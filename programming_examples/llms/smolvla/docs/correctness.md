@@ -24,10 +24,12 @@ fixture goes stale against a checkpoint or LeRobot upgrade, and being gitignored
 it would make the verify lit test fail on a clean checkout. It costs one extra
 CPU forward (~0.9 s).
 
-Measured, 3 cameras:
+Measured (2026-10-04, AMD Ryzen AI MAX+ 395):
 
 ```
-cosine 0.998427   nMSE 0.007423   PASS
+3 cameras   cosine 0.999328   nMSE 0.006984   PASS
+2 cameras   cosine 0.999148   nMSE 0.002331   PASS
+1 camera    cosine 0.998187   nMSE 0.003715   PASS
 ```
 
 nMSE is normalized rather than absolute so the threshold does not drift with
@@ -68,20 +70,78 @@ the gate. 100 frames of `lerobot/droid_100`, one from the middle of each of its
 
 | Cameras | Within threshold | cosine median | P10 | cosine worst | nMSE worst |
 |---|---|---|---|---|---|
-| **3 (shipping)** | **100/100** | 0.999679 | 0.998782 | 0.997360 | 0.008050 |
-| 2 | 98/100 | 0.999435 | 0.997137 | 0.987832 | 0.036063 |
-| 1 | 97/100 | 0.998840 | 0.995269 | 0.957068 | 0.086860 |
+| **3 (shipping)** | **100/100** | 0.999752 | 0.998841 | 0.997604 | 0.009617 |
+| 2 | 98/100 | 0.999616 | 0.997230 | 0.983156 | 0.036285 |
+| 1 | 97/100 | 0.999142 | 0.996696 | 0.893272 | 0.086942 |
+
+(2026-10-04, with the host-side vision fixes — a vectorised patch-embed unfold and
+a capped BLAS thread count, both bit-identical in output; the gate's cosine is
+unchanged to every digit by them. The earlier table, from 2026-09, had the same
+shape: 100/100, 98/100, 97/100.) The report lists at most the five worst frames
+below threshold.
 
 Agreement on real images is better than on the synthetic gate input, so the gate
 is not flattered by its generated input.
 
 Cosine is scale-blind on a physical actuator command, so the absolute figure is
-worth carrying too: the largest per-dimension error was 1.05 on action dim 5 at
-1 camera, 0.36 at 3.
+worth carrying too: the largest per-dimension error was 1.36 on action dim 5 at
+1 camera, 0.64 at 3 (0.95 at 2).
+
+## All three stages on the NPU (experimental)
+
+`make verify-all` (and `make verify-all INPUT=real`) run the same comparison with
+the vision encoder, the language backbone and the action expert all on the NPU
+(`--npu-all`; see the README, "Experimental: backbone and expert on the NPU"). Same
+reference, same thresholds, same 100 frames.
+
+The 3-camera (shipping) numbers below are from 2026-10-10, re-verified on current
+`main` (#2061/#2070/#2076 merged, no opt-in compiler flag) after this PR was rebased
+off its original, closed `air.order_drains` dependency (#2059). The 2- and 1-camera
+rows predate that rebase (2026-10-04, against the old fork compiler) and have not
+been re-measured against current `main`; vision-only is unaffected by the rebase
+(bit-identical before and after, so its numbers stand at every camera count) but the
+all-NPU 2/1-camera figures are left here only as a shape reference, not a current
+guarantee.
+
+| Gate (synthetic) | Cameras | Result | cosine | nMSE |
+|---|---|---|---|---|
+| vision-only | 3 / 2 / 1 | PASS / PASS / PASS | 0.99933 / 0.99915 / 0.99819 | 0.00698 / 0.00233 / 0.00372 |
+| **all NPU** | **3** | **PASS** | **0.99553** | **0.03219** |
+| all NPU (not re-verified) | 2 / 1 | PASS / PASS | 0.99857 / 0.99778 | 0.00716 / 0.01131 |
+
+| `droid_100`, 100 frames | Cameras | Within threshold | cosine median | P10 | cosine worst | nMSE median | nMSE worst |
+|---|---|---|---|---|---|---|---|
+| vision-only | **3** | 100/100 | 0.999752 | 0.998841 | 0.997604 | 0.00078 | 0.00962 |
+| **all NPU** | **3** | **95/100** | **0.999383** | **0.996756** | **0.982175** | **0.00400** | **0.06501** |
+| vision-only | 2 | 98/100 | 0.999616 | 0.997230 | 0.983156 | 0.00142 | 0.03629 |
+| all NPU (not re-verified) | 2 | 98/100 | 0.999321 | 0.996595 | 0.970506 | 0.00213 | 0.05671 |
+| vision-only | 1 | 97/100 | 0.999142 | 0.996696 | 0.893272 | 0.00276 | 0.08694 |
+| all NPU (not re-verified) | 1 | 94/100 | 0.998355 | 0.993409 | 0.762683 | 0.00564 | 0.20952 |
+
+The all-NPU path still passes the synthetic gate at 3 cameras, but it is
+**measurably less accurate than this PR's original numbers** against current `main`:
+the synthetic-gate cosine is 0.9955 here vs 0.9966 originally, and the 100-real-frame
+survey at 3 cameras now lands 95/100 within threshold (worst cosine 0.982, worst nMSE
+0.065) vs the 100/100 (worst cosine 0.996) this PR originally reported. It still
+clears the gate (cosine >= 0.99) comfortably on every run. Vision-only and
+vision+backbone both reproduce the original numbers exactly -- the gap is isolated to
+the action expert's dense, many-job engine launch; see the README's "Prerequisites
+beyond the vision path" for the suspected mechanism. Fewer cameras was the harder case
+on the original compiler (the 1-camera figures above show why) and is expected to
+still be, though it has not been re-checked here.
+
+Where the extra error comes from: the backbone and expert use bfp16 weights (8-bit
+mantissas, a shared exponent per 8 values) and bf16 activations. Each stage is very
+close on its own — the expert is at cosine ≥ 0.99997 per layer against the fp32
+reference and 0.99989 for the final output against LeRobot on a captured step, the
+backbone 0.99997 chained over its 16 layers — and the error accumulates through the
+10 flow-matching steps. This is agreement with the CPU model's action chunk, not
+task success.
 
 ## Why a few frames fall below threshold
 
-Not because the NPU is less accurate on those images. Measured per frame across
+(Analysis of the vision-only path, measured on the 2026-09 build; the shape is
+unchanged.) Not because the NPU is less accurate on those images. Measured per frame across
 the same 100:
 
 | Quantity | Behaviour |

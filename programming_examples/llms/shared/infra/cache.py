@@ -883,3 +883,41 @@ class KernelCache:
             len(readback_set),
         )
         return results
+
+    def alloc_bos(self, name, backend_kwargs, *inputs, bo_key=None):
+        """Allocate (without dispatching) the BOs `load_and_run`'s first call
+        for `bo_key` would allocate, sized from `inputs`. For a caller that
+        needs to patch a BO -- e.g. alias one kernel's input onto another
+        kernel's output buffer -- before the first real dispatch, so that
+        dispatch runs the intended computation instead of a throwaway one
+        used only to populate the cache. A no-op if `bo_key` is already
+        cached.
+        """
+        import pyxrt as xrt
+
+        if name not in self.artifacts:
+            raise RuntimeError(
+                f"Kernel '{name}' not found in cache. "
+                f"Available: {list(self.artifacts.keys())}"
+            )
+        if name in self._loaded:
+            KernelCache._contexts.move_to_end((self._uid, name))
+        else:
+            self._load_backend(name, backend_kwargs)
+        backend = self._loaded[name]
+        _bo_key = bo_key if bo_key is not None else name
+        if _bo_key in self._cached_bos:
+            return self._cached_bos[_bo_key]
+        is_elf = self.artifacts[name].output_binary.endswith(".elf")
+
+        def _alloc_bo(i, s):
+            if is_elf:
+                return xrt.ext.bo(backend.device, s)
+            return xrt.bo(
+                backend.device, s, xrt.bo.host_only, backend.kernel.group_id(i + 3)
+            )
+
+        bos = [_alloc_bo(i, a.size * a.itemsize) for i, a in enumerate(inputs)]
+        self._cached_bos[_bo_key] = bos
+        self._log(f"Allocated {len(bos)} BOs for {_bo_key}")
+        return bos

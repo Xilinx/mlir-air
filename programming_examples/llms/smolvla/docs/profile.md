@@ -1,12 +1,14 @@
 # SmolVLA NPU vision encoder — complete performance breakdown
 
-> **Update, 2026-09-27 (AMD Ryzen AI MAX+ 395, different machine from §0 below):**
-> the shipping NPU vision encoder now runs **~196 ms** for 3 images (was ~465 ms
-> at the time of this study), after landing #2006/#2020–#2023 and the zero-copy
+> **Update, 2026-10-04 (AMD Ryzen AI MAX+ 395, different machine from §0 below):**
+> the shipping NPU vision encoder now runs **~160 ms** for 3 images (was ~465 ms
+> at the time of this study), after landing #2006/#2020–#2023, the zero-copy
 > layer chaining, CPU thread binding, batched drain-cast, action-expert K/V
-> memo and FlashAttention Q@K^T pre-transpose changes since. NPU device time is
-> **56–58 ms/image** across the same 5 ELFs (was 136.02 ms/image; see the
-> refreshed §1 table below). The rest of this document — §2 onward — is the
+> memo and FlashAttention Q@K^T pre-transpose changes, and two host-side fixes
+> (a vectorised patch-embed unfold and numpy's BLAS threads capped inside the
+> NPU forward; see §3). NPU device time is **~50 ms/image** across the same 5
+> ELFs (was 136.02 ms/image; see the refreshed §1 table below), and the host
+> side of the stage is ~10 ms. The rest of this document — §2 onward — is the
 > **original per-kernel/per-tile study, dated and left as historical
 > hypothesis testing**; its H1/H2 verdicts and ratios were about the *fusion
 > and tiling* structure, which is unchanged, but its absolute µs/GFLOP-s
@@ -97,25 +99,27 @@ reads 65.40 / 36.15 / 36.77 / 1.12 / 0.73, total **140.18 ms** against the
 moved by up to 10% across the rebuild, and `flash_attn` and `vit_ln_qkv` swapped
 places. Treat the absolute figures in §2–§7 as of their measurement date.
 
-**Re-measured 2026-09-27** (AMD Ryzen AI MAX+ 395, `smolvla-expert-perf` tip,
-`make profile` REPS=15, 3 alternating pairs; device/image only — the BO
-write/read/driver-total columns above need `vision_profile_run.py` re-run,
-not done this session):
+**Re-measured 2026-10-04** (AMD Ryzen AI MAX+ 395, merged tree, `make profile`
+REPS=15; device/image only — the BO write/read/driver-total columns above need
+`vision_profile_run.py` re-run, not done this session):
 
-| ELF | calls/image | device/image (ms), 3 pairs | share of device |
+| ELF | calls/image | device/image (ms) | share of device |
 |---|---:|---:|---:|
-| `vit_o_ffn` | 4 | 28.75 / 29.44 / 29.12 | ~51% |
-| `flash_attn` | 4 | 16.23 / 16.40 / 16.93 | ~29% |
-| `vit_ln_qkv` | 4 | 9.78 / 9.78 / 10.24 | ~17% |
-| `gemm_connector` | 1 | 0.99 / 0.98 / 0.98 | ~2% |
-| `layer_norm` | 1 | 0.51 / 0.50 / 0.51 | ~1% |
-| **TOTAL** | | **56.26 / 57.11 / 57.78** | 100% |
+| `vit_o_ffn` | 4 | 26.62 | ~53% |
+| `flash_attn` | 4 | 14.02 | ~28% |
+| `vit_ln_qkv` | 4 | 7.73 | ~16% |
+| `gemm_connector` | 1 | 0.98 | ~2% |
+| `layer_norm` | 1 | 0.49 | ~1% |
+| **TOTAL** | | **49.84** | 100% |
 
-Down from 136.02 ms/image at this doc's original measurement (2.4×). `flash_attn`'s
-share grew (25% → ~29%) because the GEMM-heavy ELFs (`vit_o_ffn`, `vit_ln_qkv`)
-picked up more optimization work (B-stationary, vectorized/batched drain casts)
-than FlashAttention had at this point (only the Q@K^T pre-transpose, -3.3%
-device time, landed since).
+Down from 136.02 ms/image at this doc's original measurement (2.7×) and from
+56–58 ms/image on 2026-09-27: the last ~10% is the host-side fixes in §3, which
+also shortened the *measured* kernel time (with all 32 BLAS threads awake, host
+contention stretched the dispatch and wait around each launch).
+On the 3-camera encode that is 160.8 → 149.5 ms of device time and a
+host remainder of ~10 ms, at 4.6–5.0 TFLOP/s for the GEMM ELFs and 2.5 for
+attention (638 GFLOP per encode; 29% of the NPU time against a 14.7 TFLOP/s
+floor).
 
 ---
 
@@ -219,7 +223,7 @@ path uses, median of 30 (15 for im2col), machine idle.
 
 | host op | each | ×/encode | total |
 |---|---:|---:|---:|
-| `im2col_patch_embed` (all threads) | 4.220 ms | 3 | **12.66 ms** |
+| `im2col_patch_embed` (vectorised unfold, 8 BLAS threads; in situ) | ~2.0 ms | 3 | **~6 ms** |
 | patch_embed f32→bf16 (1024×768) | 0.211 ms | 3 | 0.63 ms |
 | connector A f32→bf16 (64×12288) | 0.210 ms | 3 | 0.63 ms |
 | `np.zeros` (1024,768) bf16 — FA out | 0.010 ms | 36 | 0.37 ms |
@@ -230,12 +234,19 @@ path uses, median of 30 (15 for im2col), machine idle.
 | `_to_chw_f32` (torch 1×3×512×512) | 0.003 ms | 3 | 0.01 ms |
 | LN param `np.concatenate` (2×768) | 0.001 ms | 3 | <0.01 ms |
 | connector B `ascontiguousarray` (12288,960) | <0.001 ms | 3 | <0.01 ms |
-| **TOTAL itemised host** | | | **14.84 ms** |
+| **TOTAL itemised host** | | | **~8 ms** |
 
-For reference: `im2col_patch_embed` at **1 thread** cost 9.455 ms instead of
-4.220 ms, which is why it ran outside the host BLAS clamp this session measured.
-That clamp has since been removed — ten later runs found it made no difference
-either way (442.5 vs 441.1 ms).
+**Updated 2026-10-04.** The itemised table above was measured with the original
+Python slice-loop unfold (1.4 ms per image) and all BLAS threads, in a bench
+with no idle gaps. In the pipeline the NPU is busy between encodes and numpy's
+32 BLAS threads sleep and wake late: the 3-camera `im2col` took 9 ms or 19 ms
+(tail to 54 ms) and was ~60% of the vision stage's wall-time variance. Two
+fixes, both bit-identical: the unfold is one reshape/transpose (0.2 ms per
+image), and BLAS threads are capped to `SMOLVLA_CPU_THREADS` (8) with
+`threadpoolctl` inside the NPU forward only. Together: patch embed 9.0 → 5.9 ms
+(p90 30.6 → 6.7 ms), vision stage 187.6 → 160 ms, and the whole stage's std from
+13.6 to 6.2 ms. (An earlier note here said a BLAS clamp made no difference; that
+was measured on the loop version without idle gaps and is superseded.)
 
 Note: the connector weight (12288×960 bf16, 23.6 MB) is **not** copied per call
 — it is already contiguous bf16, so `ascontiguousarray` is a no-op. Same for
