@@ -360,11 +360,19 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
     }
     if (newIfOp.getNumResults() == 0)
       return;
-    auto wa = air::WaitAllOp::create(
-        builder, scf_if_op.getLoc(),
-        air::AsyncTokenType::get(builder.getContext()), tokens);
-    wa->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
-    SmallVector<Value> yielded(newIfOp.getNumResults(), wa.getAsyncToken());
+    // Each result also waits on what the branch yielded for it, where that
+    // was carried over.
+    SmallVector<Value> yielded;
+    for (Value v : from->getTerminator()->getOperands()) {
+      SmallVector<Value> deps(tokens);
+      if (remap.contains(v) && !llvm::is_contained(deps, remap.lookup(v)))
+        deps.push_back(remap.lookup(v));
+      auto wa = air::WaitAllOp::create(
+          builder, scf_if_op.getLoc(),
+          air::AsyncTokenType::get(builder.getContext()), deps);
+      wa->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
+      yielded.push_back(wa.getAsyncToken());
+    }
     scf::YieldOp::create(builder, scf_if_op.getLoc(), yielded);
   };
   cloneBranch(scf_if_op.thenBlock(), newIfOp.thenBlock());

@@ -3290,23 +3290,28 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
   if (!async_op)
     op->emitOpError("is not an async op");
 
-  // Under an scf.if that yields a token, the op's token leaves through the
-  // branch's yield, and the scf.if's token is what the loop waits on.
-  Value opToken = getAsyncTokenFromOp(op);
+  // Under an scf.if that yields tokens, the op's token leaves through every
+  // token the branch yields, and the loop waits on the scf.if's results.
+  SmallVector<Value> opTokens;
+  if (Value t = getAsyncTokenFromOp(op))
+    opTokens.push_back(t);
   auto parent = op->getParentOp();
   Operation *child = op;
   while (auto ifOp = dyn_cast_if_present<scf::IfOp>(parent)) {
-    if (ifOp.getNumResults() != 1 ||
-        !isa<air::AsyncTokenType>(ifOp.getResult(0).getType()))
+    if (ifOp.getNumResults() == 0 ||
+        !llvm::all_of(ifOp.getResultTypes(),
+                      [](Type t) { return isa<air::AsyncTokenType>(t); }))
       return;
     auto yield = cast<scf::YieldOp>(child->getBlock()->getTerminator());
-    auto yieldWaitAll = dyn_cast_if_present<air::WaitAllOp>(
-        yield.getOperand(0).getDefiningOp());
-    if (!yieldWaitAll)
-      return;
-    if (opToken)
-      addAsyncDependencyIfNew(yieldWaitAll, opToken);
-    opToken = ifOp.getResult(0);
+    for (Value y : yield.getOperands()) {
+      auto yieldWaitAll =
+          dyn_cast_if_present<air::WaitAllOp>(y.getDefiningOp());
+      if (!yieldWaitAll)
+        return;
+      for (Value t : opTokens)
+        addAsyncDependencyIfNew(yieldWaitAll, t);
+    }
+    opTokens.assign(ifOp.getResults().begin(), ifOp.getResults().end());
     child = ifOp;
     parent = ifOp->getParentOp();
   }
@@ -3333,8 +3338,8 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
       scf_par->emitOpError("reduce op is not dependent on any air::WaitAllOp");
 
     // Connect op's async token to scf reduce
-    if (opToken)
-      addAsyncDependencyIfNew(reduce_wait_all, opToken);
+    for (Value t : opTokens)
+      addAsyncDependencyIfNew(reduce_wait_all, t);
 
     // Recurse with parent
     reconnectLoopCarriedDependencyFromOp(parent);
@@ -3374,8 +3379,8 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
     }
 
     // Connect op's async token to scf yield
-    if (opToken)
-      addAsyncDependencyIfNew(yield_wait_all, opToken);
+    for (Value t : opTokens)
+      addAsyncDependencyIfNew(yield_wait_all, t);
 
     // Recurse with parent
     reconnectLoopCarriedDependencyFromOp(parent);

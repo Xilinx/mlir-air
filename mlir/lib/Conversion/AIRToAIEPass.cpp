@@ -3683,10 +3683,15 @@ private:
   // merge contiguous pairs of dimensions, where none of them is padded. A
   // merge could carry the padding over, but the larger count may not fit the
   // BD's padding field.
+  // Then split unpadded dimensions longer than maxSize, as the unpadded path
+  // does. A padded one cannot be split without moving its padding, so that is
+  // an error.
   static LogicalResult canonicalizePaddedPattern(
-      OpBuilder &builder, Location loc, SmallVector<Value> &offsets,
+      OpBuilder &builder, Operation *op, SmallVector<Value> &offsets,
       SmallVector<Value> &sizes, SmallVector<Value> &strides,
-      SmallVector<int32_t> &padBefore, SmallVector<int32_t> &padAfter) {
+      SmallVector<int32_t> &padBefore, SmallVector<int32_t> &padAfter,
+      int maxSize) {
+    Location loc = op->getLoc();
     size_t rank = sizes.size();
     if (offsets.size() != rank || strides.size() != rank ||
         padBefore.size() != rank || padAfter.size() != rank)
@@ -3735,6 +3740,32 @@ private:
       padBefore.erase(padBefore.begin() + i + 1);
       padAfter.erase(padAfter.begin() + i + 1);
     }
+    if (maxSize <= 0)
+      return success();
+    for (int i = sizes.size() - 1; i >= 0; i--) {
+      auto size = cst(sizes[i]);
+      auto stride = cst(strides[i]);
+      if (!size || !stride || *size <= maxSize)
+        continue;
+      if (padBefore[i] || padAfter[i]) {
+        op->emitOpError("padded dimension ")
+            << i << " has " << *size << " elements, more than the " << maxSize
+            << " a buffer descriptor dimension takes";
+        return success();
+      }
+      int64_t inner = 0;
+      for (int64_t f = maxSize; f > 1 && !inner; f--)
+        if (*size % f == 0 && *size / f <= maxSize)
+          inner = f;
+      if (!inner)
+        continue;
+      sizes[i] = index(inner);
+      sizes.insert(sizes.begin() + i, index(*size / inner));
+      strides.insert(strides.begin() + i, index(*stride * inner));
+      offsets.insert(offsets.begin() + i, index(0));
+      padBefore.insert(padBefore.begin() + i, 0);
+      padAfter.insert(padAfter.begin() + i, 0);
+    }
     return success();
   }
 
@@ -3771,7 +3802,7 @@ private:
       padAfter.assign(padAfterAttr.asArrayRef().begin(),
                       padAfterAttr.asArrayRef().end());
       padded = succeeded(canonicalizePaddedPattern(
-          builder, ci->getLoc(), offsets, wraps, strides, padBefore, padAfter));
+          builder, ci, offsets, wraps, strides, padBefore, padAfter, maxSize));
     }
     if (!padded)
       (void)air::canonicalizeWrapAndStrideList(
