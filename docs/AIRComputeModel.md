@@ -796,6 +796,40 @@ channel index, and vice versa. The compiler enforces the **static balance condit
 
 A violation of the balance condition is a compile-time error.
 
+#### Endpoint ordering requirement
+
+A channel is an ordered FIFO, so the sequence in which transfers enter the channel is part
+of the program's meaning. Two ops address the same **channel slot** when they name the same
+channel, move data in the same direction, and carry provably equal indices. Ops addressing
+one slot must be totally ordered with respect to each other by `dependency` tokens. The
+requirement is independent of the buffers those ops touch, because the ordering constrains
+the shared FIFO rather than the data.
+
+- Program order does not establish the ordering. Within an async region the token graph is
+  the only ordering the IR carries, so two same-slot endpoints with disjoint dependency
+  lists are unordered, and which transfer each endpoint consumes is undefined.
+- A conditional region does not open a new sequential scope. An `affine.if` / `scf.if` /
+  `scf.index_switch` arm is guarded straight-line code belonging to the enclosing scope, so
+  endpoints in sibling conditionals must still be ordered; the edge names the conditional's
+  token result rather than the guarded op's own token. A loop body does open a new scope,
+  so endpoints in distinct loops are not ordered against each other.
+- Two endpoints reached through conditional arms are ordered only when they sit under the
+  same guard. On the arm that does not run, a conditional's token result carries whatever
+  the other arm yields, which says nothing about the endpoint inside; ordering through it
+  would be fictional. Endpoints under unrelated conditions, including opposite arms of one
+  conditional, are therefore left unordered.
+- Indices that are not provably equal address distinct slots and require no ordering.
+  Treating unknown indices as equal instead would serialize independent sub-channels.
+
+Any path through the dependency graph satisfies the requirement, but a producer of AIR
+should emit a direct edge. A path routed through ops on other channels does not survive
+compilation: each intermediate edge relates two ops that share neither a channel nor a
+buffer, so a pass that removes false dependencies deletes those intermediate edges and
+leaves the two same-slot endpoints unordered.
+
+Violating the requirement is not a compile-time error today. The pass
+`-air-verify-channel-fifo-order` checks the requirement on demand.
+
 #### Deadlock conditions
 
 A program deadlocks when a `put` is waiting for a `get` that can never execute, or a
