@@ -1,0 +1,10 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// The matmul is written for the aie2p intrinsic. Requesting aie2 must fail
+// with a diagnostic. Host-only check: no device and no Peano needed.
+//
+// RUN: mkdir -p test_npu1_unsupported_arch
+// RUN: cd test_npu1_unsupported_arch
+// RUN: not %PYTHON %S/run.py --arch aie2 --compile-mode compile-only 2>&1 | FileCheck %s
+// CHECK: Error: --arch aie2 is not supported
