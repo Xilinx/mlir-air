@@ -409,6 +409,19 @@ getLinearAccessRange(ArrayRef<OpFoldResult> offsets,
 bool mayOverlap(std::optional<std::pair<int64_t, int64_t>> a,
                 std::optional<std::pair<int64_t, int64_t>> b);
 
+// Whether two access patterns into the same buffer may touch a common element:
+// false when they cannot, true when they may, std::nullopt when a footprint is
+// not known. Footprints are bounded over the loops around the accesses.
+// Constant patterns of up to a few thousand contiguous runs are compared
+// element by element, so true means they do touch. Otherwise patterns with the
+// same strides are compared dimension by dimension, and others by linear range.
+std::optional<bool> accessesIntersect(ArrayRef<OpFoldResult> offsets0,
+                                      ArrayRef<OpFoldResult> sizes0,
+                                      ArrayRef<OpFoldResult> strides0,
+                                      ArrayRef<OpFoldResult> offsets1,
+                                      ArrayRef<OpFoldResult> sizes1,
+                                      ArrayRef<OpFoldResult> strides1);
+
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
 bool isDefaultDataAccessPattern(ArrayRef<OpFoldResult> memcpy_sizes,
