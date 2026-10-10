@@ -3290,8 +3290,27 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
   if (!async_op)
     op->emitOpError("is not an async op");
 
-  // Get parent scf loop op
+  // Under an scf.if that yields a token, the op's token leaves through the
+  // branch's yield, and the scf.if's token is what the loop waits on.
+  Value opToken = getAsyncTokenFromOp(op);
   auto parent = op->getParentOp();
+  Operation *child = op;
+  while (auto ifOp = dyn_cast_if_present<scf::IfOp>(parent)) {
+    if (ifOp.getNumResults() != 1 ||
+        !isa<air::AsyncTokenType>(ifOp.getResult(0).getType()))
+      return;
+    auto yield = cast<scf::YieldOp>(child->getBlock()->getTerminator());
+    auto yieldWaitAll = dyn_cast_if_present<air::WaitAllOp>(
+        yield.getOperand(0).getDefiningOp());
+    if (!yieldWaitAll)
+      return;
+    if (opToken)
+      addAsyncDependencyIfNew(yieldWaitAll, opToken);
+    opToken = ifOp.getResult(0);
+    child = ifOp;
+    parent = ifOp->getParentOp();
+  }
+
   if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
     // Get scf parallel's loop-carried token
     auto token = getLoopCarriedTokenFromScfOp(scf_par);
@@ -3314,7 +3333,6 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
       scf_par->emitOpError("reduce op is not dependent on any air::WaitAllOp");
 
     // Connect op's async token to scf reduce
-    auto opToken = getAsyncTokenFromOp(op);
     if (opToken)
       addAsyncDependencyIfNew(reduce_wait_all, opToken);
 
@@ -3356,7 +3374,6 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
     }
 
     // Connect op's async token to scf yield
-    auto opToken = getAsyncTokenFromOp(op);
     if (opToken)
       addAsyncDependencyIfNew(yield_wait_all, opToken);
 

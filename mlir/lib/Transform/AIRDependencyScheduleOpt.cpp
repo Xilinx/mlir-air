@@ -3615,9 +3615,38 @@ public:
         auto memcpyif_op =
             dyn_cast_if_present<MemcpyInterface>(dma_op.getOperation());
         traceDependentInductionVar(memcpyif_op, loop_dep_history, op_history);
+        addConditionHerdIds(dma_op, loop_dep_history);
         dma_op_loop_dep_history.push_back(loop_dep_history);
       }
     });
+  }
+
+  // A dma under a condition on the herd ids runs only on the cores that meet
+  // it, so it varies with those ids even when its operands do not.
+  void addConditionHerdIds(air::DmaMemcpyNdOp dma_op,
+                           SmallVector<Value, 1> &deps) {
+    auto herd = dma_op->getParentOfType<air::HerdOp>();
+    SmallVector<Value> worklist;
+    for (Operation *p = dma_op->getParentOp(); p && p != herd;
+         p = p->getParentOp()) {
+      if (auto ifOp = dyn_cast<scf::IfOp>(p))
+        worklist.push_back(ifOp.getCondition());
+      else if (auto ifOp = dyn_cast<affine::AffineIfOp>(p))
+        worklist.append(ifOp->operand_begin(), ifOp->operand_end());
+    }
+    llvm::SmallPtrSet<Value, 8> seen;
+    while (!worklist.empty()) {
+      Value v = worklist.pop_back_val();
+      if (!seen.insert(v).second)
+        continue;
+      if (llvm::is_contained(herd.getIds(), v)) {
+        deps.push_back(v);
+        continue;
+      }
+      if (Operation *def = v.getDefiningOp())
+        if (herd->isProperAncestor(def))
+          worklist.append(def->operand_begin(), def->operand_end());
+    }
   }
 
   // Detect boradcast opportunity based on dependency to loops

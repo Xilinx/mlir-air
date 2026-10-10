@@ -263,11 +263,16 @@ air::cloneAffineIfUsingRemap(OpBuilder builder, IRMapping &remap,
 SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
                                                    IRMapping &remap,
                                                    scf::IfOp scf_if_op) {
-  // Clone scf.if preserving the if structure with remapped condition.
-  // Only supports scf.if with no results (the expected pattern for hoisting
-  // external channel ops). Fall back to flattening if results are present.
+  // Clone scf.if preserving the if structure with remapped condition. An
+  // scf.if whose results are all async tokens keeps its structure too, each
+  // branch yielding the tokens of what it cloned, as long as its condition was
+  // cloned along with it. Otherwise the branches are flattened.
   SmallVector<Operation *> clonedOps;
-  if (scf_if_op.getNumResults() != 0) {
+  bool onlyTokens = llvm::all_of(scf_if_op.getResultTypes(), [](Type t) {
+    return isa<air::AsyncTokenType>(t);
+  });
+  if (!onlyTokens || (scf_if_op.getNumResults() != 0 &&
+                      !remap.contains(scf_if_op.getCondition()))) {
     // Flatten: clone body ops without the scf.if wrapper.
     auto clonedThenOps = cloneOpsInBlock(scf_if_op.thenBlock(), builder, remap);
     clonedOps.insert(clonedOps.end(), clonedThenOps.begin(),
@@ -329,39 +334,46 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
   // Remap the condition value.
   Value cond = remap.lookupOrDefault(scf_if_op.getCondition());
 
-  // Create a new scf.if with no results (external channel ops are async and
-  // don't return values through the scf.if).
   bool hasElse = (scf_if_op.elseBlock() != nullptr);
-  auto newIfOp =
-      scf::IfOp::create(builder, scf_if_op.getLoc(), /*resultTypes=*/{}, cond,
-                        /*withElseRegion=*/hasElse);
+  auto newIfOp = scf::IfOp::create(builder, scf_if_op.getLoc(),
+                                   scf_if_op.getResultTypes(), cond,
+                                   /*withElseRegion=*/hasElse);
   // Mark the new scf.if with "hoist" to prevent it from being erased during
   // the cleanup step that removes non-hoisted ops from the hoisted
   // scf.parallel.
   newIfOp->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
 
-  // Clone ops in the then block. Insert before the existing yield terminator.
-  {
+  auto cloneBranch = [&](Block *from, Block *to) {
     OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPoint(newIfOp.thenBlock()->getTerminator());
-    auto clonedThenOps = cloneOpsInBlock(scf_if_op.thenBlock(), builder, remap);
-    // Collect channel ops from the then block.
-    for (auto *op : clonedThenOps) {
+    if (to->mightHaveTerminator())
+      builder.setInsertionPoint(to->getTerminator());
+    else
+      builder.setInsertionPointToEnd(to);
+    auto cloned = cloneOpsInBlock(from, builder, remap);
+    SmallVector<Value> tokens;
+    for (auto *op : cloned) {
       if (isa<air::ChannelInterface>(op))
         clonedOps.push_back(op);
+      if (auto asyncOp = dyn_cast<air::AsyncOpInterface>(op))
+        if (auto token = asyncOp.getAsyncToken())
+          tokens.push_back(token);
     }
-  }
+    if (newIfOp.getNumResults() == 0)
+      return;
+    auto wa = air::WaitAllOp::create(
+        builder, scf_if_op.getLoc(),
+        air::AsyncTokenType::get(builder.getContext()), tokens);
+    wa->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
+    SmallVector<Value> yielded(newIfOp.getNumResults(), wa.getAsyncToken());
+    scf::YieldOp::create(builder, scf_if_op.getLoc(), yielded);
+  };
+  cloneBranch(scf_if_op.thenBlock(), newIfOp.thenBlock());
+  if (hasElse)
+    cloneBranch(scf_if_op.elseBlock(), newIfOp.elseBlock());
 
-  // Clone ops in the else block if present.
-  if (hasElse) {
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPoint(newIfOp.elseBlock()->getTerminator());
-    auto clonedElseOps = cloneOpsInBlock(scf_if_op.elseBlock(), builder, remap);
-    for (auto *op : clonedElseOps) {
-      if (isa<air::ChannelInterface>(op))
-        clonedOps.push_back(op);
-    }
-  }
+  for (auto [oldRes, newRes] :
+       llvm::zip(scf_if_op.getResults(), newIfOp.getResults()))
+    remap.map(oldRes, newRes);
 
   return clonedOps;
 }
