@@ -3678,6 +3678,66 @@ private:
     return output;
   }
 
+  // Canonicalize a padded access pattern. Padding is counted per dimension,
+  // so only folds that leave it in place are done: drop unit dimensions and
+  // merge contiguous pairs of dimensions, where none of them is padded. A
+  // merge could carry the padding over, but the larger count may not fit the
+  // BD's padding field.
+  static LogicalResult canonicalizePaddedPattern(
+      OpBuilder &builder, Location loc, SmallVector<Value> &offsets,
+      SmallVector<Value> &sizes, SmallVector<Value> &strides,
+      SmallVector<int32_t> &padBefore, SmallVector<int32_t> &padAfter) {
+    size_t rank = sizes.size();
+    if (offsets.size() != rank || strides.size() != rank ||
+        padBefore.size() != rank || padAfter.size() != rank)
+      return failure();
+    auto cst = [](Value v) { return getConstantIntValue(v); };
+    auto index = [&](int64_t v) -> Value {
+      return arith::ConstantIndexOp::create(builder, loc, v);
+    };
+    // Drop unpadded unit dimensions, moving a constant offset onto the
+    // innermost dimension.
+    for (int i = rank - 2; i >= 0; i--) {
+      auto size = cst(sizes[i]);
+      if (!size || *size != 1 || padBefore[i] || padAfter[i])
+        continue;
+      auto off = cst(offsets[i]), stride = cst(strides[i]),
+           inner = cst(strides.back()), innerOff = cst(offsets.back());
+      if (!off)
+        continue;
+      if (*off != 0) {
+        if (!stride || !inner || !innerOff || *inner == 0 ||
+            (*off * *stride) % *inner)
+          continue;
+        offsets.back() = index(*innerOff + *off * *stride / *inner);
+      }
+      for (auto *v : {&offsets, &sizes, &strides})
+        v->erase(v->begin() + i);
+      padBefore.erase(padBefore.begin() + i);
+      padAfter.erase(padAfter.begin() + i);
+    }
+    // Merge contiguous dimensions, innermost pair first.
+    for (int i = sizes.size() - 2; i >= 0; i--) {
+      auto outerStride = cst(strides[i]), innerStride = cst(strides[i + 1]);
+      auto innerSize = cst(sizes[i + 1]), outerSize = cst(sizes[i]);
+      auto outerOff = cst(offsets[i]), innerOff = cst(offsets[i + 1]);
+      if (!outerStride || !innerStride || !innerSize || !outerSize ||
+          !outerOff || !innerOff)
+        continue;
+      if (*outerStride != *innerSize * *innerStride || padBefore[i] ||
+          padAfter[i] || padBefore[i + 1] || padAfter[i + 1])
+        continue;
+      sizes[i] = index(*outerSize * *innerSize);
+      strides[i] = strides[i + 1];
+      offsets[i] = index(*outerOff * *innerSize + *innerOff);
+      for (auto *v : {&offsets, &sizes, &strides})
+        v->erase(v->begin() + i + 1);
+      padBefore.erase(padBefore.begin() + i + 1);
+      padAfter.erase(padAfter.begin() + i + 1);
+    }
+    return success();
+  }
+
   air::ChannelInterface
   createChannelPutGetWithoutBundle(OpBuilder &builder, air::ChannelOp chan,
                                    air::ChannelInterface ci,
@@ -3701,10 +3761,23 @@ private:
     auto memrefTy = llvm::dyn_cast<BaseMemRefType>(ci.getMemref().getType());
     int innerAlignment =
         memrefTy ? air::getDmaInnerElementAlignment(memrefTy, ci) : 1;
-    (void)air::canonicalizeWrapAndStrideList(
-        builder, offsets, wraps, strides,
-        air::getTensorVolume(ci.getMemref().getType()), maxSize,
-        innerAlignment);
+    auto padBeforeAttr = ci->getAttrOfType<DenseI32ArrayAttr>("pad_before");
+    auto padAfterAttr = ci->getAttrOfType<DenseI32ArrayAttr>("pad_after");
+    SmallVector<int32_t> padBefore, padAfter;
+    bool padded = false;
+    if (padBeforeAttr && padAfterAttr) {
+      padBefore.assign(padBeforeAttr.asArrayRef().begin(),
+                       padBeforeAttr.asArrayRef().end());
+      padAfter.assign(padAfterAttr.asArrayRef().begin(),
+                      padAfterAttr.asArrayRef().end());
+      padded = succeeded(canonicalizePaddedPattern(
+          builder, ci->getLoc(), offsets, wraps, strides, padBefore, padAfter));
+    }
+    if (!padded)
+      (void)air::canonicalizeWrapAndStrideList(
+          builder, offsets, wraps, strides,
+          air::getTensorVolume(ci.getMemref().getType()), maxSize,
+          innerAlignment);
     air::ChannelInterface new_ci = nullptr;
     if (isa<air::ChannelPutOp>(ci))
       new_ci = air::ChannelPutOp::create(
@@ -3720,6 +3793,12 @@ private:
           /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     new_ci->setAttrs(ci->getDiscardableAttrDictionary());
     air::copyPaddingAttributes(ci, new_ci);
+    if (padded) {
+      new_ci->setAttr("pad_before",
+                      DenseI32ArrayAttr::get(builder.getContext(), padBefore));
+      new_ci->setAttr("pad_after",
+                      DenseI32ArrayAttr::get(builder.getContext(), padAfter));
+    }
     return new_ci;
   }
 
@@ -7317,6 +7396,61 @@ public:
       return op->emitOpError("cascade channel element type has zero bit width");
     int64_t cascadeTileSize = llvm::divideCeil(cascadeWidth, elementWidth);
 
+    // A region of the memref goes out as one contiguous run. Replace it with
+    // a 1-D slice of the flattened memref, so that what follows sees a whole
+    // memref.
+    if (!op.getMixedSizes().empty()) {
+      if (!memrefTy.getLayout().isIdentity())
+        return op->emitOpError("cascade channel requires contiguous row-major "
+                               "memref layout, got ")
+               << memrefTy;
+      auto offsets = op.getMixedOffsets();
+      auto sizes = op.getMixedSizes();
+      auto strides = op.getMixedStrides();
+      int64_t count = 1, expected = 1;
+      for (int i = sizes.size() - 1; i >= 0; i--) {
+        auto size = getConstantIntValue(sizes[i]);
+        auto stride = getConstantIntValue(strides[i]);
+        if (!size || !stride)
+          return op->emitOpError(
+              "cascade channel requires constant sizes and strides");
+        if (*size == 1)
+          continue;
+        if (*stride != expected)
+          return op->emitOpError(
+              "cascade channel access pattern must be one contiguous run");
+        expected *= *size;
+        count *= *size;
+      }
+      rewriter.setInsertionPoint(op);
+      Value linear = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      for (auto [off, stride] : llvm::zip(offsets, strides)) {
+        Value o = getValueOrCreateConstantIndexOp(rewriter, loc, off);
+        Value st = getValueOrCreateConstantIndexOp(rewriter, loc, stride);
+        linear = arith::AddIOp::create(
+            rewriter, loc, linear, arith::MulIOp::create(rewriter, loc, o, st));
+      }
+      ReassociationIndices allDims;
+      for (int64_t i = 0; i < memrefTy.getRank(); i++)
+        allDims.push_back(i);
+      Value flat = memref::CollapseShapeOp::create(
+          rewriter, loc, memref, SmallVector<ReassociationIndices>{allDims});
+      Value slice = memref::SubViewOp::create(
+          rewriter, loc, flat, ArrayRef<OpFoldResult>{linear},
+          ArrayRef<OpFoldResult>{rewriter.getIndexAttr(count)},
+          ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)});
+      int memrefOperand = cast<air::AsyncOpInterface>(op.getOperation())
+                              .getAsyncDependencies()
+                              .size() +
+                          op.getIndices().size();
+      op->setOperand(memrefOperand, slice);
+      op.setMixedOffsets({});
+      op.setMixedSizes({});
+      op.setMixedStrides({});
+      memref = slice;
+      memrefTy = cast<MemRefType>(slice.getType());
+    }
+
     // Calculate total number of elements
     int64_t totalElements = 1;
     for (int64_t dim : memrefTy.getShape()) {
@@ -7334,8 +7468,9 @@ public:
     rewriter.setInsertionPoint(op);
 
     // Check for non-trivial layouts that cannot be safely flattened.
-    // Only identity (default contiguous row-major) layouts are supported.
-    if (!memrefTy.getLayout().isIdentity())
+    // Only identity (default contiguous row-major) layouts are supported,
+    // apart from a 1-D slice, which needs no flattening.
+    if (memrefTy.getRank() != 1 && !memrefTy.getLayout().isIdentity())
       return op->emitOpError("cascade channel requires contiguous row-major "
                              "memref layout, got ")
              << memrefTy;
@@ -7354,8 +7489,12 @@ public:
                         MemRefLayoutAttrInterface{}, memrefTy.getMemorySpace());
 
     // Create memref.collapse_shape op
-    Value flatMemref = memref::CollapseShapeOp::create(
-        rewriter, loc, flatMemrefTy, memref, reassociation);
+    Value flatMemref =
+        memrefTy.getRank() == 1
+            ? memref
+            : memref::CollapseShapeOp::create(rewriter, loc, flatMemrefTy,
+                                              memref, reassociation)
+                  .getResult();
 
     // ========== UPDATE MEMREF OPERAND IN PLACE ==========
     // Find the memref operand index (after async dependencies and indices)
