@@ -118,6 +118,37 @@ module {
 
 // -----
 
+// A channel named by an object FIFO rather than a shim allocation is drained at
+// the launch boundary too.
+// CHECK-LABEL: aie.runtime_sequence @launch_drain_objectfifo
+// CHECK: %[[A0:.*]] = aiex.dma_configure_task_for @of_out
+// CHECK: aiex.dma_start_task(%[[A0]])
+// CHECK-NEXT: aiex.dma_await_task(%[[A0]])
+// CHECK-NEXT: aiex.dma_configure_task_for @of_out
+module {
+  aie.device(npu2) {
+    %t0 = aie.tile(0, 0)
+    %t3 = aie.tile(0, 3)
+    aie.objectfifo @of_out(%t3, {%t0}, 1 : i32) : !aie.objectfifo<memref<64xi32>>
+  } {sym_name = "of_seg"}
+  airrt.module_metadata{}
+  func.func @launch_drain_objectfifo(%arg0: memref<128xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c3_i32 = arith.constant 3 : i32
+    %p = airrt.segment_load "of_seg" : i64
+    airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @of_out} : (i32, i64, i64, memref<128xi32>)
+    %e0 = airrt.wait_all {air.launch_end} : !airrt.event
+    %p1 = airrt.segment_load "of_seg" : i64
+    airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c64_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @of_out} : (i32, i64, i64, memref<128xi32>)
+    %e1 = airrt.wait_all {air.launch_end} : !airrt.event
+    return
+  }
+}
+
+// -----
+
 // A transfer issued as several tasks (here four) is waited on as all of them:
 // each wait frees the pieces of its own transfer, not the channel's next tasks.
 // CHECK-LABEL: aie.runtime_sequence @split_pieces

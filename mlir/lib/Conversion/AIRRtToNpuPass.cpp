@@ -4304,9 +4304,17 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       for (Value v : launchEnd->getOperands())
         if (Operation *def = v.getDefiningOp())
           waited.insert(def);
-      for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
+      // The device's shim allocations in declaration order, then any other
+      // channel the launch's transfers name (an object FIFO).
+      llvm::SetVector<StringRef> channels;
+      for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>())
+        channels.insert(alloc.getSymName());
+      for (auto &[blk, byChannel] : transfers)
+        for (auto &[channel, dmas] : byChannel)
+          channels.insert(channel);
+      for (StringRef channel : channels) {
         for (auto &[blk, byChannel] : transfers) {
-          auto it = byChannel.find(alloc.getSymName());
+          auto it = byChannel.find(channel);
           if (it == byChannel.end())
             continue;
           SmallVector<Value> events;
