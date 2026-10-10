@@ -14,15 +14,15 @@
 
 // CHECK: %[[D:.*]] = air.channel.get async  @drain[]
 // Starts inside the drained rows 2-4.
-// CHECK: air.channel.put async [%[[D]]]  @feed[] {{.*}} {id = 2 : i32}
-// Same rows, another column.
-// CHECK: air.channel.put async  @feed[] {{.*}} {id = 3 : i32}
+// CHECK: %[[P2:.*]] = air.channel.put async [%[[D]]]  @feed[] {{.*}} {id = 2 : i32}
+// Same rows, another column: only FIFO order on @feed, not the drain.
+// CHECK: %[[P3:.*]] = air.channel.put async [%[[P2]]]  @feed[] {{.*}} {id = 3 : i32}
 // A loop over rows 2-4 starts after the drain.
 // CHECK: %[[W:.*]] = air.wait_all async [%[[D]]]
 // CHECK: scf.for {{.*}} iter_args(%{{.*}} = %[[W]])
 // CHECK: air.channel.put async [%{{.*}}]  @feed[] {{.*}} {id = 4 : i32}
 // Row 6, which the drain does not write.
-// CHECK: air.channel.put async  @feed[] {{.*}} {id = 5 : i32}
+// CHECK: air.channel.put async [%[[P3]]]  @feed[] {{.*}} {id = 5 : i32}
 
 #map = affine_map<()[s0] -> (s0 + 2)>
 module {
@@ -252,8 +252,8 @@ module {
 
 // CHECK-LABEL: func.func @shapes
 // CHECK: %[[D:.*]] = air.channel.get async  @drain[]
-// CHECK: air.channel.put async [%[[D]]]  @feed[] {{.*}} {id = 2 : i32}
-// CHECK: air.channel.put async  @feed[] {{.*}} {id = 3 : i32}
+// CHECK: %[[P2:.*]] = air.channel.put async [%[[D]]]  @feed[] {{.*}} {id = 2 : i32}
+// CHECK: air.channel.put async [%[[P2]]]  @feed[] {{.*}} {id = 3 : i32}
 module {
   air.channel @drain [1]
   air.channel @feed [1]
@@ -287,9 +287,9 @@ module {
 
 // CHECK-LABEL: func.func @stride_nesting
 // CHECK: %[[D:.*]] = air.channel.get async  @drain[] {{.*}} {id = 1 : i32}
-// CHECK: air.channel.put async [%[[D]]]  @feed[] {{.*}} {id = 2 : i32}
-// CHECK: air.channel.get async  @drain[] {{.*}} {id = 3 : i32}
-// CHECK: air.channel.put async  @feed[] {{.*}} {id = 4 : i32}
+// CHECK: %[[P2:.*]] = air.channel.put async [%[[D]]]  @feed[] {{.*}} {id = 2 : i32}
+// CHECK: air.channel.get async [%[[D]]]  @drain[] {{.*}} {id = 3 : i32}
+// CHECK: air.channel.put async [%[[P2]]]  @feed[] {{.*}} {id = 4 : i32}
 module {
   air.channel @drain [1]
   air.channel @feed [1]
