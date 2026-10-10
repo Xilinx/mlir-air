@@ -861,6 +861,29 @@ make progress simultaneously. In practice:
   be **acyclic**: a cycle means at least one op in the cycle is waiting on another in
   the same cycle, which can never be resolved.
 
+#### Ordering through host memory
+
+Transfers on one channel index are matched in program order: the k-th `put` pairs with
+the k-th `get`.
+
+A `get` at launch scope whose destination is host memory (L3) — a *drain* — receives data
+produced on the device. It cannot complete before its device-side `put`, and so not
+before the host inputs that feed the producer have been issued. The async token graph
+does not carry this. A token dependency would make the `get` start only after the `put`
+completed, and a `put` may need its `get` in order to complete; so the two are related
+only by channel pairing, and so are the drain and the inputs that feed its producer.
+
+A lowering that issues host operations in sequence must therefore:
+
+- issue a drain no later than the inputs its producer needs, so that it is ready to
+  receive;
+- block on the drain's completion only after those inputs have been issued; and
+- block on the drain's completion before any host access that may touch the memory it
+  writes, as the drain's token requires.
+
+How many transfers a channel can have in flight is a property of the backend, not of the
+program.
+
 ---
 
 ### 2.6 `air.execute` and `air.wait_all`

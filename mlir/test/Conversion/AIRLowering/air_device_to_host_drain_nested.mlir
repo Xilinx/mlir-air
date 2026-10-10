@@ -36,7 +36,7 @@ module {
       %r = scf.index_switch %s0 -> !air.async.token
       case 0 {
         %d = air.channel.get async  @out[] (%b[%c64] [%c64] [%c1_l]) {id = 1 : i32, metadata = @outAlloc} : (memref<256xi32>)
-        %rb = air.channel.put async [%d]  @in[] (%b[%c0] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAlloc} : (memref<256xi32>)
+        %rb = air.channel.put async [%d]  @in[] (%b[%c64] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAlloc} : (memref<256xi32>)
         %y = air.wait_all async [%d, %rb]
         scf.yield %y : !air.async.token
       }
@@ -91,7 +91,7 @@ module {
         %d = air.channel.get async [%tk]  @out1[] (%b[%c64] [%c64] [%c1_l]) {id = 1 : i32, metadata = @outAlloc1} : (memref<256xi32>)
         // expected-warning@+2 {{this read of host memory depends on a device-to-host drain that cannot be awaited before it here}}
         // expected-note@+1 {{it is in a loop body}}
-        %rb = air.channel.put async [%d]  @in1[] (%b[%c0] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAlloc1} : (memref<256xi32>)
+        %rb = air.channel.put async [%d]  @in1[] (%b[%c64] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAlloc1} : (memref<256xi32>)
         %y = air.wait_all async [%d, %rb]
         scf.yield %y : !air.async.token
       }
@@ -144,7 +144,7 @@ module {
       case 0 {
         // expected-warning@+2 {{this read of host memory depends on a device-to-host drain that cannot be awaited before it here}}
         // expected-note@+1 {{the drain is outside its block}}
-        %rb = air.channel.put async [%d]  @inoutside[] (%b[%c0] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAllocoutside} : (memref<256xi32>)
+        %rb = air.channel.put async [%d]  @inoutside[] (%b[%c64] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAllocoutside} : (memref<256xi32>)
         %y = air.wait_all async [%d, %rb]
         scf.yield %y : !air.async.token
       }
@@ -202,7 +202,7 @@ module {
         %cond = arith.cmpi eq, %i, %c0_i : index
         %ri = scf.if %cond -> (!air.async.token) {
           %d = air.channel.get async  @outdeep[] (%b[%c64] [%c64] [%c1_l]) {id = 1 : i32, metadata = @outAllocdeep} : (memref<256xi32>)
-          %rb = air.channel.put async [%d]  @indeep[] (%b[%c0] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAllocdeep} : (memref<256xi32>)
+          %rb = air.channel.put async [%d]  @indeep[] (%b[%c64] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAllocdeep} : (memref<256xi32>)
           %y = air.wait_all async [%d, %rb]
           scf.yield %y : !air.async.token
         } else {
