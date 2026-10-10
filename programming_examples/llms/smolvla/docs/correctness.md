@@ -65,9 +65,10 @@ fraction within threshold, the cosine and nMSE distribution, the worst action
 dimension, and the five worst frames below threshold. It always exits 0: it
 measures headroom, it is not the gate.
 
-With three cameras, the shipping configuration, every frame should be within
-threshold on both paths. With fewer cameras a few frames fall below on both,
-more of them on the all-NPU path. Agreement on real frames is better than on the
+With three cameras, the shipping configuration, nearly all frames are within
+threshold on the vision-only path; the all-NPU path, which is less accurate,
+can leave more below it. Fewer cameras leaves more frames below threshold on
+both paths, and more on the all-NPU path than on vision only. Agreement on real frames is better than on the
 synthetic input, so the gate is not flattered by its generated images.
 
 Cosine ignores scale, which matters for an actuator command, so the report also
