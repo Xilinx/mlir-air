@@ -2315,10 +2315,11 @@ AIR dialect memcpy operations into AIRRt memcpy operations.</p>
 <h3 id="-air-wrap-func-with-parallel"><code>-air-wrap-func-with-parallel</code><a class="headerlink" href="#-air-wrap-func-with-parallel" title="Permanent link">&para;</a></h3>
 <p><em>Wraps the body of a given func.func operation inside an scf.parallel loop.</em></p>
 <p>Wraps the body of a given func.func operation inside an scf.parallel loop.
-The pass assumes that: 
-(1) The function arguments consist of: M memref arguments, N loop upper bounds, N loop induction variable indices.
-(2) The scf.parallel loop is constructed using the N upper bounds and induction variable indices.
-(3) The scf.parallel loop is inserted at the beginning of the function, wrapping all existing operations.</p>
+The function's last 2N arguments are the N grid sizes followed by the N
+grid indices, as triton-shared appends them; memref and scalar arguments
+before them are left alone. The loop's upper bounds come from
+<code>loop-bounds</code>, its induction variables replace the N index arguments, and
+it wraps all existing operations.</p>
 <h4 id="options_7">Options<a class="headerlink" href="#options_7" title="Permanent link">&para;</a></h4>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>-loop-bounds  : Specify upper bounds for scf.parallel loops
 <a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>-actual-sizes : Actual data sizes per launch dimension (for DMA padding). Attached as 'air.actual_sizes' on the created loop.
