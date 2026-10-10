@@ -326,21 +326,21 @@ module {
 
 // -----
 
-// Test 5: Row-only broadcast (broadcast_shape=[1,4]) -> column span is 1.
-// 3 row-only broadcasts: per-column pressure = 3 (same as non-broadcast).
-// 3 > 2 -> upgrade. Tests that row-only broadcasts aren't incorrectly
-// discounted.
+// Test 5: Row-only broadcasts (broadcast_shape=[1,4]), each fixed to its own
+// herd column by its broadcast_set. Each feeds one column, so per-column
+// pressure is 1 <= 2 -> no upgrade.
 
-// CHECK:       air.channel @channel_0 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
-// CHECK:       air.channel @channel_1 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
-// CHECK:       air.channel @channel_2 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
-// CHECK-LABEL: func.func @row_broadcast_upgrade
+// CHECK:       air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
+// CHECK:       air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4]}
+// CHECK:       air.channel @channel_2 [1, 1] {broadcast_shape = [1, 4]}
+// CHECK-NOT:   channel_type = "npu_dma_packet"
+// CHECK-LABEL: func.func @row_broadcast_distinct_columns
 
 #set5_row0 = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
 #set5_row1 = affine_set<()[s0, s1] : (s0 - 1 == 0, s1 >= 0, -s1 + 3 >= 0)>
 #set5_row2 = affine_set<()[s0, s1] : (s0 - 2 == 0, s1 >= 0, -s1 + 3 >= 0)>
 module {
-  func.func @row_broadcast_upgrade(
+  func.func @row_broadcast_distinct_columns(
       %arg0: memref<1024xbf16>, %arg1: memref<1024xbf16>,
       %arg2: memref<1024xbf16>, %arg3: memref<1024xbf16>) {
     air.launch () in () args(%b0=%arg0, %b1=%arg1, %b2=%arg2,
@@ -359,7 +359,7 @@ module {
               memref<1024xbf16>, memref<1024xbf16> {
           %buf = memref.alloc() : memref<256xbf16, 2>
           %buf_c = memref.alloc() : memref<256xbf16, 2>
-          // 3 row-only broadcasts (broadcast_shape=[1,4], col span=1).
+          // 3 row-only broadcasts, one per column.
           affine.if #set5_row0()[%tx, %ty] {
             air.dma_memcpy_nd (%buf[] [] [], %hb0[] [] [])
                 {broadcast_set = #set5_row0} :
@@ -380,6 +380,136 @@ module {
               (memref<1024xbf16>, memref<256xbf16, 2>)
           memref.dealloc %buf : memref<256xbf16, 2>
           memref.dealloc %buf_c : memref<256xbf16, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Test 6: Row-only broadcasts all fixed to herd column 0. They compete for
+// that column: per-column pressure = 3 > 2 -> upgrade. Tests that row-only
+// broadcasts aren't incorrectly discounted.
+
+// CHECK:       air.channel @channel_0 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_1 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_2 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+// CHECK-LABEL: func.func @row_broadcast_same_column_upgrade
+
+#set6_row0 = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
+#set6_row1 = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
+#set6_row2 = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
+module {
+  func.func @row_broadcast_same_column_upgrade(
+      %arg0: memref<1024xbf16>, %arg1: memref<1024xbf16>,
+      %arg2: memref<1024xbf16>, %arg3: memref<1024xbf16>) {
+    air.launch () in () args(%b0=%arg0, %b1=%arg1, %b2=%arg2,
+                              %co=%arg3)
+        : memref<1024xbf16>, memref<1024xbf16>,
+          memref<1024xbf16>, memref<1024xbf16> {
+      air.segment @seg args(%sb0=%b0, %sb1=%b1, %sb2=%b2,
+                             %sco=%co)
+          : memref<1024xbf16>, memref<1024xbf16>,
+            memref<1024xbf16>, memref<1024xbf16> {
+        %c3 = arith.constant 3 : index
+        %c4 = arith.constant 4 : index
+        air.herd @herd tile (%tx, %ty) in (%sx=%c3, %sy=%c4)
+            args(%hb0=%sb0, %hb1=%sb1, %hb2=%sb2, %hc=%sco)
+            : memref<1024xbf16>, memref<1024xbf16>,
+              memref<1024xbf16>, memref<1024xbf16> {
+          %buf = memref.alloc() : memref<256xbf16, 2>
+          %buf_c = memref.alloc() : memref<256xbf16, 2>
+          // 3 row-only broadcasts into column 0.
+          affine.if #set6_row0()[%tx, %ty] {
+            air.dma_memcpy_nd (%buf[] [] [], %hb0[] [] [])
+                {broadcast_set = #set6_row0} :
+                (memref<256xbf16, 2>, memref<1024xbf16>)
+          }
+          affine.if #set6_row1()[%tx, %ty] {
+            air.dma_memcpy_nd (%buf[] [] [], %hb1[] [] [])
+                {broadcast_set = #set6_row1} :
+                (memref<256xbf16, 2>, memref<1024xbf16>)
+          }
+          affine.if #set6_row2()[%tx, %ty] {
+            air.dma_memcpy_nd (%buf[] [] [], %hb2[] [] [])
+                {broadcast_set = #set6_row2} :
+                (memref<256xbf16, 2>, memref<1024xbf16>)
+          }
+          // 1 output (non-broadcast).
+          air.dma_memcpy_nd (%hc[] [] [], %buf_c[] [] []) :
+              (memref<1024xbf16>, memref<256xbf16, 2>)
+          memref.dealloc %buf : memref<256xbf16, 2>
+          memref.dealloc %buf_c : memref<256xbf16, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Test 7: Column-fixed broadcasts in two herds. Herd @a has two on its
+// column 0, herd @b one on its column 1. Herd columns are local and the herds
+// are not placed yet, so they may share a column: per-column pressure =
+// 2 + 1 = 3 > 2 -> upgrade.
+
+// CHECK:       air.channel @channel_0 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_1 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+// CHECK:       air.channel @channel_2 [2, 4]
+// CHECK:       air.channel @channel_3 {{.*}} {broadcast_shape = [1, 4], channel_type = "npu_dma_packet"}
+// CHECK-LABEL: func.func @row_broadcast_two_herds_upgrade
+
+#set7_col0 = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
+#set7_col1 = affine_set<()[s0, s1] : (s0 - 1 == 0, s1 >= 0, -s1 + 3 >= 0)>
+module {
+  func.func @row_broadcast_two_herds_upgrade(
+      %arg0: memref<1024xbf16>, %arg1: memref<1024xbf16>,
+      %arg2: memref<1024xbf16>, %arg3: memref<1024xbf16>) {
+    air.launch () in () args(%b0=%arg0, %b1=%arg1, %b2=%arg2,
+                              %co=%arg3)
+        : memref<1024xbf16>, memref<1024xbf16>,
+          memref<1024xbf16>, memref<1024xbf16> {
+      air.segment @seg args(%sb0=%b0, %sb1=%b1, %sb2=%b2,
+                             %sco=%co)
+          : memref<1024xbf16>, memref<1024xbf16>,
+            memref<1024xbf16>, memref<1024xbf16> {
+        %c2 = arith.constant 2 : index
+        %c4 = arith.constant 4 : index
+        air.herd @a tile (%tx, %ty) in (%sx=%c2, %sy=%c4)
+            args(%hb0=%sb0, %hb1=%sb1, %hc=%sco)
+            : memref<1024xbf16>, memref<1024xbf16>, memref<1024xbf16> {
+          %buf = memref.alloc() : memref<256xbf16, 2>
+          %buf_c = memref.alloc() : memref<256xbf16, 2>
+          // 2 row-only broadcasts into column 0 of @a.
+          affine.if #set7_col0()[%tx, %ty] {
+            air.dma_memcpy_nd (%buf[] [] [], %hb0[] [] [])
+                {broadcast_set = #set7_col0} :
+                (memref<256xbf16, 2>, memref<1024xbf16>)
+          }
+          affine.if #set7_col0()[%tx, %ty] {
+            air.dma_memcpy_nd (%buf[] [] [], %hb1[] [] [])
+                {broadcast_set = #set7_col0} :
+                (memref<256xbf16, 2>, memref<1024xbf16>)
+          }
+          air.dma_memcpy_nd (%hc[] [] [], %buf_c[] [] []) :
+              (memref<1024xbf16>, memref<256xbf16, 2>)
+          memref.dealloc %buf : memref<256xbf16, 2>
+          memref.dealloc %buf_c : memref<256xbf16, 2>
+        }
+        air.herd @b tile (%tx, %ty) in (%sx=%c2, %sy=%c4)
+            args(%hb2=%sb2)
+            : memref<1024xbf16> {
+          %buf = memref.alloc() : memref<256xbf16, 2>
+          // 1 row-only broadcast into column 1 of @b.
+          affine.if #set7_col1()[%tx, %ty] {
+            air.dma_memcpy_nd (%buf[] [] [], %hb2[] [] [])
+                {broadcast_set = #set7_col1} :
+                (memref<256xbf16, 2>, memref<1024xbf16>)
+          }
+          memref.dealloc %buf : memref<256xbf16, 2>
         }
       }
     }

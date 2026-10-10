@@ -686,6 +686,12 @@ bool isAsyncOp(Operation *op) {
 // Air dependency comes in two forms: production and consumption of the same
 // async token, and usage of the same air.channel.
 bool areAsyncDependent(Operation *a, Operation *b) {
+  return areAsyncDependent(a, b, isAsyncDependent);
+}
+
+bool areAsyncDependent(
+    Operation *a, Operation *b,
+    llvm::function_ref<bool(Operation *, Operation *)> dependsOn) {
   SmallVector<Value> dep_a = getAsyncDependenciesFromOp(a);
   Value token_a = getAsyncTokenFromOp(a);
   SmallVector<Value> dep_b = getAsyncDependenciesFromOp(b);
@@ -701,9 +707,9 @@ bool areAsyncDependent(Operation *a, Operation *b) {
     if (dep == token_a)
       return true;
   // Deep async dependency tracing through air.wait_all.
-  if (isAsyncDependent(a, b))
+  if (dependsOn(a, b))
     return true;
-  if (isAsyncDependent(b, a))
+  if (dependsOn(b, a))
     return true;
 
   auto chanA = dyn_cast_if_present<air::ChannelInterface>(a);

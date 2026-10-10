@@ -27,7 +27,7 @@
 // Iteration 0: RTP (7) + release precede iteration 0's feed.
 // CHECK: arith.constant 7 : i32
 // CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
-// CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
+// CHECK: aiex.set_lock(%__air_herd_lock_0_2, %c1_i32{{.*}})
 // CHECK: aiex.dma_configure_task_for @feedIn
 // Iteration 1's RTP (9) must NOT appear before the iteration-0 drain (no
 // global hoist / no clobber).
@@ -38,7 +38,7 @@
 // CHECK: aiex.dma_await_task
 // Iteration 1: RTP (9) + release land AFTER the drain, before iteration 1's feed.
 // CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
-// CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
+// CHECK: aiex.set_lock(%__air_herd_lock_0_2, %c1_i32{{.*}})
 // CHECK: aiex.dma_configure_task_for @feedIn
 
 module {

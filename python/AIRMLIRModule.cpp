@@ -13,6 +13,12 @@
 #include "air-c/Runner.h"
 #include "air-c/Transform.h"
 
+#include "mlir-c/Diagnostics.h"
+
+#include <cstdio>
+#include <stdexcept>
+#include <string>
+
 namespace nb = nanobind;
 using namespace nb::literals;
 using namespace mlir::python;
@@ -47,7 +53,35 @@ NB_MODULE(_air, m) {
           "Get an instance of AsyncTokenType in given context.",
           nb::arg("self"), nb::arg("ctx") = nb::none());
 
-  m.def("run_transform", ::runTransform);
+  // Raises if the transform fails, with the diagnostics in the message.
+  m.def(
+      "run_transform",
+      [](MlirModule transform, MlirModule payload) {
+        MlirContext ctx = mlirModuleGetContext(payload);
+        std::string diags;
+        auto handler = mlirContextAttachDiagnosticHandler(
+            ctx,
+            [](MlirDiagnostic diag, void *userData) {
+              auto append = [](MlirStringRef str, void *data) {
+                static_cast<std::string *>(data)->append(str.data, str.length);
+              };
+              auto &out = *static_cast<std::string *>(userData);
+              mlirLocationPrint(mlirDiagnosticGetLocation(diag), append,
+                                userData);
+              out += ": ";
+              mlirDiagnosticPrint(diag, append, userData);
+              out += "\n";
+              return mlirLogicalResultSuccess();
+            },
+            &diags, nullptr);
+        MlirLogicalResult result = ::runTransform(transform, payload);
+        mlirContextDetachDiagnosticHandler(ctx, handler);
+        if (mlirLogicalResultIsFailure(result))
+          throw std::runtime_error("transform failed:\n" + diags);
+        // Warnings and remarks from a successful run still go to stderr.
+        std::fputs(diags.c_str(), stderr);
+      },
+      "transform"_a, "payload"_a);
 
   m.attr("__version__") = "dev";
 

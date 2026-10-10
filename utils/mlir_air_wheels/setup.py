@@ -187,7 +187,6 @@ class CMakeBuild(build_ext):
             "-DBUILD_SHARED_LIBS=OFF",
             "-DLLVM_VERSION_SUFFIX=",
             "-DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON",
-            "-DLLVM_CCACHE_BUILD=ON",
             f"-DLLVM_ENABLE_RTTI={os.getenv('ENABLE_RTTI', 'ON')}",
             "-DAIE_ENABLE_BINDINGS_PYTHON=ON",
             "-DMLIR_DETECT_PYTHON_ENV_PRIME_SEARCH=ON",

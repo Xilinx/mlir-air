@@ -464,7 +464,8 @@ static StringAttr declareBlockArgOffsetParameter(ModuleOp module, Value offset,
     builder.setInsertionPointToStart(module.getBody());
     xilinx::AIEX::ScratchpadParameterOp::create(
         builder, module.getLoc(), name, TypeAttr::get(builder.getI32Type()),
-        /*state_table_idx=*/nullptr, /*kind=*/nullptr);
+        /*state_table_idx=*/nullptr, /*kind=*/nullptr, /*min_value=*/nullptr,
+        /*max_value=*/nullptr, /*joint_bounds=*/nullptr);
   }
   return name;
 }
@@ -1100,7 +1101,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*burst_length=*/nullptr, /*axcache=*/nullptr,
           /*iteration=*/nullptr,
           /*offset_parameter=*/nullptr,
-          /*offset_state_table_idx=*/nullptr, /*next_bd_id=*/nullptr);
+          /*offset_state_table_idx=*/nullptr, /*length_parameter=*/nullptr,
+          /*length_unit=*/nullptr, /*length_state_table_idx=*/nullptr,
+          /*length_core_encoded=*/nullptr, /*next_bd_id=*/nullptr);
     } else if (dynOffsetI32) {
       // Only the address moves. Build the descriptor exactly as the static path
       // would -- a KV append writes NGRP chunks at a region stride, and
@@ -1418,9 +1421,10 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
         if (!lockOp)
           continue;
 
-        auto setLockOp =
-            AIEX::SetLockOp::create(rewriter, op.getLoc(), lockOp.getResult(),
-                                    rewriter.getI32IntegerAttr(1));
+        Value one = arith::ConstantIntOp::create(rewriter, op.getLoc(),
+                                                 rewriter.getI32Type(), 1);
+        auto setLockOp = AIEX::SetLockOp::create(rewriter, op.getLoc(),
+                                                 lockOp.getResult(), one);
         if (waveAttr)
           setLockOp->setAttr(air::attrs::LaunchWave, waveAttr);
       }
