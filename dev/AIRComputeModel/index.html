@@ -1259,6 +1259,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#ordering-through-host-memory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ordering through host memory
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2417,6 +2428,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#ordering-through-host-memory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ordering through host memory
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -3504,6 +3526,25 @@ make progress simultaneously. In practice:</p>
   be <strong>acyclic</strong>: a cycle means at least one op in the cycle is waiting on another in
   the same cycle, which can never be resolved.</li>
 </ul>
+<h4 id="ordering-through-host-memory">Ordering through host memory<a class="headerlink" href="#ordering-through-host-memory" title="Permanent link">&para;</a></h4>
+<p>Transfers on one channel index are matched in program order: the k-th <code>put</code> pairs with
+the k-th <code>get</code>.</p>
+<p>A <code>get</code> at launch scope whose destination is host memory (L3) — a <em>drain</em> — receives data
+produced on the device. It cannot complete before its device-side <code>put</code>, and so not
+before the host inputs that feed the producer have been issued. The async token graph
+does not carry this. A token dependency would make the <code>get</code> start only after the <code>put</code>
+completed, and a <code>put</code> may need its <code>get</code> in order to complete; so the two are related
+only by channel pairing, and so are the drain and the inputs that feed its producer.</p>
+<p>A lowering that issues host operations in sequence must therefore:</p>
+<ul>
+<li>issue a drain no later than the inputs its producer needs, so that it is ready to
+  receive;</li>
+<li>block on the drain's completion only after those inputs have been issued; and</li>
+<li>block on the drain's completion before any host access that may touch the memory it
+  writes, as the drain's token requires.</li>
+</ul>
+<p>How many transfers a channel can have in flight is a property of the backend, not of the
+program.</p>
 <hr />
 <h3 id="26-airexecute-and-airwait_all">2.6 <code>air.execute</code> and <code>air.wait_all</code><a class="headerlink" href="#26-airexecute-and-airwait_all" title="Permanent link">&para;</a></h3>
 <p><code>air.execute</code> wraps a sequential block of host-visible computation (e.g., <code>memref.alloc</code>,
