@@ -151,10 +151,21 @@ Prerequisites beyond the vision path (why this stays experimental):
 * The expert engine must be built once, with a no-unroll Peano `opt` wrapper
   (the 16 KB core program does not fit the default unrolling):
   `make compile-expert` (= `python experimental/expert_v2_probe.py --layers 16
-  --compile-only`), run with that compiler first on `PATH` (about
-  2 minutes with the async-dependency speed-up, about an hour without; the patch
-  is not upstream either). Self-attention layers are the even layers; an ELF
-  built with the other pattern produces garbage (cosine −0.39).
+  --compile-only`), run with that compiler first on `PATH` (about 2 minutes on
+  current `main`, #2076; stock `main` between #2061/#2070 and #2076 could take
+  well over an hour -- same root cause as the accuracy note above, a denser
+  dependency graph making `IsolateAsyncDmaLoopNest`'s per-pair query do a lot
+  more work; #2076 fixed it upstream, so no local patch is needed). Self-attention
+  layers are the even layers; an ELF built with the other pattern produces
+  garbage (cosine −0.39).
+* The accuracy numbers in `docs/correctness.md` dipped slightly (cosine ~0.9955
+  vs ~0.9966 originally) when this branch moved from the closed `air.order_drains`
+  fork to current `main`'s automatic drain ordering -- isolated to the action
+  expert's dense, 160-job single launch, still well clear of the gate. Likely
+  mechanism: #2061/#2070's more precise dependency graph changes how the
+  downstream, unmodified `IsolateAsyncDmaLoopNest` groups the expert's drains
+  relative to the fork's explicit ordering; both schedules are dependency-correct,
+  just not numerically identical on this one dense workload.
 * The backbone layer ELF is compiled lazily on the first `--npu-all` run and needs the same
   compiler first on `PATH`; it is cached afterwards.
 * The expert's per-call cost is almost all device time (13 ms of 14.6 ms): it

@@ -92,30 +92,43 @@ worth carrying too: the largest per-dimension error was 1.36 on action dim 5 at
 `make verify-all` (and `make verify-all INPUT=real`) run the same comparison with
 the vision encoder, the language backbone and the action expert all on the NPU
 (`--npu-all`; see the README, "Experimental: backbone and expert on the NPU"). Same
-reference, same thresholds, same 100 frames, 2026-10-04:
+reference, same thresholds, same 100 frames.
+
+The 3-camera (shipping) numbers below are from 2026-10-10, re-verified on current
+`main` (#2061/#2070/#2076 merged, no opt-in compiler flag) after this PR was rebased
+off its original, closed `air.order_drains` dependency (#2059). The 2- and 1-camera
+rows predate that rebase (2026-10-04, against the old fork compiler) and have not
+been re-measured against current `main`; vision-only is unaffected by the rebase
+(bit-identical before and after, so its numbers stand at every camera count) but the
+all-NPU 2/1-camera figures are left here only as a shape reference, not a current
+guarantee.
 
 | Gate (synthetic) | Cameras | Result | cosine | nMSE |
 |---|---|---|---|---|
 | vision-only | 3 / 2 / 1 | PASS / PASS / PASS | 0.99933 / 0.99915 / 0.99819 | 0.00698 / 0.00233 / 0.00372 |
-| **all NPU** | 3 / 2 / 1 | **PASS / PASS / PASS** | 0.99660 / 0.99857 / 0.99778 | 0.01188 / 0.00716 / 0.01131 |
+| **all NPU** | **3** | **PASS** | **0.99553** | **0.03219** |
+| all NPU (not re-verified) | 2 / 1 | PASS / PASS | 0.99857 / 0.99778 | 0.00716 / 0.01131 |
 
 | `droid_100`, 100 frames | Cameras | Within threshold | cosine median | P10 | cosine worst | nMSE median | nMSE worst |
 |---|---|---|---|---|---|---|---|
 | vision-only | **3** | 100/100 | 0.999752 | 0.998841 | 0.997604 | 0.00078 | 0.00962 |
-| **all NPU** | **3** | **100/100** | 0.999628 | 0.998693 | 0.996188 | 0.00130 | 0.00956 |
+| **all NPU** | **3** | **95/100** | **0.999383** | **0.996756** | **0.982175** | **0.00400** | **0.06501** |
 | vision-only | 2 | 98/100 | 0.999616 | 0.997230 | 0.983156 | 0.00142 | 0.03629 |
-| all NPU | 2 | 98/100 | 0.999321 | 0.996595 | 0.970506 | 0.00213 | 0.05671 |
+| all NPU (not re-verified) | 2 | 98/100 | 0.999321 | 0.996595 | 0.970506 | 0.00213 | 0.05671 |
 | vision-only | 1 | 97/100 | 0.999142 | 0.996696 | 0.893272 | 0.00276 | 0.08694 |
-| all NPU | 1 | 94/100 | 0.998355 | 0.993409 | 0.762683 | 0.00564 | 0.20952 |
+| all NPU (not re-verified) | 1 | 94/100 | 0.998355 | 0.993409 | 0.762683 | 0.00564 | 0.20952 |
 
-The all-NPU path passes the gate at every camera count and agrees with the CPU model on
-every real frame at the shipping 3 cameras, but it is **measurably less accurate than
-vision-only**: at 3 cameras the median cosine is 0.00012 lower and the worst frame
-0.0014 lower (nMSE median 1.7× higher, worst case about the same); on the gate's
-synthetic input the cosine is 0.0027 lower. The gap grows as cameras are removed: at 1
-camera 6 frames fall below threshold instead of 3 (the report lists five), and the
-worst frame (2861, also the worst for vision-only) goes from cosine 0.89 to 0.76.
-Fewer cameras is the case to keep on the default path.
+The all-NPU path still passes the synthetic gate at 3 cameras, but it is
+**measurably less accurate than this PR's original numbers** against current `main`:
+the synthetic-gate cosine is 0.9955 here vs 0.9966 originally, and the 100-real-frame
+survey at 3 cameras now lands 95/100 within threshold (worst cosine 0.982, worst nMSE
+0.065) vs the 100/100 (worst cosine 0.996) this PR originally reported. It still
+clears the gate (cosine >= 0.99) comfortably on every run. Vision-only and
+vision+backbone both reproduce the original numbers exactly -- the gap is isolated to
+the action expert's dense, many-job engine launch; see the README's "Prerequisites
+beyond the vision path" for the suspected mechanism. Fewer cameras was the harder case
+on the original compiler (the 1-camera figures above show why) and is expected to
+still be, though it has not been re-checked here.
 
 Where the extra error comes from: the backbone and expert use bfp16 weights (8-bit
 mantissas, a shared exponent per 8 values) and bf16 activations. Each stage is very

@@ -317,17 +317,22 @@ class ExpertRuntimeV2:
         t1 = time.perf_counter()
         c = self.cache
         if not self._written:
-            # First call: allocate the step buffers, make the kv argument THE prefix buffer, then run.
-            c.load_and_run(
-                "step",
-                self.backend,
-                self.wts,
-                self.act,
-                self.act_pre,
-                output_indices=[1],
-                bo_key="step",
-                static_input_indices={0},
+            # First call: allocate the step buffers (no dispatch), write the
+            # weights (static) and the whole act arena (masks + rope table +
+            # this call's x0; only x0 changes afterward, written below on
+            # every call) once each -- load_and_run's own first-call writes,
+            # done here since alloc_bos only allocates -- then make the kv
+            # argument THE prefix buffer, and fall through to the one real
+            # dispatch below.
+            c.alloc_bos(
+                "step", self.backend, self.wts, self.act, self.act_pre, bo_key="step"
             )
+            for i, a in ((0, self.wts), (1, self.act)):
+                bo_i = c._cached_bos["step"][i]
+                src = a.view(np.uint8).ravel() if a.dtype == bfloat16 else a.ravel()
+                mv_i = np.frombuffer(bo_i.map(), np.uint8, count=src.size)
+                mv_i[:] = src
+                bo_i.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
             c._cached_bos["step"][2] = c._cached_bos["pre"][1]
             self._written = True
         bo = c._cached_bos["step"][1]

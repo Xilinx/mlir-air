@@ -48,20 +48,23 @@ def pad_src(stores):
     )
 
 
+def _peano_tool(name):
+    from air_examples.llms.shared.infra.external_kernels import _get_peano_clang
+
+    return str(Path(_get_peano_clang()).parent / name)
+
+
 def compile_pad(pad):
-    from air_examples.llms.shared.infra.external_kernels import (
-        _PEANO_FLAGS,
-        _get_peano_clang,
-    )
+    from air_examples.llms.shared.infra.external_kernels import _PEANO_FLAGS
 
     src = Path("pad_probe.cc")
     src.write_text(pad_src(pad))
     out = f"pad_{pad}.o"
-    cmd = [_get_peano_clang()] + _PEANO_FLAGS + ["-c", str(src), "-o", out]
+    cmd = [_peano_tool("clang++")] + _PEANO_FLAGS + ["-c", str(src), "-o", out]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
     size = (
         subprocess.run(
-            [os.path.expanduser("~/peano_pinned/llvm-aie/bin/llvm-size"), out],
+            [_peano_tool("llvm-size"), out],
             capture_output=True,
             text=True,
         )
@@ -122,7 +125,7 @@ def build_module(pad, cols, rows, launches):
 
 
 def ctrl_kb(build_dir):
-    readelf = os.path.expanduser("~/peano_pinned/llvm-aie/bin/llvm-readelf")
+    readelf = _peano_tool("llvm-readelf")
     elfs = sorted(Path(build_dir).rglob("*.elf"), key=lambda p: p.stat().st_mtime)
     if not elfs:
         return float("nan")

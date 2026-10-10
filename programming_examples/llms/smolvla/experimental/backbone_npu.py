@@ -262,8 +262,8 @@ def run_layer_engine(
     seq_len = x_bf16.shape[0]
     emb, hidden = config.emb_dim, config.hidden_dim
     kv = config.n_kv_heads * config.head_dim
-    _arg_cache = getattr(run_layer_engine, "_arg_cache", {})
-    run_layer_engine._arg_cache = _arg_cache
+    _arg_cache = getattr(cache, "_arg_cache_layer_engine", {})
+    cache._arg_cache_layer_engine = _arg_cache
     key = f"elayer_L{layer_idx}"
     if key not in _arg_cache:
         lw = layer_weights
@@ -768,8 +768,8 @@ def run_transformer_block_custom(
         config.hidden_dim,
     )
     kv_dim = n_kv_heads * head_dim
-    _arg_cache = getattr(run_transformer_block_custom, "_arg_cache", {})
-    run_transformer_block_custom._arg_cache = _arg_cache
+    _arg_cache = getattr(cache, "_arg_cache_transformer_block", {})
+    cache._arg_cache_transformer_block = _arg_cache
 
     # ---- RMS + QKV + RoPE ----
     if fused_qkv:
@@ -1028,8 +1028,8 @@ def run_layer_fused(
         config.hidden_dim,
     )
     kv = nkv * config.head_dim
-    _arg_cache = getattr(run_layer_fused, "_arg_cache", {})
-    run_layer_fused._arg_cache = _arg_cache
+    _arg_cache = getattr(cache, "_arg_cache_layer_fused", {})
+    cache._arg_cache_layer_fused = _arg_cache
     key = f"layer_L{layer_idx}"
     if key not in _arg_cache:
         lw = layer_weights
@@ -1108,15 +1108,15 @@ def run_layers_fused(
     from layer_fused import MULTI_PER_LAYER, MULTI_SHARED, multi_layer_arg
 
     seq_len, emb = x_bf16.shape[0], config.emb_dim
-    _arg_cache = getattr(run_layers_fused, "_arg_cache", {})
-    run_layers_fused._arg_cache = _arg_cache
+    _arg_cache = getattr(cache, "_arg_cache_layers_fused", {})
+    cache._arg_cache_layers_fused = _arg_cache
     key = f"layers{n_layers}_L{first_layer}"
     out_idx = n_layers % 2
     if key not in _arg_cache:
         per = []
         for i in range(first_layer, first_layer + n_layers):
             # run_layer_fused builds (and caches) the per-layer arg list; reuse its arrays.
-            if f"layer_L{i}" not in getattr(run_layer_fused, "_arg_cache", {}):
+            if f"layer_L{i}" not in getattr(cache, "_arg_cache_layer_fused", {}):
                 run_layer_fused(
                     x_bf16,
                     all_weights[i],
@@ -1126,7 +1126,7 @@ def run_layers_fused(
                     layer_idx=i,
                     gu_swiglu_half=gu_swiglu_half,
                 )
-            per.append(run_layer_fused._arg_cache[f"layer_L{i}"])
+            per.append(cache._arg_cache_layer_fused[f"layer_L{i}"])
         args = [None] * (2 + len(MULTI_SHARED) + n_layers * len(MULTI_PER_LAYER))
         args[1] = np.zeros((seq_len, emb), dtype=bfloat16)
         for i in range(n_layers):

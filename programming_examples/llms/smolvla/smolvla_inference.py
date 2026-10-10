@@ -872,12 +872,16 @@ def main() -> int:
     ap.add_argument("--cameras", type=int, default=3, help="camera feeds to supply")
     ap.add_argument("--dataset", default="lerobot/droid_100", help="for --input real")
     args = ap.parse_args()
+    global NPU_ALL, NPU_BACKBONE, NPU_EXPERT
     npu_vision = not args.cpu
-    if args.npu_all:
-        if args.cpu:
-            ap.error("--npu-all and --cpu are opposites")
-        global NPU_ALL, NPU_BACKBONE, NPU_EXPERT
-        NPU_ALL = NPU_BACKBONE = NPU_EXPERT = True
+    NPU_ALL = NPU_ALL or args.npu_all
+    NPU_BACKBONE = NPU_BACKBONE or args.npu_backbone or NPU_ALL
+    NPU_EXPERT = NPU_EXPERT or args.npu_expert or NPU_ALL
+    if args.cpu and (NPU_ALL or NPU_BACKBONE or NPU_EXPERT):
+        ap.error(
+            "--cpu runs the unmodified model; it cannot combine with "
+            "--npu-all / --npu-backbone / --npu-expert (or their env-var equivalents)"
+        )
 
     if args.compile_only:
         return compile_only()
@@ -889,8 +893,8 @@ def main() -> int:
             args.prompt,
             args.reps,
             args.cameras,
-            args.npu_backbone or NPU_BACKBONE,
-            args.npu_expert or NPU_EXPERT,
+            NPU_BACKBONE,
+            NPU_EXPERT,
         )
 
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
@@ -921,8 +925,8 @@ def main() -> int:
         noise=fixed_noise(policy),
         npu_vision=npu_vision,
         timings=timings,
-        npu_backbone=args.npu_backbone or NPU_BACKBONE,
-        npu_expert=args.npu_expert or NPU_EXPERT,
+        npu_backbone=NPU_BACKBONE,
+        npu_expert=NPU_EXPERT,
     )
     wall_ms = (time.perf_counter() - t0) * 1e3
 

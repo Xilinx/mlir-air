@@ -95,7 +95,7 @@ class BackboneRuntime:
     def _rewrite_static(self, new):
         import pyxrt as xrt
 
-        arg_cache = getattr(bn.run_layer_fused, "_arg_cache", {})
+        arg_cache = getattr(self.cache, "_arg_cache_layer_fused", {})
         for i in range(self.cfg.n_layers):
             key = f"layer_L{i}"
             if key in arg_cache:

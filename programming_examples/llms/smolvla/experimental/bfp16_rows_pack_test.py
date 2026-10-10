@@ -2,14 +2,20 @@
 # SPDX-License-Identifier: MIT
 
 import sys, time
+import types
+from pathlib import Path
 
-sys.path.insert(
-    0,
-    "/home/vule/workspace/mlir-air/programming_examples/matrix_multiplication/bf16_x_bfp16",
-)
+# programming_examples/ is published as the air_examples package rather than
+# put on sys.path: every directory under it would otherwise become a
+# top-level module name and shadow an installed package that shares it.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
 import numpy as np
 from ml_dtypes import bfloat16
-from matmul_bf16_x_bfp16 import pack_b_bfp16ebs8
+from air_examples.matrix_multiplication.bf16_x_bfp16.matmul_bf16_x_bfp16 import (
+    pack_b_bfp16ebs8,
+)
 from bfp16_rows_pack import pack_rows_bfp16ebs8
 
 
@@ -61,3 +67,4 @@ for f, nm in ((pack_rows_bfp16ebs8, "new"), (ref, "pack_b_bfp16ebs8 (+ .T/bf16 c
         ts.append((time.perf_counter() - t) * 1e3)
     print(f"{nm:40s} {np.median(ts[1:]):6.1f} ms for 312960 rows")
 print("ALL IDENTICAL" if ok else "MISMATCH")
+sys.exit(0 if ok else 1)
