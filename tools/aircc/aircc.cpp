@@ -243,6 +243,25 @@ static cl::opt<bool> useLockRaceConditionFixV2(
              "use-lock-race-condition-fix."),
     cl::init(false), cl::cat(airCompilerOptions));
 
+static cl::opt<bool> useLockRaceConditionFixAuto(
+    "use-lock-race-condition-fix-auto",
+    cl::desc("Pick a lock race fix per shared L2 buffer: "
+             "use-lock-race-condition-fix where each transfer has a channel of "
+             "its own, the plain counted lock where a channel moves several, "
+             "and use-lock-race-condition-fix-v2 only where the first does "
+             "not fit the BD pool. On unless either of the other two is "
+             "given."),
+    cl::init(false), cl::cat(airCompilerOptions));
+
+// When several DMA channels share one counted lock on a memtile buffer, which
+// of them gets a slot depends on timing, so every buffer gets a lock race fix
+// unless the user picks one for the whole design.
+static bool lockRaceFixAutoEnabled() {
+  if (useLockRaceConditionFixAuto.getNumOccurrences())
+    return useLockRaceConditionFixAuto;
+  return !useLockRaceConditionFix && !useLockRaceConditionFixV2;
+}
+
 static cl::opt<bool> coalesceShimDma(
     "coalesce-shim-dma",
     cl::desc("Coalesce consecutive contiguous shim DMA transfers on the same "
@@ -1243,6 +1262,8 @@ static LogicalResult runAieCompilation() {
        << (useLockRaceConditionFix ? "true" : "false");
     os << " use-lock-race-condition-fix-v2="
        << (useLockRaceConditionFixV2 ? "true" : "false");
+    os << " use-lock-race-condition-fix-auto="
+       << (lockRaceFixAutoEnabled() ? "true" : "false");
     // The full-ELF output is a static TXN, which cannot hold a runtime herd
     // scalar; only there does AIRToAIE route one through a scratchpad
     // parameter instead of the RTP control-plane write.
