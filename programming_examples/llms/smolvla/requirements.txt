@@ -5,26 +5,18 @@
 #     pip install -r requirements.txt
 #
 # `make verify` then runs with the default LEROBOT_PYTHON=python3, the same way
-# the sibling examples do. Verified end to end on a stock mlir-air environment.
+# the sibling examples do.
 #
-# One caveat worth knowing before you install: lerobot requires numpy >= 2.0
-# (`numpy<2.3.0,>=2.0.0`), and utils/requirements.txt leaves numpy unpinned, so
-# an older mlir-air environment can still be on 1.x. Installing this file will
-# then upgrade numpy across a major version in the interpreter every other
-# example shares. That upgrade was tested here -- numpy 1.26.4 -> 2.2.6, with
-# qwen25_0_5b and qwen3_1_7b `make verify` PASSing identically before and
-# after, and air/pyxrt unaffected -- but it is a shared environment, so check
-# your own models rather than taking that on faith. To keep the shared
-# environment untouched, install into a separate venv instead and point the
-# Makefile at it; sourcing utils/env_setup.sh puts air and pyxrt on PYTHONPATH
-# so they import from any venv:
+# lerobot pins its own numpy range, which may move numpy in an interpreter
+# that every other example shares. To keep the shared environment untouched,
+# install into a separate venv and point the Makefile at it; sourcing
+# utils/env_setup.sh puts air and pyxrt on PYTHONPATH so they import from any
+# venv:
 #
 #     make verify LEROBOT_PYTHON=/path/to/venv/bin/python
 #
-# After installing, one-time HuggingFace setup:
-#   1. Create a read token at https://huggingface.co/settings/tokens
-#   2. `huggingface-cli login`  (or export HF_TOKEN=<token>)
-# The example downloads lerobot/smolvla_base (450M params) on first use.
+# The example downloads lerobot/smolvla_base and its SmolVLM2 backbone on first
+# use. Both are public; no HuggingFace token is needed.
 
 # Weight loading
 safetensors
@@ -52,6 +44,7 @@ num2words
 # Host-side reference math and bf16 handling
 numpy
 ml_dtypes
-# Caps numpy's BLAS threads inside the NPU forward (default is every hardware thread; ~25 ms of
-# the vision stage). Optional: without it the cap is skipped with a warning.
+# Caps numpy's BLAS threads inside the NPU forward, where waking every hardware thread
+# slows the host side of the vision stage. Optional: without it the cap is skipped with a
+# warning.
 threadpoolctl

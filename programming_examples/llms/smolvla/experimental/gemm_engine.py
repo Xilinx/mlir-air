@@ -53,23 +53,6 @@ OWN_HD, OWN_QPG, OWN_NKV = 64, 3, 5
 OWN_VW, OWN_VR = 144, 25
 
 
-def _order_drain():
-    """Mark the air.channel.get just emitted as an ordered drain (air.order_drains).
-
-    The engine chains jobs through one activation arena in host memory: a later job's
-    input reads rows an earlier job's drain wrote. air-to-std then has to keep the
-    drains in program order instead of deferring every wait to the launch end; that is
-    opt-in per launch, by marking its drains."""
-    if os.environ.get("ENGINE_NO_ORDER_DRAINS"):  # repro: leave the drains unmarked
-        return
-    from air.ir import InsertionPoint, UnitAttr
-
-    ops = InsertionPoint.current.block.operations
-    op = ops[len(ops) - 1]
-    assert op.operation.name == "air.channel.get", op.operation.name
-    op.operation.attributes["air.order_drains"] = UnitAttr.get()
-
-
 def own_pv_col0(head_t, c, half, tile_n, l2_n):
     """First V column a "pv" own step's core column c, output half `half`, reads:
     its tile_n / 2 output dims span at most two heads, so two kv groups."""
@@ -522,7 +505,6 @@ def build_gemm_engine(
                     lo, hi = drain_before[idx]
                     for i in range(herd_m):
                         c_out.get(T[arena][lo:hi, i, :, :], indices=[i])
-                        _order_drain()
                 B = None if weights else T[j.b]
                 # air-isolate-async-dma-loop-nests gives every put its own loop nest,
                 # which would send all of a job's A steps before any residual step.

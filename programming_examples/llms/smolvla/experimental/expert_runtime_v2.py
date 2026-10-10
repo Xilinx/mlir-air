@@ -148,9 +148,8 @@ class ExpertRuntimeV2:
             except Exception as e:  # noqa: BLE001
                 raise RuntimeError(
                     f"the expert engine ELFs are not in {self.cache.cache_dir} and building them failed "
-                    f"({str(e).splitlines()[-1][:200]}). Build them once with `make compile-expert`, with a compiler "
-                    "that honours air.order_drains first on PATH (and its python on PYTHONPATH) and PEANO_INSTALL_DIR "
-                    'at a no-unroll Peano; see the README, "Experimental: backbone and expert on the NPU".'
+                    f"({str(e).splitlines()[-1][:200]}). Build them once with `make compile-expert`, with the "
+                    'mlir-air environment sourced; see the README, "The all-NPU path".'
                 ) from e
 
         nbytes = self._pack_b(_bf(np.zeros((L2N, TN))), TN, TK1).shape[-1]
