@@ -93,6 +93,12 @@ EXAMPLES = [
     },
     {
         "category": "Linear Algebra",
+        "name": "Matrix Multiplication (ragged K, cascade)",
+        "path": "matrix_multiplication/bf16_ragged_k",
+        "datatypes": "bf16 in / f32 out",
+    },
+    {
+        "category": "Linear Algebra",
         "name": "AXPY",
         "path": "axpy",
         "datatypes": "bf16, f32",
