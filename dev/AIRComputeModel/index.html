@@ -1249,6 +1249,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#endpoint-ordering-requirement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoint ordering requirement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#deadlock-conditions" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2418,6 +2429,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#endpoint-ordering-requirement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoint ordering requirement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#deadlock-conditions" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3500,6 +3522,37 @@ channel index, and vice versa. The compiler enforces the <strong>static balance 
   branch.</li>
 </ul>
 <p>A violation of the balance condition is a compile-time error.</p>
+<h4 id="endpoint-ordering-requirement">Endpoint ordering requirement<a class="headerlink" href="#endpoint-ordering-requirement" title="Permanent link">&para;</a></h4>
+<p>A channel is an ordered FIFO, so the sequence in which transfers enter the channel is part
+of the program's meaning. Two ops address the same <strong>channel slot</strong> when they name the same
+channel, move data in the same direction, and carry provably equal indices. Ops addressing
+one slot must be totally ordered with respect to each other by <code>dependency</code> tokens. The
+requirement is independent of the buffers those ops touch, because the ordering constrains
+the shared FIFO rather than the data.</p>
+<ul>
+<li>Program order does not establish the ordering. Within an async region the token graph is
+  the only ordering the IR carries, so two same-slot endpoints with disjoint dependency
+  lists are unordered, and which transfer each endpoint consumes is undefined.</li>
+<li>A conditional region does not open a new sequential scope. An <code>affine.if</code> / <code>scf.if</code> /
+  <code>scf.index_switch</code> arm is guarded straight-line code belonging to the enclosing scope, so
+  endpoints in sibling conditionals must still be ordered; the edge names the conditional's
+  token result rather than the guarded op's own token. A loop body does open a new scope,
+  so endpoints in distinct loops are not ordered against each other.</li>
+<li>Two endpoints reached through conditional arms are ordered only when they sit under the
+  same guard. On the arm that does not run, a conditional's token result carries whatever
+  the other arm yields, which says nothing about the endpoint inside; ordering through it
+  would be fictional. Endpoints under unrelated conditions, including opposite arms of one
+  conditional, are therefore left unordered.</li>
+<li>Indices that are not provably equal address distinct slots and require no ordering.
+  Treating unknown indices as equal instead would serialize independent sub-channels.</li>
+</ul>
+<p>Any path through the dependency graph satisfies the requirement, but a producer of AIR
+should emit a direct edge. A path routed through ops on other channels does not survive
+compilation: each intermediate edge relates two ops that share neither a channel nor a
+buffer, so a pass that removes false dependencies deletes those intermediate edges and
+leaves the two same-slot endpoints unordered.</p>
+<p>Violating the requirement is not a compile-time error today. The pass
+<code>-air-verify-channel-fifo-order</code> checks the requirement on demand.</p>
 <h4 id="deadlock-conditions">Deadlock conditions<a class="headerlink" href="#deadlock-conditions" title="Permanent link">&para;</a></h4>
 <p>A program deadlocks when a <code>put</code> is waiting for a <code>get</code> that can never execute, or a
 <code>get</code> is waiting for a <code>put</code> that can never execute, and no other operation can break
