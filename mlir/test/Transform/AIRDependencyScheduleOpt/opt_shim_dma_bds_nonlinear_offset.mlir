@@ -208,3 +208,73 @@ func.func @affine_of_two_linear_operands(%arg0: memref<4096xbf16>) {
   }
   return
 }
+
+// An affine.apply of the IV folds into the loop's bounds only when it
+// is a positive multiple of the IV plus a constant. A mod is not: the offsets
+// go 0, 512, 0, 512, and each transfer stays.
+
+// CHECK-LABEL: func.func @affine_mod_of_iv
+// CHECK: air.channel.put {{.*}}(%arg0[%c0{{.*}}] [%c512{{.*}}] [%c1{{.*}}])
+// CHECK: air.channel.put {{.*}}(%arg0[%c512{{.*}}] [%c512{{.*}}] [%c1{{.*}}])
+// CHECK: air.channel.put {{.*}}(%arg0[%c0{{.*}}] [%c512{{.*}}] [%c1{{.*}}])
+// CHECK: air.channel.put {{.*}}(%arg0[%c512{{.*}}] [%c512{{.*}}] [%c1{{.*}}])
+// CHECK-NOT: air.channel.put
+#mod2 = affine_map<()[s0] -> (s0 mod 1024)>
+func.func @affine_mod_of_iv(%arg0: memref<4096xbf16>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c512 = arith.constant 512 : index
+  %0 = air.wait_all async
+  %1 = scf.for %iv = %c0 to %c4 step %c1 iter_args(%t = %0) -> (!air.async.token) {
+    %a = arith.muli %iv, %c512 : index
+    %off = affine.apply #mod2()[%a]
+    %put = air.channel.put async [%t] @channel_0[] (%arg0[%off] [%c512] [%c1]) {metadata = @airMemcpyId1} : (memref<4096xbf16>)
+    scf.yield %put : !air.async.token
+  }
+  return
+}
+
+// A floordiv sends each row twice; folding it into the bounds would send each
+// row once.
+
+// CHECK-LABEL: func.func @affine_floordiv_of_iv
+// CHECK-COUNT-8: air.channel.put
+// CHECK-NOT: air.channel.put
+#half = affine_map<(d0) -> (d0 floordiv 2)>
+func.func @affine_floordiv_of_iv(%arg0: memref<4x512xbf16>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %c512 = arith.constant 512 : index
+  %0 = air.wait_all async
+  %1 = scf.for %iv = %c0 to %c8 step %c1 iter_args(%t = %0) -> (!air.async.token) {
+    %row = affine.apply #half(%iv)
+    %put = air.channel.put async [%t] @channel_0[] (%arg0[%row, %c0] [%c1, %c512] [%c512, %c1]) {metadata = @airMemcpyId1} : (memref<4x512xbf16>)
+    scf.yield %put : !air.async.token
+  }
+  return
+}
+
+// A loop whose step does not divide its range: 0, 4, 8, scaled by 2 to
+// offsets 0, 8, 16. The folded step is the scale times the loop's step, so the
+// three 8-element transfers are one of 24.
+
+// CHECK-LABEL: func.func @affine_scale_of_iv_uneven
+// CHECK: air.channel.put {{.*}}(%arg0[%c0{{.*}}] [%c24{{.*}}] [%c1{{.*}}])
+// CHECK-NOT: air.channel.put
+#twice = affine_map<(d0) -> (d0 * 2)>
+func.func @affine_scale_of_iv_uneven(%arg0: memref<4096xbf16>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c8 = arith.constant 8 : index
+  %c10 = arith.constant 10 : index
+  %0 = air.wait_all async
+  %1 = scf.for %iv = %c0 to %c10 step %c4 iter_args(%t = %0) -> (!air.async.token) {
+    %off = affine.apply #twice(%iv)
+    %put = air.channel.put async [%t] @channel_0[] (%arg0[%off] [%c8] [%c1]) {metadata = @airMemcpyId1} : (memref<4096xbf16>)
+    scf.yield %put : !air.async.token
+  }
+  return
+}

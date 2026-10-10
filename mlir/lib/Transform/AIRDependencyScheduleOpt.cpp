@@ -2297,8 +2297,8 @@ struct UnrollScfParallel : public OpRewritePattern<scf::ParallelOp> {
 private:
 };
 
-void updateAffineForBounds(affine::AffineForOp loop_op, int lb, int ub,
-                           int step) {
+void updateAffineForBounds(affine::AffineForOp loop_op, int64_t lb, int64_t ub,
+                           int64_t step) {
   loop_op.setConstantLowerBound(lb);
   loop_op.setConstantUpperBound(ub);
   loop_op.setStep(step);
@@ -2404,7 +2404,13 @@ static FailureOr<scf::ForOp> foldSingleAffineApplyIntoScfForBounds(
 
   if (!getStaticScfForTripCountAsInt(sfo))
     return failure();
-  int tripCount = *getStaticScfForTripCountAsInt(sfo);
+  auto step = mlir::getConstantIntValue(sfo.getStep());
+  // The new bounds describe the values the apply takes only when it is
+  // a * iv + b with a > 0; a mod, a division or a negative scale is not a
+  // loop of its own.
+  auto scale = air::getAffineApplyCoefficient(apply, val);
+  if (!step || !scale || *scale <= 0)
+    return failure();
   auto new_ub = air::evaluateConstantsInMap(
       apply.getAffineMap(),
       SmallVector<std::optional<int64_t>>{
@@ -2423,11 +2429,13 @@ static FailureOr<scf::ForOp> foldSingleAffineApplyIntoScfForBounds(
     apply->emitOpError("failed to evaluate upper bound.");
     return failure();
   }
-  int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
+  int64_t newStep;
+  if (llvm::MulOverflow(*scale, *step, newStep))
+    return failure();
   auto valueType = apply.getResult().getType();
   if (failed(eraseOpFromScfFor(rewriter, sfo, apply)))
     return failure();
-  return updateScfForBounds(rewriter, sfo, *new_lb, *new_ub, newStepInInt,
+  return updateScfForBounds(rewriter, sfo, *new_lb, *new_ub, newStep,
                             valueType);
 }
 
@@ -2466,7 +2474,10 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
                    dyn_cast_if_present<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
-      int tripCount = *getStaticAffineForTripCountAsInt(afo);
+      // As for scf.for: only a * iv + b with a > 0 is a loop of its own.
+      auto scale = air::getAffineApplyCoefficient(apply, val);
+      if (!scale || *scale <= 0)
+        return failure();
       auto new_ub = air::evaluateConstantsInMap(
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{afo.getConstantUpperBound()},
@@ -2483,11 +2494,13 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
         apply->emitOpError("failed to evaluate upper bound.");
         return failure();
       }
-      int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
+      int64_t newStep;
+      if (llvm::MulOverflow(*scale, afo.getStepAsInt(), newStep))
+        return failure();
       IRMapping remap;
       apply.getResult().replaceAllUsesWith(afo.getInductionVar());
       rewriter.eraseOp(apply);
-      updateAffineForBounds(afo, *new_lb, *new_ub, newStepInInt);
+      updateAffineForBounds(afo, *new_lb, *new_ub, newStep);
     } else
       return failure();
 
