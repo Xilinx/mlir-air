@@ -6363,6 +6363,235 @@ void transform::CoalesceSlicesOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
+// FoldIterArgsIntoInductionVarOp
+//===----------------------------------------------------------------------===//
+
+// `v` converted to `type` (both integer or index).
+static Value castIntOrIndex(OpBuilder &b, Location loc, Value v, Type type) {
+  if (v.getType() == type)
+    return v;
+  if (isa<IndexType>(type) || isa<IndexType>(v.getType()))
+    return arith::IndexCastOp::create(b, loc, type, v);
+  if (type.getIntOrFloatBitWidth() > v.getType().getIntOrFloatBitWidth())
+    return arith::ExtSIOp::create(b, loc, type, v);
+  return arith::TruncIOp::create(b, loc, type, v);
+}
+
+static bool foldIterArgsIntoInductionVar(RewriterBase &rewriter,
+                                         scf::ForOp forOp) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  Location loc = forOp.getLoc();
+  Operation *yield = forOp.getBody()->getTerminator();
+  bool changed = false;
+  for (auto [i, arg] : llvm::enumerate(forOp.getRegionIterArgs())) {
+    Type type = arg.getType();
+    if (!type.isIntOrIndex())
+      continue;
+    auto add = yield->getOperand(i).getDefiningOp<arith::AddIOp>();
+    if (!add)
+      continue;
+    Value delta = add.getLhs() == arg   ? add.getRhs()
+                  : add.getRhs() == arg ? add.getLhs()
+                                        : Value();
+    if (!delta || !forOp.isDefinedOutsideOfLoop(delta))
+      continue;
+    Value init = forOp.getInitArgs()[i];
+    Value lb = forOp.getLowerBound(), ub = forOp.getUpperBound(),
+          step = forOp.getStep();
+
+    // In the body: init + ((iv - lb) / step) * delta.
+    rewriter.setInsertionPointToStart(forOp.getBody());
+    Value iters = arith::DivUIOp::create(
+        rewriter, loc,
+        arith::SubIOp::create(rewriter, loc, forOp.getInductionVar(), lb),
+        step);
+    Value inBody = arith::AddIOp::create(
+        rewriter, loc, init,
+        arith::MulIOp::create(
+            rewriter, loc, castIntOrIndex(rewriter, loc, iters, type), delta));
+    // The add's use too, so the advanced value is right where the body reads
+    // it.
+    rewriter.replaceAllUsesWith(arg, inBody);
+
+    // After the loop: init + ceil((ub - lb) / step) * delta, or init when
+    // the loop runs no iteration.
+    rewriter.setInsertionPointAfter(forOp);
+    Value span = arith::SubIOp::create(rewriter, loc, ub, lb);
+    Value zero = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getZeroAttr(span.getType()));
+    Value trips = arith::MaxSIOp::create(
+        rewriter, loc, zero,
+        arith::CeilDivSIOp::create(rewriter, loc, span, step));
+    Value after = arith::AddIOp::create(
+        rewriter, loc, init,
+        arith::MulIOp::create(
+            rewriter, loc, castIntOrIndex(rewriter, loc, trips, type), delta));
+    rewriter.replaceAllUsesWith(forOp.getResult(i), after);
+
+    // Pass the argument through; canonicalization drops it.
+    rewriter.modifyOpInPlace(yield, [&] { yield->setOperand(i, arg); });
+    changed = true;
+  }
+  return changed;
+}
+
+DiagnosedSilenceableFailure transform::FoldIterArgsIntoInductionVarOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+  SmallVector<Operation *> loops;
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    auto forOp = dyn_cast<scf::ForOp>(target);
+    if (!forOp)
+      return emitDefiniteFailure() << "target must be an scf.for";
+    foldIterArgsIntoInductionVar(rewriter, forOp);
+    loops.push_back(forOp);
+  }
+  results.set(llvm::cast<OpResult>(getResult()), loops);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// HoistLoopCarriedPackOp
+//===----------------------------------------------------------------------===//
+
+namespace {
+// An iteration argument packed once and unpacked back into itself per
+// iteration.
+struct LoopCarriedPack {
+  unsigned index;
+  linalg::PackOp pack;
+  linalg::UnPackOp unpack;
+};
+} // namespace
+
+static std::optional<LoopCarriedPack> matchLoopCarriedPack(scf::ForOp forOp,
+                                                           unsigned index) {
+  BlockArgument arg = forOp.getRegionIterArgs()[index];
+  linalg::PackOp pack;
+  linalg::UnPackOp unpack;
+  for (OpOperand &use : arg.getUses()) {
+    Operation *user = use.getOwner();
+    if (user->getParentOp() != forOp)
+      return std::nullopt;
+    if (auto p = dyn_cast<linalg::PackOp>(user);
+        p && &use == &p.getSourceMutable() && !pack) {
+      pack = p;
+      continue;
+    }
+    if (auto u = dyn_cast<linalg::UnPackOp>(user);
+        u && &use == &u.getDestMutable() && !unpack) {
+      unpack = u;
+      continue;
+    }
+    return std::nullopt;
+  }
+  if (!pack || !unpack || pack.getPaddingValue())
+    return std::nullopt;
+  // The unpacked value goes straight back round the loop.
+  Operation *yield = forOp.getBody()->getTerminator();
+  if (!unpack.getResult().hasOneUse() ||
+      yield->getOperand(index) != unpack.getResult())
+    return std::nullopt;
+  if (pack.getInnerDimsPos() != unpack.getInnerDimsPos() ||
+      pack.getOuterDimsPerm() != unpack.getOuterDimsPerm() ||
+      pack.getStaticInnerTiles() != unpack.getStaticInnerTiles() ||
+      !pack.getInnerTiles().empty() || !unpack.getInnerTiles().empty() ||
+      pack.getResult().getType() != unpack.getSource().getType())
+    return std::nullopt;
+  Value dest = pack.getDest();
+  if (!forOp.isDefinedOutsideOfLoop(dest)) {
+    auto empty = dest.getDefiningOp<tensor::EmptyOp>();
+    if (!empty || !llvm::all_of(empty->getOperands(), [&](Value v) {
+          return forOp.isDefinedOutsideOfLoop(v);
+        }))
+      return std::nullopt;
+  }
+  return LoopCarriedPack{index, pack, unpack};
+}
+
+static FailureOr<std::pair<scf::ForOp, linalg::PackOp>>
+hoistLoopCarriedPack(RewriterBase &rewriter, scf::ForOp forOp,
+                     LoopCarriedPack m) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(forOp);
+  IRMapping before;
+  before.map(forOp.getRegionIterArgs()[m.index], forOp.getInitArgs()[m.index]);
+  if (!forOp.isDefinedOutsideOfLoop(m.pack.getDest()))
+    before.map(m.pack.getDest(),
+               rewriter.clone(*m.pack.getDest().getDefiningOp())->getResult(0));
+  auto packed = cast<linalg::PackOp>(rewriter.clone(*m.pack, before));
+
+  Value computed = m.unpack.getSource();
+  FailureOr<LoopLikeOpInterface> replaced = forOp.replaceWithAdditionalYields(
+      rewriter, packed.getResult(), /*replaceInitOperandUsesInLoop=*/false,
+      [&](OpBuilder &, Location, ArrayRef<BlockArgument>) {
+        return SmallVector<Value>{computed};
+      });
+  if (failed(replaced))
+    return failure();
+  auto newFor = cast<scf::ForOp>(replaced->getOperation());
+  BlockArgument carried = newFor.getRegionIterArgs().back();
+  BlockArgument original = newFor.getRegionIterArgs()[m.index];
+
+  // After the loop: unpack the carried value into what the loop returns at
+  // the original position, which is now its initial value.
+  rewriter.setInsertionPointAfter(newFor);
+  IRMapping after;
+  after.map(computed, newFor.getResults().back());
+  after.map(original, newFor.getResult(m.index));
+  Operation *unpacked = rewriter.clone(*m.unpack, after);
+  rewriter.replaceAllUsesExcept(newFor.getResult(m.index),
+                                unpacked->getResult(0), unpacked);
+
+  // Inside: read the carried value, and pass the original through.
+  rewriter.replaceAllUsesWith(m.pack.getResult(), carried);
+  Operation *yield = newFor.getBody()->getTerminator();
+  rewriter.modifyOpInPlace(yield,
+                           [&] { yield->setOperand(m.index, original); });
+  rewriter.eraseOp(m.unpack);
+  rewriter.eraseOp(m.pack);
+  return std::make_pair(newFor, packed);
+}
+
+DiagnosedSilenceableFailure
+transform::HoistLoopCarriedPackOp::apply(transform::TransformRewriter &rewriter,
+                                         transform::TransformResults &results,
+                                         transform::TransformState &state) {
+  SmallVector<Operation *> loops, packs;
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    auto forOp = dyn_cast<scf::ForOp>(target);
+    if (!forOp)
+      return emitDefiniteFailure() << "target must be an scf.for";
+    bool hoisted = false;
+    for (unsigned i = 0; i < forOp.getNumRegionIterArgs(); ++i) {
+      std::optional<LoopCarriedPack> m = matchLoopCarriedPack(forOp, i);
+      if (!m)
+        continue;
+      auto result = hoistLoopCarriedPack(rewriter, forOp, *m);
+      if (failed(result))
+        return emitDefiniteFailure() << "failed to rebuild the loop";
+      forOp = result->first;
+      packs.push_back(result->second);
+      hoisted = true;
+    }
+    if (!hoisted)
+      return emitSilenceableError()
+             << "no iteration argument is packed and unpacked in the loop";
+    loops.push_back(forOp);
+  }
+  results.set(llvm::cast<OpResult>(getLoops()), loops);
+  results.set(llvm::cast<OpResult>(getPacks()), packs);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform::HoistLoopCarriedPackOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getTargetMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
 // FoldPackIntoGenericOp
 //===----------------------------------------------------------------------===//
 
