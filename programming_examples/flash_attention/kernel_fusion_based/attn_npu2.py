@@ -545,7 +545,14 @@ def build_launch(
                                 # nested ifs, for the reason above.
                                 head_next = ctr[2:3] + 1
                                 wrapped = head_next >= num_head_groups
-                                q_adv = ops.select(wrapped, ctr[0:1] + NQ, ctr[0:1])
+                                # Go back to q block 0 after the last one, so
+                                # the next run on the same hardware context
+                                # starts from the beginning.
+                                q_next = ctr[0:1] + NQ
+                                q_next = ops.select(
+                                    q_next >= num_lq_iters * NQ, 0, q_next
+                                )
+                                q_adv = ops.select(wrapped, q_next, ctr[0:1])
                                 head_adv = ops.select(wrapped, 0, head_next)
                                 if dv_chunks > 1:
                                     last_dv = ctr[3:4] >= dv_chunks - 1
@@ -624,6 +631,14 @@ def parse_args():
     parser.add_argument("--causal-skip", action="store_true", dest="causal_skip")
     parser.add_argument("--num-kv-heads", type=int, default=None)
     parser.add_argument("--causal", action="store_true")
+    parser.add_argument(
+        "--num-runs",
+        type=int,
+        default=1,
+        help="Run the kernel this many times on one hardware context and check "
+        "the output of the last run. State kept in L1 across runs, such as the "
+        "causal block counter, is only exercised from the second run on.",
+    )
     parser.add_argument(
         "--output-format",
         type=str,
@@ -732,6 +747,8 @@ def main():
         return 0
 
     runner = XRTRunner(
+        n_warmup_iters=args.num_runs - 1,
+        n_perf_iters=1 if args.num_runs > 1 else 0,
         omit_while_true_loop=False,
         omit_pingpong="all",
         verbose=args.verbose,
