@@ -3,14 +3,13 @@
 
 """Verify adapter for the Q4_0 LFM2-1.2B example.
 
-The NPU runs Q4_0 weights quantized from the HF checkpoint on load; the
-reference is that same checkpoint in bf16. The shared verify gate compares
-NPU-q4_0 vs HF-bf16 by top-k token-set inclusion -- the same NPU-vs-bf16 proxy
-every other q4/q4nx adapter uses.
+The NPU runs Q4_0 weights quantized from the HF checkpoint on load. The
+reference is the same HF model with those weights replaced by the same Q4_0
+round trip, so the top-k gate measures the device and not the quantization.
 
 LFM2 publishes ONE checkpoint, so unlike the Llama adapters there is no
 base/instruct split to resolve: the tokenizer, the NPU weight source and the
-bf16 reference are all the same repo.
+reference are all the same repo.
 
 Drives `Lfm2Q4nxPrefill` and the one-xclbin `FusedDecoder` directly to satisfy
 the shared `prefill()` / `decode_step()` Runner contract, mirroring the resident
@@ -63,8 +62,31 @@ def resolve_model(model_choice_or_id: str) -> str:
 
 
 def hf_reference(npu_model_name: str) -> str:
-    """Reference is the same checkpoint in bf16 (NPU q4_0 vs HF bf16)."""
     return npu_model_name
+
+
+def build_hf_model(npu_model_name: str, hf_ref_model: str, config):
+    """The HF model in bf16 with every Q4_0 weight replaced by its round trip."""
+    import torch
+    from transformers import AutoModelForCausalLM
+
+    from lfm2_1_2b_q4nx_weights import Lfm2Q4Model, is_q4_weight
+
+    model = AutoModelForCausalLM.from_pretrained(
+        hf_ref_model, torch_dtype=torch.bfloat16
+    )
+    src = Lfm2Q4Model(hf_ref_model)
+    n = 0
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if is_q4_weight(name):
+                p.copy_(torch.from_numpy(src.q4(name)))
+                n += 1
+    # A renamed HF parameter would otherwise stay bf16 without any error.
+    want = 3 * config.n_layers + 4 * config.n_attn_layers + 2 * config.n_conv_layers
+    if n != want:
+        raise RuntimeError(f"Q4_0 reference patched {n} weights, expected {want}")
+    return model
 
 
 def build_runner(

@@ -85,6 +85,24 @@ def dequant_q4_0(q_u8, scale, group=GROUP):
     return q_u8.view(np.int8).astype(np.float32) * np.repeat(scale, group, axis=1)
 
 
+_Q4_SUFFIXES = (
+    ".feed_forward.w1.weight",
+    ".feed_forward.w2.weight",
+    ".feed_forward.w3.weight",
+    ".self_attn.q_proj.weight",
+    ".self_attn.k_proj.weight",
+    ".self_attn.v_proj.weight",
+    ".self_attn.out_proj.weight",
+    ".conv.in_proj.weight",
+    ".conv.out_proj.weight",
+)
+
+
+def is_q4_weight(name):
+    """True for the HF tensors the NPU runs as Q4_0."""
+    return name.startswith("model.layers.") and name.endswith(_Q4_SUFFIXES)
+
+
 @dataclass
 class Lfm2Q4nxConfig:
     """LFM2-1.2B hyperparameters (identical to the bf16 config; the codec
@@ -184,9 +202,13 @@ class Lfm2Q4Model:
         Grouping runs along the last axis, which for HF's (out, in) layout is
         the reduction dim -- exactly where the device kernel expects its groups.
         """
-        w = self.hf.bf16(name)  # [out, in] float32
-        q, sc = requant_q4_0(w)
-        return np.ascontiguousarray(dequant_q4_0(q, sc).T, dtype=self.dtype)
+        return np.ascontiguousarray(self.q4(name).T, dtype=self.dtype)
+
+    def q4(self, name):
+        """One HF projection [out, in] -> Q4_0 round-trip, float32 [out, in]."""
+        assert is_q4_weight(name), f"{name} is not in is_q4_weight()"
+        q, sc = requant_q4_0(self.hf.bf16(name))
+        return dequant_q4_0(q, sc)
 
     def bf(self, name):
         return np.asarray(self.hf.bf16(name), self.dtype)

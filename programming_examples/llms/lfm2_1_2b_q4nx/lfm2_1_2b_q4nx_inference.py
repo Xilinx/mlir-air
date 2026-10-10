@@ -32,6 +32,7 @@ Usage:
   python3 lfm2_1_2b_q4nx_inference.py --interactive   # chat REPL
 """
 
+import functools
 import os
 import re
 import sys
@@ -728,7 +729,17 @@ class FusedDecoder:
 
 
 # ------------------------------------------------------------------ orchestration
-EOS_IDS = (128001, 128009)  # <|end_of_text|>, <|eot_id|>
+@functools.cache
+def _eos_ids():
+    """End-of-turn and end-of-text ids, from the checkpoint's tokenizer."""
+    from transformers import AutoTokenizer
+
+    tk = AutoTokenizer.from_pretrained(_TOKENIZER)
+    return frozenset(
+        i
+        for i in (tk.eos_token_id, tk.convert_tokens_to_ids("<|endoftext|>"))
+        if i is not None
+    )
 
 
 class Sampler:
@@ -881,7 +892,7 @@ def generate(
     for p in range(P, P + n_eff):
         logits = dec.dispatch(tokens[p], p)
         pred = int(logits.argmax()) if greedy else sampler.sample(logits)
-        if stop_on_eos and pred in EOS_IDS:
+        if stop_on_eos and pred in _eos_ids():
             print(f"[inference] pos{p:2d} L={p+1} -> EOS ({pred}), stop")
             break
         gen_ids.append(pred)
@@ -1057,7 +1068,7 @@ class Session:
         for p in range(P, P + n_eff):
             lg = self.dec.dispatch(tokens[p], p)
             pred = int(lg.argmax()) if greedy else sampler.sample(lg)
-            if stop_on_eos and pred in EOS_IDS:
+            if stop_on_eos and pred in _eos_ids():
                 if not on_token:
                     print(
                         f"[inference] pos{p:2d} L={p+1} -> EOS ({pred}), stop",
@@ -1165,7 +1176,7 @@ def interactive_chat(
             on_token=_on_tok,
         )
         answer = tk.decode(
-            [g for g in gen_ids if g not in EOS_IDS], skip_special_tokens=True
+            [g for g in gen_ids if g not in _eos_ids()], skip_special_tokens=True
         )
         messages.append({"role": "assistant", "content": answer})
         turn += 1

@@ -5,7 +5,7 @@
 #
 # Same driver contract as the other llms/ examples: run/profile/chat drive the
 # unified prefill+decode inference driver, and verify plugs into the shared
-# verify/ subsystem (top-k token-set inclusion, NPU q4_0 vs HF bf16).
+# verify/ subsystem (top-k token-set inclusion, NPU q4_0 vs the Q4_0 HF reference).
 #
 # LFM2 is a HYBRID conv-attention decoder: of its 16 layers only 6 are attention
 # (indices 2,5,8,10,12,14) and the other 10 are Lfm2ShortConv, a gated causal
@@ -21,7 +21,7 @@
 #   make compile        — Build/cache the prefill ELFs (no weights needed)
 #   make compile-decode — Build the fused decode templates (~15 min; no weights)
 #   make run            — Run inference: NPU prefill + fused NPU decode
-#   make verify         — Top-k token-set inclusion gate: NPU q4_0 vs HF bf16
+#   make verify         — Top-k token-set inclusion gate: NPU q4_0 vs the Q4_0 HF reference
 #
 # Config: 16 layers (6 attention + 10 ShortConv), emb=2048, 32 heads / 8 KV
 #         heads, head_dim=64, hidden=8192, conv_dim=2048, k=3 taps,
@@ -42,8 +42,8 @@ N_TOKENS ?= 1000
 PROMPT   ?= What is the capital of France?
 MODEL    ?= instruct
 # Weight source. LFM2 publishes ONE checkpoint (no separate base/instruct), and
-# it is BOTH the NPU weight source (quantized to Q4_0 on load) and the bf16
-# reference `make verify` compares against.
+# it is BOTH the NPU weight source (quantized to Q4_0 on load) and the
+# reference `make verify` compares against (with the same Q4_0 weights).
 MODEL_SOURCE ?= LiquidAI/LFM2-1.2B
 export LFM2_MODEL_SOURCE := $(MODEL_SOURCE)
 
@@ -156,9 +156,9 @@ help:
 	@echo "  make profile          Run with profiling breakdown"
 	@echo ""
 	@echo "Correctness:"
-	@echo "  make verify           Top-k token-set inclusion gate: NPU q4_0 vs HF bf16 (2 prompts x 32 tokens, k=5)"
+	@echo "  make verify           Top-k token-set inclusion gate: NPU q4_0 vs the Q4_0 HF reference (2 prompts x 32 tokens, k=5)"
 	@echo "  make verify-full      Same gate over the full prompt set"
-	@echo "  make diagnosis        Per-layer cosine vs HF bf16 (single prompt, informational)"
+	@echo "  make diagnosis        Per-layer cosine vs the Q4_0 HF reference (single prompt, informational)"
 	@echo "  make verify-paris     Fast weight-integrity smoke: prefill first-token argmax gate"
 	@echo "  make decode-gate      Decode-ONLY numerics (no prefill); localises a failure to a layer"
 	@echo ""
@@ -249,9 +249,9 @@ chat:
 	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) \
 		--run-only --interactive --n-tokens $(N_TOKENS) --model $(MODEL)
 
-# ---- shared verify subsystem (top-k token-set inclusion, NPU q4_0 vs HF bf16) ----
+# ---- shared verify subsystem (top-k token-set inclusion, NPU q4_0 vs the Q4_0 HF reference) ----
 
-## Top-k token-set inclusion gate (NPU q4_0 vs HF bf16, 2 prompts x 32 tokens, k=5).
+## Top-k token-set inclusion gate (NPU q4_0 vs the Q4_0 HF reference, 2 prompts x 32 tokens, k=5).
 verify:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
@@ -263,7 +263,7 @@ verify-full:
 	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL)
 
-## Diagnosis lens (per-layer cosine vs HF bf16, single prompt, informational).
+## Diagnosis lens (per-layer cosine vs the Q4_0 HF reference, single prompt, informational).
 diagnosis:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
