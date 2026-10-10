@@ -274,6 +274,12 @@ EXAMPLES = [
     },
     {
         "category": "Attention",
+        "name": "Attention (Layer by Layer)",
+        "path": "flash_attention/layer_by_layer",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Attention",
         "name": "Flash Attention (Kernel Fusion)",
         "path": "flash_attention/kernel_fusion_based",
         "datatypes": "bf16",

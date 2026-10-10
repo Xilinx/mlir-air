@@ -210,7 +210,7 @@ def an_l2_buffer_in_a_loop_is_not_a_herd_operand():
 # the arm beside its alloc. That matters for a herd whose cores are not
 # interchangeable -- a scratch tile only one kind of core needs is written where
 # it is needed, rather than hoisted above the branch and charged to every core's
-# L1. flash_attention/dataflow_based does this twelve times.
+# L1.
 # Each arm carries its own alloc/dealloc pair, and neither escapes.
 # CHECK: scf.if
 # CHECK: memref.alloc
