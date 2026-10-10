@@ -149,3 +149,62 @@ func.func @execute_offset(%arg0: memref<512x512xbf16>) {
 }
 
 air.channel @channel_0 [1, 1]
+
+
+// The IV reaches the offset as an affine.apply operand that is itself linear
+// in it: an i32 K loop's index, scaled to a 256-row step and added to the
+// column block's base, then offset by the block's 64 columns. One transfer,
+// four steps of 131072.
+
+// CHECK-LABEL: func.func @affine_of_linear_offset
+// CHECK: %[[OFF:.*]] = affine.apply #{{.*}}()[%arg1]
+// CHECK: air.channel.put {{.*}}(%arg0[%c0{{.*}}, %c0{{.*}}, %[[OFF]]] [%c4{{.*}}, %c256{{.*}}, %c64{{.*}}] [%c131072{{.*}}, %c512{{.*}}, %c1{{.*}}])
+// CHECK-NOT: air.channel.put
+#plus64 = affine_map<()[s0] -> (s0 + 64)>
+func.func @affine_of_linear_offset(%arg0: memref<1024x512xbf16>, %base: index) {
+  %c0 = arith.constant 0 : index
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c4_i32 = arith.constant 4 : i32
+  %c1 = arith.constant 1 : index
+  %c64 = arith.constant 64 : index
+  %c256 = arith.constant 256 : index
+  %c512 = arith.constant 512 : index
+  %c131072 = arith.constant 131072 : index
+  %0 = air.wait_all async
+  %1 = scf.for %iv = %c0_i32 to %c4_i32 step %c1_i32 iter_args(%t = %0) -> (!air.async.token) : i32 {
+    %i = arith.index_cast %iv : i32 to index
+    %step = arith.muli %i, %c131072 : index
+    %blk = arith.addi %step, %base : index
+    %off = affine.apply #plus64()[%blk]
+    %put = air.channel.put async [%t] @channel_0[] (%arg0[%c0, %off] [%c256, %c64] [%c512, %c1]) {metadata = @airMemcpyId1} : (memref<1024x512xbf16>)
+    scf.yield %put : !air.async.token
+  }
+  return
+}
+
+// Two affine.apply operands, each linear in the IV, scaled by the map: the
+// steps add up to one 1024-element block per iteration, so the four blocks
+// are the whole buffer.
+
+// CHECK-LABEL: func.func @affine_of_two_linear_operands
+// CHECK: air.channel.put {{.*}}(%arg0[] [] [])
+// CHECK-NOT: air.channel.put
+#sum2 = affine_map<()[s0, s1] -> (s0 + s1 * 2)>
+func.func @affine_of_two_linear_operands(%arg0: memref<4096xbf16>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c256 = arith.constant 256 : index
+  %c512 = arith.constant 512 : index
+  %c1024 = arith.constant 1024 : index
+  %0 = air.wait_all async
+  %1 = scf.for %iv = %c0 to %c4 step %c1 iter_args(%t = %0) -> (!air.async.token) {
+    %a = arith.muli %iv, %c512 : index
+    %b = arith.muli %iv, %c256 : index
+    %off = affine.apply #sum2()[%a, %b]
+    %put = air.channel.put async [%t] @channel_0[] (%arg0[%off] [%c1024] [%c1]) {metadata = @airMemcpyId1} : (memref<4096xbf16>)
+    scf.yield %put : !air.async.token
+  }
+  return
+}
