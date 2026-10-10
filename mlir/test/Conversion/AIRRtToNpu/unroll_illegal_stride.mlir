@@ -80,17 +80,12 @@ module {
 
 // -----
 
-// A channel that already carries a wait still folds, but the split has to carry
-// the synchronization with it. generateAwaitsFromWaitAllOps pairs waits to
-// configure tasks FIFO per channel, so turning one config into `wrap` of them
-// needs `wrap` waits: with only the original one the wait would land on the
-// first piece, every later transfer on the channel would be awaited one slot
-// early, and the tail pieces would go unawaited -- on this S2MM channel both a
-// missed completion token and a BD that is never freed.
+// A transfer that is waited on still folds. Its pieces are the one transfer the
+// wait names, so the wait awaits every piece: an unawaited S2MM piece would be
+// a missed completion token and a BD that is never freed.
 //
 // This is the shape the pass exists for -- the real KV append channels are
-// waited -- so check the whole chain: both pieces are configured, and both are
-// awaited, leaving no config unpaired.
+// waited -- so check the whole chain: both pieces are configured and awaited.
 
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: %[[T0:.*]] = aiex.dma_configure_task_for @airMemcpyId4
@@ -127,15 +122,12 @@ module {
 
 // -----
 
-// The extra waits go at the transfer's own wait, not straight after the pieces.
-// Placement does not change the FIFO pairing -- waits are ordered among
-// themselves, and anywhere after the pieces and before the original wait pairs
-// piece k with the kth new wait -- but it does change when the awaits execute.
-// A design that waits late should keep the overlap it asked for.
+// The pieces are awaited where the transfer was, not straight after the
+// pieces: a design that waits late keeps the overlap it asked for.
 //
 // Here an unrelated channel's transfer sits between the folded one and the
-// wait_all that covers both. The two extra awaits must land after that
-// channel's config, not before it.
+// wait_all that covers both. The pieces' awaits must land after that channel's
+// config, not before it.
 
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: aiex.dma_configure_task_for @airMemcpyId4
