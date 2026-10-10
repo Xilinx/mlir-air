@@ -26,7 +26,7 @@
 # the same reason. Decode streams the whole weight set per token, so both of
 # those and any unrelated load competing for DRAM bandwidth show up directly.
 
-name: Nightly LLM Perf Benchmark
+name: Nightly LLM/VLA Perf Benchmark
 
 on:
   schedule:
@@ -94,7 +94,7 @@ env:
 
 jobs:
   benchmark:
-    name: LLM perf benchmark
+    name: LLM/VLA perf benchmark
     runs-on: amdryzenai5pro340
     # actions: write so the final step can dispatch generateDocs.yml to refresh
     # the GitHub Pages LLM benchmark section with this run's perf.json artifact.
@@ -490,7 +490,10 @@ jobs:
                   "mlir_aie_hash": aie_hash,
                   "llvm_aie_version": peano_ver,
               }
-              d["verify_status"] = vstatus.get(d["model"], "")
+              # A variant record (smolvla_all) is verified by its directory's
+              # run_npu2_verify* lits, so fall back to that directory's status.
+              model_dir = os.path.relpath(f, "build_assert/test/llms").split(os.sep)[0]
+              d["verify_status"] = vstatus.get(d["model"], vstatus.get(model_dir, ""))
               recs.append(d)
               prof = os.path.join(os.path.dirname(f), "profile.txt")
               if os.path.exists(prof):
@@ -656,7 +659,7 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, os
           recs = json.load(open("perf.json")) if os.path.exists("perf.json") else []
-          print("### LLM perf benchmark\n")
+          print("### LLM/VLA perf benchmark\n")
           if not recs:
               print("**No results produced** — see step logs.")
           else:
