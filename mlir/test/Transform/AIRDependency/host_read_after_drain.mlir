@@ -276,3 +276,38 @@ module {
     return
   }
 }
+
+// -----
+
+// Too many runs to compare element by element, and equal strides. With strides
+// [2, 1] an inner offset of 2 is the next outer row, so the first read (inner
+// offset 0) touches what the drain wrote and depends on it. With strides
+// [4, 1] the inner offsets stay inside a row: columns 0-1 against 2-3 never
+// meet, and the second read does not depend on the drain.
+
+// CHECK-LABEL: func.func @stride_nesting
+// CHECK: %[[D:.*]] = air.channel.get async  @drain[] {{.*}} {id = 1 : i32}
+// CHECK: air.channel.put async [%[[D]]]  @feed[] {{.*}} {id = 2 : i32}
+// CHECK: air.channel.get async  @drain[] {{.*}} {id = 3 : i32}
+// CHECK: air.channel.put async  @feed[] {{.*}} {id = 4 : i32}
+module {
+  air.channel @drain [1]
+  air.channel @feed [1]
+  func.func @stride_nesting(%buf: memref<10000xi32>, %buf2: memref<20000xi32>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%i) in (%si=%c1) args(%b=%buf, %b2=%buf2) : memref<10000xi32>, memref<20000xi32> {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c4 = arith.constant 4 : index
+      %c4999 = arith.constant 4999 : index
+      %c5000 = arith.constant 5000 : index
+      air.channel.get @drain[] (%b[%c0, %c2] [%c4999, %c1_0] [%c2, %c1_0]) {id = 1 : i32} : (memref<10000xi32>)
+      air.channel.put @feed[] (%b[%c0, %c0] [%c4999, %c1_0] [%c2, %c1_0]) {id = 2 : i32} : (memref<10000xi32>)
+      air.channel.get @drain[] (%b2[%c0, %c0] [%c5000, %c2] [%c4, %c1_0]) {id = 3 : i32} : (memref<20000xi32>)
+      air.channel.put @feed[] (%b2[%c0, %c2] [%c5000, %c2] [%c4, %c1_0]) {id = 4 : i32} : (memref<20000xi32>)
+      air.launch_terminator
+    }
+    return
+  }
+}

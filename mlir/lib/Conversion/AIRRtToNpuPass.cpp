@@ -4253,8 +4253,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // Lower each air.launch_end. Between launch iterations every shim channel
   // the launch used is drained, so the next iteration's configuration cannot
   // race this one's transfers (issue #1373), or the device is reset when its
-  // locks need it. The drain waits on the launch's transfers on each channel
-  // the launch end does not wait on itself. A transfer in a nested block -- an
+  // locks need it. The drain waits on each of the launch's transfers the
+  // launch end does not wait on itself. A transfer in a nested block -- an
   // arm of a feed select, a rolled loop body -- is waited at the end of that
   // block, the last point its event is visible.
   void lowerLaunchEnds(ModuleOp module) {
@@ -4300,21 +4300,21 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
       if (!clOutputElf && !deviceHasMultiIterLaunch(device))
         continue;
-      llvm::SmallDenseSet<StringRef> waited;
+      llvm::SmallPtrSet<Operation *, 8> waited;
       for (Value v : launchEnd->getOperands())
-        if (auto dma = v.getDefiningOp<airrt::DmaMemcpyNdOp>())
-          if (auto md = dma->getAttrOfType<FlatSymbolRefAttr>("metadata"))
-            waited.insert(md.getValue());
+        if (Operation *def = v.getDefiningOp())
+          waited.insert(def);
       for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
-        if (waited.contains(alloc.getSymName()))
-          continue;
         for (auto &[blk, byChannel] : transfers) {
           auto it = byChannel.find(alloc.getSymName());
           if (it == byChannel.end())
             continue;
           SmallVector<Value> events;
           for (auto &dma : it->second)
-            events.push_back(withEvent(dma));
+            if (!waited.contains(dma))
+              events.push_back(withEvent(dma));
+          if (events.empty())
+            continue;
           if (blk == launchEnd->getBlock()) {
             auto wait = airrt::WaitAllOp::create(b, launchEnd.getLoc(),
                                                  TypeRange{}, events);

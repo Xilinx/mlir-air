@@ -85,6 +85,39 @@ module {
 
 // -----
 
+// A launch end that waits on one transfer of a channel leaves the channel's
+// other transfers to the drain: the second transfer, issued after the one it
+// names, is awaited too.
+// CHECK-LABEL: aie.runtime_sequence @launch_end_names_one
+// CHECK: %[[A0:.*]] = aiex.dma_configure_task_for @ln_out
+// CHECK: %[[A1:.*]] = aiex.dma_configure_task_for @ln_out
+// CHECK: aiex.dma_await_task(%[[A0]])
+// CHECK-NEXT: aiex.dma_await_task(%[[A1]])
+// CHECK: aiex.dma_configure_task_for @ln_out
+module {
+  aie.device(npu2) {
+    %t0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @ln_out(%t0, S2MM, 0)
+  } {sym_name = "ln_seg"}
+  airrt.module_metadata{}
+  func.func @launch_end_names_one(%arg0: memref<128xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c3_i32 = arith.constant 3 : i32
+    %p = airrt.segment_load "ln_seg" : i64
+    %0 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @ln_out} : (i32, i64, i64, memref<128xi32>) : !airrt.event
+    airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c64_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @ln_out} : (i32, i64, i64, memref<128xi32>)
+    %e0 = airrt.wait_all %0 {air.launch_end} : !airrt.event
+    %p1 = airrt.segment_load "ln_seg" : i64
+    airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @ln_out} : (i32, i64, i64, memref<128xi32>)
+    %e1 = airrt.wait_all {air.launch_end} : !airrt.event
+    return
+  }
+}
+
+// -----
+
 // A transfer issued as several tasks (here four) is waited on as all of them:
 // each wait frees the pieces of its own transfer, not the channel's next tasks.
 // CHECK-LABEL: aie.runtime_sequence @split_pieces

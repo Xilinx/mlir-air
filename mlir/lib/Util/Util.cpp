@@ -1991,21 +1991,49 @@ std::optional<bool> air::accessesIntersect(ArrayRef<OpFoldResult> offsets0,
     }
     return true;
   };
+  // With equal strides, two patterns that are disjoint in one dimension are
+  // disjoint in memory if each stride is larger than the furthest element the
+  // smaller-stride dimensions reach; otherwise index i of one dimension can
+  // land where index i + 1 does.
   if (sameStrides() && offsets0.size() == strides0.size() &&
       offsets1.size() == strides1.size()) {
-    bool known = true;
-    for (unsigned i = 0; i < offsets0.size(); i++) {
+    unsigned rank = offsets0.size();
+    SmallVector<std::pair<int64_t, int64_t>> dims0, dims1;
+    SmallVector<int64_t> strides;
+    for (unsigned i = 0; i < rank; i++) {
       auto r0 = getLinearAccessRange({offsets0[i]}, {sizes0[i]}, {strides0[i]},
                                      /*overLoops=*/true);
       auto r1 = getLinearAccessRange({offsets1[i]}, {sizes1[i]}, {strides1[i]},
                                      /*overLoops=*/true);
-      if (r0 && r1 && !mayOverlap(r0, r1))
-        return false;
-      known &= r0 && r1;
+      if (!r0 || !r1)
+        break;
+      dims0.push_back(*r0);
+      dims1.push_back(*r1);
+      strides.push_back(*getConstantIntValue(strides0[i]));
     }
-    if (known)
+    auto nested = [&]() {
+      for (unsigned i = 0; i < rank; i++) {
+        if (strides[i] < 0 || dims0[i].first < 0 || dims1[i].first < 0)
+          return false;
+        int64_t reach = 0;
+        for (unsigned j = 0; j < rank; j++) {
+          if (j == i || strides[j] > strides[i])
+            continue;
+          if (strides[j] == strides[i] && strides[i] > 0)
+            return false;
+          reach += std::max(dims0[j].second, dims1[j].second) - 1;
+        }
+        if (strides[i] > 0 && reach >= strides[i])
+          return false;
+      }
       return true;
-    return std::nullopt;
+    };
+    if (dims0.size() == rank && nested()) {
+      for (unsigned i = 0; i < rank; i++)
+        if (!mayOverlap(dims0[i], dims1[i]))
+          return false;
+      return true;
+    }
   }
   auto r0 = getLinearAccessRange(offsets0, sizes0, strides0,
                                  /*overLoops=*/true);

@@ -400,3 +400,94 @@ module {
     return
   }
 }
+
+// -----
+
+// The input reads a subview of the buffer the drain writes. The two DMAs name
+// different memrefs over one buffer, so the input still waits for the drain.
+
+// CHECK-LABEL: func.func @subview_read
+// CHECK: %[[D:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @outAlloc9
+// CHECK: airrt.wait_all %[[D]]{{$}}
+// CHECK-NEXT: airrt.dma_memcpy_nd({{.*}}metadata = @inAlloc9
+
+module {
+  aie.device(npu2) {
+    %t = aie.tile(0, 0)
+    aie.shim_dma_allocation @outAlloc9(%t, S2MM, 0)
+    aie.shim_dma_allocation @inAlloc9(%t, MM2S, 0)
+  } {sym_name = "seg9"}
+  air.channel @out9 [1, 1]
+  air.channel @in9 [1, 1]
+  func.func @subview_read(%buf: memref<256xi32>) {
+    %c1 = arith.constant 1 : index
+    %l = air.launch async (%i, %j) in (%si=%c1, %sj=%c1) args(%b=%buf) : memref<256xi32> {
+      %c1_l = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %d = air.channel.get async  @out9[] (%b[%c64] [%c64] [%c1_l]) {id = 1 : i32, metadata = @outAlloc9} : (memref<256xi32>)
+      %v = memref.subview %b[64] [64] [1] : memref<256xi32> to memref<64xi32, strided<[1], offset: 64>>
+      %r = air.channel.put async [%d]  @in9[] (%v[] [] []) {id = 2 : i32, metadata = @inAlloc9} : (memref<64xi32, strided<[1], offset: 64>>)
+      %e = air.wait_all async [%d, %r] {air.launch_end}
+      %s = air.segment @seg9 async {
+        %c1_0 = arith.constant 1 : index
+        %h = air.herd @h9 async  tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) {
+          %tok, %a = air.execute -> (memref<64xi32, 2>) {
+            %alloc = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %alloc : memref<64xi32, 2>
+          }
+          %g = air.channel.get async [%tok]  @in9[] (%a[] [] []) {id = 3 : i32} : (memref<64xi32, 2>)
+          %p = air.channel.put async [%g]  @out9[] (%a[] [] []) {id = 4 : i32} : (memref<64xi32, 2>)
+        }
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
+
+// -----
+
+// Equal strides [2, 1], disjoint in the inner dimension (offset 2 against 0),
+// but the inner offset steps a whole outer row: element 2 * i + 2 of the drain
+// is element 2 * (i + 1) of the read. Too many runs to compare element by
+// element, and the dimensions do not nest, so the input waits.
+
+// CHECK-LABEL: func.func @aliasing_strides
+// CHECK: %[[D:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @outAlloc10
+// CHECK: airrt.wait_all %[[D]]{{$}}
+// CHECK-NEXT: airrt.dma_memcpy_nd({{.*}}metadata = @inAlloc10
+
+module {
+  aie.device(npu2) {
+    %t = aie.tile(0, 0)
+    aie.shim_dma_allocation @outAlloc10(%t, S2MM, 0)
+    aie.shim_dma_allocation @inAlloc10(%t, MM2S, 0)
+  } {sym_name = "seg10"}
+  air.channel @out10 [1, 1]
+  air.channel @in10 [1, 1]
+  func.func @aliasing_strides(%buf: memref<16384xi32>) {
+    %c1 = arith.constant 1 : index
+    %l = air.launch async (%i, %j) in (%si=%c1, %sj=%c1) args(%b=%buf) : memref<16384xi32> {
+      %c0 = arith.constant 0 : index
+      %c1_l = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c5000 = arith.constant 5000 : index
+      %d = air.channel.get async  @out10[] (%b[%c0, %c2] [%c5000, %c1_l] [%c2, %c1_l]) {id = 1 : i32, metadata = @outAlloc10} : (memref<16384xi32>)
+      %r = air.channel.put async [%d]  @in10[] (%b[%c0, %c0] [%c5000, %c1_l] [%c2, %c1_l]) {id = 2 : i32, metadata = @inAlloc10} : (memref<16384xi32>)
+      %e = air.wait_all async [%d, %r] {air.launch_end}
+      %s = air.segment @seg10 async {
+        %c1_0 = arith.constant 1 : index
+        %h = air.herd @h10 async  tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) {
+          %tok, %a = air.execute -> (memref<64xi32, 2>) {
+            %alloc = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %alloc : memref<64xi32, 2>
+          }
+          %g = air.channel.get async [%tok]  @in10[] (%a[] [] []) {id = 3 : i32} : (memref<64xi32, 2>)
+          %p = air.channel.put async [%g]  @out10[] (%a[] [] []) {id = 4 : i32} : (memref<64xi32, 2>)
+        }
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}

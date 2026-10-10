@@ -1392,13 +1392,27 @@ static llvm::SmallSetVector<Value, 8>
 awaitDrainsBeforeReads(ArrayRef<Operation *> ops, IsDrainFn isDrain,
                        const DrainDeps &deps,
                        SmallVectorImpl<Operation *> &unordered) {
-  auto readsBack = [](airrt::DmaMemcpyNdOp in, airrt::DmaMemcpyNdOp drain) {
-    return in.getMemref() == drain.getMemref() &&
-           air::accessesIntersect(in.getMixedOffsets(), in.getMixedLengths(),
+  auto root = [](Value v) {
+    while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
+      v = view.getViewSource();
+    return v;
+  };
+  auto isBuffer = [](Value v) {
+    return isa<BlockArgument>(v) || v.getDefiningOp<memref::AllocOp>();
+  };
+  auto readsBack = [&](airrt::DmaMemcpyNdOp in, airrt::DmaMemcpyNdOp drain) {
+    Value a = in.getMemref(), b = drain.getMemref();
+    if (a != b) {
+      // Different views of one buffer count offsets from different bases, so
+      // only distinct buffers are known not to touch.
+      Value ra = root(a), rb = root(b);
+      return ra == rb || !isBuffer(ra) || !isBuffer(rb);
+    }
+    return air::accessesIntersect(in.getMixedOffsets(), in.getMixedLengths(),
                                   in.getMixedStrides(), drain.getMixedOffsets(),
                                   drain.getMixedLengths(),
                                   drain.getMixedStrides())
-               .value_or(true);
+        .value_or(true);
   };
   // Drains issued so far, in issue order.
   llvm::SetVector<Operation *> issued;
