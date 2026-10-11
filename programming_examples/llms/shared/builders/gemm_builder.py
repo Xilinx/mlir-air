@@ -85,11 +85,21 @@ def repack_gemm_b_panel_layout(w, tile_k_l2, tile_n, herd_n):
     import numpy as np
 
     k, n = w.shape
-    assert k % tile_k_l2 == 0 and n % (tile_n * herd_n) == 0, (k, n, tile_k_l2, tile_n, herd_n)
+    assert k % tile_k_l2 == 0 and n % (tile_n * herd_n) == 0, (
+        k,
+        n,
+        tile_k_l2,
+        tile_n,
+        herd_n,
+    )
     n_kchunks, n_nblocks = k // tile_k_l2, n // (tile_n * herd_n)
     w5 = w.reshape(n_kchunks, tile_k_l2, n_nblocks, herd_n, tile_n)
-    panels = w5.transpose(0, 2, 3, 1, 4)  # (n_kchunks, n_nblocks, herd_n, tile_k_l2, tile_n)
-    return np.ascontiguousarray(panels).reshape(n_kchunks * n_nblocks, herd_n, tile_k_l2, tile_n)
+    panels = w5.transpose(
+        0, 2, 3, 1, 4
+    )  # (n_kchunks, n_nblocks, herd_n, tile_k_l2, tile_n)
+    return np.ascontiguousarray(panels).reshape(
+        n_kchunks * n_nblocks, herd_n, tile_k_l2, tile_n
+    )
 
 
 def gemm_registry_config(m, k, n, output_dtype="bf16", precision="high"):

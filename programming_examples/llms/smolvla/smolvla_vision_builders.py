@@ -324,9 +324,11 @@ def _bstat_kwargs(k, tk2, tk1):
 
 def _bpanel_kwargs():
     """Extra build kwargs for SMOLVLA_B_PANEL_LAYOUT (see smolvla_fuse's doc block).
-    Applied by QKV and fc1 only (not O: measured gain was a wash at small scale).
-    The weight data itself is repacked host-side in smolvla_vision_encoder.py
-    (_panel_arg_shape below computes the matching memref type)."""
+    QKV-only: O/fc1/fc2 live in vit_o_ffn's 6-launch fused ELF, where the same fix
+    measured a wash (launch-count overhead dominates there, not DMA burst size),
+    so it was not applied to them. The weight data itself is repacked host-side in
+    smolvla_vision_encoder.py (_panel_arg_shape below computes the matching memref
+    type)."""
     return {"b_panel_layout": True} if B_PANEL_LAYOUT else {}
 
 

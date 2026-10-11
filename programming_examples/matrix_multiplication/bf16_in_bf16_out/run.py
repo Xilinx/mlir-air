@@ -44,8 +44,12 @@ def pack_b_panel_layout(w, tile_k_l2, tile_n, herd_n):
     assert k % tile_k_l2 == 0 and n % (tile_n * herd_n) == 0
     n_kchunks, n_nblocks = k // tile_k_l2, n // (tile_n * herd_n)
     w5 = w.reshape(n_kchunks, tile_k_l2, n_nblocks, herd_n, tile_n)
-    panels = w5.transpose(0, 2, 3, 1, 4)  # (n_kchunks, n_nblocks, herd_n, tile_k_l2, tile_n)
-    return np.ascontiguousarray(panels).reshape(n_kchunks * n_nblocks, herd_n, tile_k_l2, tile_n)
+    panels = w5.transpose(
+        0, 2, 3, 1, 4
+    )  # (n_kchunks, n_nblocks, herd_n, tile_k_l2, tile_n)
+    return np.ascontiguousarray(panels).reshape(
+        n_kchunks * n_nblocks, herd_n, tile_k_l2, tile_n
+    )
 
 
 def pack_b_with_bias(w, bias, tile_k_l1, pad_rows):
