@@ -97,7 +97,15 @@ from air_examples.llms.shared.builders.gemm_builder import (
 from air_examples.llms.shared.builders.rms_qkv_bias_rope_multi import _build_bias_add_2d
 from air_examples.llms.shared.builders.o_ffn_multi import _build_add_2d_to_2d
 from air_examples.layer_norm.layer_norm import build_module as build_layer_norm
-from smolvla_fuse import B_STATIONARY, B_PANEL_LAYOUT, LN_EXT, LN_ROWS
+from smolvla_fuse import (
+    B_STATIONARY,
+    B_PANEL_LAYOUT,
+    FC1_TILE,
+    FC2_SWAP,
+    LN_EXT,
+    LN_ROWS,
+    O_SWAP,
+)
 
 import types
 from pathlib import Path
@@ -219,7 +227,7 @@ def _force_tile_n_suffix(spec):
     via disambiguation — avoids colliding on the generic `mm_m32.o` whose baked
     DIM_N could belong to a different shape."""
     s = dict(spec)
-    tag = "m32" if s["method"] == "drain" else "m64"
+    tag = f"m{s['tile_m']}"
     suffix = f"_{tag}_n{s['tile_n']}"
     obj = f"mm_{tag}_n{s['tile_n']}.o"
     s["sym_suffix"] = suffix
@@ -228,6 +236,50 @@ def _force_tile_n_suffix(spec):
     s["build_kwargs"]["sym_suffix"] = suffix
     s["build_kwargs"]["link_with_name"] = obj
     return s
+
+
+def _swapped(spec, tile_m, tile_n):
+    """`spec` at tile_m x tile_n on the swapped herd (M on 4 core rows, N on 8 columns)."""
+    s = dict(spec, tile_m=tile_m, tile_n=tile_n, herd_swap=True)
+    s["build_kwargs"] = dict(s["build_kwargs"], herd_swap=True)
+    return s
+
+
+def _herd(spec, herd_m, herd_n):
+    """(herd_m, herd_n) to build `spec` with: a swapped spec puts 4 rows on M and 8 columns on N."""
+    return (herd_n, herd_m) if spec.get("herd_swap") else (herd_m, herd_n)
+
+
+def o_ffn_specs(reg_len, emb_dim, hidden_dim, apply_overrides=True):
+    """(O, fc1, fc2) GEMM specs of vit_o_ffn with SMOLVLA_O_SWAP / SMOLVLA_FC1_TILE /
+    SMOLVLA_FC2_SWAP applied. The module builder, the kernel compile and the weight packing
+    all call it, so they cannot disagree. With any override set, every spec is keyed by
+    (tile_m, tile_n) (`_m{tm}_n{tn}`), so specs that share a compiled object share it with
+    vit_ln_qkv too."""
+    o_spec = dict(gemm_registry_config(reg_len, emb_dim, emb_dim, "bf16", "high"))
+    g_spec = dict(gemm_registry_config(reg_len, emb_dim, hidden_dim, "bf16", "high"))
+    d_spec = dict(gemm_registry_config(reg_len, hidden_dim, emb_dim, "bf16", "high"))
+    if not (apply_overrides and (O_SWAP or FC1_TILE or FC2_SWAP)):
+        return tuple(disambiguate_by_tile_n([o_spec, g_spec, d_spec]))
+    if O_SWAP:
+        o_spec = _swapped(o_spec, 64, 48)
+    if FC1_TILE:
+        tn, tk1 = (int(x) for x in FC1_TILE.lower().split("x"))
+        assert emb_dim % tk1 == 0, (FC1_TILE, emb_dim)
+        g_spec = dict(g_spec, tile_n=tn, tile_k_l1=tk1)
+        g_spec["tile_k_l2"] = 384 if tk1 == 64 else tk1 * 4
+    if FC2_SWAP:
+        d_spec = _swapped(d_spec, 64, d_spec["tile_n"])
+    specs = [_force_tile_n_suffix(s) for s in (o_spec, g_spec, d_spec)]
+    by_obj = {}
+    for s in specs:
+        key = (s["tile_m"], s["tile_n"], s["tile_k_l1"])
+        assert by_obj.setdefault(s["obj"], key) == key, (
+            s["obj"],
+            by_obj[s["obj"]],
+            key,
+        )
+    return tuple(specs)
 
 
 def _gemm_externs(spec, bias_fused=False, gelu=False):
@@ -319,9 +371,12 @@ def vit_o_ffn_runtime_tiling(
     since one tiling vector is shared by the whole stitched ELF and each
     launch's own loop clips to its own trip count (see _gemm_grid_extents)."""
     reg_len = registry_seq_len or seq_len
-    o_spec = gemm_registry_config(reg_len, emb_dim, emb_dim, "bf16", "high")
-    g_spec = gemm_registry_config(reg_len, emb_dim, hidden_dim, "bf16", "high")
-    d_spec = gemm_registry_config(reg_len, hidden_dim, emb_dim, "bf16", "high")
+    # The registry tiles even with SMOLVLA_FC1_TILE etc.: fc1 at tile_n 96 would raise the
+    # request to 12,8, which hangs the device (ERT_CMD_STATE_TIMEOUT); with 12,6 each launch's
+    # loop clips to its own trip count.
+    o_spec, g_spec, d_spec = o_ffn_specs(
+        reg_len, emb_dim, hidden_dim, apply_overrides=False
+    )
     grids = [
         _gemm_grid_extents(seq_len, emb_dim, o_spec, herd_m, herd_n),
         _gemm_grid_extents(seq_len, hidden_dim, g_spec, herd_m, herd_n),
@@ -461,11 +516,8 @@ def build_vit_o_ffn_module(
     the drain herd's epilogue cast.
     """
     reg_len = registry_seq_len or seq_len  # see build_vit_ln_qkv_module
-    o_spec = dict(gemm_registry_config(reg_len, emb_dim, emb_dim, "bf16", "high"))
-    g_spec = dict(gemm_registry_config(reg_len, emb_dim, hidden_dim, "bf16", "high"))
-    d_spec = dict(gemm_registry_config(reg_len, hidden_dim, emb_dim, "bf16", "high"))
     # O (tn96) + fc1 (tn128) + fc2 (tn96), all drain → disambiguate by tile_n.
-    o_spec, g_spec, d_spec = disambiguate_by_tile_n([o_spec, g_spec, d_spec])
+    o_spec, g_spec, d_spec = o_ffn_specs(reg_len, emb_dim, hidden_dim)
     for s in (o_spec, g_spec, d_spec):
         assert s["method"] == "drain", s["method"]
 
@@ -473,7 +525,7 @@ def build_vit_o_ffn_module(
     gk, gtm, gk2, gk1, gtn = _gemm_tiles(g_spec)
     dk, dtm, dk2, dk1, dtn = _gemm_tiles(d_spec)
 
-    print(f"  [o_ffn 1/6] O GEMM (drain tn={otn}, bias fused)...")
+    print(f"  [o_ffn 1/6] O GEMM (drain {otm}x{otn}x{ok1}, bias fused)...")
     ok2, o_bst = _bstat_kwargs(emb_dim, ok2, ok1)
     o_ir = str(
         _build_gemm_module(
@@ -484,8 +536,7 @@ def build_vit_o_ffn_module(
             ok2,
             ok1,
             otn,
-            herd_m,
-            herd_n,
+            *_herd(o_spec, herd_m, herd_n),
             b_pad_rows=BIAS_PAD_ROWS,
             **o_bst,
             **ok,
@@ -495,7 +546,7 @@ def build_vit_o_ffn_module(
     res1_ir = str(_build_add_2d_to_2d(seq_len, emb_dim, bfloat16))
     print("  [o_ffn 3/6] LN2 (affine)...")
     ln2_ir = _layer_norm_ir(seq_len, emb_dim)
-    print(f"  [o_ffn 4/6] fc1 GEMM (drain tn={gtn}, bias+GELU fused)...")
+    print(f"  [o_ffn 4/6] fc1 GEMM (drain {gtm}x{gtn}x{gk1}, bias+GELU fused)...")
     gk2, g_bst = _bstat_kwargs(emb_dim, gk2, gk1)
     fc1_ir = str(
         _build_gemm_module(
@@ -514,7 +565,7 @@ def build_vit_o_ffn_module(
             **gk,
         )
     )
-    print(f"  [o_ffn 5/6] fc2 GEMM (drain tn={dtn}, bias fused)...")
+    print(f"  [o_ffn 5/6] fc2 GEMM (drain {dtm}x{dtn}x{dk1}, bias fused)...")
     fc2_ir = str(
         _build_gemm_module(
             seq_len,
@@ -524,8 +575,7 @@ def build_vit_o_ffn_module(
             dk2,
             dk1,
             dtn,
-            herd_m,
-            herd_n,
+            *_herd(d_spec, herd_m, herd_n),
             b_pad_rows=BIAS_PAD_ROWS,
             **dk,
         )
@@ -551,12 +601,14 @@ def build_vit_o_ffn_module(
         FuncArg("%arg11", f"memref<{seq_len}x{emb_dim}xbf16>"),
     ]
 
-    # GEMM privates: emit each distinct sym_suffix's decls exactly once.
+    # GEMM privates: emit each distinct sym_suffix's decls exactly once; fc1's GELU cast
+    # is its own decl, so it is keyed apart even when fc1 shares O's or fc2's object.
     _seen = set()
 
-    def _pf(spec):
-        first = spec["sym_suffix"] not in _seen
-        _seen.add(spec["sym_suffix"])
+    def _pf(spec, kind="plain"):
+        key = (spec["sym_suffix"], kind)
+        first = key not in _seen
+        _seen.add(key)
         return first
 
     slices = [
@@ -582,7 +634,7 @@ def build_vit_o_ffn_module(
             "g",
             {0: 6, 1: 7, 2: 8},
             extern_syms=_gemm_externs(g_spec, True, gelu=True),
-            private_from=_pf(g_spec),
+            private_from=_pf(g_spec, "gelu"),
         ),
         KernelSlice(
             fc2_ir,

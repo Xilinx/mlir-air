@@ -362,7 +362,6 @@ def _compile_fused_kernels(
     from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
     from air_examples.llms.shared.builders.gemm_builder import (
         gemm_registry_config,
-        disambiguate_by_tile_n,
         BIAS_PAD_ROWS,
     )
     from smolvla_vision_builders import build_vit_ln_qkv_module, build_vit_o_ffn_module
@@ -386,13 +385,17 @@ def _compile_fused_kernels(
     batch_len = seq_len * n_images
 
     # Compile every distinct tile_n-keyed drain mm.o the two ELFs link.
-    o_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
-    g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
-    d_spec = gemm_registry_config(seq_len, hidden_dim, emb_dim, "bf16", "high")
-    o_spec, g_spec, d_spec = disambiguate_by_tile_n([o_spec, g_spec, d_spec])
+    # vit_ln_qkv's object is listed too: with SMOLVLA_O_SWAP no vit_o_ffn GEMM may use it.
+    from smolvla_vision_builders import _force_tile_n_suffix, o_ffn_specs
+
+    qkv_spec = _force_tile_n_suffix(
+        gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
+    )
     _needed = {}
-    for s in (o_spec, g_spec, d_spec):
-        _needed[s["sym_suffix"]] = s
+    for s in (qkv_spec, *o_ffn_specs(seq_len, emb_dim, hidden_dim)):
+        key = (s["tile_m"], s["tile_n"], s["tile_k_l1"])
+        prev = _needed.setdefault(s["sym_suffix"], s)
+        assert (prev["tile_m"], prev["tile_n"], prev["tile_k_l1"]) == key, (prev, s)
     for s in _needed.values():
         print(
             f"  Compiling {s['obj']} (drain tile_m={s['tile_m']} tile_n={s['tile_n']})"
@@ -967,18 +970,11 @@ def run_vit_block_fused(
     offn_key = f"vit_o_ffn_L{layer_idx}"
     if offn_key not in _cache:
         from air_examples.llms.shared.builders.gemm_builder import (
-            disambiguate_by_tile_n,
-            gemm_registry_config,
             repack_gemm_b_with_bias,
         )
+        from smolvla_vision_builders import o_ffn_specs
 
-        _o, _g, _d = disambiguate_by_tile_n(
-            [
-                dict(gemm_registry_config(reg_len, emb, emb, "bf16", "high")),
-                dict(gemm_registry_config(reg_len, emb, hidden, "bf16", "high")),
-                dict(gemm_registry_config(reg_len, hidden, emb, "bf16", "high")),
-            ]
-        )
+        _o, _g, _d = o_ffn_specs(reg_len, emb, hidden)
 
         def _wb(w, b, rows, cols, spec):
             return repack_gemm_b_with_bias(

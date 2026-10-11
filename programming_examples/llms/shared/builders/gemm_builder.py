@@ -237,6 +237,7 @@ def _build_gemm_module(
     b_stationary=False,
     epilogue_swiglu=False,
     b_panel_layout=False,
+    herd_swap=False,
 ):
     """Build a high-precision BF16-in/BF16-out GEMM via the external mm.o microkernel.
 
@@ -308,6 +309,7 @@ def _build_gemm_module(
             b_stationary=b_stationary,
             epilogue_swiglu=epilogue_swiglu,
             b_panel_layout=b_panel_layout,
+            herd_swap=herd_swap,
         )
 
     raise ValueError(

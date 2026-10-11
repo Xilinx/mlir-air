@@ -42,6 +42,25 @@ SMOLVLA_B_PANEL_LAYOUT (default 1)
     vit_ln_qkv specifically (2026-10-10/11, noisy -- small ELF, run-to-run variance is
     comparable to the effect size).
 
+SMOLVLA_O_SWAP (default 1)
+    Builds vit_o_ffn's O GEMM with tile 64x48x64 on the swapped herd (4 core rows on M, 8 columns
+    on N) instead of the registry's 32x96x64 on 8 rows x 4 columns. Its own compiled object
+    (mm_m64_n48.o); tile_k_l1 is unchanged, so the packed weights are too. 0 restores the registry.
+
+SMOLVLA_FC1_TILE (default "96x64"; empty = the registry tile, 32x128x32)
+    "<tile_n>x<tile_k_l1>": builds vit_o_ffn's fc1 GEMM (bias + GELU) with tile
+    32 x tile_n x tile_k_l1. 96x64 is the shape QKV already uses, so fc1 links the same
+    compiled object. Changes the fc1 weight packing (tile_k_l1).
+
+SMOLVLA_FC2_SWAP (default 1)
+    Builds vit_o_ffn's fc2 GEMM with tile 64x96x64 on the swapped herd. Its own compiled object
+    (mm_m64_n96.o); same packed weights. 0 restores the registry.
+
+    The three are part of the ELF cache name, and the action chunk at the gate is identical with
+    and without them. Together they take vit_o_ffn from 25.9 to 22.8 ms per image and the vision
+    stage from 160.4 to 148.7 ms (3 cameras, NPU2). vit_o_ffn's loop tiling stays the registry one
+    (see smolvla_vision_builders.vit_o_ffn_runtime_tiling).
+
 SMOLVLA_ZERO_COPY (default 1)
     Chains the three ELFs of every vision layer (and layer to layer) through shared device
     buffers instead of copying each intermediate to the host and back: Q|K|V, the attention
@@ -83,4 +102,9 @@ FA_Q_IN_SEGMENT = os.environ.get("SMOLVLA_FA_QSEG", "1") == "1"
 FA_QK_PRETRANSPOSE = os.environ.get("SMOLVLA_FA_QK_PRETRANSPOSE", "1") == "1"
 B_STATIONARY = os.environ.get("SMOLVLA_B_STATIONARY", "1") == "1"
 B_PANEL_LAYOUT = os.environ.get("SMOLVLA_B_PANEL_LAYOUT", "1") == "1"
+O_SWAP = os.environ.get("SMOLVLA_O_SWAP", "1") == "1"
+FC1_TILE = os.environ.get(
+    "SMOLVLA_FC1_TILE", "96x64"
+)  # "<tile_n>x<tile_k_l1>" or "" (registry)
+FC2_SWAP = os.environ.get("SMOLVLA_FC2_SWAP", "1") == "1"
 ZERO_COPY = os.environ.get("SMOLVLA_ZERO_COPY", "1") == "1"

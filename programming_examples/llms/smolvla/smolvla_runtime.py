@@ -84,6 +84,9 @@ from smolvla_fuse import (  # noqa: E402
     FA_QK_PRETRANSPOSE,
     B_STATIONARY,
     B_PANEL_LAYOUT,
+    O_SWAP,
+    FC1_TILE,
+    FC2_SWAP,
 )
 from smolvla_vision_weights import SigLIPVisionConfig  # noqa: E402
 from smolvla_vision_builders import (  # noqa: E402
@@ -115,6 +118,9 @@ _CACHE_SUFFIX = (
     + ("_kt" if FA_QK_PRETRANSPOSE else "")
     + ("_bst" if B_STATIONARY else "")
     + ("_bpnl" if B_PANEL_LAYOUT else "")
+    + ("_os" if O_SWAP else "")
+    + (f"_f1t{FC1_TILE}" if FC1_TILE else "")
+    + ("_f2s" if FC2_SWAP else "")
 )
 VISION_CACHE_DIR = str(_HERE / "build" / f"vision_kernel_cache{_CACHE_SUFFIX}")
 VISION_KERNELS = {
