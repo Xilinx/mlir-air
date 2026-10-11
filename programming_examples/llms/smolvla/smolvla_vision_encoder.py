@@ -47,6 +47,8 @@ from smolvla_fuse import (
     OFFN_TILING_OVERRIDE,
     FA_Q_IN_SEGMENT,
     FA_QK_PRETRANSPOSE,
+    B_STATIONARY,
+    B_PANEL_LAYOUT,
     ZERO_COPY,
 )
 from smolvla_vision_weights import SigLIPVisionConfig
@@ -869,11 +871,15 @@ def run_vit_block_fused(
         from air_examples.llms.shared.builders.gemm_builder import (
             gemm_registry_config,
             repack_gemm_b_with_bias,
+            repack_gemm_b_panel_layout,
+            BIAS_PAD_ROWS,
         )
+        from smolvla_vision_builders import _bstat_kwargs
 
         # Registry lookups use the PER-IMAGE length (the measured shape); tiles
         # do not depend on M, so they carry over to the batched build.
-        _tk1 = gemm_registry_config(reg_len, emb, emb, "bf16", "high")["tile_k_l1"]
+        _qkv_spec = gemm_registry_config(reg_len, emb, emb, "bf16", "high")
+        _tk1 = _qkv_spec["tile_k_l1"]
 
         def _wb(w, b):
             return repack_gemm_b_with_bias(
@@ -885,13 +891,23 @@ def run_vit_block_fused(
         # [Wq|Wk|Wv] column-concatenated: the three GEMMs are one wide GEMM.
         # Packing pads along K-rows, so hstacking already-packed blocks keeps
         # every block's pad rows aligned.
+        _qkv_b = np.ascontiguousarray(  # arg3 [Wq|Wk|Wv] weight+bias packed
+            np.hstack([_wb(lw.wq, lw.bq), _wb(lw.wk, lw.bk), _wb(lw.wv, lw.bv)])
+        )
+        if B_PANEL_LAYOUT:
+            # Mirrors build_vit_ln_qkv_module's tk2/herd_n resolution exactly
+            # (same _bstat_kwargs call, same herd_n=4 default) so the host
+            # layout matches the device's panel addressing.
+            _qkv_tk2, _ = _bstat_kwargs(emb, _qkv_spec["tile_k_l2"], _tk1)
+            _qkv_tk2_pad = (_qkv_tk2 // _tk1) * (_tk1 + BIAS_PAD_ROWS)
+            _qkv_b = repack_gemm_b_panel_layout(
+                _qkv_b, _qkv_tk2_pad, _qkv_spec["tile_n"], herd_n=4
+            )
         _cache[ln_key] = [
             None,  # arg0 x_in (dynamic)
             _pack(lw.ln1_w, lw.ln1_b),  # arg1 LN1 param
             z2(emb),  # arg2 normed
-            np.ascontiguousarray(  # arg3 [Wq|Wk|Wv] weight+bias packed
-                np.hstack([_wb(lw.wq, lw.bq), _wb(lw.wk, lw.bk), _wb(lw.wv, lw.bv)])
-            ),
+            _qkv_b,
             z2(3 * emb),  # arg4 [Q|K|V] (out)
         ]
     ln_args = _cache[ln_key]
@@ -971,6 +987,8 @@ def run_vit_block_fused(
                 spec["tile_k_l1"],
             )
 
+        # b_panel_layout is QKV-only (see build_vit_ln_qkv_module's comment):
+        # vit_o_ffn's fc1/fc2 weights stay plain bias-packed, no panel reshuffle.
         _cache[offn_key] = [
             None,  # arg0 attn (dynamic)
             _wb(lw.wo, lw.bo, emb, emb, _o),  # arg1 O weight+bias

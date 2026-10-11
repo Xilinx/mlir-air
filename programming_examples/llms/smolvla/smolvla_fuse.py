@@ -29,6 +29,19 @@ SMOLVLA_B_STATIONARY (default 1)
     from (M/256) x N-iterations to N-iterations. Output is bit-identical to 0. fc2 (K=3072,
     B block > one memtile) is unchanged.
 
+SMOLVLA_B_PANEL_LAYOUT (default 1)
+    Lays B out offline (host-side repack_gemm_b_panel_layout) so each (K-chunk,
+    N-launch-block) slab is one dense contiguous DRAM run instead of tile_k_l2 separate
+    tile_n-element bursts: the L3->L2 DMA becomes one burst per panel. QKV-only
+    (vit_ln_qkv's 2-launch ELF): O/fc1/fc2 live in vit_o_ffn's 6-launch fused ELF, where
+    the same fix measured a wash (launch-count overhead dominates, not DMA burst size --
+    see Vu_exp/iron_vs_air-oct-11-2026), so it was reverted there, not shipped. Orthogonal
+    to B_STATIONARY (burst size vs reread count) -- bit-identical output either way.
+    `make verify` bit-identical to off (cosine 0.9993277192115784) at full production scale
+    (M=3072, real HF weights); measured -0.4% to -2.6% vision-stage, 5-18%/rep on
+    vit_ln_qkv specifically (2026-10-10/11, noisy -- small ELF, run-to-run variance is
+    comparable to the effect size).
+
 SMOLVLA_ZERO_COPY (default 1)
     Chains the three ELFs of every vision layer (and layer to layer) through shared device
     buffers instead of copying each intermediate to the host and back: Q|K|V, the attention
@@ -69,4 +82,5 @@ LNQKV_TILING_OVERRIDE = _sizes_override("SMOLVLA_LNQKV_TILING")
 FA_Q_IN_SEGMENT = os.environ.get("SMOLVLA_FA_QSEG", "1") == "1"
 FA_QK_PRETRANSPOSE = os.environ.get("SMOLVLA_FA_QK_PRETRANSPOSE", "1") == "1"
 B_STATIONARY = os.environ.get("SMOLVLA_B_STATIONARY", "1") == "1"
+B_PANEL_LAYOUT = os.environ.get("SMOLVLA_B_PANEL_LAYOUT", "1") == "1"
 ZERO_COPY = os.environ.get("SMOLVLA_ZERO_COPY", "1") == "1"

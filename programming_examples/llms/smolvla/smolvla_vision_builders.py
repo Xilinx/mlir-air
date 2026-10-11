@@ -97,7 +97,7 @@ from air_examples.llms.shared.builders.gemm_builder import (
 from air_examples.llms.shared.builders.rms_qkv_bias_rope_multi import _build_bias_add_2d
 from air_examples.llms.shared.builders.o_ffn_multi import _build_add_2d_to_2d
 from air_examples.layer_norm.layer_norm import build_module as build_layer_norm
-from smolvla_fuse import B_STATIONARY, LN_EXT, LN_ROWS
+from smolvla_fuse import B_STATIONARY, B_PANEL_LAYOUT, LN_EXT, LN_ROWS
 
 import types
 from pathlib import Path
@@ -270,6 +270,25 @@ def _bstat_kwargs(k, tk2, tk1):
     return k, {"b_stationary": True}
 
 
+def _bpanel_kwargs():
+    """Extra build kwargs for SMOLVLA_B_PANEL_LAYOUT (see smolvla_fuse's doc block).
+    Applied by QKV and fc1 only (not O: measured gain was a wash at small scale).
+    The weight data itself is repacked host-side in smolvla_vision_encoder.py
+    (_panel_arg_shape below computes the matching memref type)."""
+    return {"b_panel_layout": True} if B_PANEL_LAYOUT else {}
+
+
+def _panel_arg_shape(k, n, tk1, tk2, tn, herd_n, pad_rows=BIAS_PAD_ROWS):
+    """memref shape string for a bias-packed B weight laid out panel-contiguous
+    (SMOLVLA_B_PANEL_LAYOUT): mirrors build_module's b_size for b_panel_layout=True
+    (bf16_in_bf16_out/run.py) -- `tk2` must be the RESOLVED tile_k_l2 (after
+    _bstat_kwargs, i.e. k if B_STATIONARY), matching what gets passed to
+    _build_gemm_module."""
+    tk2_pad = (tk2 // tk1) * (tk1 + pad_rows)
+    n_kchunks, n_nblocks = k // tk2, n // (tn * herd_n)
+    return f"{n_kchunks * n_nblocks}x{herd_n}x{tk2_pad}x{tn}"
+
+
 def _gemm_grid_extents(m, n, spec, herd_m, herd_n):
     """(grid_m, grid_n): how many launch-grid iterations a drain GEMM at this
     shape/tiling needs. A `runtime_loop_tiling_sizes` request >= this per-axis
@@ -363,6 +382,7 @@ def build_vit_ln_qkv_module(
         f"N={qkv_dim}, bias fused)..."
     )
     tk2, bst = _bstat_kwargs(emb_dim, tk2, tk1)
+    bpnl = _bpanel_kwargs()
     qkv_ir = str(
         _build_gemm_module(
             seq_len,
@@ -376,15 +396,21 @@ def build_vit_ln_qkv_module(
             herd_n,
             b_pad_rows=BIAS_PAD_ROWS,
             **bst,
+            **bpnl,
             **kw,
         )
     )
 
+    arg3_type = (
+        f"memref<{_panel_arg_shape(emb_dim, qkv_dim, tk1, tk2, tn, herd_n)}xbf16>"
+        if B_PANEL_LAYOUT
+        else f"memref<{packed_k(emb_dim, tk1)}x{qkv_dim}xbf16>"
+    )
     base_args = [
         FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),
         FuncArg("%arg1", f"memref<{2*emb_dim}xbf16>"),
         FuncArg("%arg2", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg3", f"memref<{packed_k(emb_dim, tk1)}x{qkv_dim}xbf16>"),
+        FuncArg("%arg3", arg3_type),
         FuncArg("%arg4", f"memref<{seq_len}x{qkv_dim}xbf16>"),
     ]
 
@@ -507,6 +533,9 @@ def build_vit_o_ffn_module(
     print("  [o_ffn 6/6] residual add (fc2_b + res1)...")
     res2_ir = str(_build_add_2d_to_2d(seq_len, emb_dim, bfloat16))
 
+    # b_panel_layout is QKV-only (vit_ln_qkv's 2-launch ELF shows the DMA-burst
+    # win cleanly; vit_o_ffn's 6 fused launches dilute it to noise level --
+    # measured 2026-10-10, see Vu_exp/iron_vs_air-oct-11-2026 and memory).
     base_args = [
         FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),
         FuncArg("%arg1", f"memref<{packed_k(emb_dim, ok1)}x{emb_dim}xbf16>"),
