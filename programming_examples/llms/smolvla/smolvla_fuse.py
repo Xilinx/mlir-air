@@ -84,29 +84,33 @@ SMOLVLA_FA_QK_PRETRANSPOSE (default 1)
     ~3000 to ~1650 cycles per 64x64 block at a ~340 cycle transpose pass. Part of the ELF
     cache name (`_kt`). 0 restores the in-matmul transpose.
 
-SMOLVLA_FA_FUSED (default 0)
+SMOLVLA_FA_FUSED (default 1)
     FlashAttention kernels rebuilt from a single-core cost breakdown of the 64x64 key chunk
     (shared with `fa_chunk_bench.py` in aie-for-ai/experiments/flash_att_amd_npu): the cascade
     merge fused into one pass over L1 (`merge_gp`, and `merge_gp_div` for the last stage, which
-    also folds in the divide by the softmax sum); exp and row sums in one sweep (`exp_sum_g`,
-    row sums by one 8x8 transpose per 8 rows, `-DSUM_T`); `max_g` with four independent row-block
-    chains (`-DMAX_X4`, the single chain was latency bound); and a Q@K^T that writes G instead of
-    accumulating into a zero-filled G (`matmul_a_b_bf16_z`, no zero-fill pass). The max and the
-    zero-init are exact; the merge and the row sums round once instead of two or three times, so
-    the output matches the default to bf16 rounding (standalone cosine vs NumPy 0.998933 for both
-    the 2-D and the default placement), not bit for bit. Chunk cost 9.3k -> 6.4k cycles on a
-    single core, 3-camera FA call 3,530 -> about 3,000 us with the kernels alone. Needs the q
+    also folds in the divide by the softmax sum); `max_g` with four independent row-block
+    chains (`-DMAX_X4`, exact -- max is associative regardless of grouping, the single chain
+    was latency bound); and a Q@K^T that writes G instead of accumulating into a zero-filled G
+    (`matmul_a_b_bf16_z`, no zero-fill pass, exact). A fourth kernel, row sums by one 8x8
+    transpose per 8 rows instead of scalar reduce_adds (`-DSUM_T`), was tried and DROPPED
+    (2026-10-11): it is not exact (different float summation order, plus a lossy hi/lo-bf16
+    intermediate for the transpose) and bought almost no speed -- full-pipeline cosine with it
+    was 0.9989126 vs 0.9993277 without any fusion, for ~0.2 ms less than without it; without
+    SUM_T the fused kernels alone match or beat the unfused baseline (cosine 0.9993850, nmse
+    0.005204 vs 0.006984) while keeping nearly all the speed. Chunk cost 9.3k -> 6.4k cycles on
+    a single core, 3-camera FA call 3,530 -> about 3,000 us with the kernels alone. Needs the q
     loop in the segment and SMOLVLA_FA_QK_PRETRANSPOSE=1. Part of the ELF cache name (`_mf`).
 
-SMOLVLA_FA_2D (default 0)
+SMOLVLA_FA_2D (default 1)
     FlashAttention with 4 head-images in flight instead of 2: 2 along the columns and 2
     along the rows of the array (a [4, 4] herd holding two row groups of 2 cascade stages),
     2 key stages instead of 4, and the q blocks split over 2 launch iterations (the shim
     has 16 buffer descriptors per tile). Waves of 8 key chunks instead of 4, so the
     per-wave overhead (Q capture, cascade chain, output) is paid half as often. Implies
-    SMOLVLA_FA_FUSED. With the kernels above: FA call 3,530 -> about 2,710 us (-23%),
-    flash_attn 14.1 -> about 11.2 ms per image (3 cameras). Needs the q loop in the
-    segment. Part of the ELF cache name (`_f2d`).
+    SMOLVLA_FA_FUSED. With the kernels above (SUM_T dropped, see FA_FUSED): flash_attn
+    14.51 -> 11.24 ms per image (3 cameras, -22.5%), `make verify` cosine 0.9993850 --
+    matches or beats the unfused default. Needs the q loop in the segment. Part of the
+    ELF cache name (`_f2d`).
 """
 
 import os
@@ -125,8 +129,8 @@ LNQKV_TILING_OVERRIDE = _sizes_override("SMOLVLA_LNQKV_TILING")
 FA_Q_IN_SEGMENT = os.environ.get("SMOLVLA_FA_QSEG", "1") == "1"
 FA_QK_PRETRANSPOSE = os.environ.get("SMOLVLA_FA_QK_PRETRANSPOSE", "1") == "1"
 # Both change the ELF, so they are part of the cache-dir name in smolvla_runtime.py.
-FA_FUSED = os.environ.get("SMOLVLA_FA_FUSED", "0") == "1"
-FA_2D = os.environ.get("SMOLVLA_FA_2D", "0") == "1"
+FA_FUSED = os.environ.get("SMOLVLA_FA_FUSED", "1") == "1"
+FA_2D = os.environ.get("SMOLVLA_FA_2D", "1") == "1"
 B_STATIONARY = os.environ.get("SMOLVLA_B_STATIONARY", "1") == "1"
 B_PANEL_LAYOUT = os.environ.get("SMOLVLA_B_PANEL_LAYOUT", "1") == "1"
 O_SWAP = os.environ.get("SMOLVLA_O_SWAP", "1") == "1"

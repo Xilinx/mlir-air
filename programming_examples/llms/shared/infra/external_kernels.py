@@ -248,8 +248,8 @@ def compile_attn_npu2(
             call, so it is opt-in per design.
         fused_softmax_merge: -DFUSE_EXP_SUM, the fused cascade-merge kernels
             (merge_gp, merge_gp_div), the exp+row-sum softmax sweep, the zero-init Q@K^T
-            (matmul_a_b_bf16_z, needs pretranspose_k), max_g with four chains and
-            transposed row sums. The
+            (matmul_a_b_bf16_z, needs pretranspose_k), max_g with four independent
+            chains (exact -- max is associative regardless of grouping). The
             builder must be called with fused_merge=True to use merge_gp*.
             Same result to bf16 rounding (cosine 0.998830 vs 0.998828 at
             seq 1024, 12 heads).
@@ -287,9 +287,16 @@ def compile_attn_npu2(
         _flags.append("-DQK_PRETRANSPOSE")
     if fused_softmax_merge:
         # FUSE_EXP_SUM: merge_gp / merge_gp_div, exp+row sum in one sweep, matmul_a_b_bf16_z;
-        # MAX_X4: max_g with four independent row-block chains; SUM_T: row sums by one 8x8
-        # transpose per 8 rows instead of scalar reduce_adds
-        _flags += ["-DFUSE_EXP_SUM", "-DMAX_X4", "-DSUM_T"]
+        # MAX_X4: max_g with four independent row-block chains (exact: max is
+        # associative regardless of grouping). SUM_T (row sums by one 8x8 transpose
+        # per 8 rows instead of scalar reduce_adds, dropped here) is NOT exact: a
+        # different floating-point summation order plus a lossy hi/lo-bf16-split
+        # intermediate for the transpose. Isolated 2026-10-11: with SUM_T, full
+        # SmolVLA pipeline cosine 0.9993277 (no fusion) -> 0.9989126; without it
+        # (this bundle), 0.9993850 -- matches or beats the unfused baseline, for
+        # -22.5% flash_attn time (vs -24% with SUM_T) -- not worth the accuracy cost
+        # it bought almost nothing.
+        _flags += ["-DFUSE_EXP_SUM", "-DMAX_X4"]
     _compile_kernel(src, "attn_npu2.o", extra_flags=_flags, force=force)
     # Also create attn.o copy (some link_with attributes use "attn.o").
     # Refresh whenever attn_npu2.o exists so a force-rebuild (different tile
