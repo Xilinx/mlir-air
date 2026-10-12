@@ -2847,7 +2847,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_op.getOperation(), offsets,
-        wraps, strides, channel_op.getMemref(), skipZeroStride);
+        wraps, strides, channel_op.getMemref(), skipZeroStride, maxSize);
     if (res.failed())
       return failure();
 
