@@ -1416,6 +1416,76 @@ def CoalesceSlicesOp : Op<Transform_Dialect, "air.coalesce_slices",
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
+def FoldIterArgsIntoInductionVarOp : Op<Transform_Dialect, "air.fold_iter_args_into_induction_var",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Compute values advanced by a fixed step from the induction variable";
+  let description = [{
+    Each target is an `scf.for`. An integer or index iteration argument whose
+    yielded value is itself plus a value defined outside the loop is a linear
+    function of the iteration count. Its uses in the body read
+    `init + i * delta` instead, where `i` is the iteration number
+    `(iv - lb) / step`, the loop's result reads `init + n * delta` for the
+    trip count `n`, and the argument is then passed through unchanged, which
+    canonicalization removes.
+
+    Loops written with pointer increments carry their offsets this way. An
+    offset computed from the induction variable can be folded into a DMA's
+    strides; one carried by the loop cannot.
+
+    Returns the loops.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def HoistLoopCarriedPackOp : Op<Transform_Dialect, "air.hoist_loop_carried_pack",
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Carry a packed value through an scf.for instead of packing it every iteration";
+  let description = [{
+    Each target is an `scf.for`. An iteration argument qualifies when its only
+    uses in the body are as the source of one `linalg.pack` and as the
+    destination of one `linalg.unpack` whose result is yielded back to it,
+    and the two use the same layout and the pack has no padding. That is the
+    shape packing a loop-carried accumulator leaves:
+
+    ```mlir
+    %r = scf.for ... iter_args(%acc = %init) {
+      %p = linalg.pack %acc ... into %empty
+      %x = <compute on %p>
+      %u = linalg.unpack %x ... into %acc
+      scf.yield %u
+    }
+    ```
+
+    The loop then carries the packed value instead. The pack moves before
+    the loop, applied to the initial value, and the unpack after it:
+
+    ```mlir
+    %p0 = linalg.pack %init ... into %empty
+    %r:2 = scf.for ... iter_args(%acc = %init, %pa = %p0) {
+      %x = <compute on %pa>
+      scf.yield %acc, %x
+    }
+    %u = linalg.unpack %r#1 ... into %r#0
+    ```
+
+    The pack's destination must be a `tensor.empty` or defined outside the
+    loop. Iteration arguments that do not qualify are left alone; a target
+    with none is a silenceable failure.
+
+    Returns the new loops and the hoisted packs.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$loops,
+                      TransformHandleTypeInterface:$packs);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
 def FoldPackIntoGenericOp : Op<Transform_Dialect, "air.fold_pack_into_generic",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
