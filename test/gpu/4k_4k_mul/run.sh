@@ -24,7 +24,9 @@ mkdir -p "$TMPDIR"
 #      and the gfx name is gfx<major><minor><step> (e.g. 90500 -> gfx950).
 if [ -z "${GFX_TARGET:-}" ]; then
   AMDGPU_ARCH_BIN=$(command -v amdgpu-arch || echo /opt/rocm/llvm/bin/amdgpu-arch)
-  GFX_TARGET=$("$AMDGPU_ARCH_BIN" 2>/dev/null | head -1 || true)
+  # amdgpu-arch reports a full target id (gfx942:sramecc+:xnack-), but the
+  # chipset options below take the bare gfx name and reject the features.
+  GFX_TARGET=$("$AMDGPU_ARCH_BIN" 2>/dev/null | head -1 | cut -d: -f1 || true)
   if [ -z "$GFX_TARGET" ]; then
     GFX_TARGET=$(awk '/^gfx_target_version [1-9]/{v=$2; printf "gfx%d%d%d", v/10000, (v%10000)/100, v%100; exit}' /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null || true)
   fi
