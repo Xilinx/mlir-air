@@ -888,6 +888,8 @@ def generate(
     import os as _os
 
     _dbg_tok = _os.environ.get("DECODE_VERBOSE") == "1"
+    if stop_on_eos and first in _eos_ids():
+        n_eff = 0  # the prefill already ended the turn
     t_decode0 = time.perf_counter()
     for p in range(P, P + n_eff):
         logits = dec.dispatch(tokens[p], p)
@@ -993,9 +995,7 @@ class Session:
         # leaves NO conversation state -- it only warms the resident kernels / BOs / dispatch path.
         t_w = time.perf_counter()
         self.prefiller.clear_context()
-        self.prefiller.prefill(
-            [128000]
-        )  # 1-token dummy, padded to seq_len -> warms the full path
+        self.prefiller.prefill([0])  # any in-vocab token; warms the full path
         self.prefiller.clear_context()
         print(
             f"[session] ready: prefill+decode resident (ATTN_MAXL={self.attn_maxl}, "
@@ -1064,6 +1064,8 @@ class Session:
         gen_ids = [first]
         if on_token:
             on_token(gen_ids)  # emit the prefill's first token immediately
+        if stop_on_eos and first in _eos_ids():
+            n_eff = 0  # the prefill already ended the turn
         t_decode0 = time.perf_counter()
         for p in range(P, P + n_eff):
             lg = self.dec.dispatch(tokens[p], p)
