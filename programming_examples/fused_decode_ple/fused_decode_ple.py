@@ -6150,6 +6150,11 @@ def build_module():
                                             idx(0),
                                         )
                                         for _w in for_(idx(0), _has_w, idx(1)):
+                                            # Ping-pong gives this sometimes-run
+                                            # get two BD slots it cannot alternate.
+                                            _w.owner.owner.attributes[
+                                                "air.disable_ping_pong"
+                                            ] = UnitAttr.get()
                                             a_w = AllocOp(wblk_l1, [], [])
                                             ChannelGet(
                                                 "wL2ToL1", a_w, indices=[gcx, gcy]
