@@ -340,7 +340,8 @@ void getDefiningOpsToOperands(Operation *op, SmallVector<Operation *> &def_ops);
 LogicalResult foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
-    SmallVector<Value> &strides, Value memref, bool skipZeroStride = false);
+    SmallVector<Value> &strides, Value memref, bool skipZeroStride = false,
+    int maxSize = -1);
 
 // Find the largest factor of 'num' which is not larger than 'max'.
 int findLargestFactor(int num, int max);

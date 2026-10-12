@@ -2061,14 +2061,39 @@ int air::findLargestAlignedFactor(int num, int max, int alignment) {
 }
 
 // Canonicalize wrap and stride lists by removing redundant dimensions.
+// AIE2 hardware constraints. TODO: import these info from target model.
+static const int AIE2_STRIDE_UPPER_BOUND = 1048576;
+
+// Whether `extent` steps of `stride` elements, as one dimension, come out of
+// the maxSize split in canonicalizeWrapAndStrideList with every stride within
+// AIE2_STRIDE_UPPER_BOUND. Mirrors that split for a strided (stride > 1)
+// dimension; anything it does not cover counts as not legal.
+static bool splitsWithinStrideLimit(int64_t extent, int64_t stride, int maxSize,
+                                    int64_t memrefVolume) {
+  auto reduce = [&](int64_t v) {
+    return memrefVolume != 1 ? v % memrefVolume : v;
+  };
+  if (stride > AIE2_STRIDE_UPPER_BOUND)
+    return false;
+  if (maxSize <= 0 || extent <= maxSize)
+    return true;
+  if (stride == 1 || extent > std::numeric_limits<int>::max())
+    return false;
+  int64_t a = air::findLargestFactor(extent, maxSize);
+  if (extent % a)
+    return false;
+  int64_t b = extent / a;
+  bool swap = reduce(stride * a) > AIE2_STRIDE_UPPER_BOUND;
+  int64_t inner = swap ? b : a, outer = swap ? a : b;
+  return outer <= maxSize && reduce(stride * inner) <= AIE2_STRIDE_UPPER_BOUND;
+}
+
 LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
                                                  SmallVector<Value> &offsets,
                                                  SmallVector<Value> &sizes,
                                                  SmallVector<Value> &strides,
                                                  int memref_volume, int maxSize,
                                                  int innerAlignment) {
-  // AIE2 hardware constraints. TODO: import these info from target model.
-  const int AIE2_STRIDE_UPPER_BOUND = 1048576;
   bool listsHaveChanged = false;
   OpBuilder::InsertionGuard guard(builder);
   // Match offsets size with sizes and strides
@@ -2094,6 +2119,25 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
     auto isNonConst = [](Value v) { return !getConstantIntValue(v); };
     if (llvm::any_of(sizes, isNonConst) || llvm::any_of(strides, isNonConst))
       return listsHaveChanged ? success() : failure();
+  }
+
+  // A dimension whose stride no descriptor can hold, and which continues the
+  // dimension inside it, is one walk with that dimension. Merge the two here
+  // when the maxSize split below then factors the walk with legal strides;
+  // otherwise leave both for the lowering to unroll.
+  for (int i = sizes.size() - 1; i >= 1; i--) {
+    auto outerSize = *getConstantIntValue(sizes[i - 1]);
+    auto outerStride = *getConstantIntValue(strides[i - 1]);
+    auto innerSize = *getConstantIntValue(sizes[i]);
+    auto innerStride = *getConstantIntValue(strides[i]);
+    if (outerStride > AIE2_STRIDE_UPPER_BOUND &&
+        outerStride == innerSize * innerStride &&
+        splitsWithinStrideLimit(outerSize * innerSize, innerStride, maxSize,
+                                memref_volume)) {
+      listsHaveChanged |= eraseWrapNStrideDim(builder, SmallVector<int>{i - 1},
+                                              offsets, sizes, strides)
+                              .succeeded();
+    }
   }
 
   // If maxSize is given, check whether any size value goes beyond maxSize.
@@ -2303,7 +2347,8 @@ static std::optional<int64_t> ivCoefficient(Value v, Value iv,
 LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
-    SmallVector<Value> &strides, Value memref, bool skipZeroStride) {
+    SmallVector<Value> &strides, Value memref, bool skipZeroStride,
+    int maxSize) {
   auto loc = for_op->getLoc();
 
   // Fold for loops into channel op's wrap and stride fields
@@ -2396,15 +2441,30 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     Value new_stride =
         arith::ConstantIndexOp::create(builder, loc, new_stride_value);
 
-    // Check for compliance with DMA BD hardware limitation (<= 1M). Note that
-    // the exception is when stepSize = previous highest wrap, because in that
-    // case the large stride shall simply get canonicalized away.
+    // Check for compliance with DMA BD hardware limitation (<= 1M). The
+    // exception is a loop that continues the outermost dimension, stepping by
+    // its whole extent: the two are one contiguous walk, which
+    // canonicalizeWrapAndStrideList re-splits, so the fold is admitted when
+    // that split comes out legal.
     if (llvm::divideCeilSigned(
             new_stride_value * getElementSizeInBytes(memref.getType()), 4) >
         0x100000) {
-      if (stepSize != *getConstantIntValue(wraps[0])) {
+      auto outerWrap =
+          wraps.empty() ? std::nullopt : getConstantIntValue(wraps[0]);
+      auto outerStride =
+          strides.empty() ? std::nullopt : getConstantIntValue(strides[0]);
+      int trips = 0;
+      if (auto afo = dyn_cast_if_present<affine::AffineForOp>(o))
+        trips = getStaticAffineForTripCountAsInt(afo).value_or(0);
+      else if (auto sfo = dyn_cast_if_present<scf::ForOp>(o))
+        trips = getStaticScfForTripCountAsInt(sfo).value_or(0);
+      bool continuesOuterDim =
+          outerWrap && outerStride && trips > 0 &&
+          new_stride_value == *outerWrap * *outerStride &&
+          splitsWithinStrideLimit(trips * *outerWrap, *outerStride, maxSize,
+                                  getTensorVolume(memref.getType()));
+      if (!continuesOuterDim && (!outerWrap || stepSize != *outerWrap))
         return failure();
-      }
     }
 
     // Insert new dimension into the wraps and strides list.
