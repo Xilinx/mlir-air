@@ -216,6 +216,33 @@ def main():
         )
         check(render_vla_benchmark([]) == "", "no VLA model renders no VLA table")
 
+        # smolvla_all is smolvla with every stage on the NPU: a VLA row of its
+        # own, linked to the example that implements it.
+        vla_all = vla + [
+            dict(
+                vla[0],
+                model="smolvla_all",
+                metrics=dict(vla[0]["metrics"], ttft_ms=389.4),
+            )
+        ]
+        all_page = render_llm_benchmark(
+            None, history_path=_history(tmp, vla_all, "vla_all.ndjson")
+        )
+        check(
+            sum(1 for l in all_page.splitlines() if l.startswith("| [smolvla_all]"))
+            == 1,
+            "a variant record is a VLA row of its own",
+        )
+        check(
+            "Decode (tok/s)" not in all_page and "389.4" in all_page,
+            "the variant row is in the VLA table with its chunk latency",
+        )
+        check(
+            "[smolvla_all](llms/smolvla/)" in all_page
+            and "llms/smolvla_all/" not in all_page,
+            "the variant row links to the directory that implements it",
+        )
+
         print("an all-swept page drops the empty scalar table")
         # The steady state once every LLM publishes a curve. A header with no
         # body renders as a broken table, not as nothing.

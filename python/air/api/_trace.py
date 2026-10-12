@@ -829,9 +829,9 @@ def prune_unused_operands(op):
     Leaving the cleanup to that canonicalization is too late. It runs at PASS
     014, and ``air-dependency`` runs at 008 -- so the dead operands have
     already been read as data dependencies by the time they are removed, and
-    the async edges they produced outlive them. In
-    ``flash_attention/dataflow_based`` that serialises three herds the
-    predecessor leaves independent; a loop body with three impure ops instead
+    the async edges they produced outlive them. In a segment whose herds share
+    L1 accumulators, that serialises herds the predecessor leaves
+    independent; a loop body with three impure ops instead
     of one fails ``hasNImpureOps(body, 1)`` in
     ``HoistAIRHerdsToSharedRegionPattern``, so the herds never hoist out of
     the loop, never merge, and their L1 accumulators are still herd operands
@@ -1104,8 +1104,8 @@ class SegmentContext:
         What the two have in common is the lifetime, which is the reason to
         allocate at segment scope at all. A buffer in a herd body dies when that
         body ends, so state that has to survive from one herd to the next cannot
-        live there. flash_attention/dataflow_based carries a running maximum, a
-        running sum and a running output across three separate herds this way.
+        live there. An online softmax split across herds carries its running
+        maximum, running sum and running output this way.
 
         Nothing is sliced, so nothing is subscripted by tile coordinate, and the
         buffer reaches a kernel whole. It is charged against the 64 KB core
@@ -2004,8 +2004,7 @@ def alloc(
     # loop body is, and placement treats it the same way: the dealloc lands in
     # the arm beside its alloc, so a tile that only one kind of core needs is
     # written where it is needed rather than hoisted above the branch and paid
-    # for by every core. flash_attention/dataflow_based does this twelve times,
-    # once per scratch tile in each arm of its cascade-stage select.
+    # for by every core.
     #
     # What used to make this unsafe was not the allocation but the diagnosis: a
     # buffer read *after* the arm closed walked off the top of the IR and

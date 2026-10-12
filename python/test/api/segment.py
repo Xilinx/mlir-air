@@ -145,8 +145,8 @@ def staged_f32():
 # divided -- every core gets its own copy of the whole shape, and the kernel
 # receives it entire.
 #
-# The shape below is flash_attention/dataflow_based's: a [lq, 1] running
-# maximum carried across two separate herds of a 2-D herd grid. shared() cannot
+# The shape below is an online softmax's: a [lq, 1] running maximum carried
+# across two separate herds of a 2-D herd grid. shared() cannot
 # express it at all -- both its dimensions would be cores, leaving nothing for
 # the tile -- which is the case checked in api/errors.py.
 # CHECK: %[[UP:.*]] = memref.alloc() : memref<64x1xbf16, 2 : i32>

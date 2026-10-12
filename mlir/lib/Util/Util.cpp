@@ -2280,12 +2280,22 @@ static std::optional<int64_t> ivCoefficient(Value v, Value iv,
     return std::nullopt;
   }
   if (auto apply = dyn_cast<affine::AffineApplyOp>(op)) {
-    // Linear only when the IV is a direct operand and no other operand
-    // depends on it.
-    for (auto [operand, coef] : llvm::zip(apply.getOperands(), c))
-      if (operand != iv && (!coef || *coef != 0))
+    // A linear map of operands that are each linear in the IV: sum, over the
+    // distinct operands, the map's coefficient times the operand's.
+    int64_t total = 0;
+    llvm::SmallPtrSet<Value, 4> seen;
+    for (auto [operand, coef] : llvm::zip(apply.getOperands(), c)) {
+      if (!coef)
         return std::nullopt;
-    return air::getAffineApplyCoefficient(apply, iv);
+      if (*coef == 0 || !seen.insert(operand).second)
+        continue;
+      auto mapCoef = air::getAffineApplyCoefficient(apply, operand);
+      int64_t term;
+      if (!mapCoef || llvm::MulOverflow(*mapCoef, *coef, term) ||
+          llvm::AddOverflow(total, term, total))
+        return std::nullopt;
+    }
+    return total;
   }
   return std::nullopt;
 }
