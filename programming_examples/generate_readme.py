@@ -544,7 +544,12 @@ _VERIFY_EMOJI = {"pass": "\U0001f7e2", "fail": "\U0001f534", "skip": "⚪"}
 # An explicit list rather than a heuristic. "decode_tokens_per_sec is null"
 # would also match an LLM whose profile run half-failed, and quietly moving a
 # broken LLM into the VLA table is a worse failure than maintaining one name.
-_VLA_MODELS = frozenset({"smolvla"})
+_VLA_MODELS = frozenset({"smolvla", "smolvla_all"})
+
+# Records that are a variant of an example rather than an example of their own,
+# mapped to the directory under llms/ that implements them. smolvla_all is
+# smolvla with every stage on the NPU (run_npu2_profile_all.lit).
+_MODEL_DIRS = {"smolvla_all": "smolvla"}
 
 # ── LLM model registry ────────────────────────────────────────────────
 # Maps the perf.json "model" key (which matches the directory name under
@@ -595,8 +600,9 @@ def _llm_model_cell(model, base_url):
     trailing (HF) link to the HuggingFace model page when known."""
     if not model:
         return ""
-    name_link = f"[{model}]({base_url}llms/{model}/)"
-    hf_id = LLM_HF_MODELS.get(model)
+    model_dir = _MODEL_DIRS.get(model, model)
+    name_link = f"[{model}]({base_url}llms/{model_dir}/)"
+    hf_id = LLM_HF_MODELS.get(model_dir)
     if hf_id:
         return f"{name_link} ([HF](https://huggingface.co/{hf_id}))"
     return name_link
