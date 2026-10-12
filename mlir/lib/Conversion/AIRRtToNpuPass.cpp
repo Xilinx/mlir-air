@@ -1858,11 +1858,6 @@ AIE::DeviceOp createMainDeviceWrapper(
   return mainDevice;
 }
 
-// AIE2 hardware constraints.
-const std::vector<int> AIE2_WRAP_UPPER_BOUNDS = {64, 1024, 1024, 1024};
-const int AIE2_STRIDE_UPPER_BOUND = 1048576;
-const int AIE2_DIM_COUNT = 4;
-
 // Largest divisor of `n` that is at most `limit` (0 if none, i.e. limit < 1).
 static int64_t largestDivisorUpTo(int64_t n, int64_t limit) {
   for (int64_t d = std::min(n, limit); d >= 1; d--)
@@ -1875,7 +1870,7 @@ static int64_t largestDivisorUpTo(int64_t n, int64_t limit) {
 // out of it.
 //
 // tileIllegalWrapDim splits an over-long dim into exactly two factors, then
-// hands everything past AIE2_DIM_COUNT to the affine.for unroller below, which
+// hands everything past what one BD holds to the affine.for unroller, which
 // costs one shim BD per iteration. Splitting a single dim can leave a partition
 // that is legal but needlessly fine-grained, because it never reconsiders the
 // dims NEXT to the one it split. gelu_and_mul at 4096x10240 (Gemma-3-4B's GeGLU
@@ -1892,14 +1887,16 @@ static int64_t largestDivisorUpTo(int64_t n, int64_t limit) {
 // of it -- turns the example into [2, 32, 16, 8, 640]: the same transfer in two
 // BDs instead of sixteen.
 //
-// Only ever applied when the list is already over AIE2_DIM_COUNT (so BDs were
+// Only ever applied when the list is already over the BD's dims (so BDs were
 // going to be unrolled regardless) and only when it strictly reduces the unroll
 // count without lengthening the list, so it cannot make a working design worse.
 static void minimizeUnrolledBdCount(SmallVector<OpFoldResult> &offsets,
                                     SmallVector<OpFoldResult> &wraps,
                                     SmallVector<OpFoldResult> &strides,
-                                    OpBuilder &builder) {
-  if (wraps.size() <= (size_t)AIE2_DIM_COUNT)
+                                    OpBuilder &builder,
+                                    const air::DmaBdLimits &limits) {
+  const size_t dimCount = limits.listDims();
+  if (wraps.size() <= dimCount)
     return;
   SmallVector<int64_t> w, s;
   for (auto [wrap, stride] : llvm::zip_equal(wraps, strides)) {
@@ -1937,10 +1934,9 @@ static void minimizeUnrolledBdCount(SmallVector<OpFoldResult> &offsets,
 
   // wraps[0] of the emitted BD must fit the position-0 bound; the dim built on
   // top of the innermost factor must keep its stride under the ceiling.
-  const int64_t maxOuter = AIE2_WRAP_UPPER_BOUNDS[0] - 1;
+  const int64_t maxOuter = limits.maxWrapAt(0);
   const int64_t maxInner =
-      std::min<int64_t>(AIE2_WRAP_UPPER_BOUNDS[1] - 1,
-                        (int64_t)AIE2_STRIDE_UPPER_BOUND / runStride);
+      std::min<int64_t>(limits.maxWrapAt(1), limits.maxStride / runStride);
   int64_t bestOuter = 0, bestInner = 0, bestVolume = 0;
   for (int64_t inner = std::min(runExtent, maxInner); inner >= 1; inner--) {
     if (inner * maxOuter <= bestVolume)
@@ -1976,12 +1972,12 @@ static void minimizeUnrolledBdCount(SmallVector<OpFoldResult> &offsets,
   }
 
   // Validate the descriptor the unroller will actually emit. It peels leading
-  // dims until AIE2_DIM_COUNT remain, so the positional wrap bounds and the
+  // dims until dimCount remain, so the positional wrap bounds and the
   // stride ceiling apply to the TAIL of the list -- the dim that ends up at BD
   // position 0 is not necessarily the outer factor chosen above (with an unroll
   // count of 1 the pair shifts left by one and the inner factor lands there).
-  auto bdStartOf = [](size_t n) -> unsigned {
-    return n > (size_t)AIE2_DIM_COUNT ? n - AIE2_DIM_COUNT : 0;
+  auto bdStartOf = [&](size_t n) -> unsigned {
+    return n > dimCount ? n - dimCount : 0;
   };
   auto bdCount = [&](ArrayRef<int64_t> ws) {
     int64_t bds = 1;
@@ -1992,8 +1988,7 @@ static void minimizeUnrolledBdCount(SmallVector<OpFoldResult> &offsets,
   auto isLegalBd = [&](ArrayRef<int64_t> ws, ArrayRef<int64_t> ss) {
     unsigned bdStart = bdStartOf(ws.size());
     for (unsigned j = bdStart; j < ws.size(); j++)
-      if (ws[j] >= AIE2_WRAP_UPPER_BOUNDS[j - bdStart] ||
-          ss[j] > AIE2_STRIDE_UPPER_BOUND)
+      if (ws[j] > limits.maxWrapAt(j - bdStart) || !limits.strideFits(ss[j]))
         return false;
     return true;
   };
@@ -2025,10 +2020,11 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   SmallVector<OpFoldResult> stride_list = dma.getMixedStrides();
   if (air::isContiguousRowMajorOrRepeated(wrap_list, stride_list))
     return false;
+  air::DmaBdLimits limits = air::getDmaBdLimits(dma, air::MemorySpace::L3);
   for (unsigned i = 0; i < wrap_list.size(); i++) {
     if (auto const_val = getConstantIntValue(wrap_list[i])) {
-      // Detected wrap that goes beyond the AIE2 hardware limit.
-      if (*const_val >= AIE2_WRAP_UPPER_BOUNDS[i])
+      // Detected wrap that goes beyond the hardware limit.
+      if (*const_val > limits.maxWrapAt(i))
         return true;
     }
   }
@@ -2072,24 +2068,25 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       llvm::dyn_cast<BaseMemRefType>(memcpy_op.getMemref().getType());
   int innerAlignment =
       memrefTy ? air::getDmaInnerElementAlignment(memrefTy, memcpy_op) : 1;
+  air::DmaBdLimits limits =
+      air::getDmaBdLimits(memcpy_op, air::MemorySpace::L3);
 
   for (int i = wraps.size() - 1; i >= 0; i--) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
     auto const_stride = *getConstantIntValue(strides[i]);
-    if (const_wrap >= AIE2_WRAP_UPPER_BOUNDS[i]) {
+    if (const_wrap > limits.maxWrapAt(i)) {
       // Found dimension with illegal wrap. Prefers smaller outer wrap as
       // long as stride fits. For stride==1, force the inner wrap to a
       // multiple of innerAlignment elements so its byte size stays aligned
       // to the shim address granularity (otherwise aie.dma_bd rejects it).
       int alignment = (const_stride == 1) ? innerAlignment : 1;
       int a_wrap = air::findLargestAlignedFactor(
-          const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1, alignment);
+          const_wrap, limits.maxWrapAt(i), alignment);
       if (a_wrap == 0) {
         return memcpy_op.emitOpError()
                << "cannot tile dim " << i << " of size " << const_wrap
                << " into shim-legal chunks: no factor in [" << alignment << ", "
-               << (AIE2_WRAP_UPPER_BOUNDS[i] - 1) << "] is a multiple of "
-               << alignment
+               << limits.maxWrapAt(i) << "] is a multiple of " << alignment
                << " elements. Reshape the transfer or pad the inner dimension.";
       }
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
@@ -2099,12 +2096,10 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       if (volume != 1)
         new_a_stride %=
             volume; // Avoids striding out of memory size, if memref is ranked
-      int inner_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
-                           ? (b_wrap)
-                           : (a_wrap);
-      int outer_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
-                           ? (a_wrap)
-                           : (b_wrap);
+      int inner_wrap =
+          (!limits.strideFits(new_a_stride) && i != 0) ? (b_wrap) : (a_wrap);
+      int outer_wrap =
+          (!limits.strideFits(new_a_stride) && i != 0) ? (a_wrap) : (b_wrap);
       wraps[i] = builder.getI64IntegerAttr(inner_wrap);
       wraps.insert(wraps.begin() + i, builder.getI64IntegerAttr(outer_wrap));
       auto new_const_stride = const_stride * inner_wrap;
@@ -2136,13 +2131,13 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
 
   // The split above factors one dim at a time, which can leave more BDs to
   // unroll below than the shim's descriptor limits actually require.
-  minimizeUnrolledBdCount(offsets, wraps, strides, builder);
+  minimizeUnrolledBdCount(offsets, wraps, strides, builder, limits);
 
   // Unroll highest dimensions of wrap and stride, if the new dimension count
-  // goes beyond 4.
+  // goes beyond what one BD holds.
   SmallVector<affine::AffineForOp> for_loop_nest;
   Value inner_affine_for_iv = nullptr;
-  while (wraps.size() > AIE2_DIM_COUNT) {
+  while (wraps.size() > (size_t)limits.listDims()) {
     affine::AffineForOp inner_affine_for = nullptr;
     auto const_offset = *getConstantIntValue(offsets[0]);
     auto const_lowest_offset = *getConstantIntValue(offsets.back());
@@ -2496,10 +2491,10 @@ static void coalesceShimDmaOrder(ModuleOp module) {
   }
 }
 
-// AIE2 shim BDs encode each dimension's stride in a 20-bit field, so a stride
-// above AIE2_STRIDE_UPPER_BOUND cannot be expressed at all. Unlike an illegal
-// wrap, an illegal stride cannot be tiled away: splitting the dim leaves the
-// stride unchanged.
+// Shim BDs encode each dimension's stride in a fixed-width field, so a stride
+// above the limit cannot be expressed at all. Unlike an illegal wrap, an
+// illegal stride cannot be tiled away: splitting the dim leaves the stride
+// unchanged.
 //
 // It CAN be turned into base offsets. A dim (wrap W, stride S) contributes the
 // address set {(off + k) * S : k in [0, W)}, so the transfer is equivalent to W
@@ -2512,26 +2507,28 @@ static void coalesceShimDmaOrder(ModuleOp module) {
 // a KV cache laid out region-major strides its per-group dim by
 // ATTN_MAXL*REGION_W, which crosses the 20-bit field once the context is long
 // enough, while the dim itself stays tiny (one entry per KV group). A large W
-// is left alone rather than silently exploding the runtime sequence.
-const int AIE2_STRIDE_UNROLL_LIMIT = 16;
+// is left alone rather than silently exploding the runtime sequence: W may not
+// exceed the shim tile's BD count.
 
 // Index of the outermost dim whose stride exceeds the hardware field, or
 // std::nullopt. Dims of wrap 1 are ignored: they contribute a single address
 // and the stride is dead, so the BD builder drops them.
 static std::optional<unsigned>
 findIllegalStrideDim(SmallVector<OpFoldResult> wraps,
-                     SmallVector<OpFoldResult> strides) {
+                     SmallVector<OpFoldResult> strides,
+                     const air::DmaBdLimits &limits) {
   for (unsigned i = 0; i < strides.size(); i++) {
     auto s = getConstantIntValue(strides[i]);
     auto w = getConstantIntValue(wraps[i]);
-    if (s && w && *s > AIE2_STRIDE_UPPER_BOUND && *w > 1)
+    if (s && w && !limits.strideFits(*s) && *w > 1)
       return i;
   }
   return std::nullopt;
 }
 
 bool violatesAIE2StrideLimit(airrt::DmaMemcpyNdOp dma) {
-  return findIllegalStrideDim(dma.getMixedLengths(), dma.getMixedStrides())
+  return findIllegalStrideDim(dma.getMixedLengths(), dma.getMixedStrides(),
+                              air::getDmaBdLimits(dma, air::MemorySpace::L3))
       .has_value();
 }
 
@@ -2596,7 +2593,9 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
   SmallVector<OpFoldResult> strides = memcpy_op.getMixedStrides();
 
   folded = false;
-  auto dim = findIllegalStrideDim(wraps, strides);
+  air::DmaBdLimits limits =
+      air::getDmaBdLimits(memcpy_op, air::MemorySpace::L3);
+  auto dim = findIllegalStrideDim(wraps, strides, limits);
   if (!dim)
     return success();
   unsigned i = *dim;
@@ -2615,11 +2614,11 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
     return success();
   // Only a middle dim of a BD whose 4th dim is unused is dropped once its wrap
   // becomes 1; anywhere else the over-limit stride would still be encoded.
-  if (strides.size() != AIE2_DIM_COUNT || i == 0 || i + 1 == strides.size() ||
-      *outerStride != 0)
+  if (strides.size() != (size_t)limits.listDims() || i == 0 ||
+      i + 1 == strides.size() || *outerStride != 0)
     return success();
   // Folding costs one descriptor per entry of the folded dim.
-  if (*constWrap > AIE2_STRIDE_UNROLL_LIMIT)
+  if (*constWrap > limits.numBDs)
     return success();
   // The pieces are issued back to back, so an enclosing dim that still walks is
   // traversed inside each piece instead of around them: (d,k) order becomes
@@ -2644,10 +2643,10 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
 // pieces are issued in that dim's order.
 static std::optional<unsigned>
 findWalkOutsideRepeat(SmallVector<OpFoldResult> wraps,
-                      SmallVector<OpFoldResult> strides) {
-  if (wraps.size() != AIE2_DIM_COUNT)
+                      SmallVector<OpFoldResult> strides, unsigned dimCount) {
+  if (wraps.size() != dimCount)
     return std::nullopt;
-  for (unsigned d = 1; d + 1 < AIE2_DIM_COUNT; d++) {
+  for (unsigned d = 1; d + 1 < dimCount; d++) {
     auto w = getConstantIntValue(wraps[d]);
     auto st = getConstantIntValue(strides[d]);
     if (!w || !st || *w <= 1 || *st != 0)
@@ -2665,18 +2664,20 @@ findWalkOutsideRepeat(SmallVector<OpFoldResult> wraps,
 LogicalResult enforceRepeatOutermost(ModuleOp module) {
   // Each split removes one walking dim outside a repeat; iterate to a
   // fixpoint, bounded by the dim count.
-  for (unsigned round = 0; round < AIE2_DIM_COUNT; round++) {
+  air::DmaBdLimits limits = air::getDmaBdLimits(module, air::MemorySpace::L3);
+  unsigned dimCount = limits.listDims();
+  for (unsigned round = 0; round < dimCount; round++) {
     SmallVector<std::pair<airrt::DmaMemcpyNdOp, unsigned>> targets;
     module.walk([&](airrt::DmaMemcpyNdOp dma) {
       if (auto e = findWalkOutsideRepeat(dma.getMixedLengths(),
-                                         dma.getMixedStrides()))
+                                         dma.getMixedStrides(), dimCount))
         targets.push_back({dma, *e});
     });
     if (targets.empty())
       return success();
     for (auto [op, e] : targets) {
       auto wrap = getConstantIntValue(op.getMixedLengths()[e]);
-      if (!wrap || *wrap > AIE2_STRIDE_UNROLL_LIMIT)
+      if (!wrap || *wrap > limits.numBDs)
         return op->emitOpError("a repeated dim inside a walking dim of ")
                << (wrap ? *wrap : -1)
                << " entries cannot be expressed as shim tasks";
@@ -2689,7 +2690,9 @@ LogicalResult enforceRepeatOutermost(ModuleOp module) {
 LogicalResult enforceAIE2StrideLimit(ModuleOp module) {
   // One pass peels one dim; a transfer with several illegal strides needs
   // several. Iterate to a fixpoint, bounded by the dim count.
-  for (unsigned round = 0; round < AIE2_DIM_COUNT; round++) {
+  unsigned dimCount =
+      air::getDmaBdLimits(module, air::MemorySpace::L3).listDims();
+  for (unsigned round = 0; round < dimCount; round++) {
     SmallVector<airrt::DmaMemcpyNdOp> targets;
     module.walk([&](func::FuncOp f) {
       f.walk([&](airrt::DmaMemcpyNdOp dma) {

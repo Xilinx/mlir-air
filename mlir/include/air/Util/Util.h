@@ -19,11 +19,61 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace mlir;
 
 namespace xilinx {
+namespace AIE {
+class AIETargetModel;
+} // namespace AIE
+
 namespace air {
+
+// ===----------------------------------------------------------------------===//
+// DMA buffer descriptor limits
+// ===----------------------------------------------------------------------===//
+
+// Limits of one DMA buffer descriptor (BD). Strides and lengths count
+// address-generation granules of `granuleBits` bits. A negative limit means
+// there is none.
+struct DmaBdLimits {
+  // Addressing dimensions, not counting the iteration dimension.
+  int dims = -1;
+  // Largest wrap of an addressing dimension.
+  int64_t maxWrap = -1;
+  // Largest wrap of the iteration dimension; 0 when the BD has none.
+  int64_t maxIterWrap = 0;
+  int64_t maxStride = -1;
+  int64_t maxLen = -1;
+  // BDs on the tile.
+  int numBDs = -1;
+  unsigned granuleBits = 8;
+
+  // Entries of a wrap-and-stride list that one BD holds: the addressing
+  // dimensions, plus the iteration dimension outermost.
+  int listDims() const {
+    return dims < 0 ? -1 : dims + (maxIterWrap > 0 ? 1 : 0);
+  }
+  // Largest wrap at position `i` of such a list.
+  int64_t maxWrapAt(unsigned i) const {
+    return i == 0 && maxIterWrap > 0 ? maxIterWrap : maxWrap;
+  }
+  bool strideFits(int64_t stride) const {
+    return maxStride < 0 || stride <= maxStride;
+  }
+  // `bytes` in granules, rounded up.
+  int64_t bytesToGranules(int64_t bytes) const {
+    return llvm::divideCeilSigned(bytes * 8, (int64_t)granuleBits);
+  }
+};
+
+// Limits of a BD on the tile that serves `space`, read from `tm`.
+DmaBdLimits getDmaBdLimits(const AIE::AIETargetModel &tm, MemorySpace space);
+
+// Same, for the device that is or contains `op`, else the first device in the
+// module that is or contains `op`, else the npu1 device.
+DmaBdLimits getDmaBdLimits(Operation *op, MemorySpace space);
 
 // ===----------------------------------------------------------------------===//
 // Memory space helpers
@@ -340,8 +390,8 @@ void getDefiningOpsToOperands(Operation *op, SmallVector<Operation *> &def_ops);
 LogicalResult foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
-    SmallVector<Value> &strides, Value memref, bool skipZeroStride = false,
-    int maxSize = -1);
+    SmallVector<Value> &strides, Value memref, const DmaBdLimits &limits,
+    bool skipZeroStride = false);
 
 // Find the largest factor of 'num' which is not larger than 'max'.
 int findLargestFactor(int num, int max);
@@ -362,17 +412,16 @@ int findLargestAlignedFactor(int num, int max, int alignment);
 int getDmaInnerElementAlignment(mlir::BaseMemRefType memrefTy,
                                 mlir::Operation *op);
 
-// Canonicalize wrap and stride lists, by removing redundant dimensions.
+// Canonicalize wrap and stride lists, by removing redundant dimensions, and
+// split wraps above `limits.maxWrap`.
 // 'innerAlignment' constrains the contiguous innermost dim (stride==1) when
 // it must be split: the new inner wrap is forced to be a multiple of
 // 'innerAlignment' elements (e.g. 2 for bf16 on a 4-byte shim BD). Pass 1
 // (the default) when no extra constraint applies.
-LogicalResult canonicalizeWrapAndStrideList(OpBuilder &builder,
-                                            SmallVector<Value> &offsets,
-                                            SmallVector<Value> &sizes,
-                                            SmallVector<Value> &strides,
-                                            int memref_volume, int maxSize = -1,
-                                            int innerAlignment = 1);
+LogicalResult canonicalizeWrapAndStrideList(
+    OpBuilder &builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
+    SmallVector<Value> &strides, int memref_volume, const DmaBdLimits &limits,
+    int innerAlignment = 1);
 
 // If wrap-and-stride lists are empty, populate them with default data access
 // layout (contiguous, row-major).
