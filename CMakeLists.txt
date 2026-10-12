@@ -149,6 +149,9 @@ add_flag_if_supported("-Werror=implicit-function-declaration" WERROR_IMPLICIT_FU
 # harmless on Unix systems, but it'll be a ticking bomb for MSVC/Windows systems
 # where it creeps into the ABI.
 add_flag_if_supported("-Werror=mismatched-tags" WERROR_MISMATCHED_TAGS)
+# Hold the code to CMAKE_CXX_STANDARD: clang accepts some later-standard
+# features with only a warning, and older compilers reject them.
+add_flag_if_supported("-Werror=c++20-extensions" WERROR_CXX20_EXTENSIONS)
 # Silence a false positive GCC -Wunused-but-set-parameter warning in constexpr
 # cases, by marking SelectedCase as used. See
 # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=85827 for details. The issue is

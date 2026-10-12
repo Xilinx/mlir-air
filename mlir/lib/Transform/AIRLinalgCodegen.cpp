@@ -6429,7 +6429,8 @@ static bool foldIterArgsIntoInductionVar(RewriterBase &rewriter,
     rewriter.replaceAllUsesWith(forOp.getResult(i), after);
 
     // Pass the argument through; canonicalization drops it.
-    rewriter.modifyOpInPlace(yield, [&] { yield->setOperand(i, arg); });
+    rewriter.modifyOpInPlace(
+        yield, [&, i = i, arg = arg] { yield->setOperand(i, arg); });
     changed = true;
   }
   return changed;
