@@ -2023,7 +2023,7 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   air::DmaBdLimits limits = air::getDmaBdLimits(dma, air::MemorySpace::L3);
   for (unsigned i = 0; i < wrap_list.size(); i++) {
     if (auto const_val = getConstantIntValue(wrap_list[i])) {
-      // Detected wrap that goes beyond the hardware limit.
+      // Wrap over the limit for its position.
       if (*const_val > limits.maxWrapAt(i))
         return true;
     }
