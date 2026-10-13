@@ -308,10 +308,12 @@ public:
                          AIE::LockOp, AIE::LockOp>>
       lock_allocation_list;
   DenseMap<Value, std::pair<int, int>> passiveSideBufferUseCounters;
-  // Memtile buffers whose one transfer on one side holds the lock pairs of
-  // every transfer on the other side; their locks count one transfer at a
-  // time. Filled by generateDmaBdProgram.
-  DenseSet<Operation *> heldLockBuffers;
+  // Memtile buffers moved by one transfer on one side and several on the
+  // other, filled by generateDmaBdProgram. With a lock pair per transfer on
+  // the other side, the one transfer holds all their lock pairs, and each lock
+  // counts one transfer at a time (heldLockBuffers). Otherwise the buffer keeps
+  // one counted lock pair (countedLockBuffers).
+  DenseSet<Operation *> heldLockBuffers, countedLockBuffers;
   // v2: one chain-lock set per shared L2 buffer (keyed on aie.buffer op).
   DenseMap<Operation *, ChainLockSet> chain_lock_sets;
 };

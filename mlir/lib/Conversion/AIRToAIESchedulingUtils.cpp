@@ -1050,7 +1050,8 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
       for (size_t i = 0; i < lock_allocation_list.size(); i++) {
         if (tileIsMemTile) {
           if (!lockRaceConditionFix ||
-              (bufferOp && bufferOp->hasAttr(air::attrs::CountedLock))) {
+              (bufferOp && (bufferOp->hasAttr(air::attrs::CountedLock) ||
+                            countedLockBuffers.contains(bufferOp)))) {
             // If memtile, and multiple bds reference the same buffer op, but
             // different DMA channels, then we assume the scenario of having two
             // bds, one S2MM and the other MM2S. This scenario is almost always

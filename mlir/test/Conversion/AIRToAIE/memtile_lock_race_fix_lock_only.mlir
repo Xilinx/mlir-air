@@ -618,3 +618,70 @@ func.func @two_fanouts_one_reader_channel() {
   }
   return
 }
+
+// -----
+
+// Two writes on one channel and one read. The writes share the channel's lock
+// pair, so the read waits for both on that pair, with no lock-only BDs.
+
+// CHECK-LABEL: aie.device({{.*}}) @seg_0_0
+// CHECK-NOT: len = 0
+// CHECK: aie.dma_start(MM2S, 0
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%[[C:.*]], AcquireGreaterEqual, %c2_i32)
+// CHECK-NEXT: aie.dma_bd(%{{.*}} : memref<8xi32, 1> offset = 0 len = 8)
+// CHECK-NEXT: aie.use_lock(%[[P:.*]], Release, %c2_i32)
+// CHECK: aie.dma_start(S2MM, 0
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%[[P]], AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%{{.*}} : memref<8xi32, 1> offset = 0 len = 4)
+// CHECK-NEXT: aie.use_lock(%[[C]], Release, %c1_i32)
+// CHECK-NEXT: aie.next_bd
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%[[P]], AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%{{.*}} : memref<8xi32, 1> offset = 4 len = 4)
+// CHECK-NEXT: aie.use_lock(%[[C]], Release, %c1_i32)
+// CHECK: func.func @writes_on_one_dynamic_endpoint
+
+air.channel @w [2]
+air.channel @r [1, 1]
+func.func @writes_on_one_dynamic_endpoint(%arg0: memref<16xi32>) {
+  %c1 = arith.constant 1 : index
+  air.launch (%a, %b) in (%c=%c1, %d=%c1) args(%in=%arg0) : memref<16xi32> {
+    %c0_l = arith.constant 0 : index
+    %c1_l = arith.constant 1 : index
+    %c4_l = arith.constant 4 : index
+    %c8_l = arith.constant 8 : index
+    %c12_l = arith.constant 12 : index
+    %c2_l = arith.constant 2 : index
+    air.channel.put @w[%c0_l] (%in[%c0_l] [%c4_l] [%c1_l]) : (memref<16xi32>)
+    air.channel.put @w[%c0_l] (%in[%c4_l] [%c4_l] [%c1_l]) : (memref<16xi32>)
+    air.channel.put @w[%c1_l] (%in[%c8_l] [%c4_l] [%c1_l]) : (memref<16xi32>)
+    air.channel.put @w[%c1_l] (%in[%c12_l] [%c4_l] [%c1_l]) : (memref<16xi32>)
+    air.segment @seg unroll(%s) in (%ss=%c2_l) {
+      %c1_0 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %c4 = arith.constant 4 : index
+      %t, %l2 = air.execute -> (memref<8xi32, 1>) {
+        %alloc = memref.alloc() : memref<8xi32, 1>
+        air.execute_terminator %alloc : memref<8xi32, 1>
+      }
+      %g0 = air.channel.get async [%t] @w[%s] (%l2[%c0] [%c4] [%c1_0]) : (memref<8xi32, 1>)
+      %g1 = air.channel.get async [%g0] @w[%s] (%l2[%c4] [%c4] [%c1_0]) : (memref<8xi32, 1>)
+      %p = air.channel.put async [%g1] @r[] (%l2[] [] []) : (memref<8xi32, 1>)
+      %d_ = air.execute [%p] {
+        memref.dealloc %l2 : memref<8xi32, 1>
+      }
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0)
+            attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+        %tk, %l1 = air.execute -> (memref<8xi32, 2>) {
+          %aa = memref.alloc() : memref<8xi32, 2>
+          air.execute_terminator %aa : memref<8xi32, 2>
+        }
+        air.channel.get @r[] (%l1[] [] []) : (memref<8xi32, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xi32, 2>}
+      }
+    }
+  }
+  return
+}

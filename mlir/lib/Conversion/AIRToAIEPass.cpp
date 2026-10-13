@@ -4922,22 +4922,28 @@ public:
           manySide.append(gets.begin(), gets.end());
         else
           manySide.append(puts.begin(), puts.end());
-        llvm::StringMap<unsigned> transfersPerChannel;
-        for (air::ChannelInterface op : manySide) {
-          std::string key = op.getChanName().str();
-          llvm::raw_string_ostream os(key);
-          for (Value index : op.getIndices()) {
-            if (auto c = getConstantIntValue(index))
-              os << "," << *c;
-            else
-              os << ",?" << op.getOperation();
-          }
-          transfersPerChannel[key]++;
-        }
-        bool channelEach =
-            transfersPerChannel.size() > 1 &&
-            llvm::all_of(transfersPerChannel,
-                         [](const auto &entry) { return entry.second == 1; });
+        // Two transfers are on different endpoints only if that is provable:
+        // different channels, or a constant index that differs. Indices not
+        // known to differ may name the same endpoint.
+        auto differ = [](const air::ChannelEndpointKey &a,
+                         const air::ChannelEndpointKey &b) {
+          if (a.name != b.name)
+            return true;
+          if (a.constIndices.size() != b.constIndices.size())
+            return false;
+          for (auto it : llvm::zip(a.constIndices, b.constIndices))
+            if (std::get<0>(it) && std::get<1>(it) &&
+                *std::get<0>(it) != *std::get<1>(it))
+              return true;
+          return false;
+        };
+        SmallVector<air::ChannelEndpointKey> endpoints;
+        for (air::ChannelInterface op : manySide)
+          endpoints.push_back(air::getChannelEndpointKey(op));
+        bool channelEach = endpoints.size() > 1;
+        for (unsigned i = 0; i < endpoints.size() && channelEach; i++)
+          for (unsigned j = i + 1; j < endpoints.size() && channelEach; j++)
+            channelEach = differ(endpoints[i], endpoints[j]);
         if (!channelEach) {
           if (def)
             def->setAttr(air::attrs::CountedLock, builder.getUnitAttr());
@@ -6851,26 +6857,36 @@ public:
                        bool lockRaceConditionFixV2 = false) {
 
     // Under use-lock-race-condition-fix, a memtile buffer moved by one transfer
-    // on one side and by several on the other: the one transfer holds the lock
-    // pairs of all the others, so a slice cannot be refilled before it is read
-    // out, nor read before the buffer is filled. Maps each such buffer to the
-    // direction of its one transfer.
+    // on one side and by several on the other, each with a lock pair of its
+    // own: the one transfer holds the lock pairs of all the others, so a slice
+    // cannot be refilled before it is read out, nor read before the buffer is
+    // filled. Maps each such buffer to the direction of its one transfer.
+    // Transfers on the same air.channel and DMA channel share a lock pair; if
+    // two of the several do, the buffer keeps one counted lock pair.
     llvm::DenseMap<Operation *, AIE::DMAChannelDir> heldLockSide;
     if constexpr (std::is_same_v<dmaAllocatorTy, air::MemTileDMAAllocator>) {
       if (lockRaceConditionFix) {
-        // Per buffer: transfers reading it (MM2S), transfers writing it (S2MM).
-        llvm::MapVector<Operation *, std::pair<unsigned, unsigned>> transfers;
+        // Per buffer: the (air.channel, DMA channel) of each transfer reading
+        // it (MM2S) and of each transfer writing it (S2MM).
+        using LockKey = std::pair<Operation *, int>;
+        llvm::MapVector<Operation *,
+                        std::pair<SmallVector<LockKey>, SmallVector<LockKey>>>
+            transfers;
         for (auto &entry : dma_memcpys) {
           for (Operation *op : entry.second) {
             auto memcpyOp = cast<air::MemcpyInterface>(op);
             auto buf = dmaAlloc.getBuffer(BufferId, nullptr, memcpyOp);
             if (failed(buf))
               continue;
-            auto &count = transfers[buf.value().getOperation()];
+            Operation *chanDecl = op;
+            if (auto chanIf = dyn_cast<air::ChannelInterface>(op))
+              chanDecl = air::getChannelDeclarationThroughSymbol(chanIf);
+            LockKey key(chanDecl, entry.first.second);
+            auto &keys = transfers[buf.value().getOperation()];
             if (entry.first.first == AIE::DMAChannelDir::MM2S)
-              count.first++;
+              keys.first.push_back(key);
             else
-              count.second++;
+              keys.second.push_back(key);
           }
         }
         for (auto &entry : transfers) {
@@ -6878,11 +6894,20 @@ public:
           if (buf->hasAttr(air::attrs::CountedLock) ||
               air::usesChainLock(buf, lockRaceConditionFixV2))
             continue;
-          unsigned reads = entry.second.first, writes = entry.second.second;
-          if (reads == 1 && writes > 1)
+          auto ownPairs = [](const SmallVector<LockKey> &keys) {
+            return keys.size() > 1 &&
+                   llvm::DenseSet<LockKey>(keys.begin(), keys.end()).size() ==
+                       keys.size();
+          };
+          const auto &reads = entry.second.first;
+          const auto &writes = entry.second.second;
+          if (reads.size() == 1 && ownPairs(writes))
             heldLockSide[entry.first] = AIE::DMAChannelDir::MM2S;
-          else if (writes == 1 && reads > 1)
+          else if (writes.size() == 1 && ownPairs(reads))
             heldLockSide[entry.first] = AIE::DMAChannelDir::S2MM;
+          else if ((reads.size() == 1 && writes.size() > 1) ||
+                   (writes.size() == 1 && reads.size() > 1))
+            dmaAlloc.countedLockBuffers.insert(entry.first);
         }
         for (auto &entry : heldLockSide)
           dmaAlloc.heldLockBuffers.insert(entry.first);
