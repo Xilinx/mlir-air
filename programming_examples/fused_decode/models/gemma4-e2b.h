@@ -75,6 +75,8 @@ constexpr int BF16_PROJ_K_BLOCK = 256;
 #define A_FUNC A_GELU
 // qk-norm: RMSNorm(DH) on Q,K per head before RoPE (rope_w carries q/k norm w).
 #define HAS_QK_NORM
+// value_norm (RMSNorm, no weight) on V before it is written to the KV cache.
+#define HAS_V_NORM
 // Gemma4 keeps Gemma3's 4-norm sandwich and adds a FIFTH norm on the per-layer
 // embedding branch (post_layernorm), applied to the PLE projection before its
 // residual add.

@@ -62,6 +62,27 @@ void qk_norm(const bf16 *restrict x, const bf16 *restrict w) {
 }
 #endif
 
+#ifdef HAS_V_NORM
+// value_norm: RMSNorm without a weight, in place on one V head. Only the first
+// dh_real lanes carry data; the rest of the DH slot is zero padding.
+void v_norm(bf16 *restrict x, int dh_real) {
+  constexpr int vector_size = 16;
+  aie::accum<accfloat, vector_size> sum_squares = aie::zeros<accfloat>();
+  AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(16) for (int i = 0; i < DH;
+                                                     i += vector_size) {
+    sum_squares = aie::mac_square(sum_squares, aie::load_v<vector_size>(x + i));
+  }
+  float sum = aie::reduce_add(sum_squares.template to_vector<float>());
+  float divrms = aie::invsqrt(sum / (float)dh_real + 1e-6f);
+  AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(16) for (int i = 0; i < DH;
+                                                     i += vector_size) {
+    aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(x + i);
+    aie::store_v(x + i,
+                 aie::mul(x_vec, (bf16)divrms).template to_vector<bf16>());
+  }
+}
+#endif
+
 // Rotates the leading ROPE_DIM of the head (halves ROPE_DIM/2 apart) and copies
 // the remaining DH-ROPE_DIM through untouched. ROPE_DIM == DH (every model but
 // Phi-4) leaves the tail loop empty, so those builds are unchanged.
@@ -142,7 +163,7 @@ void add_q_k_v_bias(const bf16 *q_k_v_bias_in, bf16 *qkv) {
 ///@param w: weight
 ///@note: C = A cos - B sin, D = A sin + B cos
 void pseduo_rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
-                 bf16 *restrict qkv, bf16 *restrict rope_w) {
+                 bf16 *restrict qkv, bf16 *restrict rope_w, int v_dh = DH) {
   bf16 *it_q = q;
   bf16 *it_k = k;
   bf16 *it_v = v;
@@ -187,6 +208,10 @@ void pseduo_rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
     it_qkv += DH;
   }
 
+#ifdef HAS_V_NORM
+  for (int h = 0; h < DV / DH; h++)
+    v_norm(it_qkv + h * DH, v_dh);
+#endif
   // move v from qkv to v, N
   for (int i = 0; i < DV / 32; i++) {
     aie::vector<bf16, 32> v_vec = aie::load_v<32>(it_qkv);
@@ -282,7 +307,7 @@ void rope_compute_swa(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
   aie_round_nearest_even();
   if (_arm & 4)
     spread_swa_heads(qkv);
-  pseduo_rope(q, k, v, qkv, rope_w);
+  pseduo_rope(q, k, v, qkv, rope_w, (_arm & 4) ? SWA_DH : DH);
 }
 #endif
 
