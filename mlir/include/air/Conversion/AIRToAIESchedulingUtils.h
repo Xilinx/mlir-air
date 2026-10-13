@@ -302,20 +302,16 @@ protected:
   AIE::DeviceOp device;
   air::MemorySpace dmaMemorySpace;
 
-  FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
-  allocateLockForDMA(air::MemcpyInterface &memcpyOp, AIE::TileLike tile,
-                     Operation *bufferOp, bool lockRaceConditionFix,
-                     bool lockRaceConditionFixV2);
-
 public:
   std::vector<allocation_info_t> mm2s_allocs, s2mm_allocs;
   std::vector<std::tuple<Operation *, air::ChannelOp, AIE::DMAChannel,
                          AIE::LockOp, AIE::LockOp>>
       lock_allocation_list;
   DenseMap<Value, std::pair<int, int>> passiveSideBufferUseCounters;
-  // Locks taken by each acquire-only BD, keyed on (aie.buffer op, slot).
-  DenseMap<std::pair<Operation *, int64_t>, std::pair<AIE::LockOp, AIE::LockOp>>
-      lockOnlyPairs;
+  // Memtile buffers whose one transfer on one side holds the lock pairs of
+  // every transfer on the other side; their locks count one transfer at a
+  // time. Filled by generateDmaBdProgram.
+  DenseSet<Operation *> heldLockBuffers;
   // v2: one chain-lock set per shared L2 buffer (keyed on aie.buffer op).
   DenseMap<Operation *, ChainLockSet> chain_lock_sets;
 };

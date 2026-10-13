@@ -410,16 +410,23 @@ func.func @fanouts_share_a_channel() {
 // -----
 
 // The two reads sit in exclusive branches on the segment index, so each
-// unrolled segment keeps one of them. Counted before that, they looked like a
-// transfer per channel; per-transfer locks would leave the second pair with no
-// reader, and the writer would wait on it forever. The buffer keeps the
-// counted lock instead.
+// unrolled segment keeps one of them. The lock-only BDs are added once the BD
+// program is built, after unrolling, so each segment gets a single lock pair
+// that its one write and one read share.
 
 // CHECK-LABEL: aie.device({{.*}}) @seg_0_0
-// CHECK: aie.buffer(%{{.*}}) {air.counted_lock, sym_name = "{{buf[0-9]+}}"} : memref<8xi32, 1>
 // CHECK-NOT: len = 0
+// CHECK: aie.dma_start(MM2S, 0
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%[[C:.*]], AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%{{.*}} : memref<8xi32, 1> offset = 0 len = 8)
+// CHECK-NEXT: aie.use_lock(%[[P:.*]], Release, %c1_i32)
+// CHECK: aie.dma_start(S2MM, 0
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%[[P]], AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%{{.*}} : memref<8xi32, 1> offset = 0 len = 8)
+// CHECK-NEXT: aie.use_lock(%[[C]], Release, %c1_i32)
 // CHECK-LABEL: aie.device({{.*}}) @seg_1_0
-// CHECK: aie.buffer(%{{.*}}) {air.counted_lock, sym_name = "{{buf[0-9]+}}"} : memref<8xi32, 1>
 // CHECK-NOT: len = 0
 // CHECK: func.func @reads_in_exclusive_branches
 
@@ -472,6 +479,106 @@ func.func @reads_in_exclusive_branches(%arg0: memref<16xi32>) {
         }
         air.channel.get @r1[] (%l1[] [] []) : (memref<8xi32, 2>)
         %dl = air.execute {memref.dealloc %l1 : memref<8xi32, 2>}
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// Two writes, and four reads in exclusive branches on the segment index. The
+// side with fewer transfers has two, so its lock-only BDs are dummy ops added
+// before unrolling; after it, each segment keeps two of the reads and one
+// dummy's lock pair has no reader. The buffer keeps the counted lock.
+
+// CHECK-LABEL: aie.device({{.*}}) @seg_0_0
+// CHECK: aie.buffer(%{{.*}}) {air.counted_lock, sym_name = "{{buf[0-9]+}}"} : memref<8xi32, 1>
+// CHECK-NOT: len = 0
+// CHECK-LABEL: aie.device({{.*}}) @seg_1_0
+// CHECK: aie.buffer(%{{.*}}) {air.counted_lock, sym_name = "{{buf[0-9]+}}"} : memref<8xi32, 1>
+// CHECK-NOT: len = 0
+// CHECK: func.func @several_writes_reads_in_exclusive_branches
+
+air.channel @wa [2]
+air.channel @wb [2]
+air.channel @r0 [1, 1]
+air.channel @r1 [1, 1]
+air.channel @r2 [1, 1]
+air.channel @r3 [1, 1]
+func.func @several_writes_reads_in_exclusive_branches(%arg0: memref<16xi32>) {
+  %c1 = arith.constant 1 : index
+  air.launch (%a, %b) in (%c=%c1, %d=%c1) args(%in=%arg0) : memref<16xi32> {
+    %c2_l = arith.constant 2 : index
+    %c0_l = arith.constant 0 : index
+    %c1_l = arith.constant 1 : index
+    %c4_l = arith.constant 4 : index
+    %c8_l = arith.constant 8 : index
+    %c12_l = arith.constant 12 : index
+    air.channel.put @wa[%c0_l] (%in[%c0_l] [%c4_l] [%c1_l]) : (memref<16xi32>)
+    air.channel.put @wb[%c0_l] (%in[%c4_l] [%c4_l] [%c1_l]) : (memref<16xi32>)
+    air.channel.put @wa[%c1_l] (%in[%c8_l] [%c4_l] [%c1_l]) : (memref<16xi32>)
+    air.channel.put @wb[%c1_l] (%in[%c12_l] [%c4_l] [%c1_l]) : (memref<16xi32>)
+    air.segment @seg unroll(%s) in (%ss=%c2_l) {
+      %c1_0 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %c4 = arith.constant 4 : index
+      %t, %l2 = air.execute -> (memref<8xi32, 1>) {
+        %alloc = memref.alloc() : memref<8xi32, 1>
+        air.execute_terminator %alloc : memref<8xi32, 1>
+      }
+      %g0 = air.channel.get async [%t] @wa[%s] (%l2[%c0] [%c4] [%c1_0]) : (memref<8xi32, 1>)
+      %g1 = air.channel.get async [%g0] @wb[%s] (%l2[%c4] [%c4] [%c1_0]) : (memref<8xi32, 1>)
+      %first = arith.cmpi eq, %s, %c0 : index
+      %p = scf.if %first -> (!air.async.token) {
+        %xr0 = air.channel.put async [%g1] @r0[] (%l2[%c0] [%c4] [%c1_0]) : (memref<8xi32, 1>)
+        %xr1 = air.channel.put async [%g1] @r1[] (%l2[%c4] [%c4] [%c1_0]) : (memref<8xi32, 1>)
+        %w = air.wait_all async [%xr0, %xr1]
+        scf.yield %w : !air.async.token
+      } else {
+        %xr2 = air.channel.put async [%g1] @r2[] (%l2[%c0] [%c4] [%c1_0]) : (memref<8xi32, 1>)
+        %xr3 = air.channel.put async [%g1] @r3[] (%l2[%c4] [%c4] [%c1_0]) : (memref<8xi32, 1>)
+        %w = air.wait_all async [%xr2, %xr3]
+        scf.yield %w : !air.async.token
+      }
+      %d_ = air.execute [%p] {
+        memref.dealloc %l2 : memref<8xi32, 1>
+      }
+      air.herd @h0 tile (%tx_h0, %ty_h0) in (%sx_h0=%c1_0, %sy_h0=%c1_0)
+            attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+        %tk, %l1 = air.execute -> (memref<4xi32, 2>) {
+          %aa = memref.alloc() : memref<4xi32, 2>
+          air.execute_terminator %aa : memref<4xi32, 2>
+        }
+        air.channel.get @r0[] (%l1[] [] []) : (memref<4xi32, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<4xi32, 2>}
+      }
+      air.herd @h1 tile (%tx_h1, %ty_h1) in (%sx_h1=%c1_0, %sy_h1=%c1_0)
+            attributes {x_loc = 1 : i64, y_loc = 2 : i64} {
+        %tk, %l1 = air.execute -> (memref<4xi32, 2>) {
+          %aa = memref.alloc() : memref<4xi32, 2>
+          air.execute_terminator %aa : memref<4xi32, 2>
+        }
+        air.channel.get @r1[] (%l1[] [] []) : (memref<4xi32, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<4xi32, 2>}
+      }
+      air.herd @h2 tile (%tx_h2, %ty_h2) in (%sx_h2=%c1_0, %sy_h2=%c1_0)
+            attributes {x_loc = 2 : i64, y_loc = 2 : i64} {
+        %tk, %l1 = air.execute -> (memref<4xi32, 2>) {
+          %aa = memref.alloc() : memref<4xi32, 2>
+          air.execute_terminator %aa : memref<4xi32, 2>
+        }
+        air.channel.get @r2[] (%l1[] [] []) : (memref<4xi32, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<4xi32, 2>}
+      }
+      air.herd @h3 tile (%tx_h3, %ty_h3) in (%sx_h3=%c1_0, %sy_h3=%c1_0)
+            attributes {x_loc = 3 : i64, y_loc = 2 : i64} {
+        %tk, %l1 = air.execute -> (memref<4xi32, 2>) {
+          %aa = memref.alloc() : memref<4xi32, 2>
+          air.execute_terminator %aa : memref<4xi32, 2>
+        }
+        air.channel.get @r3[] (%l1[] [] []) : (memref<4xi32, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<4xi32, 2>}
       }
     }
   }
