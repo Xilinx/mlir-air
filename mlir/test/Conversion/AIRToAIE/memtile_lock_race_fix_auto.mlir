@@ -406,3 +406,74 @@ func.func @fanouts_share_a_channel() {
   }
   return
 }
+
+// -----
+
+// The two reads sit in exclusive branches on the segment index, so each
+// unrolled segment keeps one of them. Counted before that, they looked like a
+// transfer per channel; per-transfer locks would leave the second pair with no
+// reader, and the writer would wait on it forever. The buffer keeps the
+// counted lock instead.
+
+// CHECK-LABEL: aie.device({{.*}}) @seg_0_0
+// CHECK: aie.buffer(%{{.*}}) {air.counted_lock, sym_name = "{{buf[0-9]+}}"} : memref<8xi32, 1>
+// CHECK-NOT: len = 0
+// CHECK-LABEL: aie.device({{.*}}) @seg_1_0
+// CHECK: aie.buffer(%{{.*}}) {air.counted_lock, sym_name = "{{buf[0-9]+}}"} : memref<8xi32, 1>
+// CHECK-NOT: len = 0
+// CHECK: func.func @reads_in_exclusive_branches
+
+air.channel @w0 [2]
+air.channel @r0 [1, 1]
+air.channel @r1 [1, 1]
+func.func @reads_in_exclusive_branches(%arg0: memref<16xi32>) {
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  air.launch (%a, %b) in (%c=%c1, %d=%c1) args(%in=%arg0) : memref<16xi32> {
+    %c2_l = arith.constant 2 : index
+    %c0_l = arith.constant 0 : index
+    %c1_l = arith.constant 1 : index
+    %c8_l = arith.constant 8 : index
+    air.channel.put @w0[%c0_l] (%in[%c0_l] [%c8_l] [%c1_l]) : (memref<16xi32>)
+    air.channel.put @w0[%c1_l] (%in[%c8_l] [%c8_l] [%c1_l]) : (memref<16xi32>)
+    air.segment @seg unroll(%s) in (%ss=%c2_l) {
+      %c1_0 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %t, %l2 = air.execute -> (memref<8xi32, 1>) {
+        %alloc = memref.alloc() : memref<8xi32, 1>
+        air.execute_terminator %alloc : memref<8xi32, 1>
+      }
+      %g = air.channel.get async [%t] @w0[%s] (%l2[] [] []) : (memref<8xi32, 1>)
+      %first = arith.cmpi eq, %s, %c0 : index
+      %p = scf.if %first -> (!air.async.token) {
+        %x = air.channel.put async [%g] @r0[] (%l2[] [] []) : (memref<8xi32, 1>)
+        scf.yield %x : !air.async.token
+      } else {
+        %x = air.channel.put async [%g] @r1[] (%l2[] [] []) : (memref<8xi32, 1>)
+        scf.yield %x : !air.async.token
+      }
+      %d_ = air.execute [%p] {
+        memref.dealloc %l2 : memref<8xi32, 1>
+      }
+      air.herd @h0 tile (%tx0, %ty0) in (%sx0=%c1_0, %sy0=%c1_0)
+            attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+        %tk, %l1 = air.execute -> (memref<8xi32, 2>) {
+          %aa = memref.alloc() : memref<8xi32, 2>
+          air.execute_terminator %aa : memref<8xi32, 2>
+        }
+        air.channel.get @r0[] (%l1[] [] []) : (memref<8xi32, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xi32, 2>}
+      }
+      air.herd @h1 tile (%tx1, %ty1) in (%sx1=%c1_0, %sy1=%c1_0)
+            attributes {x_loc = 1 : i64, y_loc = 2 : i64} {
+        %tk, %l1 = air.execute -> (memref<8xi32, 2>) {
+          %aa = memref.alloc() : memref<8xi32, 2>
+          air.execute_terminator %aa : memref<8xi32, 2>
+        }
+        air.channel.get @r1[] (%l1[] [] []) : (memref<8xi32, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xi32, 2>}
+      }
+    }
+  }
+  return
+}

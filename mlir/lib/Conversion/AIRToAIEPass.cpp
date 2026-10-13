@@ -42,6 +42,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetOperations.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringMap.h"
@@ -8983,6 +8984,47 @@ public:
     return overflows;
   }
 
+  // The air.l2_buffer_id of each buffer lowered with per-transfer locks whose
+  // BDs acquire a lock none of them releases, or release one none of them
+  // acquires. Transfers counted as separate on the many side can end up as one
+  // (reads in exclusive branches, of which unrolling keeps one), and the pair
+  // allocated for the other is then never serviced.
+  static SmallVector<int64_t> findUnpairedLockBuffers(ModuleOp module) {
+    llvm::MapVector<int64_t, llvm::SmallPtrSet<Operation *, 8>> acquired,
+        released;
+    llvm::DenseSet<int64_t> perTransfer;
+    module.walk([&](AIE::MemTileDMAOp dma) {
+      dma.walk([&](AIE::DMABDOp bd) {
+        Operation *buf = bd.getBuffer().getDefiningOp();
+        auto id = buf ? buf->getAttrOfType<IntegerAttr>(air::attrs::L2BufferId)
+                      : nullptr;
+        if (!id)
+          return;
+        if (bd.getConstantLen() == 0)
+          perTransfer.insert(id.getInt());
+        for (auto useLock : bd->getBlock()->getOps<AIE::UseLockOp>()) {
+          auto value = useLock.getConstantValue();
+          if (failed(value) || *value == 0)
+            continue;
+          Operation *lock = useLock.getLock().getDefiningOp();
+          if (useLock.release())
+            released[id.getInt()].insert(lock);
+          else if (useLock.getAcqEn())
+            acquired[id.getInt()].insert(lock);
+        }
+      });
+    });
+    SmallVector<int64_t> unpaired;
+    for (int64_t id : perTransfer) {
+      auto &acq = acquired[id];
+      auto &rel = released[id];
+      if (!llvm::set_is_subset(acq, rel) || !llvm::set_is_subset(rel, acq))
+        unpaired.push_back(id);
+    }
+    llvm::sort(unpaired);
+    return unpaired;
+  }
+
   // The memref Value the memcpys of `alloc` name.
   static Value l2MemrefOf(memref::AllocOp alloc) {
     if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc->getParentOp()))
@@ -9049,9 +9091,29 @@ public:
         result = failure();
         break;
       }
-      SmallVector<BdPoolOverflow> overflows = findBdPoolOverflows(module);
-      if (overflows.empty())
+      // A buffer whose per-transfer lock pairs did not each get both a
+      // producer and a consumer BD keeps the counted lock.
+      bool counted = false;
+      for (int64_t id : findUnpairedLockBuffers(module)) {
+        memref::AllocOp alloc = allocById.lookup(id);
+        if (!alloc || alloc->hasAttr(air::attrs::CountedLock)) {
+          mlir::emitError(alloc ? alloc.getLoc() : module.getLoc())
+              << "use-lock-race-condition-fix-auto left a lock of this "
+                 "buffer with no BD to release it";
+          result = failure();
+          break;
+        }
+        alloc->setAttr(air::attrs::CountedLock, UnitAttr::get(ctx));
+        counted = true;
+      }
+      if (failed(result))
         break;
+      SmallVector<BdPoolOverflow> overflows;
+      if (!counted) {
+        overflows = findBdPoolOverflows(module);
+        if (overflows.empty())
+          break;
+      }
 
       for (BdPoolOverflow &overflow : overflows) {
         SmallVector<std::pair<int64_t, unsigned>> byCount(
