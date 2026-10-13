@@ -114,8 +114,16 @@ class Q4nxModel:
         path = resolve_q4nx_model(model)
         self._mm = np.memmap(path, dtype=np.uint8, mode="r")
         hlen = int(np.frombuffer(self._mm[:8].tobytes(), dtype="<u8")[0])
-        self._hdr = json.loads(self._mm[8 : 8 + hlen].tobytes())
+        self._hdr_bytes = self._mm[8 : 8 + hlen].tobytes()
+        self._hdr = json.loads(self._hdr_bytes)
         self._base = 8 + hlen
+
+    def fingerprint(self):
+        """Short digest of the safetensors header, so a derived cache is tied to
+        the bundle it was built from."""
+        import hashlib
+
+        return hashlib.sha256(self._hdr_bytes).hexdigest()[:8]
 
     def _raw_i16(self, name):
         o0, o1 = self._hdr[name]["data_offsets"]

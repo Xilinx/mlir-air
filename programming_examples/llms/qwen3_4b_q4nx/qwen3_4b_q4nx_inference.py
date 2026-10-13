@@ -91,7 +91,11 @@ def _ensure_requant_cache(fd, model):
     # entry -- a warm single-channel cache would feed the dual-channel xclbin the
     # wrong blocks.
     _w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
-    rc = rc or os.path.join(_Q4NX_CACHE, f"packed{_w2}.npz")
+    if not rc:
+        from qwen3_4b_q4nx_weights import Q4nxModel
+
+        fp = Q4nxModel(model).fingerprint()
+        rc = os.path.join(_Q4NX_CACHE, f"packed_{fp}{_w2}.npz")
     if not os.path.exists(rc):
         rq.build_requant_cache(model, fd, rc)
     os.environ["Q4NX_QWEN3_4B_DECODE_NPZ"] = rc
