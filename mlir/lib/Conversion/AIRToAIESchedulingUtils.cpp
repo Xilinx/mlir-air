@@ -1098,8 +1098,12 @@ air::DMAAllocator::allocateLockForDMA(air::MemcpyInterface &memcpyOp,
                 channel.direction == AIE::DMAChannelDir::MM2S
                     ? AIE::DMAChannelDir::S2MM
                     : AIE::DMAChannelDir::MM2S;
-            // Case 1: Exact match on (channel symbol, physical channel number).
+            // Case 1: Exact match on (buffer, channel symbol, physical channel
+            // number). A channel that moves two buffers needs a lock pair per
+            // buffer: each buffer has its own writers, and a shared pair would
+            // let one buffer's writer signal a read of the other.
             if (air_chan &&
+                (std::get<0>(lock_allocation_list[i]) == bufferOp) &&
                 (std::get<1>(lock_allocation_list[i]) == air_chan) &&
                 (std::get<2>(lock_allocation_list[i]) == channel)) {
               // Reuse the existing lock entry by appending a new BD with the

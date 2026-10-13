@@ -7004,10 +7004,11 @@ public:
           newBD.value()->setAttr(
               "task_id",
               IntegerAttr::get(IntegerType::get(b.getContext(), 32), taskId));
+          Operation *bdSource = memcpyOp.getOperation();
           if (auto kind =
-                  memcpyOp->getAttrOfType<StringAttr>(air::attrs::LockOnly)) {
+                  bdSource->getAttrOfType<StringAttr>(air::attrs::LockOnly)) {
             auto slot =
-                memcpyOp->getAttrOfType<IntegerAttr>(air::attrs::LockOnlySlot);
+                bdSource->getAttrOfType<IntegerAttr>(air::attrs::LockOnlySlot);
             auto key =
                 std::make_pair(bufferOp.value().getOperation(), slot.getInt());
             if (kind.getValue() == "acquire")
