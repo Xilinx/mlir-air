@@ -112,6 +112,16 @@ constexpr StringLiteral CountedLock = "air.counted_lock";
 // traced back to its alloc across lowering attempts. Removed before the pass
 // returns.
 constexpr StringLiteral L2BufferId = "air.l2_buffer_id";
+// String attr, "acquire" or "release", on a zero-length channel op that
+// use-lock-race-condition-fix adds to the single side of a shared L2 buffer
+// when that side moves the buffer in one transfer. Acquire-only ops precede
+// the transfer and release-only ops follow it, so the transfer runs holding
+// the lock pair of every transfer on the many side. Releasing a pair any
+// earlier hands its transfer the buffer before the data has moved.
+constexpr StringLiteral LockOnly = "air.lock_only";
+// Integer attr on a LockOnly op. A release-only op releases the pair taken by
+// the acquire-only op with the same slot on the same buffer.
+constexpr StringLiteral LockOnlySlot = "air.lock_only_slot";
 // Opt-out (unit attr) on a shared-L2 memref.alloc (or its enclosing
 // air.execute): leave this L2 buffer intact instead of partitioning it. Used by
 // hand-written aggregator patterns where splitting would multiply the

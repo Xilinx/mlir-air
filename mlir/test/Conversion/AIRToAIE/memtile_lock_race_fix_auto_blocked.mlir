@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu2 use-lock-race-condition-fix-auto=true" -verify-diagnostics
 
-// Three buffers whose per-transfer locks would need 27 BDs in a 24-BD pool,
+// Three buffers whose per-transfer locks would need 42 BDs in a 24-BD pool,
 // none of which may take chain locks instead.
 
 air.channel @w0 [1, 1]
@@ -31,7 +31,7 @@ func.func @fanouts_no_chain_lock() {
       %k4 = arith.constant 4 : index
       %k5 = arith.constant 5 : index
       %t_bufa, %bufa = air.execute -> (memref<6x8xbf16, 1>) {
-        // expected-error@+1 {{a memtile BD pool needs 27 BDs and holds 24}}
+        // expected-error@+1 {{a memtile BD pool needs 42 BDs and holds 24}}
         %alloc_bufa = memref.alloc() {air.no_chain_lock, air.no_split} : memref<6x8xbf16, 1>
         air.execute_terminator %alloc_bufa : memref<6x8xbf16, 1>
       }

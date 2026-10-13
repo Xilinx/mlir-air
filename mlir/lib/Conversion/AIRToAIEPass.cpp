@@ -4855,6 +4855,9 @@ public:
   ///   the first put
   ///   - If there are more puts than gets: clone and insert dummy gets after
   ///   the last get
+  ///   - If the side with fewer ops has just one, insert acquire-only dummies
+  ///   before it and release-only dummies after it instead (see
+  ///   air::attrs::LockOnly)
   ///
   /// \param aieDevice The surrounding aie.device operation to walk.
   /// \param builder An OpBuilder to insert new operations.
@@ -4944,6 +4947,8 @@ public:
 
       unsigned numOpsToClone = 0;
       Operation *templateOp = nullptr;
+      // Ops on the side with fewer of them.
+      unsigned numSingleSideOps = 0;
 
       // Determine imbalance pattern and insertion point
       if (puts.size() < gets.size()) {
@@ -4951,11 +4956,13 @@ public:
         builder.setInsertionPoint(puts.front());
         templateOp = puts.front();
         numOpsToClone = gets.size() - puts.size();
+        numSingleSideOps = puts.size();
       } else if (gets.size() < puts.size()) {
         // "Distribute" pattern — add dummy gets
         builder.setInsertionPointAfter(gets.back());
         templateOp = gets.back();
         numOpsToClone = puts.size() - gets.size();
+        numSingleSideOps = gets.size();
       } else {
         continue; // Already balanced
       }
@@ -4974,9 +4981,9 @@ public:
       assert(templateAsyncIf && templateChanIf &&
              "Expected valid async/channel op");
 
-      for (unsigned i = 0; i < numOpsToClone; ++i) {
-        if (isa<air::ChannelPutOp>(templateOp)) {
-          air::ChannelPutOp::create(
+      auto createDummy = [&]() -> Operation * {
+        if (isa<air::ChannelPutOp>(templateOp))
+          return air::ChannelPutOp::create(
               builder, templateOp->getLoc(), templateOp->getResultTypes(),
               templateAsyncIf.getAsyncDependencies(),
               templateChanIf.getChanName(), templateChanIf.getIndices(),
@@ -4985,18 +4992,41 @@ public:
               /*offsets*/ SmallVector<Value>{zeroIdx},
               /*steps*/ SmallVector<Value>{oneIdx},
               /*pad_before=*/nullptr, /*pad_after=*/nullptr);
-        } else if (isa<air::ChannelGetOp>(templateOp)) {
-          air::ChannelGetOp::create(
-              builder, templateOp->getLoc(), templateOp->getResultTypes(),
-              templateAsyncIf.getAsyncDependencies(),
-              templateChanIf.getChanName(), templateChanIf.getIndices(),
-              templateChanIf.getMemref(),
-              /*sizes*/ SmallVector<Value>{zeroIdx},
-              /*offsets*/ SmallVector<Value>{zeroIdx},
-              /*steps*/ SmallVector<Value>{oneIdx},
-              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+        return air::ChannelGetOp::create(
+            builder, templateOp->getLoc(), templateOp->getResultTypes(),
+            templateAsyncIf.getAsyncDependencies(),
+            templateChanIf.getChanName(), templateChanIf.getIndices(),
+            templateChanIf.getMemref(),
+            /*sizes*/ SmallVector<Value>{zeroIdx},
+            /*offsets*/ SmallVector<Value>{zeroIdx},
+            /*steps*/ SmallVector<Value>{oneIdx},
+            /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+      };
+
+      // See air::attrs::LockOnly.
+      if (numSingleSideOps == 1) {
+        builder.setInsertionPoint(templateOp);
+        for (unsigned i = 0; i < numOpsToClone; ++i) {
+          Operation *dummy = createDummy();
+          dummy->setAttr(air::attrs::LockOnly,
+                         builder.getStringAttr("acquire"));
+          dummy->setAttr(air::attrs::LockOnlySlot,
+                         builder.getI64IntegerAttr(i));
         }
+        builder.setInsertionPointAfter(templateOp);
+        for (unsigned i = 0; i < numOpsToClone; ++i) {
+          Operation *dummy = createDummy();
+          dummy->setAttr(air::attrs::LockOnly,
+                         builder.getStringAttr("release"));
+          dummy->setAttr(air::attrs::LockOnlySlot,
+                         builder.getI64IntegerAttr(i));
+          builder.setInsertionPointAfter(dummy);
+        }
+        continue;
       }
+
+      for (unsigned i = 0; i < numOpsToClone; ++i)
+        createDummy();
     }
   }
 
@@ -7154,11 +7184,18 @@ public:
 
     Value length =
         arith::ConstantIndexOp::create(b, memcpyOp.getLoc(), len)->getResult(0);
-    AIE::UseLockOp::create(b, loc, acqLockOp,
-                           UsesSemaphoreLocks
-                               ? AIE::LockAction::AcquireGreaterEqual
-                               : AIE::LockAction::Acquire,
-                           lockAqValue);
+    // A BD has one acquire and one release field. A lock-only BD uses one;
+    // the other is a disabled acquire or a release of 0.
+    auto lockOnly = memcpyOp->getAttrOfType<StringAttr>(air::attrs::LockOnly);
+    bool acquireOnly = lockOnly && lockOnly.getValue() == "acquire";
+    bool releaseOnly = lockOnly && lockOnly.getValue() == "release";
+    auto acqOp = AIE::UseLockOp::create(
+        b, loc, acqLockOp,
+        UsesSemaphoreLocks ? AIE::LockAction::AcquireGreaterEqual
+                           : AIE::LockAction::Acquire,
+        lockAqValue);
+    if (releaseOnly)
+      acqOp.setAcqEnAttr(b.getBoolAttr(false));
 
     // Packet flow routing: tag every BD (sender AND receiver) for a packet
     // channel with its pkt_id so the AIE switchbox and the receiving DMA's
@@ -7369,7 +7406,7 @@ public:
     if (pktInfoAttr)
       aieDmaBdOp->setAttr("packet", pktInfoAttr);
     AIE::UseLockOp::create(b, loc, relLockOp, AIE::LockAction::Release,
-                           lockRelValue);
+                           acquireOnly ? 0 : lockRelValue);
     return aieDmaBdOp;
   }
 

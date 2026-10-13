@@ -481,6 +481,10 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
   int read_counter = 0;
   int write_counter = 0;
   for (auto user : buffer_memref.getUsers()) {
+    // Counted once, through its acquire-only partner.
+    if (auto lockOnly = user->getAttrOfType<StringAttr>(air::attrs::LockOnly))
+      if (lockOnly.getValue() == "release")
+        continue;
     if (auto memcpyOp = dyn_cast_if_present<air::MemcpyInterface>(user)) {
       if (buffer_memref == memcpyOp.getSrcMemref())
         read_counter++;
@@ -962,9 +966,32 @@ air::DMAAllocator::lookupDMAAllocation(AIE::TileLike tile,
 
 // Allocate a reader/writer lock pair. These may be the same or different
 // locks depending on the target device.
+// A release-only BD takes its acquire-only partner's pair rather than the
+// next one.
 FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
     air::MemcpyInterface &memcpyOp, AIE::TileLike tile, Operation *bufferOp,
     bool lockRaceConditionFix, bool lockRaceConditionFixV2) {
+  auto lockOnly = memcpyOp->getAttrOfType<StringAttr>(air::attrs::LockOnly);
+  auto slot = memcpyOp->getAttrOfType<IntegerAttr>(air::attrs::LockOnlySlot);
+  if (lockOnly && slot && lockOnly.getValue() == "release") {
+    auto it = lockOnlyPairs.find({bufferOp, slot.getInt()});
+    if (it == lockOnlyPairs.end())
+      return memcpyOp->emitOpError(
+          "release-only BD has no acquire-only BD for its slot");
+    return it->second;
+  }
+  auto locks = allocateLockForDMA(memcpyOp, tile, bufferOp,
+                                  lockRaceConditionFix, lockRaceConditionFixV2);
+  if (succeeded(locks) && lockOnly && slot)
+    lockOnlyPairs[{bufferOp, slot.getInt()}] = *locks;
+  return locks;
+}
+
+FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
+air::DMAAllocator::allocateLockForDMA(air::MemcpyInterface &memcpyOp,
+                                      AIE::TileLike tile, Operation *bufferOp,
+                                      bool lockRaceConditionFix,
+                                      bool lockRaceConditionFixV2) {
   auto alloc = lookupDMAAllocation(tile, memcpyOp);
   if (failed(alloc))
     return memcpyOp->emitOpError("failed to look up dma allocation.");

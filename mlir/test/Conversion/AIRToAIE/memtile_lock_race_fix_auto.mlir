@@ -17,21 +17,38 @@
 
 // NOID-NOT: air.l2_buffer_id
 
-// Four writers on four channels, one reader: the reader's channel gets the
-// real BD plus one lock-only BD per other writer.
+// Four writers on four channels, one reader. The reader acquires every
+// writer's lock before its one transfer reads the whole buffer, and releases
+// them all after it: three acquire-only BDs (releasing by 0), the real BD,
+// then three release-only BDs (acquire disabled) on the same lock pairs. A
+// writer whose lock came back before the read could overwrite its slice
+// while the reader still has to send it.
 
 // CHECK-LABEL: aie.device(npu2) @seg
 // CHECK: %[[BUF:.*]] = aie.buffer(%{{.*}}) {sym_name = "{{buf[0-9]+}}"} : memref<4x8xbf16, 1>
 // CHECK: aie.memtile_dma
 // CHECK: aie.dma_start(MM2S, 0
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual
+// CHECK: aie.use_lock(%[[C0:.*]], AcquireGreaterEqual, %c1_i32)
 // CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<4x8xbf16, 1> offset = 0 len = 0)
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual
+// CHECK-NEXT: aie.use_lock(%[[P0:.*]], Release, %c0_i32)
+// CHECK: aie.use_lock(%[[C1:.*]], AcquireGreaterEqual, %c1_i32)
 // CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<4x8xbf16, 1> offset = 0 len = 0)
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual
+// CHECK-NEXT: aie.use_lock(%[[P1:.*]], Release, %c0_i32)
+// CHECK: aie.use_lock(%[[C2:.*]], AcquireGreaterEqual, %c1_i32)
 // CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<4x8xbf16, 1> offset = 0 len = 0)
-// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual
+// CHECK-NEXT: aie.use_lock(%[[P2:.*]], Release, %c0_i32)
+// CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %c1_i32)
 // CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<4x8xbf16, 1> offset = 0 len = 32)
+// CHECK-NEXT: aie.use_lock(%{{.*}}, Release, %c1_i32)
+// CHECK: aie.use_lock(%[[C0]], AcquireGreaterEqual, %c1_i32) {acq_en = false}
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<4x8xbf16, 1> offset = 0 len = 0)
+// CHECK-NEXT: aie.use_lock(%[[P0]], Release, %c1_i32)
+// CHECK: aie.use_lock(%[[C1]], AcquireGreaterEqual, %c1_i32) {acq_en = false}
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<4x8xbf16, 1> offset = 0 len = 0)
+// CHECK-NEXT: aie.use_lock(%[[P1]], Release, %c1_i32)
+// CHECK: aie.use_lock(%[[C2]], AcquireGreaterEqual, %c1_i32) {acq_en = false}
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<4x8xbf16, 1> offset = 0 len = 0)
+// CHECK-NEXT: aie.use_lock(%[[P2]], Release, %c1_i32)
 // CHECK-NOT: air.chain_lock
 // CHECK-NOT: air.counted_lock
 // CHECK: func.func @fanin_fits
@@ -237,21 +254,22 @@ func.func @fanin_several_per_channel() {
 
 // -----
 
-// Three buffers, each written through @w0 and read on six channels: with
-// per-transfer locks the even-channel pool would need 27 BDs, so one buffer
-// takes chain locks and the pool needs 22.
+// Three buffers, each written through @w0 and read on six channels. With
+// per-transfer locks the writer's channel takes, per buffer, the real BD plus
+// five acquire-only and five release-only BDs, more than the even-channel pool
+// holds. Two buffers move to chain locks; the third keeps per-transfer locks.
 
 // CHECK-LABEL: aie.device(npu2) @seg
-// CHECK-DAG: %[[CHAINED:.*]] = aie.buffer(%{{.*}}) {air.chain_lock, sym_name = "{{buf[0-9]+}}"} : memref<6x8xbf16, 1>
-// CHECK-DAG: %[[B1:.*]] = aie.buffer(%{{.*}}) {sym_name = "{{buf[0-9]+}}"} : memref<6x8xbf16, 1>
-// CHECK-DAG: %[[B2:.*]] = aie.buffer(%{{.*}}) {sym_name = "{{buf[0-9]+}}"} : memref<6x8xbf16, 1>
+// CHECK-DAG: %[[CHAINED0:.*]] = aie.buffer(%{{.*}}) {air.chain_lock, sym_name = "{{buf[0-9]+}}"} : memref<6x8xbf16, 1>
+// CHECK-DAG: %[[CHAINED1:.*]] = aie.buffer(%{{.*}}) {air.chain_lock, sym_name = "{{buf[0-9]+}}"} : memref<6x8xbf16, 1>
+// CHECK-DAG: %[[B:.*]] = aie.buffer(%{{.*}}) {sym_name = "{{buf[0-9]+}}"} : memref<6x8xbf16, 1>
 // CHECK: aie.dma_start(S2MM, 0
-// CHECK: aie.dma_bd(%[[CHAINED]] : memref<6x8xbf16, 1> offset = 0 len = 48)
-// CHECK-NOT: aie.dma_bd(%[[CHAINED]] : memref<6x8xbf16, 1> offset = 0 len = 0)
 // CHECK: aie.dma_bd(%{{.*}} : memref<6x8xbf16, 1> offset = 0 len = 48)
-// CHECK-COUNT-5: aie.dma_bd(%{{.*}} : memref<6x8xbf16, 1> offset = 0 len = 0)
 // CHECK: aie.dma_bd(%{{.*}} : memref<6x8xbf16, 1> offset = 0 len = 48)
-// CHECK-COUNT-5: aie.dma_bd(%{{.*}} : memref<6x8xbf16, 1> offset = 0 len = 0)
+// CHECK-COUNT-5: aie.dma_bd(%[[B]] : memref<6x8xbf16, 1> offset = 0 len = 0)
+// CHECK: aie.dma_bd(%[[B]] : memref<6x8xbf16, 1> offset = 0 len = 48)
+// CHECK-COUNT-5: aie.dma_bd(%[[B]] : memref<6x8xbf16, 1> offset = 0 len = 0)
+// CHECK-NOT: aie.dma_bd(%[[B]]
 // CHECK: func.func @fanouts_share_a_channel
 
 air.channel @w0 [1, 1]
