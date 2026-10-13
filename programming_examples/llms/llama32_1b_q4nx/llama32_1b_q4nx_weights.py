@@ -202,8 +202,9 @@ class Q4nxModel:
         e = self._hdr[name]
         return tuple(e["shape"]) if e.get("dtype") == "Q4NX" else None
 
-    def dequant(self, name, M=None, K=None):
-        """A quantized tensor dequantized to float32 [M, K].
+    def _unpack(self, name, M=None, K=None):
+        """A quantized tensor's (q, scale, offset) in logical [M, K] order, and
+        whether its codec is additive (I8) or subtracts a zero point (Q4NX).
 
         `M`/`K` are required for an I8-header bundle and cross-checked against
         the header for a Q4NX one (see the class docstring), which also selects
@@ -253,22 +254,41 @@ class Q4nxModel:
         )
         lo = (qb & 0xF).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
         hi = (qb >> 4).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-        q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.float32)
+        q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.uint8)
         q[:, _EVEN, :] = lo
         q[:, _ODD, :] = hi
-        scale = np.repeat(sc.transpose(0, 2, 1), GROUP, axis=2)
-        offset = np.repeat(mn.transpose(0, 2, 1), GROUP, axis=2)
+
+        def logical(a):  # [nb, ROW_BLOCK, cols] block-major -> [M, nbj*cols]
+            c = a.shape[2]
+            return (
+                a.reshape(nbi, nbj, ROW_BLOCK, c).transpose(0, 2, 1, 3).reshape(M, -1)
+            )
+
+        return (
+            logical(q),
+            logical(sc.transpose(0, 2, 1)),
+            logical(mn.transpose(0, 2, 1)),
+            hdr_dims is None,
+        )
+
+    def q4nx(self, name, M=None, K=None):
+        """A quantized tensor as (q, scale, min), w = scale*q + min: q uint8
+        [M, K], scale/min float32 [M, K/GROUP]. Exact for an I8 bundle; for a
+        Q4NX-dtype one min = -scale*offset, which a bf16 pack rounds."""
+        q, scale, offset, additive = self._unpack(name, M, K)
+        return q, scale, offset if additive else -scale * offset
+
+    def dequant(self, name, M=None, K=None):
+        """A quantized tensor dequantized to float32 [M, K]."""
+        q, scale, offset, additive = self._unpack(name, M, K)
+        scale = np.repeat(scale, GROUP, axis=1)
+        offset = np.repeat(offset, GROUP, axis=1)
         # The two codecs also differ in the dequant itself, not just the header:
         # Q4NX subtracts an unscaled zero point, I8 (GGUF Q4_1) adds an already
         # scaled offset (offset/scale ~ -7.4), matching the AIR kernel q4_k.h
         # (c += (q*b)*scale; c += min*sum(b)). Using the wrong one yields weights
         # of plausible magnitude that decode to garbage, so it must follow dtype.
-        w = scale * (q - offset) if hdr_dims is not None else scale * q + offset
-        return (
-            w.reshape(nbi, nbj, ROW_BLOCK, COL_BLOCK)
-            .transpose(0, 2, 1, 3)
-            .reshape(M, K)
-        )
+        return scale * q + offset if additive else scale * (q - offset)
 
     _PROJ = {
         "q": "self_attn.q_proj",

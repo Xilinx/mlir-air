@@ -8,8 +8,8 @@ with an on-device KV cache -> o-proj -> FFN, x28 layers, then the LM head, all i
 ONE dispatch per token via the `fused_decode` superkernel. There is no CPU
 attention and no host-side KV cache.
 
-Weights come from FastFlowLM's 4-bit `model.q4nx` bundle, re-quantized once into
-the decode's q4k-cascade layout and cached (see q4nx_decode_3b).
+Weights come from FastFlowLM's 4-bit `model.q4nx` bundle, packed once into the
+decode's q4k-cascade layout and cached (see q4nx_decode_3b).
 
 The prompt runs as ONE batched NPU prefill (llama32_3b_q4nx_prefill) whose per-layer
 roped-K / raw-V seed the decode's device KV cache, then generation continues one

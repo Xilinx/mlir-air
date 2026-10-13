@@ -134,10 +134,11 @@ class Q4nxModel:
         )
         return v.astype(np.float32).reshape(self._hdr[name]["shape"])
 
-    def dequant(self, name, M, K):
-        """A Q4NX tensor dequantized to float32 [M, K] (w = scale*q + min).
+    def q4nx(self, name, M, K):
+        """A Q4NX tensor as stored, in logical order: (q, scale, min) with q a
+        uint8 [M, K] and scale/min float32 [M, K/GROUP], w = scale*q + min.
 
-        The Gemma bundle stores each Q4NX tensor block-major as [nb, block_bytes]
+        The bundle stores each Q4NX tensor block-major as [nb, block_bytes]
         (nb = (M/32)*(K/256), block = 256 scales + 256 mins + 32*256 nibbles =
         2560 int16), so the logical [M,K] must be supplied by the caller (unlike
         the llama bundle whose header shape is [M,K])."""
@@ -169,21 +170,30 @@ class Q4nxModel:
         )
         lo = (qb & 0xF).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
         hi = (qb >> 4).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-        q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.float32)
+        q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.uint8)
         q[:, _EVEN, :] = lo
         q[:, _ODD, :] = hi
+
+        def logical(a):  # [nb, ROW_BLOCK, cols] block-major -> [M, nbj*cols]
+            c = a.shape[2]
+            return (
+                a.reshape(nbi, nbj, ROW_BLOCK, c).transpose(0, 2, 1, 3).reshape(M, -1)
+            )
+
+        return (
+            logical(q),
+            logical(sc.transpose(0, 2, 1)),
+            logical(mn.transpose(0, 2, 1)),
+        )
+
+    def dequant(self, name, M, K):
+        """A Q4NX tensor dequantized to float32 [M, K] (w = scale*q + min)."""
+        q, sc, mn = self.q4nx(name, M, K)
         # Q4NX is additive (GGUF Q4_1): w = scale*q + min, min = the negative
         # additive offset (min/scale ~ -7.4). This matches the AIR kernel q4_k.h
         # (c += (q*b)*scale; c += min*sum(b) => w = scale*q + min). Verified by an
         # exact round-trip against FLM's converter _pack_q4nx.
-        w = np.repeat(sc.transpose(0, 2, 1), GROUP, axis=2) * q + np.repeat(
-            mn.transpose(0, 2, 1), GROUP, axis=2
-        )
-        return (
-            w.reshape(nbi, nbj, ROW_BLOCK, COL_BLOCK)
-            .transpose(0, 2, 1, 3)
-            .reshape(M, K)
-        )
+        return np.repeat(sc, GROUP, axis=1) * q + np.repeat(mn, GROUP, axis=1)
 
     # name -> (tensor suffix, out, in) logical dims (Gemma bundle is block-major).
     _PROJ = {

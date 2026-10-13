@@ -84,7 +84,7 @@ def ensure_requant_cache(model_source, fd, n_layers, wcache_dir=None, verbose=Tr
     """Return the q4k-cascade requant cache path, building it ONCE if missing. Keyed by
     (n_layers, VOCAB_I2, bundle fingerprint): the lm_head pack depends on VOCAB_I2, so a
     stale chunk size must not be silently reused, and the fingerprint ties the cache to the
-    exact model.q4nx it was requantized from. Without it a warm cache survives a Hub
+    exact model.q4nx it was packed from. Without it a warm cache survives a Hub
     re-export -- the machine keeps the old weights while a fresh one builds from the new
     bundle, same code, different numbers.
 
@@ -103,12 +103,12 @@ def ensure_requant_cache(model_source, fd, n_layers, wcache_dir=None, verbose=Tr
     # a warm single-channel cache would feed the dual-channel xclbin the wrong
     # blocks.
     w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
-    cache = wc / f"q4nx_phi4_decode_L{n_layers}_v{fd.VOCAB_I2}{w2}_{fp}.npz"
+    cache = wc / f"q4nx_phi4_decode_L{n_layers}_v{fd.VOCAB_I2}{w2}_packed_{fp}.npz"
     if cache.exists():
         return str(cache)
     if verbose:
         print(
-            f"[q4nx-phi4] requantizing {n_layers} decode layers + lm_head "
+            f"[q4nx-phi4] packing {n_layers} decode layers + lm_head "
             f"(VOCAB_I2={fd.VOCAB_I2}); cached ONCE to {cache}",
             flush=True,
         )

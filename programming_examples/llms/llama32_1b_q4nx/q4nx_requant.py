@@ -1,12 +1,13 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# Build the fused-decode requant cache (q4k-cascade weights .npz) from the HF
-# model.q4nx bundle. The decode kernels consume a re-quantized, cascade-packed
-# weight stream (per-block min/max q4 + pack_q4k_cascade) that differs from the
-# prefill's GEMM input-B layout; this reproduces it from the same model.q4nx the
-# prefill loads, so nothing external is needed. Cached to an .npz (keys W /
-# RMS_in / RMS_post) since the pack is deterministic + xclbin-independent.
+# Build the fused-decode weight cache (q4k-cascade weights .npz) from the HF
+# model.q4nx bundle. The decode kernels consume a cascade-packed weight stream
+# (pack_q4k_cascade) that differs from the prefill's GEMM input-B layout; this
+# reproduces it from the same model.q4nx the prefill loads, so nothing external
+# is needed. Bundle matrices keep their stored q4 scale/min; only a tied LM head,
+# which is bf16, is quantized here. Cached to an .npz (keys W / RMS_in /
+# RMS_post) since the pack is deterministic + xclbin-independent.
 import os
 import numpy as np
 from ml_dtypes import bfloat16
@@ -50,10 +51,23 @@ def _interleave512(up_t, gate_t, glu_chunk):
     return tuple(il(up_t[i], gate_t[i]) for i in range(3))
 
 
+def _cat(*mats):
+    """Stack (q, scale, min) matrices by rows."""
+    return tuple(np.concatenate(p, 0) for p in zip(*mats))
+
+
+def _pad_rows(t, n):
+    """Zero-pad a (q, scale, min) matrix to n rows."""
+    return tuple(
+        np.concatenate([a, np.zeros((n - a.shape[0],) + a.shape[1:], a.dtype)])
+        for a in t
+    )
+
+
 def build_requant_cache(
     model, fd, cache_path, n_layers=16, verbose=True, tie_lm_head=True
 ):
-    """Re-quantize + cascade-pack the model.q4nx weights into the decode's .npz.
+    """Cascade-pack the model.q4nx weights into the decode's .npz.
 
     `model` = HF repo id / local dir/file for model.q4nx; `fd` = the loaded
     fused_decode module (supplies the cascade geometry + pack_q4k_cascade).
@@ -83,7 +97,7 @@ def build_requant_cache(
     # Logical (out, K) per projection. An I8-packed bundle header carries only
     # the block count, so the caller has to supply this (Q4nxModel docstring).
     # Take it from `fd`, not from Q4nxModel's 1B default table: this function
-    # requantizes whichever model `fd` was configured for, and a mismatched
+    # packs whichever model `fd` was configured for, and a mismatched
     # table would reshape a 3B tensor as a 1B one.
     dims = {
         "q": (fd.DQ, fd.K),
@@ -98,16 +112,14 @@ def build_requant_cache(
     W_all, RMS_in, RMS_post = [], [], []
     for k in range(n_layers):
         R = {
-            nm: qm_model.dequant(f"model.layers.{k}.{t}.weight", *dims[nm])
+            nm: qm_model.q4nx(f"model.layers.{k}.{t}.weight", *dims[nm])
             for nm, t in _PROJ.items()
         }
         qm = [None] * NPH
-        qm[0] = _requant_q4k(np.concatenate([R["q"], R["k"], R["v"]], 0), G)
-        qm[OP] = _requant_q4k(R["o"], G)
-        qm[GP] = _interleave512(
-            _requant_q4k(R["up"], G), _requant_q4k(R["gate"], G), GLU_CHUNK
-        )
-        qm[DP] = _requant_q4k(R["down"], G)
+        qm[0] = _cat(R["q"], R["k"], R["v"])
+        qm[OP] = R["o"]
+        qm[GP] = _interleave512(R["up"], R["gate"], GLU_CHUNK)
+        qm[DP] = R["down"]
         W_all.append(
             np.concatenate(
                 [
@@ -123,18 +135,17 @@ def build_requant_cache(
         RMS_post.append(np.asarray(rpo, bfloat16))
         assert W_all[-1].size == W_LAYER, (W_all[-1].size, W_LAYER)
         if verbose:
-            print(f"[q4nx_requant] layer {k} requantized", flush=True)
+            print(f"[q4nx_requant] layer {k} packed", flush=True)
     if tie_lm_head:
         # lm_head is tied to embed (config tie_word_embeddings=true): use the
         # full-precision embed matrix, not the bundle's separate Q4NX lm_head tensor.
-        lm = qm_model.bf16("model.embed_tokens.weight")
+        lm_pad = np.zeros((VPF, K), np.float32)
+        lm_pad[:VOCAB] = qm_model.bf16("model.embed_tokens.weight")[:VOCAB]
+        lq, ls, lm_ = _requant_q4k(lm_pad, G)
     else:
         # Untied: the bundle's own quantized lm_head is the LM head. Its I8 header
         # does not carry the logical shape, so pass (VOCAB, K) from the config.
-        lm = qm_model.dequant("lm_head.weight", VOCAB, K)
-    lm_pad = np.zeros((VPF, K), np.float32)
-    lm_pad[:VOCAB] = lm[:VOCAB]
-    lq, ls, lm_ = _requant_q4k(lm_pad, G)
+        lq, ls, lm_ = _pad_rows(qm_model.q4nx("lm_head.weight", VOCAB, K), VPF)
     Wv = [
         fd.pack_q4k_cascade(
             lq[w * VP : (w + 1) * VP],

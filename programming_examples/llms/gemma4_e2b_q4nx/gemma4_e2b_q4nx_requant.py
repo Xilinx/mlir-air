@@ -37,18 +37,6 @@ from ml_dtypes import bfloat16
 import gemma4_e2b_q4nx_weights as gw
 
 
-def _requant_q4k(Wm, group):
-    """Per-32-column-group min/max 4-bit re-quant of a dequantized matrix [M,K]."""
-    M, Kc = Wm.shape
-    Wg = Wm.reshape(M, Kc // group, group)
-    mn = Wg.min(2)
-    mx = Wg.max(2)
-    sc = (mx - mn) / 15.0
-    sc = np.where(sc <= 0, 1.0, sc).astype(np.float32)
-    q = np.clip(np.round((Wg - mn[..., None]) / sc[..., None]), 0, 15).astype(np.uint8)
-    return q.reshape(M, Kc), sc, mn.astype(np.float32)
-
-
 def _interleave512(up_t, gate_t, glu_chunk):
     """Interleave up/gate in GLU_CHUNK-row halves (the decode's GLU stream order)."""
     n = up_t[0].shape[0] // glu_chunk
@@ -105,6 +93,19 @@ def _pad_cols(A, n):
     return out
 
 
+def _each(t, f, f_groups=None):
+    """Apply f to q and f_groups (default f) to scale and min of a (q, scale,
+    min) matrix. A column transform needs f_groups: scale/min have one column
+    per GROUP weights."""
+    f_groups = f_groups or f
+    return f(t[0]), f_groups(t[1]), f_groups(t[2])
+
+
+def _cat(*mats):
+    """Stack (q, scale, min) matrices by rows."""
+    return tuple(np.concatenate(p, 0) for p in zip(*mats))
+
+
 def layer_rope_w(pos, L, fd, rope_freqs):
     """One layer's rope_w slab: [cos/sin(DH) | q_norm(DH) | k_norm(DH)].
 
@@ -128,8 +129,9 @@ def layer_rope_w(pos, L, fd, rope_freqs):
 def pack_layer_weights(fd, L, w):
     """One layer's projections as the decode slab layer L streams.
 
-    `w` holds the layer's float weights, [out, in]: q, o, up, gate, down, and k,
-    v on the layers that own their KV. `fd` is the loaded fused_decode_ple
+    `w` holds the layer's weights as stored (q, scale, min), [out, in]: q, o,
+    up, gate, down, and k, v on the layers that own their KV
+    (gemma4_e2b_q4nx_weights.layer_q4nx). `fd` is the loaded fused_decode_ple
     module; the slab has fd.w_layer_of(L) elements.
     """
     G, NCX, NCY, NPH = fd.GROUP, fd.NCX, fd.NCY, fd.NPH
@@ -141,41 +143,60 @@ def pack_layer_weights(fd, L, w):
     # --- attention: a sliding layer's heads go compact (the device spreads
     # them, see fused_decode_ple CLASS_GEOM), a full layer's are DH wide ---
     swa = fd.arm_of_layer(L) & fd.SWA_ARM_BIT
-    pad = (lambda a, n: a) if swa else (lambda a, n: _pad_head(a, n, dh, DH))
+    pad = (
+        (lambda t, n: t)
+        if swa
+        else (lambda t, n: _each(t, lambda a: _pad_head(a, n, dh, DH)))
+    )
     q = pad(w["q"], NQ)
     if "k" in w:
         # MQA against a 2-CU build: the device wants NKV kv heads, the model
         # has one, and each CU needs its own copy (see the N_ATTN_CU note in
         # the gemma4-e2b entry). Duplicate the rows BEFORE padding, so every
         # copy gets the same head interleave.
-        _rep = NKV // (w["k"].shape[0] // dh)
-        qkv = [
-            q,
-            pad(np.tile(w["k"], (_rep, 1)), NKV),
-            pad(np.tile(w["v"], (_rep, 1)), NKV),
-        ]
+        _rep = NKV // (w["k"][0].shape[0] // dh)
+        tile = lambda t: _each(t, lambda a: np.tile(a, (_rep, 1)))  # noqa: E731
+        qkv = [q, pad(tile(w["k"]), NKV), pad(tile(w["v"]), NKV)]
     elif fd.PER_CLASS:
         # A KV-shared layer reuses a lower layer's cache and streams q only.
         qkv = [q]
     else:
         # Without per-class geometry the QKV phase has one shape for every
         # layer, so a KV-shared layer's k/v rows are zero.
-        qkv = [q, np.zeros((2 * NKV * DH, K), np.float32)]
+        qkv = [
+            q,
+            (
+                np.zeros((2 * NKV * DH, K), np.uint8),
+                np.zeros((2 * NKV * DH, K // G), np.float32),
+                np.zeros((2 * NKV * DH, K // G), np.float32),
+            ),
+        ]
     # A sliding head's v sits at the front of its slot, so its o-proj columns
     # are the even X blocks, which are all the device streams.
-    o = w["o"] if swa else _pad_head(w["o"], NQ, dh, DH, axis=1)
+    o = (
+        w["o"]
+        if swa
+        else _each(
+            w["o"],
+            lambda a: _pad_head(a, NQ, dh, DH, axis=1),
+            lambda a: _pad_head(a, NQ, dh // G, DH // G, axis=1),
+        )
+    )
 
     # --- FFN: at its own width on a per-class build, else padded up to the
     # widest layer ---
-    inter = w["up"].shape[0] if fd.PER_CLASS else fd.MODEL["INTER_NARROW"] * 2
-    up, gate = _pad_rows(w["up"], inter), _pad_rows(w["gate"], inter)
-    down = _pad_cols(w["down"], inter)
+    inter = w["up"][0].shape[0] if fd.PER_CLASS else fd.MODEL["INTER_NARROW"] * 2
+    up = _each(w["up"], lambda a: _pad_rows(a, inter))
+    gate = _each(w["gate"], lambda a: _pad_rows(a, inter))
+    down = _each(
+        w["down"], lambda a: _pad_cols(a, inter), lambda a: _pad_cols(a, inter // G)
+    )
 
     qmats = [None] * NPH
-    qmats[0] = _requant_q4k(np.concatenate(qkv, 0), G)
-    qmats[OP] = _requant_q4k(o, G)
-    qmats[GP] = _interleave512(_requant_q4k(up, G), _requant_q4k(gate, G), fd.GLU_CHUNK)
-    qmats[DP] = _requant_q4k(down, G)
+    qmats[0] = _cat(*qkv)
+    qmats[OP] = o
+    qmats[GP] = _interleave512(up, gate, fd.GLU_CHUNK)
+    qmats[DP] = down
     dual = bool(getattr(fd, "W_DUAL_CHAN", 0))
     packed = np.concatenate(
         [
@@ -190,7 +211,7 @@ def pack_layer_weights(fd, L, w):
 def build_requant_cache(
     model, fd, cache_path, layers=None, verbose=True, pack_vocab=False
 ):
-    """Re-quantize + cascade-pack model.q4nx into the decode .npz.
+    """Cascade-pack model.q4nx into the decode .npz.
 
     `fd` is the loaded fused_decode_ple module (DECODE_MODEL=gemma4-e2b), which
     supplies the cascade geometry and the PLE slab layout, so the two cannot
@@ -200,8 +221,8 @@ def build_requant_cache(
 
     `pack_vocab` appends the LM-head chunks after the layer slabs, which is what
     the decode dispatch expects in the weight BO. Off by default because the
-    per-layer gate never reads logits and packing 262144x1536 costs minutes;
-    the token-level driver needs it and passes True.
+    per-layer gate never reads logits; the token-level driver needs it and
+    passes True.
     """
     qm = gw.Q4nxModel(model)
     G, NCX, NCY = fd.GROUP, fd.NCX, fd.NCY
@@ -214,7 +235,7 @@ def build_requant_cache(
     ROPE_QK = []
 
     for slab, L in enumerate(layers):
-        w = qm.layer_weights(L)
+        w = qm.layer_q4nx(L)
         nm = qm.layer_norms(L)
         dh = gw.head_dim(L)
 
@@ -260,8 +281,8 @@ def build_requant_cache(
 
     # --- LM head. Gemma4's lm_head is its OWN 4-bit matrix (NOT tied to
     # embed_tokens, unlike Llama-3.2-1B), so the untied path is the only one.
-    # Read in row chunks rather than dequantizing 262144x1536 in one go, the
-    # same reason gemma4_e2b_q4nx_weights.lm_head_rows exists.
+    # Read in row chunks rather than unpacking 262144x1536 in one go, the
+    # same reason gemma4_e2b_q4nx_weights.lm_head_q4nx exists.
     if pack_vocab:
         VP, VPF, VOCAB, UNI_LM = (
             fd.VOCAB_SIZE_PADDED,
@@ -269,15 +290,15 @@ def build_requant_cache(
             fd.VOCAB_SIZE,
             fd.UNI_LM,
         )
-        lm_pad = np.zeros((VPF, K), np.float32)
+        lq = np.zeros((VPF, K), np.uint8)
+        ls = np.zeros((VPF, K // G), np.float32)
+        lmn = np.zeros((VPF, K // G), np.float32)
         CH = 16384
         for r0 in range(0, VOCAB, CH):
             r1 = min(r0 + CH, VOCAB)
-            lm_pad[r0:r1] = qm.lm_head_rows(r0, r1)
+            lq[r0:r1], ls[r0:r1], lmn[r0:r1] = qm.lm_head_q4nx(r0, r1)
             if verbose:
                 print(f"[gemma4 requant] lm_head rows {r0}:{r1}", flush=True)
-        lq, ls, lmn = _requant_q4k(lm_pad, G)
-        del lm_pad
         for w in range(UNI_LM):
             W_all.append(
                 fd.pack_q4k_cascade(

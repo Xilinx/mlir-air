@@ -182,7 +182,7 @@ def _ensure_requant_cache(fd):
         _vc = getattr(fd, "VOCAB_I2", 0)
         _v = f"_v{_vc}" if _vc and _vc != 14 else ""
         rc = os.path.join(
-            _Q4NX_CACHE, f"requant_{Q4nxModel(src).fingerprint()}{_w2}{_v}.npz"
+            _Q4NX_CACHE, f"packed_{Q4nxModel(src).fingerprint()}{_w2}{_v}.npz"
         )
     if not os.path.exists(rc):
         q4nx_requant.build_requant_cache(src, fd, rc)

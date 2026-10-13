@@ -99,6 +99,40 @@ _EVEN = np.array(
 _ODD = _EVEN + 1
 
 
+def _unpack_q4nx(i16, nbi, nbj):
+    """Codec B blocks [nbi*nbj, BLOCK_BF16] -> (q, scale, min) in logical order:
+    q uint8 [nbi*32, nbj*256], scale/min float32 [nbi*32, nbj*N_GROUPS]."""
+    nb = nbi * nbj
+    sc = _bf(i16[:, 0:256].copy()).reshape(nb, N_GROUPS, ROW_BLOCK)
+    mn = _bf(i16[:, 256:512].copy()).reshape(nb, N_GROUPS, ROW_BLOCK)
+    qb = (
+        i16[:, 512:BLOCK_BF16]
+        .copy()
+        .view(np.uint8)
+        .reshape(nb, _G, COL_BLOCK, PARALLEL // 2)
+    )
+    lo = (qb & 0xF).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
+    hi = (qb >> 4).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
+    q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.uint8)
+    q[:, _EVEN, :] = lo
+    q[:, _ODD, :] = hi
+
+    def logical(a):  # [nb, ROW_BLOCK, cols] block-major -> [rows, nbj*cols]
+        c = a.shape[2]
+        return (
+            a.reshape(nbi, nbj, ROW_BLOCK, c)
+            .transpose(0, 2, 1, 3)
+            .reshape(nbi * ROW_BLOCK, -1)
+        )
+
+    return logical(q), logical(sc.transpose(0, 2, 1)), logical(mn.transpose(0, 2, 1))
+
+
+def _expand(q, sc, mn):
+    """(q, scale, min) -> float32 weights, w = scale*q + min."""
+    return np.repeat(sc, GROUP, axis=1) * q + np.repeat(mn, GROUP, axis=1)
+
+
 def is_sliding(layer_idx):
     return LAYER_TYPES[layer_idx] == "sliding_attention"
 
@@ -223,8 +257,9 @@ class Q4nxModel:
     def bf16(self, name):
         return _bf(self._raw(name, np.int16))
 
-    def dequant(self, name, M, K):
-        """Codec B tensor -> float32 [M, K], w = scale*q + min.
+    def q4nx(self, name, M, K):
+        """Codec B tensor as stored: (q, scale, min), w = scale*q + min, with q
+        uint8 [M, K] and scale/min float32 [M, K/GROUP].
 
         The header shape is the PACKED (n_chunks, 5120); the logical (M,K) is not
         recoverable from it, so the caller supplies it and we assert consistency
@@ -239,27 +274,11 @@ class Q4nxModel:
                 f"={nb}. The (M,K) handed to dequant() is wrong for this tensor."
             )
         i16 = self._raw(name, np.int16).reshape(nb, BLOCK_BF16)
-        sc = _bf(i16[:, 0:256].copy()).reshape(nb, N_GROUPS, ROW_BLOCK)
-        mn = _bf(i16[:, 256:512].copy()).reshape(nb, N_GROUPS, ROW_BLOCK)
-        qb = (
-            i16[:, 512:BLOCK_BF16]
-            .copy()
-            .view(np.uint8)
-            .reshape(nb, _G, COL_BLOCK, PARALLEL // 2)
-        )
-        lo = (qb & 0xF).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-        hi = (qb >> 4).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-        q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.float32)
-        q[:, _EVEN, :] = lo
-        q[:, _ODD, :] = hi
-        w = np.repeat(sc.transpose(0, 2, 1), GROUP, axis=2) * q + np.repeat(
-            mn.transpose(0, 2, 1), GROUP, axis=2
-        )
-        return (
-            w.reshape(nbi, nbj, ROW_BLOCK, COL_BLOCK)
-            .transpose(0, 2, 1, 3)
-            .reshape(M, K)
-        )
+        return _unpack_q4nx(i16, nbi, nbj)
+
+    def dequant(self, name, M, K):
+        """Codec B tensor -> float32 [M, K], w = scale*q + min."""
+        return _expand(*self.q4nx(name, M, K))
 
     def embed_rows(self, name, ids):
         """Rows of an int8 group-32 embedding table, dequantized.
@@ -301,24 +320,31 @@ class Q4nxModel:
         return self._proj_out(f"model.layers.{k}.mlp.gate_proj.weight", D)
 
     def layer_weights(self, k):
+        return self._layer(k, self.dequant)
+
+    def layer_q4nx(self, k):
+        """layer_weights() with each matrix as its stored (q, scale, min)."""
+        return self._layer(k, self.q4nx)
+
+    def _layer(self, k, read):
         dh = head_dim(k)
         dq, dkv = N_Q_HEADS * dh, N_KV_HEADS * dh
         inter = self.mlp_inter(k)
         p = f"model.layers.{k}."
         w = dict(
-            q=self.dequant(p + "self_attn.q_proj.weight", dq, D),
-            o=self.dequant(p + "self_attn.o_proj.weight", D, dq),
-            up=self.dequant(p + "mlp.up_proj.weight", inter, D),
-            gate=self.dequant(p + "mlp.gate_proj.weight", inter, D),
-            down=self.dequant(p + "mlp.down_proj.weight", D, inter),
+            q=read(p + "self_attn.q_proj.weight", dq, D),
+            o=read(p + "self_attn.o_proj.weight", D, dq),
+            up=read(p + "mlp.up_proj.weight", inter, D),
+            gate=read(p + "mlp.gate_proj.weight", inter, D),
+            down=read(p + "mlp.down_proj.weight", D, inter),
         )
         # Shared-KV layers still ship k/v in the bundle, but the reference never
         # evaluates them -- it takes k/v from the source layer's cache. Load them
         # only where they are actually used, so a wrong sharing map shows up as a
         # KeyError instead of silently-unused weights.
         if owns_kv(k):
-            w["k"] = self.dequant(p + "self_attn.k_proj.weight", dkv, D)
-            w["v"] = self.dequant(p + "self_attn.v_proj.weight", dkv, D)
+            w["k"] = read(p + "self_attn.k_proj.weight", dkv, D)
+            w["v"] = read(p + "self_attn.v_proj.weight", dkv, D)
         return w
 
     def layer_norms(self, k):
@@ -352,8 +378,8 @@ class Q4nxModel:
             model_proj=mp.transpose(0, 2, 1).reshape(PLI_D, D),
         )
 
-    def lm_head_rows(self, r0, r1, name="lm_head.weight", K=D):
-        """Dequantize only output rows [r0, r1) of a Codec B matrix.
+    def lm_head_q4nx(self, r0, r1, name="lm_head.weight", K=D):
+        """Output rows [r0, r1) of a Codec B matrix as stored (q, scale, min).
 
         lm_head here is its OWN 4-bit matrix (262144 x 1536, not tied to
         embed_tokens), which is 1.6 GB dequantized in float32. The chunk layout is
@@ -374,27 +400,11 @@ class Q4nxModel:
             count=nb * BLOCK_BF16,
             offset=self._data_off + s + i0 * nbj * BLOCK_BF16 * 2,
         ).reshape(nb, BLOCK_BF16)
-        sc = _bf(i16[:, 0:256].copy()).reshape(nb, N_GROUPS, ROW_BLOCK)
-        mn = _bf(i16[:, 256:512].copy()).reshape(nb, N_GROUPS, ROW_BLOCK)
-        qb = (
-            i16[:, 512:BLOCK_BF16]
-            .copy()
-            .view(np.uint8)
-            .reshape(nb, _G, COL_BLOCK, PARALLEL // 2)
-        )
-        lo = (qb & 0xF).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-        hi = (qb >> 4).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-        q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.float32)
-        q[:, _EVEN, :] = lo
-        q[:, _ODD, :] = hi
-        w = np.repeat(sc.transpose(0, 2, 1), GROUP, axis=2) * q + np.repeat(
-            mn.transpose(0, 2, 1), GROUP, axis=2
-        )
-        return (
-            w.reshape(i1 - i0, nbj, ROW_BLOCK, COL_BLOCK)
-            .transpose(0, 2, 1, 3)
-            .reshape(r1 - r0, K)
-        )
+        return _unpack_q4nx(i16, i1 - i0, nbj)
+
+    def lm_head_rows(self, r0, r1, name="lm_head.weight", K=D):
+        """Dequantize only output rows [r0, r1) of a Codec B matrix."""
+        return _expand(*self.lm_head_q4nx(r0, r1, name, K))
 
     def rope_freqs(self):
         """The 'proportional' rope divisor table (cached; see rope_lut)."""
