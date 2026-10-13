@@ -7058,7 +7058,7 @@ public:
             AIE::UseLockOp::create(lb, loc, isMM2S ? pair.second : pair.first,
                                    AIE::LockAction::Release, acquire ? 0 : 1);
           };
-          // Move `bd` on to a new block that `bd` now leads to.
+          // Chain a new block after `bd` and continue in it.
           auto appendBd = [&]() {
             auto next = cast<AIE::NextBDOp>(bd->getTerminator());
             Block *blk = new Block();
@@ -9050,9 +9050,8 @@ public:
 
   // The air.l2_buffer_id of each buffer lowered with per-transfer locks whose
   // BDs acquire a lock none of them releases, or release one none of them
-  // acquires. Transfers counted as separate on the many side can end up as one
-  // (reads in exclusive branches, of which unrolling keeps one), and the pair
-  // allocated for the other is then never serviced.
+  // acquires. Dummy ops added before segment unrolling can outlive transfers
+  // that unrolling removes, leaving a lock pair no BD services.
   static SmallVector<int64_t> findUnpairedLockBuffers(ModuleOp module) {
     llvm::MapVector<int64_t, llvm::SmallPtrSet<Operation *, 8>> acquired,
         released;
@@ -9121,10 +9120,11 @@ public:
     src.erase();
   }
 
-  // use-lock-race-condition-fix-auto: lower with use-lock-race-condition-fix,
-  // and while a memtile BD pool overflows with the lock-only BDs that fix
-  // adds, move the buffer adding the most of them to the chain-lock template
-  // and lower again from the unlowered module.
+  // use-lock-race-condition-fix-auto: lower with use-lock-race-condition-fix
+  // and, until the result is usable, lower again from the unlowered module:
+  // a buffer with an unserviced lock pair keeps the counted lock, and while a
+  // memtile BD pool overflows, the buffer adding the most lock-only BDs to it
+  // moves to the chain-lock template.
   LogicalResult lowerModuleWithBdFallback(ModuleOp module) {
     auto *ctx = module.getContext();
     lockRaceFixAuto = true;
@@ -9247,11 +9247,8 @@ public:
       return;
     }
 
-    // The lock race fixes are mutually exclusive: v1 and v2 apply different
-    // fixes to overlapping problem areas, and combining them would interleave
-    // dummy-op insertion (v1) with chain-lock allocation (v2) in ways that
-    // don't have a coherent semantics. Auto picks between them per buffer.
-    // Force the user to pick one.
+    // Each of the three options decides how every shared buffer is locked, so
+    // at most one may be on; auto mode makes the choice per buffer.
     if (int(clUseLockRaceConditionFix) + int(clUseLockRaceConditionFixV2) +
             int(clUseLockRaceConditionFixAuto) >
         1) {

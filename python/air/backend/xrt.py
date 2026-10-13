@@ -295,7 +295,7 @@ class XRTBackend(AirBackend):
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
-            use_lock_race_condition_fix_auto: pick a lock race fix per shared L2 buffer (see aircc --use-lock-race-condition-fix-auto). None (default) leaves it to aircc, which turns it on unless one of the other two fixes is set; False turns it off.
+            use_lock_race_condition_fix_auto: pick a lock race fix per shared L2 buffer (see aircc --use-lock-race-condition-fix-auto). None (default) leaves the choice to aircc; True or False sets it.
             coalesce_shim_dma: configure aircc to coalesce consecutive contiguous shim DMA transfers on the same channel (marked air.preserve_shim_dma_order) into a single wide transfer, reducing host-issued DMA task triplets. Opt-in: only enable for feeds verified numerically equivalent when coalesced.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
