@@ -719,8 +719,11 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     SmallVector<Value> w = getValueOrCreateConstantIndexOp(builder, loc, wraps);
     SmallVector<Value> s =
         getValueOrCreateConstantIndexOp(builder, loc, strides);
-    (void)air::canonicalizeWrapAndStrideList(builder, o, w, s,
-                                             air::getTensorVolume(memrefType));
+    // Wraps are not split here; only the stride limit applies.
+    air::DmaBdLimits limits = air::getDmaBdLimits(thisOp, air::MemorySpace::L3);
+    limits.maxWrap = -1;
+    (void)air::canonicalizeWrapAndStrideList(
+        builder, o, w, s, air::getTensorVolume(memrefType), limits);
     offsets = getAsOpFoldResult(o);
     wraps = getAsOpFoldResult(w);
     strides = getAsOpFoldResult(s);

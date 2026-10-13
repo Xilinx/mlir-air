@@ -2663,11 +2663,12 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
-  AIRSpecializeChannelWrapAndStrideInScfFor(MLIRContext *ctx, int &maxNumDims,
-                                            int &maxSize,
+  AIRSpecializeChannelWrapAndStrideInScfFor(MLIRContext *ctx,
+                                            const DmaBdLimits &limits,
                                             bool &enableRepeatAtHighestDim,
                                             bool &skipZeroStride)
-      : OpRewritePattern(ctx), maxNumDims(maxNumDims), maxSize(maxSize),
+      : OpRewritePattern(ctx), limits(limits), maxNumDims(limits.listDims()),
+        maxSize(limits.maxWrap),
         enableRepeatAtHighestDim(enableRepeatAtHighestDim),
         skipZeroStride(skipZeroStride) {}
 
@@ -2709,7 +2710,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         memrefTy ? air::getDmaInnerElementAlignment(memrefTy, channel_op) : 1;
     (void)canonicalizeWrapAndStrideList(
         b, offsets, wraps, strides,
-        air::getTensorVolume(channel_op.getMemref().getType()), maxSize,
+        air::getTensorVolume(channel_op.getMemref().getType()), limits,
         innerAlignment);
 
     // If empty offsets/sizes/strides, then populate the lists with default
@@ -2773,13 +2774,13 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_op.getOperation(), offsets,
-        wraps, strides, channel_op.getMemref(), skipZeroStride, maxSize);
+        wraps, strides, channel_op.getMemref(), limits, skipZeroStride);
     if (res.failed())
       return failure();
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
-        air::getTensorVolume(channel_op.getMemref().getType()), maxSize,
+        air::getTensorVolume(channel_op.getMemref().getType()), limits,
         innerAlignment);
 
     // Post-fold legality: reject when canonicalize did not bring the active
@@ -2799,8 +2800,8 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     // Outermost-dimension rebalance (shim only).
     //
     // canonicalizeWrapAndStrideList splits an oversized extent against a
-    // single `maxSize` (1023) for every dimension, but the outermost shim BD
-    // dimension is narrower than the rest -- a 6-bit count, so 64 on AIE2.
+    // single `maxSize` for every dimension, but the outermost shim BD
+    // dimension, the iteration count, is narrower than the rest.
     // A fold that lands 1024 iterations as [512, 2, ...] is therefore legal by
     // maxSize and illegal in the slot it occupies, and airrt-to-npu has to
     // split it again. The descriptor is already at the 4-dim limit by then, so
@@ -2817,10 +2818,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     // Only rebalances descriptors that would otherwise be split downstream, so
     // anything already legal is emitted byte-for-byte as before.
     if (!skipZeroStride && wraps.size() >= 2) {
-      // AIE2 shim BD limits, mirrored from AIE2_WRAP_UPPER_BOUNDS /
-      // AIE2_STRIDE_UPPER_BOUND in AIRRtToNpuPass.cpp.
-      constexpr int64_t kOutermostWrapMax = 63;
-      constexpr int64_t kStrideMax = 1048576;
+      const int64_t kOutermostWrapMax = limits.maxIterWrap;
       auto w0 = getConstantIntValue(wraps[0]);
       auto w1 = getConstantIntValue(wraps[1]);
       auto s0 = getConstantIntValue(strides[0]);
@@ -2845,7 +2843,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
           if (b > maxSize)
             continue;
           int64_t newS0 = *s1 * b;
-          if (newS0 > kStrideMax)
+          if (!limits.strideFits(newS0))
             continue;
           wraps[0] = arith::ConstantIndexOp::create(rewriter, loc, a);
           wraps[1] = arith::ConstantIndexOp::create(rewriter, loc, b);
@@ -2971,8 +2969,9 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
   }
 
 private:
-  int &maxNumDims;
-  int &maxSize;
+  DmaBdLimits limits;
+  int maxNumDims;
+  int maxSize;
   bool &enableRepeatAtHighestDim;
   bool &skipZeroStride;
 };
@@ -3128,6 +3127,13 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
     : public OpRewritePattern<affine::AffineForOp> {
   using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
 
+  // Wraps are not split here; only the stride limit applies.
+  AIRSpecializeChannelWrapAndStrideInAffineFor(MLIRContext *ctx,
+                                               const DmaBdLimits &limits)
+      : OpRewritePattern(ctx), limits(limits) {
+    this->limits.maxWrap = -1;
+  }
+
   LogicalResult matchAndRewrite(affine::AffineForOp for_op,
                                 PatternRewriter &rewriter) const override {
     auto loc = for_op->getLoc();
@@ -3158,7 +3164,7 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
-        air::getTensorVolume(channel_op.getMemref().getType()));
+        air::getTensorVolume(channel_op.getMemref().getType()), limits);
 
     // If empty offsets/sizes/strides, then populate the lists with default
     // values.
@@ -3168,13 +3174,13 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_op.getOperation(), offsets,
-        wraps, strides, channel_op.getMemref(), false);
+        wraps, strides, channel_op.getMemref(), limits, false);
     if (res.failed())
       return failure();
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
-        air::getTensorVolume(channel_op.getMemref().getType()));
+        air::getTensorVolume(channel_op.getMemref().getType()), limits);
 
     air::ChannelInterface new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
@@ -3240,6 +3246,7 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
   }
 
 private:
+  DmaBdLimits limits;
 };
 
 /// This pattern canonicalizes the offset/size/stride lists of `OpT` channel
@@ -3262,9 +3269,10 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
   using OpRewritePattern<OpT>::OpRewritePattern;
 
   AIRCanonicalizeChannelPutGetOpWrapAndStrideList(
-      MLIRContext *ctx, int &maxSize, int &maxNumDims,
+      MLIRContext *ctx, const DmaBdLimits &limits,
       bool &enableRepeatAtHighestDim)
-      : OpRewritePattern<OpT>(ctx), maxSize(maxSize), maxNumDims(maxNumDims),
+      : OpRewritePattern<OpT>(ctx), limits(limits),
+        maxNumDims(limits.listDims()),
         enableRepeatAtHighestDim(enableRepeatAtHighestDim) {}
 
   LogicalResult matchAndRewrite(OpT op,
@@ -3317,7 +3325,7 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
           memrefTy ? air::getDmaInnerElementAlignment(memrefTy, op) : 1;
       if (failed(canonicalizeWrapAndStrideList(
               rewriter, offsets, sizes, strides,
-              air::getTensorVolume(op.getMemref().getType()), maxSize,
+              air::getTensorVolume(op.getMemref().getType()), limits,
               innerAlignment)))
         return failure();
 
@@ -3357,8 +3365,8 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
   }
 
 private:
-  int &maxSize;
-  int &maxNumDims;
+  DmaBdLimits limits;
+  int maxNumDims;
   bool &enableRepeatAtHighestDim;
 };
 
@@ -4371,10 +4379,11 @@ public:
 private:
 };
 
-LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
-    Region *region, int maxNumDims = -1, int maxSize = -1,
-    bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false,
-    bool skipZeroStride = false) {
+LogicalResult
+AIRSpecializeChannelWrapAndStrideImpl(Region *region, const DmaBdLimits &limits,
+                                      bool enableForLoopUnrolling = true,
+                                      bool enableRepeatAtHighestDim = false,
+                                      bool skipZeroStride = false) {
   MLIRContext *ctx = region->getContext();
   RewritePatternSet preproc_patterns(ctx);
   preproc_patterns
@@ -4392,17 +4401,17 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet preproc_wns_patterns(ctx);
   populateAIRCanonicalizeChannelWrapAndStridePatterns(
-      preproc_wns_patterns, maxSize, maxNumDims, enableRepeatAtHighestDim);
+      preproc_wns_patterns, limits, enableRepeatAtHighestDim);
   (void)applyPatternsGreedily(*region, std::move(preproc_wns_patterns));
 
   RewritePatternSet patterns(ctx);
   patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar,
                   CanonicalizeArithMuliOpOnLoopInductionVar,
                   CanonicalizeArithAddiOpOnLoopInductionVar,
-                  CanonicalizeArithIndexCastOpOnLoopInductionVar,
-                  AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
+                  CanonicalizeArithIndexCastOpOnLoopInductionVar>(ctx);
+  patterns.insert<AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx, limits);
   patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(
-      ctx, maxNumDims, maxSize, enableRepeatAtHighestDim, skipZeroStride);
+      ctx, limits, enableRepeatAtHighestDim, skipZeroStride);
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(patterns));
@@ -4417,8 +4426,8 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
 
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet cano_patterns(ctx);
-  populateAIRCanonicalizeChannelWrapAndStridePatterns(
-      cano_patterns, maxSize, maxNumDims, enableRepeatAtHighestDim);
+  populateAIRCanonicalizeChannelWrapAndStridePatterns(cano_patterns, limits,
+                                                      enableRepeatAtHighestDim);
   ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(cano_patterns));
 
@@ -4471,8 +4480,12 @@ public:
                 "Must be one of [segment, launch, func].");
       signalPassFailure();
     }
+    // No dimension or wrap limit here; only the stride limit applies.
+    DmaBdLimits limits = getDmaBdLimits(module, MemorySpace::L3);
+    limits.dims = -1;
+    limits.maxWrap = -1;
     for (auto region : regions)
-      if (AIRSpecializeChannelWrapAndStrideImpl(region).failed())
+      if (AIRSpecializeChannelWrapAndStrideImpl(region, limits).failed())
         signalPassFailure();
   }
 
@@ -8189,8 +8202,7 @@ private:
     const auto &tm = AIE::getTargetModel(device);
     bool isAIE1 = isa<AIE::AIE1TargetModel>(tm);
     bool isAIE2 = isa<AIE::AIE2TargetModel>(tm);
-    int maxNumDims = isAIE1 ? 1 : 4;
-    int maxSize = isAIE1 ? -1 : 1023;
+    DmaBdLimits limits = getDmaBdLimits(tm, MemorySpace::L3);
     bool enableForLoopUnrolling = !isAIE1;
 
     // Collect launch regions to process. If there are no launches, fall back
@@ -8251,9 +8263,7 @@ private:
         air::applyAIRIsolateAsyncDmaLoopNestsPattern(region);
 
       air::applyAIRSpecializeChannelWrapAndStridePattern(
-          region,
-          /*maxNumDims=*/maxNumDims,
-          /*maxSize=*/maxSize,
+          region, limits,
           /*enableForLoopUnrolling=*/enableForLoopUnrolling,
           /*enableRepeatAtHighestDim=*/true,
           /*skipZeroStride=*/false);
@@ -8292,10 +8302,8 @@ public:
       signalPassFailure();
       return;
     }
-    int maxNumDims =
-        isa<AIE::AIE2TargetModel>(AIE::getTargetModel(*device)) ? 4 : 4;
-    int maxSize =
-        isa<AIE::AIE2TargetModel>(AIE::getTargetModel(*device)) ? 1023 : 1023;
+    DmaBdLimits limits =
+        getDmaBdLimits(AIE::getTargetModel(*device), MemorySpace::L3);
     // Preprocess the IR's L2 dma bds by applying loop splitting, fusion and
     // specialization patterns.
     llvm::SetVector<air::SegmentOp> segs;
@@ -8303,8 +8311,7 @@ public:
     for (auto seg : segs) {
       air::applyAIRIsolateAsyncDmaLoopNestsPattern(&seg.getBody());
       air::applyAIRSpecializeChannelWrapAndStridePattern(
-          &seg.getBody(),
-          /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
+          &seg.getBody(), limits,
           /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ false,
           /*skipZeroStride*/ true);
 
@@ -8876,21 +8883,21 @@ FailureOr<scf::ForOp> foldAffineApplyIntoLoopBounds(scf::ForOp forOp,
 }
 
 void populateAIRCanonicalizeChannelWrapAndStridePatterns(
-    RewritePatternSet &patterns, int &maxSize, int &maxNumDims,
+    RewritePatternSet &patterns, const DmaBdLimits &limits,
     bool &enableRepeatAtHighestDim) {
   MLIRContext *ctx = patterns.getContext();
   patterns.insert<
       AIRCanonicalizeChannelPutGetOpWrapAndStrideList<air::ChannelPutOp>,
       AIRCanonicalizeChannelPutGetOpWrapAndStrideList<air::ChannelGetOp>>(
-      ctx, maxSize, maxNumDims, enableRepeatAtHighestDim);
+      ctx, limits, enableRepeatAtHighestDim);
 }
 
 void applyAIRSpecializeChannelWrapAndStridePattern(
-    Region *region, int maxNumDims, int maxSize, bool enableForLoopUnrolling,
+    Region *region, const DmaBdLimits &limits, bool enableForLoopUnrolling,
     bool enableRepeatAtHighestDim, bool skipZeroStride) {
   (void)AIRSpecializeChannelWrapAndStrideImpl(
-      region, maxNumDims, maxSize, enableForLoopUnrolling,
-      enableRepeatAtHighestDim, skipZeroStride);
+      region, limits, enableForLoopUnrolling, enableRepeatAtHighestDim,
+      skipZeroStride);
 }
 
 void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {

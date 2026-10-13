@@ -2477,12 +2477,12 @@ struct LowerAIRExecutePattern : public OpRewritePattern<air::ExecuteOp> {
 void lowerAirExecute(AIE::DeviceOp d) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  int maxSize = isa<AIE::AIE1TargetModel>(AIE::getTargetModel(d)) ? -1 : 1023;
-  int maxNumDims = isa<AIE::AIE1TargetModel>(AIE::getTargetModel(d)) ? 1 : 4;
+  air::DmaBdLimits limits =
+      air::getDmaBdLimits(AIE::getTargetModel(d), air::MemorySpace::L3);
   patterns.insert<LowerAIRExecutePattern>(ctx);
   bool enableRepeatAtHighestDim = false;
   air::populateAIRCanonicalizeChannelWrapAndStridePatterns(
-      patterns, maxSize, maxNumDims, enableRepeatAtHighestDim);
+      patterns, limits, enableRepeatAtHighestDim);
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
@@ -3498,9 +3498,9 @@ struct SpecializeChannelBundlePattern
 
   SpecializeChannelBundlePattern(
       MLIRContext *ctx, std::map<std::string, std::string> &chan_to_chan_map,
-      int &maxSize)
+      const air::DmaBdLimits &limits)
       : OpRewritePattern(ctx), chan_to_chan_map(chan_to_chan_map),
-        maxSize(maxSize) {}
+        limits(limits) {}
 
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
@@ -3589,8 +3589,8 @@ struct SpecializeChannelBundlePattern
         if (areIdenticalVectors(indices_uint, position)) {
           // Found channel put for this channel
           rewriter.setInsertionPoint(put);
-          auto new_put = createChannelPutGetWithoutBundle(rewriter, new_chan,
-                                                          put, maxSize);
+          auto new_put =
+              createChannelPutGetWithoutBundle(rewriter, new_chan, put, limits);
           auto async_new_put = dyn_cast_if_present<air::AsyncOpInterface>(
               new_put.getOperation());
           if (put.getAsyncToken()) {
@@ -3612,8 +3612,8 @@ struct SpecializeChannelBundlePattern
         if (areIdenticalVectors(indices_uint, position)) {
           // Found channel get for this channel
           rewriter.setInsertionPoint(get);
-          auto new_get = createChannelPutGetWithoutBundle(rewriter, new_chan,
-                                                          get, maxSize);
+          auto new_get =
+              createChannelPutGetWithoutBundle(rewriter, new_chan, get, limits);
           auto async_new_get = dyn_cast_if_present<air::AsyncOpInterface>(
               new_get.getOperation());
           if (get.getAsyncToken()) {
@@ -3654,7 +3654,7 @@ struct SpecializeChannelBundlePattern
 
 private:
   std::map<std::string, std::string> &chan_to_chan_map;
-  int &maxSize;
+  air::DmaBdLimits limits;
   bool areIdenticalVectors(std::vector<unsigned> a,
                            std::vector<unsigned> b) const {
     if (a.empty())
@@ -3772,7 +3772,7 @@ private:
   air::ChannelInterface
   createChannelPutGetWithoutBundle(OpBuilder &builder, air::ChannelOp chan,
                                    air::ChannelInterface ci,
-                                   int maxSize) const {
+                                   const air::DmaBdLimits &limits) const {
     SmallVector<Type, 4> tys = {};
     SmallVector<Value, 4> deps = {};
     auto asyncOp =
@@ -3801,13 +3801,14 @@ private:
                        padBeforeAttr.asArrayRef().end());
       padAfter.assign(padAfterAttr.asArrayRef().begin(),
                       padAfterAttr.asArrayRef().end());
-      padded = succeeded(canonicalizePaddedPattern(
-          builder, ci, offsets, wraps, strides, padBefore, padAfter, maxSize));
+      padded = succeeded(canonicalizePaddedPattern(builder, ci, offsets, wraps,
+                                                   strides, padBefore, padAfter,
+                                                   limits.maxWrap));
     }
     if (!padded)
       (void)air::canonicalizeWrapAndStrideList(
           builder, offsets, wraps, strides,
-          air::getTensorVolume(ci.getMemref().getType()), maxSize,
+          air::getTensorVolume(ci.getMemref().getType()), limits,
           innerAlignment);
     air::ChannelInterface new_ci = nullptr;
     if (isa<air::ChannelPutOp>(ci))
@@ -3856,10 +3857,10 @@ void specializeChannelBundle(
     AIE::DeviceOp &d, std::map<std::string, std::string> &chan_to_chan_map) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  // Enforce max size constraint
-  int maxSize = isa<AIE::AIE1TargetModel>(AIE::getTargetModel(d)) ? -1 : 1023;
+  air::DmaBdLimits limits =
+      air::getDmaBdLimits(AIE::getTargetModel(d), air::MemorySpace::L3);
   patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map,
-                                                  maxSize);
+                                                  limits);
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
@@ -8470,11 +8471,10 @@ public:
     }
     std::map<std::string, std::string> chan_to_chan_map;
     if (clTestPatterns.find("specialize-channel-bundle") != std::string::npos) {
-      // Enforce max size constraint
-      int maxSize =
-          isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? -1 : 1023;
+      air::DmaBdLimits limits = air::getDmaBdLimits(
+          AIE::getTargetModel(*device), air::MemorySpace::L3);
       patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map,
-                                                      maxSize);
+                                                      limits);
     }
 
     if (patterns.getNativePatterns().size())
