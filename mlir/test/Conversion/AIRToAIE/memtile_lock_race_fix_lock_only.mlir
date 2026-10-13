@@ -330,3 +330,171 @@ func.func @fanin_two_reads() {
   }
   return
 }
+
+// -----
+
+// Two writers, one reader. The single side's acquire-only and release-only BDs look alike, but
+// the release-only one must survive the BD pattern folding.
+
+// CHECK-LABEL: aie.device
+// CHECK: %[[BUF:.*]] = aie.buffer(%{{.*}}) {sym_name = "{{buf[0-9]+}}"} : memref<2x8xbf16, 1>
+// CHECK: aie.memtile_dma
+// CHECK: aie.dma_start(S2MM, 0
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%[[A0:.*]], AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<2x8xbf16, 1> offset = 0 len = 8)
+// CHECK-NEXT: aie.use_lock(%[[B0:.*]], Release, %c1_i32)
+// CHECK: aie.dma_start(MM2S, 0
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%[[B0]], AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<2x8xbf16, 1> offset = 0 len = 0)
+// CHECK-NEXT: aie.use_lock(%[[A0]], Release, %c0_i32)
+// CHECK-NEXT: aie.next_bd
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<2x8xbf16, 1> offset = 0 len = 16)
+// CHECK-NEXT: aie.use_lock(%{{.*}}, Release, %c1_i32)
+// CHECK-NEXT: aie.next_bd
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%[[B0]], AcquireGreaterEqual, %c1_i32) {acq_en = false}
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<2x8xbf16, 1> offset = 0 len = 0)
+// CHECK-NEXT: aie.use_lock(%[[A0]], Release, %c1_i32)
+// CHECK-NEXT: aie.next_bd
+// CHECK: func.func @fanin_two
+
+air.channel @w0 [1, 1]
+air.channel @w1 [1, 1]
+air.channel @r0 [1, 1]
+func.func @fanin_two() {
+  %c1 = arith.constant 1 : index
+  air.launch (%a, %b) in (%c=%c1, %d=%c1) {
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %c8 = arith.constant 8 : index
+      %k1 = arith.constant 1 : index
+      %t, %l2 = air.execute -> (memref<2x8xbf16, 1>) {
+        %alloc = memref.alloc() {air.no_split} : memref<2x8xbf16, 1>
+        air.execute_terminator %alloc : memref<2x8xbf16, 1>
+      }
+      air.channel.get @w0[] (%l2[%c0, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<2x8xbf16, 1>)
+      air.channel.get @w1[] (%l2[%k1, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<2x8xbf16, 1>)
+      air.channel.put @r0[] (%l2[] [] []) : (memref<2x8xbf16, 1>)
+      %d_ = air.execute {
+        memref.dealloc %l2 : memref<2x8xbf16, 1>
+      }
+      air.herd @h0 tile (%tx_h0, %ty_h0) in (%sx_h0=%c1_0, %sy_h0=%c1_0)
+            attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+        %tok, %l1 = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        air.channel.put @w0[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xbf16, 2>}
+      }
+      air.herd @h1 tile (%tx_h1, %ty_h1) in (%sx_h1=%c1_0, %sy_h1=%c1_0)
+            attributes {x_loc = 1 : i64, y_loc = 2 : i64} {
+        %tok, %l1 = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        air.channel.put @w1[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xbf16, 2>}
+      }
+      air.herd @hr tile (%tx_hr, %ty_hr) in (%sx_hr=%c1_0, %sy_hr=%c1_0)
+            attributes {x_loc = 0 : i64, y_loc = 3 : i64} {
+        %tok, %l1 = air.execute -> (memref<16xbf16, 2>) {
+          %aa = memref.alloc() : memref<16xbf16, 2>
+          air.execute_terminator %aa : memref<16xbf16, 2>
+        }
+        air.channel.get @r0[] (%l1[] [] []) : (memref<16xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<16xbf16, 2>}
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// One writer, two readers. The single side's acquire-only and release-only BDs look alike, but
+// the release-only one must survive the BD pattern folding.
+
+// CHECK-LABEL: aie.device
+// CHECK: %[[BUF:.*]] = aie.buffer(%{{.*}}) {sym_name = "{{buf[0-9]+}}"} : memref<2x8xbf16, 1>
+// CHECK: aie.memtile_dma
+// CHECK: aie.dma_start(MM2S, 0
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%[[A0:.*]], AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<2x8xbf16, 1> offset = 0 len = 8)
+// CHECK-NEXT: aie.use_lock(%[[B0:.*]], Release, %c1_i32)
+// CHECK: aie.dma_start(S2MM, 0
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%[[B0]], AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<2x8xbf16, 1> offset = 0 len = 0)
+// CHECK-NEXT: aie.use_lock(%[[A0]], Release, %c0_i32)
+// CHECK-NEXT: aie.next_bd
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<2x8xbf16, 1> offset = 0 len = 16)
+// CHECK-NEXT: aie.use_lock(%{{.*}}, Release, %c1_i32)
+// CHECK-NEXT: aie.next_bd
+// CHECK-NEXT: ^bb{{[0-9]+}}:
+// CHECK-NEXT: aie.use_lock(%[[B0]], AcquireGreaterEqual, %c1_i32) {acq_en = false}
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<2x8xbf16, 1> offset = 0 len = 0)
+// CHECK-NEXT: aie.use_lock(%[[A0]], Release, %c1_i32)
+// CHECK-NEXT: aie.next_bd
+// CHECK: func.func @fanout_two
+
+air.channel @w0 [1, 1]
+air.channel @r0 [1, 1]
+air.channel @r1 [1, 1]
+func.func @fanout_two() {
+  %c1 = arith.constant 1 : index
+  air.launch (%a, %b) in (%c=%c1, %d=%c1) {
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %c8 = arith.constant 8 : index
+      %k1 = arith.constant 1 : index
+      %t, %l2 = air.execute -> (memref<2x8xbf16, 1>) {
+        %alloc = memref.alloc() {air.no_split} : memref<2x8xbf16, 1>
+        air.execute_terminator %alloc : memref<2x8xbf16, 1>
+      }
+      air.channel.get @w0[] (%l2[] [] []) : (memref<2x8xbf16, 1>)
+      air.channel.put @r0[] (%l2[%c0, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<2x8xbf16, 1>)
+      air.channel.put @r1[] (%l2[%k1, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<2x8xbf16, 1>)
+      %d_ = air.execute {
+        memref.dealloc %l2 : memref<2x8xbf16, 1>
+      }
+      air.herd @hw tile (%tx_hw, %ty_hw) in (%sx_hw=%c1_0, %sy_hw=%c1_0)
+            attributes {x_loc = 0 : i64, y_loc = 3 : i64} {
+        %tok, %l1 = air.execute -> (memref<16xbf16, 2>) {
+          %aa = memref.alloc() : memref<16xbf16, 2>
+          air.execute_terminator %aa : memref<16xbf16, 2>
+        }
+        air.channel.put @w0[] (%l1[] [] []) : (memref<16xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<16xbf16, 2>}
+      }
+      air.herd @h0 tile (%tx_h0, %ty_h0) in (%sx_h0=%c1_0, %sy_h0=%c1_0)
+            attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+        %tok, %l1 = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        air.channel.get @r0[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xbf16, 2>}
+      }
+      air.herd @h1 tile (%tx_h1, %ty_h1) in (%sx_h1=%c1_0, %sy_h1=%c1_0)
+            attributes {x_loc = 1 : i64, y_loc = 2 : i64} {
+        %tok, %l1 = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        air.channel.get @r1[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xbf16, 2>}
+      }
+    }
+  }
+  return
+}

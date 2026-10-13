@@ -202,6 +202,11 @@ int64_t air::get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
 // (one repeat-count entry).
 static bool chansMappedToEquivalentBDs(air::ChannelInterface chanA,
                                        air::ChannelInterface chanB) {
+  // Lock-only BDs that look alike can still take different lock actions, so
+  // folding one into another drops part of a handshake.
+  for (StringRef name : {air::attrs::LockOnly, air::attrs::LockOnlySlot})
+    if (chanA->getAttr(name) != chanB->getAttr(name))
+      return false;
   // Two transfers on different channels are different FLOWS: they carry
   // different packet ids and land on different destinations, so their BDs are
   // not interchangeable however alike the access patterns look. Folding them

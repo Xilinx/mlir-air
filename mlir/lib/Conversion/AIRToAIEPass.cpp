@@ -6913,6 +6913,9 @@ public:
     // The first block
     Block *channel_head = nullptr;
     Block *end_bb = nullptr;
+    // (buffer, slot) of each lock-only BD emitted, by kind.
+    llvm::DenseSet<std::pair<Operation *, int64_t>> lockOnlyAcquired,
+        lockOnlyReleased;
 
     for (auto &[dma_chan, memcpy_ops] : dma_memcpys_sorted) {
       AIE::DMAChannelDir dir = dma_chan.first;
@@ -7001,6 +7004,17 @@ public:
           newBD.value()->setAttr(
               "task_id",
               IntegerAttr::get(IntegerType::get(b.getContext(), 32), taskId));
+          if (auto kind =
+                  memcpyOp->getAttrOfType<StringAttr>(air::attrs::LockOnly)) {
+            auto slot =
+                memcpyOp->getAttrOfType<IntegerAttr>(air::attrs::LockOnlySlot);
+            auto key =
+                std::make_pair(bufferOp.value().getOperation(), slot.getInt());
+            if (kind.getValue() == "acquire")
+              lockOnlyAcquired.insert(key);
+            else
+              lockOnlyReleased.insert(key);
+          }
 
           // v2 chain-lock 2-slot ping-pong: splice a twin BD (on a second
           // buffer instance, sharing the chain locks) between the primary BD
@@ -7078,6 +7092,12 @@ public:
         taskId++;
       }
     }
+    // A pattern fold that drops a release-only BD leaves the other side
+    // waiting forever on hardware.
+    for (auto &key : lockOnlyAcquired)
+      if (!lockOnlyReleased.contains(key))
+        return key.first->emitOpError(
+            "has a lock-only BD whose locks no BD releases");
     return success();
   }
 
