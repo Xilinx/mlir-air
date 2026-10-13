@@ -6,6 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#if AIR_ENABLE_AIE
+#include "aie/Dialect/AIEVec/IR/AIEVecDialect.h"
+#endif
 #include "air/Dialect/AIR/AIRTransformOps.h"
 #if AIR_ENABLE_AIE
 #include "air/Conversion/AIRToAIEPass.h"
@@ -78,6 +81,10 @@ public:
 
   AIRTransformDialectExtension() {
     declareDependentDialect<func::FuncDialect>();
+#if AIR_ENABLE_AIE
+    // linearize_vectors emits aievec.unpack for 4-bit unpacks.
+    declareGeneratedDialect<xilinx::aievec::AIEVecDialect>();
+#endif
     registerTransformOps<
 #define GET_OP_LIST
 #include "air/Dialect/AIR/AIRTransformOps.cpp.inc"

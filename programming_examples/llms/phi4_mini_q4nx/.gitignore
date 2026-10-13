@@ -37,3 +37,4 @@ decode.insts.bin
 
 # Staircase window manifest (which ATTN_MAXL pairs this dir holds).
 .decode_windows
+_fused_prefill/

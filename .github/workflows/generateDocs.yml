@@ -187,7 +187,7 @@ jobs:
       # Generate the CI-produced MkDocs pages into the docs tree:
       #   - Operator Dashboard (operators only)
       #   - LLMs on NPU overview (live nightly benchmark table)
-      #   - LLM Performance History (charts, embedded for Material)
+      #   - LLM/VLA Performance History (charts, embedded for Material)
       - name: Generate dashboard pages
         run: |
           BASE=https://github.com/Xilinx/mlir-air/tree/main/programming_examples/

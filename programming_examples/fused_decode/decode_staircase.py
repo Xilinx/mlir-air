@@ -81,14 +81,16 @@ def make_insts_states(gen, xrt, dev, group_id, windows):
     for m in windows:
         i1 = gen.insts_for(m, 1)
         if exact:
-            # A dynseq build computes the stream, so there is nothing to calibrate
-            # -- and nothing that could be: its readback length steps with
-            # ceil(L/16), which no two-point slope reproduces. Keep the generator
-            # and rewrite the whole stream per token.
+            # The readback length steps with ceil(L/16), which no two-point slope
+            # reproduces, so the generator computes the L-dependent words itself.
+            ld = gen.varying(m)
             st[m] = dict(
                 exact=True,
                 gen=gen,
                 maxl=m,
+                ld=ld,
+                lo=int(ld.min()),
+                hi=int(ld.max()) + 1,
                 buf=i1.astype(np.uint32).copy(),
                 size=int(i1.size),
                 ib=xrt.bo(dev, i1.nbytes, xrt.bo.cacheable, group_id),
@@ -118,15 +120,13 @@ def patch_insts(state, L, xrt, to_dir):
     and synced.
     """
     if state.get("exact"):
-        # Whole stream: the L-dependent words are scattered across it and cost
-        # far less to rewrite than to locate.
-        state["buf"][:] = state["gen"].insts_for(state["maxl"], L)
-        state["ib"].write(state["buf"], 0)
-        state["ib"].sync(to_dir)
-        return state["size"]
-    state["buf"][state["ld"]] = (state["base"] + (L - 1) * state["slope"]).astype(
-        np.uint32
-    )
+        state["buf"][state["ld"]] = state["gen"].words_for(
+            state["maxl"], L, state["ld"]
+        )
+    else:
+        state["buf"][state["ld"]] = (state["base"] + (L - 1) * state["slope"]).astype(
+            np.uint32
+        )
     if not state["primed"]:
         state["ib"].write(state["buf"], 0)
         state["ib"].sync(to_dir)

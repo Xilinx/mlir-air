@@ -796,6 +796,40 @@ channel index, and vice versa. The compiler enforces the **static balance condit
 
 A violation of the balance condition is a compile-time error.
 
+#### Endpoint ordering requirement
+
+A channel is an ordered FIFO, so the sequence in which transfers enter the channel is part
+of the program's meaning. Two ops address the same **channel slot** when they name the same
+channel, move data in the same direction, and carry provably equal indices. Ops addressing
+one slot must be totally ordered with respect to each other by `dependency` tokens. The
+requirement is independent of the buffers those ops touch, because the ordering constrains
+the shared FIFO rather than the data.
+
+- Program order does not establish the ordering. Within an async region the token graph is
+  the only ordering the IR carries, so two same-slot endpoints with disjoint dependency
+  lists are unordered, and which transfer each endpoint consumes is undefined.
+- A conditional region does not open a new sequential scope. An `affine.if` / `scf.if` /
+  `scf.index_switch` arm is guarded straight-line code belonging to the enclosing scope, so
+  endpoints in sibling conditionals must still be ordered; the edge names the conditional's
+  token result rather than the guarded op's own token. A loop body does open a new scope,
+  so endpoints in distinct loops are not ordered against each other.
+- Two endpoints reached through conditional arms are ordered only when they sit under the
+  same guard. On the arm that does not run, a conditional's token result carries whatever
+  the other arm yields, which says nothing about the endpoint inside; ordering through it
+  would be fictional. Endpoints under unrelated conditions, including opposite arms of one
+  conditional, are therefore left unordered.
+- Indices that are not provably equal address distinct slots and require no ordering.
+  Treating unknown indices as equal instead would serialize independent sub-channels.
+
+Any path through the dependency graph satisfies the requirement, but a producer of AIR
+should emit a direct edge. A path routed through ops on other channels does not survive
+compilation: each intermediate edge relates two ops that share neither a channel nor a
+buffer, so a pass that removes false dependencies deletes those intermediate edges and
+leaves the two same-slot endpoints unordered.
+
+Violating the requirement is not a compile-time error today. The pass
+`-air-verify-channel-fifo-order` checks the requirement on demand.
+
 #### Deadlock conditions
 
 A program deadlocks when a `put` is waiting for a `get` that can never execute, or a
@@ -826,6 +860,29 @@ make progress simultaneously. In practice:
 - The communication graph (nodes = ops, edges = channel put→get dependencies) must
   be **acyclic**: a cycle means at least one op in the cycle is waiting on another in
   the same cycle, which can never be resolved.
+
+#### Ordering through host memory
+
+Transfers on one channel index are matched in program order: the k-th `put` pairs with
+the k-th `get`.
+
+A `get` at launch scope whose destination is host memory (L3) — a *drain* — receives data
+produced on the device. It cannot complete before its device-side `put`, and so not
+before the host inputs that feed the producer have been issued. The async token graph
+does not carry this. A token dependency would make the `get` start only after the `put`
+completed, and a `put` may need its `get` in order to complete; so the two are related
+only by channel pairing, and so are the drain and the inputs that feed its producer.
+
+A lowering that issues host operations in sequence must therefore:
+
+- issue a drain no later than the inputs its producer needs, so that it is ready to
+  receive;
+- block on the drain's completion only after those inputs have been issued; and
+- block on the drain's completion before any host access that may touch the memory it
+  writes, as the drain's token requires.
+
+How many transfers a channel can have in flight is a property of the backend, not of the
+program.
 
 ---
 

@@ -13,11 +13,7 @@
 #include "mlir/CAPI/Support.h"
 #include "mlir/IR/BuiltinTypes.h"
 
-void runTransform(MlirModule transform_ir, MlirModule payload_ir) {
-  auto transformModule = unwrap(transform_ir);
-  auto payloadModule = unwrap(payload_ir);
-  auto logicalResult =
-      xilinx::air::runAIRTransform(transformModule, payloadModule);
-  (void)logicalResult;
-  return;
+MlirLogicalResult runTransform(MlirModule transform_ir, MlirModule payload_ir) {
+  return wrap(
+      xilinx::air::runAIRTransform(unwrap(transform_ir), unwrap(payload_ir)));
 }

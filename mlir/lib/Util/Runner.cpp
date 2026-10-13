@@ -855,10 +855,10 @@ private:
     }
   }
 
-  // Convert time from cycle count to time stamp in ms (with 3 d.p.)
+  // Convert cycles to a microsecond timestamp, rounded to nanoseconds.
   std::string convertToTimeStampInStr(uint64_t time, device &d) {
     uint64_t time_in_ns =
-        (uint64_t)std::round(((double)time) / (1000000000.0 / (double)d.clock));
+        (uint64_t)std::round(((double)time) * (1000000000.0 / (double)d.clock));
     uint64_t int_part = (uint64_t)(time_in_ns / 1000);
     uint64_t frac_part = (uint64_t)(time_in_ns % 1000);
     std::string zero_fill = "";

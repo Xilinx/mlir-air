@@ -21,7 +21,11 @@ BLOCK_BF16 = (ROW_BLOCK * COL_BLOCK) // 2 // 2 + 2 * (N_GROUPS * ROW_BLOCK)  # 2
 
 
 def pack_q4k_block(q, scale, mn):
-    """Pack one 32x256 block.
+    """Pack one 32x256 block, element by element.
+
+    The reference for `pack_q4k_blocks`, which produces the same bytes for
+    every block of a matrix at once; check_proj_qmm_pack.py holds the two to
+    that.
     q:     uint8 [ROW_BLOCK, COL_BLOCK] nibbles 0..15
     scale: float [ROW_BLOCK, N_GROUPS]   (per row, per 32-col group)
     mn:    float [ROW_BLOCK, N_GROUPS]
@@ -55,6 +59,37 @@ def pack_q4k_block(q, scale, mn):
     arr = np.frombuffer(bytes(buf), dtype=np.int16).copy()
     assert arr.size == BLOCK_BF16, (arr.size, BLOCK_BF16)
     return arr
+
+
+def pack_q4k_blocks(q, scale, mn):
+    """Pack every 32x256 block of an [M, K] matrix at once.
+
+    q:     uint8 [M, K] nibbles 0..15 (high nibbles are ignored)
+    scale: float [M, K / GROUP]
+    mn:    float [M, K / GROUP]
+    returns: int16 [M / ROW_BLOCK, K / COL_BLOCK, BLOCK_BF16]; entry [i, j] is
+    `pack_q4k_block` of rows i*32.. and columns j*256...
+    """
+    M, K = q.shape
+    assert M % ROW_BLOCK == 0 and K % COL_BLOCK == 0
+    nbi, nbj = M // ROW_BLOCK, K // COL_BLOCK
+    assert scale.shape == mn.shape == (M, K // GROUP)
+
+    def by_group(x):
+        # [M, K/32] -> [nbi, nbj, group, row] bf16 bytes: scales[group][row].
+        x = np.asarray(x).reshape(nbi, ROW_BLOCK, nbj, N_GROUPS)
+        x = np.ascontiguousarray(x.transpose(0, 2, 3, 1).astype(bfloat16))
+        return x.view(np.uint8).reshape(nbi, nbj, -1)
+
+    # Row r of a block is rowgrp*PARALLEL + 2*kk + e; the byte for
+    # qs[rowgrp][col][kk] holds row e=1 in its high nibble and e=0 in its low.
+    w = (np.asarray(q, np.uint8) & 0xF).reshape(
+        nbi, ROW_GROUPS, PARALLEL // 2, 2, nbj, COL_BLOCK
+    )
+    qs = (w[:, :, :, 1] << 4) | w[:, :, :, 0]  # [nbi, rowgrp, kk, nbj, col]
+    qs = qs.transpose(0, 3, 1, 4, 2).reshape(nbi, nbj, -1)
+    out = np.concatenate([by_group(scale), by_group(mn), qs], axis=2)
+    return np.ascontiguousarray(out).view(np.int16)
 
 
 def pack_q4k_cascade(
@@ -115,7 +150,7 @@ def pack_q4k_cascade(
         ]
     else:
         order = [(i, j, cy) for (i, j) in steps for cy in range(NCY)]
-    blocks = []
+    rows, cols = [], []
     for cx in range(NCX):
         for i, j, cy in order:
             if iter_major:
@@ -128,13 +163,6 @@ def pack_q4k_cascade(
                 gi = (cx * NCY + cy) * nbi_pc + i  # contiguous per core
             else:
                 gi = cx * (NCY * nbi_pc) + i * NCY + cy  # global row-block
-            rs, cs = gi * ROW_BLOCK, j * COL_BLOCK
-            gs = j * (COL_BLOCK // GROUP)
-            blocks.append(
-                pack_q4k_block(
-                    q[rs : rs + ROW_BLOCK, cs : cs + COL_BLOCK],
-                    scale[rs : rs + ROW_BLOCK, gs : gs + N_GROUPS],
-                    mn[rs : rs + ROW_BLOCK, gs : gs + N_GROUPS],
-                )
-            )
-    return np.concatenate(blocks)
+            rows.append(gi)
+            cols.append(j)
+    return pack_q4k_blocks(q, scale, mn)[rows, cols].reshape(-1)

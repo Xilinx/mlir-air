@@ -985,15 +985,9 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
   // Ping-pong transform
   if (omitPingpong.getValue().empty() || omitPingpong.getValue() == "L1" ||
       omitPingpong.getValue() == "L2") {
-    // The device lets the labeller decline a candidate whose duplicated L1
-    // buffers would not fit the tile; the chain-lock flag lets it decline one
-    // whose run-ahead would feed a serialized fan-in. Both are facts the
-    // labeller cannot derive on its own, and the second must agree with what
-    // air-to-aie is told below or the two disagree about whether a chain
-    // exists.
+    // Pass the device so the labeller can decline a candidate whose duplicated
+    // L1 buffers would not fit the tile.
     std::string labelOpts = "device=" + deviceName.getValue();
-    labelOpts += " chain-lock-v2=";
-    labelOpts += useLockRaceConditionFixV2 ? "true" : "false";
     std::string ppOpts;
     if (omitPingpong.getValue() == "L1" || omitPingpong.getValue() == "L2") {
       labelOpts += " omit-memory-space=" + omitPingpong.getValue();
@@ -1155,10 +1149,6 @@ static LogicalResult runAieCompilation() {
     // Folding up front means every pass downstream sees exactly the IR it saw
     // when the count was written by hand.
     os << "air-annotate-refeed";
-    // Same reasoning: derive from the shape the front end wrote, before any
-    // pass rewrites the channel ops. A shim readback that reads an L3 buffer a
-    // shim append wrote is a RAW pair the runtime does not order on its own.
-    os << ",air-annotate-append-barrier";
     // Same slot, same reason. Derives a demux channel's packet id count from
     // its fan-out shape and checks the ids against the ones its kernel stamps.
     // Header emission is deferred to a second run of this pass, inside the

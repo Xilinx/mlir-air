@@ -6,6 +6,7 @@ set(AIRUTIL_LINK_LIBS
   MLIRAnalysis
   MLIRIR
   MLIRTransforms
+  MLIRValueBoundsOpInterface
 )
 
 # AIE target model is queried for the shim address-gen granularity when

@@ -91,12 +91,73 @@ def _check_dependency(dependency):
             )
 
 
-def _check_padding(pad_before, pad_after):
+def _padding(src, src_ep, pad_before, pad_after, direction):
+    """Check pad_before/pad_after and return them as two lists of ints.
+
+    There is one entry per axis of the source region, as dma_memcpy_nd takes
+    them; the zeros are added on the read side. Only a memtile can read with
+    padding, so the source has to be an L2 buffer. An omitted list means no
+    padding on that side.
+    """
     if pad_before is None and pad_after is None:
-        return
-    raise NotImplementedError(
-        "pad_before/pad_after are not supported by air.api yet; the underlying "
-        "air.dma_memcpy_nd accepts them, but the DSL does not validate them"
+        return None
+    if not isinstance(src, (Buffer, BufferSlice)) or _space(src) != "L2":
+        raise ValueError(
+            f"air.api.ops.{direction}: padding needs an L2 source, since only "
+            f"the memtile DMA can add zeros on the read; the source is "
+            f"{src_ep.what} in {_space(src) or 'L3'}"
+        )
+    rank = len(src_ep.pattern[1]) if src_ep.pattern is not None else len(src_ep.sizes)
+    pads = []
+    for name, pad in (("pad_before", pad_before), ("pad_after", pad_after)):
+        pad = [0] * rank if pad is None else list(pad)
+        if len(pad) != rank:
+            raise ValueError(
+                f"air.api.ops.{direction}: {name} has {len(pad)} entries but "
+                f"the source region has {rank} axes"
+            )
+        for p in pad:
+            if isinstance(p, bool) or not isinstance(p, int) or not 0 <= p <= 65535:
+                raise ValueError(
+                    f"air.api.ops.{direction}: {name} entries must be integers "
+                    f"in [0, 65535], got {pad}"
+                )
+        pads.append(pad)
+    return pads
+
+
+def _space(obj):
+    if isinstance(obj, BufferSlice):
+        return obj.buffer.space
+    return getattr(obj, "space", None)
+
+
+def _padded(src_ep, pads):
+    """The source endpoint as the destination sees it, padding included."""
+    if pads is None:
+        return src_ep
+    before, after = pads
+    if src_ep.pattern is None:
+        # A whole buffer: spell out its row-major walk so the padding has
+        # sizes to attach to.
+        strides, run = [], 1
+        for n in reversed(src_ep.sizes):
+            strides.insert(0, run)
+            run *= n
+        src_ep.pattern = ([0] * len(src_ep.sizes), list(src_ep.sizes), strides)
+    sizes = src_ep.pattern[1]
+    padded = tuple(int(n) + b + a for n, b, a in zip(sizes, before, after))
+    # A micro-tiled source is walked at a different rank than its logical
+    # shape, so only the element count can be compared.
+    is_view = src_ep.is_view or len(sizes) != len(src_ep.sizes)
+    return _Endpoint(
+        src_ep.value,
+        src_ep.dtype,
+        padded,
+        src_ep.pattern,
+        tensor=src_ep.tensor,
+        what=f"padded {src_ep.what}",
+        is_view=is_view,
     )
 
 
@@ -248,10 +309,12 @@ def _check_pair(dst, src, direction):
         )
 
 
-def _emit_dma(dst, src):
+def _emit_dma(dst, src, pads=None):
     from air.dialects.air import dma_memcpy_nd
 
     kwargs = {}
+    if pads is not None:
+        kwargs.update(pad_before=pads[0], pad_after=pads[1])
     if dst.pattern is not None:
         offsets, sizes, strides = dst.pattern
         kwargs.update(dst_offsets=offsets, dst_sizes=sizes, dst_strides=strides)
@@ -276,9 +339,13 @@ def load(dst, src, pad_before=None, pad_after=None, dependency=None):
     not to have a caller yet, and the asymmetry read as a rule rather than an
     omission: a kernel whose L1 tile is shaped for a hand-written kernel but
     whose L3 region is flat has to reshape on the way *in*.
+
+    ``pad_before``/``pad_after`` add zeros around the source, one count per axis
+    of the source region: ``load(l1, l2[0:m, 0:k], pad_after=[0, kp - k])``
+    fills an ``[m, kp]`` tile from ``k`` real columns. The source must be in L2,
+    because only the memtile DMA pads.
     """
     _check_dependency(dependency)
-    _check_padding(pad_before, pad_after)
 
     if not isinstance(dst, (Buffer, BufferSlice)):
         raise TypeError(
@@ -287,8 +354,9 @@ def load(dst, src, pad_before=None, pad_after=None, dependency=None):
         )
     dst_ep = _endpoint(dst, "load", "destination")
     src_ep = _endpoint(src, "load", "source")
-    _check_pair(dst_ep, src_ep, "load")
-    return Token(_emit_dma(dst_ep, src_ep))
+    pads = _padding(src, src_ep, pad_before, pad_after, "load")
+    _check_pair(dst_ep, _padded(src_ep, pads), "load")
+    return Token(_emit_dma(dst_ep, src_ep, pads))
 
 
 def store(src, dst, pad_before=None, pad_after=None, dependency=None):
@@ -297,9 +365,10 @@ def store(src, dst, pad_before=None, pad_after=None, dependency=None):
     ``store(l1, C[i:i+n])`` is L1 to L3; ``store(l1, staged[tx, :])`` is L1 to
     L2; ``store(l2, C[i:i+n])`` is L2 to L3. The source is always the buffer
     being drained. A bare tensor destination means the whole of it.
+
+    Padding is as for ``load``: it applies to the source, which must be in L2.
     """
     _check_dependency(dependency)
-    _check_padding(pad_before, pad_after)
 
     if not isinstance(src, (Buffer, BufferSlice)):
         raise TypeError(
@@ -308,7 +377,8 @@ def store(src, dst, pad_before=None, pad_after=None, dependency=None):
         )
     src_ep = _endpoint(src, "store", "source")
     dst_ep = _endpoint(dst, "store", "destination")
-    _check_pair(dst_ep, src_ep, "store")
+    pads = _padding(src, src_ep, pad_before, pad_after, "store")
+    _check_pair(dst_ep, _padded(src_ep, pads), "store")
 
     # Being the destination of a store is what makes a tensor an output, which
     # in turn fixes the kernel's calling convention (inputs first, then
@@ -316,7 +386,7 @@ def store(src, dst, pad_before=None, pad_after=None, dependency=None):
     if dst_ep.tensor is not None:
         dst_ep.tensor.is_output = True
 
-    return Token(_emit_dma(dst_ep, src_ep))
+    return Token(_emit_dma(dst_ep, src_ep, pads))
 
 
 def fill(buf, value):

@@ -239,8 +239,8 @@ static void assignLaunchWaveIndices(mlir::ModuleOp module) {
 
 // Compute and stamp the reset decision on every device. MUST run after
 // moveFuncOpToEndOfDeviceOp (so the control funcs, hence the launch_end
-// markers, are inside their devices) and before generateNpuWaitFromAIRRtWaitAll
-// / unrollAffineFors (which erase the markers and strip the loops).
+// markers, are inside their devices) and before lowerLaunchEnds /
+// unrollAffineFors (which erase the markers and strip the loops).
 static void markDevicesNeedingLockReset(mlir::ModuleOp module) {
   module.walk([&](xilinx::AIE::DeviceOp device) {
     if (deviceHasRepeatCountDMAs(device) || deviceHasSingleTripCascade(device))
@@ -716,7 +716,7 @@ struct FoldConstIndexSwitchPattern
     // If the switch carried an async drain token (a fused per-wave mode switch
     // wrapping host feeds is made async upstream so shim-dma-bds can build the
     // launch_end drain), sever the drain's dependency on it. At this stage feed
-    // synchronization is handled by NpuDmaWaitOp on channels; the launch_end
+    // synchronization comes from the transfers' own events; the launch_end
     // wait_all only needs its marker attribute (already counted by
     // markDevicesNeedingLockReset). Rebuild each consuming airrt.wait_all
     // without the switch-token operand, so the token becomes dead and the
@@ -1058,13 +1058,6 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // weight stream.
     if (op->hasAttr(air::attrs::RuntimeHoist))
       configTaskOp->setAttr(air::attrs::RuntimeHoist, rewriter.getUnitAttr());
-    if (op->hasAttr(air::attrs::AwaitAppends))
-      configTaskOp->setAttr(air::attrs::AwaitAppends, rewriter.getUnitAttr());
-    // Carry the append-barrier marker so the append->readback ordering step can
-    // find this append's completion await and move it before the tagged
-    // readback (see the air.await_appends barrier below).
-    if (op->hasAttr(air::attrs::AppendBarrier))
-      configTaskOp->setAttr(air::attrs::AppendBarrier, rewriter.getUnitAttr());
     // Carry the coalesced-feed marker so the double-buffered await synthesis
     // paces this merged channel at depth 1 (no cross-run overlap).
     if (op->hasAttr(air::attrs::CoalescedShimFeed))
@@ -1193,13 +1186,12 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     AIEX::DMAStartTaskOp::create(rewriter, op.getLoc(),
                                  configTaskOp.getResult());
 
-    // NOTE: We do NOT generate DMAAwaitTaskOp here. Awaits are generated
-    // by AIRRtWaitAllOpToAwaitPattern AFTER DMA conversion, at the location
-    // of the WaitAllOp (clustered together), replicating the original behavior
-    // where NpuDmaWaitOp was generated at WaitAllOp location.
-
-    // Erase the original op
-    rewriter.eraseOp(op);
+    // The task stands for the transfer: the wait_alls naming the transfer's
+    // event await or free it (AIRRtWaitAllOpConversion).
+    if (op->getNumResults())
+      rewriter.replaceOp(op, configTaskOp.getResult());
+    else
+      rewriter.eraseOp(op);
 
     return success();
   }
@@ -1532,68 +1524,67 @@ public:
   }
 };
 
-// Erase remaining WaitAllOps that weren't converted to NpuDmaWaitOp.
-// These are pure synchronization ops that don't generate NPU ops.
-// For WaitAllOps with "air.launch_end" attribute, we may need to insert
-// aiex.npu.load_pdi to reset the DMA engine / cascade state if:
-// 1. output-elf mode is enabled, AND
-// 2. deviceNeedsLockReset(device) -- i.e. the device has core/memtile DMAs
-//    with repeat_count > 0, OR is a single-trip cascade launch.
+// Whether shim channel `metadata` of `device` moves data to the host.
+static bool isDeviceToHostShimChannel(AIE::DeviceOp device,
+                                      StringRef metadata) {
+  if (auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(device, metadata))
+    return alloc.getChannelDir() == AIE::DMAChannelDir::S2MM;
+  // An objectfifo whose consumer is a shim tile.
+  if (auto objFifo = device.lookupSymbol<AIE::ObjectFifoCreateOp>(metadata))
+    for (auto consumerTile : objFifo.getConsumerTiles())
+      if (isShimTileValue(consumerTile))
+        return true;
+  return false;
+}
+
+// A wait_all on shim transfers becomes, at its position, an await of each
+// device-to-host task it names (wait for completion, free the BD) and a free
+// of each host-to-device one (no wait). A paced host-to-device task is
+// awaited by synthesizeDoubleBufferedAwaits instead. Operands that are not
+// transfers -- other wait_alls -- lower to nothing.
 class AIRRtWaitAllOpConversion : public OpConversionPattern<airrt::WaitAllOp> {
 public:
-  AIRRtWaitAllOpConversion(MLIRContext *context, bool outputElf,
-                           PatternBenefit benefit = 1)
-      : OpConversionPattern<airrt::WaitAllOp>(context, benefit),
-        outputElf(outputElf) {}
+  using OpConversionPattern<airrt::WaitAllOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(airrt::WaitAllOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Check if this is a launch_end wait_all
-    if (op->hasAttr("air.launch_end")) {
-      // Find the parent device
-      auto device = op->getParentOfType<AIE::DeviceOp>();
-      if (device) {
-        // Only apply for NPU2 family devices
-        const AIE::AIETargetModel &tm = device.getTargetModel();
-        if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          // A fused multi-iteration launch (scf.for over air.launch stitching N
-          // iterations into one dispatch) needs the between-iteration shim
-          // drain on the xclbin (non-elf) path too: otherwise consecutive
-          // iterations overlap and a finite-depth device lock deadlocks after a
-          // few iterations.
-          bool multiIter = deviceHasMultiIterLaunch(device);
-          if (outputElf && deviceNeedsLockReset(device)) {
-            // Insert aiex.npu.load_pdi to reset DMA engine / cascade state
-            // (repeat_count DMAs, or a single-trip cascade launch).
-            rewriter.setInsertionPoint(op);
-            auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
-                                                    device.getSymName());
-            AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef,
-                                       IntegerAttr(), IntegerAttr(),
-                                       IntegerAttr(), AIEX::ExpandModeAttr());
-          } else if (outputElf || multiIter) {
-            // No PDI reload needed (no repeat_count DMAs), but still need
-            // between-iteration synchronization to prevent the next
-            // iteration's shim DMA configuration from racing with the
-            // current iteration's compute (issue #1373; extended to the
-            // multi-iteration xclbin path).
-            rewriter.setInsertionPoint(op);
-            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>())
-              AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
-                                         alloc.getSymName());
-          }
-        }
-      }
+    auto device = op->getParentOfType<AIE::DeviceOp>();
+    if (!device) {
+      rewriter.eraseOp(op);
+      return success();
     }
-
-    // Erase the op - synchronization is handled by NpuDmaWaitOp/load_pdi
+    auto channelOf = [](AIEX::DMAConfigureTaskForOp task) {
+      return task.getAlloc().getLeafReference().getValue();
+    };
+    // A channel retires its tasks in the order they were issued, so the
+    // tasks named on one channel are released in that order.
+    SmallVector<AIEX::DMAConfigureTaskForOp> named;
+    llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>>
+        inIssueOrder;
+    for (Value v : adaptor.getOperands())
+      if (auto task = v.getDefiningOp<AIEX::DMAConfigureTaskForOp>()) {
+        named.push_back(task);
+        inIssueOrder[channelOf(task)].push_back(task);
+      }
+    for (auto &[channel, tasks] : inIssueOrder)
+      if (llvm::all_equal(llvm::map_range(
+              tasks, [](Operation *t) { return t->getBlock(); })))
+        llvm::sort(tasks, [](Operation *a, Operation *b) {
+          return a->isBeforeInBlock(b);
+        });
+    llvm::StringMap<unsigned> next;
+    for (auto namedTask : named) {
+      StringRef channel = channelOf(namedTask);
+      auto task = inIssueOrder[channel][next[channel]++];
+      if (isDeviceToHostShimChannel(device, channel))
+        AIEX::DMAAwaitTaskOp::create(rewriter, op.getLoc(), task.getResult());
+      else if (!task->hasAttr(air::attrs::PreserveShimDmaOrder))
+        AIEX::DMAFreeTaskOp::create(rewriter, op.getLoc(), task.getResult());
+    }
     rewriter.eraseOp(op);
     return success();
   }
-
-private:
-  bool outputElf;
 };
 
 // Convert FuncOp control function into aiex.runtime_sequence op.
@@ -1671,111 +1662,6 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
-};
-
-// Pattern to convert WaitAllOp to NpuDmaWaitOp(s).
-// This runs BEFORE DMA conversion. NpuDmaWaitOp takes a symbol reference,
-// so it can be created before DMAConfigureTaskForOp exists.
-// Later, after DMA conversion, we convert:
-//   - S2MM waits to DMAAwaitTaskOp (wait + free BD)
-//   - MM2S waits to DMAFreeTaskOp (just free BD, no wait needed)
-struct AIRRtWaitAllOpToNpuWaitPattern
-    : public OpRewritePattern<airrt::WaitAllOp> {
-public:
-  AIRRtWaitAllOpToNpuWaitPattern(MLIRContext *context, bool outputElf,
-                                 PatternBenefit benefit = 1)
-      : OpRewritePattern<airrt::WaitAllOp>(context, benefit),
-        outputElf(outputElf) {}
-
-  LogicalResult matchAndRewrite(airrt::WaitAllOp op,
-                                PatternRewriter &rewriter) const override {
-    // Only match if at least one operand is a DmaMemcpyNdOp
-    if (llvm::none_of(op->getOperands(), [](Value oper) {
-          return (bool)oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
-        }))
-      return failure();
-
-    bool isLaunchEnd = op->hasAttr("air.launch_end");
-    bool multiIter = false;
-    if (isLaunchEnd) {
-      if (auto device = op->getParentOfType<AIE::DeviceOp>())
-        if (llvm::isa<AIE::BaseNPU2TargetModel>(device.getTargetModel()))
-          multiIter = deviceHasMultiIterLaunch(device);
-    }
-
-    llvm::SmallDenseSet<StringRef> waitedChannels;
-    for (auto oper : op->getOperands()) {
-      auto airrtDmaOp = oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
-      if (!airrtDmaOp)
-        continue;
-      auto metadataAttr =
-          airrtDmaOp->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata");
-      if (!metadataAttr)
-        continue;
-
-      // Generate NpuDmaWaitOp for ALL channels (both S2MM and MM2S)
-      // The conversion to DMAAwaitTaskOp vs DMAFreeTaskOp happens later
-      // based on channel direction
-      StringRef metadata = metadataAttr.getValue();
-      AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
-      waitedChannels.insert(metadata);
-    }
-
-    // Check if this is a launch_end wait_all and needs between-iteration sync
-    if (op->hasAttr("air.launch_end")) {
-      auto device = op->getParentOfType<AIE::DeviceOp>();
-      if (device) {
-        // Only apply for NPU2 family devices
-        const AIE::AIETargetModel &tm = device.getTargetModel();
-        if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          // A fused multi-iteration launch (scf.for over air.launch, e.g. N
-          // stitched iterations) must fence every iteration boundary even on
-          // the xclbin (non-elf) path: without it consecutive iterations
-          // overlap and a finite-depth device lock deadlocks after a few
-          // iterations.
-          if (outputElf && deviceNeedsLockReset(device)) {
-            auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
-                                                    device.getSymName());
-            AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef,
-                                       IntegerAttr(), IntegerAttr(),
-                                       IntegerAttr(), AIEX::ExpandModeAttr());
-          } else if (outputElf || multiIter) {
-            // No PDI reload needed, but emit NpuDmaWaitOp for any shim
-            // channels not already waited on to synchronize before the
-            // next iteration (issue #1373; extended to the multi-iteration
-            // xclbin path so each launch iteration fully drains).
-            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>())
-              if (!waitedChannels.contains(alloc.getSymName()))
-                AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
-                                           alloc.getSymName());
-          }
-        }
-      }
-    }
-
-    // The WaitAllOp may have uses (other WaitAllOps depending on its result).
-    // Replace with a new WaitAllOp with no operands to break the dependency
-    // chain. This is safe because the synchronization is now handled by
-    // NpuDmaWaitOp.
-    if (op->getNumResults() > 0 && !op->use_empty()) {
-      // Create a replacement WaitAllOp with no DMA operands (only non-DMA deps)
-      SmallVector<Value> nonDmaOpers;
-      for (auto oper : op->getOperands()) {
-        if (!oper.getDefiningOp<airrt::DmaMemcpyNdOp>())
-          nonDmaOpers.push_back(oper);
-      }
-      auto newWaitAll = airrt::WaitAllOp::create(
-          rewriter, op.getLoc(), airrt::EventType::get(op->getContext()),
-          nonDmaOpers);
-      rewriter.replaceOp(op, newWaitAll->getResult(0));
-    } else {
-      rewriter.eraseOp(op);
-    }
-    return success();
-  }
-
-private:
-  bool outputElf;
 };
 
 AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
@@ -2149,6 +2035,31 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   return false;
 }
 
+// Make the wait_alls that name `transfer` name the `pieces` it was split into
+// instead. Its event is used only by wait_alls: this pass drops the events
+// carried through region results and loop arguments before splitting.
+static void replaceTransferEvent(airrt::DmaMemcpyNdOp transfer,
+                                 ArrayRef<airrt::DmaMemcpyNdOp> pieces) {
+  if (!transfer->getNumResults())
+    return;
+  Value event = transfer->getResult(0);
+  SmallVector<Operation *> users(event.getUsers());
+  for (Operation *user : users) {
+    assert(isa<airrt::WaitAllOp>(user) &&
+           "a shim transfer's event is only waited on");
+    SmallVector<Value> operands;
+    for (Value v : user->getOperands()) {
+      if (v != event) {
+        operands.push_back(v);
+        continue;
+      }
+      for (auto piece : pieces)
+        operands.push_back(piece->getResult(0));
+    }
+    user->setOperands(operands);
+  }
+}
+
 LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto loc = memcpy_op->getLoc();
   auto ctx = memcpy_op->getContext();
@@ -2287,16 +2198,29 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
             .getResult();
   }
   auto newOp = airrt::DmaMemcpyNdOp::create(
-      builder, loc, SmallVector<Type>{}, memcpy_op.getId(), memcpy_op.getX(),
-      memcpy_op.getY(), memcpy_op.getMemref(), offsets, wraps, strides);
+      builder, loc, SmallVector<Type>(memcpy_op->getResultTypes()),
+      memcpy_op.getId(), memcpy_op.getX(), memcpy_op.getY(),
+      memcpy_op.getMemref(), offsets, wraps, strides);
   // Only discardable attrs carry over; the static_* arrays are inherent and
   // already set by the builder above.
   newOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
 
-  // Unroll the affine loop nest.
-  for (auto forOp : llvm::reverse(for_loop_nest)) {
-    (void)loopUnrollFull(forOp);
+  // Unroll the loop nest. The copies it leaves ahead of the transfer are the
+  // transfer's pieces.
+  SmallVector<airrt::DmaMemcpyNdOp> pieces;
+  if (for_loop_nest.empty()) {
+    pieces.push_back(newOp);
+  } else {
+    Operation *before = for_loop_nest.front()->getPrevNode();
+    for (auto forOp : llvm::reverse(for_loop_nest))
+      (void)loopUnrollFull(forOp);
+    for (Operation *o = before ? before->getNextNode()
+                               : &memcpy_op->getBlock()->front();
+         o != memcpy_op.getOperation(); o = o->getNextNode())
+      if (auto piece = dyn_cast<airrt::DmaMemcpyNdOp>(o))
+        pieces.push_back(piece);
   }
+  replaceTransferEvent(memcpy_op, pieces);
 
   memcpy_op.erase();
   return success();
@@ -2620,33 +2544,7 @@ static void splitDimIntoPieces(airrt::DmaMemcpyNdOp memcpy_op, unsigned i,
   SmallVector<OpFoldResult> offsets = memcpy_op.getMixedOffsets();
   SmallVector<OpFoldResult> wraps = memcpy_op.getMixedLengths();
   SmallVector<OpFoldResult> strides = memcpy_op.getMixedStrides();
-  // generateAwaitsFromWaitAllOps matches waits to configure tasks FIFO per
-  // channel -- the Nth wait for a channel awaits the Nth config for it. This
-  // rewrite turns one config into `wrap` of them, so the channel needs `wrap`
-  // waits or the pairing shifts: the original wait would land on the first
-  // piece, every later transfer on the channel would be awaited one slot
-  // early, and the tail pieces would go unawaited -- on an S2MM channel that
-  // is both a missed completion token and a BD that is never freed. Emit the
-  // extra waits alongside the extra configs so the 1:1 invariant survives.
-  //
-  // Only on a channel that is already waited: adding waits to a fire-and-
-  // forget channel would impose synchronisation the design never asked for.
-  StringRef waitedSym;
-  if (auto metadata = memcpy_op->getAttrOfType<FlatSymbolRefAttr>("metadata"))
-    if (auto func = memcpy_op->getParentOfType<func::FuncOp>())
-      func.walk([&](AIEX::NpuDmaWaitOp wait) {
-        if (wait.getSymbol() == metadata.getValue())
-          waitedSym = metadata.getValue();
-      });
-
-  // The op's !airrt.event is optional and, unlike tileIllegalWrapDim (which
-  // rewrites in place), this replaces the op -- so the result has to be
-  // carried across. The pieces are issued in program order on one channel, so
-  // the last one completing implies all of them have; give it the event and
-  // let it stand in for the original. This mirrors how coalesceShimDmaOrder
-  // redirects the event tokens of the ops it merges away.
-  SmallVector<Type> eventTy(memcpy_op->getResultTypes());
-  airrt::DmaMemcpyNdOp lastOp;
+  SmallVector<airrt::DmaMemcpyNdOp> pieces;
   for (int64_t k = 0; k < constWrap; k++) {
     SmallVector<OpFoldResult> newOffsets(offsets), newWraps(wraps),
         newStrides(strides);
@@ -2661,36 +2559,17 @@ static void splitDimIntoPieces(airrt::DmaMemcpyNdOp memcpy_op, unsigned i,
                                     builder, loc, builder.getI64IntegerAttr(k)))
               .getResult();
     newWraps[i] = builder.getI64IntegerAttr(1);
-    bool isLast = k + 1 == constWrap;
-    lastOp = airrt::DmaMemcpyNdOp::create(
-        builder, loc, isLast ? eventTy : SmallVector<Type>{}, memcpy_op.getId(),
-        memcpy_op.getX(), memcpy_op.getY(), memcpy_op.getMemref(), newOffsets,
-        newWraps, newStrides);
-    // Ordering/barrier markers must ride along on every piece, or the split
-    // silently drops the append barrier and the shim order constraint.
-    lastOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
+    auto piece = airrt::DmaMemcpyNdOp::create(
+        builder, loc, SmallVector<Type>(memcpy_op->getResultTypes()),
+        memcpy_op.getId(), memcpy_op.getX(), memcpy_op.getY(),
+        memcpy_op.getMemref(), newOffsets, newWraps, newStrides);
+    // Ordering markers must ride along on every piece, or the split silently
+    // drops the shim order constraint.
+    piece->setAttrs(memcpy_op->getDiscardableAttrDictionary());
+    pieces.push_back(piece);
   }
-  // Where they go does not change the pairing -- FIFO orders waits among
-  // themselves, and anywhere after the pieces and before the transfer's own
-  // wait gives piece k the kth of these and the last piece the original wait.
-  // It does change when the awaits execute, so prefer the transfer's own wait:
-  // a design that deliberately waits late keeps the overlap it asked for
-  // instead of being synchronised early. Only in the same block, though -- a
-  // wait in a nested region (a per-iteration drain inside an scf.for, say)
-  // would multiply these by the trip count and unbalance the very pairing they
-  // exist to preserve. Falling back to right after the pieces is always valid:
-  // every piece dominates them, which the pairing's dominance guard requires.
-  if (!waitedSym.empty()) {
-    for (Operation *o = memcpy_op->getNextNode(); o; o = o->getNextNode())
-      if (auto wait = dyn_cast<AIEX::NpuDmaWaitOp>(o))
-        if (wait.getSymbol() == waitedSym) {
-          builder.setInsertionPoint(wait);
-          break;
-        }
-    for (int64_t k = 1; k < constWrap; k++)
-      AIEX::NpuDmaWaitOp::create(builder, loc, waitedSym);
-  }
-  memcpy_op->replaceAllUsesWith(lastOp);
+  // The waits on the transfer wait on every piece.
+  replaceTransferEvent(memcpy_op, pieces);
   memcpy_op.erase();
 }
 
@@ -2949,13 +2828,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       (void)applyPatternsGreedily(module, std::move(p));
     }
 
-    // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
-    // This must happen BEFORE DMA conversion because:
-    // 1. WaitAllOp has SSA operands to DmaMemcpyNdOp event tokens
-    // 2. NpuDmaWaitOp uses symbol reference (can be created before DMA
-    // conversion)
-    // 3. After this, DMA tokens can be safely purged
-
     // Decide the per-launch lock/DMA reset for each device now, while the
     // launch_end markers (and the loops that mark a multi-iteration launch) are
     // still present: the conversion below erases the markers and
@@ -2969,14 +2841,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     assignLaunchWaveIndices(module);
 
     // Coalesce contiguous same-channel paced shim feeds into wider
-    // transfers before the wait-generation and wrap-enforcement steps, so
-    // fewer DMA tasks and awaits are emitted. Runs after wave tagging (the kept
-    // op keeps its wave attribute) and before WaitAll->wait conversion (erased
-    // ops' event tokens are redirected to the merged op).
+    // transfers before the wrap-enforcement steps, so fewer DMA tasks and
+    // awaits are emitted. Runs after wave tagging (the kept op keeps its wave
+    // attribute); erased ops' event tokens are redirected to the merged op.
     if (clCoalesceShimDma)
       coalesceShimDmaOrder(module);
 
-    generateNpuWaitFromAIRRtWaitAll(module);
+    lowerLaunchEnds(module);
 
     // Enforce AIE2 hardware constraints.
     if (failed(enforceAIE2WrapLimit(module))) {
@@ -3077,7 +2948,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                  L1AffineStoreOpConversion, HostMemRefCopyOpConversion,
                  AIRRtAllocOpConversion, AIRRtDeallocOpConversion>(ctx);
     patterns.add<DmaToNpuPattern>(ctx, clOutputElf);
-    patterns.add<AIRRtWaitAllOpConversion>(ctx, clOutputElf);
+    patterns.add<AIRRtWaitAllOpConversion>(ctx);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
@@ -3100,11 +2971,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     (void)applyPatternsGreedily(module, std::move(castPattern));
     bufferMemrefToSequenceArgs(module);
 
-    // Convert NpuDmaWaitOp → DMAAwaitTaskOp AFTER DMA conversion.
-    // NpuDmaWaitOp was placed at WaitAllOp locations (clustered), and now we
-    // replace each one with DMAAwaitTaskOp referencing the corresponding
-    // DMAConfigureTaskForOp result.
-    generateAwaitsFromWaitAllOps(module);
+    paceShimFeeds(module);
 
     // Renumber npu dma ops
     renumberNpuDmaOps(module.getBody());
@@ -3218,8 +3085,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
         // One arm group per launch. Both things that can delimit a launch
         // boundary are cuts of this block's op list, emitted from the SAME
-        // air.launch_end marker: AIRRtWaitAllOpConversion turns each marker
-        // into an aiex.npu.load_pdi (ELF + lock reset) or into dma_waits
+        // air.launch_end marker: lowerLaunchEnds turns each marker into an
+        // aiex.npu.load_pdi (ELF + lock reset) or into drain waits
         // (plain xclbin), while assignLaunchWaveIndices turns markers into a
         // wave index on each op. So cut on either signal: a load_pdi, or a
         // change of wave. Single dispatch has neither and stays one group.
@@ -3311,7 +3178,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // to each fused wave by hoisting the wave's output-S2MM configure+start
     // ahead of the wave's first input feed (after the arm/set_lock block the
     // RTP hoist just placed). The output drain (dma_await_task) stays at the
-    // wave boundary (emitted by generateAwaitsFromWaitAllOps). Gated to fused
+    // wave boundary (emitted for the launch end's wait). Gated to fused
     // multi-iteration launches so single-dispatch sequences are byte-identical.
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
@@ -3384,16 +3251,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     });
 
-    // Hoist input DMA feeds (air.runtime_hoist) and enforce the
-    // append->readback barrier (air.await_appends). These opt-in orderings
-    // target a single configuration region, so anchor them at the global front
-    // of the sequence.
+    // Hoist input DMA feeds (air.runtime_hoist). This opt-in ordering targets
+    // a single configuration region, so anchor it at the front of the block.
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
         return;
-      // Rolled, the hoisted feeds and the append/readback pair live in the
-      // loop body or a select arm, so scoping to the entry block finds nothing
-      // and the append barrier is silently not applied.
+      // Rolled, the hoisted feeds live in a loop body or a select arm, so
+      // every block is visited, not just the entry block.
       SmallVector<Block *> blocks;
       seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
       for (Block *blkPtr : blocks) {
@@ -3440,93 +3304,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                            "feed was hoisted but its start was not, so the "
                            "requested ordering may not take effect");
         }
-
-        // air.await_appends barrier: a same-L3 write-after-write / read-after-
-        // write ordering that the async dependence graph cannot express. A
-        // shared- DDR readback tagged `air.await_appends` must observe values
-        // written by one or more device-side appends (S2MM drains into that
-        // same DDR buffer), but an append's completion await is deferred to the
-        // launch terminator, so the readback -- issued in program order after
-        // the append START -- would race the append S2MM and read a stale slot.
-        // Each participating append is tagged `air.append_barrier`; move those
-        // appends' completion awaits to just BEFORE the tagged readback's
-        // start, so the runtime blocks on append completion before reading
-        // back.
-        //
-        // A runtime sequence may contain one or MORE independent readbacks
-        // (e.g. an unrolled loop with N append/readback pairs). Each append's
-        // completion await is moved before the FIRST tagged readback start that
-        // follows the append in program order -- the readback that consumes it.
-        // Collapsing every append onto the first readback would move a later
-        // readback's append await ahead of an earlier readback, violating SSA
-        // dominance and the append->readback ordering. With a single readback
-        // this reduces to moving every append's await before that one readback.
-        SmallVector<AIEX::DMAConfigureTaskForOp> awaitCfgs;
-        for (auto &o : blk)
-          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
-            if (c->hasAttr(air::attrs::AwaitAppends))
-              awaitCfgs.push_back(c);
-        if (!awaitCfgs.empty()) {
-          // First dma_start_task among a configure task's users, if any.
-          auto getStart = [](AIEX::DMAConfigureTaskForOp c) {
-            for (auto *u : c.getResult().getUsers())
-              if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u))
-                return s;
-            return AIEX::DMAStartTaskOp(nullptr);
-          };
-          // Program-order index for every op in the block. Only awaits are
-          // relocated below (append/readback starts stay put), so the indices
-          // used for the interval decisions remain valid throughout.
-          DenseMap<Operation *, unsigned> order;
-          unsigned idx = 0;
-          for (auto &o : blk)
-            order[&o] = idx++;
-          // Tagged readback starts, in program order.
-          SmallVector<AIEX::DMAStartTaskOp> barrierStarts;
-          for (auto c : awaitCfgs) {
-            if (auto s = getStart(c))
-              barrierStarts.push_back(s);
-            else
-              c->emitWarning("air.await_appends: tagged readback has no "
-                             "dma_start_task; the "
-                             "append barrier cannot be applied");
-          }
-          bool anyAppendAwait = false;
-          for (auto &o : blk) {
-            auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o);
-            if (!cfg || !cfg->hasAttr(air::attrs::AppendBarrier))
-              continue;
-            AIEX::DMAAwaitTaskOp aAwait = nullptr;
-            for (auto *u : cfg.getResult().getUsers())
-              if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(u))
-                aAwait = aw;
-            if (!aAwait)
-              continue;
-            anyAppendAwait = true;
-            AIEX::DMAStartTaskOp aStart = getStart(cfg);
-            unsigned apos = order[aStart ? aStart.getOperation() : &o];
-            AIEX::DMAStartTaskOp target = nullptr;
-            unsigned best = std::numeric_limits<unsigned>::max();
-            for (auto s : barrierStarts) {
-              unsigned sp = order[s.getOperation()];
-              if (sp > apos && sp < best) {
-                best = sp;
-                target = s;
-              }
-            }
-            if (target)
-              aAwait->moveBefore(target);
-          }
-          if (!anyAppendAwait && !barrierStarts.empty())
-            barrierStarts.front()->emitWarning(
-                "air.await_appends: readback tagged but no air.append_barrier "
-                "appends found to await; no ordering was enforced");
-        }
       }
     });
 
     // Bound how far one shim feed channel may run ahead of its siblings.
     boundShimFeedBursts(module);
+    awaitInChannelOrder(module);
 
     // Repair dominance after the reordering above. Every hoist here moves a
     // configure task or an RTP write past other ops, and a runtime access
@@ -3604,38 +3387,84 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     });
   }
 
-  // Bound how far one shim MM2S feed channel may run ahead of its siblings, and
-  // how many tasks it may have in flight at once.
+  // Whether two buffer descriptors touch a common element of their buffer;
+  // std::nullopt when an offset, length or dimension is only known at runtime.
+  static std::optional<bool> bdsIntersect(AIE::DMABDOp a, AIE::DMABDOp b) {
+    struct Pattern {
+      SmallVector<OpFoldResult> offsets, sizes, strides;
+    };
+    auto pattern = [](AIE::DMABDOp bd) -> std::optional<Pattern> {
+      if (bd.getOffset() || bd.getLen() || !bd.getSizes().empty() ||
+          !bd.getStrides().empty())
+        return std::nullopt;
+      auto offset = bd.getStaticOffset();
+      if (!offset)
+        return std::nullopt;
+      Builder b(bd.getContext());
+      Pattern p;
+      auto sizes = bd.getStaticSizesAttr();
+      auto strides = bd.getStaticStridesAttr();
+      if (!sizes || !strides || sizes.empty()) {
+        auto len = bd.getStaticLen();
+        if (!len)
+          return std::nullopt;
+        p.offsets = {b.getIndexAttr(*offset)};
+        p.sizes = {b.getIndexAttr(*len)};
+        p.strides = {b.getIndexAttr(1)};
+        return p;
+      }
+      // The offset as a leading dimension of one element.
+      p.offsets = {b.getIndexAttr(*offset)};
+      p.sizes = {b.getIndexAttr(1)};
+      p.strides = {b.getIndexAttr(1)};
+      for (auto [size, stride] :
+           llvm::zip(sizes.asArrayRef(), strides.asArrayRef())) {
+        p.offsets.push_back(b.getIndexAttr(0));
+        p.sizes.push_back(b.getIndexAttr(size));
+        p.strides.push_back(b.getIndexAttr(stride));
+      }
+      return p;
+    };
+    auto pa = pattern(a), pb = pattern(b);
+    if (!pa || !pb)
+      return std::nullopt;
+    return air::accessesIntersect(pa->offsets, pa->sizes, pa->strides,
+                                  pb->offsets, pb->sizes, pb->strides);
+  }
+
+  // Lay out a launch's shim tasks so the control program never waits on a task
+  // that depends on something issued after it, and bound how many tasks each
+  // shim channel has in flight.
+  //
+  // A shim channel's task queue is a few entries deep and does not
+  // backpressure: a push onto a full queue is lost unless the control program
+  // first waits for a free slot. Either way a push can only go out once an
+  // older task on that channel retires, so an older task must never depend on
+  // a later push -- the launch hangs. How many pushes a channel takes before
+  // that matters depends on the task sizes, so it is not a count to check.
   //
   // Feeds come out of the conversion channel-major -- every task for A, then
-  // every task for B -- because that is the order the channels' puts appear in,
-  // and nothing bounds how many one channel may have outstanding. A shim
-  // channel absorbs only a few: its DMA task queue (4 entries on AIE2) plus
-  // whatever the L2 consumer is double-buffering. Measured on a 2x2 herd GEMM,
-  // <= 6 tasks in flight on one channel completes and >= 7 hangs, independent
-  // of the output drain's structure, the launch count, and the dtype
-  // (Xilinx/mlir-air#1822).
+  // every task for B -- so A can use up its channel before B is fed at all,
+  // and the cores wait on a B chunk that was never sent. They are woven
+  // round-robin instead, and each channel's in-flight set is capped by awaiting
+  // task i-limit before starting task i.
   //
-  // Two things are wrong, and both need fixing:
-  //
-  //   - Channel-major order lets A consume the whole budget before B is fed at
-  //     all, so the cores wait on a B chunk that was never sent. Interleaving
-  //     the burst round-robin fixes that, and costs nothing.
-  //
-  //   - The overflow itself is per channel and absolute: a push past what the
-  //     channel holds is dropped, not deferred. A perfect A/B/A/B weave at 16
-  //     deep still hangs, so interleaving alone is not a fix. Capping each
-  //     channel's in-flight set -- await task i-limit before starting task i --
-  //     is what actually removes the deadlock.
+  // air-to-std arms a launch's drains ahead of the inputs that drive their
+  // producer, so that a drain is running before its producer emits. Past the
+  // limit that is the same inversion: drain j cannot retire until the feeds
+  // producing its data run, and those now come after it. So the drains ahead
+  // of a burst are woven between its feeds in proportion to how far through
+  // the burst each is. Drains between the feeds, and the drain awaits
+  // air-to-std put in front of a feed that reads a drained region, are woven
+  // with the feeds they precede. Every drain on a channel counts toward its
+  // cap, which a drain-only launch gets too.
   //
   // Only bursts that exceed the limit are touched. A design whose channels were
   // already short-run keeps its emission order and its await structure byte for
   // byte, which is what keeps this off the hot path of the tuned LLM decoders.
   void boundShimFeedBursts(ModuleOp module) {
-    // Per-channel tasks in flight that a shim channel absorbs without the
-    // control program blocking on the push: the AIE2 shim DMA task queue depth.
-    // The measured limit is 6 (queue + an L2 ping-pong); staying at the queue
-    // depth alone keeps the bound independent of what the consumer buffers.
+    // Tasks in flight per shim channel: the shim DMA task queue depth, which a
+    // channel holds regardless of how large its tasks are.
     constexpr unsigned burstLimit = 4;
 
     module.walk([&](AIE::RuntimeSequenceOp seq) {
@@ -3647,32 +3476,100 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
       // A feed whose position is already load-bearing is left alone, and fences
       // the burst it sits in: `air.runtime_hoist` was deliberately moved to the
-      // front, the paced/coalesced feeds are bounded by
-      // synthesizeDoubleBufferedAwaits, and the append-barrier feeds carry a
-      // write-after-write ordering the dependence graph cannot express.
-      auto isReorderable = [&](AIEX::DMAConfigureTaskForOp cfg) {
+      // front, and the paced/coalesced feeds are bounded by
+      // synthesizeDoubleBufferedAwaits.
+      auto channelDir = [&](AIEX::DMAConfigureTaskForOp cfg)
+          -> std::optional<AIE::DMAChannelDir> {
         for (StringRef a :
              {air::attrs::RuntimeHoist, air::attrs::PreserveShimDmaOrder,
-              air::attrs::CoalescedShimFeed, air::attrs::AppendBarrier,
-              air::attrs::AwaitAppends})
+              air::attrs::CoalescedShimFeed})
           if (cfg->hasAttr(a))
-            return false;
+            return std::nullopt;
         auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(
             device, cfg.getAlloc().getLeafReference().getValue());
-        return allocOp && allocOp.getChannelDir() == AIE::DMAChannelDir::MM2S;
+        if (!allocOp)
+          return std::nullopt;
+        return allocOp.getChannelDir();
+      };
+      auto isReorderable = [&](AIEX::DMAConfigureTaskForOp cfg) {
+        return channelDir(cfg) == AIE::DMAChannelDir::MM2S;
+      };
+      // A drain's position among the feeds is not load-bearing: air-to-std
+      // armed it early, and any feed that reads it back is preceded by an
+      // await of it.
+      auto isDrain = [&](AIEX::DMAConfigureTaskForOp cfg) {
+        return channelDir(cfg) == AIE::DMAChannelDir::S2MM;
+      };
+      // Whether `feed` reads what the drain `await` waits for wrote: the
+      // await air-to-std put in front of a read-back. Unknown footprints
+      // count as overlapping.
+      auto guardsReadBack = [&](AIEX::DMAAwaitTaskOp await,
+                                AIEX::DMAConfigureTaskForOp feed) {
+        auto drain =
+            await.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+        if (!drain || channelDir(drain) != AIE::DMAChannelDir::S2MM)
+          return false;
+        bool overlap = false;
+        drain.getBody().walk([&](AIE::DMABDOp w) {
+          feed.getBody().walk([&](AIE::DMABDOp r) {
+            if (w.getBuffer() == r.getBuffer() &&
+                bdsIntersect(w, r).value_or(true))
+              overlap = true;
+          });
+        });
+        return overlap;
       };
 
       struct Unit {
         AIEX::DMAConfigureTaskForOp cfg;
         Operation *start;
         StringRef chan;
+        // Drain awaits that must stay right in front of this feed: it reads
+        // what those drains wrote (air-to-std put them there).
+        SmallVector<Operation *> prefix = {};
       };
 
       SmallVector<Block *> blocks;
       seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
       for (Block *blk : blocks) {
         SmallVector<Unit> run;
+        // Drains ahead of the run's first feed.
+        SmallVector<Unit> drains;
+        // Drains between the run's feeds, each with the round of the feed
+        // after it in its channel (rounds = after every feed when none).
+        SmallVector<std::pair<Unit, unsigned>> midDrains;
+        SmallVector<Unit> pendingDrains;
+        // Drain awaits waiting for the feed they guard.
+        SmallVector<Operation *> pendingAwaits;
+        llvm::SmallPtrSet<Operation *, 8> travelling;
         SmallVector<Operation *> staleFrees;
+
+        // Cap one channel's in-flight set: before starting task i, await the
+        // token from task i-burstLimit, which cannot have retired any later
+        // than that. The await lands at `at(i)`.
+        auto capChannel = [&](SmallVector<Unit> &chan,
+                              function_ref<Operation *(unsigned)> at) {
+          for (unsigned i = burstLimit; i < chan.size(); i++) {
+            AIEX::DMAConfigureTaskForOp older = chan[i - burstLimit].cfg;
+            // An MM2S task issues no completion token by default, so there
+            // would be nothing to wait on.
+            older.setIssueToken(true);
+            Operation *where = at(i);
+            OpBuilder b(where);
+            auto await = AIEX::DMAAwaitTaskOp::create(b, where->getLoc(),
+                                                      older.getResult());
+            // The await also frees the BD, so the fire-and-free this task was
+            // given at conversion would now be a second release. Erase those
+            // only once the block walk is done -- they sit after the burst, so
+            // erasing them here would pull the ground out from under the
+            // iterator. A second await of the task is left to
+            // awaitInChannelOrder, which keeps the first.
+            (void)await;
+            for (auto *u : older.getResult().getUsers())
+              if (isa<AIEX::DMAFreeTaskOp>(u))
+                staleFrees.push_back(u);
+          }
+        };
 
         // Lay the burst back down just before `fence`, round-robin over the
         // channels it feeds, then cap each channel's in-flight set. Each
@@ -3681,102 +3578,353 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // each other. A single-channel burst has nothing to weave and just gets
         // the cap.
         auto flush = [&](Operation *fence) {
-          if (run.size() < 2 || !fence)
+          // Drain awaits after the run's last feed stay behind every feed.
+          SmallVector<Operation *> trailing = std::move(pendingAwaits);
+          pendingAwaits.clear();
+          for (const Unit &d : pendingDrains)
+            midDrains.push_back({d, ~0u});
+          pendingDrains.clear();
+          if (!fence)
             return;
+          if (run.empty()) {
+            // Drains with no feed after them in the block (a drain-only
+            // launch): their producer needs nothing later in the sequence, so a
+            // wait on an older drain always retires, and they are capped like
+            // any other channel.
+            bool feedAfter = false;
+            for (Operation *o = fence; o && !feedAfter; o = o->getNextNode())
+              o->walk([&](AIEX::DMAConfigureTaskForOp c) {
+                if (channelDir(c) != AIE::DMAChannelDir::S2MM)
+                  feedAfter = true;
+              });
+            if (feedAfter)
+              return;
+            llvm::MapVector<StringRef, SmallVector<Unit>> drainsByChan;
+            for (const Unit &u : drains)
+              drainsByChan[u.chan].push_back(u);
+            for (auto &kv : drainsByChan)
+              capChannel(kv.second, [&](unsigned i) {
+                return kv.second[i].cfg.getOperation();
+              });
+            return;
+          }
           llvm::MapVector<StringRef, SmallVector<Unit>> byChan;
           for (const Unit &u : run)
             byChan[u.chan].push_back(u);
-          unsigned deepest = 0;
+          llvm::MapVector<StringRef, SmallVector<Unit>> drainsByChan;
+          for (const Unit &u : drains)
+            drainsByChan[u.chan].push_back(u);
+          unsigned rounds = 0;
           for (auto &kv : byChan)
-            deepest = std::max<unsigned>(deepest, kv.second.size());
-          if (deepest <= burstLimit)
+            rounds = std::max<unsigned>(rounds, kv.second.size());
+          // Every drain on a channel, ahead of the feeds and between them, in
+          // program order: the order the channel fills them in.
+          llvm::MapVector<StringRef, SmallVector<Unit>> allDrainsByChan;
+          for (const Unit &u : drains)
+            allDrainsByChan[u.chan].push_back(u);
+          for (auto &[u, r] : midDrains)
+            allDrainsByChan[u.chan].push_back(u);
+          unsigned deepestDrain = 0;
+          for (auto &kv : drainsByChan)
+            deepestDrain = std::max<unsigned>(deepestDrain, kv.second.size());
+          bool weaveDrains = deepestDrain > burstLimit;
+          // A feed that reads back a drain waits for it, and that drain's
+          // producer may also need this round's feeds on the other channels;
+          // left channel-major, those come after the wait.
+          bool readsBack = llvm::any_of(
+              run, [](const Unit &u) { return !u.prefix.empty(); });
+          if (rounds <= burstLimit && !weaveDrains && !readsBack &&
+              midDrains.empty())
             return; // already within what a channel absorbs; leave as emitted.
-          for (unsigned i = 0; i < deepest; i++)
-            for (auto &kv : byChan) {
-              if (i >= kv.second.size())
-                continue;
-              const Unit &u = kv.second[i];
+
+          // Drain j of a channel holding D of them is armed at round
+          // floor(j * rounds / D), ahead of that round's feeds, so it is
+          // running before its producer emits. Assuming the drains draw on the
+          // feeds evenly, drain j is complete once round
+          // lastRound(j) = ceil((j + 1) * rounds / D) - 1 has been fed, and the
+          // cap makes drain j wait for drain j - burstLimit; so drain j is held
+          // back until the round after that one, or the wait would be on feeds
+          // not yet issued. Round `rounds` means after every feed.
+          SmallVector<SmallVector<Unit>> drainsAt(rounds + 1);
+          // The round each leading drain is armed at, per channel; drains
+          // between the feeds come no earlier.
+          llvm::StringMap<unsigned> lastLeadingRound;
+          // The round of the first feed that awaits `drain`, or `rounds`.
+          auto firstAwaiter = [&](Unit drain) {
+            unsigned r = rounds;
+            for (auto &ch : byChan)
+              for (auto [i, u] : llvm::enumerate(ch.second))
+                if (llvm::any_of(u.prefix, [&](Operation *a) {
+                      return cast<AIEX::DMAAwaitTaskOp>(a).getTask() ==
+                             drain.cfg.getResult();
+                    }))
+                  r = std::min<unsigned>(r, i);
+            return r;
+          };
+          if (weaveDrains) {
+            for (auto &kv : drainsByChan) {
+              unsigned d = kv.second.size();
+              auto lastRound = [&](unsigned j) {
+                return ((j + 1) * rounds + d - 1) / d - 1;
+              };
+              for (unsigned j = 0; j < d; j++) {
+                unsigned r = j * rounds / d;
+                if (j >= burstLimit)
+                  r = std::max(r, lastRound(j - burstLimit) + 1);
+                // Never after a feed that awaits it.
+                r = std::min(r, firstAwaiter(kv.second[j]));
+                if (j)
+                  r = std::max(r, lastLeadingRound[kv.first]);
+                lastLeadingRound[kv.first] = std::min(r, rounds);
+                drainsAt[std::min(r, rounds)].push_back(kv.second[j]);
+              }
+            }
+          }
+
+          // A drain between feeds is armed at the round of the feed it was
+          // emitted in front of, but never after a feed that awaits it, and in
+          // its channel's order.
+          {
+            llvm::MapVector<StringRef, SmallVector<std::pair<Unit, unsigned>>>
+                midByChan;
+            for (auto &[u, r] : midDrains)
+              midByChan[u.chan].push_back({u, std::min(r, firstAwaiter(u))});
+            for (auto &kv : midByChan) {
+              auto &ds = kv.second;
+              if (auto it = lastLeadingRound.find(kv.first);
+                  it != lastLeadingRound.end() && !ds.empty())
+                ds[0].second = std::max(ds[0].second, it->second);
+              for (unsigned j = 1; j < ds.size(); j++)
+                ds[j].second = std::max(ds[j].second, ds[j - 1].second);
+              for (unsigned j = ds.size(); j-- > 1;)
+                ds[j - 1].second = std::min(ds[j - 1].second, ds[j].second);
+              for (auto &[u, r] : ds)
+                drainsAt[r].push_back(u);
+            }
+          }
+
+          for (unsigned i = 0; i <= rounds; i++) {
+            for (const Unit &u : drainsAt[i]) {
               u.cfg->moveBefore(fence);
               u.start->moveBefore(fence);
             }
-          // Interleaving alone is not enough. It does bound how far one channel
-          // runs ahead, but the overflow is per channel and absolute: a push
-          // past what the channel can hold is dropped, not deferred, so the
-          // chunk is simply never sent. Measured with a perfect A/B/A/B weave
-          // at 16 deep, the design still hangs. So cap each channel's in-flight
-          // set as well: before starting task i, await the token from task
-          // i-burstLimit, which cannot have retired any later than that.
-          for (auto &kv : byChan) {
-            SmallVector<Unit> &chan = kv.second;
-            for (unsigned i = burstLimit; i < chan.size(); i++) {
-              AIEX::DMAConfigureTaskForOp older = chan[i - burstLimit].cfg;
-              // An MM2S task issues no completion token by default, so there
-              // would be nothing to wait on.
-              older.setIssueToken(true);
-              OpBuilder b(chan[i].start);
-              AIEX::DMAAwaitTaskOp::create(b, chan[i].start->getLoc(),
-                                           older.getResult());
-              // An await also frees the BD, so the fire-and-free this task was
-              // given at conversion would now be a second release. Erase those
-              // only once the block walk is done -- a free sits after the
-              // burst, so erasing it here would pull the ground out from under
-              // the iterator.
-              for (auto *u : older.getResult().getUsers())
-                if (isa<AIEX::DMAFreeTaskOp>(u))
-                  staleFrees.push_back(u);
-            }
+            if (i == rounds)
+              break;
+            // Feeds carrying a drain await go last in their round, so the
+            // other channels' feeds of the round are out before the control
+            // program blocks.
+            for (bool awaiting : {false, true})
+              for (auto &kv : byChan) {
+                if (i >= kv.second.size())
+                  continue;
+                const Unit &u = kv.second[i];
+                if (u.prefix.empty() == awaiting)
+                  continue;
+                for (Operation *a : u.prefix)
+                  a->moveBefore(fence);
+                u.cfg->moveBefore(fence);
+                u.start->moveBefore(fence);
+              }
           }
+          for (Operation *a : trailing)
+            a->moveBefore(fence);
+          for (auto &kv : byChan)
+            capChannel(kv.second,
+                       [&](unsigned i) { return kv.second[i].start; });
+          // A drain's wait goes ahead of its configure rather than its start,
+          // so the BD it frees is free for the configure to take.
+          for (auto &kv : allDrainsByChan)
+            capChannel(kv.second, [&](unsigned i) {
+              return kv.second[i].cfg.getOperation();
+            });
         };
 
-        // Walk the block, growing a run of reorderable feeds. Anything that is
-        // not such a feed and is not pure ends it: an await, a free, an RTP
-        // write, a lock set, a PDI load -- each is an ordering point, and a
-        // burst only exists between them. Pure ops (the arith chain narrowing a
-        // runtime length or offset) are transparent; moving a feed above its
-        // operands is repaired by the rematerialization pass below, which is
-        // there for exactly this.
+        // The single start of `cfg` in this block, or null if it has none or
+        // several (then it is not a plain single-shot task).
+        auto singleStart = [&](AIEX::DMAConfigureTaskForOp cfg) -> Operation * {
+          Operation *start = nullptr;
+          for (auto *u : cfg.getResult().getUsers()) {
+            if (!isa<AIEX::DMAStartTaskOp>(u) || u->getBlock() != blk)
+              continue;
+            if (start)
+              return nullptr;
+            start = u;
+          }
+          return start;
+        };
+        auto reset = [&]() {
+          run.clear();
+          drains.clear();
+          midDrains.clear();
+          pendingDrains.clear();
+        };
+
+        // Walk the block, growing a run of reorderable feeds, led by the drains
+        // ahead of it. Anything that is not such a task and is not pure ends
+        // it: an await, a free, an RTP write, a lock set, a PDI load -- each is
+        // an ordering point, and a burst only exists between them. Drains
+        // between the feeds stay in the burst, and so do the drain awaits in
+        // front of a feed that reads a drained region: ending the burst there
+        // would leave the other channels' feeds behind every task before it.
+        // Pure ops (the arith chain narrowing a runtime length or offset) are
+        // transparent; moving a task above its operands is repaired by the
+        // rematerialization pass below, which is there for exactly this.
         for (Operation &o : llvm::make_early_inc_range(*blk)) {
+          if (auto await = dyn_cast<AIEX::DMAAwaitTaskOp>(&o)) {
+            if (travelling.contains(&o)) {
+              pendingAwaits.push_back(&o);
+              continue;
+            }
+            // A drain await in front of a feed that reads the drain's region
+            // travels with that feed; any other await is an ordering point.
+            // The awaits in front of a feed go together: they are for the
+            // drains it reads.
+            SmallVector<AIEX::DMAAwaitTaskOp> group = {await};
+            Operation *next = o.getNextNode();
+            while (next && (isMemoryEffectFree(next) ||
+                            isa<AIEX::DMAAwaitTaskOp>(next))) {
+              if (auto a = dyn_cast<AIEX::DMAAwaitTaskOp>(next))
+                group.push_back(a);
+              next = next->getNextNode();
+            }
+            auto feed = dyn_cast_or_null<AIEX::DMAConfigureTaskForOp>(next);
+            if (feed && singleStart(feed) && isReorderable(feed) &&
+                llvm::any_of(group, [&](AIEX::DMAAwaitTaskOp a) {
+                  return guardsReadBack(a, feed);
+                })) {
+              for (AIEX::DMAAwaitTaskOp a : group)
+                travelling.insert(a);
+              pendingAwaits.push_back(&o);
+              continue;
+            }
+          }
           if (auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o)) {
-            Operation *start = nullptr;
-            for (auto *u : cfg.getResult().getUsers()) {
-              if (!isa<AIEX::DMAStartTaskOp>(u) || u->getBlock() != blk)
-                continue;
-              if (start) { // more than one start: not a plain single-shot feed
-                start = nullptr;
-                break;
-              }
-              start = u;
+            Operation *start = singleStart(cfg);
+            StringRef chan = cfg.getAlloc().getLeafReference().getValue();
+            if (start && isDrain(cfg)) {
+              (run.empty() ? drains : pendingDrains)
+                  .push_back({cfg, start, chan});
+              continue;
             }
             if (start && isReorderable(cfg)) {
-              run.push_back(
-                  {cfg, start, cfg.getAlloc().getLeafReference().getValue()});
+              unsigned round = llvm::count_if(
+                  run, [&](const Unit &u) { return u.chan == chan; });
+              for (const Unit &d : pendingDrains)
+                midDrains.push_back({d, round});
+              pendingDrains.clear();
+              run.push_back({cfg, start, chan, std::move(pendingAwaits)});
+              pendingAwaits.clear();
               continue;
             }
             flush(&o);
-            run.clear();
+            reset();
             continue;
           }
           if (isa<AIEX::DMAStartTaskOp>(&o)) {
-            // The start of a feed already in the run travels with its configure
-            // and does not break the burst; any other start does.
-            bool owned =
-                llvm::any_of(run, [&](const Unit &u) { return u.start == &o; });
-            if (owned)
+            // The start of a task already in the run travels with its
+            // configure and does not break the burst; any other start does.
+            auto owns = [&](const Unit &u) { return u.start == &o; };
+            if (llvm::any_of(run, owns) || llvm::any_of(drains, owns) ||
+                llvm::any_of(pendingDrains, owns))
               continue;
             flush(&o);
-            run.clear();
+            reset();
             continue;
           }
           if (isMemoryEffectFree(&o))
             continue;
           flush(&o);
-          run.clear();
+          reset();
         }
         if (blk->mightHaveTerminator())
           flush(blk->getTerminator());
-        run.clear();
+        reset();
         for (Operation *f : staleFrees)
           f->erase();
+      }
+    });
+  }
+
+  // Put each channel's awaits in the order its tasks were started, and release
+  // what an await proves finished. A shim channel retires its tasks in order
+  // and an await consumes the oldest completion token outstanding on the
+  // channel, whichever task it names. So an await of task j while an older
+  // token-issuing task i on the channel is still unawaited returns once i
+  // completes, not j: pacing meant to bound the channel lets it run further
+  // ahead, and BD assignment, which models the same rule, cannot release j's
+  // descriptors. This happens when a paced burst's tail is awaited, or only
+  // freed, at the end of the sequence while a later burst on the channel is
+  // already awaiting its own tasks. So await i right before j, which costs
+  // nothing since i completes first, and free the older tasks that issue no
+  // token right after it, instead of holding their descriptors to the end.
+  void awaitInChannelOrder(ModuleOp module) {
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      SmallVector<Block *> blocks;
+      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      for (Block *blk : blocks) {
+        // Started tasks still holding their descriptors, per channel, in
+        // start order.
+        llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>>
+            open;
+        llvm::SmallPtrSet<Operation *, 16> released;
+        SmallVector<Operation *> stale;
+        auto channelOf = [](AIEX::DMAConfigureTaskForOp cfg) {
+          return cfg.getAlloc().getLeafReference().getValue();
+        };
+        for (Operation &o : llvm::make_early_inc_range(*blk)) {
+          if (auto start = dyn_cast<AIEX::DMAStartTaskOp>(&o)) {
+            auto cfg =
+                start.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+            if (cfg && cfg->getBlock() == blk && !released.contains(cfg))
+              open[channelOf(cfg)].push_back(cfg);
+            continue;
+          }
+          if (auto free = dyn_cast<AIEX::DMAFreeTaskOp>(&o)) {
+            auto cfg =
+                free.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+            if (!cfg)
+              continue;
+            if (released.contains(cfg)) {
+              stale.push_back(free);
+              continue;
+            }
+            auto &pending = open[channelOf(cfg)];
+            llvm::erase(pending, cfg);
+            released.insert(cfg);
+            continue;
+          }
+          auto await = dyn_cast<AIEX::DMAAwaitTaskOp>(&o);
+          if (!await)
+            continue;
+          auto cfg =
+              await.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+          if (!cfg)
+            continue;
+          if (released.contains(cfg)) {
+            // Already awaited, or freed, in order further up.
+            stale.push_back(await);
+            continue;
+          }
+          auto &pending = open[channelOf(cfg)];
+          auto it = llvm::find(pending, cfg);
+          if (it == pending.end())
+            continue;
+          OpBuilder before(await);
+          OpBuilder after(await->getBlock(), std::next(await->getIterator()));
+          for (auto older : llvm::make_range(pending.begin(), it)) {
+            if (older.getIssueToken())
+              AIEX::DMAAwaitTaskOp::create(before, await.getLoc(),
+                                           older.getResult());
+            else
+              AIEX::DMAFreeTaskOp::create(after, await.getLoc(),
+                                          older.getResult());
+            released.insert(older);
+          }
+          released.insert(cfg);
+          pending.erase(pending.begin(), std::next(it));
+        }
+        for (Operation *op : stale)
+          op->erase();
       }
     });
   }
@@ -4106,156 +4254,120 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
   }
 
-  // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
-  // This must happen BEFORE DMA conversion.
-  void generateNpuWaitFromAIRRtWaitAll(ModuleOp module) {
-    auto ctx = module.getContext();
+  // Lower each air.launch_end. Between launch iterations every shim channel
+  // the launch used is drained, so the next iteration's configuration cannot
+  // race this one's transfers (issue #1373), or the device is reset when its
+  // locks need it. The drain waits on each of the launch's transfers the
+  // launch end does not wait on itself. A transfer in a nested block -- an
+  // arm of a feed select, a rolled loop body -- is waited at the end of that
+  // block, the last point its event is visible.
+  void lowerLaunchEnds(ModuleOp module) {
+    SmallVector<airrt::WaitAllOp> launchEnds;
+    module.walk([&](airrt::WaitAllOp w) {
+      if (w->hasAttr("air.launch_end"))
+        launchEnds.push_back(w);
+    });
+    // Each launch's transfers, per block and channel in program order, read
+    // while every launch end still marks where its launch begins.
+    using Transfers = llvm::MapVector<
+        Block *, llvm::MapVector<StringRef, SmallVector<airrt::DmaMemcpyNdOp>>>;
+    SmallVector<Transfers> launches;
+    for (auto launchEnd : launchEnds) {
+      SmallVector<Operation *> window;
+      for (Operation *o = launchEnd->getPrevNode();
+           o && !(isa<airrt::WaitAllOp>(o) && o->hasAttr("air.launch_end"));
+           o = o->getPrevNode())
+        window.push_back(o);
+      Transfers &transfers = launches.emplace_back();
+      for (Operation *o : llvm::reverse(window))
+        o->walk([&](airrt::DmaMemcpyNdOp dma) {
+          if (auto md = dma->getAttrOfType<FlatSymbolRefAttr>("metadata"))
+            transfers[dma->getBlock()][md.getValue()].push_back(dma);
+        });
+    }
 
-    // Apply the pattern to convert WaitAllOp → NpuDmaWaitOp
-    RewritePatternSet patterns(ctx);
-    patterns.insert<AIRRtWaitAllOpToNpuWaitPattern>(ctx, clOutputElf);
-    (void)applyPatternsGreedily(module, std::move(patterns));
-
-    // Now that WaitAllOps with DMA operands are erased, purge DMA async
-    // tokens (they no longer have uses from WaitAllOps)
-    purgeDmaAsyncTokens(module);
+    for (auto [launchEnd, transfers] : llvm::zip(launchEnds, launches)) {
+      launchEnd->removeAttr("air.launch_end");
+      auto device = launchEnd->getParentOfType<AIE::DeviceOp>();
+      if (!device ||
+          !llvm::isa<AIE::BaseNPU2TargetModel>(device.getTargetModel()))
+        continue;
+      OpBuilder b(launchEnd->getContext());
+      b.setInsertionPointAfter(launchEnd);
+      if (clOutputElf && deviceNeedsLockReset(device)) {
+        auto deviceRef = FlatSymbolRefAttr::get(launchEnd->getContext(),
+                                                device.getSymName());
+        AIEX::NpuLoadPdiOp::create(b, launchEnd.getLoc(), deviceRef,
+                                   IntegerAttr(), IntegerAttr(), IntegerAttr(),
+                                   AIEX::ExpandModeAttr());
+        continue;
+      }
+      if (!clOutputElf && !deviceHasMultiIterLaunch(device))
+        continue;
+      llvm::SmallPtrSet<Operation *, 8> waited;
+      for (Value v : launchEnd->getOperands())
+        if (Operation *def = v.getDefiningOp())
+          waited.insert(def);
+      // The device's shim allocations in declaration order, then any other
+      // channel the launch's transfers name (an object FIFO).
+      llvm::SetVector<StringRef> channels;
+      for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>())
+        channels.insert(alloc.getSymName());
+      for (auto &[blk, byChannel] : transfers)
+        for (auto &[channel, dmas] : byChannel)
+          channels.insert(channel);
+      for (StringRef channel : channels) {
+        for (auto &[blk, byChannel] : transfers) {
+          auto it = byChannel.find(channel);
+          if (it == byChannel.end())
+            continue;
+          SmallVector<Value> events;
+          for (auto &dma : it->second)
+            if (!waited.contains(dma))
+              events.push_back(withEvent(dma));
+          if (events.empty())
+            continue;
+          if (blk == launchEnd->getBlock()) {
+            auto wait = airrt::WaitAllOp::create(b, launchEnd.getLoc(),
+                                                 TypeRange{}, events);
+            b.setInsertionPointAfter(wait);
+          } else {
+            OpBuilder atEnd(blk->getTerminator());
+            airrt::WaitAllOp::create(atEnd, launchEnd.getLoc(), TypeRange{},
+                                     events);
+          }
+        }
+      }
+    }
   }
 
-  // Convert NpuDmaWaitOp → DMAAwaitTaskOp or DMAFreeTaskOp AFTER DMA
-  // conversion. This processes NpuDmaWaitOp ops and DMAConfigureTaskForOp ops
-  // in order, matching each wait to its corresponding configure task by
-  // channel. The key insight: waits and configures for the same channel must
-  // be matched in FIFO order - the Nth wait for channel X awaits the Nth
-  // config for X.
-  //
-  // For S2MM (output) channels: generate DMAAwaitTaskOp (wait + free BD)
-  // For MM2S (input) channels: generate DMAFreeTaskOp (just free BD, no wait)
-  void generateAwaitsFromWaitAllOps(ModuleOp module) {
+  // The event of `dma`, giving it one if it has none.
+  static Value withEvent(airrt::DmaMemcpyNdOp &dma) {
+    if (dma->getNumResults())
+      return dma->getResult(0);
+    OpBuilder b(dma);
+    auto withResult = airrt::DmaMemcpyNdOp::create(
+        b, dma.getLoc(), airrt::EventType::get(dma->getContext()), dma.getId(),
+        dma.getX(), dma.getY(), dma.getMemref(), dma.getMixedOffsets(),
+        dma.getMixedLengths(), dma.getMixedStrides());
+    withResult->setAttrs(dma->getDiscardableAttrDictionary());
+    dma->erase();
+    dma = withResult;
+    return withResult->getResult(0);
+  }
+
+  // Pace the shim feeds that are kept in order, after the awaits and frees
+  // the conversion emits.
+  void paceShimFeeds(ModuleOp module) {
     // Either container is possible here: the rolled path has already turned
     // the control func into its runtime_sequence.
     SmallVector<Operation *> funcOps;
     module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
     module.walk([&](AIE::RuntimeSequenceOp s) { funcOps.push_back(s); });
-
-    for (auto f : funcOps) {
-      auto device = f->getParentOfType<AIE::DeviceOp>();
-      if (!device)
-        continue;
-
-      if (f->getRegion(0).empty())
-        continue;
-
-      mlir::DominanceInfo domInfo(f);
-
-      // First pass: collect all DMAConfigureTaskForOp per channel in order
-      // Map from metadata symbol -> list of ConfigTasks in order
-      llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>>
-          channelToConfigTasks;
-
-      // Also track per-channel indices for matching
-      llvm::DenseMap<StringRef, unsigned> channelToNextConfigIdx;
-
-      // Walk the function body in order
-      f->walk([&](AIEX::DMAConfigureTaskForOp configTask) {
-        auto allocSymbol = configTask.getAlloc();
-        StringRef metadata = allocSymbol.getLeafReference().getValue();
-        channelToConfigTasks[metadata].push_back(configTask);
-      });
-
-      // Initialize indices
-      for (auto &kv : channelToConfigTasks) {
-        channelToNextConfigIdx[kv.first] = 0;
-      }
-
-      // Second pass: process NpuDmaWaitOp ops in order
-      // For each wait, find the next unconsumed ConfigTask for that channel
-      SmallVector<AIEX::NpuDmaWaitOp> waitOps;
-      f->walk([&](AIEX::NpuDmaWaitOp waitOp) { waitOps.push_back(waitOp); });
-
-      for (auto waitOp : waitOps) {
-        StringRef metadata = waitOp.getSymbol();
-
-        // Determine channel direction
-        // First try ShimDMAAllocationOp
-        auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, metadata);
-        bool isS2MM = false;
-        if (allocOp) {
-          isS2MM = allocOp.getChannelDir() == AIE::DMAChannelDir::S2MM;
-        } else {
-          // Check for objectfifo - if consumer is shim tile, it's S2MM
-          auto objFifo = device.lookupSymbol<AIE::ObjectFifoCreateOp>(metadata);
-          if (objFifo) {
-            for (auto consumerTileOp : objFifo.getConsumerTiles()) {
-              if (isShimTileValue(consumerTileOp)) {
-                isS2MM = true;
-                break;
-              }
-            }
-          }
-        }
-
-        // Find the next ConfigTask for this channel.
-        //
-        // The Nth wait for a channel awaits its Nth config in FIFO order, BUT
-        // only if that config dominates the wait. A fused multi-iteration
-        // launch with HETEROGENEOUS waves (some waves use a channel and
-        // others do not) emits a per-iteration all-shim
-        // boundary drain that waits on EVERY channel at each boundary. For a
-        // channel with no config in the current wave, FIFO would otherwise pair
-        // that boundary wait with a config from a LATER wave -- producing a
-        // dma_await_task whose config operand does not dominate it
-        // (use-before-def). That invalid IR is not caught until
-        // ControlFuncConversion clones the func (the clone leaves the await
-        // referencing the un-mapped original config, crossing into the new
-        // runtime_sequence -> erase-with-uses assert). Guard the match on
-        // dominance: if the next unconsumed config does not dominate this wait,
-        // leave it for a later (dominated) wait and emit no await here.
-        AIEX::DMAConfigureTaskForOp matchingConfigTask = nullptr;
-        auto it = channelToConfigTasks.find(metadata);
-        if (it != channelToConfigTasks.end()) {
-          auto &configTasks = it->second;
-          unsigned &nextIdx = channelToNextConfigIdx[metadata];
-          if (nextIdx < configTasks.size() &&
-              domInfo.properlyDominates(configTasks[nextIdx].getOperation(),
-                                        waitOp.getOperation())) {
-            matchingConfigTask = configTasks[nextIdx];
-            nextIdx++;
-          }
-        }
-
-        if (matchingConfigTask) {
-          OpBuilder builder(waitOp);
-          // Block dominance is satisfied by an op in a sibling region -- a
-          // configure in one arm of a rolled feed select -- but its result is
-          // not visible outside that arm. Await at the end of the arm instead.
-          if (!matchingConfigTask->getParentRegion()->isAncestor(
-                  waitOp->getParentRegion()))
-            builder.setInsertionPoint(
-                matchingConfigTask->getBlock()->getTerminator());
-          if (isS2MM) {
-            // S2MM (output): await task - waits for completion AND frees BD
-            AIEX::DMAAwaitTaskOp::create(builder, waitOp.getLoc(),
-                                         matchingConfigTask.getResult());
-          } else if (matchingConfigTask->hasAttr(
-                         air::attrs::PreserveShimDmaOrder)) {
-            // MM2S, paced: do not emit a fire-and-free here. Bounded
-            // double-buffered awaits are synthesized in
-            // synthesizeDoubleBufferedAwaits() below.
-          } else {
-            // MM2S (input): free task - just frees BD for reuse, no wait
-            AIEX::DMAFreeTaskOp::create(builder, waitOp.getLoc(),
-                                        matchingConfigTask.getResult());
-          }
-        }
-        // Erase the NpuDmaWaitOp regardless of whether we found a match
-        waitOp->erase();
-      }
-
-      // Emit bounded double-buffered awaits for paced (lockstep-coupled) MM2S
-      // shim feeds. Must run after the default await/free emission above so it
-      // can rely on the per-task config ops being in final program order.
-      synthesizeDoubleBufferedAwaits(f, device, /*depth=*/2);
-    }
+    for (auto f : funcOps)
+      if (auto device = f->getParentOfType<AIE::DeviceOp>())
+        if (!f->getRegion(0).empty())
+          synthesizeDoubleBufferedAwaits(f, device, /*depth=*/2);
   }
 
   // For shim feeds marked `air.preserve_shim_dma_order`, replace fire-and-free
@@ -4511,25 +4623,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           seg.push_back(ct);
         }
         flush();
-      }
-    }
-  }
-
-  // Purge DMA async tokens - they are no longer needed after WaitAllOp
-  // processing. Call this BEFORE DMA conversion.
-  void purgeDmaAsyncTokens(ModuleOp module) {
-    SmallVector<airrt::DmaMemcpyNdOp> dmas;
-    module.walk([&](airrt::DmaMemcpyNdOp dma) { dmas.push_back(dma); });
-    for (auto dma : dmas) {
-      if (dma->getNumResults()) {
-        OpBuilder builder(dma);
-        SmallVector<Type, 1> tys;
-        auto newOp = airrt::DmaMemcpyNdOp::create(
-            builder, dma->getLoc(), tys, dma.getId(), dma.getX(), dma.getY(),
-            dma.getMemref(), dma.getMixedOffsets(), dma.getMixedLengths(),
-            dma.getMixedStrides());
-        newOp->setAttrs(dma->getDiscardableAttrDictionary());
-        dma->erase();
       }
     }
   }

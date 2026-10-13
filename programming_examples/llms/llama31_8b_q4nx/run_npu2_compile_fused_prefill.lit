@@ -1,0 +1,15 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// llama31_8b_q4nx fused prefill compile-only test: builds the kernels and every op's
+// insts (shared/fused_prefill). Weights are runtime BOs, so this needs no
+// weight data. The build fails if the op builds disagree on the device
+// configuration they all share.
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22
+//
+// RUN: mkdir -p test_npu2_compile_fused_prefill
+// RUN: cd test_npu2_compile_fused_prefill
+// RUN: make -f %S/Makefile compile-fused-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+//
+// CHECK: built {{[0-9]+}} ops into {{.*}}_fused_prefill

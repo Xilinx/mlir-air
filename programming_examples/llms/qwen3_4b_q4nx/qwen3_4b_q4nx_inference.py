@@ -70,6 +70,13 @@ EOS_IDS = (151643, 151645)  # <|endoftext|>, <|im_end|>
 _Q4NX_CACHE = os.path.expanduser("~/.cache/q4nx_qwen3_4b")
 
 
+def _fused_build():
+    """$FUSED_PREFILL_DIR (the Makefile sets it) if it holds a fused prefill
+    build, else None: the per-op prefill."""
+    d = os.environ.get("FUSED_PREFILL_DIR")
+    return d if d and os.path.isfile(os.path.join(d, "manifest.json")) else None
+
+
 def _ensure_requant_cache(fd, model):
     """Return the decode q4k-cascade cache path, building it from model.q4nx on first
     use (one-time ~pack of 36 layers + tied lm-head). Honors Q4NX_QWEN3_4B_DECODE_NPZ.
@@ -445,7 +452,7 @@ class FusedDecoder:
         return yv[: self.VOCAB_SIZE]
 
 
-def _build_prefiller(model, seq_len=None):
+def _build_prefiller(model, seq_len=None, fused=None):
     """Construct the AIR prefill engine and load its resident weight BOs.
 
     This is the model-load cost -- the ELF cache plus the Q4NX host dequant of
@@ -453,15 +460,24 @@ def _build_prefiller(model, seq_len=None):
     per-turn prefill so an interactive session pays it once."""
     import os
     import time
+    import types
 
-    from qwen3_4b_q4nx_prefill import Qwen3Q4nxPrefill
-
-    seq_len = seq_len or int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
     t_load = time.perf_counter()
-    pf = Qwen3Q4nxPrefill(
-        seq_len=seq_len, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
-    )
-    pf.load_weights(model=model)
+    if fused:
+        sys.modules.setdefault(
+            "air_examples", types.ModuleType("air_examples")
+        ).__path__ = [str(_HERE.parents[1])]
+        from air_examples.llms.shared.fused_prefill import dense
+
+        pf = dense.load("qwen3_4b_q4nx", fused, model)
+    else:
+        from qwen3_4b_q4nx_prefill import Qwen3Q4nxPrefill
+
+        seq_len = seq_len or int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
+        pf = Qwen3Q4nxPrefill(
+            seq_len=seq_len, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
+        )
+        pf.load_weights(model=model)
     print(
         f"[inference] model load (dequant + resident BOs): "
         f"{time.perf_counter() - t_load:.1f}s",
@@ -483,12 +499,15 @@ def _prefill_turn(pf, prompt):
     logits = pf.prefill(prompt)
     ttft = time.perf_counter() - t0
     Kc, Vc = pf.kv_stack()
+    # release the prefill's hw_context for the decoder; prefill() resumes it
+    if hasattr(pf, "suspend"):
+        pf.suspend()
     return Kc, Vc, int(logits.argmax()), ttft
 
 
-def _prefill_npu(prompt, model, seq_len=None):
+def _prefill_npu(prompt, model, seq_len=None, fused=None):
     """Load the prefill engine and run one prompt through it (the one-shot path)."""
-    return _prefill_turn(_build_prefiller(model, seq_len), prompt)
+    return _prefill_turn(_build_prefiller(model, seq_len, fused), prompt)
 
 
 def _decode_loop(dec, prompt, first, n_tokens, Kc, Vc, on_token=None, stop_on_eos=True):
@@ -525,6 +544,7 @@ def generate(
     greedy=True,
     numpy_prefill=False,
     stop_on_eos=True,
+    fused_prefill=None,
 ):
     import numpy as np, time
     import qwen3_4b_q4nx_weights as gw
@@ -542,7 +562,7 @@ def generate(
         first = int(logits[-1].argmax())
         ttft = time.perf_counter() - t0  # the numpy path fuses load and compute
     else:
-        Kc, Vc, first, ttft = _prefill_npu(prompt, model)
+        Kc, Vc, first, ttft = _prefill_npu(prompt, model, fused=fused_prefill)
     P = Kc.shape[1]
     print(
         f"[inference] prefill first token = {first} (Paris={PARIS_FIRST})", flush=True
@@ -645,7 +665,7 @@ def _format_prompt(tokenizer, text):
     return [int(t) for t in ids]
 
 
-def repl(model=MODEL_DEFAULT, n_tokens=64):
+def repl(model=MODEL_DEFAULT, n_tokens=64, fused_prefill=None):
     """Interactive chat. The prefill engine and the decode templates are built once
     and held across turns, so only the first turn pays the model load."""
     import os
@@ -653,7 +673,7 @@ def repl(model=MODEL_DEFAULT, n_tokens=64):
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model)
-    pf = _build_prefiller(model)
+    pf = _build_prefiller(model, fused=fused_prefill)
     dec = FusedDecoder(model=model)
     print(
         f"\nInteractive chat (Ctrl-D or 'exit' to quit). "
@@ -714,6 +734,13 @@ def main():
         "full --n-tokens (what `make profile` wants)",
     )
     ap.add_argument(
+        "--fused-prefill",
+        default=_fused_build(),
+        metavar="BUILD_DIR",
+        help="prefill on this `make compile-fused-prefill` build (default: "
+        "$FUSED_PREFILL_DIR if it holds one; '' selects the per-op prefill)",
+    )
+    ap.add_argument(
         "--interactive",
         action="store_true",
         help="chat REPL: build the engine once and hold it across turns",
@@ -723,7 +750,7 @@ def main():
     if args.interactive:
         if args.numpy_prefill:
             ap.error("--interactive cannot be combined with --numpy-prefill")
-        repl(model=args.model, n_tokens=args.n_tokens)
+        repl(model=args.model, n_tokens=args.n_tokens, fused_prefill=args.fused_prefill)
         return
 
     if args.prompt_ids:
@@ -744,6 +771,7 @@ def main():
         model=args.model,
         numpy_prefill=args.numpy_prefill,
         stop_on_eos=not args.no_eos_stop,
+        fused_prefill=args.fused_prefill,
     )
     print("=" * 60)
     print(f"[inference] gen ids: {gen_ids}")

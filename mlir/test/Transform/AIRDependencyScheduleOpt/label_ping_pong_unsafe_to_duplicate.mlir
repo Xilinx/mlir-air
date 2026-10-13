@@ -207,3 +207,292 @@ func.func @nested_unsafe_disqualifies_outer() {
   }
   return
 }
+
+// -----
+
+// The callee is defined in the module, overwrites the whole per-iteration
+// buffer and never reads it, so its call is the buffer's definite first write:
+// the loop is double buffered as with a channel.get.
+
+// CHECK-LABEL: @defined_callee_writes_only
+// CHECK: memref.alloc() {hoist_alloc = true} : memref<16xf32, 2>
+// CHECK: } {unroll = 2 : i32}
+air.channel @c1 [1, 1]
+func.func private @fill_tile(%src: memref<64xbf16, 2>, %dst: memref<16xf32, 2>) {
+  %c0 = arith.constant 0 : index
+  %p = arith.constant 0.0 : bf16
+  %v = vector.transfer_read %src[%c0], %p {in_bounds = [true]} : memref<64xbf16, 2>, vector<16xbf16>
+  %f = arith.extf %v : vector<16xbf16> to vector<16xf32>
+  %view = memref.subview %dst[0] [16] [1] : memref<16xf32, 2> to memref<16xf32, strided<[1]>, 2>
+  vector.transfer_write %f, %view[%c0] {in_bounds = [true]} : vector<16xf32>, memref<16xf32, strided<[1]>, 2>
+  return
+}
+func.func @defined_callee_writes_only() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %t = air.wait_all async
+  %r = scf.for %i = %c0 to %c8 step %c1 iter_args(%tok = %t) -> (!air.async.token) {
+    %tok0, %buf = air.execute [%tok] -> (memref<64xbf16, 2>) {
+      %alloc = memref.alloc() : memref<64xbf16, 2>
+      air.execute_terminator %alloc : memref<64xbf16, 2>
+    }
+    %tok1, %out = air.execute -> (memref<16xf32, 2>) {
+      %alloc = memref.alloc() : memref<16xf32, 2>
+      air.execute_terminator %alloc : memref<16xf32, 2>
+    }
+    %g = air.channel.get async [%tok0] @c1[] (%buf[] [] []) : (memref<64xbf16, 2>)
+    %tok2 = air.execute [%g, %tok1] {
+      func.call @fill_tile(%buf, %out) : (memref<64xbf16, 2>, memref<16xf32, 2>) -> ()
+    }
+    %tok3 = air.execute [%tok2] {
+      memref.dealloc %buf : memref<64xbf16, 2>
+    }
+    %tok4 = air.execute [%tok2] {
+      memref.dealloc %out : memref<16xf32, 2>
+    }
+    scf.yield %tok3 : !air.async.token
+  }
+  return
+}
+
+// -----
+
+// The same defined callee, but it also reads the buffer before writing it:
+// the value may flow from the previous iteration, so the loop stays single.
+
+// CHECK-LABEL: @defined_callee_reads
+// CHECK-NOT: unroll
+air.channel @c1 [1, 1]
+func.func private @acc_tile(%src: memref<64xbf16, 2>, %dst: memref<16xf32, 2>) {
+  %c0 = arith.constant 0 : index
+  %p = arith.constant 0.0 : f32
+  %a = vector.transfer_read %dst[%c0], %p {in_bounds = [true]} : memref<16xf32, 2>, vector<16xf32>
+  %s = arith.addf %a, %a : vector<16xf32>
+  vector.transfer_write %s, %dst[%c0] {in_bounds = [true]} : vector<16xf32>, memref<16xf32, 2>
+  return
+}
+func.func @defined_callee_reads() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %t = air.wait_all async
+  %r = scf.for %i = %c0 to %c8 step %c1 iter_args(%tok = %t) -> (!air.async.token) {
+    %tok0, %buf = air.execute [%tok] -> (memref<64xbf16, 2>) {
+      %alloc = memref.alloc() : memref<64xbf16, 2>
+      air.execute_terminator %alloc : memref<64xbf16, 2>
+    }
+    %tok1, %out = air.execute -> (memref<16xf32, 2>) {
+      %alloc = memref.alloc() : memref<16xf32, 2>
+      air.execute_terminator %alloc : memref<16xf32, 2>
+    }
+    %g = air.channel.get async [%tok0] @c1[] (%buf[] [] []) : (memref<64xbf16, 2>)
+    %tok2 = air.execute [%g, %tok1] {
+      func.call @acc_tile(%buf, %out) : (memref<64xbf16, 2>, memref<16xf32, 2>) -> ()
+    }
+    %tok3 = air.execute [%tok2] {
+      memref.dealloc %buf : memref<64xbf16, 2>
+    }
+    %tok4 = air.execute [%tok2] {
+      memref.dealloc %out : memref<16xf32, 2>
+    }
+    scf.yield %tok3 : !air.async.token
+  }
+  return
+}
+
+// -----
+
+// A callee that writes the buffer in a loop nest, two vectors per row: the
+// writes cover it, so the call is a definite write.
+
+// CHECK-LABEL: @defined_callee_loop_nest
+// CHECK: } {unroll = 2 : i32}
+air.channel @c1 [1, 1]
+func.func private @fill_rows(%src: memref<64xbf16, 2>, %dst: memref<4x16xbf16, 2>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c8 = arith.constant 8 : index
+  %p = arith.constant 0.0 : bf16
+  scf.for %r = %c0 to %c4 step %c1 {
+    %v = vector.transfer_read %src[%c0], %p {in_bounds = [true]} : memref<64xbf16, 2>, vector<8xbf16>
+    vector.transfer_write %v, %dst[%r, %c0] {in_bounds = [true]} : vector<8xbf16>, memref<4x16xbf16, 2>
+    vector.transfer_write %v, %dst[%r, %c8] {in_bounds = [true]} : vector<8xbf16>, memref<4x16xbf16, 2>
+  }
+  return
+}
+func.func @defined_callee_loop_nest() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %t = air.wait_all async
+  %r = scf.for %i = %c0 to %c8 step %c1 iter_args(%tok = %t) -> (!air.async.token) {
+    %tok0, %buf = air.execute [%tok] -> (memref<64xbf16, 2>) {
+      %alloc = memref.alloc() : memref<64xbf16, 2>
+      air.execute_terminator %alloc : memref<64xbf16, 2>
+    }
+    %tok1, %out = air.execute -> (memref<4x16xbf16, 2>) {
+      %alloc = memref.alloc() : memref<4x16xbf16, 2>
+      air.execute_terminator %alloc : memref<4x16xbf16, 2>
+    }
+    %g = air.channel.get async [%tok0] @c1[] (%buf[] [] []) : (memref<64xbf16, 2>)
+    %tok2 = air.execute [%g, %tok1] {
+      func.call @fill_rows(%buf, %out) : (memref<64xbf16, 2>, memref<4x16xbf16, 2>) -> ()
+    }
+    %tok3 = air.execute [%tok2] {
+      memref.dealloc %buf : memref<64xbf16, 2>
+    }
+    %tok4 = air.execute [%tok2] {
+      memref.dealloc %out : memref<4x16xbf16, 2>
+    }
+    scf.yield %tok3 : !air.async.token
+  }
+  return
+}
+
+// -----
+
+// A callee that writes only one row of the buffer leaves the rest as the
+// previous iteration left it, so the loop stays single.
+
+// CHECK-LABEL: @defined_callee_writes_one_row
+// CHECK-NOT: unroll
+air.channel @c1 [1, 1]
+func.func private @fill_row(%src: memref<64xbf16, 2>, %dst: memref<4x16xbf16, 2>) {
+  %c0 = arith.constant 0 : index
+  %p = arith.constant 0.0 : bf16
+  %v = vector.transfer_read %src[%c0], %p {in_bounds = [true]} : memref<64xbf16, 2>, vector<16xbf16>
+  vector.transfer_write %v, %dst[%c0, %c0] {in_bounds = [true]} : vector<16xbf16>, memref<4x16xbf16, 2>
+  return
+}
+func.func @defined_callee_writes_one_row() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %t = air.wait_all async
+  %r = scf.for %i = %c0 to %c8 step %c1 iter_args(%tok = %t) -> (!air.async.token) {
+    %tok0, %buf = air.execute [%tok] -> (memref<64xbf16, 2>) {
+      %alloc = memref.alloc() : memref<64xbf16, 2>
+      air.execute_terminator %alloc : memref<64xbf16, 2>
+    }
+    %tok1, %out = air.execute -> (memref<4x16xbf16, 2>) {
+      %alloc = memref.alloc() : memref<4x16xbf16, 2>
+      air.execute_terminator %alloc : memref<4x16xbf16, 2>
+    }
+    %g = air.channel.get async [%tok0] @c1[] (%buf[] [] []) : (memref<64xbf16, 2>)
+    %tok2 = air.execute [%g, %tok1] {
+      func.call @fill_row(%buf, %out) : (memref<64xbf16, 2>, memref<4x16xbf16, 2>) -> ()
+    }
+    %tok3 = air.execute [%tok2] {
+      memref.dealloc %buf : memref<64xbf16, 2>
+    }
+    %tok4 = air.execute [%tok2] {
+      memref.dealloc %out : memref<4x16xbf16, 2>
+    }
+    scf.yield %tok3 : !air.async.token
+  }
+  return
+}
+
+// -----
+
+// A callee that writes the whole buffer, but only under a condition: the loop
+// stays single.
+
+// CHECK-LABEL: @defined_callee_writes_conditionally
+// CHECK-NOT: unroll
+air.channel @c1 [1, 1]
+func.func private @maybe_fill(%src: memref<64xbf16, 2>, %dst: memref<16xbf16, 2>, %cond: i1) {
+  %c0 = arith.constant 0 : index
+  %p = arith.constant 0.0 : bf16
+  scf.if %cond {
+    %v = vector.transfer_read %src[%c0], %p {in_bounds = [true]} : memref<64xbf16, 2>, vector<16xbf16>
+    vector.transfer_write %v, %dst[%c0] {in_bounds = [true]} : vector<16xbf16>, memref<16xbf16, 2>
+  }
+  return
+}
+func.func @defined_callee_writes_conditionally(%cond: i1) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %t = air.wait_all async
+  %r = scf.for %i = %c0 to %c8 step %c1 iter_args(%tok = %t) -> (!air.async.token) {
+    %tok0, %buf = air.execute [%tok] -> (memref<64xbf16, 2>) {
+      %alloc = memref.alloc() : memref<64xbf16, 2>
+      air.execute_terminator %alloc : memref<64xbf16, 2>
+    }
+    %tok1, %out = air.execute -> (memref<16xbf16, 2>) {
+      %alloc = memref.alloc() : memref<16xbf16, 2>
+      air.execute_terminator %alloc : memref<16xbf16, 2>
+    }
+    %g = air.channel.get async [%tok0] @c1[] (%buf[] [] []) : (memref<64xbf16, 2>)
+    %tok2 = air.execute [%g, %tok1] {
+      func.call @maybe_fill(%buf, %out, %cond) : (memref<64xbf16, 2>, memref<16xbf16, 2>, i1) -> ()
+    }
+    %tok3 = air.execute [%tok2] {
+      memref.dealloc %buf : memref<64xbf16, 2>
+    }
+    %tok4 = air.execute [%tok2] {
+      memref.dealloc %out : memref<16xbf16, 2>
+    }
+    scf.yield %tok3 : !air.async.token
+  }
+  return
+}
+
+// -----
+
+// The async form of the loop-nest callee: loops carry tokens and each write
+// sits in an air.execute, which runs it once.
+
+// CHECK-LABEL: @defined_callee_async_loop_nest
+// CHECK: } {unroll = 2 : i32}
+air.channel @c1 [1, 1]
+func.func private @fill_rows_async(%src: memref<64xbf16, 2>, %dst: memref<4x16xbf16, 2>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c16 = arith.constant 16 : index
+  %p = arith.constant 0.0 : bf16
+  %t0 = air.wait_all async
+  %r = scf.for %i = %c0 to %c4 step %c1 iter_args(%t = %t0) -> (!air.async.token) {
+    %t1, %v = air.execute [%t] -> (vector<16xbf16>) {
+      %x = vector.transfer_read %src[%c0], %p {in_bounds = [true]} : memref<64xbf16, 2>, vector<16xbf16>
+      air.execute_terminator %x : vector<16xbf16>
+    }
+    %t2 = air.execute [%t1] {
+      vector.transfer_write %v, %dst[%i, %c0] {in_bounds = [true]} : vector<16xbf16>, memref<4x16xbf16, 2>
+    }
+    scf.yield %t2 : !air.async.token
+  }
+  return
+}
+func.func @defined_callee_async_loop_nest() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %t = air.wait_all async
+  %r = scf.for %i = %c0 to %c8 step %c1 iter_args(%tok = %t) -> (!air.async.token) {
+    %tok0, %buf = air.execute [%tok] -> (memref<64xbf16, 2>) {
+      %alloc = memref.alloc() : memref<64xbf16, 2>
+      air.execute_terminator %alloc : memref<64xbf16, 2>
+    }
+    %tok1, %out = air.execute -> (memref<4x16xbf16, 2>) {
+      %alloc = memref.alloc() : memref<4x16xbf16, 2>
+      air.execute_terminator %alloc : memref<4x16xbf16, 2>
+    }
+    %g = air.channel.get async [%tok0] @c1[] (%buf[] [] []) : (memref<64xbf16, 2>)
+    %tok2 = air.execute [%g, %tok1] {
+      func.call @fill_rows_async(%buf, %out) : (memref<64xbf16, 2>, memref<4x16xbf16, 2>) -> ()
+    }
+    %tok3 = air.execute [%tok2] {
+      memref.dealloc %buf : memref<64xbf16, 2>
+    }
+    %tok4 = air.execute [%tok2] {
+      memref.dealloc %out : memref<4x16xbf16, 2>
+    }
+    scf.yield %tok3 : !air.async.token
+  }
+  return
+}

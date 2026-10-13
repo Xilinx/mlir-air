@@ -9,6 +9,7 @@
 #define AIR_C_TRANSFORM_H
 
 #include "mlir-c/IR.h"
+#include "mlir-c/Support.h"
 
 #include <string>
 
@@ -16,7 +17,8 @@
 extern "C" {
 #endif
 
-MLIR_CAPI_EXPORTED void runTransform(MlirModule transform, MlirModule payload);
+MLIR_CAPI_EXPORTED MlirLogicalResult runTransform(MlirModule transform,
+                                                  MlirModule payload);
 
 #ifdef __cplusplus
 }

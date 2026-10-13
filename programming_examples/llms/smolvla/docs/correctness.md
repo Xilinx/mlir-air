@@ -3,111 +3,111 @@
 ## The gate
 
 `make verify` runs the pipeline twice in one process, from the same policy
-object and the same batch, changing exactly one thing: where `embed_image` gets
-its answer. It compares the final **action chunk** — the (1,50,6) tensor the
-robot would execute — not an intermediate activation, and not a
-reimplementation.
+object and the same batch, changing one thing: whether the NPU stages are used.
+It compares the final action chunk, the (1,50,6) tensor the robot would execute,
+not an intermediate activation and not a reimplementation.
 
 | | |
 |---|---|
 | Reference | the unmodified LeRobot CPU model, computed live in the same run |
-| Metric | median per-position cosine (primary) + normalized MSE |
+| Metric | median per-position cosine (primary) and normalized MSE |
 | Thresholds | cosine ≥ 0.99, nMSE ≤ 0.04 |
 | Determinism | flow-matching noise pinned to zero, images from a fixed seed |
 
 SmolVLA emits a continuous action chunk rather than tokens, so this uses
-`regression_gate` from `../../verify/comparators.py` rather than the top-k
-token-set gate the autoregressive siblings use.
+`regression_gate` from `../../verify/comparators.py` instead of the top-k
+token-set gate the autoregressive examples use.
 
 The reference is recomputed every run rather than loaded from a fixture. A saved
-fixture goes stale against a checkpoint or LeRobot upgrade, and being gitignored
-it would make the verify lit test fail on a clean checkout. It costs one extra
-CPU forward (~0.9 s).
+fixture goes stale with a checkpoint or LeRobot upgrade, and being gitignored it
+would fail the verify lit test on a clean checkout. The cost is one extra CPU
+forward.
 
-Measured, 3 cameras:
+nMSE is normalized so that the threshold does not move with the action
+magnitude. The shipping configuration clears both thresholds by a wide margin,
+so a pass with little margin is itself worth a look.
 
-```
-cosine 0.998427   nMSE 0.007423   PASS
-```
-
-nMSE is normalized rather than absolute so the threshold does not drift with
-action magnitude; 0.04 is ~5× the observed value.
+`make verify-all` is the same gate with every stage on the NPU. `CAMERAS=2` and
+`CAMERAS=1` run either gate with fewer feeds.
 
 ## The synthetic input
 
 The gate's images are generated, not recorded, so it stays deterministic and CI
-needs no dataset. They are **not** all-zero and **not** white noise; both fail
-for measurable reasons.
+needs no dataset. They are neither all-zero nor white noise, because both hide
+errors.
 
 `_synthetic_image` draws one uniform value per SigLIP patch on the encoder's
-32×32 grid, upsamples bilinearly, and adds 5% per-pixel grain. Seed 0, via an
-explicit `torch.Generator` so the batch does not depend on global RNG state.
-Only the images are randomized — state feeds the CPU-only `state_proj`.
+32×32 grid, upsamples bilinearly and adds 5% per-pixel grain. The seed is fixed
+and drawn from an explicit `torch.Generator`, so the batch does not depend on
+global RNG state. Only the images are randomized; the state feeds the CPU-only
+`state_proj`.
 
-**Why not all-zero.** After LeRobot's normalizer a zero image is a constant −1
-frame, which makes all 1024 patches identical: the patch-embedding GEMM is then
-probed by a **rank-1** operand, so only its per-channel weight sums matter. A
-sum-preserving shuffle of the weights within a channel left the action chunk
-bit-identical — a mutation the gate could not see. With the patch-grid input the
-same mutation moves the chunk by 0.40.
+Why not all-zero: after LeRobot's normalizer a zero image is a constant −1
+frame, so all 1024 patches are identical and the patch-embedding GEMM sees a
+rank-1 operand. Only the per-channel weight sums then matter: shuffling the
+weights within a channel, sums preserved, left the action chunk bit-identical. A
+gate on that input cannot see such a bug. The patch-grid input moves the chunk
+well past the threshold under the same mutation.
 
-**Why not white noise.** Per-pixel noise has no spatial structure, and the model
-answers it with a near-zero action chunk (rms 0.13 against 0.5–1.6 on real
-frames). Cosine on a near-zero reference is hypersensitive: the gate read 0.9869
-and FAILED on arithmetic that was correct.
+Why not white noise: per-pixel noise has no spatial structure, and the model
+answers it with a near-zero action chunk. Cosine against a near-zero reference
+is hypersensitive, and correct arithmetic failed the gate on it.
 
-The grain earns its place separately — it lifts the im2col rank from 27/768 to
-297 without moving the model out of its normal output range.
+The grain is there for the patch embedding: it raises the rank of the im2col
+matrix without moving the model out of its normal output range.
 
 ## Real frames
 
-`make verify INPUT=real` runs the same CPU-vs-NPU comparison frame by frame
-against the same thresholds, and always exits 0: it reports headroom, it is not
-the gate. 100 frames of `lerobot/droid_100`, one from the middle of each of its
-100 episodes.
+`make verify INPUT=real` runs the same comparison frame by frame against the
+same thresholds over `FRAMES` frames of `DATASET` (by default 100 frames of
+`lerobot/droid_100`, one from the middle of each episode). It reports the
+fraction within threshold, the cosine and nMSE distribution, the worst action
+dimension, and the five worst frames below threshold. It always exits 0: it
+measures headroom, it is not the gate.
 
-| Cameras | Within threshold | cosine median | P10 | cosine worst | nMSE worst |
-|---|---|---|---|---|---|
-| **3 (shipping)** | **100/100** | 0.999679 | 0.998782 | 0.997360 | 0.008050 |
-| 2 | 98/100 | 0.999435 | 0.997137 | 0.987832 | 0.036063 |
-| 1 | 97/100 | 0.998840 | 0.995269 | 0.957068 | 0.086860 |
+With three cameras, the shipping configuration, nearly all frames are within
+threshold on the vision-only path; the all-NPU path, which is less accurate,
+can leave more below it. Fewer cameras leaves more frames below threshold on
+both paths, and more on the all-NPU path than on vision only. Agreement on real frames is better than on the
+synthetic input, so the gate is not flattered by its generated images.
 
-Agreement on real images is better than on the synthetic gate input, so the gate
-is not flattered by its generated input.
+Cosine ignores scale, which matters for an actuator command, so the report also
+gives the largest absolute error per action dimension.
 
-Cosine is scale-blind on a physical actuator command, so the absolute figure is
-worth carrying too: the largest per-dimension error was 1.05 on action dim 5 at
-1 camera, 0.36 at 3.
+## The all-NPU path
+
+The all-NPU path is less accurate than vision only. The backbone and the expert
+use bfp16 weights (8-bit mantissas, one exponent shared by 8 values) and bf16
+activations. Each stage on its own agrees closely with its fp32 reference; the
+error accumulates through the 10 flow-matching steps that each re-run the
+expert.
 
 ## Why a few frames fall below threshold
 
-Not because the NPU is less accurate on those images. Measured per frame across
-the same 100:
+On the vision-only path, the frames below threshold are not frames the NPU
+computes less accurately. Measured per frame:
 
-| Quantity | Behaviour |
-|---|---|
-| Vision-stage error (NPU vs CPU connector) | cosine 0.9959 ± 0.004 — near constant |
-| Its correlation with the final chunk error | **r = +0.06** |
-| Final ‖error‖ | 0.16 → 3.63, a **22× spread** |
+- The vision-stage error (NPU against CPU connector output) is nearly the same
+  on every frame.
+- It is uncorrelated with the final action-chunk error.
+- The final error varies by more than an order of magnitude between frames.
 
-The perturbation entering the CPU backbone is the same size on every frame; what
-varies is how much the backbone and the 10 flow-matching Euler steps amplify it.
-Injecting a *random* perturbation of equal magnitude instead of the NPU's
-reproduces the spread — frame 20540 lands at 0.987 either way, while the best
-frames stay above 0.9997 no matter what is injected. The sensitivity belongs to
-those frames, not to the port.
+The perturbation entering the backbone is the same size on every frame; what
+varies is how much the backbone and the 10 Euler steps amplify it. Injecting a
+random perturbation of the same size instead of the NPU's reproduces the
+spread: the same frames fall below threshold either way, while the best frames
+stay well above it whatever is injected. The sensitivity belongs to those
+frames, not to the port.
 
-One secondary effect: 24% of the connector error energy sits in a fixed,
-input-independent direction (pairwise cosine 0.133 between per-frame error
-vectors, against a 0.004 white-noise floor) — the systematic residue of bf16
-weight rounding. On an already-sensitive frame it can therefore hurt more than
-equal-norm white noise would.
+A secondary effect: part of the connector error points in a fixed,
+input-independent direction, the systematic residue of bf16 weight rounding. On
+an already sensitive frame it can hurt more than white noise of the same size.
 
-Fewer cameras is consistently worse because the cameras' independent error
-components average out; three feeds leave less of the vision error to propagate.
+Fewer cameras is consistently worse because the cameras' independent errors
+average out; with three feeds less of the vision error propagates.
 
 ## What this does and does not claim
 
 It claims the port did not change the model's behaviour. It does not claim the
-model is good at the task — that needs evaluation against recorded robot
+model is good at the task; that needs evaluation against recorded robot
 trajectories, which is out of scope for a kernel port.

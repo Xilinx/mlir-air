@@ -45,6 +45,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -336,6 +337,228 @@ void setAIEDeviceDataLayout(OpBuilder &builder, AIE::DeviceOp aie_dev) {
       DataLayoutEntryAttr::get(indexType, builder.getI64IntegerAttr(32));
   auto dlSpec = DataLayoutSpecAttr::get(builder.getContext(), {dlEntry});
   aie_dev->setAttr(DLTIDialect::kDataLayoutAttrName, dlSpec);
+}
+
+// Every memref type in `f`, its signature included, in the default memory
+// space. aie-normalize-address-spaces leaves a core's buffers there; it retypes
+// a function's signature but not the uses of its arguments.
+static void toDefaultMemorySpace(func::FuncOp f) {
+  auto plain = [](Type t) -> Type {
+    auto m = dyn_cast<MemRefType>(t);
+    if (!m || !m.getMemorySpace())
+      return t;
+    return MemRefType::get(m.getShape(), m.getElementType(), m.getLayout(),
+                           nullptr);
+  };
+  f.walk([&](Operation *o) {
+    for (Value r : o->getResults())
+      r.setType(plain(r.getType()));
+    for (Region &reg : o->getRegions())
+      for (Block &b : reg)
+        for (BlockArgument a : b.getArguments())
+          a.setType(plain(a.getType()));
+  });
+  SmallVector<Type> ins, outs;
+  for (Type t : f.getFunctionType().getInputs())
+    ins.push_back(plain(t));
+  for (Type t : f.getFunctionType().getResults())
+    outs.push_back(plain(t));
+  f.setFunctionType(FunctionType::get(f.getContext(), ins, outs));
+}
+
+// Sets llvm.noalias on the memref arguments of a cloned callee that `call`
+// proves disjoint from its other memref arguments (different buffers, or both
+// only read), and removes it from those it does not. With `firstCall` unset
+// it is only ever removed, so it stays only where every call proves it.
+static void narrowNoAlias(func::CallOp call, func::FuncOp fn, bool firstCall) {
+  auto writes = [&](unsigned i) {
+    llvm::SmallDenseSet<Value> aliases;
+    air::collectBufferAliases(fn.getArgument(i), aliases);
+    for (Value m : aliases)
+      for (Operation *u : m.getUsers()) {
+        if (auto view = dyn_cast<ViewLikeOpInterface>(u);
+            view && view.getViewSource() == m)
+          continue;
+        auto eff = dyn_cast<MemoryEffectOpInterface>(u);
+        if (!eff || eff.getEffectOnValue<MemoryEffects::Write>(m))
+          return true;
+      }
+    return false;
+  };
+  // Distinct roots are distinct buffers only when both are allocations;
+  // block arguments, globals and other definitions may still alias.
+  auto allocated = [](Value root) {
+    return isa_and_present<memref::AllocOp, memref::AllocaOp, AIE::BufferOp>(
+        root.getDefiningOp());
+  };
+  StringRef noalias = LLVM::LLVMDialect::getNoAliasAttrName();
+  unsigned n = call.getNumOperands();
+  for (unsigned i = 0; i < n; ++i) {
+    if (!isa<MemRefType>(call.getOperand(i).getType()))
+      continue;
+    Value ri = air::resolveBufferRoot(call.getOperand(i));
+    bool disjoint = true;
+    for (unsigned j = 0; j < n && disjoint; ++j) {
+      if (j == i || !isa<MemRefType>(call.getOperand(j).getType()))
+        continue;
+      Value rj = air::resolveBufferRoot(call.getOperand(j));
+      bool distinct = ri != rj && allocated(ri) && allocated(rj);
+      if (!distinct && (writes(i) || writes(j)))
+        disjoint = false;
+    }
+    if (firstCall && disjoint)
+      fn.setArgAttr(i, noalias, UnitAttr::get(fn.getContext()));
+    else if (!disjoint)
+      fn.removeArgAttr(i, noalias);
+  }
+}
+
+// A declaration in `device` of the external function `name`, called with
+// `callType`. Memref layouts are dropped: external kernels take bare pointers.
+// LLVM intrinsics (`llvm.*`) are declared as they are.
+static func::FuncOp declareExternalCallee(AIE::DeviceOp device,
+                                          AIE::CoreOp core, StringRef name,
+                                          FunctionType callType) {
+  SmallVector<Type> inputs;
+  for (Type t : callType.getInputs()) {
+    auto m = dyn_cast<MemRefType>(t);
+    inputs.push_back(m ? MemRefType::get(m.getShape(), m.getElementType(),
+                                         MemRefLayoutAttrInterface{},
+                                         m.getMemorySpace())
+                       : t);
+  }
+  auto fn = func::FuncOp::create(
+      device.getLoc(), name,
+      FunctionType::get(device.getContext(), inputs, callType.getResults()));
+  fn.setPrivate();
+  if (name.starts_with("llvm.")) {
+    device.insert(device.getBody()->getTerminator(), fn);
+    return fn;
+  }
+  // Attributes of the host declaration (link_with, llvm.emit_c_interface).
+  if (auto parentModule = device->getParentOfType<ModuleOp>())
+    if (auto origFn = parentModule.lookupSymbol<func::FuncOp>(name))
+      for (auto attr : origFn->getDiscardableAttrs())
+        fn->setAttr(attr.getName(), attr.getValue());
+  if (!fn->hasAttr("link_with"))
+    if (auto attr = core->getAttrOfType<StringAttr>("link_with"))
+      fn->setAttr("link_with", attr);
+  if (!fn->hasAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName()))
+    fn->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
+                UnitAttr::get(device.getContext()));
+  device.insert(device.getBody()->getTerminator(), fn);
+  return fn;
+}
+
+// Casts the operands of `call`, and its results back, where their types
+// differ from `fn`'s in layout or memory space.
+static void matchCallToCallee(func::CallOp call, func::FuncOp fn) {
+  FunctionType fnType = fn.getFunctionType();
+  OpBuilder b(call);
+  SmallVector<Value> newOperands;
+  bool needsUpdate = false;
+  for (auto [operand, inputType] :
+       llvm::zip(call.getOperands(), fnType.getInputs())) {
+    if (operand.getType() == inputType) {
+      newOperands.push_back(operand);
+      continue;
+    }
+    auto om = dyn_cast<MemRefType>(operand.getType());
+    auto im = dyn_cast<MemRefType>(inputType);
+    if (om && im && om.getMemorySpace() != im.getMemorySpace() &&
+        memref::MemorySpaceCastOp::areCastCompatible(om, im)) {
+      newOperands.push_back(memref::MemorySpaceCastOp::create(
+          b, call.getLoc(), inputType, operand));
+      needsUpdate = true;
+      continue;
+    }
+    if (!memref::CastOp::areCastCompatible(operand.getType(), inputType)) {
+      call.emitError("cannot cast operand type ")
+          << operand.getType() << " to normalized function type " << inputType;
+      newOperands.push_back(operand);
+      continue;
+    }
+    newOperands.push_back(
+        memref::CastOp::create(b, call.getLoc(), inputType, operand));
+    needsUpdate = true;
+  }
+  if (needsUpdate)
+    call->setOperands(newOperands);
+  if (call.getResultTypes() == fnType.getResults())
+    return;
+  auto newCall = func::CallOp::create(b, call.getLoc(), fn, call.getOperands());
+  for (auto [oldRes, newRes] :
+       llvm::zip(call.getResults(), newCall.getResults())) {
+    Value v = newRes;
+    if (v.getType() != oldRes.getType())
+      v = memref::MemorySpaceCastOp::create(b, call.getLoc(), oldRes.getType(),
+                                            v);
+    oldRes.replaceAllUsesWith(v);
+  }
+  call->erase();
+}
+
+// Clones `orig`, a function the module defines and a core calls, into
+// `device`, with every function it refers to: defined ones cloned the same
+// way, external ones declared as for a direct call from the core. The callee
+// is kept a function of its own rather than inlined into the core, so that
+// it is compiled separately from the code around the call.
+static FailureOr<func::FuncOp>
+cloneDefinedCallee(AIE::DeviceOp device, AIE::CoreOp core, func::FuncOp orig) {
+  ModuleOp parentModule = device->getParentOfType<ModuleOp>();
+  auto clone = [&](func::FuncOp f) -> FailureOr<func::FuncOp> {
+    // Allocations become aie.buffer ops only directly under the core.
+    if (f.walk([](memref::AllocOp) {
+           return WalkResult::interrupt();
+         }).wasInterrupted())
+      return f.emitOpError("is called from a herd and allocates memory; "
+                           "allocate the buffer in the herd and pass it in");
+    auto copy = cast<func::FuncOp>(f->clone());
+    copy.setPrivate();
+    copy->setAttr("air.cloned_callee", UnitAttr::get(copy.getContext()));
+    toDefaultMemorySpace(copy);
+    device.insert(device.getBody()->getTerminator(), copy);
+    return copy;
+  };
+  FailureOr<func::FuncOp> top = clone(orig);
+  if (failed(top))
+    return failure();
+  SmallVector<func::FuncOp> work{*top};
+  while (!work.empty()) {
+    func::FuncOp f = work.pop_back_val();
+    std::optional<SymbolTable::UseRange> uses =
+        SymbolTable::getSymbolUses(&f.getBody());
+    if (!uses)
+      return f.emitOpError("has symbol uses that cannot be resolved");
+    SmallVector<func::CallOp> calls;
+    for (const SymbolTable::SymbolUse &use : *uses) {
+      StringRef name = use.getSymbolRef().getRootReference();
+      if (auto known = device.lookupSymbol<func::FuncOp>(name)) {
+        // Its arguments are now `f`'s, which nothing here proves disjoint.
+        if (known->hasAttr("air.cloned_callee"))
+          for (unsigned i = 0; i < known.getNumArguments(); ++i)
+            known.removeArgAttr(i, LLVM::LLVMDialect::getNoAliasAttrName());
+      } else if (auto callee = parentModule.lookupSymbol<func::FuncOp>(name)) {
+        if (callee.isExternal()) {
+          auto call = dyn_cast<func::CallOp>(use.getUser());
+          declareExternalCallee(device, core, name,
+                                call ? call.getCalleeType()
+                                     : callee.getFunctionType());
+        } else {
+          FailureOr<func::FuncOp> copy = clone(callee);
+          if (failed(copy))
+            return failure();
+          work.push_back(*copy);
+        }
+      }
+      if (auto call = dyn_cast<func::CallOp>(use.getUser()))
+        calls.push_back(call);
+    }
+    for (func::CallOp call : calls)
+      if (auto callee = device.lookupSymbol<func::FuncOp>(call.getCallee()))
+        matchCallToCallee(call, callee);
+  }
+  return *top;
 }
 
 LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
@@ -687,80 +910,36 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       } else
         AIE::EndOp::create(core_builder, hloc);
 
-      core.walk([&](Operation *op) {
-        if (auto call = dyn_cast_if_present<func::CallOp>(op)) {
-          auto fn = aie_device.lookupSymbol<func::FuncOp>(call.getCallee());
-          if (!fn) {
-            // Normalize memref types: strip strided layout so that
-            // convert-func-to-llvm with bare-ptr calling convention can
-            // handle the declaration. External kernels use C ABI (raw
-            // pointers), so MLIR layout metadata is irrelevant.
-            SmallVector<Type> normalizedInputs;
-            for (Type t : call.getCalleeType().getInputs()) {
-              if (auto memrefTy = dyn_cast<MemRefType>(t)) {
-                normalizedInputs.push_back(MemRefType::get(
-                    memrefTy.getShape(), memrefTy.getElementType(),
-                    MemRefLayoutAttrInterface{}, memrefTy.getMemorySpace()));
-              } else {
-                normalizedInputs.push_back(t);
-              }
+      bool calleeFailed = false;
+      core.walk([&](func::CallOp call) {
+        auto fn = aie_device.lookupSymbol<func::FuncOp>(call.getCallee());
+        if (fn && fn->hasAttr("air.cloned_callee"))
+          narrowNoAlias(call, fn, /*firstCall=*/false);
+        if (!fn) {
+          auto parentModule = aie_device->getParentOfType<ModuleOp>();
+          auto origFn =
+              parentModule
+                  ? parentModule.lookupSymbol<func::FuncOp>(call.getCallee())
+                  : func::FuncOp();
+          if (origFn && !origFn.isExternal()) {
+            FailureOr<func::FuncOp> cloned =
+                cloneDefinedCallee(aie_device, core, origFn);
+            if (failed(cloned)) {
+              calleeFailed = true;
+              return WalkResult::interrupt();
             }
-            auto normalizedType =
-                FunctionType::get(aie_device.getContext(), normalizedInputs,
-                                  call.getCalleeType().getResults());
-            fn = func::FuncOp::create(aie_device.getLoc(), call.getCallee(),
-                                      normalizedType);
-            fn.setPrivate();
-            // Copy attributes from the original declaration in the parent
-            // module (e.g. link_with, llvm.emit_c_interface).
-            if (auto parentModule = aie_device->getParentOfType<ModuleOp>()) {
-              if (auto origFn = parentModule.lookupSymbol<func::FuncOp>(
-                      call.getCallee())) {
-                for (auto attr : origFn->getDiscardableAttrs())
-                  fn->setAttr(attr.getName(), attr.getValue());
-              }
-            }
-            // Fallback: if link_with was not found from parent module,
-            // use the attribute from the aie.core op.
-            if (!fn->hasAttr("link_with")) {
-              if (auto attr = core->getAttrOfType<StringAttr>("link_with"))
-                fn->setAttr("link_with", attr);
-            }
-            if (!fn->hasAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName())) {
-              fn->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
-                          UnitAttr::get(aie_device.getContext()));
-            }
-            aie_device.insert(aie_device.getBody()->getTerminator(), fn);
+            fn = *cloned;
+            narrowNoAlias(call, fn, /*firstCall=*/true);
           }
-          // Insert memref.cast at call sites where operand types differ
-          // from the (possibly normalized) declaration types.
-          auto fnType = fn.getFunctionType();
-          OpBuilder castBuilder(call);
-          SmallVector<Value> newOperands;
-          bool needsUpdate = false;
-          for (auto [operand, inputType] :
-               llvm::zip(call.getOperands(), fnType.getInputs())) {
-            if (operand.getType() != inputType) {
-              if (!memref::CastOp::areCastCompatible(operand.getType(),
-                                                     inputType)) {
-                call.emitError("cannot cast operand type ")
-                    << operand.getType() << " to normalized function type "
-                    << inputType;
-                newOperands.push_back(operand);
-                continue;
-              }
-              auto cast = memref::CastOp::create(castBuilder, call.getLoc(),
-                                                 inputType, operand);
-              newOperands.push_back(cast);
-              needsUpdate = true;
-            } else {
-              newOperands.push_back(operand);
-            }
-          }
-          if (needsUpdate)
-            call->setOperands(newOperands);
         }
+        if (!fn)
+          fn = declareExternalCallee(aie_device, core, call.getCallee(),
+                                     call.getCalleeType());
+        matchCallToCallee(call, fn);
+        return WalkResult::advance();
       });
+      if (calleeFailed)
+        return failure();
 
       // erase air.herd_termintor ops
       launch_bb->walk([&](air::HerdTerminatorOp op) { op->erase(); });
@@ -2823,7 +3002,7 @@ void L2MemrefToMemTileMap(
   // Saturation check: col-affinity is only safe when each column would
   // receive at most one bucket. With more, downstream allocation tends
   // to ping-pong L1 buffers to keep up with the concentrated L2->L1 flow
-  // (flash_attention/dataflow_based: 9 buckets across 3 cols → col 0
+  // (9 buckets across 3 cols → col 0
   // gets 5-6 buckets → L1 doubled to 6 buffers on tile (1,2) → 65536B,
   // over the 64KB budget). Fall back to round-robin across the full LTO
   // pool to match the pre-Path-B distribution that flash_attention
@@ -3505,6 +3684,97 @@ private:
     return output;
   }
 
+  // Canonicalize a padded access pattern. Padding is counted per dimension,
+  // so only folds that leave it in place are done: drop unit dimensions and
+  // merge contiguous pairs of dimensions, where none of them is padded. A
+  // merge could carry the padding over, but the larger count may not fit the
+  // BD's padding field.
+  // Then split unpadded dimensions longer than maxSize, as the unpadded path
+  // does. A padded one cannot be split without moving its padding, so that is
+  // an error.
+  static LogicalResult canonicalizePaddedPattern(
+      OpBuilder &builder, Operation *op, SmallVector<Value> &offsets,
+      SmallVector<Value> &sizes, SmallVector<Value> &strides,
+      SmallVector<int32_t> &padBefore, SmallVector<int32_t> &padAfter,
+      int maxSize) {
+    Location loc = op->getLoc();
+    size_t rank = sizes.size();
+    if (offsets.size() != rank || strides.size() != rank ||
+        padBefore.size() != rank || padAfter.size() != rank)
+      return failure();
+    auto cst = [](Value v) { return getConstantIntValue(v); };
+    auto index = [&](int64_t v) -> Value {
+      return arith::ConstantIndexOp::create(builder, loc, v);
+    };
+    // Drop unpadded unit dimensions, moving a constant offset onto the
+    // innermost dimension.
+    for (int i = rank - 2; i >= 0; i--) {
+      auto size = cst(sizes[i]);
+      if (!size || *size != 1 || padBefore[i] || padAfter[i])
+        continue;
+      auto off = cst(offsets[i]), stride = cst(strides[i]),
+           inner = cst(strides.back()), innerOff = cst(offsets.back());
+      if (!off)
+        continue;
+      if (*off != 0) {
+        if (!stride || !inner || !innerOff || *inner == 0 ||
+            (*off * *stride) % *inner)
+          continue;
+        offsets.back() = index(*innerOff + *off * *stride / *inner);
+      }
+      for (auto *v : {&offsets, &sizes, &strides})
+        v->erase(v->begin() + i);
+      padBefore.erase(padBefore.begin() + i);
+      padAfter.erase(padAfter.begin() + i);
+    }
+    // Merge contiguous dimensions, innermost pair first.
+    for (int i = sizes.size() - 2; i >= 0; i--) {
+      auto outerStride = cst(strides[i]), innerStride = cst(strides[i + 1]);
+      auto innerSize = cst(sizes[i + 1]), outerSize = cst(sizes[i]);
+      auto outerOff = cst(offsets[i]), innerOff = cst(offsets[i + 1]);
+      if (!outerStride || !innerStride || !innerSize || !outerSize ||
+          !outerOff || !innerOff)
+        continue;
+      if (*outerStride != *innerSize * *innerStride || padBefore[i] ||
+          padAfter[i] || padBefore[i + 1] || padAfter[i + 1])
+        continue;
+      sizes[i] = index(*outerSize * *innerSize);
+      strides[i] = strides[i + 1];
+      offsets[i] = index(*outerOff * *innerSize + *innerOff);
+      for (auto *v : {&offsets, &sizes, &strides})
+        v->erase(v->begin() + i + 1);
+      padBefore.erase(padBefore.begin() + i + 1);
+      padAfter.erase(padAfter.begin() + i + 1);
+    }
+    if (maxSize <= 0)
+      return success();
+    for (int i = sizes.size() - 1; i >= 0; i--) {
+      auto size = cst(sizes[i]);
+      auto stride = cst(strides[i]);
+      if (!size || !stride || *size <= maxSize)
+        continue;
+      if (padBefore[i] || padAfter[i]) {
+        op->emitOpError("padded dimension ")
+            << i << " has " << *size << " elements, more than the " << maxSize
+            << " a buffer descriptor dimension takes";
+        return success();
+      }
+      int64_t inner = 0;
+      for (int64_t f = maxSize; f > 1 && !inner; f--)
+        if (*size % f == 0 && *size / f <= maxSize)
+          inner = f;
+      if (!inner)
+        continue;
+      sizes[i] = index(inner);
+      sizes.insert(sizes.begin() + i, index(*size / inner));
+      strides.insert(strides.begin() + i, index(*stride * inner));
+      offsets.insert(offsets.begin() + i, index(0));
+      padBefore.insert(padBefore.begin() + i, 0);
+      padAfter.insert(padAfter.begin() + i, 0);
+    }
+    return success();
+  }
+
   air::ChannelInterface
   createChannelPutGetWithoutBundle(OpBuilder &builder, air::ChannelOp chan,
                                    air::ChannelInterface ci,
@@ -3528,10 +3798,23 @@ private:
     auto memrefTy = llvm::dyn_cast<BaseMemRefType>(ci.getMemref().getType());
     int innerAlignment =
         memrefTy ? air::getDmaInnerElementAlignment(memrefTy, ci) : 1;
-    (void)air::canonicalizeWrapAndStrideList(
-        builder, offsets, wraps, strides,
-        air::getTensorVolume(ci.getMemref().getType()), maxSize,
-        innerAlignment);
+    auto padBeforeAttr = ci->getAttrOfType<DenseI32ArrayAttr>("pad_before");
+    auto padAfterAttr = ci->getAttrOfType<DenseI32ArrayAttr>("pad_after");
+    SmallVector<int32_t> padBefore, padAfter;
+    bool padded = false;
+    if (padBeforeAttr && padAfterAttr) {
+      padBefore.assign(padBeforeAttr.asArrayRef().begin(),
+                       padBeforeAttr.asArrayRef().end());
+      padAfter.assign(padAfterAttr.asArrayRef().begin(),
+                      padAfterAttr.asArrayRef().end());
+      padded = succeeded(canonicalizePaddedPattern(
+          builder, ci, offsets, wraps, strides, padBefore, padAfter, maxSize));
+    }
+    if (!padded)
+      (void)air::canonicalizeWrapAndStrideList(
+          builder, offsets, wraps, strides,
+          air::getTensorVolume(ci.getMemref().getType()), maxSize,
+          innerAlignment);
     air::ChannelInterface new_ci = nullptr;
     if (isa<air::ChannelPutOp>(ci))
       new_ci = air::ChannelPutOp::create(
@@ -3547,6 +3830,12 @@ private:
           /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     new_ci->setAttrs(ci->getDiscardableAttrDictionary());
     air::copyPaddingAttributes(ci, new_ci);
+    if (padded) {
+      new_ci->setAttr("pad_before",
+                      DenseI32ArrayAttr::get(builder.getContext(), padBefore));
+      new_ci->setAttr("pad_after",
+                      DenseI32ArrayAttr::get(builder.getContext(), padAfter));
+    }
     return new_ci;
   }
 
@@ -7191,6 +7480,61 @@ public:
       return op->emitOpError("cascade channel element type has zero bit width");
     int64_t cascadeTileSize = llvm::divideCeil(cascadeWidth, elementWidth);
 
+    // A region of the memref goes out as one contiguous run. Replace it with
+    // a 1-D slice of the flattened memref, so that what follows sees a whole
+    // memref.
+    if (!op.getMixedSizes().empty()) {
+      if (!memrefTy.getLayout().isIdentity())
+        return op->emitOpError("cascade channel requires contiguous row-major "
+                               "memref layout, got ")
+               << memrefTy;
+      auto offsets = op.getMixedOffsets();
+      auto sizes = op.getMixedSizes();
+      auto strides = op.getMixedStrides();
+      int64_t count = 1, expected = 1;
+      for (int i = sizes.size() - 1; i >= 0; i--) {
+        auto size = getConstantIntValue(sizes[i]);
+        auto stride = getConstantIntValue(strides[i]);
+        if (!size || !stride)
+          return op->emitOpError(
+              "cascade channel requires constant sizes and strides");
+        if (*size == 1)
+          continue;
+        if (*stride != expected)
+          return op->emitOpError(
+              "cascade channel access pattern must be one contiguous run");
+        expected *= *size;
+        count *= *size;
+      }
+      rewriter.setInsertionPoint(op);
+      Value linear = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      for (auto [off, stride] : llvm::zip(offsets, strides)) {
+        Value o = getValueOrCreateConstantIndexOp(rewriter, loc, off);
+        Value st = getValueOrCreateConstantIndexOp(rewriter, loc, stride);
+        linear = arith::AddIOp::create(
+            rewriter, loc, linear, arith::MulIOp::create(rewriter, loc, o, st));
+      }
+      ReassociationIndices allDims;
+      for (int64_t i = 0; i < memrefTy.getRank(); i++)
+        allDims.push_back(i);
+      Value flat = memref::CollapseShapeOp::create(
+          rewriter, loc, memref, SmallVector<ReassociationIndices>{allDims});
+      Value slice = memref::SubViewOp::create(
+          rewriter, loc, flat, ArrayRef<OpFoldResult>{linear},
+          ArrayRef<OpFoldResult>{rewriter.getIndexAttr(count)},
+          ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)});
+      int memrefOperand = cast<air::AsyncOpInterface>(op.getOperation())
+                              .getAsyncDependencies()
+                              .size() +
+                          op.getIndices().size();
+      op->setOperand(memrefOperand, slice);
+      op.setMixedOffsets({});
+      op.setMixedSizes({});
+      op.setMixedStrides({});
+      memref = slice;
+      memrefTy = cast<MemRefType>(slice.getType());
+    }
+
     // Calculate total number of elements
     int64_t totalElements = 1;
     for (int64_t dim : memrefTy.getShape()) {
@@ -7208,8 +7552,9 @@ public:
     rewriter.setInsertionPoint(op);
 
     // Check for non-trivial layouts that cannot be safely flattened.
-    // Only identity (default contiguous row-major) layouts are supported.
-    if (!memrefTy.getLayout().isIdentity())
+    // Only identity (default contiguous row-major) layouts are supported,
+    // apart from a 1-D slice, which needs no flattening.
+    if (memrefTy.getRank() != 1 && !memrefTy.getLayout().isIdentity())
       return op->emitOpError("cascade channel requires contiguous row-major "
                              "memref layout, got ")
              << memrefTy;
@@ -7228,8 +7573,12 @@ public:
                         MemRefLayoutAttrInterface{}, memrefTy.getMemorySpace());
 
     // Create memref.collapse_shape op
-    Value flatMemref = memref::CollapseShapeOp::create(
-        rewriter, loc, flatMemrefTy, memref, reassociation);
+    Value flatMemref =
+        memrefTy.getRank() == 1
+            ? memref
+            : memref::CollapseShapeOp::create(rewriter, loc, flatMemrefTy,
+                                              memref, reassociation)
+                  .getResult();
 
     // ========== UPDATE MEMREF OPERAND IN PLACE ==========
     // Find the memref operand index (after async dependencies and indices)
@@ -8229,6 +8578,7 @@ public:
     if (failed(createAIEModulesAndOutlineCores(module, aie_devices, options))) {
       return failure();
     }
+    module.walk([](func::FuncOp f) { f->removeAttr("air.cloned_callee"); });
 
     std::set<AIE::DeviceOp> seen;
     DenseSet<func::FuncOp> shimUnrolledFuncs;
@@ -8474,13 +8824,39 @@ public:
       removeDeadGlobalOps(device);
     }
 
-    // After every device, because specializeL2MemrefsIntoMemtiles partitions an
-    // L2 buffer that exceeds the memtile channel limits and rewires its
-    // endpoints: a buffer that was MIMO before can come out of that as a
-    // fan-in, and only then is the chain shape final. air.herd survives this
-    // far, so the producer marks are still readable.
-    if (v2 && failed(air::verifyChainLockProducers(module)))
-      return failure();
+    // A function cloned into the devices keeps only a declaration in the
+    // module once every use of it is in a herd: the later func.func passes
+    // would otherwise compile its body as host code. Erasing one body can
+    // remove the last host use of another, so repeat until nothing changes.
+    {
+      llvm::StringSet<> inDevice;
+      module.walk([&](AIE::DeviceOp dev) {
+        for (auto fn : dev.getOps<func::FuncOp>())
+          inDevice.insert(fn.getSymName());
+      });
+      bool changed = true;
+      while (changed) {
+        changed = false;
+        for (auto fn : module.getOps<func::FuncOp>()) {
+          if (fn.isExternal() || !inDevice.contains(fn.getSymName()))
+            continue;
+          std::optional<SymbolTable::UseRange> uses =
+              SymbolTable::getSymbolUses(fn, module);
+          if (!uses || llvm::any_of(*uses, [](const SymbolTable::SymbolUse &u) {
+                return !u.getUser()->getParentOfType<air::HerdOp>() &&
+                       !u.getUser()->getParentOfType<AIE::DeviceOp>();
+              }))
+            continue;
+          for (Block &b : fn.getBody())
+            b.dropAllDefinedValueUses();
+          fn.getBody().dropAllReferences();
+          fn.eraseBody();
+          fn.setPrivate();
+          changed = true;
+        }
+      }
+    }
+
     return result;
   }
 
@@ -8556,19 +8932,18 @@ public:
     return alloc.getMemref();
   }
 
-  // Why `alloc` cannot take the chain-lock template; empty if it can.
-  static std::string chainLockBlocker(ModuleOp module, memref::AllocOp alloc) {
-    Value memref = l2MemrefOf(alloc);
-    if (!air::isSerializedChainBuffer(memref))
+  // Why `alloc` cannot take the chain-lock template; empty if it can. The
+  // same shape test as air::isChainLockCandidate, on the unlowered alloc.
+  static std::string chainLockBlocker(memref::AllocOp alloc) {
+    int numWriters = 0, numReaders = 0;
+    air::classifyChainBuffer(l2MemrefOf(alloc), numWriters, numReaders);
+    if (numWriters > 1 && numReaders == 1)
+      return "";
+    if (numWriters == 1 && numReaders > 1)
       return alloc->hasAttr(air::attrs::NoChainLock)
                  ? "it carries air.no_chain_lock"
-                 : "it is neither a fan-in nor a fan-out buffer";
-    auto producers = air::getHerdsFeedingBuffers(
-        module, [&](Value v) { return v == memref; });
-    for (auto &entry : producers)
-      if (entry.first->hasAttr(air::attrs::PingPong))
-        return "a ping-pong herd feeds it";
-    return "";
+                 : "";
+    return "it is neither a fan-in nor a fan-out buffer";
   }
 
   static void replaceModuleBody(ModuleOp dst, ModuleOp src) {
@@ -8634,7 +9009,7 @@ public:
             continue;
           memref::AllocOp alloc = allocById.lookup(id);
           std::string blocker =
-              alloc ? chainLockBlocker(unlowered, alloc) : "it was not found";
+              alloc ? chainLockBlocker(alloc) : "it was not found";
           if (blocker.empty()) {
             alloc->setAttr(air::attrs::ChainLock, UnitAttr::get(ctx));
             chained.insert(id);

@@ -25,6 +25,16 @@ Key differences from the NPU2 variant:
   - 1/sqrt(dk) scaling inside fused_softmax
   - links attn_npu1.o
 
+Under ``causal``, cascade stage ``s`` handles K/V blocks ``s, s + NS, s + 2NS,
+...`` and skips the matmuls, mask and softmax for blocks that lie entirely above
+the diagonal. Interleaving spreads the unmasked blocks of a round across the
+stages. With contiguous ranges, stage 0 would hold the earliest blocks, never
+skip any of them, and the whole round would wait for it. Neither the online
+softmax nor the cascade merge depends on the order in which a stage sees its
+blocks. The channel gets are not skipped, so every put still has a matching
+get, and a stage that skipped all of its blocks passes its initial state to the
+merge.
+
 DMA channel budget per compute tile is 2 S2MM + 2 MM2S:
   S2MM 0: QK (Q selective capture, then K chunks)
   S2MM 1: V, per stage via the memtile
@@ -101,6 +111,9 @@ def build_launch(
     dv_tile = lkp
     assert dv % dv_tile == 0, f"dv ({dv}) must be divisible by dv_tile/lkp ({dv_tile})"
     dv_chunks = dv // dv_tile
+    # Under causal, cascade stage s owns K/V blocks s, s + NS, s + 2NS, ... and
+    # skips the ones above the diagonal (see the module docstring).
+    interleave = causal
     if causal:
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
         assert lqp // num_q_tiles == lkp, (
@@ -234,23 +247,38 @@ def build_launch(
 
                 # K: the same split over this stage's chunks.
                 for s in range(NS):
-                    off = k_off + s * lk_per_stage * dk
+                    if interleave:
+                        # Stage s takes K blocks s, s + NS, s + 2NS, ...
+                        k_src = k_flat[k_off : k_off + lk * dk].reshape(
+                            chunks_per_stage, NS, lkp, dk_chunks, dk_tile
+                        )[:, s, :, :, :]
+                    else:
+                        off = k_off + s * lk_per_stage * dk
+                        k_src = k_flat[off : off + chunks_per_stage * lkp * dk].reshape(
+                            chunks_per_stage, lkp, dk_chunks, dk_tile
+                        )
+                    # The interleaved view keeps the stage axis as size 1.
                     qkin[s].put(
-                        k_flat[off : off + chunks_per_stage * lkp * dk]
-                        .reshape(chunks_per_stage, lkp, dk_chunks, dk_tile)
-                        .transpose(0, 2, 1, 3),
+                        (
+                            k_src.transpose(0, 1, 3, 2, 4)
+                            if interleave
+                            else k_src.transpose(0, 2, 1, 3)
+                        ),
                         indices=[head_local],
                     )
 
                 # V needs no permutation: its L3 layout is already dv_tile-major.
                 for s in range(NS):
-                    off = v_off + s * lk_per_stage * dv_tile
-                    vin[s].put(
-                        v_flat[off : off + chunks_per_stage * lkp * dv_tile].reshape(
-                            chunks_per_stage, lkp, dv_tile
-                        ),
-                        indices=[head_local],
-                    )
+                    if interleave:
+                        v_src = v_flat[v_off : v_off + lk * dv_tile].reshape(
+                            chunks_per_stage, NS, lkp, dv_tile
+                        )[:, s, :, :]
+                    else:
+                        off = v_off + s * lk_per_stage * dv_tile
+                        v_src = v_flat[
+                            off : off + chunks_per_stage * lkp * dv_tile
+                        ].reshape(chunks_per_stage, lkp, dv_tile)
+                    vin[s].put(v_src, indices=[head_local])
 
             with air.segment([range(H), range(1)], name="attn_seg") as seg:
 
@@ -353,36 +381,54 @@ def build_launch(
                                         copy_tile(qk, q_saved[dk_c])
 
                             for chunk in air.sequential(0, chunks_per_stage):
+                                q_block = ctr[0] + tx if causal else None
+                                kv_block = (
+                                    chunk * NS + ty
+                                    if interleave
+                                    else ty * chunks_per_stage + chunk
+                                )
+                                skip = causal
+
                                 zero_fill_g(g.reshape(g_flat))
 
                                 for dk_c in range(dk_chunks):
+                                    # The gets are not skipped, so every put
+                                    # still has a matching get.
                                     for s in range(NS):
                                         with ops.branch(ty == s):
                                             qk2l1[s].get(qk, indices=[seg_x, ty, tx])
-                                    matmul_a_b(q_saved[dk_c], qk, g.reshape(g_flat))
+                                    if skip:
+                                        with ops.branch(q_block >= kv_block):
+                                            matmul_a_b(
+                                                q_saved[dk_c], qk, g.reshape(g_flat)
+                                            )
+                                    else:
+                                        matmul_a_b(q_saved[dk_c], qk, g.reshape(g_flat))
 
                                 for s in range(NS):
                                     with ops.branch(ty == s):
                                         v2l1[s].get(v_l1, indices=[seg_x, ty, tx])
 
-                                if causal:
-                                    apply_causal_mask(
-                                        g,
-                                        ctr[0] + tx,
-                                        ty * chunks_per_stage + chunk,
+                                def softmax_accumulate():
+                                    if causal:
+                                        apply_causal_mask(g, q_block, kv_block)
+                                    s_tmp = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
                                     )
+                                    r_tmp = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
+                                    )
+                                    fused_softmax(g.reshape(g_flat), up, s_tmp, r_tmp)
+                                    mul_r_gp(r_tmp, gp)
+                                    matmul_g_b(g.reshape(g_flat), v_l1, gp)
+                                    accum_sp_r_s(sp, r_tmp, s_tmp)
+                                    vector_copy(0, s_tmp, sp)
 
-                                s_tmp = air.alloc(
-                                    [tile_size_q, 1], bf16, scope=h.private()
-                                )
-                                r_tmp = air.alloc(
-                                    [tile_size_q, 1], bf16, scope=h.private()
-                                )
-                                fused_softmax(g.reshape(g_flat), up, s_tmp, r_tmp)
-                                mul_r_gp(r_tmp, gp)
-                                matmul_g_b(g.reshape(g_flat), v_l1, gp)
-                                accum_sp_r_s(sp, r_tmp, s_tmp)
-                                vector_copy(0, s_tmp, sp)
+                                if skip:
+                                    with ops.branch(q_block >= kv_block):
+                                        softmax_accumulate()
+                                else:
+                                    softmax_accumulate()
 
                             # Cascade merge, north to south.
                             with ops.branch(ty == NS - 1) as north:
@@ -460,7 +506,14 @@ def build_launch(
                                 # nested ifs, for the reason above.
                                 head_next = ctr[2:3] + 1
                                 wrapped = head_next >= num_head_groups
-                                q_adv = ops.select(wrapped, ctr[0:1] + NQ, ctr[0:1])
+                                # Go back to q block 0 after the last one, so
+                                # the next run on the same hardware context
+                                # starts from the beginning.
+                                q_next = ctr[0:1] + NQ
+                                q_next = ops.select(
+                                    q_next >= num_lq_iters * NQ, 0, q_next
+                                )
+                                q_adv = ops.select(wrapped, q_next, ctr[0:1])
                                 head_adv = ops.select(wrapped, 0, head_next)
                                 if dv_chunks > 1:
                                     last_dv = ctr[3:4] >= dv_chunks - 1
@@ -533,6 +586,14 @@ def parse_args():
     parser.add_argument("--num-heads", type=int, default=1)
     parser.add_argument("--num-kv-heads", type=int, default=None)
     parser.add_argument("--causal", action="store_true")
+    parser.add_argument(
+        "--num-runs",
+        type=int,
+        default=1,
+        help="Run the kernel this many times on one hardware context and check "
+        "the output of the last run. State kept in L1 across runs, such as the "
+        "causal block counter, is only exercised from the second run on.",
+    )
     parser.add_argument(
         "--output-format", type=str, choices=["xclbin", "elf"], default="xclbin"
     )
@@ -628,6 +689,8 @@ def main():
         return 0
 
     runner = XRTRunner(
+        n_warmup_iters=args.num_runs - 1,
+        n_perf_iters=1 if args.num_runs > 1 else 0,
         omit_while_true_loop=False,
         omit_pingpong="all",
         verbose=args.verbose,

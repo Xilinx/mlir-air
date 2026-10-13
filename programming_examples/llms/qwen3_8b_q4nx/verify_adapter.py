@@ -36,6 +36,7 @@ for _p in (str(_VERIFY), str(_THIS_DIR)):
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
+from runners import fused_prefill  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
 # Qwen3-8B geometry. Taken from qwen3_8b_q4nx_weights rather than restated, so
@@ -118,10 +119,12 @@ class NpuRunner:
         from qwen3_8b_q4nx_prefill import Qwen3Q4nxPrefill
         from qwen3_8b_q4nx_inference import FusedDecoder
 
-        self.prefiller = Qwen3Q4nxPrefill(
-            seq_len=_SEQ_LEN, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
-        )
-        self.prefiller.load_weights(model=Q4NX_MODEL_SOURCE)
+        self.prefiller = fused_prefill.load("qwen3_8b_q4nx", Q4NX_MODEL_SOURCE)
+        if self.prefiller is None:
+            self.prefiller = Qwen3Q4nxPrefill(
+                seq_len=_SEQ_LEN, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
+            )
+            self.prefiller.load_weights(model=Q4NX_MODEL_SOURCE)
         self.dec = FusedDecoder(model=Q4NX_MODEL_SOURCE)
         self.attn_maxl = self.dec.ATTN_MAXL
         self._P = 0
@@ -138,6 +141,8 @@ class NpuRunner:
         logits = np.asarray(self.prefiller.prefill(ids), np.float32)
         first = int(logits.argmax())
         Kc, Vc = self.prefiller.kv_stack()
+        if hasattr(self.prefiller, "suspend"):
+            self.prefiller.suspend()  # free its hw_context for the decoder
         self._P = Kc.shape[1]
         self.dec.seed_kv(Kc, Vc, self._P)
 

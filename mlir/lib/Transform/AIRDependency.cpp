@@ -420,6 +420,16 @@ public:
         }
       });
     }
+
+    // 5th traversal: channel endpoint ordering.
+    //
+    // Endpoints on one channel slot share a FIFO and must be ordered even when
+    // they write unrelated buffers, which the memref tracing above cannot see.
+    //
+    // Runs after the transitive reduction, which has no notion of the shared
+    // channel and would drop these edges, and after loop-carried deps, which
+    // supply the iter_args that in-loop scopes hang off.
+    air::enforceChannelFifoOrder(module);
   }
 
 private:
@@ -925,7 +935,8 @@ private:
             if (tile == nullptr) {
               addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                          op);
-            } else if (areEqualIndexPartialMemrefs(tile, &memcpy_dst))
+            } else if (areEqualIndexPartialMemrefs(tile, &memcpy_dst) ||
+                       footprintsIntersectInHostMemory(tile, &memcpy_dst))
               addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                          op);
           }
@@ -2050,6 +2061,22 @@ private:
   //===----------------------------------------------------------------------===//
   // Other utilities
   //===----------------------------------------------------------------------===//
+
+  // Whether a read of `tile_0` reads what a write of `tile_1` wrote, for a
+  // host buffer. A launch can read back from host memory what its own drains
+  // wrote, at an offset inside the drained region or from a loop over it, and
+  // the equal-start test below misses both. An access whose footprint is not
+  // known keeps the equal-start test alone.
+  bool footprintsIntersectInHostMemory(partialMemref *tile_0,
+                                       partialMemref *tile_1) {
+    auto ty = dyn_cast<BaseMemRefType>(tile_0->memrefValue.getType());
+    if (!ty || !air::isL3(ty))
+      return false;
+    return air::accessesIntersect(tile_0->offsets, tile_0->sizes,
+                                  tile_0->strides, tile_1->offsets,
+                                  tile_1->sizes, tile_1->strides)
+        .value_or(false);
+  }
 
   // Check if two partial memref tiles have potentially conflicting access
   // patterns. Returns true if the accesses overlap or cannot be proven

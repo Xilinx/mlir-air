@@ -120,3 +120,37 @@ func.func @func_scalar_ssa_chain(%arg0: memref<*xbf16>, %arg1: memref<*xbf16>, %
   bufferization.materialize_in_destination %truncated in writable %reinterpret_cast_out : (tensor<64xbf16>, memref<64xbf16, strided<[1], offset: ?>>) -> ()
   return
 }
+
+// A function the module calls is not an entry point, whatever its
+// visibility: it is left as it is (its arguments are not a launch grid).
+// CHECK-LABEL: func.func @called_helper
+// CHECK-NOT: scf.parallel
+// CHECK: return
+func.func @called_helper(%arg0: memref<16xf32>, %arg1: memref<16xf32>, %arg2: i32, %arg3: i32) {
+  %c0 = arith.constant 0 : index
+  %v = memref.load %arg0[%c0] : memref<16xf32>
+  memref.store %v, %arg1[%c0] : memref<16xf32>
+  return
+}
+func.func @calls_helper(%arg0: memref<16xf32>, %arg1: memref<16xf32>, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
+  func.call @called_helper(%arg0, %arg1, %arg2, %arg3) : (memref<16xf32>, memref<16xf32>, i32, i32) -> ()
+  return
+}
+
+// A kernel scalar sits between the memrefs and the six grid arguments. The
+// loop's induction variables replace the last three arguments, and the
+// scalar keeps its uses.
+
+// CHECK-LABEL: func.func @func_with_scalar
+// CHECK-SAME: %[[MEM:[^:]*]]: memref<*xf32>, %[[SCALAR:[^:]*]]: i32
+// CHECK: scf.parallel (%[[IV0:.*]], %[[IV1:.*]], %[[IV2:.*]]) =
+// CHECK: %[[PID:.*]] = arith.index_cast %[[IV0]] : index to i32
+// CHECK: arith.muli %[[PID]], %[[SCALAR]] : i32
+func.func @func_with_scalar(%arg0: memref<*xf32>, %arg1: i32, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
+  %cst = arith.constant 1.000000e+00 : f32
+  %0 = arith.muli %arg5, %arg1 : i32
+  %1 = arith.index_cast %0 : i32 to index
+  %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%1], sizes: [16], strides: [1] : memref<*xf32> to memref<16xf32, strided<[1], offset: ?>>
+  linalg.fill ins(%cst : f32) outs(%reinterpret_cast : memref<16xf32, strided<[1], offset: ?>>)
+  return
+}

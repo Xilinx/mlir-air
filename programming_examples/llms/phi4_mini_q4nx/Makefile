@@ -261,3 +261,6 @@ verify-paris:
 profile-prefill:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && Q4NX_BENCH_L=$(CTX) python3 $(PREFILL)
+
+FUSED_MODEL := phi4_mini_q4nx
+include $(srcdir)/../shared/fused_prefill/fused_prefill.mk

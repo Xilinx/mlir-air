@@ -53,6 +53,8 @@ createAIRFuseChannels(const AIRFuseChannelsOptions &);
 
 std::unique_ptr<mlir::Pass> createAIREnforceChannelFifoOrder();
 
+std::unique_ptr<mlir::Pass> createAIRVerifyChannelFifoOrder();
+
 std::unique_ptr<mlir::Pass> createAIRIsolateAsyncDmaLoopNests();
 
 std::unique_ptr<mlir::Pass> createAIRLoopFusion();

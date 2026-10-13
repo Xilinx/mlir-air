@@ -83,7 +83,11 @@ def build_module(
     n_out=None,
     n_out_offset=0,
     b_stationary=False,
+    epilogue_swiglu=False,
 ):
+    # epilogue_swiglu: each tile_n block of B holds tile_n/2 gate columns then the
+    # matching tile_n/2 up columns; the drain writes SiLU(gate)*up, so C is
+    # [m, n/2] and every C-side extent (drain buffer, L2 C, L3 C) is halved.
     # b_stationary: keep the weight tile stationary in L2 (external drain path, one K slab).
     # N stays a launch dimension; each launch fills B once (K x tile_n per herd column) and
     # loops over the M tiles inside the segment, streaming only A. B is then read from DRAM
@@ -142,8 +146,10 @@ def build_module(
     # at a column offset, so a wide GEMM can be split into narrower ones that
     # still produce one contiguous result. Only C is affected; A and B keep their
     # own extents. Defaults reproduce the unsplit layout exactly.
-    n_out_eff = n if n_out is None else n_out
-    assert n_out_offset + n <= n_out_eff, (n_out_offset, n, n_out_eff)
+    tile_n_c = tile_n // 2 if epilogue_swiglu else tile_n
+    n_c = n // 2 if epilogue_swiglu else n
+    n_out_eff = n_c if n_out is None else n_out
+    assert n_out_offset + n_c <= n_out_eff, (n_out_offset, n_c, n_out_eff)
     a_size = [m, k]
     b_size = [(k // tile_k_l1) * tile_k_l1_pad, n]
     c_size = [m, n_out_eff]
@@ -173,6 +179,12 @@ def build_module(
         assert (tile_n // drain_chunks) % mmul_mkn[
             2
         ] == 0, "tile_n/drain_chunks must be a multiple of mmul n"
+    if epilogue_swiglu:
+        assert cast_out and drain_chunks == 1, "epilogue_swiglu needs the drain path"
+        assert not (
+            b_pad_rows or epilogue_gelu or n_out
+        ), "epilogue_swiglu is standalone"
+        assert tile_n % (2 * mmul_mkn[2]) == 0, "tile_n/2 must be a multiple of mmul n"
 
     # L3 MemRefTypes
     memrefTyA = MemRefType.get(a_size, xrt_dtype_in)
@@ -268,7 +280,7 @@ def build_module(
     # compute herd's A/B). The f32 accumulator subview is cast into it (in
     # `drain_chunks` segments along tile_n), then DMA'd out. Plain (non-strided)
     # layout. With drain_chunks=G the buffer is 1/G of the full tile.
-    tile_n_chunk = tile_n // drain_chunks if cast_out else tile_n
+    tile_n_chunk = tile_n_c // drain_chunks if cast_out else tile_n
     c_l1_chunk_size = [
         1,
         1,
@@ -338,6 +350,8 @@ def build_module(
                 _drain_sym = (
                     "f32_to_bf16_gelu_mn" if epilogue_gelu else "f32_to_bf16_mn"
                 )
+                if epilogue_swiglu:
+                    _drain_sym = "f32_to_bf16_swiglu_mn"
                 if b_pad_rows:
                     _drain_sym = (
                         "f32_to_bf16_bias_gelu_mn"
@@ -406,7 +420,7 @@ def build_module(
                 # L2 MemRefTypes
                 a_size_l2 = [herd_m, 1, tile_m, tile_k_l2]
                 b_size_l2 = [1, herd_n, tile_k_l2_pad, tile_n]
-                c_size_l2 = [herd_m, herd_n, tile_m, tile_n]
+                c_size_l2 = [herd_m, herd_n, tile_m, tile_n_c]
                 l2_mem_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L2)
                 l2MemrefTyA = MemRefType.get(
                     shape=a_size_l2,
@@ -506,6 +520,20 @@ def build_module(
                                         AffineConstantExpr.get(tile_n * herd_n),
                                     ),
                                     AffineConstantExpr.get(n_out_offset),
+                                )
+                            ],
+                        ),
+                        [launch_ivy_s],
+                    )
+                elif epilogue_swiglu:
+                    launch_offset_y_c = affine_apply(
+                        AffineMap.get(
+                            0,
+                            1,
+                            [
+                                AffineExpr.get_mul(
+                                    AffineSymbolExpr.get(0),
+                                    AffineConstantExpr.get(tile_n_c * herd_n),
                                 )
                             ],
                         ),
@@ -750,7 +778,11 @@ def build_module(
                                 sizes=[
                                     1,
                                     1,
-                                    n_chunk_blk,
+                                    (
+                                        tile_n // mmul_mkn[2]
+                                        if epilogue_swiglu
+                                        else n_chunk_blk
+                                    ),
                                     tile_m // mmul_mkn[0],
                                     mmul_mkn[0],
                                     mmul_mkn[2],
@@ -782,9 +814,9 @@ def build_module(
                                 dst_offsets=[_tx, _ty, 0, g * tile_n_chunk],
                                 dst_sizes=[1, 1, tile_m, tile_n_chunk],
                                 dst_strides=[
-                                    herd_n * tile_m * tile_n,
-                                    tile_m * tile_n,
-                                    tile_n,
+                                    herd_n * tile_m * tile_n_c,
+                                    tile_m * tile_n_c,
+                                    tile_n_c,
                                     1,
                                 ],
                                 src_offsets=[0, 0, 0, 0, 0, 0],
@@ -841,11 +873,16 @@ def build_module(
                     l3_c_data_s,
                     l2_c_data,
                     dst_offsets=[launch_offset_x, launch_offset_y_c],
-                    dst_sizes=[herd_m * tile_m, herd_n * tile_n],
+                    dst_sizes=[herd_m * tile_m, herd_n * tile_n_c],
                     dst_strides=[n_out_eff, 1],
                     src_offsets=[0, 0, 0, 0],
-                    src_sizes=[herd_m, tile_m, herd_n, tile_n],
-                    src_strides=[tile_m * herd_n * tile_n, tile_n, tile_m * tile_n, 1],
+                    src_sizes=[herd_m, tile_m, herd_n, tile_n_c],
+                    src_strides=[
+                        tile_m * herd_n * tile_n_c,
+                        tile_n_c,
+                        tile_m * tile_n_c,
+                        1,
+                    ],
                 )
 
                 if b_stationary:

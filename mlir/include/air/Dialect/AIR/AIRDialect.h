@@ -39,8 +39,6 @@ namespace air {
 // no-ops). See the AIRRtToNpu / AIRToAIE passes for their semantics.
 namespace attrs {
 constexpr StringLiteral RuntimeHoist = "air.runtime_hoist";
-constexpr StringLiteral AwaitAppends = "air.await_appends";
-constexpr StringLiteral AppendBarrier = "air.append_barrier";
 constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 // Marker on a shim MM2S configure task produced by the coalesce-shim-dma merge:
 // its BD covers a whole contiguous run merged from several smaller feeds, so
@@ -114,14 +112,6 @@ constexpr StringLiteral CountedLock = "air.counted_lock";
 // traced back to its alloc across lowering attempts. Removed before the pass
 // returns.
 constexpr StringLiteral L2BufferId = "air.l2_buffer_id";
-// Set by air-ping-pong-transform (unit attr) on an air.herd whose body now runs
-// a loop over two buffer instances. A record of what the transform did, not a
-// request: the "unroll" attribute that drove it is stripped before AIRToAIE,
-// which reads this to verify no chain-lock producer can run a round ahead.
-constexpr StringLiteral PingPong = "air.pingpong";
-// Set by air-label-scf-for-to-ping-pong (unit attr) on an air.herd whose BD
-// rings only stay in step because of the unroll, so it was not declined.
-constexpr StringLiteral PingPongRequired = "air.pingpong_required";
 // Opt-out (unit attr) on a shared-L2 memref.alloc (or its enclosing
 // air.execute): leave this L2 buffer intact instead of partitioning it. Used by
 // hand-written aggregator patterns where splitting would multiply the
@@ -140,12 +130,11 @@ constexpr StringLiteral MemtileCol = "air.memtile_col";
 constexpr int kMaxPacketID = 31;
 
 // Copy the DMA-steering / runtime-ordering markers
-// (attrs::RuntimeHoist, AwaitAppends, AppendBarrier,
-// RefeedCount, PacketIDs, KeepPktHeader) that must survive channel-op
-// re-instantiation from src to dst. Single source of truth for the marker set,
-// so copy sites (Util::copyPaddingAttributes, ComposeMemrefOpOnChannelOp,
-// SpecializeChannelBundlePattern) cannot diverge. Both ops must be live (call
-// before erasing src).
+// (attrs::RuntimeHoist, RefeedCount, PacketIDs, KeepPktHeader) that must
+// survive channel-op re-instantiation from src to dst. Single source of truth
+// for the marker set, so copy sites (Util::copyPaddingAttributes,
+// ComposeMemrefOpOnChannelOp, SpecializeChannelBundlePattern) cannot diverge.
+// Both ops must be live (call before erasing src).
 void copyChannelSteeringAttrs(Operation *src, Operation *dst);
 
 void registerAIRRtTranslations();

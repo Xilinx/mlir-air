@@ -7,10 +7,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Util/Dependency.h"
+
 #include "air/Util/Util.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -673,6 +675,160 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
     op->emitOpError("unknown async op");
 }
 
+//===----------------------------------------------------------------------===//
+// Channel endpoint identity and FIFO ordering
+//===----------------------------------------------------------------------===//
+
+ChannelEndpointKey getChannelEndpointKey(air::ChannelInterface chan) {
+  ChannelEndpointKey k;
+  k.name = chan.getChanName();
+  k.isPut = isa<air::ChannelPutOp>(chan.getOperation());
+  for (auto idx : chan.getIndices()) {
+    k.indices.push_back(idx);
+    k.constIndices.push_back(getConstantIntValue(idx));
+  }
+  return k;
+}
+
+bool sameChannelEndpoint(const ChannelEndpointKey &a,
+                         const ChannelEndpointKey &b) {
+  if (a.isPut != b.isPut || a.name != b.name)
+    return false;
+  if (a.indices.size() != b.indices.size())
+    return false;
+  for (auto it : llvm::zip(a.indices, b.indices))
+    if (!areEqualIndices(std::get<0>(it), std::get<1>(it)))
+      return false;
+  return true;
+}
+
+// Is this op a conditional whose arms are guarded straight-line code?
+static bool isConditionalOp(Operation *op) {
+  return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(op);
+}
+
+// Do two conditionals select on the same runtime value?
+static bool sameCondition(Operation *a, Operation *b) {
+  if (a == b)
+    return true;
+  if (auto ifA = dyn_cast<scf::IfOp>(a)) {
+    auto ifB = dyn_cast<scf::IfOp>(b);
+    return ifB && ifA.getCondition() == ifB.getCondition();
+  }
+  if (auto afA = dyn_cast<affine::AffineIfOp>(a)) {
+    auto afB = dyn_cast<affine::AffineIfOp>(b);
+    return afB && afA.getIntegerSet() == afB.getIntegerSet() &&
+           afA.getOperands() == afB.getOperands();
+  }
+  if (auto swA = dyn_cast<scf::IndexSwitchOp>(a)) {
+    auto swB = dyn_cast<scf::IndexSwitchOp>(b);
+    return swB && swA.getArg() == swB.getArg() &&
+           swA.getCases() == swB.getCases();
+  }
+  return false;
+}
+
+bool sameGuardChain(ArrayRef<std::pair<Operation *, unsigned>> a,
+                    ArrayRef<std::pair<Operation *, unsigned>> b) {
+  if (a.size() != b.size())
+    return false;
+  for (auto [ga, gb] : llvm::zip(a, b)) {
+    // Different arms of the same condition never run together.
+    if (ga.second != gb.second)
+      return false;
+    if (!sameCondition(ga.first, gb.first))
+      return false;
+  }
+  return true;
+}
+
+void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
+                          SmallVectorImpl<ChannelScopeLevel> &chain) {
+  Block *block = chan->getBlock();
+  Value token = directToken;
+  SmallVector<std::pair<Operation *, unsigned>> guards;
+  chain.push_back({block, token, guards});
+  while (Operation *parent = block->getParentOp()) {
+    if (!isConditionalOp(parent))
+      break;
+    // Promote to the result that carries `token` out of this arm, found by
+    // matching the arm's yielded operand. A conditional can have several token
+    // results -- rebuildIndexSwitchWithTrailingAsyncToken appends its summary
+    // token after the existing ones -- so taking the first would publish a
+    // result that says nothing about this endpoint. Where no yielded operand
+    // is `token`, the relationship cannot be established and the walk stops.
+    Operation *term = block->getTerminator();
+    if (!term)
+      break;
+    auto operands = term->getOperands();
+    auto it = llvm::find(operands, token);
+    if (it == operands.end())
+      break;
+    unsigned idx = std::distance(operands.begin(), it);
+    if (idx >= parent->getNumResults())
+      break;
+    Value promoted = parent->getResult(idx);
+    if (!isa<air::AsyncTokenType>(promoted.getType()))
+      break;
+    guards.push_back({parent, block->getParent()->getRegionNumber()});
+    token = promoted;
+    block = parent->getBlock();
+    chain.push_back({block, token, guards});
+  }
+}
+
+void enforceChannelFifoOrder(Operation *root) {
+  // Per scope block, the token of the most recent endpoint at each slot, with
+  // the guard chain that token stands behind. walk() runs in program order, so
+  // linking each op to its last-seen match builds the nearest-preceding chain
+  // in one pass.
+  //
+  // Publishing at every scope in the chain and looking up innermost-first is
+  // what lets a nested endpoint pair with a sibling under the same guard, while
+  // a loop boundary keeps the two apart.
+  struct Slot {
+    ChannelEndpointKey key;
+    Value token;
+    SmallVector<std::pair<Operation *, unsigned>> guards;
+  };
+  llvm::DenseMap<Block *, SmallVector<Slot>> lastSeen;
+  root->walk([&](air::ChannelInterface chan) {
+    auto async = dyn_cast<air::AsyncOpInterface>(chan.getOperation());
+    if (!async || !async.getAsyncToken())
+      return;
+    ChannelEndpointKey key = getChannelEndpointKey(chan);
+    SmallVector<ChannelScopeLevel> chain;
+    getChannelScopeChain(chan, async.getAsyncToken(), chain);
+
+    auto findSlot = [&](const ChannelScopeLevel &level) -> Slot * {
+      auto it = lastSeen.find(level.block);
+      if (it == lastSeen.end())
+        return nullptr;
+      for (auto &slot : it->second)
+        if (sameChannelEndpoint(slot.key, key) &&
+            sameGuardChain(slot.guards, level.guards))
+          return &slot;
+      return nullptr;
+    };
+
+    // Link to the nearest preceding match, innermost scope outward.
+    for (auto &level : chain)
+      if (Slot *slot = findSlot(level)) {
+        addAsyncDependencyIfNew(chan.getOperation(), slot->token);
+        break;
+      }
+
+    // Publish at every scope level, so a later endpoint at any of them matches.
+    for (auto &level : chain) {
+      if (Slot *slot = findSlot(level)) {
+        slot->token = level.token;
+        continue;
+      }
+      lastSeen[level.block].push_back({key, level.token, level.guards});
+    }
+  });
+}
+
 bool isAsyncOp(Operation *op) {
   if (!op)
     return false;
@@ -686,6 +842,12 @@ bool isAsyncOp(Operation *op) {
 // Air dependency comes in two forms: production and consumption of the same
 // async token, and usage of the same air.channel.
 bool areAsyncDependent(Operation *a, Operation *b) {
+  return areAsyncDependent(a, b, isAsyncDependent);
+}
+
+bool areAsyncDependent(
+    Operation *a, Operation *b,
+    llvm::function_ref<bool(Operation *, Operation *)> dependsOn) {
   SmallVector<Value> dep_a = getAsyncDependenciesFromOp(a);
   Value token_a = getAsyncTokenFromOp(a);
   SmallVector<Value> dep_b = getAsyncDependenciesFromOp(b);
@@ -701,9 +863,9 @@ bool areAsyncDependent(Operation *a, Operation *b) {
     if (dep == token_a)
       return true;
   // Deep async dependency tracing through air.wait_all.
-  if (isAsyncDependent(a, b))
+  if (dependsOn(a, b))
     return true;
-  if (isAsyncDependent(b, a))
+  if (dependsOn(b, a))
     return true;
 
   auto chanA = dyn_cast_if_present<air::ChannelInterface>(a);
@@ -3202,60 +3364,10 @@ bool dependencyTracer::areOverlappingPartialMemrefs(partialMemref *tile_0,
   // conflict with any other accesses.
   if (tile_0->offsets.empty() || tile_1->offsets.empty())
     return true;
-
-  // Compute the linear range [start, end) for an access pattern.
-  // Returns std::nullopt if the range cannot be statically determined.
-  auto getAccessRange =
-      [](partialMemref *tile) -> std::optional<std::pair<int64_t, int64_t>> {
-    int64_t minOffset = 0;
-    int64_t maxOffset = 0;
-
-    for (unsigned i = 0; i < tile->offsets.size(); i++) {
-      auto constOffset = getConstantIntValue(tile->offsets[i]);
-      auto constSize = getConstantIntValue(tile->sizes[i]);
-      auto constStride = getConstantIntValue(tile->strides[i]);
-
-      // If any dimension has non-constant offset, size, or stride,
-      // we cannot determine the exact range - conservatively assume overlap
-      if (!constOffset || !constSize || !constStride)
-        return std::nullopt;
-
-      // For this dimension, compute contribution to min and max offsets
-      // Min is at index 0: offset * stride
-      // Max is at index (size-1): (offset + size - 1) * stride
-      int64_t dimMin = (*constOffset) * (*constStride);
-      int64_t dimMax = (*constOffset + *constSize - 1) * (*constStride);
-
-      // Handle negative strides
-      if (dimMin > dimMax)
-        std::swap(dimMin, dimMax);
-
-      minOffset += dimMin;
-      maxOffset += dimMax;
-    }
-
-    // Return the range [minOffset, maxOffset + 1) - the +1 because end is
-    // exclusive
-    return std::make_pair(minOffset, maxOffset + 1);
+  auto range = [](partialMemref *tile) {
+    return getLinearAccessRange(tile->offsets, tile->sizes, tile->strides);
   };
-
-  auto range_0 = getAccessRange(tile_0);
-  auto range_1 = getAccessRange(tile_1);
-
-  // If either range cannot be determined, conservatively assume overlap
-  if (!range_0 || !range_1)
-    return true;
-
-  auto [start_0, end_0] = *range_0;
-  auto [start_1, end_1] = *range_1;
-
-  // Check if ranges are disjoint: [start_0, end_0) and [start_1, end_1)
-  // Disjoint if: end_0 <= start_1 OR end_1 <= start_0
-  if (end_0 <= start_1 || end_1 <= start_0)
-    return false; // Provably no overlap
-
-  // Ranges intersect - there is overlap
-  return true;
+  return mayOverlap(range(tile_0), range(tile_1));
 }
 
 char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
@@ -3340,8 +3452,32 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
   if (!async_op)
     op->emitOpError("is not an async op");
 
-  // Get parent scf loop op
+  // Under an scf.if that yields tokens, the op's token leaves through every
+  // token the branch yields, and the loop waits on the scf.if's results.
+  SmallVector<Value> opTokens;
+  if (Value t = getAsyncTokenFromOp(op))
+    opTokens.push_back(t);
   auto parent = op->getParentOp();
+  Operation *child = op;
+  while (auto ifOp = dyn_cast_if_present<scf::IfOp>(parent)) {
+    if (ifOp.getNumResults() == 0 ||
+        !llvm::all_of(ifOp.getResultTypes(),
+                      [](Type t) { return isa<air::AsyncTokenType>(t); }))
+      return;
+    auto yield = cast<scf::YieldOp>(child->getBlock()->getTerminator());
+    for (Value y : yield.getOperands()) {
+      auto yieldWaitAll =
+          dyn_cast_if_present<air::WaitAllOp>(y.getDefiningOp());
+      if (!yieldWaitAll)
+        return;
+      for (Value t : opTokens)
+        addAsyncDependencyIfNew(yieldWaitAll, t);
+    }
+    opTokens.assign(ifOp.getResults().begin(), ifOp.getResults().end());
+    child = ifOp;
+    parent = ifOp->getParentOp();
+  }
+
   if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
     // Get scf parallel's loop-carried token
     auto token = getLoopCarriedTokenFromScfOp(scf_par);
@@ -3364,9 +3500,8 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
       scf_par->emitOpError("reduce op is not dependent on any air::WaitAllOp");
 
     // Connect op's async token to scf reduce
-    auto opToken = getAsyncTokenFromOp(op);
-    if (opToken)
-      addAsyncDependencyIfNew(reduce_wait_all, opToken);
+    for (Value t : opTokens)
+      addAsyncDependencyIfNew(reduce_wait_all, t);
 
     // Recurse with parent
     reconnectLoopCarriedDependencyFromOp(parent);
@@ -3406,9 +3541,8 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
     }
 
     // Connect op's async token to scf yield
-    auto opToken = getAsyncTokenFromOp(op);
-    if (opToken)
-      addAsyncDependencyIfNew(yield_wait_all, opToken);
+    for (Value t : opTokens)
+      addAsyncDependencyIfNew(yield_wait_all, t);
 
     // Recurse with parent
     reconnectLoopCarriedDependencyFromOp(parent);

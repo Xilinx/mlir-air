@@ -238,41 +238,6 @@ void classifyChainBuffer(Value memref, int &numWriters, int &numReaders);
 // one, so an unkeyed endpoint never shares a stage with anything but itself.
 bool chainEndpointsShareStage(Operation *a, Operation *b);
 
-// Will the v2 chain lock serialize this buffer's endpoints? Mirrors
-// isChainLockCandidate on pre-conversion IR: fan-in is N>1 writers and one
-// reader, fan-out is one writer and N>1 readers, and fan-out honors the
-// air.no_chain_lock opt-out. `isFanIn`, if non-null, receives which shape
-// matched.
-bool isSerializedChainBuffer(Value memref, bool *isFanIn = nullptr);
-
-// Herds whose output data transitively reaches a buffer `isTarget` accepts,
-// each mapped to the targets it reaches. Callers that only need the herds can
-// use the keys; the targets are what lets a diagnostic name the right buffer
-// instead of every one in the module.
-//
-// A channel put reaches every get on the same symbol; any other memcpy names
-// its destination directly. Staging hops are followed at every memory space,
-// since AIR permits cross-space channel hops and an L1 or L3 buffer on the way
-// is still a path.
-//
-// Shared by the labeller (which declines these herds) and AIRToAIE (which
-// verifies none was ping-ponged anyway), so the two cannot disagree. Puts match
-// gets by symbol, not endpoint -- inside a herd the bundle index is an
-// expression in the induction variables -- so it over-approximates.
-llvm::MapVector<Operation *, SmallVector<Value>>
-getHerdsFeedingBuffers(Operation *scope,
-                       llvm::function_ref<bool(Value)> isTarget);
-
-// Loops whose ping-pong unroll is what keeps a BD ring in step with its core,
-// so declining them would move the wrong buffer. A sibling group only realigns
-// if every member is unrolled, hence isCandidate.
-llvm::DenseSet<Operation *>
-getLoadBearingPingPongLoops(Operation *herd,
-                            llvm::function_ref<bool(scf::ForOp)> isCandidate);
-
-// Does this herd hold any such group? Asked post-unroll, where the labeller's
-// notion of a candidate no longer applies.
-bool pingPongIsLoadBearing(Operation *herd);
 // Get integer index to metadataArray, from channel bundle indices.
 std::optional<int>
 getIndexToMetadataArrayFromChannelIndices(air::ChannelInterface op);
@@ -340,7 +305,8 @@ void getDefiningOpsToOperands(Operation *op, SmallVector<Operation *> &def_ops);
 LogicalResult foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
-    SmallVector<Value> &strides, Value memref, bool skipZeroStride = false);
+    SmallVector<Value> &strides, Value memref, bool skipZeroStride = false,
+    int maxSize = -1);
 
 // Find the largest factor of 'num' which is not larger than 'max'.
 int findLargestFactor(int num, int max);
@@ -392,6 +358,35 @@ void copyPaddingAttributes(Operation *src, Operation *dst);
 // air-to-std sinks it into its device). Returns false when there is no metadata
 // or no matching ShimDMAAllocationOp.
 bool isDeviceToHostShimDMA(Operation *op);
+
+// The linear element range [start, end) an access pattern touches, given one
+// offset, size and stride per dimension (the offset counts in units of that
+// dimension's stride). std::nullopt if any of them is not a constant. With
+// `overLoops`, an offset may be any index value that value-bounds analysis
+// bounds (loop induction variables, affine.apply, arith), and the range covers
+// every value it can take.
+std::optional<std::pair<int64_t, int64_t>>
+getLinearAccessRange(ArrayRef<OpFoldResult> offsets,
+                     ArrayRef<OpFoldResult> sizes,
+                     ArrayRef<OpFoldResult> strides, bool overLoops = false);
+
+// Whether two access patterns into the same buffer may touch a common element:
+// false only when both linear ranges are known and disjoint.
+bool mayOverlap(std::optional<std::pair<int64_t, int64_t>> a,
+                std::optional<std::pair<int64_t, int64_t>> b);
+
+// Whether two access patterns into the same buffer may touch a common element:
+// false when they cannot, true when they may, std::nullopt when a footprint is
+// not known. Footprints are bounded over the loops around the accesses.
+// Constant patterns of up to a few thousand contiguous runs are compared
+// element by element, so true means they do touch. Otherwise patterns with the
+// same strides are compared dimension by dimension, and others by linear range.
+std::optional<bool> accessesIntersect(ArrayRef<OpFoldResult> offsets0,
+                                      ArrayRef<OpFoldResult> sizes0,
+                                      ArrayRef<OpFoldResult> strides0,
+                                      ArrayRef<OpFoldResult> offsets1,
+                                      ArrayRef<OpFoldResult> sizes1,
+                                      ArrayRef<OpFoldResult> strides1);
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
