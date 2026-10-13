@@ -242,13 +242,12 @@ def _kv_put(kvin, KV, g, nkv, rounds):
         kvin.put(KV[0:n].broadcast_to(rounds, n))
     else:
         # rounds walk the heads kv-head-major: each KV head's records
-        # repeat for its group's rounds
-        h = g.kv_heads
-        kvin.put(
-            KV.reshape(h, 1, g.max_blocks * kv_rec(g))[0:h, 0:1, 0:n].broadcast_to(
-                h, rounds // h, n
-            )
-        )
+        # repeat for its group's rounds. Each head is its own put, so its
+        # start goes in the buffer offset: as a BD stride, max_blocks
+        # records overflow the shim BD's stride field at long max_len.
+        h, span = g.kv_heads, g.max_blocks * kv_rec(g)
+        for i in range(h):
+            kvin.put(KV[i * span : i * span + n].broadcast_to(rounds // h, n))
 
 
 def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs):
