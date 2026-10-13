@@ -70,7 +70,7 @@ class XRTRunner:
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
         use_lock_race_condition_fix_v2: bool = False,
-        use_lock_race_condition_fix_auto: bool = None,
+        use_lock_race_condition_fix_auto: bool | None = None,
         trace_offset: int = 0,
         trace_size: int = 0,
         output_format: str = "xclbin",

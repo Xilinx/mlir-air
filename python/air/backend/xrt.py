@@ -263,7 +263,7 @@ class XRTBackend(AirBackend):
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
         use_lock_race_condition_fix_v2: bool = False,
-        use_lock_race_condition_fix_auto: bool = None,
+        use_lock_race_condition_fix_auto: bool | None = None,
         coalesce_shim_dma: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
@@ -344,10 +344,16 @@ class XRTBackend(AirBackend):
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
-        if use_lock_race_condition_fix and use_lock_race_condition_fix_v2:
+        if (
+            int(bool(use_lock_race_condition_fix))
+            + int(bool(use_lock_race_condition_fix_v2))
+            + int(bool(use_lock_race_condition_fix_auto))
+            > 1
+        ):
             raise AirBackendError(
-                "use_lock_race_condition_fix and use_lock_race_condition_fix_v2 "
-                "are mutually exclusive; enable at most one"
+                "use_lock_race_condition_fix, use_lock_race_condition_fix_v2 and "
+                "use_lock_race_condition_fix_auto are mutually exclusive; enable "
+                "at most one"
             )
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
         self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
