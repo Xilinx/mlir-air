@@ -83,7 +83,7 @@ _DECODE_DIR = Path(os.environ.get("Q4NX_GEMMA4_DECODE_DIR", str(_HERE)))
 # The packed decode weights. Repo-local and keyed on the geometry that shaped
 # them, because a cache packed for a different layer count or vocab chunking is
 # not detectably wrong at dispatch time -- it just feeds the kernels the wrong
-# blocks. ~1.8 GB, and packing it from the bundle takes the better part of an hour.
+# blocks.
 _WCACHE_DIR = Path(
     os.environ.get("Q4NX_GEMMA4_WCACHE_DIR", str(_HERE / ".decode_wcache"))
 )
@@ -120,7 +120,7 @@ def _wcache_path(uni_dec, fingerprint):
     """
     return (
         _WCACHE_DIR
-        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_swa_{fingerprint}.npz"
+        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_swa_packed_{fingerprint}.npz"
     )
 
 
@@ -140,7 +140,7 @@ def _ensure_wcache(model, fd, uni_dec, qm, verbose=True):
         if verbose:
             print(
                 f"[inference] packing decode weights -> {path} "
-                f"(one-time, {uni_dec} layers + LM head; this takes ~an hour)",
+                f"(one-time, {uni_dec} layers + LM head)",
                 flush=True,
             )
         rq.build_requant_cache(

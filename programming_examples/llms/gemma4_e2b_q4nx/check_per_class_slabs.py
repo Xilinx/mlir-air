@@ -23,7 +23,7 @@ import validate_layer_npu as vln  # noqa: E402
 UNI = 35
 fd = vln._load_fd(UNI, 64, kv_src=[gw.kv_source_layer(i) for i in range(UNI)])
 assert fd.PER_CLASS
-K, BLK, NCX, NPH = fd.K, fd.BLOCK_BF16, fd.NCX, fd.NPH
+K, G, BLK, NCX, NPH = fd.K, fd.GROUP, fd.BLOCK_BF16, fd.NCX, fd.NPH
 GP, DP = fd.GLU_PHASE, fd.DOWN_PHASE
 DUAL = bool(getattr(fd, "W_DUAL_CHAN", 0))
 rng = np.random.default_rng(0)
@@ -33,7 +33,14 @@ def weights(L):
     dh, inter = gw.head_dim(L), fd.MODEL["INTER_NARROW"]
     if L >= fd.MODEL["FIRST_KV_SHARED"]:
         inter *= 2
-    r = lambda *s: rng.standard_normal(s).astype(np.float32)  # noqa: E731
+
+    def r(m, k):  # (q, scale, min)
+        return (
+            rng.integers(0, 16, (m, k), dtype=np.uint8),
+            rng.standard_normal((m, k // G)).astype(np.float32),
+            rng.standard_normal((m, k // G)).astype(np.float32),
+        )
+
     w = dict(
         q=r(fd.NUM_Q_HEADS * dh, K),
         o=r(K, fd.NUM_Q_HEADS * dh),
@@ -62,27 +69,35 @@ def device_slab(L, w):
     dh, DH, NQ, NKV = gw.head_dim(L), fd.DH_A, fd.NUM_Q_HEADS, fd.NUM_KV_HEADS
     swa = dh != DH
     head = (
-        (lambda a, n, ax=0: a)
+        (lambda t, n: t)
         if swa
-        else (lambda a, n, ax=0: rq._pad_head(a, n, dh, DH, ax))
+        else (lambda t, n: rq._each(t, lambda a: rq._pad_head(a, n, dh, DH)))
     )
     qkv = [head(w["q"], NQ)]
     if "k" in w:
-        qkv += [head(np.tile(w[x], (NKV, 1)), NKV) for x in "kv"]
-    qkv = rq._pad_rows(np.concatenate(qkv), fd.M)
-    o = np.zeros((K, NQ * DH), np.float32)
-    for h in range(NQ):  # [head | 0] per slot; identity on a full layer
-        o[:, h * DH : h * DH + dh] = w["o"][:, h * dh : (h + 1) * dh]
+        qkv += [head(rq._each(w[x], lambda a: np.tile(a, (NKV, 1))), NKV) for x in "kv"]
+    qkv = rq._each(rq._cat(*qkv), lambda a: rq._pad_rows(a, fd.M))
+
+    def slots(a, g):  # [head | 0] per slot; identity on a full layer
+        out = np.zeros((K, NQ * DH // g), a.dtype)
+        for h in range(NQ):
+            out[:, h * DH // g : (h * DH + dh) // g] = a[
+                :, h * dh // g : (h + 1) * dh // g
+            ]
+        return out
+
+    o = rq._each(w["o"], lambda a: slots(a, 1), lambda a: slots(a, G))
     full = 2 * fd.MODEL["INTER_NARROW"]
-    up, gate = rq._pad_rows(w["up"], full), rq._pad_rows(w["gate"], full)
+    up = rq._each(w["up"], lambda a: rq._pad_rows(a, full))
+    gate = rq._each(w["gate"], lambda a: rq._pad_rows(a, full))
     q = [None] * NPH
-    q[0], q[fd.OPROJ_PHASE] = rq._requant_q4k(qkv, fd.GROUP), rq._requant_q4k(
-        o, fd.GROUP
+    q[0], q[fd.OPROJ_PHASE] = qkv, o
+    q[GP] = rq._interleave512(up, gate, fd.GLU_CHUNK)
+    q[DP] = rq._each(
+        w["down"],
+        lambda a: rq._pad_cols(a, full),
+        lambda a: rq._pad_cols(a, full // G),
     )
-    q[GP] = rq._interleave512(
-        rq._requant_q4k(up, fd.GROUP), rq._requant_q4k(gate, fd.GROUP), fd.GLU_CHUNK
-    )
-    q[DP] = rq._requant_q4k(rq._pad_cols(w["down"], full), fd.GROUP)
     return np.concatenate(
         [
             fd.pack_q4k_cascade(*q[p], NCX, fd.NCY, iter_major=True, dual_chan=DUAL)
@@ -92,8 +107,11 @@ def device_slab(L, w):
 
 
 # one packed block of zero weights; every block of one is identical
-_z = rq._requant_q4k(
-    np.zeros((NCX * fd.NCY * fd.ROW_BLOCK, fd.COL_BLOCK), np.float32), fd.GROUP
+_rows = NCX * fd.NCY * fd.ROW_BLOCK
+_z = (
+    np.zeros((_rows, fd.COL_BLOCK), np.uint8),
+    np.zeros((_rows, fd.COL_BLOCK // G), np.float32),
+    np.zeros((_rows, fd.COL_BLOCK // G), np.float32),
 )
 ZERO_BLOCK = fd.pack_q4k_cascade(*_z, NCX, fd.NCY, iter_major=True)[:BLK]
 
