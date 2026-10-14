@@ -7,7 +7,8 @@
 
 FUSED_MAIN := $(dir $(lastword $(MAKEFILE_LIST)))dense_main.py
 # The build (kernels + every op's insts), under the invoking directory. The
-# prefill is chunked, so it has no CTX.
+# prefill is chunked; FUSED_MAX_LEN, when set, is the longest prompt the build
+# takes (models.py's max_len otherwise).
 FUSED_DIR ?= $(CURDIR)/_fused_prefill
 override FUSED_DIR := $(abspath $(FUSED_DIR))
 FUSED_JOBS ?= 6
@@ -23,7 +24,8 @@ compile: compile-fused-prefill
 ## The fused prefill: every op of a 128-token chunk on one configured device,
 ## int4 weights dequantized on the cores.
 compile-fused-prefill:
-	python3 $(FUSED_MAIN) build $(FUSED_MODEL) $(FUSED_DIR) -j $(FUSED_JOBS)
+	python3 $(FUSED_MAIN) build $(FUSED_MODEL) $(FUSED_DIR) -j $(FUSED_JOBS) \
+	  $(if $(FUSED_MAX_LEN),--max-len $(FUSED_MAX_LEN))
 
 ## One chunk, gated against the fp32 reference by logit cosine and first token.
 fused-prefill:

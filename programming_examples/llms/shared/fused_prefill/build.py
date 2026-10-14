@@ -55,11 +55,16 @@ def attn_points(heads, even=False):
 
 
 def load_spec(ref):
-    """A spec module by name, or "dense:<model>" for a model in models.py."""
+    """A spec module by name, or "dense:<model>[:<max_len>]" for a model in
+    models.py, with its max_len replaced when one is given."""
     if ref.startswith("dense:"):
         from .models import MODELS, spec
 
-        return spec(MODELS[ref[6:]])
+        name, _, max_len = ref[6:].partition(":")
+        desc = MODELS[name]
+        if max_len:
+            desc = desc._replace(max_len=int(max_len))
+        return spec(desc)
     return importlib.import_module(ref)
 
 
@@ -264,6 +269,7 @@ def main(spec_name, argv=None):
         attn_points=spec.ATTN_POINTS,
         lm="lm" if hasattr(spec, "lm_build") else None,
         device=fused.pop(),
+        max_len=getattr(spec, "max_len", None),
     )
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
     print(f"built {len(todo)} ops into {out}")

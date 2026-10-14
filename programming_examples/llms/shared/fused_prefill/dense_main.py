@@ -2,9 +2,13 @@
 # SPDX-License-Identifier: MIT
 """Build, or gate and time, the fused prefill of a dense model (models.py).
 
-  python3 dense_main.py build MODEL BUILD_DIR [-j N]
+  python3 dense_main.py build MODEL BUILD_DIR [-j N] [--max-len N]
   python3 dense_main.py verify MODEL BUILD_DIR [--prompt TEXT |
       --text-file F --text-tokens N] [--repeat R] [--tol T]
+
+--max-len sets the longest prompt the build takes (models.py's max_len by
+default), a multiple of the model's lkp. verify and dense.load read it from the
+build.
 
 verify prints the logit cosine and first token against the fp32 numpy
 reference on the same 4-bit weights, and per-run prefill times. GATE PASS needs logit
@@ -120,7 +124,16 @@ def main():
     if name not in MODELS:
         sys.exit(f"unknown model {name}; one of {', '.join(MODELS)}")
     if cmd == "build":
-        build(f"dense:{name}", rest)
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--max-len", type=int, default=None)
+        a, rest = ap.parse_known_args(rest)
+        ref = f"dense:{name}"
+        if a.max_len is not None:
+            lkp = MODELS[name].lkp
+            if a.max_len <= 0 or a.max_len % lkp:
+                sys.exit(f"--max-len must be a positive multiple of {lkp}")
+            ref += f":{a.max_len}"
+        build(ref, rest)
     else:
         verify(name, rest)
 
