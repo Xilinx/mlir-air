@@ -7113,11 +7113,8 @@ public:
             appendBd();
             emitLockOnlyBd(pair, /*acquire=*/false);
           }
-          for (AIE::DMABDOp lockOnlyBd : lockOnlyBds) {
+          for (AIE::DMABDOp lockOnlyBd : lockOnlyBds)
             lockOnlyBd->setAttr("task_id", newBD.value()->getAttr("task_id"));
-            if (Attribute packet = newBD.value()->getAttr("packet"))
-              lockOnlyBd->setAttr("packet", packet);
-          }
 
           // v2 chain-lock 2-slot ping-pong: splice a twin BD (on a second
           // buffer instance, sharing the chain locks) between the primary BD
@@ -7514,7 +7511,9 @@ public:
       aieDmaBdOp = AIE::DMABDOp::create(
           b, loc, bufferOp, offset,
           cast<arith::ConstantIndexOp>(length.getDefiningOp()).value());
-    if (pktInfoAttr)
+    // A zero-length MM2S BD sends nothing, and the hardware leaves a packet
+    // header on one undefined.
+    if (pktInfoAttr && !(isMM2S && len == 0))
       aieDmaBdOp->setAttr("packet", pktInfoAttr);
     AIE::UseLockOp::create(b, loc, relLockOp, AIE::LockAction::Release,
                            lockRelValue);

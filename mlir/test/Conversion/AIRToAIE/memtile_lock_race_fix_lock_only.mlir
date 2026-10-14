@@ -685,3 +685,84 @@ func.func @writes_on_one_dynamic_endpoint(%arg0: memref<16xi32>) {
   }
   return
 }
+
+// -----
+
+// The fan-in's reader sends packets. Its lock-only BDs move no data and carry
+// no packet header, which a zero-length MM2S BD must not have.
+
+// CHECK-LABEL: aie.device({{.*}}) @seg {
+// CHECK: aie.memtile_dma
+// CHECK: aie.dma_start(MM2S, 0
+// CHECK: aie.dma_bd(%{{.*}} : memref<3x8xbf16, 1> offset = 0 len = 0) {task_id = 0 : i32}
+// CHECK: aie.dma_bd(%{{.*}} : memref<3x8xbf16, 1> offset = 0 len = 0) {task_id = 0 : i32}
+// CHECK: aie.dma_bd(%{{.*}} : memref<3x8xbf16, 1> offset = 0 len = 24) {packet = #aie.packet_info<pkt_type = 0, pkt_id = {{[0-9]+}}>, task_id = 0 : i32}
+// CHECK: aie.dma_bd(%{{.*}} : memref<3x8xbf16, 1> offset = 0 len = 0) {task_id = 0 : i32}
+// CHECK: aie.dma_bd(%{{.*}} : memref<3x8xbf16, 1> offset = 0 len = 0) {task_id = 0 : i32}
+// CHECK: func.func @fanin_packet
+
+air.channel @w0 [1, 1]
+air.channel @w1 [1, 1]
+air.channel @w2 [1, 1]
+air.channel @r0 [1, 1] {channel_type = "npu_dma_packet"}
+func.func @fanin_packet() {
+  %c1 = arith.constant 1 : index
+  air.launch (%a, %b) in (%c=%c1, %d=%c1) {
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %c2 = arith.constant 2 : index
+      %c8 = arith.constant 8 : index
+      %k1 = arith.constant 1 : index
+      %k2 = arith.constant 2 : index
+      %t, %l2 = air.execute -> (memref<3x8xbf16, 1>) {
+        %alloc = memref.alloc() {air.no_split} : memref<3x8xbf16, 1>
+        air.execute_terminator %alloc : memref<3x8xbf16, 1>
+      }
+      air.channel.get @w0[] (%l2[%c0, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<3x8xbf16, 1>)
+      air.channel.get @w1[] (%l2[%k1, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<3x8xbf16, 1>)
+      air.channel.get @w2[] (%l2[%k2, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<3x8xbf16, 1>)
+      air.channel.put @r0[] (%l2[] [] []) : (memref<3x8xbf16, 1>)
+      %d_ = air.execute {
+        memref.dealloc %l2 : memref<3x8xbf16, 1>
+      }
+      air.herd @h0 tile (%tx_h0, %ty_h0) in (%sx_h0=%c1_0, %sy_h0=%c1_0)
+            attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+        %tok, %l1 = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        air.channel.put @w0[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xbf16, 2>}
+      }
+      air.herd @h1 tile (%tx_h1, %ty_h1) in (%sx_h1=%c1_0, %sy_h1=%c1_0)
+            attributes {x_loc = 1 : i64, y_loc = 2 : i64} {
+        %tok, %l1 = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        air.channel.put @w1[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xbf16, 2>}
+      }
+      air.herd @h2 tile (%tx_h2, %ty_h2) in (%sx_h2=%c1_0, %sy_h2=%c1_0)
+            attributes {x_loc = 2 : i64, y_loc = 2 : i64} {
+        %tok, %l1 = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        air.channel.put @w2[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xbf16, 2>}
+      }
+      air.herd @hr tile (%tx_hr, %ty_hr) in (%sx_hr=%c1_0, %sy_hr=%c1_0)
+            attributes {x_loc = 0 : i64, y_loc = 3 : i64} {
+        %tok, %l1 = air.execute -> (memref<24xbf16, 2>) {
+          %aa = memref.alloc() : memref<24xbf16, 2>
+          air.execute_terminator %aa : memref<24xbf16, 2>
+        }
+        air.channel.get @r0[] (%l1[] [] []) : (memref<24xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<24xbf16, 2>}
+      }
+    }
+  }
+  return
+}
