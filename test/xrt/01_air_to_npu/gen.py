@@ -159,7 +159,6 @@ C = np.matmul(A, B)
 runner = XRTRunner(
     air_loop_fusion=True,
     omit_while_true_loop=False,
-    use_lock_race_condition_fix=True,
     trace_offset=opts.trace_offset,
     trace_size=opts.trace_size,
     trace_file=opts.trace_file,

@@ -997,7 +997,6 @@ if __name__ == "__main__":
             output_format=args.output_format,
             instance_name="matvec_swiglu_rms",
             debug_ir=args.debug_ir,
-            use_lock_race_condition_fix=True,
         )
         exit(
             runner.run_test(
@@ -1014,7 +1013,6 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
-            use_lock_race_condition_fix=True,
         )
         backend.compile(mlir_module)
         backend.unload()
