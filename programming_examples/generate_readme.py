@@ -176,6 +176,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Activation/Math",
+        "name": "Erf",
+        "path": "primitives/vector_examples/vector_erf",
+        "datatypes": "bf16, f32",
+    },
+    {
         "category": "Normalization",
         "name": "Layer Normalization",
         "path": "layer_norm",

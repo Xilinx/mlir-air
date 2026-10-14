@@ -70,6 +70,7 @@ __all__ = [
     "switch",
     "relu",
     "tanh",
+    "erf",
     "exp",
     "rsqrt",
     "sigmoid",
@@ -1387,6 +1388,11 @@ def _unary(name, x):
 def tanh(x):
     """Elementwise hyperbolic tangent. Lowers to math.tanh. Float only."""
     return _unary("tanh", x)
+
+
+def erf(x):
+    """Elementwise error function. Lowers to math.erf. Float only."""
+    return _unary("erf", x)
 
 
 # exp and rsqrt lower the same way tanh does -- one math dialect op on the
