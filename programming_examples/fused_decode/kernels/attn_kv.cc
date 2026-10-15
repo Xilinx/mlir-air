@@ -40,10 +40,9 @@ void passThrough_aie(T_in *restrict in0, T_out *restrict out);
 // then the rescale of y can be skipped. Compared as bit patterns: a float
 // compare is a library call on this core.
 static inline bool attn_rescale_needed(const float *c, int n) {
-  const uint32_t *cb = reinterpret_cast<const uint32_t *>(c);
   uint32_t diff = 0;
   for (int h = 0; h < n; h++)
-    diff |= cb[h] ^ 0x3F800000u;
+    diff |= __builtin_bit_cast(uint32_t, c[h]) ^ 0x3F800000u;
   return diff != 0;
 }
 
