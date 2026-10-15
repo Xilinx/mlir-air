@@ -338,9 +338,9 @@ void calculate_l(bf16 *__restrict pS, float *__restrict c,
 }
 
 typedef float y_acc_dtype;
-template <unsigned colQ, unsigned r, unsigned s, unsigned t>
-void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
-             y_acc_dtype *__restrict pY, float *__restrict c) {
+template <bool RESCALE, unsigned colQ, unsigned r, unsigned s, unsigned t>
+void attn_fv_impl(bf16 *__restrict pS, bf16 *__restrict pV,
+                  y_acc_dtype *__restrict pY, float *__restrict c) {
   aie_round_nearest_even();
 
   using MMUL = aie::mmul<r, s, t, bf16, bf16, accfloat>;
@@ -385,8 +385,13 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
 
     aie::accum<accfloat, MMUL::size_C> ACC_Y00;
     aie::accum<accfloat, MMUL::size_C> ACC_Y01;
-    ACC_Y00 = aie::mul(CORRECT, acc_Y00);
-    ACC_Y01 = aie::mul(CORRECT, acc_Y01);
+    if constexpr (RESCALE) {
+      ACC_Y00 = aie::mul(CORRECT, acc_Y00);
+      ACC_Y01 = aie::mul(CORRECT, acc_Y01);
+    } else {
+      ACC_Y00.from_vector(acc_Y00);
+      ACC_Y01.from_vector(acc_Y01);
+    }
 
     MMUL Y00(ACC_Y00);
     MMUL Y01(ACC_Y01);
@@ -421,8 +426,13 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
 
     aie::accum<accfloat, MMUL::size_C> ACC_Y02;
     aie::accum<accfloat, MMUL::size_C> ACC_Y03;
-    ACC_Y02 = aie::mul(CORRECT, acc_Y02);
-    ACC_Y03 = aie::mul(CORRECT, acc_Y03);
+    if constexpr (RESCALE) {
+      ACC_Y02 = aie::mul(CORRECT, acc_Y02);
+      ACC_Y03 = aie::mul(CORRECT, acc_Y03);
+    } else {
+      ACC_Y02.from_vector(acc_Y02);
+      ACC_Y03.from_vector(acc_Y03);
+    }
 
     MMUL Y02(ACC_Y02);
     MMUL Y03(ACC_Y03);
@@ -442,6 +452,20 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
     aie::store_v(pY1, Y03.template to_vector<y_acc_dtype>());
     pY1 += MMUL::size_C;
   }
+}
+
+// Most blocks leave every head's running max unchanged, so every c is 1 and
+// the rescale of y can be skipped.
+template <unsigned colQ, unsigned r, unsigned s, unsigned t>
+void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
+             y_acc_dtype *__restrict pY, float *__restrict c) {
+  bool moved = false;
+  for (int h = 0; h < Q_HEADS_PADDED_PER_CU; h++)
+    moved |= c[h] != 1.0f;
+  if (moved)
+    attn_fv_impl<true, colQ, r, s, t>(pS, pV, pY, c);
+  else
+    attn_fv_impl<false, colQ, r, s, t>(pS, pV, pY, c);
 }
 
 // Divides every head by its own denominator, and converts y's PADDED head slots
