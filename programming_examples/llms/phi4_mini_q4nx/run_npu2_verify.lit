@@ -20,9 +20,7 @@
 // RUN: cd test_peano_verify
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile compile-decode PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
-// Q4NX_VERIFY_FORCE_PREFILL=1 exercises the production prefill -> KV-handoff ->
-// decode path. Without it these short prompts are replayed through the decode,
-// whose LM head is the 4-bit cascade rather than the prefill's bf16 head -- see
-// README 'Two LM-head precisions'.
-// RUN: env Q4NX_VERIFY_FORCE_PREFILL=1 make -f %S/Makefile verify PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// Gates the prefill -> KV handoff -> decode path. The replay path is
+// `make verify-replay`; see README 'Two LM-head precisions'.
+// RUN: make -f %S/Makefile verify PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: [verify] PASS
