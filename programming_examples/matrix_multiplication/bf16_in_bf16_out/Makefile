@@ -27,6 +27,7 @@ METHOD ?= auto
 B_PAD_ROWS ?= 0
 EPILOGUE_GELU ?= false
 B_STATIONARY ?= false
+B_PANEL_LAYOUT ?= false
 AIE_TARGET ?= aie2p
 COMPILE_MODE ?= compile-and-run
 PERF_ITERS ?= 20
@@ -68,7 +69,8 @@ run: compile-kernel
 		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) \
 		--herd-m $(HERD_M) --herd-n $(HERD_N) --compile-mode $(COMPILE_MODE) --perf-iters $(PERF_ITERS) \
 		--b-pad-rows $(B_PAD_ROWS) $(if $(filter true,$(EPILOGUE_GELU)),--epilogue-gelu) \
-		$(if $(filter true,$(B_STATIONARY)),--b-stationary)
+		$(if $(filter true,$(B_STATIONARY)),--b-stationary) \
+		$(if $(filter true,$(B_PANEL_LAYOUT)),--b-panel-layout)
 
 clean:
 	rm -rf build_peano build_chess
