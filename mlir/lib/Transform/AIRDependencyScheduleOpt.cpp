@@ -2981,6 +2981,74 @@ private:
 // scf.for loops that iterates over air.channel.put/get but cannot be converted
 // directly to wraps and strides. The unrolled air.channel.put/get ops form a bd
 // chain.
+// Product of the static trip counts of the scf.for / affine.for loops enclosing
+// `op`, up to its launch, segment or herd; nullopt if one is dynamic.
+static std::optional<int64_t> tripsWithinHierarchy(Operation *op) {
+  Operation *scope = op->getParentOp();
+  while (scope && !isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(scope))
+    scope = scope->getParentOp();
+  return air::getStaticTripCountInRange(op, scope);
+}
+
+// Sends into `get`'s channel element per launch iteration: the trip-weighted
+// count of the producers whose constant indices name the same element;
+// nullopt if any producer's (or the get's) indices are not constant.
+static std::optional<int64_t> sendsInto(air::ChannelGetOp get,
+                                        air::ChannelOp chan) {
+  auto constIndices =
+      [](air::ChannelInterface op) -> std::optional<SmallVector<int64_t>> {
+    SmallVector<int64_t> idx;
+    for (Value v : op.getIndices()) {
+      auto c = getConstantIntValue(v);
+      if (!c)
+        return std::nullopt;
+      idx.push_back(*c);
+    }
+    return idx;
+  };
+  auto getIdx = constIndices(get);
+  if (!getIdx)
+    return std::nullopt;
+  int64_t sends = 0;
+  for (auto producer : air::getChannelPutOpThroughSymbol(chan)) {
+    auto putIdx = constIndices(producer);
+    if (!putIdx)
+      return std::nullopt;
+    if (!putIdx->empty() && *putIdx != *getIdx)
+      continue;
+    auto trips = tripsWithinHierarchy(producer);
+    if (!trips)
+      return std::nullopt;
+    sends += *trips;
+  }
+  return sends;
+}
+
+// True if every buffer `for_op` puts from is written only by channel.gets that
+// run once and receive one send per launch iteration: the loop re-sends a
+// buffer filled once.
+static bool isFilledOncePerLaunchIteration(scf::ForOp for_op) {
+  bool any = false, once = true, written = false;
+  for_op.getBody()->walk([&](air::ChannelPutOp put) {
+    any = true;
+    for (Operation *user : put.getMemref().getUsers()) {
+      if (isa<air::ChannelPutOp, memref::DeallocOp>(user) ||
+          isa<air::ExecuteOp>(user->getParentOp()))
+        continue;
+      auto get = dyn_cast<air::ChannelGetOp>(user);
+      auto chan = get ? air::getChannelDeclarationThroughSymbol(get) : nullptr;
+      if (!get || !chan || tripsWithinHierarchy(get) != 1 ||
+          sendsInto(get, chan) != 1) {
+        once = false;
+        return WalkResult::interrupt();
+      }
+      written = true;
+    }
+    return WalkResult::advance();
+  });
+  return any && written && once;
+}
+
 struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -3076,7 +3144,11 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
         }
       return WalkResult::advance();
     });
-    if (!someIVInOffsets && compoundTrip >= kRedundantUnrollLockLimit)
+    // The guard is for a buffer refilled every iteration. A buffer filled once
+    // per launch iteration and re-sent every iteration (a B-stationary GEMM
+    // tile) needs the unroll: its lock must count the re-sends.
+    if (!someIVInOffsets && compoundTrip >= kRedundantUnrollLockLimit &&
+        !isFilledOncePerLaunchIteration(for_op))
       return failure();
 
     // Unroll loop; preserve async tokens after unroll.
