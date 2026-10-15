@@ -679,14 +679,27 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=True):
         compile_rope,
     )
 
-    # mm.o variants for the external GEMMs (drain _m32, fused-cast _m64).
-    # Gate/Up direct-codegen needs NO external .o. rope.o for head_dim=64.
-    compile_gemm_mm(
-        tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
-    )
-    compile_gemm_mm(
-        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
-    )
+    # Compile exactly the external recipes selected for this length; every
+    # external GEMM is built at tile_n=128 (N-padded). Gate/Up direct-codegen
+    # needs NO external .o. rope.o for head_dim=64.
+    compiled = set()
+    for k, n in (
+        (emb_dim, q_dim),
+        (emb_dim, kv_dim),
+        (emb_dim, emb_dim),
+        (hidden_dim, emb_dim),
+    ):
+        spec = _gemm_spec(seq_len, k, n, "high")
+        if spec["obj"] in compiled:
+            continue
+        compiled.add(spec["obj"])
+        compile_gemm_mm(
+            tile_m=spec["tile_m"],
+            tile_n=128,
+            tile_k_l1=spec["tile_k_l1"],
+            sym_suffix=spec["sym_suffix"],
+            out_name=spec["obj"],
+        )
     compile_rope()
 
     print("\n--- rms_qkv_bias_rope (FUSED: RMSNorm+QKV+bias+RoPE, 9 launches) ---")
