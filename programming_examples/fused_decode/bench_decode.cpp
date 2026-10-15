@@ -173,6 +173,12 @@ int main(int argc, char **argv) {
   // decode_insts_gen).
   const std::string rbPath =
       dir + "/decode_L" + std::to_string(baseL) + ".rb.insts.bin";
+  // decode_L<base>.rt_pair: the cores take KV blocks in pairs, so each wave's
+  // block count is rounded to even.
+  const bool pairs =
+      std::ifstream(dir + "/decode_L" + std::to_string(baseL) + ".rt_pair")
+          .good();
+  const long rounds = (L + 15) / 16 + (pairs ? ((L + 15) / 16) & 1 : 0);
   if (std::ifstream(rbPath).good()) {
     auto irb = readWords(rbPath);
     if (irb.size() != ibase.size())
@@ -180,7 +186,7 @@ int main(int argc, char **argv) {
     if (irb == ibase)
       throw std::runtime_error(rbPath + " equals the base build: its build "
                                         "ignored DECODE_RB_ROUNDS");
-    const long dr = (L + 15) / 16 - (baseL + 15) / 16;
+    const long dr = rounds - (baseL + 15) / 16;
     for (size_t i = 0; i < insts.size(); i++) {
       const int64_t d =
           static_cast<int64_t>(ibase[i]) - static_cast<int64_t>(irb[i]);
@@ -191,8 +197,7 @@ int main(int argc, char **argv) {
         hi = std::max(hi, i + 1);
       }
     }
-    std::cout << "readback    " << (L + 15) / 16 << " blocks (" << rbPath
-              << ")\n";
+    std::cout << "readback    " << rounds << " blocks (" << rbPath << ")\n";
   } else if ((baseL + 15) / 16 > 1 &&
              (std::ifstream(dir + "/decode_L" + std::to_string(baseL) +
                             ".rt_rounds")
@@ -218,7 +223,7 @@ int main(int argc, char **argv) {
     if (isw == ibase)
       throw std::runtime_error(stem + ".sw.insts.bin equals the base build: "
                                       "its build ignored DECODE_RB_SWA_SKIP");
-    const long skip = (L - window) / 16;
+    const long skip = (L - window) / 16 - (pairs ? ((L - window) / 16) & 1 : 0);
     for (size_t i = 0; i < insts.size(); i++) {
       const int64_t d =
           static_cast<int64_t>(isw[i]) - static_cast<int64_t>(ibase[i]);
