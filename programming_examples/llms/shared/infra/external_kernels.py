@@ -209,6 +209,7 @@ def compile_attn_npu2(
     dk_tile=None,
     dv_tile=None,
     pretranspose_k=False,
+    fused_softmax_merge=False,
 ):
     """Compile attn_npu2.o (FlashAttention kernel) from source.
 
@@ -245,6 +246,11 @@ def compile_attn_npu2(
             (-DQK_PRETRANSPOSE in attn_npu2.cc) instead of inside the matmul.
             Bit-identical, needs the K L1 buffer to be re-filled before every
             call, so it is opt-in per design.
+        fused_softmax_merge: -DFUSE_EXP_SUM, the fused cascade-merge kernels
+            (merge_gp, merge_gp_div) and the exp+row-sum softmax sweep. The
+            builder must be called with fused_merge=True to use merge_gp*.
+            Same result to bf16 rounding (cosine 0.998830 vs 0.998828 at
+            seq 1024, 12 heads).
     """
     if lkp is None:
         lkp = head_dim
@@ -277,6 +283,8 @@ def compile_attn_npu2(
         _flags.append("-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16")
     if pretranspose_k:
         _flags.append("-DQK_PRETRANSPOSE")
+    if fused_softmax_merge:
+        _flags.append("-DFUSE_EXP_SUM")
     _compile_kernel(src, "attn_npu2.o", extra_flags=_flags, force=force)
     # Also create attn.o copy (some link_with attributes use "attn.o").
     # Refresh whenever attn_npu2.o exists so a force-rebuild (different tile
