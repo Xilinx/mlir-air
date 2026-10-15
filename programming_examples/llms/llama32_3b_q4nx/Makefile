@@ -184,7 +184,7 @@ _compile_decode_build:
 ## passes L each token through the mlir-aie scratchpad instead of patching an
 ## instruction stream, so there are no templates to calibrate.
 DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
-DECODE_ELF_FLAGS := $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
 
 ## Skipped when the artifacts exist and were built with the same flags. LBUILD
 ## is part of the stamp because the ELF bakes in ATTN_MAXL.
