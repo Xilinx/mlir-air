@@ -298,7 +298,6 @@ if __name__ == "__main__":
             output_format=args.output_format,
             instance_name="matvec_bf16",
             debug_ir=args.debug_ir,
-            use_lock_race_condition_fix=True,
             report_precision=True,
             n_perf_iters=args.perf_iters,
             perf_flops=((2.0 * args.m * args.k) if args.perf_iters > 0 else None),
@@ -319,7 +318,6 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             omit_pingpong=True,
             runtime_loop_tiling_sizes=[4, 4],
-            use_lock_race_condition_fix=True,
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

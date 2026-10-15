@@ -263,6 +263,7 @@ class XRTBackend(AirBackend):
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
         use_lock_race_condition_fix_v2: bool = False,
+        use_lock_race_condition_fix_auto: bool | None = None,
         coalesce_shim_dma: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
@@ -294,6 +295,7 @@ class XRTBackend(AirBackend):
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
+            use_lock_race_condition_fix_auto: pick a lock race fix per shared L2 buffer (see aircc --use-lock-race-condition-fix-auto). None (default) leaves the choice to aircc; True or False sets it.
             coalesce_shim_dma: configure aircc to coalesce consecutive contiguous shim DMA transfers on the same channel (marked air.preserve_shim_dma_order) into a single wide transfer, reducing host-issued DMA task triplets. Opt-in: only enable for feeds verified numerically equivalent when coalesced.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
@@ -342,13 +344,20 @@ class XRTBackend(AirBackend):
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
-        if use_lock_race_condition_fix and use_lock_race_condition_fix_v2:
+        if (
+            int(bool(use_lock_race_condition_fix))
+            + int(bool(use_lock_race_condition_fix_v2))
+            + int(bool(use_lock_race_condition_fix_auto))
+            > 1
+        ):
             raise AirBackendError(
-                "use_lock_race_condition_fix and use_lock_race_condition_fix_v2 "
-                "are mutually exclusive; enable at most one"
+                "use_lock_race_condition_fix, use_lock_race_condition_fix_v2 and "
+                "use_lock_race_condition_fix_auto are mutually exclusive; enable "
+                "at most one"
             )
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
         self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
+        self.use_lock_race_condition_fix_auto = use_lock_race_condition_fix_auto
         self.coalesce_shim_dma = coalesce_shim_dma
         self.trace_offset = trace_offset
         self.trace_size = trace_size
@@ -553,6 +562,12 @@ class XRTBackend(AirBackend):
 
             if self.use_lock_race_condition_fix_v2:
                 aircc_options += ["--use-lock-race-condition-fix-v2"]
+
+            if self.use_lock_race_condition_fix_auto is not None:
+                aircc_options += [
+                    "--use-lock-race-condition-fix-auto="
+                    + ("true" if self.use_lock_race_condition_fix_auto else "false")
+                ]
 
             if self.coalesce_shim_dma:
                 aircc_options += ["--coalesce-shim-dma"]

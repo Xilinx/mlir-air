@@ -559,6 +559,12 @@ bool air::isChainLockCandidate(AIE::BufferOp buf) {
   return false;
 }
 
+bool air::usesChainLock(AIE::BufferOp buf, bool lockRaceConditionFixV2) {
+  if (!buf || !isChainLockCandidate(buf))
+    return false;
+  return lockRaceConditionFixV2 || buf->hasAttr(air::attrs::ChainLock);
+}
+
 // True iff `buf` is an L2 memtile buffer that is FILLED by DMA (>=1 writer
 // endpoint) but NEVER READ (0 reader endpoints) within the segment -- a "pure
 // drain" (e.g. a readback whose data is discarded). Such a buffer's receiving
@@ -1007,11 +1013,12 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
   }
 
   // v2: chain-lock branch. Memtile-only; requires the buffer to be a
-  // shared L2 with fan-in or fan-out shape (predicate is shape-based).
+  // shared L2 with fan-in or fan-out shape (predicate is shape-based), and
+  // either v2 on for the design or air.chain_lock on the buffer.
   // Takes precedence over the legacy / v1 paths when it applies.
-  if (lockRaceConditionFixV2 && tileIsMemTile && UsesSemaphoreLocks) {
+  if (tileIsMemTile && UsesSemaphoreLocks) {
     auto buf = dyn_cast_or_null<AIE::BufferOp>(bufferOp);
-    if (buf && isChainLockCandidate(buf)) {
+    if (usesChainLock(buf, lockRaceConditionFixV2)) {
       auto clsOrFail = getOrCreateChainLockSet(buf, tile);
       if (failed(clsOrFail))
         return memcpyOp->emitOpError(
@@ -1042,7 +1049,9 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
       // AIE2's semaphore locks may share by air.channels
       for (size_t i = 0; i < lock_allocation_list.size(); i++) {
         if (tileIsMemTile) {
-          if (!lockRaceConditionFix) {
+          if (!lockRaceConditionFix ||
+              (bufferOp && (bufferOp->hasAttr(air::attrs::CountedLock) ||
+                            countedLockBuffers.contains(bufferOp)))) {
             // If memtile, and multiple bds reference the same buffer op, but
             // different DMA channels, then we assume the scenario of having two
             // bds, one S2MM and the other MM2S. This scenario is almost always
@@ -1058,8 +1067,12 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
                 channel.direction == AIE::DMAChannelDir::MM2S
                     ? AIE::DMAChannelDir::S2MM
                     : AIE::DMAChannelDir::MM2S;
-            // Case 1: Exact match on (channel symbol, physical channel number).
+            // Case 1: Exact match on (buffer, channel symbol, physical channel
+            // number). A channel that moves two buffers needs a lock pair per
+            // buffer: each buffer has its own writers, and a shared pair would
+            // let one buffer's writer signal a read of the other.
             if (air_chan &&
+                (std::get<0>(lock_allocation_list[i]) == bufferOp) &&
                 (std::get<1>(lock_allocation_list[i]) == air_chan) &&
                 (std::get<2>(lock_allocation_list[i]) == channel)) {
               // Reuse the existing lock entry by appending a new BD with the
@@ -1153,7 +1166,9 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
   }
   std::pair<int64_t, int64_t> init_pair;
   if (tileIsMemTile)
-    init_pair = getLockValuePair(target_model, bufferOp->getResult(0));
+    init_pair = lockRaceConditionFix && heldLockBuffers.contains(bufferOp)
+                    ? std::make_pair<int64_t, int64_t>(1, 1)
+                    : getLockValuePair(target_model, bufferOp->getResult(0));
   else
     init_pair =
         getLockValuePair(target_model, bufferOp->getResult(0), air_chan);

@@ -228,6 +228,15 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
           "the memtile DMA. Mutually exclusive with use-lock-race-condition-fix. "
           "Requires upstream to preserve the shared L2 buffer (typically via "
           "`air.no_split` on the alloc).">,
+    Option<"clUseLockRaceConditionFixAuto", "use-lock-race-condition-fix-auto",
+          "bool", /*default=*/"false",
+          "Pick a lock race fix per shared L2 buffer: "
+          "use-lock-race-condition-fix when each transfer on its many side has "
+          "a channel of its own, the plain counted lock when a channel moves "
+          "several of them, and the chain locks of "
+          "use-lock-race-condition-fix-v2 only for a buffer whose extra BDs do "
+          "not fit the memtile's BD pool. Mutually exclusive with the other "
+          "two.">,
     Option<"clStackSize", "stack-size", "unsigned", /*default=*/"2048",
           "Stack size in bytes to allocate per AIE core. Must be large enough "
           "to hold the full call chain stack depth including callee frames. "

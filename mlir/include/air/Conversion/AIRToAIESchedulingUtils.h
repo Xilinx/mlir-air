@@ -101,6 +101,10 @@ getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref,
 // option.
 bool isChainLockCandidate(AIE::BufferOp buf);
 
+// Whether `buf` gets the chain-lock template: it must be a candidate, and
+// either v2 is on for the whole design or the buffer carries air.chain_lock.
+bool usesChainLock(AIE::BufferOp buf, bool lockRaceConditionFixV2);
+
 // Classify a chain-lock buffer's access shape. Counts distinct memcpy
 // users (channel puts/gets) on the buffer's underlying memref result.
 // Writes/reads from the buffer's perspective:
@@ -304,6 +308,12 @@ public:
                          AIE::LockOp, AIE::LockOp>>
       lock_allocation_list;
   DenseMap<Value, std::pair<int, int>> passiveSideBufferUseCounters;
+  // Memtile buffers moved by one transfer on one side and several on the
+  // other, filled by generateDmaBdProgram. With a lock pair per transfer on
+  // the other side, the one transfer holds all their lock pairs, and each lock
+  // counts one transfer at a time (heldLockBuffers). Otherwise the buffer keeps
+  // one counted lock pair (countedLockBuffers).
+  DenseSet<Operation *> heldLockBuffers, countedLockBuffers;
   // v2: one chain-lock set per shared L2 buffer (keyed on aie.buffer op).
   DenseMap<Operation *, ChainLockSet> chain_lock_sets;
 };

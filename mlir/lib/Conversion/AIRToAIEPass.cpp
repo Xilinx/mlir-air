@@ -41,6 +41,9 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetOperations.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -2754,6 +2757,10 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     // the v2 daisy-chain, which over-serializes independent readers.
     if (alloc->hasAttr(air::attrs::NoChainLock))
       buffer->setAttr(air::attrs::NoChainLock, rewriter.getUnitAttr());
+    for (StringRef name : {air::attrs::ChainLock, air::attrs::CountedLock,
+                           air::attrs::L2BufferId})
+      if (Attribute attr = alloc->getAttr(name))
+        buffer->setAttr(name, attr);
 
     rewriter.replaceOp(alloc, buffer->getResults());
     bufferToMemtileMap[buffer] = tile;
@@ -4407,6 +4414,8 @@ static LogicalResult diagnoseComputeOutsideHerd(ModuleOp module) {
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 
   uint64_t BufferId = 0;
+  // Set while lowering in use-lock-race-condition-fix-auto mode.
+  bool lockRaceFixAuto = false;
 
 public:
   AIRToAIEPass() = default;
@@ -4848,6 +4857,8 @@ public:
   ///   the first put
   ///   - If there are more puts than gets: clone and insert dummy gets after
   ///   the last get
+  ///   - If the side with fewer ops has just one, insert nothing:
+  ///   generateDmaBdProgram adds that side's lock-only BDs around its transfer
   ///
   /// \param aieDevice The surrounding aie.device operation to walk.
   /// \param builder An OpBuilder to insert new operations.
@@ -4893,6 +4904,53 @@ public:
       auto &[puts, gets] = putsAndGets;
       if (puts.empty() || gets.empty())
         continue; // Skip buffers that only appear in one direction
+      // A chain-locked buffer orders its channels with its own locks and
+      // needs no balancing.
+      Operation *def = memref.getDefiningOp();
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(def))
+        for (auto alloc : exec.getOps<memref::AllocOp>())
+          def = alloc.getOperation();
+      if (def && def->hasAttr(air::attrs::ChainLock))
+        continue;
+      if (def && def->hasAttr(air::attrs::CountedLock))
+        continue;
+      // use-lock-race-condition-fix-auto balances a buffer only when each
+      // many-side transfer has a channel to itself; see
+      // air::attrs::CountedLock.
+      if (lockRaceFixAuto) {
+        SmallVector<air::ChannelInterface> manySide;
+        if (puts.size() < gets.size())
+          manySide.append(gets.begin(), gets.end());
+        else
+          manySide.append(puts.begin(), puts.end());
+        // Two transfers are on different endpoints only if that is provable:
+        // different channels, or a constant index that differs. Indices not
+        // known to differ may name the same endpoint.
+        auto differ = [](const air::ChannelEndpointKey &a,
+                         const air::ChannelEndpointKey &b) {
+          if (a.name != b.name)
+            return true;
+          if (a.constIndices.size() != b.constIndices.size())
+            return false;
+          for (auto it : llvm::zip(a.constIndices, b.constIndices))
+            if (std::get<0>(it) && std::get<1>(it) &&
+                *std::get<0>(it) != *std::get<1>(it))
+              return true;
+          return false;
+        };
+        SmallVector<air::ChannelEndpointKey> endpoints;
+        for (air::ChannelInterface op : manySide)
+          endpoints.push_back(air::getChannelEndpointKey(op));
+        bool channelEach = endpoints.size() > 1;
+        for (unsigned i = 0; i < endpoints.size() && channelEach; i++)
+          for (unsigned j = i + 1; j < endpoints.size() && channelEach; j++)
+            channelEach = differ(endpoints[i], endpoints[j]);
+        if (!channelEach) {
+          if (def)
+            def->setAttr(air::attrs::CountedLock, builder.getUnitAttr());
+          continue;
+        }
+      }
 
       unsigned numOpsToClone = 0;
       Operation *templateOp = nullptr;
@@ -4911,6 +4969,8 @@ public:
       } else {
         continue; // Already balanced
       }
+      if (std::min(puts.size(), gets.size()) == 1)
+        continue;
 
       // Constants for dummy sizes: zero offset, one element
       Value zeroIdx =
@@ -5276,6 +5336,10 @@ public:
           builder, loc,
           MemRefType::get(newMemrefShape, ty.getElementType(),
                           ty.getLayout().getAffineMap(), ty.getMemorySpace()));
+      for (StringRef name : {air::attrs::ChainLock, air::attrs::CountedLock,
+                             air::attrs::L2BufferId})
+        if (Attribute attr = allocOp->getAttr(name))
+          newMemref.getDefiningOp()->setAttr(name, attr);
       for (auto op : chanOpPartitions[key]) {
         int memrefOperandOffset =
             dyn_cast_if_present<air::AsyncOpInterface>(op.getOperation())
@@ -6793,6 +6857,74 @@ public:
                        AIE::TileLike tile, bool lockRaceConditionFix = false,
                        bool lockRaceConditionFixV2 = false) {
 
+    // Under use-lock-race-condition-fix, a memtile buffer moved by one transfer
+    // on one side and by several on the other, each with a lock pair of its
+    // own: the one transfer holds the lock pairs of all the others, so a slice
+    // cannot be refilled before it is read out, nor read before the buffer is
+    // filled. Maps each such buffer to the direction of its one transfer.
+    // Transfers on the same air.channel and DMA channel share a lock pair; if
+    // two of the several do, the buffer keeps one counted lock pair.
+    llvm::DenseMap<Operation *, AIE::DMAChannelDir> heldLockSide;
+    if constexpr (std::is_same_v<dmaAllocatorTy, air::MemTileDMAAllocator>) {
+      if (lockRaceConditionFix) {
+        // Per buffer: the (air.channel, DMA channel) of each transfer reading
+        // it (MM2S) and of each transfer writing it (S2MM).
+        using LockKey = std::pair<Operation *, int>;
+        llvm::MapVector<Operation *,
+                        std::pair<SmallVector<LockKey>, SmallVector<LockKey>>>
+            transfers;
+        for (auto &entry : dma_memcpys) {
+          for (Operation *op : entry.second) {
+            auto memcpyOp = cast<air::MemcpyInterface>(op);
+            auto buf = dmaAlloc.getBuffer(BufferId, nullptr, memcpyOp);
+            if (failed(buf))
+              continue;
+            Operation *chanDecl = op;
+            if (auto chanIf = dyn_cast<air::ChannelInterface>(op))
+              chanDecl = air::getChannelDeclarationThroughSymbol(chanIf);
+            LockKey key(chanDecl, entry.first.second);
+            auto &keys = transfers[buf.value().getOperation()];
+            if (entry.first.first == AIE::DMAChannelDir::MM2S)
+              keys.first.push_back(key);
+            else
+              keys.second.push_back(key);
+          }
+        }
+        for (auto &entry : transfers) {
+          auto buf = cast<AIE::BufferOp>(entry.first);
+          if (buf->hasAttr(air::attrs::CountedLock) ||
+              air::usesChainLock(buf, lockRaceConditionFixV2))
+            continue;
+          auto ownPairs = [](const SmallVector<LockKey> &keys) {
+            return keys.size() > 1 &&
+                   llvm::DenseSet<LockKey>(keys.begin(), keys.end()).size() ==
+                       keys.size();
+          };
+          const auto &reads = entry.second.first;
+          const auto &writes = entry.second.second;
+          if (reads.size() == 1 && ownPairs(writes))
+            heldLockSide[entry.first] = AIE::DMAChannelDir::MM2S;
+          else if (writes.size() == 1 && ownPairs(reads))
+            heldLockSide[entry.first] = AIE::DMAChannelDir::S2MM;
+          else if ((reads.size() == 1 && writes.size() > 1) ||
+                   (writes.size() == 1 && reads.size() > 1))
+            dmaAlloc.countedLockBuffers.insert(entry.first);
+        }
+        for (auto &entry : heldLockSide)
+          dmaAlloc.heldLockBuffers.insert(entry.first);
+      }
+    }
+    auto holdsLocks = [&](AIE::DMAChannelDir dir, Operation *op) {
+      if (heldLockSide.empty())
+        return false;
+      auto memcpyOp = cast<air::MemcpyInterface>(op);
+      auto buf = dmaAlloc.getBuffer(BufferId, nullptr, memcpyOp);
+      if (failed(buf))
+        return false;
+      auto it = heldLockSide.find(buf.value().getOperation());
+      return it != heldLockSide.end() && it->second == dir;
+    };
+
     llvm::MapVector<std::pair<AIE::DMAChannelDir, int>,
                     std::vector<Operation *>>
         dma_memcpys_sorted;
@@ -6816,13 +6948,21 @@ public:
           return chanIf && isVectorOfZeros(chanIf.getMixedSizes());
         });
       };
+      // A channel whose transfer holds another side's locks goes last too:
+      // those locks are allocated by the other side's channels.
+      auto goesLast = [&](AIE::DMAChannelDir dir,
+                          const std::vector<Operation *> &ops) {
+        return containsDummyBDs(ops) || llvm::any_of(ops, [&](Operation *op) {
+                 return holdsLocks(dir, op);
+               });
+      };
       // Sort MapVector.
       for (auto &entry : dma_memcpys) {
-        if (!containsDummyBDs(entry.second))
+        if (!goesLast(entry.first.first, entry.second))
           dma_memcpys_sorted.insert(std::move(entry));
       }
       for (auto &entry : dma_memcpys) {
-        if (containsDummyBDs(entry.second))
+        if (goesLast(entry.first.first, entry.second))
           dma_memcpys_sorted.insert(std::move(entry));
       }
     } else
@@ -6908,9 +7048,60 @@ public:
               lockRaceConditionFix, lockRaceConditionFixV2);
           if (failed(locks))
             return memcpyOp->emitOpError("failed to get lock for dma.");
+          // The other side's lock pairs this transfer holds, besides its own.
+          SmallVector<std::pair<AIE::LockOp, AIE::LockOp>> heldPairs;
+          Operation *bufOp = bufferOp.value().getOperation();
+          if (holdsLocks(dir, memcpyOp.getOperation())) {
+            for (auto &alloc : dmaAlloc.lock_allocation_list) {
+              auto pair =
+                  std::make_pair(std::get<3>(alloc), std::get<4>(alloc));
+              if (std::get<0>(alloc) == bufOp &&
+                  std::get<2>(alloc).direction != dir &&
+                  !llvm::is_contained(heldPairs, pair))
+                heldPairs.push_back(pair);
+            }
+            auto *own = llvm::find(heldPairs, locks.value());
+            if (own == heldPairs.end())
+              return memcpyOp->emitOpError(
+                  "moves a shared buffer in one transfer, but its lock pair is "
+                  "not one of the other side's");
+            heldPairs.erase(own);
+          }
+          // A lock-only BD: an acquire with a release of 0, or a release with
+          // the acquire disabled. A buffer descriptor has one field for each.
+          bool isMM2S = dir == AIE::DMAChannelDir::MM2S;
+          SmallVector<AIE::DMABDOp> lockOnlyBds;
+          auto emitLockOnlyBd = [&](std::pair<AIE::LockOp, AIE::LockOp> pair,
+                                    bool acquire) {
+            OpBuilder lb(bd->getTerminator());
+            auto acqOp = AIE::UseLockOp::create(
+                lb, loc, isMM2S ? pair.first : pair.second,
+                AIE::LockAction::AcquireGreaterEqual, 1);
+            if (!acquire)
+              acqOp.setAcqEnAttr(lb.getBoolAttr(false));
+            lockOnlyBds.push_back(AIE::DMABDOp::create(
+                lb, loc, bufferOp.value(), /*offset=*/0, /*len=*/0));
+            AIE::UseLockOp::create(lb, loc, isMM2S ? pair.second : pair.first,
+                                   AIE::LockAction::Release, acquire ? 0 : 1);
+          };
+          // Chain a new block after `bd` and continue in it.
+          auto appendBd = [&]() {
+            auto next = cast<AIE::NextBDOp>(bd->getTerminator());
+            Block *blk = new Block();
+            blk->insertBefore(end_bb);
+            auto nb = OpBuilder::atBlockEnd(blk);
+            AIE::NextBDOp::create(nb, loc, next.getDest());
+            next->setSuccessor(blk, 0);
+            bd = blk;
+          };
+          for (auto pair : heldPairs) {
+            emitLockOnlyBd(pair, /*acquire=*/true);
+            appendBd();
+          }
           auto newBD = generateDmaBd<bufferOpTy>(
               loc, dir, locks.value(), tile, targetModel, bd, memcpyOp,
-              bufferOp.value(), chan, lockRaceConditionFixV2);
+              bufferOp.value(), chan, lockRaceConditionFixV2,
+              dmaAlloc.heldLockBuffers.contains(bufOp));
           // Attribute task_id is necessary to ensure that BDs do not get shared
           // across tasks, otherwise MLIR may fold BDs and cause BD sharing
           // across tasks.
@@ -6919,15 +7110,21 @@ public:
           newBD.value()->setAttr(
               "task_id",
               IntegerAttr::get(IntegerType::get(b.getContext(), 32), taskId));
+          for (auto pair : heldPairs) {
+            appendBd();
+            emitLockOnlyBd(pair, /*acquire=*/false);
+          }
+          for (AIE::DMABDOp lockOnlyBd : lockOnlyBds)
+            lockOnlyBd->setAttr("task_id", newBD.value()->getAttr("task_id"));
 
           // v2 chain-lock 2-slot ping-pong: splice a twin BD (on a second
           // buffer instance, sharing the chain locks) between the primary BD
           // and its next_bd target, giving producer-consumer overlap on the
           // shared L2 buffer.
           if constexpr (std::is_same_v<bufferOpTy, AIE::BufferOp>) {
-            if (lockRaceConditionFixV2 && task_ops.size() == 1) {
+            if (task_ops.size() == 1) {
               AIE::BufferOp primaryBuf = bufferOp.value();
-              if (air::isChainLockCandidate(primaryBuf)) {
+              if (air::usesChainLock(primaryBuf, lockRaceConditionFixV2)) {
                 auto clsOrFail =
                     dmaAlloc.getOrCreateChainLockSet(primaryBuf, tile);
                 if (failed(clsOrFail))
@@ -7005,7 +7202,8 @@ public:
                 std::pair<AIE::LockOp, AIE::LockOp> locks, AIE::TileLike tile,
                 const AIE::AIETargetModel &targetModel, Block *bd,
                 air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan,
-                bool lockRaceConditionFixV2 = false) {
+                bool lockRaceConditionFixV2 = false,
+                bool unitLockCounts = false) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
@@ -7036,13 +7234,13 @@ public:
     // The 3-way (compute-tile) and chain-lock (memtile) cases are mutually
     // exclusive, so a chained selection is unambiguous.
     bool useChainLockCounts =
-        lockRaceConditionFixV2 &&
         isa_and_nonnull<AIE::BufferOp>(bufferOp.getOperation()) &&
-        air::isChainLockCandidate(cast<AIE::BufferOp>(bufferOp.getOperation()));
+        air::usesChainLock(cast<AIE::BufferOp>(bufferOp.getOperation()),
+                           lockRaceConditionFixV2);
     auto aie2LockVal =
         useSharedL1LockCounts
             ? std::pair<int64_t, int64_t>(*sharedLockCount, *sharedLockCount)
-        : useChainLockCounts
+        : useChainLockCounts || unitLockCounts
             ? std::make_pair<int64_t, int64_t>(1, 1)
             : air::getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
@@ -7314,7 +7512,9 @@ public:
       aieDmaBdOp = AIE::DMABDOp::create(
           b, loc, bufferOp, offset,
           cast<arith::ConstantIndexOp>(length.getDefiningOp()).value());
-    if (pktInfoAttr)
+    // A zero-length MM2S BD sends nothing, and the hardware leaves a packet
+    // header on one undefined.
+    if (pktInfoAttr && !(isMM2S && len == 0))
       aieDmaBdOp->setAttr("packet", pktInfoAttr);
     AIE::UseLockOp::create(b, loc, relLockOp, AIE::LockAction::Release,
                            lockRelValue);
@@ -8485,36 +8685,12 @@ public:
     // `aie-place-tiles` resolves them with full objfifo connectivity.
   }
 
-  void runOnOperation() override {
-
-    if (!clTestPatterns.empty()) {
-      runTestPatterns();
-      return;
-    }
-
-    auto module = getOperation();
-
-    // Before anything is emitted: an op no AIE core can run would otherwise
-    // be lowered into IR that looks fine and cannot execute.
-    if (failed(diagnoseComputeOutsideHerd(module))) {
-      signalPassFailure();
-      return;
-    }
-
+  // Lowers every herd of `module` into aie.device ops. v1 and v2 are the
+  // design-wide lock race fixes; per-buffer air.chain_lock marks apply on top.
+  LogicalResult lowerModule(ModuleOp module, bool v1, bool v2) {
     OpBuilder builder(module);
     builder.setInsertionPointToStart(module.getBody());
-
-    // v1/v2 mutual exclusion: they apply different fixes to overlapping
-    // problem areas, and combining them would interleave dummy-op
-    // insertion (v1) with chain-lock allocation (v2) in ways that don't
-    // have a coherent semantics. Force the user to pick one.
-    if (clUseLockRaceConditionFix && clUseLockRaceConditionFixV2) {
-      module.emitOpError(
-          "use-lock-race-condition-fix and use-lock-race-condition-fix-v2 are "
-          "mutually exclusive; enable at most one");
-      signalPassFailure();
-      return;
-    }
+    LogicalResult result = success();
 
     auto loc = builder.getUnknownLoc();
     auto module_meta = airrt::ModuleMetadataOp::create(builder, loc);
@@ -8531,8 +8707,7 @@ public:
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
       module.emitOpError("Invalid aie.device option");
-      signalPassFailure();
-      return;
+      return failure();
     }
     air::renumberMemcpyIfOps(&module.getRegion());
     AIRToAIEConversionOptions options = {
@@ -8542,14 +8717,13 @@ public:
         /* .emit_herd_lock = */ clEmitHerdLock,
         /* .generate_shim_dma = */ clGenerateShimDMA,
         /* .insert_trace_packet_flow = */ clInsertTracePacketFlow,
-        /* .use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
-        /* .use_lock_race_condition_fix_v2 = */ clUseLockRaceConditionFixV2,
+        /* .use_lock_race_condition_fix = */ v1,
+        /* .use_lock_race_condition_fix_v2 = */ v2,
         /* .output_elf = */ clOutputElf,
         /* .device = */ *device,
         /* .stack_size = */ clStackSize};
     if (failed(createAIEModulesAndOutlineCores(module, aie_devices, options))) {
-      signalPassFailure();
-      return;
+      return failure();
     }
     module.walk([](func::FuncOp f) { f->removeAttr("air.cloned_callee"); });
 
@@ -8583,8 +8757,7 @@ public:
         device.emitOpError(
             ": lowering of segments containing both dma copies and "
             "channels is not supported");
-        signalPassFailure();
-        return;
+        return failure();
       }
 
       air::ShimDMAAllocator shimDmaAlloc(device);
@@ -8614,8 +8787,7 @@ public:
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
         if (failed(
                 lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap))) {
-          signalPassFailure();
-          return;
+          return failure();
         }
         allocL1Buffers(device, BufferId);
       } else {
@@ -8639,15 +8811,13 @@ public:
                                  chan_renumber_reverse_map);
         if (failed(lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc,
                                                            device_options))) {
-          signalPassFailure();
-          return;
+          return failure();
         }
       }
 
       if (failed(lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc,
                                                       device_options))) {
-        signalPassFailure();
-        return;
+        return failure();
       }
 
       if (device_options.insert_trace_packet_flow)
@@ -8728,8 +8898,7 @@ public:
                   applyPatternsGreedily(func, std::move(shimUnrollPatterns)))) {
             func->emitOpError(
                 "failed to unroll scf.parallel around shim channel ops");
-            signalPassFailure();
-            return;
+            return failure();
           }
         }
 
@@ -8763,8 +8932,7 @@ public:
                                               chan_renumber_reverse_map,
                                               /*skipUnlinked=*/
                                               isSegmentUnrolled))) {
-          signalPassFailure();
-          return;
+          return failure();
         }
       }
 
@@ -8796,7 +8964,7 @@ public:
                           memref::AssumeAlignmentOp>();
       if (failed(applyPartialConversion(device, target,
                                         std::move(removepatterns))))
-        signalPassFailure();
+        result = failure();
 
       // Clean up dead memref.get_global/memref.global left by outlineAIECores
       // after DMA/channel lowering consumed their users.
@@ -8835,6 +9003,295 @@ public:
         }
       }
     }
+
+    return result;
+  }
+
+  // A memtile BD pool that use-lock-race-condition-fix pushed past its size.
+  // dummyBds counts, per air.l2_buffer_id, the lock-only BDs that fix added to
+  // the pool.
+  struct BdPoolOverflow {
+    unsigned used = 0;
+    unsigned capacity = 0;
+    llvm::MapVector<int64_t, unsigned> dummyBds;
+  };
+
+  static SmallVector<BdPoolOverflow> findBdPoolOverflows(ModuleOp module) {
+    SmallVector<BdPoolOverflow> overflows;
+    module.walk([&](AIE::MemTileDMAOp dma) {
+      const AIE::AIETargetModel &tm =
+          dma->getParentOfType<AIE::DeviceOp>().getTargetModel();
+      // Every memtile of a device has the same BD layout, so a tile that is
+      // not placed yet can use any memtile's coordinates.
+      std::optional<int> col, row;
+      if (auto tile = dyn_cast_if_present<AIE::TileLike>(
+              dma.getTile().getDefiningOp())) {
+        col = tile.tryGetCol();
+        row = tile.tryGetRow();
+      }
+      for (int c = 0; c < tm.columns() && !(col && row); c++)
+        for (int r = 0; r < tm.rows() && !(col && row); r++)
+          if (tm.isMemTile(c, r)) {
+            col = c;
+            row = r;
+          }
+      if (!col || !row)
+        return;
+
+      // Channels that can reach the same BD ids draw from one pool.
+      std::map<std::vector<bool>, BdPoolOverflow> pools;
+      uint32_t numBds = tm.getNumBDs(*col, *row);
+      dma.walk([&](AIE::DMAStartOp start) {
+        std::vector<bool> reachable(numBds);
+        for (uint32_t id = 0; id < numBds; id++)
+          reachable[id] =
+              tm.isBdChannelAccessible(*col, *row, id, start.getChannelIndex());
+        BdPoolOverflow &use = pools[reachable];
+        use.capacity = llvm::count(reachable, true);
+        llvm::SmallPtrSet<Block *, 8> visited;
+        for (Block *b = start.getDest(); b && visited.insert(b).second;) {
+          for (auto bd : b->getOps<AIE::DMABDOp>()) {
+            use.used++;
+            if (bd.getConstantLen() != 0)
+              continue;
+            Operation *buf = bd.getBuffer().getDefiningOp();
+            if (auto id = buf ? buf->getAttrOfType<IntegerAttr>(
+                                    air::attrs::L2BufferId)
+                              : nullptr)
+              use.dummyBds[id.getInt()]++;
+          }
+          auto next = dyn_cast<AIE::NextBDOp>(b->getTerminator());
+          b = next ? next.getDest() : nullptr;
+        }
+      });
+      for (auto &entry : pools)
+        if (entry.second.used > entry.second.capacity &&
+            !entry.second.dummyBds.empty())
+          overflows.push_back(std::move(entry.second));
+    });
+    return overflows;
+  }
+
+  // The air.l2_buffer_id of each buffer lowered with per-transfer locks whose
+  // BDs acquire a lock none of them releases, or release one none of them
+  // acquires. Dummy ops added before segment unrolling can outlive transfers
+  // that unrolling removes, leaving a lock pair no BD services.
+  static SmallVector<int64_t> findUnpairedLockBuffers(ModuleOp module) {
+    llvm::MapVector<int64_t, llvm::SmallPtrSet<Operation *, 8>> acquired,
+        released;
+    llvm::DenseSet<int64_t> perTransfer;
+    module.walk([&](AIE::MemTileDMAOp dma) {
+      dma.walk([&](AIE::DMABDOp bd) {
+        Operation *buf = bd.getBuffer().getDefiningOp();
+        auto id = buf ? buf->getAttrOfType<IntegerAttr>(air::attrs::L2BufferId)
+                      : nullptr;
+        if (!id)
+          return;
+        if (bd.getConstantLen() == 0)
+          perTransfer.insert(id.getInt());
+        for (auto useLock : bd->getBlock()->getOps<AIE::UseLockOp>()) {
+          auto value = useLock.getConstantValue();
+          if (failed(value) || *value == 0)
+            continue;
+          Operation *lock = useLock.getLock().getDefiningOp();
+          if (useLock.release())
+            released[id.getInt()].insert(lock);
+          else if (useLock.getAcqEn())
+            acquired[id.getInt()].insert(lock);
+        }
+      });
+    });
+    SmallVector<int64_t> unpaired;
+    for (int64_t id : perTransfer) {
+      auto &acq = acquired[id];
+      auto &rel = released[id];
+      if (!llvm::set_is_subset(acq, rel) || !llvm::set_is_subset(rel, acq))
+        unpaired.push_back(id);
+    }
+    llvm::sort(unpaired);
+    return unpaired;
+  }
+
+  // The memref Value the memcpys of `alloc` name.
+  static Value l2MemrefOf(memref::AllocOp alloc) {
+    if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc->getParentOp()))
+      return exec->getResult(1);
+    return alloc.getMemref();
+  }
+
+  // Why `alloc` cannot take the chain-lock template; empty if it can. The
+  // same shape test as air::isChainLockCandidate, on the unlowered alloc.
+  static std::string chainLockBlocker(memref::AllocOp alloc) {
+    int numWriters = 0, numReaders = 0;
+    air::classifyChainBuffer(l2MemrefOf(alloc), numWriters, numReaders);
+    if (numWriters > 1 && numReaders == 1)
+      return "";
+    if (numWriters == 1 && numReaders > 1)
+      return alloc->hasAttr(air::attrs::NoChainLock)
+                 ? "it carries air.no_chain_lock"
+                 : "";
+    return "it is neither a fan-in nor a fan-out buffer";
+  }
+
+  static void replaceModuleBody(ModuleOp dst, ModuleOp src) {
+    Block *body = dst.getBody();
+    for (Operation &op : *body)
+      op.dropAllReferences();
+    while (!body->empty())
+      body->back().erase();
+    body->getOperations().splice(body->end(), src.getBody()->getOperations());
+    dst->setAttrs(src->getAttrDictionary());
+    src.erase();
+  }
+
+  // use-lock-race-condition-fix-auto: lower with use-lock-race-condition-fix
+  // and, until the result is usable, lower again from the unlowered module:
+  // a buffer with an unserviced lock pair keeps the counted lock, and while a
+  // memtile BD pool overflows, the buffer adding the most lock-only BDs to it
+  // moves to the chain-lock template.
+  LogicalResult lowerModuleWithBdFallback(ModuleOp module) {
+    auto *ctx = module.getContext();
+    lockRaceFixAuto = true;
+    int64_t nextId = 0;
+    llvm::DenseMap<int64_t, memref::AllocOp> allocById;
+    module.walk([&](memref::AllocOp alloc) {
+      if (!air::isL2(alloc.getType()))
+        return;
+      alloc->setAttr(air::attrs::L2BufferId,
+                     IntegerAttr::get(IntegerType::get(ctx, 64), nextId++));
+    });
+    // The unlowered module every attempt starts from; air.chain_lock marks go
+    // onto its allocs.
+    ModuleOp unlowered = cast<ModuleOp>(module->clone());
+    unlowered.walk([&](memref::AllocOp alloc) {
+      if (auto id = alloc->getAttrOfType<IntegerAttr>(air::attrs::L2BufferId))
+        allocById[id.getInt()] = alloc;
+    });
+    uint64_t savedBufferId = BufferId;
+    auto savedPacketIDs = packetIDForChannelName;
+    auto savedClaimedPacketIDs = claimedPacketIDs;
+    int savedShimPacketID = nextGlobalShimPacketID;
+
+    llvm::DenseSet<int64_t> chained;
+    LogicalResult result = success();
+    while (true) {
+      if (failed(lowerModule(module, /*v1=*/true, /*v2=*/false))) {
+        result = failure();
+        break;
+      }
+      // A buffer whose per-transfer lock pairs did not each get both a
+      // producer and a consumer BD keeps the counted lock.
+      bool counted = false;
+      for (int64_t id : findUnpairedLockBuffers(module)) {
+        memref::AllocOp alloc = allocById.lookup(id);
+        if (!alloc || alloc->hasAttr(air::attrs::CountedLock)) {
+          mlir::emitError(alloc ? alloc.getLoc() : module.getLoc())
+              << "use-lock-race-condition-fix-auto left a lock of this "
+                 "buffer with no BD to release it";
+          result = failure();
+          break;
+        }
+        alloc->setAttr(air::attrs::CountedLock, UnitAttr::get(ctx));
+        counted = true;
+      }
+      if (failed(result))
+        break;
+      SmallVector<BdPoolOverflow> overflows;
+      if (!counted) {
+        overflows = findBdPoolOverflows(module);
+        if (overflows.empty())
+          break;
+      }
+
+      for (BdPoolOverflow &overflow : overflows) {
+        SmallVector<std::pair<int64_t, unsigned>> byCount(
+            overflow.dummyBds.begin(), overflow.dummyBds.end());
+        llvm::stable_sort(byCount,
+                          [](auto &a, auto &b) { return a.second > b.second; });
+        bool moved = false;
+        Location errLoc = module.getLoc();
+        std::string reasons;
+        llvm::raw_string_ostream os(reasons);
+        for (auto [id, count] : byCount) {
+          if (chained.contains(id))
+            continue;
+          memref::AllocOp alloc = allocById.lookup(id);
+          std::string blocker =
+              alloc ? chainLockBlocker(alloc) : "it was not found";
+          if (blocker.empty()) {
+            alloc->setAttr(air::attrs::ChainLock, UnitAttr::get(ctx));
+            chained.insert(id);
+            moved = true;
+            break;
+          }
+          if (alloc && reasons.empty())
+            errLoc = alloc.getLoc();
+          os << "\n  buffer at " << (alloc ? alloc.getLoc() : module.getLoc())
+             << " adds " << count << " BDs, but " << blocker;
+        }
+        if (!moved) {
+          mlir::emitError(errLoc)
+              << "a memtile BD pool needs " << overflow.used
+              << " BDs and holds " << overflow.capacity
+              << ", and use-lock-race-condition-fix-auto has no buffer left "
+                 "to move to chain locks:"
+              << reasons;
+          result = failure();
+          break;
+        }
+      }
+      if (failed(result))
+        break;
+
+      replaceModuleBody(module, cast<ModuleOp>(unlowered->clone()));
+      BufferId = savedBufferId;
+      packetIDForChannelName = savedPacketIDs;
+      claimedPacketIDs = savedClaimedPacketIDs;
+      nextGlobalShimPacketID = savedShimPacketID;
+    }
+    unlowered.erase();
+    module.walk([](Operation *op) { op->removeAttr(air::attrs::L2BufferId); });
+    lockRaceFixAuto = false;
+    return result;
+  }
+
+  void runOnOperation() override {
+
+    if (!clTestPatterns.empty()) {
+      runTestPatterns();
+      return;
+    }
+
+    auto module = getOperation();
+
+    // Before anything is emitted: an op no AIE core can run would otherwise
+    // be lowered into IR that looks fine and cannot execute.
+    if (failed(diagnoseComputeOutsideHerd(module))) {
+      signalPassFailure();
+      return;
+    }
+
+    // Each of the three options decides how every shared buffer is locked, so
+    // at most one may be on; auto mode makes the choice per buffer.
+    if (int(clUseLockRaceConditionFix) + int(clUseLockRaceConditionFixV2) +
+            int(clUseLockRaceConditionFixAuto) >
+        1) {
+      module.emitOpError(
+          "use-lock-race-condition-fix, use-lock-race-condition-fix-v2 and "
+          "use-lock-race-condition-fix-auto are mutually exclusive; enable at "
+          "most one");
+      signalPassFailure();
+      return;
+    }
+
+    if (clUseLockRaceConditionFixAuto) {
+      if (failed(lowerModuleWithBdFallback(module)))
+        signalPassFailure();
+      return;
+    }
+    if (failed(lowerModule(module, clUseLockRaceConditionFix,
+                           clUseLockRaceConditionFixV2)))
+      signalPassFailure();
   }
 
   // Packet-flow id tracking.
