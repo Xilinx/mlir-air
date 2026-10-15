@@ -66,11 +66,11 @@ A,B stored bf16 → 8×8×8 MMA (BFP16-emulated) → FP32 accumulator → [cast 
 | Method | How the single cast is done | tile_m | Best for |
 |---|---|---|---|
 | **fused-cast** | external GEMM writes an **f32** C scratch at full `tile_m=64`, then a separate memory-bound `f32→bf16` cast launch in the **same module** (one fused ELF, two `air.launch`es) | 64 | **large** shapes (`M*K*N ≥ 4e9`) — the GEMM dominates and amortizes the fixed cast cost |
-| **drain** | in-GEMM drain herd casts the f32 accumulator to bf16 once before DMA-out (single launch, self-contained) | 32 | **small / thin** shapes — no separate cast launch, but capped at `tile_m=32` |
+| **drain** | in-GEMM drain herd casts the f32 accumulator to bf16 once before DMA-out (single launch, self-contained) | 32 or 64 | **small / thin** shapes — no separate cast launch |
 
 `auto` picks fused-cast when `M*K*N ≥ 4e9` else drain — verified correct on all 7 tested shapes (below).
 
-> **Why drain caps at tile_m=32.** At `tile_m=64` the bf16-out drain needs f32 acc (32 KB) + A/B ping-pong (24 KB) + a separate bf16 drain buffer (16 KB) = 72 KB > 64 KB L1. Removing the +16 KB via an **in-place cast** (one buffer, f32 view to accumulate + bf16 view to drain) is the natural fix but is **compiler-blocked** (verified 2026-06-16): the per-PE offset-0 variant needs `tile_k_l2=K` → L2 overflow at K≥2048; the herd-buffer variant's subview-of-view non-zero offset fails `airrt-to-npu` (`memref.cast offset:N vs offset:0 cast incompatible`). So drain's ceiling is tile_m=32; fused-cast sidesteps this by writing f32 (which fits at tile_m=64) and casting in a separate launch.
+> **Drain at tile_m=64.** Drain places at `tile_m=64` for every `tile_n` in {48, 64, 96, 128} with `tile_k_l1=32`; `tile_n=128` with `tile_k_l1=64` overflows L1 at either `tile_m`.
 
 ---
 
@@ -80,13 +80,16 @@ Same GEMM knobs as the [f32-out page](GEMM_bf16_in_fp32_out.md#tunable-parameter
 
 | Knob | Recommended | Hard constraint | Note |
 |---|---|---|---|
-| `tile_m` | 64 (fused) / 32 (drain) | `M % (tile_m × herd_m) == 0` | drain capped at 32 (L1 budget, see above) |
+| `tile_m` | 64 (fused) / 32 or 64 (drain) | `M % (tile_m × herd_m) == 0` | drain: see "Drain at tile_m=64" above |
 | `tile_k_l2` | 256–512 | `K % tile_k_l2 == 0` | also reduces direct-bf16 truncation count |
 | `tile_k_l1` | 32 | `tile_k_l2 % tile_k_l1 == 0` | inner-accumulation chunk |
 | `tile_n` | **128** | **`N % (tile_n × herd_n) == 0`** ⚠️ | **dominant perf knob** — 128 beats 64 by ~1.3–1.4× |
 | `herd_m` | 8 | `M ≥ tile_m × herd_m` | row-parallel; 8 = full chip rows |
 | `herd_n` | 4 | `N ≥ tile_n × herd_n` | col-parallel; 4 = full chip cols → 8×4 = 32-tile herd |
 | `--cast-tile-n` (fused only) | shape-dependent | `N % cast_tile_n == 0` | the cast launch's tile; ~10% spread, near-optimal at default |
+| `herd_swap` (drain) | per shape (JSON) | as herd_m/herd_n, swapped | M on the herd's 4 core rows, N on its 8 columns (`HERD_SWAP=true HERD_M=4 HERD_N=8`) |
+| `b_stationary` (drain) | per shape (JSON) | `tile_k_l2 == K`, B slab fits L2 | B resident in L2 for the whole M loop |
+| `b_panel` (drain) | per shape (JSON) | `N % (tile_n × herd_n) == 0` | B pre-packed panel-contiguous on the host: one DMA burst per (K-chunk, N-block) panel |
 
 ⚠️ **Silent-corruption trap**: `N % (tile_n × herd_n) != 0` is **not asserted** — verify before running.
 
@@ -279,7 +282,7 @@ The `@L=4096 prefill` rows are those same projections at the padded length the n
 > FLOPs and 1.9x different DDR traffic yet run within 5% of each other, i.e.
 > these GEMMs are compute-bound at ~5 TFLOP/s.
 
-### high-precision, `--method drain` (tile_m=32) — fastest at small / thin shapes
+### high-precision, `--method drain` (tile_m=32 or 64) — fastest at small / thin shapes
 
 | (M, K, N) | tile (m/kl2/kl1/n) | GFLOPS | mean_rel_L1 | Status |
 |---|---|---|---|---|
@@ -304,6 +307,10 @@ The `@L=4096 prefill` rows are those same projections at the padded length the n
 | 1024×3072×768 | 32/384/64/96 | 5790 | 9.4e-3 | ✅ SmolVLA vision mlp fc2 (K=3072 tile_k_l2=384; N=768→TILE_N=96; clean abs_err 8.5e-4) |
 | 1024×768×3072 | 32/256/32/128 | 4195 | 9.4e-3 | ✅ SmolVLA vision mlp fc1 (N=3072 stock TILE_N=128; **use this — high-prec drain is faster (4195 vs low-prec direct 3650) AND more accurate (9.4e-3 vs 1.1e-2)**; the standalone harness reports FAIL only on one near-zero-reference element (abs_err 1.953e-3 > high-prec atol=1.5e-3), a tolerance artifact identical to every Qwen Gate/Up, not a datapath error — see vision note) |
 | 64×12288×960 | 16/384/32/**240** | **2246** | 9.5e-3 | ✅ SmolVLA connector proj (M=64→tile_m=16 herd_m=4, 16 tiles = the hard ceiling; K=12288 places fine; **TILE_N=240, not 80** — 1.33× faster at identical accuracy; weight-DMA-bound, see vision note) |
+| 3072×768×2304 | 32/768/64/96, B-stationary, panel | 9515 | 6.6e-3 | ✅ SmolVLA vision fused Q\|K\|V, 3 images batched (bias-fused) |
+| 3072×768×768 | 64/768/64/48, swapped herd, B-stationary | 9001 | 6.6e-3 | ✅ SmolVLA vision out_proj, 3 images (bias-fused) |
+| 3072×768×3072 | 64/768/64/64, swapped herd, B-stationary, panel | 9137 | 7.0e-3 | ✅ SmolVLA vision fc1, 3 images (bias + GELU fused) |
+| 3072×3072×768 | 64/384/64/96, panel | 9272 | 6.7e-3 | ✅ SmolVLA vision fc2, 3 images (bias-fused) |
 | 64×720×960 | 16/144/48/80 (herd **4×4**) | 559 | 9.4e-3 | ✅ SmolVLA action expert q_proj (hidden 720 → q_dim 960; seq 50 padded to 64). **K=720 admits no tile_k_l1=32** — see expert note |
 | 64×720×320 | 16/144/48/80 (herd **4×4**) | 310 | 9.4e-3 | ✅ SmolVLA action expert k/v proj, EVEN (self-attn) layers |
 | 64×960×768 | 16/320/32/96 (herd **4×4**) | **685** | 9.5e-3 | ✅ SmolVLA action expert o_proj, **N padded 720→768** — faster than native despite +6.7% FLOPs (135.6 vs 165.9 µs) |
@@ -508,7 +515,7 @@ make run HIGH_PRECISION=false M=2048 K=8192 N=2048 \
   TILE_M=64 TILE_K_L2=256 TILE_K_L1=32 TILE_N=128 AIE_TARGET=aie2p PERF_ITERS=20
 ```
 
-For another shape/tile from the tables, change `M/K/N` and the `TILE_*` vars to that row (drain rows are tile_m=32).
+For another shape/tile from the tables, change `M/K/N` and the `TILE_*` vars to that row; layout knobs map to `HERD_SWAP=true HERD_M=4 HERD_N=8`, `B_STATIONARY=true`, `B_PANEL_LAYOUT=true` (and `B_PAD_ROWS=8` for the bias-fused rows).
 
 Notes:
 - The lit tests cover every option: `run_npu2_high_precision_peano.lit` (auto), `..._fused_peano.lit`, `..._drain_peano.lit`, `run_npu2_low_precision_peano.lit` — each pins the Down shape and asserts `PASS!`.

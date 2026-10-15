@@ -45,7 +45,6 @@ from smolvla_fuse import (
     LN_ROWS,
     LNQKV_TILING_OVERRIDE,
     OFFN_TILING_OVERRIDE,
-    FA_Q_IN_SEGMENT,
     FA_QK_PRETRANSPOSE,
     ZERO_COPY,
 )
@@ -110,16 +109,10 @@ def _gelu_backend():
     }
 
 
-# SMOLVLA_FA_QSEG (default 1; 0 = launch-grid axis) runs the FlashAttention q-block loop
-# inside the segment instead of as a launch-grid axis: the same design and microkernels (bit-identical output), but
-# head_groups * n_images sequential waves instead of q_blocks * head_groups * n_images.
-# Read once in smolvla_fuse.py so the compile path here and the cache-dir naming in
-# smolvla_runtime.py can never disagree on which schedule is baked into the ELF.
-_FA_Q_IN_SEGMENT = FA_Q_IN_SEGMENT
 _FA_QK_PRETRANSPOSE = FA_QK_PRETRANSPOSE
 
 
-def _attn_backend(n_images=1):
+def _attn_backend(n_images=1, extra_launch_dims=0):
     """FlashAttention ELF kwargs. `runtime_loop_tiling_sizes` needs ONE ENTRY
     PER LAUNCH DIMENSION: batching images adds a third axis, and with only two
     entries that axis survives as an scf.for in the runtime sequence, which
@@ -129,7 +122,8 @@ def _attn_backend(n_images=1):
         "verbose": False,
         "omit_while_true_loop": False,
         "omit_pingpong": "all",
-        "runtime_loop_tiling_sizes": [1, 1, 1] if n_images > 1 else [1, 1],
+        "runtime_loop_tiling_sizes": [1]
+        * ((3 if n_images > 1 else 2) + extra_launch_dims),
         "output_format": "elf",
         "instance_name": "attention_bf16",
     }
@@ -244,48 +238,52 @@ def _compile_flash_attn(cache, config, seq_len, fa_bfp16, fused_qkv=False, n_ima
     )
     from air_examples.llms.shared.infra.external_kernels import compile_attn_npu2
 
+    from air_examples.kernel_registry.registry_lookup import fa_config
+
     n_heads = config.n_heads
     n_kv_heads = config.n_heads  # MHA
     head_dim = config.head_dim
-    num_heads_per_unroll = 2
-    num_q_tiles = 4
-    assert n_heads % num_heads_per_unroll == 0
-    assert num_heads_per_unroll * num_q_tiles <= 8
+    sch = fa_config(seq_len, seq_len, n_heads, n_kv_heads, head_dim, False, n_images)[
+        "schedule"
+    ]
     print(
         f"  Compiling flash_attn: non-causal, seq={seq_len}, {n_heads}Q/{n_kv_heads}KV, "
-        f"head_dim={head_dim}, hpu={num_heads_per_unroll}"
+        f"head_dim={head_dim}, registry schedule {sch}"
     )
     attn_mod = build_attn(
         lk=seq_len,
         lkp=head_dim,
         lq=seq_len,
-        lqp=256,
+        lqp=sch["lqp"],
         dk=head_dim,
         dv=head_dim,
-        num_q_tiles=num_q_tiles,
-        num_cascade_stages=4,
+        num_q_tiles=sch["num_q_tiles"],
+        num_cascade_stages=sch["num_cascade_stages"],
         num_heads=n_heads,
         num_kv_heads=n_kv_heads,
         causal=False,
-        num_heads_per_unroll=num_heads_per_unroll,
+        num_heads_per_unroll=sch["num_heads_per_unroll"],
         fused_qkv=fused_qkv,
         n_images=n_images,
-        q_in_segment=_FA_Q_IN_SEGMENT,
+        q_in_segment=sch["q_in_segment"],
+        fused_merge=sch["fused_merge"],
+        heads_rows=sch["heads_rows"],
+        q_launch=sch["q_launch"],
     )
     compile_attn_npu2(
         head_dim=head_dim,
         bfp16=fa_bfp16,
         force=True,
-        pretranspose_k=_FA_QK_PRETRANSPOSE,
-    )
-    print(
-        f"    (FA microkernel BFP16={fa_bfp16}, q loop in segment={_FA_Q_IN_SEGMENT}, "
-        f"K pre-transpose={_FA_QK_PRETRANSPOSE})"
+        pretranspose_k=sch["qk_pretranspose"],
+        fused_merge=sch["fused_merge"],
     )
     cache.compile_and_cache(
         "flash_attn",
         attn_mod,
-        {**_attn_backend(n_images), "verbose": cache.verbose},
+        {
+            **_attn_backend(n_images, extra_launch_dims=int(sch["q_launch"] > 1)),
+            "verbose": cache.verbose,
+        },
     )
 
 
@@ -360,7 +358,6 @@ def _compile_fused_kernels(
     from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
     from air_examples.llms.shared.builders.gemm_builder import (
         gemm_registry_config,
-        disambiguate_by_tile_n,
         BIAS_PAD_ROWS,
     )
     from smolvla_vision_builders import build_vit_ln_qkv_module, build_vit_o_ffn_module
@@ -383,14 +380,12 @@ def _compile_fused_kernels(
     # post_layernorm and the connector stay at the per-image length.
     batch_len = seq_len * n_images
 
-    # Compile every distinct tile_n-keyed drain mm.o the two ELFs link.
-    o_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
-    g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
-    d_spec = gemm_registry_config(seq_len, hidden_dim, emb_dim, "bf16", "high")
-    o_spec, g_spec, d_spec = disambiguate_by_tile_n([o_spec, g_spec, d_spec])
+    # Compile every distinct tile-keyed drain mm.o the two ELFs link.
+    from smolvla_vision_builders import vit_gemm_specs
+
     _needed = {}
-    for s in (o_spec, g_spec, d_spec):
-        _needed[s["sym_suffix"]] = s
+    for s in vit_gemm_specs(batch_len, emb_dim, hidden_dim).values():
+        _needed.setdefault(s["sym_suffix"], s)
     for s in _needed.values():
         print(
             f"  Compiling {s['obj']} (drain tile_m={s['tile_m']} tile_n={s['tile_n']})"
@@ -867,13 +862,12 @@ def run_vit_block_fused(
     ln_key = f"vit_ln_qkv_L{layer_idx}"
     if ln_key not in _cache:
         from air_examples.llms.shared.builders.gemm_builder import (
-            gemm_registry_config,
             repack_gemm_b_with_bias,
         )
+        from smolvla_vision_builders import vit_gemm_spec, pack_b
 
-        # Registry lookups use the PER-IMAGE length (the measured shape); tiles
-        # do not depend on M, so they carry over to the batched build.
-        _tk1 = gemm_registry_config(reg_len, emb, emb, "bf16", "high")["tile_k_l1"]
+        _qkv_spec = vit_gemm_spec(seq_len, emb, 3 * emb)
+        _tk1 = _qkv_spec["tile_k_l1"]
 
         def _wb(w, b):
             return repack_gemm_b_with_bias(
@@ -885,13 +879,18 @@ def run_vit_block_fused(
         # [Wq|Wk|Wv] column-concatenated: the three GEMMs are one wide GEMM.
         # Packing pads along K-rows, so hstacking already-packed blocks keeps
         # every block's pad rows aligned.
+        _qkv_b = pack_b(  # arg3 [Wq|Wk|Wv] weight+bias packed
+            np.ascontiguousarray(
+                np.hstack([_wb(lw.wq, lw.bq), _wb(lw.wk, lw.bk), _wb(lw.wv, lw.bv)])
+            ),
+            _qkv_spec,
+            emb,
+        )
         _cache[ln_key] = [
             None,  # arg0 x_in (dynamic)
             _pack(lw.ln1_w, lw.ln1_b),  # arg1 LN1 param
             z2(emb),  # arg2 normed
-            np.ascontiguousarray(  # arg3 [Wq|Wk|Wv] weight+bias packed
-                np.hstack([_wb(lw.wq, lw.bq), _wb(lw.wk, lw.bk), _wb(lw.wv, lw.bv)])
-            ),
+            _qkv_b,
             z2(3 * emb),  # arg4 [Q|K|V] (out)
         ]
     ln_args = _cache[ln_key]
@@ -951,25 +950,20 @@ def run_vit_block_fused(
     offn_key = f"vit_o_ffn_L{layer_idx}"
     if offn_key not in _cache:
         from air_examples.llms.shared.builders.gemm_builder import (
-            disambiguate_by_tile_n,
-            gemm_registry_config,
             repack_gemm_b_with_bias,
         )
+        from smolvla_vision_builders import vit_gemm_specs, pack_b
 
-        _o, _g, _d = disambiguate_by_tile_n(
-            [
-                dict(gemm_registry_config(reg_len, emb, emb, "bf16", "high")),
-                dict(gemm_registry_config(reg_len, emb, hidden, "bf16", "high")),
-                dict(gemm_registry_config(reg_len, hidden, emb, "bf16", "high")),
-            ]
-        )
+        _sp = vit_gemm_specs(seq_len, emb, hidden)
+        _o, _g, _d = _sp["o"], _sp["fc1"], _sp["fc2"]
 
         def _wb(w, b, rows, cols, spec):
-            return repack_gemm_b_with_bias(
+            packed = repack_gemm_b_with_bias(
                 np.asarray(w, dtype=bfloat16).reshape(rows, cols),
                 np.asarray(b, dtype=bfloat16).reshape(cols),
                 spec["tile_k_l1"],
             )
+            return pack_b(packed, spec, rows)
 
         _cache[offn_key] = [
             None,  # arg0 attn (dynamic)

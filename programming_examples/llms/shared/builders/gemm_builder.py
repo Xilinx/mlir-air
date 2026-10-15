@@ -94,22 +94,37 @@ def gemm_registry_config(m, k, n, output_dtype="bf16", precision="high"):
     from air_examples.kernel_registry.registry_lookup import gemm_config
 
     cfg = gemm_config(m, k, n, output_dtype, precision)
-    return _spec_with_tiles(cfg["method"], cfg["tile"])
+    return _spec_with_tiles(cfg["method"], cfg["tile"], cfg)
 
 
-def _spec_with_tiles(method, tile):
+def _spec_with_tiles(method, tile, layout=None):
     """Merge a method's build spec with the registry tile (a named dict
-    {tile_m, tile_k_l2, tile_k_l1, tile_n}). tile_m is dictated by the method
-    (drain=32 / fused=64) and matches spec['tile_m'] (asserted for safety).
+    {tile_m, tile_k_l2, tile_k_l1, tile_n}) and layout knobs (herd_swap,
+    b_stationary, b_panel; absent = False). fused-cast's tile_m is fixed by its
+    cast launch; drain takes the registry's tile_m.
     """
     spec = dict(gemm_method_spec(method))
-    assert (
-        tile["tile_m"] == spec["tile_m"]
-    ), f"registry tile_m={tile['tile_m']} != method '{method}' tile_m={spec['tile_m']}"
+    if method == "fused-cast":
+        assert (
+            tile["tile_m"] == spec["tile_m"]
+        ), f"registry tile_m={tile['tile_m']} != fused-cast tile_m={spec['tile_m']}"
     spec["method"] = method
+    spec["tile_m"] = tile["tile_m"]
+    if method == "drain" and tile["tile_m"] != _DRAIN_TILE_M:
+        # mm.o bakes DIM_M in, so a non-default drain tile_m gets its own object
+        sfx = f"_m{tile['tile_m']}d"
+        spec["sym_suffix"], spec["obj"] = sfx, f"mm{sfx}.o"
+        spec["build_kwargs"] = dict(
+            spec["build_kwargs"], sym_suffix=sfx, link_with_name=spec["obj"]
+        )
     spec["tile_k_l2"] = tile["tile_k_l2"]
     spec["tile_k_l1"] = tile["tile_k_l1"]
     spec["tile_n"] = tile["tile_n"]
+    layout = layout or {}
+    for k in ("herd_swap", "b_stationary", "b_panel"):
+        spec[k] = bool(layout.get(k, False))
+    if spec["herd_swap"]:
+        spec["build_kwargs"] = dict(spec["build_kwargs"], herd_swap=True)
     return spec
 
 
@@ -193,7 +208,7 @@ def disambiguate_by_tile_n(specs):
     for s in specs:
         if len(tile_n_by_method[s["method"]]) > 1:
             s = dict(s)
-            tag = "m32" if s["method"] == "drain" else "m64"
+            tag = s["sym_suffix"].lstrip("_")
             suffix = f"_{tag}_n{s['tile_n']}"
             obj = f"mm_{tag}_n{s['tile_n']}.o"
             s["sym_suffix"] = suffix

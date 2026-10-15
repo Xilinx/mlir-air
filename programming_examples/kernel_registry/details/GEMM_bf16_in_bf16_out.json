@@ -5397,6 +5397,110 @@
       "best": {
         "high": "fused-cast"
       }
+    },
+    {
+      "M": 3072,
+      "K": 768,
+      "N": 2304,
+      "used_by": "SmolVLA vision fused Q|K|V (3 images)",
+      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B.",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 768,
+            "tile_k_l1": 64,
+            "tile_n": 96
+          },
+          "herd_swap": false,
+          "b_stationary": true,
+          "b_panel": true,
+          "gflops": 9515,
+          "mean_rel_L1": 0.0066,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 3072,
+      "K": 768,
+      "N": 768,
+      "used_by": "SmolVLA vision out_proj (3 images)",
+      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B.",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 768,
+            "tile_k_l1": 64,
+            "tile_n": 48
+          },
+          "herd_swap": true,
+          "b_stationary": true,
+          "b_panel": false,
+          "gflops": 9001,
+          "mean_rel_L1": 0.0066,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 3072,
+      "K": 768,
+      "N": 3072,
+      "used_by": "SmolVLA vision mlp fc1 (3 images)",
+      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B + GELU epilogue.",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 768,
+            "tile_k_l1": 64,
+            "tile_n": 64
+          },
+          "herd_swap": true,
+          "b_stationary": true,
+          "b_panel": true,
+          "gflops": 9137,
+          "mean_rel_L1": 0.007,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 3072,
+      "K": 3072,
+      "N": 768,
+      "used_by": "SmolVLA vision mlp fc2 (3 images)",
+      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B.",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 64,
+            "tile_k_l2": 384,
+            "tile_k_l1": 64,
+            "tile_n": 96
+          },
+          "herd_swap": false,
+          "b_stationary": false,
+          "b_panel": true,
+          "gflops": 9272,
+          "mean_rel_L1": 0.0067,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
     }
   ]
 }

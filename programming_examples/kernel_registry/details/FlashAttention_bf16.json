@@ -1,0 +1,570 @@
+{
+  "_comment": "Machine-readable FlashAttention (bf16, attn_npu2.o, seq-first builder attn_npu2_seqfirst.py) schedules on NPU2, read via kernel_registry/registry_lookup.py fa_config(). Keyed by the exact attention shape. schedule fields are build_launch kwargs; heads_rows > 1 puts head groups on the herd's rows (columns = (num_heads_per_unroll / heads_rows) * num_q_tiles <= 8, rows = heads_rows * num_cascade_stages <= 4); q_launch splits the q blocks over launch iterations to stay within 16 shim BDs. fused_merge needs attn_npu2.o built with fused_merge (-DFUSED_MERGE) and qk_pretranspose (-DQK_PRETRANSPOSE). latency is the whole call (all heads, all images), median of 3, turbo pmode. Measured 2026-10-14, main f9457c51.",
+  "kernel": "FlashAttention",
+  "target": "npu2",
+  "measured": "2026-10",
+  "shapes": [
+    {
+      "lq": 512,
+      "lk": 512,
+      "heads": 12,
+      "kv_heads": 12,
+      "dk": 64,
+      "causal": false,
+      "n_images": 1,
+      "schedule": {
+        "q_in_segment": true,
+        "num_q_tiles": 4,
+        "lqp": 256,
+        "num_heads_per_unroll": 4,
+        "num_cascade_stages": 2,
+        "heads_rows": 2,
+        "q_launch": 1,
+        "fused_merge": true,
+        "qk_pretranspose": true
+      },
+      "latency_us": 958.1,
+      "gflops": 841,
+      "mean_rel_L1": 0.0426,
+      "alternatives": [
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 4,
+            "lqp": 256,
+            "num_heads_per_unroll": 4,
+            "num_cascade_stages": 2,
+            "heads_rows": 2,
+            "q_launch": 2,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 993.0,
+          "gflops": 811,
+          "mean_rel_L1": 0.0426
+        },
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 4,
+            "lqp": 256,
+            "num_heads_per_unroll": 2,
+            "num_cascade_stages": 4,
+            "heads_rows": 1,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 1075.6,
+          "gflops": 749,
+          "mean_rel_L1": 0.04522
+        }
+      ]
+    },
+    {
+      "lq": 512,
+      "lk": 512,
+      "heads": 16,
+      "kv_heads": 16,
+      "dk": 64,
+      "causal": false,
+      "n_images": 1,
+      "schedule": {
+        "q_in_segment": true,
+        "num_q_tiles": 4,
+        "lqp": 256,
+        "num_heads_per_unroll": 4,
+        "num_cascade_stages": 2,
+        "heads_rows": 2,
+        "q_launch": 1,
+        "fused_merge": true,
+        "qk_pretranspose": true
+      },
+      "latency_us": 1065.8,
+      "gflops": 1007,
+      "mean_rel_L1": 0.04262,
+      "alternatives": [
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 4,
+            "lqp": 256,
+            "num_heads_per_unroll": 4,
+            "num_cascade_stages": 2,
+            "heads_rows": 2,
+            "q_launch": 2,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 1126.3,
+          "gflops": 953,
+          "mean_rel_L1": 0.04262
+        },
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 4,
+            "lqp": 256,
+            "num_heads_per_unroll": 2,
+            "num_cascade_stages": 4,
+            "heads_rows": 1,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 1339.2,
+          "gflops": 802,
+          "mean_rel_L1": 0.04508
+        }
+      ]
+    },
+    {
+      "lq": 1024,
+      "lk": 1024,
+      "heads": 12,
+      "kv_heads": 12,
+      "dk": 64,
+      "causal": false,
+      "n_images": 1,
+      "schedule": {
+        "q_in_segment": true,
+        "num_q_tiles": 4,
+        "lqp": 256,
+        "num_heads_per_unroll": 4,
+        "num_cascade_stages": 2,
+        "heads_rows": 2,
+        "q_launch": 2,
+        "fused_merge": true,
+        "qk_pretranspose": true
+      },
+      "latency_us": 1416.4,
+      "gflops": 2274,
+      "mean_rel_L1": 0.04575,
+      "alternatives": [
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 8,
+            "lqp": 512,
+            "num_heads_per_unroll": 2,
+            "num_cascade_stages": 2,
+            "heads_rows": 2,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 1471.0,
+          "gflops": 2190,
+          "mean_rel_L1": 0.04575
+        },
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 4,
+            "lqp": 256,
+            "num_heads_per_unroll": 2,
+            "num_cascade_stages": 4,
+            "heads_rows": 1,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 1543.4,
+          "gflops": 2087,
+          "mean_rel_L1": 0.04875
+        }
+      ]
+    },
+    {
+      "lq": 1024,
+      "lk": 1024,
+      "heads": 12,
+      "kv_heads": 12,
+      "dk": 64,
+      "causal": false,
+      "n_images": 3,
+      "schedule": {
+        "q_in_segment": true,
+        "num_q_tiles": 4,
+        "lqp": 256,
+        "num_heads_per_unroll": 4,
+        "num_cascade_stages": 2,
+        "heads_rows": 2,
+        "q_launch": 2,
+        "fused_merge": true,
+        "qk_pretranspose": true
+      },
+      "latency_us": 2722.2,
+      "gflops": 3550,
+      "mean_rel_L1": 0.04518,
+      "alternatives": [
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 8,
+            "lqp": 512,
+            "num_heads_per_unroll": 2,
+            "num_cascade_stages": 2,
+            "heads_rows": 2,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 2850.6,
+          "gflops": 3390,
+          "mean_rel_L1": 0.04518
+        },
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 4,
+            "lqp": 256,
+            "num_heads_per_unroll": 2,
+            "num_cascade_stages": 4,
+            "heads_rows": 1,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 3114.9,
+          "gflops": 3102,
+          "mean_rel_L1": 0.04812
+        }
+      ],
+      "used_by": "SmolVLA vision self-attention (SigLIP, 3 cameras)"
+    },
+    {
+      "lq": 1024,
+      "lk": 1024,
+      "heads": 16,
+      "kv_heads": 16,
+      "dk": 64,
+      "causal": false,
+      "n_images": 1,
+      "schedule": {
+        "q_in_segment": true,
+        "num_q_tiles": 4,
+        "lqp": 256,
+        "num_heads_per_unroll": 4,
+        "num_cascade_stages": 2,
+        "heads_rows": 2,
+        "q_launch": 2,
+        "fused_merge": true,
+        "qk_pretranspose": true
+      },
+      "latency_us": 1696.2,
+      "gflops": 2532,
+      "mean_rel_L1": 0.04515,
+      "alternatives": [
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 8,
+            "lqp": 512,
+            "num_heads_per_unroll": 2,
+            "num_cascade_stages": 2,
+            "heads_rows": 2,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 1820.3,
+          "gflops": 2360,
+          "mean_rel_L1": 0.04515
+        },
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 8,
+            "lqp": 512,
+            "num_heads_per_unroll": 1,
+            "num_cascade_stages": 4,
+            "heads_rows": 1,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 2264.1,
+          "gflops": 1897,
+          "mean_rel_L1": 0.04787
+        }
+      ]
+    },
+    {
+      "lq": 2048,
+      "lk": 2048,
+      "heads": 12,
+      "kv_heads": 12,
+      "dk": 64,
+      "causal": false,
+      "n_images": 1,
+      "schedule": {
+        "q_in_segment": true,
+        "num_q_tiles": 4,
+        "lqp": 256,
+        "num_heads_per_unroll": 4,
+        "num_cascade_stages": 2,
+        "heads_rows": 2,
+        "q_launch": 4,
+        "fused_merge": true,
+        "qk_pretranspose": true
+      },
+      "latency_us": 2830.4,
+      "gflops": 4552,
+      "mean_rel_L1": 0.04793,
+      "alternatives": [
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 8,
+            "lqp": 512,
+            "num_heads_per_unroll": 2,
+            "num_cascade_stages": 2,
+            "heads_rows": 2,
+            "q_launch": 2,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 2902.3,
+          "gflops": 4440,
+          "mean_rel_L1": 0.04793
+        },
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 4,
+            "lqp": 256,
+            "num_heads_per_unroll": 2,
+            "num_cascade_stages": 4,
+            "heads_rows": 1,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 3195.5,
+          "gflops": 4032,
+          "mean_rel_L1": 0.05133
+        }
+      ]
+    },
+    {
+      "lq": 2048,
+      "lk": 2048,
+      "heads": 16,
+      "kv_heads": 16,
+      "dk": 64,
+      "causal": false,
+      "n_images": 1,
+      "schedule": {
+        "q_in_segment": true,
+        "num_q_tiles": 8,
+        "lqp": 512,
+        "num_heads_per_unroll": 2,
+        "num_cascade_stages": 2,
+        "heads_rows": 2,
+        "q_launch": 1,
+        "fused_merge": true,
+        "qk_pretranspose": true
+      },
+      "latency_us": 3865.4,
+      "gflops": 4445,
+      "mean_rel_L1": 0.047,
+      "alternatives": [
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 4,
+            "lqp": 256,
+            "num_heads_per_unroll": 4,
+            "num_cascade_stages": 2,
+            "heads_rows": 2,
+            "q_launch": 4,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 3940.4,
+          "gflops": 4360,
+          "mean_rel_L1": 0.047
+        },
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 8,
+            "lqp": 512,
+            "num_heads_per_unroll": 1,
+            "num_cascade_stages": 4,
+            "heads_rows": 1,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 4561.9,
+          "gflops": 3766,
+          "mean_rel_L1": 0.05058
+        }
+      ]
+    },
+    {
+      "lq": 4096,
+      "lk": 4096,
+      "heads": 12,
+      "kv_heads": 12,
+      "dk": 64,
+      "causal": false,
+      "n_images": 1,
+      "schedule": {
+        "q_in_segment": true,
+        "num_q_tiles": 8,
+        "lqp": 512,
+        "num_heads_per_unroll": 2,
+        "num_cascade_stages": 2,
+        "heads_rows": 2,
+        "q_launch": 2,
+        "fused_merge": true,
+        "qk_pretranspose": true
+      },
+      "latency_us": 8045.2,
+      "gflops": 6406,
+      "mean_rel_L1": 0.04821,
+      "alternatives": [
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 8,
+            "lqp": 512,
+            "num_heads_per_unroll": 2,
+            "num_cascade_stages": 2,
+            "heads_rows": 2,
+            "q_launch": 4,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 8152.4,
+          "gflops": 6322,
+          "mean_rel_L1": 0.04821
+        },
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 8,
+            "lqp": 512,
+            "num_heads_per_unroll": 1,
+            "num_cascade_stages": 4,
+            "heads_rows": 1,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 8749.4,
+          "gflops": 5891,
+          "mean_rel_L1": 0.05199
+        }
+      ]
+    },
+    {
+      "lq": 4096,
+      "lk": 4096,
+      "heads": 16,
+      "kv_heads": 16,
+      "dk": 64,
+      "causal": false,
+      "n_images": 1,
+      "schedule": {
+        "q_in_segment": true,
+        "num_q_tiles": 8,
+        "lqp": 512,
+        "num_heads_per_unroll": 2,
+        "num_cascade_stages": 2,
+        "heads_rows": 2,
+        "q_launch": 2,
+        "fused_merge": true,
+        "qk_pretranspose": true
+      },
+      "latency_us": 10848.7,
+      "gflops": 6334,
+      "mean_rel_L1": 0.04913,
+      "alternatives": [
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 8,
+            "lqp": 512,
+            "num_heads_per_unroll": 2,
+            "num_cascade_stages": 2,
+            "heads_rows": 2,
+            "q_launch": 4,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 11062.6,
+          "gflops": 6212,
+          "mean_rel_L1": 0.04913
+        },
+        {
+          "schedule": {
+            "q_in_segment": true,
+            "num_q_tiles": 8,
+            "lqp": 512,
+            "num_heads_per_unroll": 1,
+            "num_cascade_stages": 4,
+            "heads_rows": 1,
+            "q_launch": 1,
+            "fused_merge": true,
+            "qk_pretranspose": true
+          },
+          "latency_us": 12229.5,
+          "gflops": 5619,
+          "mean_rel_L1": 0.05269
+        }
+      ]
+    },
+    {
+      "lq": 2048,
+      "lk": 2048,
+      "heads": 32,
+      "kv_heads": 8,
+      "dk": 64,
+      "causal": true,
+      "n_images": 1,
+      "schedule": {
+        "q_in_segment": false,
+        "num_q_tiles": 4,
+        "lqp": 256,
+        "num_heads_per_unroll": 2,
+        "num_cascade_stages": 4,
+        "heads_rows": 1,
+        "q_launch": 1,
+        "fused_merge": false,
+        "qk_pretranspose": false
+      },
+      "latency_us": 13792.2,
+      "gflops": 1246,
+      "mean_rel_L1": 0.03896,
+      "alternatives": []
+    },
+    {
+      "lq": 2048,
+      "lk": 2048,
+      "heads": 16,
+      "kv_heads": 8,
+      "dk": 128,
+      "causal": true,
+      "n_images": 1,
+      "schedule": {
+        "q_in_segment": false,
+        "num_q_tiles": 4,
+        "lqp": 256,
+        "num_heads_per_unroll": 2,
+        "num_cascade_stages": 4,
+        "heads_rows": 1,
+        "q_launch": 1,
+        "fused_merge": false,
+        "qk_pretranspose": false
+      },
+      "latency_us": 15217.7,
+      "gflops": 1129,
+      "mean_rel_L1": 0.0378,
+      "alternatives": []
+    }
+  ]
+}
