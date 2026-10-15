@@ -74,12 +74,9 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
           const T_in *__restrict pB2 = pB + (j + 1) * colA * MMUL::size_B;
 
           aie::vector<T_out, MMUL::size_C> acc_C00, acc_C01, acc_C10, acc_C11;
-          if constexpr (zero_c) {
-            // C is written, not accumulated: no zero-fill pass and no C loads
-            acc_C00 = aie::zeros<T_out, MMUL::size_C>();
-            acc_C01 = aie::zeros<T_out, MMUL::size_C>();
-            acc_C10 = aie::zeros<T_out, MMUL::size_C>();
-            acc_C11 = aie::zeros<T_out, MMUL::size_C>();
+          if constexpr (zero_c) { // C is written, not accumulated
+            acc_C00 = acc_C01 = acc_C10 = acc_C11 =
+                aie::zeros<T_out, MMUL::size_C>();
           } else {
             acc_C00 = aie::load_v<MMUL::size_C>(pC1);
             acc_C01 = aie::load_v<MMUL::size_C>(pC1 + MMUL::size_C * rowA);
@@ -354,19 +351,6 @@ void matmul_a_b_bf16(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *out) {
   matmul_vectorized_8x8x8_bf16_bf16<lqp, dk, lkp>(a_in, b_in, out);
 }
 
-#if defined(FUSE_EXP_SUM) && defined(QK_PRETRANSPOSE)
-// Q@K^T that writes G instead of accumulating into a zero-filled G (needs
-// QK_PRETRANSPOSE like the entry above).
-void matmul_a_b_bf16_z(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *out) {
-  SET_ROUNDING();
-#ifdef QK_PRETRANSPOSE
-  transpose_k_blocks_inplace(b_in);
-  matmul_vectorized_8x8x8_bf16_bf16<lqp, dk, lkp, true, true, true>(a_in, b_in,
-                                                                    out);
-#endif
-}
-#endif
-
 void matmul_g_b_bf16(bfloat16 *g_in, bfloat16 *b_in, bfloat16 *out) {
   SET_ROUNDING();
   // Buffer shapes:
@@ -403,7 +387,6 @@ void neg_inf_fill_up_bf16(bfloat16 *c_out) {
   neg_inf_vectorized<bfloat16, lqp, 1, 32>(c_out);
 }
 
-#if !defined(MAX_X4)
 void max_g_bf16(bfloat16 *in, bfloat16 *out) {
   SET_ROUNDING();
   // u = np.max(G, axis=-1, keepdims=True)
@@ -439,51 +422,6 @@ void max_g_bf16(bfloat16 *in, bfloat16 *out) {
     aie::store_v(out + rb * 8, c);
   }
 }
-
-#else
-// max_g with four independent row-block chains per pass: the cb loop of one row
-// block is a dependent chain of vector max operations (each waits for the
-// previous result), so a single chain is latency bound; four chains in flight
-// keep the vector unit busy. Same result bit for bit (max is exact).
-void max_g_bf16(bfloat16 *in, bfloat16 *out) {
-  SET_ROUNDING();
-  constexpr int col_blocks = lkp / 8;
-  constexpr int row_blocks = lqp / 8;
-  constexpr int block_stride = lqp * 8;
-  static_assert(row_blocks % 4 == 0);
-  uint16_t lowest_u16 = (uint16_t)0xff7f;
-  bfloat16 lowest_val = *(bfloat16 *)&lowest_u16;
-  aie::vector<bfloat16, 64> lowest_vec =
-      aie::broadcast<bfloat16, 64>(lowest_val);
-  for (int rb = 0; rb < row_blocks; rb += 4) {
-    const bfloat16 *__restrict p0 = in + (rb + 0) * 64;
-    const bfloat16 *__restrict p1 = in + (rb + 1) * 64;
-    const bfloat16 *__restrict p2 = in + (rb + 2) * 64;
-    const bfloat16 *__restrict p3 = in + (rb + 3) * 64;
-    aie::vector<bfloat16, 64> m0 = lowest_vec, m1 = lowest_vec, m2 = lowest_vec,
-                              m3 = lowest_vec;
-#pragma clang loop unroll(full)
-    for (int cb = 0; cb < col_blocks; cb++) {
-      m0 = aie::max(m0, aie::load_v<64>(p0 + cb * block_stride));
-      m1 = aie::max(m1, aie::load_v<64>(p1 + cb * block_stride));
-      m2 = aie::max(m2, aie::load_v<64>(p2 + cb * block_stride));
-      m3 = aie::max(m3, aie::load_v<64>(p3 + cb * block_stride));
-    }
-    aie::vector<bfloat16, 64> ms[4] = {m0, m1, m2, m3};
-#pragma clang loop unroll(full)
-    for (int q = 0; q < 4; q++) {
-      aie::vector<bfloat16, 64> t = aie::transpose(ms[q], 8, 8);
-      aie::vector<bfloat16, 32> a2 =
-          aie::max(t.extract<32>(0), t.extract<32>(1));
-      aie::vector<bfloat16, 16> b2 =
-          aie::max(a2.extract<16>(0), a2.extract<16>(1));
-      aie::vector<bfloat16, 8> c2 =
-          aie::max(b2.extract<8>(0), b2.extract<8>(1));
-      aie::store_v(out + (rb + q) * 8, c2);
-    }
-  }
-}
-#endif // MAX_X4
 
 void maximum_up_u_bf16(bfloat16 *up, bfloat16 *u) {
   SET_ROUNDING();
@@ -668,116 +606,96 @@ void mul_r_gp(bfloat16 *r, bfloat16 *gp) {
   }
 }
 
-#if defined(FUSE_EXP_SUM)
-// Fused cascade-merge scaling: gc = gc * rc + gp * rl in one pass (replaces
-// mul_r_gp(rc, gc); mul_r_gp(rl, gp); add_gp_g(gp, gc)). The two products and
-// the sum stay in fp32 accumulators, so it rounds once instead of three times.
-void merge_gp(bfloat16 *rc, bfloat16 *gc, bfloat16 *rl, bfloat16 *gp) {
+#ifdef FUSED_MERGE
+// -DFUSED_MERGE (with -DQK_PRETRANSPOSE): the cascade merge in one pass, a
+// Q@K^T that writes G instead of accumulating into a zero-filled G, and exp
+// with the row sums in one sweep.
+#ifndef QK_PRETRANSPOSE
+#error "FUSED_MERGE needs QK_PRETRANSPOSE"
+#endif
+static_assert(lqp % 32 == 0,
+              "FUSED_MERGE reads the row factors 32 rows at a time");
+
+void matmul_a_b_bf16_z(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *out) {
   SET_ROUNDING();
+  transpose_k_blocks_inplace(b_in);
+  matmul_vectorized_8x8x8_bf16_bf16<lqp, dk, lkp, true, true, true>(a_in, b_in,
+                                                                    out);
+}
+
+// Each of 32 row factors replicated over the 8 lanes of its row, as 8 vectors
+// of 4 rows x 8 lanes (the layout of a half 8x8 block).
+static inline void rows_to_lanes(aie::vector<bfloat16, 32> v,
+                                 aie::vector<bfloat16, 32> out[8]) {
+  auto z1 = aie::interleave_zip(v, v, 1);
+  auto z2a = aie::interleave_zip(z1.first, z1.first, 2);
+  auto z2b = aie::interleave_zip(z1.second, z1.second, 2);
+  auto z3a = aie::interleave_zip(z2a.first, z2a.first, 4);
+  auto z3b = aie::interleave_zip(z2a.second, z2a.second, 4);
+  auto z3c = aie::interleave_zip(z2b.first, z2b.first, 4);
+  auto z3d = aie::interleave_zip(z2b.second, z2b.second, 4);
+  out[0] = z3a.first, out[1] = z3a.second, out[2] = z3b.first;
+  out[3] = z3b.second, out[4] = z3c.first, out[5] = z3c.second;
+  out[6] = z3d.first, out[7] = z3d.second;
+}
+
+// gc = gc * rc + gp * rl for one 32-row half, both products in one fp32
+// accumulator (one rounding instead of three).
+static inline void merge_rows(int rh, aie::vector<bfloat16, 32> rcv,
+                              aie::vector<bfloat16, 32> rlv, bfloat16 *gc,
+                              bfloat16 *gp) {
   constexpr int VecLen = 32;
   constexpr int col_blocks = dv / 8;
-  constexpr int row_halves = lqp / 32;
   constexpr int block_stride = lqp * 8;
   using V = aie::vector<bfloat16, VecLen>;
-  for (int rh = 0; rh < row_halves; rh++) {
-    V rcv = aie::load_v<VecLen>(rc + rh * VecLen);
-    V rlv = aie::load_v<VecLen>(rl + rh * VecLen);
-    auto c1 = aie::interleave_zip(rcv, rcv, 1);
-    auto c2a = aie::interleave_zip(c1.first, c1.first, 2);
-    auto c2b = aie::interleave_zip(c1.second, c1.second, 2);
-    auto c3a = aie::interleave_zip(c2a.first, c2a.first, 4);
-    auto c3b = aie::interleave_zip(c2a.second, c2a.second, 4);
-    auto c3c = aie::interleave_zip(c2b.first, c2b.first, 4);
-    auto c3d = aie::interleave_zip(c2b.second, c2b.second, 4);
-    V cvec[8] = {c3a.first, c3a.second, c3b.first, c3b.second,
-                 c3c.first, c3c.second, c3d.first, c3d.second};
-    auto l1 = aie::interleave_zip(rlv, rlv, 1);
-    auto l2a = aie::interleave_zip(l1.first, l1.first, 2);
-    auto l2b = aie::interleave_zip(l1.second, l1.second, 2);
-    auto l3a = aie::interleave_zip(l2a.first, l2a.first, 4);
-    auto l3b = aie::interleave_zip(l2a.second, l2a.second, 4);
-    auto l3c = aie::interleave_zip(l2b.first, l2b.first, 4);
-    auto l3d = aie::interleave_zip(l2b.second, l2b.second, 4);
-    V lvec[8] = {l3a.first, l3a.second, l3b.first, l3b.second,
-                 l3c.first, l3c.second, l3d.first, l3d.second};
-    for (int gi = 0; gi < 8; gi++) {
-      bfloat16 *__restrict pc = gc + (rh * 8 + gi) * VecLen;
-      bfloat16 *__restrict pg = gp + (rh * 8 + gi) * VecLen;
-      V a[col_blocks], b[col_blocks];
+  V cvec[8], lvec[8];
+  rows_to_lanes(rcv, cvec);
+  rows_to_lanes(rlv, lvec);
+  for (int gi = 0; gi < 8; gi++) {
+    bfloat16 *__restrict pc = gc + (rh * 8 + gi) * VecLen;
+    bfloat16 *__restrict pg = gp + (rh * 8 + gi) * VecLen;
+    V a[col_blocks], b[col_blocks];
 #pragma clang loop unroll(full)
-      for (int cb = 0; cb < col_blocks; cb++) {
-        a[cb] = aie::load_v<VecLen>(pc + cb * block_stride);
-        b[cb] = aie::load_v<VecLen>(pg + cb * block_stride);
-      }
-#pragma clang loop unroll(full)
-      for (int cb = 0; cb < col_blocks; cb++) {
-        aie::accum<accfloat, VecLen> acc = aie::mul(a[cb], cvec[gi]);
-        acc = aie::mac(acc, b[cb], lvec[gi]);
-        a[cb] = acc.template to_vector<bfloat16>();
-      }
-#pragma clang loop unroll(full)
-      for (int cb = 0; cb < col_blocks; cb++)
-        aie::store_v(pc + cb * block_stride, a[cb]);
+    for (int cb = 0; cb < col_blocks; cb++) {
+      a[cb] = aie::load_v<VecLen>(pc + cb * block_stride);
+      b[cb] = aie::load_v<VecLen>(pg + cb * block_stride);
     }
+#pragma clang loop unroll(full)
+    for (int cb = 0; cb < col_blocks; cb++) {
+      aie::accum<accfloat, VecLen> acc = aie::mul(a[cb], cvec[gi]);
+      acc = aie::mac(acc, b[cb], lvec[gi]);
+      a[cb] = acc.template to_vector<bfloat16>();
+    }
+#pragma clang loop unroll(full)
+    for (int cb = 0; cb < col_blocks; cb++)
+      aie::store_v(pc + cb * block_stride, a[cb]);
   }
 }
 
-// Final-stage merge with the normalization folded in: gc = gc*(rc/sp) +
-// gp*(rl/sp).
+// Replaces mul_r_gp(rc, gc); mul_r_gp(rl, gp); add_gp_g(gp, gc).
+void merge_gp(bfloat16 *rc, bfloat16 *gc, bfloat16 *rl, bfloat16 *gp) {
+  SET_ROUNDING();
+  for (int rh = 0; rh < lqp / 32; rh++)
+    merge_rows(rh, aie::load_v<32>(rc + rh * 32), aie::load_v<32>(rl + rh * 32),
+               gc, gp);
+}
+
+// The last stage's merge with the division by the softmax sum folded into the
+// row factors: gc = gc * (rc / sp) + gp * (rl / sp).
 void merge_gp_div(bfloat16 *rc, bfloat16 *gc, bfloat16 *rl, bfloat16 *gp,
                   bfloat16 *sp) {
   SET_ROUNDING();
-  constexpr int VecLen = 32;
-  constexpr int col_blocks = dv / 8;
-  constexpr int row_halves = lqp / 32;
-  constexpr int block_stride = lqp * 8;
-  using V = aie::vector<bfloat16, VecLen>;
-  for (int rh = 0; rh < row_halves; rh++) {
-    V sv = aie::inv(aie::load_v<VecLen>(sp + rh * VecLen));
-    V rcv = aie::mul(aie::load_v<VecLen>(rc + rh * VecLen), sv)
+  using V = aie::vector<bfloat16, 32>;
+  for (int rh = 0; rh < lqp / 32; rh++) {
+    V sv = aie::inv(aie::load_v<32>(sp + rh * 32));
+    V rcv = aie::mul(aie::load_v<32>(rc + rh * 32), sv)
                 .template to_vector<bfloat16>();
-    V rlv = aie::mul(aie::load_v<VecLen>(rl + rh * VecLen), sv)
+    V rlv = aie::mul(aie::load_v<32>(rl + rh * 32), sv)
                 .template to_vector<bfloat16>();
-    auto c1 = aie::interleave_zip(rcv, rcv, 1);
-    auto c2a = aie::interleave_zip(c1.first, c1.first, 2);
-    auto c2b = aie::interleave_zip(c1.second, c1.second, 2);
-    auto c3a = aie::interleave_zip(c2a.first, c2a.first, 4);
-    auto c3b = aie::interleave_zip(c2a.second, c2a.second, 4);
-    auto c3c = aie::interleave_zip(c2b.first, c2b.first, 4);
-    auto c3d = aie::interleave_zip(c2b.second, c2b.second, 4);
-    V cvec[8] = {c3a.first, c3a.second, c3b.first, c3b.second,
-                 c3c.first, c3c.second, c3d.first, c3d.second};
-    auto l1 = aie::interleave_zip(rlv, rlv, 1);
-    auto l2a = aie::interleave_zip(l1.first, l1.first, 2);
-    auto l2b = aie::interleave_zip(l1.second, l1.second, 2);
-    auto l3a = aie::interleave_zip(l2a.first, l2a.first, 4);
-    auto l3b = aie::interleave_zip(l2a.second, l2a.second, 4);
-    auto l3c = aie::interleave_zip(l2b.first, l2b.first, 4);
-    auto l3d = aie::interleave_zip(l2b.second, l2b.second, 4);
-    V lvec[8] = {l3a.first, l3a.second, l3b.first, l3b.second,
-                 l3c.first, l3c.second, l3d.first, l3d.second};
-    for (int gi = 0; gi < 8; gi++) {
-      bfloat16 *__restrict pc = gc + (rh * 8 + gi) * VecLen;
-      bfloat16 *__restrict pg = gp + (rh * 8 + gi) * VecLen;
-      V a[col_blocks], b[col_blocks];
-#pragma clang loop unroll(full)
-      for (int cb = 0; cb < col_blocks; cb++) {
-        a[cb] = aie::load_v<VecLen>(pc + cb * block_stride);
-        b[cb] = aie::load_v<VecLen>(pg + cb * block_stride);
-      }
-#pragma clang loop unroll(full)
-      for (int cb = 0; cb < col_blocks; cb++) {
-        aie::accum<accfloat, VecLen> acc = aie::mul(a[cb], cvec[gi]);
-        acc = aie::mac(acc, b[cb], lvec[gi]);
-        a[cb] = acc.template to_vector<bfloat16>();
-      }
-#pragma clang loop unroll(full)
-      for (int cb = 0; cb < col_blocks; cb++)
-        aie::store_v(pc + cb * block_stride, a[cb]);
-    }
+    merge_rows(rh, rcv, rlv, gc, gp);
   }
 }
-
+static_assert(lkp == 64, "exp_sum_g holds a row group's column blocks at once");
 // exp_g_minus_u with the row sums folded in: G = exp(G - u) in place and
 // s[row] = sum(G[row, :]) in the same pass (saves sum_g's second sweep over
 // G). The sums use the bf16-rounded exp values in the same column-block order
@@ -844,97 +762,7 @@ void exp_sum_g(bfloat16 *u, bfloat16 *g, bfloat16 *s) {
     s[gi * 4 + 3] = (bfloat16)aie::reduce_add(sum_v.extract<8>(3));
   }
 }
-// exp_sum_g with the per-row horizontal sums done as one 8x8 transpose and
-// three vector adds per 8 rows (instead of four scalar reduce_adds per 4 rows).
-// The partial sums stay in f32 until the single rounding to bf16.
-void exp_sum_g_t(bfloat16 *u, bfloat16 *g, bfloat16 *s) {
-  SET_ROUNDING();
-  constexpr int col_blocks = lkp / 8;
-  constexpr int row_halves = lqp / 32;
-  constexpr int row_groups = lqp / 4;
-  constexpr int block_stride = lqp * 8;
-  using V = aie::vector<bfloat16, 32>;
-  alignas(64) static bfloat16 u_rep[lqp * 8];
-  uint16_t lowest_u16 = (uint16_t)0xff7f;
-  bfloat16 lowest_val = *(bfloat16 *)&lowest_u16;
-  aie::vector<bfloat16, 16> log2e_vec16 =
-      aie::broadcast<bfloat16, 16>((bfloat16)log2e);
-  V lowest_vec = aie::broadcast<bfloat16, 32>(lowest_val);
-  for (int rh = 0; rh < row_halves; rh++) {
-    V uv = aie::load_v<32>(u + rh * 32);
-    auto z1 = aie::interleave_zip(uv, uv, 1);
-    auto z2a = aie::interleave_zip(z1.first, z1.first, 2);
-    auto z2b = aie::interleave_zip(z1.second, z1.second, 2);
-    auto z3a = aie::interleave_zip(z2a.first, z2a.first, 4);
-    auto z3b = aie::interleave_zip(z2a.second, z2a.second, 4);
-    auto z3c = aie::interleave_zip(z2b.first, z2b.first, 4);
-    auto z3d = aie::interleave_zip(z2b.second, z2b.second, 4);
-    bfloat16 *t = u_rep + rh * 256;
-    aie::store_v(t + 0, z3a.first);
-    aie::store_v(t + 32, z3a.second);
-    aie::store_v(t + 64, z3b.first);
-    aie::store_v(t + 96, z3b.second);
-    aie::store_v(t + 128, z3c.first);
-    aie::store_v(t + 160, z3c.second);
-    aie::store_v(t + 192, z3d.first);
-    aie::store_v(t + 224, z3d.second);
-  }
-  for (int gi = 0; gi < row_groups; gi += 2) {
-    aie::vector<float, 64> sv;
-#pragma clang loop unroll(full)
-    for (int h = 0; h < 2; h++) {
-      V uvec = aie::load_v<32>(u_rep + (gi + h) * 32);
-      bfloat16 *__restrict p = g + (gi + h) * 32;
-      V v[col_blocks];
-#pragma clang loop unroll(full)
-      for (int cb = 0; cb < col_blocks; cb++)
-        v[cb] = aie::load_v<32>(p + cb * block_stride);
-      aie::accum<accfloat, 32> sum_acc = aie::zeros<accfloat, 32>();
-#pragma clang loop unroll(full)
-      for (int cb = 0; cb < col_blocks; cb++) {
-        V d = aie::max(aie::sub(v[cb], uvec), lowest_vec);
-        aie::vector<bfloat16, 16> lo = d.extract<16>(0);
-        aie::vector<bfloat16, 16> hi = d.extract<16>(1);
-        lo = aie::exp2<bfloat16>(aie::mul(lo, log2e_vec16).to_vector<float>());
-        hi = aie::exp2<bfloat16>(aie::mul(hi, log2e_vec16).to_vector<float>());
-        d.insert(0, lo);
-        d.insert(1, hi);
-        v[cb] = d;
-        sum_acc = aie::add(sum_acc, d);
-      }
-#pragma clang loop unroll(full)
-      for (int cb = 0; cb < col_blocks; cb++)
-        aie::store_v(p + cb * block_stride, v[cb]);
-      sv.insert(h, sum_acc.to_vector<float>());
-    }
-    // sv[r*8 + l]: row r of this 8-row block, lane l. 32-bit lanes cannot be
-    // transposed by aie_api, so split each f32 partial into a bf16 high part
-    // and a bf16 remainder (about 16 significant bits together), transpose both
-    // and add the 16 vectors of 8 rows in f32.
-    aie::accum<accfloat, 64> accsv(sv);
-    aie::vector<bfloat16, 64> hi = accsv.to_vector<bfloat16>();
-    aie::accum<accfloat, 64> ahi(hi);
-    aie::vector<float, 64> hif = ahi.to_vector<float>();
-    aie::accum<accfloat, 64> alo(aie::sub(sv, hif));
-    aie::vector<bfloat16, 64> lo = alo.to_vector<bfloat16>();
-    aie::vector<bfloat16, 64> th = aie::transpose(hi, 8, 8);
-    aie::vector<bfloat16, 64> tl = aie::transpose(lo, 8, 8);
-    aie::accum<accfloat, 8> acc8 = aie::zeros<accfloat, 8>();
-    aie::accum<accfloat, 8> acc9 = aie::zeros<accfloat, 8>();
-#pragma clang loop unroll(full)
-    for (int l = 0; l < 8; l += 2) {
-      acc8 = aie::add(acc8, th.extract<8>(l));
-      acc9 = aie::add(acc9, th.extract<8>(l + 1));
-      acc8 = aie::add(acc8, tl.extract<8>(l));
-      acc9 = aie::add(acc9, tl.extract<8>(l + 1));
-    }
-    aie::vector<float, 8> fa = acc8.to_vector<float>();
-    aie::vector<float, 8> fb = acc9.to_vector<float>();
-    aie::accum<accfloat, 8> acc_sum(aie::add(fa, fb));
-    aie::store_v(s + gi * 4, acc_sum.to_vector<bfloat16>());
-  }
-}
-#endif // FUSE_EXP_SUM
+#endif // FUSED_MERGE
 
 void sum_g(bfloat16 *g, bfloat16 *s) {
   SET_ROUNDING();
@@ -1069,15 +897,11 @@ void fused_softmax(bfloat16 *g, bfloat16 *up, bfloat16 *sp, bfloat16 *r) {
   SET_ROUNDING();
   max_g_bf16(g, r);
   maximum_up_u_bf16(up, r);
-#if defined(FUSE_EXP_SUM)
-  // exp and the row sums in one sweep; the sums go to a local row vector and
-  // reach sp after exp_up_minus_u / the copies have used sp as scratch.
+#ifdef FUSED_MERGE
+  // exp and the row sums in one sweep; the sums reach sp after exp_up_minus_u
+  // and the copies have used it as scratch.
   alignas(64) static bfloat16 sum_tmp[lqp];
-#if defined(SUM_T)
-  exp_sum_g_t(r, g, sum_tmp);
-#else
   exp_sum_g(r, g, sum_tmp);
-#endif
   exp_up_minus_u(up, r, sp);
   vector_copy_32elems(0, r, up);
   vector_copy_32elems(0, sp, r);
