@@ -209,6 +209,7 @@ def compile_attn_npu2(
     dk_tile=None,
     dv_tile=None,
     pretranspose_k=False,
+    fused_merge=False,
 ):
     """Compile attn_npu2.o (FlashAttention kernel) from source.
 
@@ -245,6 +246,9 @@ def compile_attn_npu2(
             (-DQK_PRETRANSPOSE in attn_npu2.cc) instead of inside the matmul.
             Bit-identical, needs the K L1 buffer to be re-filled before every
             call, so it is opt-in per design.
+        fused_merge: -DFUSED_MERGE, the one-pass cascade merge (merge_gp,
+            merge_gp_div) and the zero-init Q@K^T (matmul_a_b_bf16_z) a builder
+            with fused_merge=True links. Needs pretranspose_k.
     """
     if lkp is None:
         lkp = head_dim
@@ -277,6 +281,9 @@ def compile_attn_npu2(
         _flags.append("-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16")
     if pretranspose_k:
         _flags.append("-DQK_PRETRANSPOSE")
+    if fused_merge:
+        assert pretranspose_k, "fused_merge needs pretranspose_k"
+        _flags.append("-DFUSED_MERGE")
     _compile_kernel(src, "attn_npu2.o", extra_flags=_flags, force=force)
     # Also create attn.o copy (some link_with attributes use "attn.o").
     # Refresh whenever attn_npu2.o exists so a force-rebuild (different tile
