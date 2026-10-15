@@ -96,21 +96,13 @@ def gelu_cubic_then_tanh():
     print(build(65536, 1024, lambda b: air.ops.gelu(b[:]), herd_shape=(4,)).mlir())
 
 
-# CHECK-LABEL: TEST: scalar_fallback_is_emitted_but_will_not_compile
-# The emitter's usual safety net is a hazard for tanh specifically. A tile
-# narrower than the vector width still lowers the whole tree scalar, unary node
-# included -- and scalar bf16 tanh does not legalize on either generation
-# ("unable to legalize instruction: s16 G_FTANH"), so this IR is valid MLIR that
-# the backend cannot build.
-#
-# The IR is pinned here so the hazard is visible rather than folklore. The
-# examples do not rely on the emitter noticing: sigmoid/silu/gelu reject
-# --vector-size 0 and reject a tile that is not a multiple of the vector width,
-# which are the two routes into this path.
+# CHECK-LABEL: TEST: scalar_fallback
+# A tile narrower than the vector width lowers the whole tree scalar, unary node
+# included.
 # CHECK-NOT: vector.transfer_read
 # CHECK: memref.load
 # CHECK: math.tanh {{.*}} : bf16
 # CHECK: memref.store
 @run
-def scalar_fallback_is_emitted_but_will_not_compile():
+def scalar_fallback():
     print(build(48, 12, lambda b: air.ops.tanh(b[:]), herd_shape=(4,)).mlir())

@@ -15,20 +15,7 @@ limitations at once: exp would need a division, and bf16 has no vector division.
 places, but only where multiplication is commutative, which is exact in IEEE --
 so the emitted arithmetic is the predecessor's, op for op.
 
-**npu2 only, and bf16 only.** Both limits are inherited, not introduced:
-
-  - On npu1, bf16 `math.tanh` lowers to a C call via `emitc.include`, which the
-    peano path cannot translate ("missing LLVMTranslationDialectInterface
-    registration ... for op: emitc.include"). The predecessor fails identically
-    on npu1; its lit was already `REQUIRES: ryzen_ai_npu2`.
-  - f32 `math.tanh` does not legalize on either generation, at any vector width
-    including scalar ("unable to legalize instruction: G_FTANH"). So there is no
-    f32 path to offer, unlike the other air.api examples.
-  - Scalar bf16 tanh does not legalize either ("s16 G_FTANH"), so unlike every
-    other air.api example there is no scalar fallback to drop to. The builder
-    rejects a non-positive `--vector-size`, and rejects a tile that is not a
-    multiple of the vector width, since that would reach the same scalar path
-    indirectly.
+**npu2 only.** ``--vector-size 0`` runs the scalar path.
 """
 
 import argparse
@@ -63,22 +50,6 @@ def build_sigmoid(n, tile_n, herd_shape=None, vector=None):
     """Build a Sigmoid launch over a 1-D vector of length n."""
     if n % tile_n:
         raise ValueError(f"n ({n}) must be divisible by tile_n ({tile_n})")
-    # math.tanh exists only as a vector lowering: scalar bf16 tanh fails with
-    # "unable to legalize instruction: s16 G_FTANH" on npu2 too. That makes the
-    # emitter's usual scalar fallback a trap here rather than a safety net, so
-    # both routes into it are refused up front.
-    width = bf16.default_vector_width if vector is None else int(vector)
-    if width <= 0:
-        raise ValueError(
-            f"--vector-size must be positive, got {width}: this kernel has no "
-            "scalar form, as math.tanh only lowers as a vector op"
-        )
-    if tile_n % width:
-        raise ValueError(
-            f"tile_n {tile_n} must be a multiple of the vector width {width}; "
-            "otherwise the emitter falls back to a scalar loop, and math.tanh "
-            "has no scalar lowering"
-        )
     if tile_n > max_tile():
         raise ValueError(
             f"tile_n {tile_n} does not fit L1: the ping-ponged buffers of that "
@@ -122,8 +93,8 @@ if __name__ == "__main__":
         type=int,
         default=None,
         dest="vector",
-        help="compute vector width in lanes (default: 16, the bf16 width). "
-        "0 is rejected: math.tanh has no scalar lowering.",
+        help="compute vector width in lanes (default: 16, the bf16 width; "
+        "0 runs the scalar path)",
     )
     parser.add_argument(
         "--herd-shape",
