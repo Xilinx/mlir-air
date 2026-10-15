@@ -5403,7 +5403,7 @@
       "K": 768,
       "N": 2304,
       "used_by": "SmolVLA vision fused Q|K|V (3 images)",
-      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B. b_stationary needs M/(tile_m*herd_m) < 16 (16+ hangs: kRedundantUnrollLockLimit drops the memtile reuse lock to 1).",
+      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B.",
       "methods": {
         "drain": {
           "tile": {
@@ -5429,7 +5429,7 @@
       "K": 768,
       "N": 768,
       "used_by": "SmolVLA vision out_proj (3 images)",
-      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B. b_stationary needs M/(tile_m*herd_m) < 16 (16+ hangs: kRedundantUnrollLockLimit drops the memtile reuse lock to 1).",
+      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B.",
       "methods": {
         "drain": {
           "tile": {
@@ -5455,7 +5455,7 @@
       "K": 768,
       "N": 3072,
       "used_by": "SmolVLA vision mlp fc1 (3 images)",
-      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B + GELU epilogue. b_stationary needs M/(tile_m*herd_m) < 16 (16+ hangs: kRedundantUnrollLockLimit drops the memtile reuse lock to 1).",
+      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B + GELU epilogue.",
       "methods": {
         "drain": {
           "tile": {
@@ -5481,7 +5481,7 @@
       "K": 3072,
       "N": 768,
       "used_by": "SmolVLA vision mlp fc2 (3 images)",
-      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B. b_stationary needs M/(tile_m*herd_m) < 16 (16+ hangs: kRedundantUnrollLockLimit drops the memtile reuse lock to 1).",
+      "_note": "SmolVLA SigLIP, 3 images batched (M = 3 x 1024). Measured 2026-10-14 on NPU2 turbo, main f9457c51, with the shape's real epilogue: 8 bias pad rows on B.",
       "methods": {
         "drain": {
           "tile": {

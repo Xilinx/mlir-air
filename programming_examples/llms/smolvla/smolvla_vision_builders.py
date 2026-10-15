@@ -365,9 +365,8 @@ def vit_o_ffn_runtime_tiling(
     since one tiling vector is shared by the whole stitched ELF and each
     launch's own loop clips to its own trip count (see _gemm_grid_extents)."""
     reg_len = registry_seq_len or seq_len
-    # The per-image registry tiles, not the batched ones: those would raise the request to
-    # 12,8, which hangs the device (ERT_CMD_STATE_TIMEOUT); with 12,6 each launch's loop clips
-    # to its own trip count.
+    # Sized from the per-image registry tiles: the batched tiles' larger request hangs the
+    # device, and each launch's loop clips to its own trip count either way.
     o_spec, g_spec, d_spec = (
         gemm_registry_config(reg_len, kk, nn, "bf16", "high")
         for kk, nn in ((emb_dim, emb_dim), (emb_dim, hidden_dim), (hidden_dim, emb_dim))

@@ -84,9 +84,9 @@ def gemm_config(M, K, N, output_dtype="bf16", precision="high"):
             # present, so every existing shape's return dict is unchanged.
             if "herd" in m:
                 out["herd"] = list(m["herd"])
-            # Layout knobs, present only where they were measured on: herd_swap (M
-            # on the herd's 4 rows, N on its 8 columns), b_stationary (B resident in
-            # L2, tile_k_l2 == K), b_panel (B pre-packed panel-contiguous).
+            # Layout knobs (absent = False): herd_swap (M on the herd's 4 rows, N on
+            # its 8 columns), b_stationary (B resident in L2, tile_k_l2 == K),
+            # b_panel (B pre-packed panel-contiguous).
             for k in ("herd_swap", "b_stationary", "b_panel"):
                 if k in m:
                     out[k] = bool(m[k])

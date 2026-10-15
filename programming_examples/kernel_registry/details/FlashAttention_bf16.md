@@ -217,7 +217,7 @@ The two are within **~1–3%** across all shapes measured — the 2-heads-vs-fin
 | 4096, 12 | 8/1/4: 8749 us | 8/2/2, ql 2: 8045 us | 1.09x |
 | 4096, 16 | 8/1/4: 12230 us | 8/2/2, ql 2: 10849 us | 1.13x |
 
-(`nqt/hpu/ncs`.) Two notes: with 16 heads the default 4/2/4 is not the best rows-for-stages config (8/1/4 is, by up to 22%), and 4/2/4 hangs at lq 4096 (16 q blocks in one segment run). The fused cascade merge (`fused_merge`, `merge_gp`/`merge_gp_div` + zero-init Q@K^T) adds 4-7% on `q_in_segment`; `MAX_X4` and `FUSE_EXP_SUM` alone are within 2% everywhere.
+(`nqt/hpu/ncs`.) With 16 heads, 8/1/4 is the best rows-for-stages config, not 4/2/4. The fused cascade merge (`fused_merge`) adds 4-7% on `q_in_segment`.
 
 ---
 

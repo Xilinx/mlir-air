@@ -70,7 +70,7 @@ A,B stored bf16 → 8×8×8 MMA (BFP16-emulated) → FP32 accumulator → [cast 
 
 `auto` picks fused-cast when `M*K*N ≥ 4e9` else drain — verified correct on all 7 tested shapes (below).
 
-> **Drain at tile_m=64.** The 2026-06 analysis capped drain at `tile_m=32` (72 KB > 64 KB L1 at 64x128). On main f9457c51 (2026-10) drain places at `tile_m=64` for every `tile_n` in {48, 64, 96, 128} with `tile_k_l1=32`; the measured L1 limit is `tile_n=128` with `tile_k_l1=64` (at either tile_m). Rows below that use tile_m=64 were measured there.
+> **Drain at tile_m=64.** Drain places at `tile_m=64` for every `tile_n` in {48, 64, 96, 128} with `tile_k_l1=32`; `tile_n=128` with `tile_k_l1=64` overflows L1 at either `tile_m`.
 
 ---
 
@@ -88,7 +88,7 @@ Same GEMM knobs as the [f32-out page](GEMM_bf16_in_fp32_out.md#tunable-parameter
 | `herd_n` | 4 | `N ≥ tile_n × herd_n` | col-parallel; 4 = full chip cols → 8×4 = 32-tile herd |
 | `--cast-tile-n` (fused only) | shape-dependent | `N % cast_tile_n == 0` | the cast launch's tile; ~10% spread, near-optimal at default |
 | `herd_swap` (drain) | per shape (JSON) | as herd_m/herd_n, swapped | M on the herd's 4 core rows, N on its 8 columns (`HERD_SWAP=true HERD_M=4 HERD_N=8`) |
-| `b_stationary` (drain) | per shape (JSON) | `tile_k_l2 == K`, B slab fits L2; `M/(tile_m·herd_m) < 16` | B resident in L2 for the whole M loop. 16+ M trips hang the device (memtile reuse lock lowered as 1) |
+| `b_stationary` (drain) | per shape (JSON) | `tile_k_l2 == K`, B slab fits L2 | B resident in L2 for the whole M loop |
 | `b_panel` (drain) | per shape (JSON) | `N % (tile_n × herd_n) == 0` | B pre-packed panel-contiguous on the host: one DMA burst per (K-chunk, N-block) panel |
 
 ⚠️ **Silent-corruption trap**: `N % (tile_n × herd_n) != 0` is **not asserted** — verify before running.
