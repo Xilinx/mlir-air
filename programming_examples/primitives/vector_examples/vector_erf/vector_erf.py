@@ -123,14 +123,15 @@ if __name__ == "__main__":
             target_device=launch.target,
             runtime_loop_tiling_sizes=[4, 4],
         )
-        # bf16-level tolerances for both dtypes.
+        # erf lowers through AIE2P vtanh, which returns x for |x| <= 0.5; the
+        # error peaks at 0.038 near x = 0.44, for both dtypes.
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[input_a],
                 expected_outputs=[expected],
                 rtol=1.6e-2,
-                atol=1e-2,
+                atol=4e-2,
             )
         )
 
