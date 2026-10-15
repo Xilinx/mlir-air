@@ -20,8 +20,7 @@ EXTRA_PY_FLAGS ?=
 
 all: run
 
-# bf16 only: f32 math.tanh does not legalize on either generation. npu2 only:
-# on npu1 bf16 math.tanh lowers to emitc, which peano cannot translate.
+# npu2 only: on npu1 bf16 math.tanh lowers to emitc, which peano cannot translate.
 N ?= 65536
 TILE_N ?= 1024
 VECTOR_SIZE ?=

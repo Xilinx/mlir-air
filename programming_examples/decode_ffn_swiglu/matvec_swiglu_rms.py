@@ -663,8 +663,7 @@ def build_module(
                                 # to bf16, store gate partials and up partials
                                 # into SEPARATE bf16 scratches indexed by pair
                                 # position. Vectorized silu+mul runs after the
-                                # j_m loop (scalar tanh isn't legalizable on
-                                # AIE2P).
+                                # j_m loop.
                                 ChannelGet(
                                     "chan_cascade",
                                     _l1_recv,
