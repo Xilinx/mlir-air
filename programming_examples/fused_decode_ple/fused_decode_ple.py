@@ -306,6 +306,8 @@ _MODELS = {
         DH_SWA=256,
         SLIDING_WINDOW=512,
         KV_PER_CU=1,  # the one real kv head, replicated to each of the 2 CUs
+        KV_REPLICATED=True,  # so read the copy back once and fan it to both
+        KV_BLOCK_PAIRS=True,  # attention takes KV blocks two at a time
         N_ATTN_CU=2,
         NPH=4,
         I2P=[12, 3, 48, 3],
@@ -1047,6 +1049,10 @@ RT_WINDOW = int(_os.environ.get("DECODE_RT_WINDOW", "0"))
 RB_SWA_SKIP = int(_os.environ.get("DECODE_RB_SWA_SKIP", "0"))
 if RT_WINDOW and not RT_ROUNDS:
     raise SystemExit("DECODE_RT_WINDOW needs DECODE_RT_ROUNDS")
+# Attention takes KV blocks two at a time into two L1 buffers, so the DMA fills
+# one while the kernel reads the other. Each wave's block range is widened to an
+# even count; the extra block lies outside [lo, L) and the kernels skip it.
+KV_PAIRS = bool(MODEL.get("KV_BLOCK_PAIRS")) and ATTN_ROUNDS % 2 == 0 and not DYNSEQ
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -1297,8 +1303,23 @@ ATTN_CU_GROUP = {c: gi for gi, (_, cus) in enumerate(ATTN_COL_GROUPS) for c in c
 KV_REGION = True  # fixed config: region-major DDR KV quadrants + fire-and-free readback (50 tok/s)
 NGRP = len(ATTN_COL_GROUPS)
 # Uniform group width (all groups same #CUs in the reference 4-CU/2-group layout).
-REGION_W = len(ATTN_COL_GROUPS[0][1]) * KVPC_DH  # 256
+# Every CU of a group holds the same kv head, so the cache keeps one copy and
+# the memtile sends each block to all of them.
+KV_REPLICATED = MODEL.get("KV_REPLICATED", False)
+# The rope core still appends every copy; the extra ones land in the slab's
+# unused tail and are never read.
+KV_COPIES = len(ATTN_COL_GROUPS[0][1]) if KV_REPLICATED else 1
+REGION_W = len(ATTN_COL_GROUPS[0][1]) * KVPC_DH // KV_COPIES
 REGION_STRIDE = ATTN_MAXL * REGION_W  # per-group region span (one K or V region)
+
+
+# The append's S2MM walk; extra copies stride past the K and V regions.
+APPEND_SIZES = [NGRP, REGION_W] if KV_COPIES == 1 else [NGRP, KV_COPIES, REGION_W]
+APPEND_STRIDES = (
+    [REGION_STRIDE, 1]
+    if KV_COPIES == 1
+    else [REGION_STRIDE, 2 * NGRP * REGION_STRIDE, 1]
+)
 
 
 def _kreg_off(gi):
@@ -2000,7 +2021,11 @@ def build_module():
         # block [K block 2048 | V block 2048] = 4096; a fresh alloc per block gives a
         # count-free ping-pong ring (1 fill : 1 read), unlike a whole-cache buffer
         # multi-read (1 fill : N read = lock deadlock).
-        kvblk_l2 = MemRefType.get([2 * 16 * KVPC_DH], bf16, memory_space=l2)
+        kvblk_l2 = MemRefType.get(
+            [16 * KVPC_DH if KV_REPLICATED else 2 * 16 * KVPC_DH],
+            bf16,
+            memory_space=l2,
+        )
         # buf_ph2 (LOOPCLOSE): ph2 (gate-up) X = a_xn stand-in, re-broadcast from a
         # memtile (mechanism-2 refeed) so it converges on @xnorm AFTER ph1 attn-o.
         bufp2_l2 = MemRefType.get([K], bf16, memory_space=l2)
@@ -2288,8 +2313,17 @@ def build_module():
             size=[len(ATTN_COL_GROUPS)],
             channel_type="npu_dma_packet",
         )
-        channel_decl("toK", size=[N_ATTN_CU])
-        channel_decl("toV", size=[N_ATTN_CU])
+        if KV_REPLICATED:
+            # Every CU reads the same head, so each block goes out as one broadcast.
+            assert NGRP == 1, "KV_REPLICATED broadcasts across a single group"
+            Channel("toK", size=[1, 1], broadcast_shape=[1, N_ATTN_CU])
+            Channel("toV", size=[1, 1], broadcast_shape=[1, N_ATTN_CU])
+        else:
+            channel_decl("toK", size=[N_ATTN_CU])
+            channel_decl("toV", size=[N_ATTN_CU])
+        if KV_PAIRS:
+            # Two blocks per iteration need a score hand-over per block.
+            channel_decl("toS", size=[N_ATTN_CU])
         if MULTIBLK:
             # the reference full-faithful KV cache (DDR): rope appends this token's roped
             # K/V into the cache (appendK/appendV -> KVC at APPEND_OFF); the whole
@@ -3428,8 +3462,8 @@ def build_module():
                                         KVC,
                                         indices=[idx(0)],
                                         offsets=[_loi_slot(_kbase, 0)],
-                                        sizes=[idx(NGRP), idx(REGION_W)],
-                                        strides=[idx(REGION_STRIDE), idx(1)],
+                                        sizes=[idx(v) for v in APPEND_SIZES],
+                                        strides=[idx(v) for v in APPEND_STRIDES],
                                         async_token=AsyncTokenType.get(),
                                     )
                                     _apvG = ChannelGet(
@@ -3437,8 +3471,8 @@ def build_module():
                                         KVC,
                                         indices=[idx(0)],
                                         offsets=[_loi_slot(_kbase, _vreg_off(0))],
-                                        sizes=[idx(NGRP), idx(REGION_W)],
-                                        strides=[idx(REGION_STRIDE), idx(1)],
+                                        sizes=[idx(v) for v in APPEND_SIZES],
+                                        strides=[idx(v) for v in APPEND_STRIDES],
                                         async_token=AsyncTokenType.get(),
                                     )
                                     return _apkG.async_token, _apvG.async_token
@@ -4784,7 +4818,11 @@ def build_module():
                                         _gcol, _cus = ATTN_COL_GROUPS[_gi]
                                         if c != _cus[0]:
                                             return
-                                        _gw = len(_cus) * KVPC_DH
+                                        _gw = (
+                                            KVPC_DH
+                                            if KV_REPLICATED
+                                            else len(_cus) * KVPC_DH
+                                        )
                                         for _blk in for_(idx(0), _seg_rounds(), idx(1)):
                                             _kbuf = AllocOp(kvblk_l2, [], [])
                                             _kbuf.operation.attributes[
@@ -4800,15 +4838,26 @@ def build_module():
                                             ChannelGet(
                                                 "inKV_V", _vbuf, indices=[idx(_gi)]
                                             )
-                                            for _lc, _cc in enumerate(_cus):
+                                            _dsts = (
+                                                [(0, lambda: [idx(0), idx(0)])]
+                                                if KV_REPLICATED
+                                                else [
+                                                    (
+                                                        _lc * KVPC_DH,
+                                                        lambda c=_cc: [idx(c)],
+                                                    )
+                                                    for _lc, _cc in enumerate(_cus)
+                                                ]
+                                            )
+                                            for _lane, _ix in _dsts:
                                                 ChannelPut(
                                                     "toK",
                                                     _kbuf,
-                                                    indices=[idx(_cc)],
+                                                    indices=_ix(),
                                                     offsets=[
                                                         idx(0),
                                                         idx(0),
-                                                        idx(_lc * KVPC_DH),
+                                                        idx(_lane),
                                                     ],
                                                     sizes=[
                                                         idx(KVPC_DH // 8),
@@ -4820,12 +4869,12 @@ def build_module():
                                                 ChannelPut(
                                                     "toV",
                                                     _vbuf,
-                                                    indices=[idx(_cc)],
+                                                    indices=_ix(),
                                                     offsets=[
                                                         idx(0),
                                                         idx(0),
                                                         idx(0),
-                                                        idx(_lc * KVPC_DH),
+                                                        idx(_lane),
                                                     ],
                                                     sizes=[
                                                         idx(2),
@@ -4936,6 +4985,11 @@ def build_module():
                                             IntegerAttr.get(i32, 16), None
                                         ).result,
                                     )
+                                    if KV_PAIRS:
+                                        _c1 = lambda v: arith.ConstantOp(
+                                            IntegerAttr.get(i32, v), None
+                                        ).result
+                                        _q = arith.andi(arith.addi(_q, _c1(1)), _c1(-2))
                                     return arith.index_cast(idx_t, _q)
 
                                 def _core_first(Lh):
@@ -4957,6 +5011,8 @@ def build_module():
                                         arith.cmpi(arith.CmpIPredicate.ugt, L, w),
                                     )
                                     _lo = arith.shrui(arith.subi(L, w), _c(4))
+                                    if KV_PAIRS:
+                                        _lo = arith.andi(_lo, _c(-2))
                                     return arith.index_cast(
                                         idx_t, arith.select(_open, _lo, _c(0))
                                     )
@@ -4973,19 +5029,62 @@ def build_module():
                                     # unrollSCFFors only unrolls all-constant loops, so this
                                     # survives to core codegen as a real runtime loop.
                                     _nblk_qk = _core_rounds(Lh)
-                                    for _blk in for_(_core_first(Lh), _nblk_qk, idx(1)):
-                                        # REQUIRED single-buffer: ping-pong would unroll-by-2 +
-                                        # 1-remainder over a 3-buffer toK ring whose remainder reads
-                                        # the wrong buffer vs the DMA rotation -> misaligned KV ->
-                                        # garbage chat. Single-buffer is aligned.
-                                        a_k = AllocOp(ak_l1, [], [])
-                                        ChannelGet("toK", a_k, indices=[idx(_c)])
-                                        blk_c = arith.index_cast(i32, _blk)
-                                        CallOp(
-                                            attn_qk_blk,
-                                            [a_q, a_k, a_m, a_cc, sh, blk_c, Lh],
-                                        )
-                                        DeallocOp(a_k)
+                                    _step = 2 if KV_PAIRS else 1
+                                    for _blk in for_(
+                                        _core_first(Lh), _nblk_qk, idx(_step)
+                                    ):
+                                        # Not left to the ping-pong pass: its remainder trip on a
+                                        # runtime count reads the wrong buffer. KV_PAIRS unrolls by
+                                        # hand over an even count instead.
+                                        for _o in range(_step):
+                                            a_k = AllocOp(ak_l1, [], [])
+                                            ChannelGet(
+                                                "toK",
+                                                a_k,
+                                                indices=(
+                                                    [idx(0), idx(_c)]
+                                                    if KV_REPLICATED
+                                                    else [idx(_c)]
+                                                ),
+                                            )
+                                            _b = (
+                                                arith.addi(_blk, idx(_o))
+                                                if _o
+                                                else _blk
+                                            )
+                                            blk_c = arith.index_cast(i32, _b)
+                                            if KV_PAIRS:
+                                                a_s = AllocOp(as_l1, [], [])
+                                                CallOp(
+                                                    attn_qk_blk,
+                                                    [
+                                                        a_q,
+                                                        a_k,
+                                                        a_m,
+                                                        a_cc,
+                                                        a_s,
+                                                        blk_c,
+                                                        Lh,
+                                                    ],
+                                                )
+                                                ChannelPut(
+                                                    "toS", a_s, indices=[idx(_c)]
+                                                )
+                                                DeallocOp(a_s)
+                                            else:
+                                                CallOp(
+                                                    attn_qk_blk,
+                                                    [
+                                                        a_q,
+                                                        a_k,
+                                                        a_m,
+                                                        a_cc,
+                                                        sh,
+                                                        blk_c,
+                                                        Lh,
+                                                    ],
+                                                )
+                                            DeallocOp(a_k)
                                         yield_([])
                                     DeallocOp(a_q)
                                     DeallocOp(a_m)
@@ -5002,19 +5101,62 @@ def build_module():
                                     # unrollSCFFors only unrolls all-constant loops, so this
                                     # survives to core codegen as a real runtime loop.
                                     _nblk_qk = _core_rounds(Lh)
-                                    for _blk in for_(_core_first(Lh), _nblk_qk, idx(1)):
-                                        # REQUIRED single-buffer: ping-pong would unroll-by-2 +
-                                        # 1-remainder over a 3-buffer toK ring whose remainder reads
-                                        # the wrong buffer vs the DMA rotation -> misaligned KV ->
-                                        # garbage chat. Single-buffer is aligned.
-                                        a_k = AllocOp(ak_l1, [], [])
-                                        ChannelGet("toK", a_k, indices=[idx(_c)])
-                                        blk_c = arith.index_cast(i32, _blk)
-                                        CallOp(
-                                            attn_qk_blk,
-                                            [a_q, a_k, a_m, a_cc, sh, blk_c, Lh],
-                                        )
-                                        DeallocOp(a_k)
+                                    _step = 2 if KV_PAIRS else 1
+                                    for _blk in for_(
+                                        _core_first(Lh), _nblk_qk, idx(_step)
+                                    ):
+                                        # Not left to the ping-pong pass: its remainder trip on a
+                                        # runtime count reads the wrong buffer. KV_PAIRS unrolls by
+                                        # hand over an even count instead.
+                                        for _o in range(_step):
+                                            a_k = AllocOp(ak_l1, [], [])
+                                            ChannelGet(
+                                                "toK",
+                                                a_k,
+                                                indices=(
+                                                    [idx(0), idx(_c)]
+                                                    if KV_REPLICATED
+                                                    else [idx(_c)]
+                                                ),
+                                            )
+                                            _b = (
+                                                arith.addi(_blk, idx(_o))
+                                                if _o
+                                                else _blk
+                                            )
+                                            blk_c = arith.index_cast(i32, _b)
+                                            if KV_PAIRS:
+                                                a_s = AllocOp(as_l1, [], [])
+                                                CallOp(
+                                                    attn_qk_blk,
+                                                    [
+                                                        a_q,
+                                                        a_k,
+                                                        a_m,
+                                                        a_cc,
+                                                        a_s,
+                                                        blk_c,
+                                                        Lh,
+                                                    ],
+                                                )
+                                                ChannelPut(
+                                                    "toS", a_s, indices=[idx(_c)]
+                                                )
+                                                DeallocOp(a_s)
+                                            else:
+                                                CallOp(
+                                                    attn_qk_blk,
+                                                    [
+                                                        a_q,
+                                                        a_k,
+                                                        a_m,
+                                                        a_cc,
+                                                        sh,
+                                                        blk_c,
+                                                        Lh,
+                                                    ],
+                                                )
+                                            DeallocOp(a_k)
                                         yield_([])
                                     DeallocOp(a_q)
                                     DeallocOp(a_m)
@@ -5027,18 +5169,44 @@ def build_module():
                                     # RUNTIME-L block count = ceil(Lh/16) (see _qk_body). Core
                                     # loops per RTP-L; matched by the shim readback push count.
                                     _nblk_kv = _core_rounds(Lh)
-                                    for _blk in for_(_core_first(Lh), _nblk_kv, idx(1)):
-                                        # REQUIRED single-buffer (see _qk_body): keeps toV/toK
-                                        # consumption aligned with the DMA rotation (no unroll-by-2
-                                        # remainder desync -> no misaligned KV).
-                                        a_v = AllocOp(av_l1, [], [])
-                                        ChannelGet("toV", a_v, indices=[idx(_c)])
-                                        blk_c = arith.index_cast(i32, _blk)
-                                        CallOp(
-                                            attn_kv_blk,
-                                            [sh, a_v, a_y, a_l, blk_c, Lh],
-                                        )
-                                        DeallocOp(a_v)
+                                    _step = 2 if KV_PAIRS else 1
+                                    for _blk in for_(
+                                        _core_first(Lh), _nblk_kv, idx(_step)
+                                    ):
+                                        # Unrolled by hand as in _qk_body.
+                                        for _o in range(_step):
+                                            a_v = AllocOp(av_l1, [], [])
+                                            ChannelGet(
+                                                "toV",
+                                                a_v,
+                                                indices=(
+                                                    [idx(0), idx(_c)]
+                                                    if KV_REPLICATED
+                                                    else [idx(_c)]
+                                                ),
+                                            )
+                                            _b = (
+                                                arith.addi(_blk, idx(_o))
+                                                if _o
+                                                else _blk
+                                            )
+                                            blk_c = arith.index_cast(i32, _b)
+                                            if KV_PAIRS:
+                                                a_s = AllocOp(as_l1, [], [])
+                                                ChannelGet(
+                                                    "toS", a_s, indices=[idx(_c)]
+                                                )
+                                                CallOp(
+                                                    attn_kv_blk,
+                                                    [a_s, a_v, a_y, a_l, blk_c, Lh],
+                                                )
+                                                DeallocOp(a_s)
+                                            else:
+                                                CallOp(
+                                                    attn_kv_blk,
+                                                    [sh, a_v, a_y, a_l, blk_c, Lh],
+                                                )
+                                            DeallocOp(a_v)
                                         yield_([])
                                     CallOp(attn_kv_fin, [a_y, a_l, a_o])
                                     if MIX_TO_CU:
@@ -7027,6 +7195,12 @@ def run():
         f"8 cascade pairs, NPH={NPH} dests={DEMUX}"
     )
     art = backend.compile(module, output_binary_name="decode", insts="decode.insts.bin")
+    # Tells the host to pad each wave's readback to an even block count.
+    if KV_PAIRS:
+        with open("decode.rt_pair", "w") as f:
+            f.write("2\n")
+    elif _os.path.exists("decode.rt_pair"):
+        _os.remove("decode.rt_pair")
     print(f"[q4nx_decode] emitted {art.output_binary} + {art.insts}")
     return 0
 
