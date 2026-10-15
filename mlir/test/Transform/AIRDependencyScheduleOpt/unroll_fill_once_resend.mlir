@@ -8,9 +8,8 @@
 // RUN: air-opt %s -air-opt-memtile-dma-bds="device=npu2" -split-input-file | FileCheck %s
 
 // A buffer filled once per launch iteration and re-sent 16 times (a B-stationary
-// GEMM tile): the redundant-repeat loop must unroll so the memtile lock counts the
-// 16 re-sends. Left rolled, the lock is lowered as 1 and the memtile waits for 15
-// refills that never come.
+// GEMM tile): the redundant-repeat loop unrolls so the memtile lock counts the 16
+// re-sends.
 
 // CHECK-LABEL: @unroll_fill_once_resend
 // CHECK:       air.channel.get async {{.*}} @chan_fill_in
@@ -54,7 +53,7 @@ module {
 // -----
 
 // The same loop when the producer refills the buffer every iteration: one fill
-// per send, so the loop stays rolled (the case the redundant-unroll guard is for).
+// per send, so the loop stays rolled.
 
 // CHECK-LABEL: @refill_per_iter_preserved
 // CHECK:       scf.for
