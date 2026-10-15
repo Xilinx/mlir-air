@@ -80,9 +80,7 @@ from smolvla_fuse import (  # noqa: E402
     LN_ROWS,
     LNQKV_TILING_OVERRIDE,
     OFFN_TILING_OVERRIDE,
-    FA_Q_IN_SEGMENT,
     FA_QK_PRETRANSPOSE,
-    B_STATIONARY,
 )
 from smolvla_vision_weights import SigLIPVisionConfig  # noqa: E402
 from smolvla_vision_builders import (  # noqa: E402
@@ -93,6 +91,20 @@ from smolvla_vision_builders import (  # noqa: E402
 import types
 
 _cfg = SigLIPVisionConfig()
+
+
+def _registry_hash():
+    """GEMM and FA configs come from the kernel registry, so the ELF cache is keyed
+    by the registry files' content."""
+    import hashlib
+
+    d = _HERE.parent.parent / "kernel_registry" / "details"
+    h = hashlib.md5()
+    for f in ("GEMM_bf16_in_bf16_out.json", "FlashAttention_bf16.json"):
+        h.update((d / f).read_bytes())
+    return h.hexdigest()[:8]
+
+
 _LNQKV_TILING = LNQKV_TILING_OVERRIDE or vit_ln_qkv_runtime_tiling(
     VISION_SEQ_LEN * VISION_N_IMAGES, _cfg.emb_dim, registry_seq_len=VISION_SEQ_LEN
 )
@@ -110,9 +122,9 @@ _CACHE_SUFFIX = (
     + "x".join(map(str, _OFFN_TILING))
     + "_q"
     + "x".join(map(str, _LNQKV_TILING))
-    + ("_qseg" if FA_Q_IN_SEGMENT else "")
-    + ("_kt" if FA_QK_PRETRANSPOSE else "")
-    + ("_bst" if B_STATIONARY else "")
+    + ("_kt" if FA_QK_PRETRANSPOSE else "")  # the unfused path's FA
+    + "_reg"
+    + _registry_hash()
 )
 VISION_CACHE_DIR = str(_HERE / "build" / f"vision_kernel_cache{_CACHE_SUFFIX}")
 VISION_KERNELS = {
