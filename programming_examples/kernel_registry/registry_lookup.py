@@ -9,7 +9,7 @@ tile config + method + performance, per shape, on NPU2. The matching ``.md``
 pages mirror them for humans; model code (e.g. llama) calls the lookups here so
 tile sizes are never hand-copied (which caused drift / stale-config bugs).
 
-Currently provides GEMM lookups; other kernels add their own as their JSON lands.
+Provides GEMM and FlashAttention lookups; other kernels add their own as their JSON lands.
 """
 
 import json
@@ -84,6 +84,12 @@ def gemm_config(M, K, N, output_dtype="bf16", precision="high"):
             # present, so every existing shape's return dict is unchanged.
             if "herd" in m:
                 out["herd"] = list(m["herd"])
+            # Layout knobs, present only where they were measured on: herd_swap (M
+            # on the herd's 4 rows, N on its 8 columns), b_stationary (B resident in
+            # L2, tile_k_l2 == K), b_panel (B pre-packed panel-contiguous).
+            for k in ("herd_swap", "b_stationary", "b_panel"):
+                if k in m:
+                    out[k] = bool(m[k])
             return out
     raise KeyError(
         f"gemm_config: shape {M}x{K}x{N} (out={output_dtype}) not in registry "
@@ -122,4 +128,39 @@ def gemm_config_method(M, K, N, output_dtype, method, precision="high"):
     raise KeyError(
         f"gemm_config_method: shape {M}x{K}x{N} (out={output_dtype}) not in registry "
         f"{_GEMM_JSON[output_dtype]}. Run a sweep and add it."
+    )
+
+
+def fa_config(lq, lk, heads, kv_heads, dk, causal, n_images=1):
+    """Best measured FlashAttention schedule for one attention shape.
+
+    Returns {"schedule": {...build_launch kwargs...}, "latency_us", "gflops",
+    "mean_rel_L1"}. schedule holds q_in_segment, num_q_tiles, lqp,
+    num_heads_per_unroll, num_cascade_stages, heads_rows, q_launch, fused_merge and
+    qk_pretranspose (the last two also select how attn_npu2.o is compiled).
+
+    Raises KeyError if the shape is not in FlashAttention_bf16.json (sweep it and
+    add it; no fallback to a guessed schedule).
+    """
+    data = _load("FlashAttention_bf16.json")
+    key = (lq, lk, heads, kv_heads, dk, bool(causal), n_images)
+    for s in data["shapes"]:
+        if (
+            s["lq"],
+            s["lk"],
+            s["heads"],
+            s["kv_heads"],
+            s["dk"],
+            s["causal"],
+            s["n_images"],
+        ) == key:
+            return {
+                "schedule": dict(s["schedule"]),
+                "latency_us": s["latency_us"],
+                "gflops": s["gflops"],
+                "mean_rel_L1": s["mean_rel_L1"],
+            }
+    raise KeyError(
+        f"fa_config: (lq, lk, heads, kv_heads, dk, causal, n_images)={key} not in "
+        f"FlashAttention_bf16.json. Sweep it with attn_npu2_seqfirst.py and add it."
     )

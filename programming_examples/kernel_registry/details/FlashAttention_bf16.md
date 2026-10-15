@@ -32,6 +32,8 @@ Driven by the harness CLI; the example also has a `Makefile`. The compute kernel
 
 **Tile usage (full chip).** The work is laid out as `segment(num_heads_per_unroll=2) × herd(num_q_tiles × num_cascade_stages)` compute tiles. At a 32-tile config (`num_q_tiles=4, num_cascade_stages=4`) this is `2 × 4 × 4 = 32` tiles = **the full NPU2 8×4 array**. Columns = `num_heads_per_unroll(2) × num_q_tiles(4)` = 8; rows = `num_cascade_stages(4)` = 4. The outer `launch` is sequential in time — it does not consume extra tiles.
 
+**Rows for heads (seq-first, `q_in_segment`, non-causal).** `heads_rows = Hr` splits the herd's rows into Hr head groups of `num_cascade_stages` stages each (core `ty = r·ncs + s`; the cascade stays inside a group), so `num_heads_per_unroll = Hc·Hr` heads run at once: columns = `Hc × num_q_tiles ≤ 8`, rows = `Hr × num_cascade_stages ≤ 4`. `Hr = 1` is the layout above. `q_launch` splits the q blocks over launch iterations. Per-shape picks are in [`FlashAttention_bf16.json`](FlashAttention_bf16.json), read by `kernel_registry/registry_lookup.py` `fa_config()`.
+
 **`dv_chunks` (value-dim chunking).** When `dv > lkp` (e.g. `dk = dv = 128`, `lkp = 64`), the value dimension is split into `dv_chunks = dv/lkp` chunks; the heads-first layout handles this directly. (The seq-first variant asserts `dv_chunks == 1` — its interleaved-layout dv-chunked DMA strides are not test-covered — so head-dim-128 shapes use the heads-first harness.)
 
 ---
@@ -113,14 +115,17 @@ Two sources of error stack: the **bf16 carry** of the softmax statistics/accumul
 |---|---|---|---|
 | `num_cascade_stages` | 4 | physical **rows** | **= 4**: NPU2 has exactly 4 compute rows; `< 4` under-pipelines / explodes `aircc` routing on long seq, `> 4` cannot place |
 | `num_q_tiles` | 4 | physical **columns** (× `num_heads_per_unroll`) | `num_heads_per_unroll × num_q_tiles = 8`: NPU2 has 8 columns |
-| `num_heads_per_unroll` | 2 | column multiplier | **≤ 2**: a shim-DMA-channel limit (hpu=4 runs out of channels) |
+| `num_heads_per_unroll` | 2 (4 with `heads_rows=2`) | column (× row) multiplier | heads along the columns (`hpu / heads_rows`) **≤ 2**: a shim-DMA-channel limit |
+| `heads_rows` | 1 or 2 | rows split into head groups | `heads_rows × num_cascade_stages ≤ 4`; seq-first `q_in_segment` only, non-causal |
+| `q_launch` | 1, 2 or 4 | q blocks per launch iteration | keeps the output gathers within 16 active shim BDs (`Too many simultaneously active buffer descriptors` otherwise) |
 | `lqp` | 256 | Q chunk per launch | `lq % lqp == 0`; pins `tile_q = lqp/num_q_tiles` (below) |
 | `lkp` | 64 | K/V chunk (MMA k-dim) | `= dk` (shared-buffer mode); `dk % lkp == 0`, `dv % lkp == 0` (`dv > lkp` → `dv_chunks > 1`, heads-first only) |
 | `tile_q` | 64 | Q rows per tile | **= lkp**: causal *asserts* it (the block-wise mask needs square Q-tile/K-chunk alignment — see [Tolerances & reference](#tolerances--reference)); non-causal has no assert but `tile_q ≠ 64` hangs (32) or overflows L1 (≥128) anyway |
 
 **Where the constraints come from** (three sources, all hardware/algorithm, not arbitrary):
 - **NPU2 fabric = 8 columns × 4 compute rows.** The herd's two axes map directly onto it: `num_heads_per_unroll × num_q_tiles` → columns (≤ 8), `num_cascade_stages` → rows (≤ 4). Filling the chip (anything less wastes it) forces columns = 8, rows = 4.
-- **Shim DMA channels** cap `num_heads_per_unroll ≤ 2`.
+- **Shim DMA channels** cap the heads along the columns at 2 (`num_heads_per_unroll / heads_rows ≤ 2`).
+- **16 active shim BDs** per channel bound the q blocks one launch iteration may hold (`q_launch`).
 - **L1 budget (64 KB/tile) + the causal mask** pin `tile_q = lkp = 64`.
 
 These hold for **both layouts** (same `attn_npu2.o`). heads-first additionally allows `dv_chunks > 1` (`dv > lkp`, e.g. `dk=dv=128`), which seq-first rejects.
@@ -186,7 +191,7 @@ Unlike GEMM (which has a rich `tile_m × tile_k × tile_n` space where the swept
 
 The two are within **~1–3%** across all shapes measured — the 2-heads-vs-finer-Q-tiling tradeoff barely moves throughput.
 
-**2. `num_cascade_stages` must be 4** (= physical rows). Reducing it under-pipelines (cs=2 → ~25% slower); cs=8 needs 8 rows and does not place. On long sequences, low `ncs` also makes `aircc` routing explode (each tile serially scans `seq/lkp/ncs` chunks).
+**2. `num_cascade_stages` must be 4 when the rows hold only stages** (`heads_rows = 1`). Reducing it under-pipelines (cs=2 → ~25% slower); cs=8 needs 8 rows and does not place. On long sequences, low `ncs` also makes `aircc` routing explode (each tile serially scans `seq/lkp/ncs` chunks).
 
 **3. `tile_q` is pinned to `lkp` (= 64), even when not required by the assert.** Under causal masking `tile_q = lqp/num_q_tiles == lkp` is enforced (see [Tolerances & reference](#tolerances--reference) — the block-wise causal mask needs square Q-tile/K-chunk alignment). For **non-causal** the assert is absent, but a sweep of `tile_q ∈ {32, 64, 128, 256, 512}` (varying `lqp` at fixed 32-tile) shows the same pin in practice:
 
@@ -196,7 +201,23 @@ The two are within **~1–3%** across all shapes measured — the 2-heads-vs-fin
 | **64** | ✅ the only working point |
 | ≥ 128 | ❌ does not place (L1 budget) |
 
-**Bottom line.** Across the whole sweep the only working configs are `(lqp=256, nqt=4, hpu=2, ncs=4)` and the ~equivalent `(lqp=512, nqt=8, hpu=1, ncs=4)`; everything else either fails to place, hangs, or under-utilizes. The numbers in [Tested shapes](#tested-shapes) use `256/4/2/4`, which is within ~1–3% of the best placeable config for every shape. FlashAttention's tile config is **determined, not tuned**.
+**Bottom line.** Across the whole sweep the only working configs are `(lqp=256, nqt=4, hpu=2, ncs=4)` and the ~equivalent `(lqp=512, nqt=8, hpu=1, ncs=4)`; everything else either fails to place, hangs, or under-utilizes. The numbers in [Tested shapes](#tested-shapes) use `256/4/2/4`, which is within ~1–3% of the best placeable config for every shape. For the launch-grid (heads-first, causal) schedule the config is **determined, not tuned**.
+
+**4. Rows for heads (seq-first `q_in_segment`, non-causal, measured 2026-10 on main f9457c51).** Putting two head groups of two cascade stages on the rows (`heads_rows=2, ncs=2`) beats the best rows-for-stages config on every shape swept, at lower error (one cascade merge instead of three). Whole-call latency, median of 3, turbo:
+
+| lq, heads (MHA, dk 64) | best `heads_rows=1` | best `heads_rows=2` | speedup |
+|---|---|---|---|
+| 512, 12 | 4/2/4: 1076 us | 4/4/2, ql 1: 958 us | 1.12x |
+| 512, 16 | 4/2/4: 1339 us | 4/4/2, ql 1: 1066 us | 1.26x |
+| 1024, 12 | 4/2/4: 1543 us | 4/4/2, ql 2: 1416 us | 1.09x |
+| 1024, 12, 3 images | 4/2/4: 3115 us | 4/4/2, ql 2: 2722 us | 1.14x |
+| 1024, 16 | 8/1/4: 2264 us | 4/4/2, ql 2: 1696 us | 1.33x |
+| 2048, 12 | 4/2/4: 3196 us | 4/4/2, ql 4: 2830 us | 1.13x |
+| 2048, 16 | 8/1/4: 4562 us | 8/2/2, ql 1: 3865 us | 1.18x |
+| 4096, 12 | 8/1/4: 8749 us | 8/2/2, ql 2: 8045 us | 1.09x |
+| 4096, 16 | 8/1/4: 12230 us | 8/2/2, ql 2: 10849 us | 1.13x |
+
+(`nqt/hpu/ncs`.) Two notes: with 16 heads the default 4/2/4 is not the best rows-for-stages config (8/1/4 is, by up to 22%), and 4/2/4 hangs at lq 4096 (16 q blocks in one segment run). The fused cascade merge (`fused_merge`, `merge_gp`/`merge_gp_div` + zero-init Q@K^T) adds 4-7% on `q_in_segment`; `MAX_X4` and `FUSE_EXP_SUM` alone are within 2% everywhere.
 
 ---
 
