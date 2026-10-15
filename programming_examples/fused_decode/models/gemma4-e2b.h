@@ -72,6 +72,7 @@ constexpr int BF16_PROJ_K_BLOCK = 256;
 // that path wedges the decode wave on NPU2 -- see the gemma4-e2b entry in
 // fused_decode_ple.py for the measurement.
 #define ATTN_IMPL ATTN_IMPL_1x4x1
+#define ATTN_LAZY_RESCALE 1
 #define A_FUNC A_GELU
 // qk-norm: RMSNorm(DH) on Q,K per head before RoPE (rope_w carries q/k norm w).
 #define HAS_QK_NORM

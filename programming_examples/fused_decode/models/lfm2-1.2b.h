@@ -37,6 +37,7 @@ constexpr float ATTN_SCALE = 0.125f; // 1/sqrt(64)
 #define RMS_NORM_EPS 1e-5f
 
 #define ATTN_IMPL ATTN_IMPL_2x4x1
+#define ATTN_LAZY_RESCALE 1
 #define A_FUNC A_SILU
 
 // Per-head RMSNorm on Q and K (HF: q_layernorm / k_layernorm, over DH).

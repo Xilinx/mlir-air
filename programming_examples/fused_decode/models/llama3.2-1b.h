@@ -17,6 +17,7 @@ constexpr int VOCAB_SIZE = 128256;
 constexpr float ATTN_SCALE = 0.125f;
 
 #define ATTN_IMPL ATTN_IMPL_2x4x1
+#define ATTN_LAZY_RESCALE 1
 #define A_FUNC A_SILU
 
 constexpr int Q4NX_ROW_BLOCK_SIZE = 32;
