@@ -39,6 +39,7 @@ for _p in (str(_FUSED), str(_THIS_DIR)):
         sys.path.insert(0, _p)
 
 from q4nx_decode_8b import FusedDecode8B, EOS_IDS  # noqa: E402
+import decode_elf  # noqa: E402  (on sys.path via q4nx_decode_8b)
 
 MODEL_TYPE = "LLAMA_3_1_8B"
 # NPU weight source: the self-contained model.q4nx bundle (HF repo id or local
@@ -197,12 +198,14 @@ def build_prefiller(args, prompt_len=None):
 
 
 def build_decoder(args) -> FusedDecode8B:
+    # Check for the artifact this run loads: the ELF or the xclbin templates.
+    want = "decode_scratchpad.elf" if decode_elf.elf_on() else "decode_L"
     if not os.path.isdir(args.templates) or not any(
-        f.startswith("decode_L") for f in os.listdir(args.templates)
+        f.startswith(want) for f in os.listdir(args.templates)
     ):
         raise SystemExit(
-            f"No decode templates in {args.templates}. Run `make compile-decode` "
-            f"first (or pass --templates)."
+            f"No {want}* decode artifact in {args.templates}. Run "
+            f"`make compile-decode` first (or pass --templates)."
         )
     print(f"\nLoading Q4NX weights ({args.model_source}) + decode templates ...")
     return FusedDecode8B(

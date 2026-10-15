@@ -102,6 +102,7 @@ help:
 	@echo "Quick start:"
 	@echo "  make compile          Compile prefill ELFs (~4 min, one-time; no weights)"
 	@echo "  make compile-decode   Decode templates, built into this dir (~15 min, no weights)"
+	@echo "  make compile-decode-elf  Full-ELF decode only"
 	@echo "  make  Staircase: one template pair per ATTN_MAXL ($(WINDOWS)); ~1.11x decode"
 	@echo "  make run              Run inference ($(N_TOKENS) tokens)"
 	@echo "  make chat             Interactive chat REPL (streaming output)"
@@ -180,6 +181,51 @@ _compile_decode_build:
 	  else echo "decode_L$(LREF) FAILED (see /tmp/llama8b_decode_L$(LREF).log)"; tail -30 /tmp/llama8b_decode_L$(LREF).log; exit 1; fi
 	@echo "8B decode build complete: decode_L$(LBUILD) + decode_L$(LREF) templates."
 
+## Full-ELF decode: one artifact for every context length up to LBUILD. The host
+## passes L each token through the mlir-aie scratchpad instead of patching an
+## instruction stream, so there are no templates to calibrate.
+DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
+DECODE_ELF_FLAGS := $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+
+## Skipped when the artifacts exist and were built with the same flags. LBUILD
+## is part of the stamp because the ELF bakes in ATTN_MAXL.
+.PHONY: compile-decode-elf _compile_decode_elf_build
+compile-decode-elf:
+	@if [ -f $(srcdir)/decode_scratchpad.elf ] && [ -f $(srcdir)/decode_scratchpad.params.txt ] \
+	    && [ -f $(srcdir)/decode_scratchpad.maxl ] \
+	    && [ "`cat $(DECODE_ELF_STAMP) 2>/dev/null`" = "$(DECODE_ELF_FLAGS)" ]; then \
+	  echo "Full-ELF decode already built ($(DECODE_ELF_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
+	else \
+	  $(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_elf_build \
+	    && echo "$(DECODE_ELF_FLAGS)" > $(DECODE_ELF_STAMP); \
+	fi
+
+_compile_decode_elf_build:
+	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
+	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
+	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
+	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
+	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
+	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
+	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
+	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
+	@cd $(DEC) && rm -f decode.elf params.txt; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
+	  DECODE_DYNSEQ=1 \
+	  $(if $(PYTHON),$(PYTHON),python3) $(DECODE_DRIVER) >/tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log 2>&1; rc=$$?; \
+	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
+	    mv -f decode.elf $(srcdir)/decode_scratchpad.elf; \
+	    cp -f params.txt $(srcdir)/decode_scratchpad.params.txt; \
+	    echo $$(( (($(LBUILD)+15)/16)*16 )) > $(srcdir)/decode_scratchpad.maxl; \
+	  else echo "decode ELF FAILED (see /tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log)"; \
+	    tail -30 /tmp/decode_elf_$(notdir $(srcdir))_L$(LBUILD).log; exit 1; fi
+	@echo "Full-ELF build complete: $(srcdir)/decode_scratchpad.elf"
+	@cat $(srcdir)/decode_scratchpad.params.txt
+
+# The ELF is a decode artifact like the templates, so compile-decode builds it.
+compile-decode: compile-decode-elf
+
 ## Run unified inference
 run:
 	@mkdir -p $(BUILD_DIR)
@@ -254,6 +300,7 @@ gen:
 ## the lit tests run `clean` before every gate. Delete it by hand to force a re-pack.
 clean:
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
+	rm -f $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt $(srcdir)/decode_scratchpad.maxl $(DECODE_ELF_STAMP) 2>/dev/null || true
 	rm -f $(DECODE_FLAGS_STAMP) 2>/dev/null || true
 	rm -f $(addprefix $(DEC)/,$(addsuffix .o,$(NONATTN_KERNELS))) \
 	      $(addprefix $(DEC)/,$(addsuffix .ll,$(ATTN_LL_KERNELS))) 2>/dev/null || true
