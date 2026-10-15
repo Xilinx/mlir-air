@@ -17,6 +17,7 @@ constexpr int VOCAB_SIZE = 151936;
 constexpr float ATTN_SCALE = 0.08838834764831843f; // 1/sqrt(128)
 
 #define ATTN_IMPL ATTN_IMPL_1x8x1
+#define ATTN_LAZY_RESCALE 1
 #define A_FUNC A_SILU
 #define HAS_QKV_BIAS
 
