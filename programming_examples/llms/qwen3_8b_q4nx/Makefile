@@ -268,22 +268,14 @@ clean:
 	       $(srcdir)/_q4nx_* 2>/dev/null || true
 	@echo "Qwen3-8B decode templates, build dirs and shared-dir kernels removed."
 
-## Full-ELF decode: ONE artifact for every context length in [1, ATTN_MAXL].
-## The KV append offset and the attention mask threshold become mlir-aie
-## scratchpad parameters the host writes per dispatch, so there is no
-## instruction stream to patch -- and so no template pair and no L-slope
-## calibration. Select it at run time with DECODE_ELF=1.
-##
-## RB/MEM/TRIP stay off: they would need a runtime BD *length* or loop bound,
-## and aie.dma_bd has offset_parameter but no len_parameter. That costs nothing
-## -- the xclbin already streams the full ATTN_MAXL on readback whatever L is.
+## Full-ELF decode: one artifact for every context length up to LBUILD. The host
+## passes L each token through the mlir-aie scratchpad instead of patching an
+## instruction stream, so there are no templates to calibrate.
 DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
 DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
 
-## Idempotent like the xclbin target: skip when all three artifacts are present
-## AND were built with the current flags. The stamp is keyed on LBUILD too,
-## because that is what the ELF bakes in -- a warm artifact from another LBUILD
-## would be silently reused at the wrong ATTN_MAXL. `make clean` forces a rebuild.
+## Skipped when the artifacts exist and were built with the same flags. LBUILD
+## is part of the stamp because the ELF bakes in ATTN_MAXL.
 .PHONY: compile-decode-elf _compile_decode_elf_build
 compile-decode-elf:
 	@if [ -f $(srcdir)/decode_scratchpad.elf ] && [ -f $(srcdir)/decode_scratchpad.params.txt ] \
@@ -318,9 +310,7 @@ _compile_decode_elf_build:
 	@echo "Full-ELF build complete: $(srcdir)/decode_scratchpad.elf"
 	@cat $(srcdir)/decode_scratchpad.params.txt
 
-# The full ELF is the default decode path (DECODE_ELF=0 selects the xclbin), so
-# "build the decode" has to build it too. Stated as an extra prerequisite rather
-# than folded into the recipe, which stays the xclbin template build.
+# The ELF is a decode artifact like the templates, so compile-decode builds it.
 compile-decode: compile-decode-elf
 
 FUSED_MODEL := qwen3_8b_q4nx
