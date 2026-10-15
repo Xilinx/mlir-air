@@ -979,6 +979,7 @@ def _build_launch_q_in_segment(
     NQ = num_q_tiles
     if Hr > 1:
         assert Hc * NQ <= 8 and Hr * NS <= 4, (Hc, NQ, Hr, NS)
+        assert NS >= 2, "a row group needs a first and a last cascade stage"
     chunks_per_stage = num_chunks // NS
     lk_per_stage = lkp * chunks_per_stage
     g_flat = tile_size_q * lkp
