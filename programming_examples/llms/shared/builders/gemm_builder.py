@@ -71,6 +71,16 @@ def repack_gemm_b_with_bias(w, bias, tile_k_l1):
     return out
 
 
+def repack_gemm_b_panel_layout(w, tile_k_l2, tile_n, herd_n):
+    """Host side of b_panel_layout: see pack_b_panel_layout in
+    matrix_multiplication/bf16_in_bf16_out/run.py."""
+    from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
+        pack_b_panel_layout,
+    )
+
+    return pack_b_panel_layout(w, tile_k_l2, tile_n, herd_n)
+
+
 def gemm_registry_config(m, k, n, output_dtype="bf16", precision="high"):
     """Full per-shape build recipe from the registry: the chosen method's spec
     (build_kwargs / suffix / launches) MERGED with the registry tile sizes. This is
@@ -215,6 +225,8 @@ def _build_gemm_module(
     n_out_offset=0,
     b_stationary=False,
     epilogue_swiglu=False,
+    b_panel_layout=False,
+    herd_swap=False,
 ):
     """Build a high-precision BF16-in/BF16-out GEMM via the external mm.o microkernel.
 
@@ -237,6 +249,9 @@ def _build_gemm_module(
             "epilogue_gelu needs the drain method (external_bf16_out); "
             "fused-cast's cast launch runs on 8 columns, not the GEMM's 32"
         )
+        assert not (
+            b_panel_layout or herd_swap
+        ), "b_panel_layout / herd_swap are drain-only (external_bf16_out)"
         from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
             build_module_gemm_cast,
         )
@@ -285,6 +300,8 @@ def _build_gemm_module(
             n_out_offset=n_out_offset,
             b_stationary=b_stationary,
             epilogue_swiglu=epilogue_swiglu,
+            b_panel_layout=b_panel_layout,
+            herd_swap=herd_swap,
         )
 
     raise ValueError(
