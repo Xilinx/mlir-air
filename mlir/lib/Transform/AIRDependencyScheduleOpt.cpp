@@ -8969,11 +8969,30 @@ struct AIRFuseAllocDeallocToLoopLike : public OpRewritePattern<OpTy> {
       });
     };
 
+    // Preserve explicitly pinned scratch and activation buffers. Moving an
+    // opaque callee's scratch into the loop disqualifies otherwise initialized
+    // weight buffers from the following ping-pong transformation.
+    auto carriesNoSink = [](Value memref) {
+      Operation *defOp = memref.getDefiningOp();
+      if (!defOp)
+        return false;
+      if (defOp->hasAttr("air.disable_alloc_sink"))
+        return true;
+      // air-dependency wraps the allocation but keeps its attributes inside.
+      if (auto exec = dyn_cast<air::ExecuteOp>(defOp))
+        for (auto alloc : exec.template getOps<memref::AllocOp>())
+          if (alloc->hasAttr("air.disable_alloc_sink"))
+            return true;
+      return false;
+    };
+
     // Get candidate allocs and deallocs to be fused.
     std::vector<std::pair<memref::AllocOp, memref::DeallocOp>> allocsDeallocs;
     std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> allocDeallocExecs;
     for (auto memref : usedMemrefsDefedAbove) {
       if (!memrefIsOnlyUsedInRegionOrByDealloc(opRegion, memref))
+        continue;
+      if (carriesNoSink(memref))
         continue;
       air::ExecuteOp allocExec = nullptr;
       air::ExecuteOp deallocExec = nullptr;
