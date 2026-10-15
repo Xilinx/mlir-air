@@ -28,18 +28,10 @@ range_ = for_
 
 
 def pack_b_panel_layout(w, tile_k_l2, tile_n, herd_n):
-    """(K, N) weights -> panel-contiguous layout read by build_module(b_panel_layout=True):
-    each (K-chunk, N-launch-block) slab -- shape (herd_n, tile_k_l2, tile_n), the same shape
-    the L3->L2 DMA fills L2 with -- is stored as one dense contiguous run, panels ordered
-    (K-chunk outer, N-launch-block inner). One linear burst per panel instead of tile_k_l2
-    separate tile_n-element bursts. Ported from aie-for-ai/kernels/npu2's preshuffle_B
-    (whole_array_f32acc_n4p.py): measured -15% to -22% on standalone NPU2 GEMMs at the
-    SmolVLA QKV/fc1 shapes (2026-10-10), bit-identical output to the unpacked layout.
-
-    Composes with b_pad_rows (pack_b_with_bias): apply this AFTER bias-packing, passing
-    `w` = the already bias-packed (packed_k, N) array and `tile_k_l2` = tile_k_l2_pad (the
-    padded per-chunk extent build_module computes internally), not the unpadded tile_k_l2.
-    """
+    """(K, N) weights -> the layout build_module(b_panel_layout=True) reads: each
+    (K-chunk, N-launch-block) slab, shape (herd_n, tile_k_l2, tile_n), stored as one
+    contiguous run, K-chunk outer. With b_pad_rows, pass the bias-packed array and
+    tile_k_l2 = (tile_k_l2 // tile_k_l1) * (tile_k_l1 + pad_rows)."""
     k, n = w.shape
     assert k % tile_k_l2 == 0 and n % (tile_n * herd_n) == 0
     n_kchunks, n_nblocks = k // tile_k_l2, n // (tile_n * herd_n)
@@ -110,13 +102,10 @@ def build_module(
     b_stationary=False,
     epilogue_swiglu=False,
     b_panel_layout=False,
-    dma_only=False,
     herd_swap=False,
 ):
-    # herd_swap: map M onto the herd's y (core rows) and N onto its x (columns) instead
-    # of the reverse, i.e. 4 rows on M and 8 columns on N for herd_m=4, herd_n=8. The
-    # herd extents are [herd_n, herd_m]; each herd body swaps the two ids back so every
-    # index below keeps its meaning.
+    # herd_swap: M on the herd's rows, N on its columns (herd extents [herd_n, herd_m]);
+    # each herd body swaps the ids back.
     # epilogue_swiglu: each tile_n block of B holds tile_n/2 gate columns then the
     # matching tile_n/2 up columns; the drain writes SiLU(gate)*up, so C is
     # [m, n/2] and every C-side extent (drain buffer, L2 C, L3 C) is halved.
@@ -135,15 +124,8 @@ def build_module(
         k,
         tile_k_l2,
     )
-    # b_panel_layout: B is laid out offline (host-side pack_b_panel_layout) so each
-    # (K-chunk, N-launch-block) slab is one dense contiguous (herd_n, tile_k_l2_pad,
-    # tile_n) run in DRAM; the L3->L2 DMA becomes one linear burst per panel instead
-    # of tile_k_l2_pad separate tile_n-element bursts (the memtile fill order into L2
-    # is unchanged, so nothing downstream of L2 changes). Composes with b_pad_rows:
-    # the panel chunk size is tile_k_l2_pad (the padded extent) either way, so the
-    # host just reshuffles the already bias-packed (packed_k, N) array -- pass
-    # tile_k_l2_pad, not tile_k_l2, to pack_b_panel_layout when b_pad_rows > 0.
-    # Orthogonal to b_stationary (residency vs burst size).
+    # b_panel_layout: B arrives pre-packed (pack_b_panel_layout), one contiguous run per
+    # (K-chunk, N-launch-block) panel, so each L3->L2 fill is a single burst.
     assert not b_panel_layout or n % (tile_n * herd_n) == 0, (n, tile_n, herd_n)
     if emit_external_call:
         # Manual-CallOp external-mm.o path (also usable inside a fused multi-launch
@@ -539,8 +521,7 @@ def build_module(
                 if b_stationary:
                     launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
                     # B tile: filled once per launch, stays resident in L2 for the whole M loop.
-                    # b_panel_layout, k==tile_k_l2 (b_stationary's own invariant) -> one K-chunk,
-                    # so the panel index is just the N-launch index.
+                    # b_stationary has one K-chunk, so the panel index is the N-launch index.
                     if b_panel_layout:
                         dma_memcpy_nd(
                             l2_b_data,
@@ -678,8 +659,7 @@ def build_module(
                     )
                     if not b_stationary:
                         if b_panel_layout:
-                            # panel index = K-chunk * n_nblocks_panel + N-launch-block
-                            # (matches pack_b_panel_layout's panel ordering on the host).
+                            # panel = K-chunk * n_nblocks_panel + N-launch-block, as packed.
                             panel_idx = affine_apply(
                                 AffineMap.get(
                                     0,
@@ -821,11 +801,7 @@ def build_module(
                                 strides=[1, 1, 1, 1, 1, 1],
                             )
                             if emit_external_call:
-                                # dma_only: skip the matmul call, keep every DMA/zero/drain op
-                                # unchanged (same "matmul removed" ablation the tex used for
-                                # IRON, Sec sec:npu-config) -- isolates DMA-only wall time.
-                                if not dma_only:
-                                    CallOp(matmul_func, [_l1_a, _l1_b, l1_c_subview])
+                                CallOp(matmul_func, [_l1_a, _l1_b, l1_c_subview])
                                 if b_pad_rows:
                                     CallOp(
                                         extract_bias_func,
@@ -1588,13 +1564,6 @@ if __name__ == "__main__":
         "of tile_k_l2 separate tile_n-element bursts. Orthogonal to --b-stationary.",
     )
     parser.add_argument(
-        "--dma-only",
-        action="store_true",
-        dest="dma_only",
-        help="(method=drain, diagnostic) skip the matmul call, keep every DMA/zero/drain op "
-        "unchanged, to isolate DMA-only wall time. Output will not match the reference.",
-    )
-    parser.add_argument(
         "--herd-swap",
         action="store_true",
         dest="herd_swap",
@@ -1704,7 +1673,6 @@ if __name__ == "__main__":
             epilogue_gelu=args.epilogue_gelu,
             b_stationary=args.b_stationary,
             b_panel_layout=args.b_panel_layout,
-            dma_only=args.dma_only,
             herd_swap=args.herd_swap,
         )
         instance, n_inputs = "matmul_bf16", 2
@@ -1723,8 +1691,6 @@ if __name__ == "__main__":
         ref_f32 = ref_f32 + bias.astype(np.float32)
         b_in = pack_b_with_bias(input_b, bias, tk1, args.b_pad_rows)
     if args.b_panel_layout:
-        # tile_k_l2_pad: the padded per-chunk K extent build_module computes
-        # internally (== tk2 when b_pad_rows == 0). Chains after bias-packing.
         tk2_pad = (tk2 // tk1) * (tk1 + args.b_pad_rows)
         b_in = pack_b_panel_layout(b_in, tk2_pad, tn, hn)
     if args.epilogue_gelu:

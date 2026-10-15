@@ -72,34 +72,13 @@ def repack_gemm_b_with_bias(w, bias, tile_k_l1):
 
 
 def repack_gemm_b_panel_layout(w, tile_k_l2, tile_n, herd_n):
-    """(K, N) weights -> panel-contiguous layout read by build_module(b_panel_layout=True)
-    (matrix_multiplication/bf16_in_bf16_out/run.py): each (K-chunk, N-launch-block) slab --
-    shape (herd_n, tile_k_l2, tile_n), the same shape the L3->L2 DMA fills L2 with -- is
-    stored as one dense contiguous run, panels ordered (K-chunk outer, N-launch-block
-    inner). One linear burst per panel instead of tile_k_l2 separate tile_n-element bursts.
-    Ported from aie-for-ai/kernels/npu2's preshuffle_B (whole_array_f32acc_n4p.py): measured
-    -15% to -22% on standalone NPU2 GEMMs at the SmolVLA QKV/fc1 shapes (2026-10-10),
-    bit-identical output to the unpacked layout (verified on both the IRON kernel and this
-    AIR-flow port, b_stationary on and off). Not yet composed with the bias pad rows.
-    """
-    import numpy as np
+    """Host side of b_panel_layout: see pack_b_panel_layout in
+    matrix_multiplication/bf16_in_bf16_out/run.py."""
+    from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
+        pack_b_panel_layout,
+    )
 
-    k, n = w.shape
-    assert k % tile_k_l2 == 0 and n % (tile_n * herd_n) == 0, (
-        k,
-        n,
-        tile_k_l2,
-        tile_n,
-        herd_n,
-    )
-    n_kchunks, n_nblocks = k // tile_k_l2, n // (tile_n * herd_n)
-    w5 = w.reshape(n_kchunks, tile_k_l2, n_nblocks, herd_n, tile_n)
-    panels = w5.transpose(
-        0, 2, 3, 1, 4
-    )  # (n_kchunks, n_nblocks, herd_n, tile_k_l2, tile_n)
-    return np.ascontiguousarray(panels).reshape(
-        n_kchunks * n_nblocks, herd_n, tile_k_l2, tile_n
-    )
+    return pack_b_panel_layout(w, tile_k_l2, tile_n, herd_n)
 
 
 def gemm_registry_config(m, k, n, output_dtype="bf16", precision="high"):
