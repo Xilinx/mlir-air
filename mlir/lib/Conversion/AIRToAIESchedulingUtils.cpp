@@ -1173,6 +1173,12 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
     init_pair =
         getLockValuePair(target_model, bufferOp->getResult(0), air_chan);
   auto init = std::max(init_pair.first, init_pair.second);
+  if (UsesSemaphoreLocks &&
+      init > static_cast<int64_t>(target_model.getMaxLockValue()))
+    return memcpyOp->emitOpError("buffer needs a lock count of ")
+           << init << " (one fill re-sent that many times), above the "
+           << target_model.getMaxLockValue()
+           << " a lock holds; split the loop over more launch iterations";
 
   // Consumerless memtile drain: emit ONE self-recycling lock (returned as both
   // pair elements) so the receiving BD acquires AND releases the same lock and

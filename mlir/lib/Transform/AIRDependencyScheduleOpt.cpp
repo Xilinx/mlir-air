@@ -2981,6 +2981,56 @@ private:
 // scf.for loops that iterates over air.channel.put/get but cannot be converted
 // directly to wraps and strides. The unrolled air.channel.put/get ops form a bd
 // chain.
+// Product of the static trip counts of the scf.for loops enclosing `op`, up to
+// its launch, segment or herd; nullopt if one is dynamic.
+static std::optional<int64_t> tripsWithinHierarchy(Operation *op) {
+  int64_t trips = 1;
+  for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
+    if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(p))
+      break;
+    if (auto f = dyn_cast<scf::ForOp>(p)) {
+      auto t = air::getStaticScfForTripCountAsInt(f);
+      if (!t)
+        return std::nullopt;
+      trips *= *t;
+    }
+  }
+  return trips;
+}
+
+// True if every buffer `for_op` puts from is written only by channel.gets that
+// run once, from producers that put once per launch iteration: the loop
+// re-sends a buffer filled once.
+static bool isFilledOncePerLaunchIteration(scf::ForOp for_op) {
+  bool any = false, once = true, written = false;
+  for_op.getBody()->walk([&](air::ChannelPutOp put) {
+    any = true;
+    for (Operation *user : put.getMemref().getUsers()) {
+      if (isa<air::ChannelPutOp>(user) ||
+          isa<air::ExecuteOp>(user->getParentOp()))
+        continue;
+      auto get = dyn_cast<air::ChannelGetOp>(user);
+      if (!get || tripsWithinHierarchy(get) != 1) {
+        once = false;
+        return WalkResult::interrupt();
+      }
+      written = true;
+      auto chan = air::getChannelDeclarationThroughSymbol(get);
+      if (!chan) {
+        once = false;
+        return WalkResult::interrupt();
+      }
+      for (auto producer : air::getChannelPutOpThroughSymbol(chan))
+        if (tripsWithinHierarchy(producer) != 1) {
+          once = false;
+          return WalkResult::interrupt();
+        }
+    }
+    return WalkResult::advance();
+  });
+  return any && written && once;
+}
+
 struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -3076,7 +3126,11 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
         }
       return WalkResult::advance();
     });
-    if (!someIVInOffsets && compoundTrip >= kRedundantUnrollLockLimit)
+    // The guard is for a buffer refilled every iteration. A buffer filled once
+    // per launch iteration and re-sent every iteration (a B-stationary GEMM
+    // tile) needs the unroll: its lock must count the re-sends.
+    if (!someIVInOffsets && compoundTrip >= kRedundantUnrollLockLimit &&
+        !isFilledOncePerLaunchIteration(for_op))
       return failure();
 
     // Unroll loop; preserve async tokens after unroll.
