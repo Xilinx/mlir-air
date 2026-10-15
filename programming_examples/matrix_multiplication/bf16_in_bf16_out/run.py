@@ -107,7 +107,12 @@ def build_module(
     epilogue_swiglu=False,
     b_panel_layout=False,
     dma_only=False,
+    herd_swap=False,
 ):
+    # herd_swap: map M onto the herd's y (core rows) and N onto its x (columns) instead
+    # of the reverse, i.e. 4 rows on M and 8 columns on N for herd_m=4, herd_n=8. The
+    # herd extents are [herd_n, herd_m]; each herd body swaps the two ids back so every
+    # index below keeps its meaning.
     # epilogue_swiglu: each tile_n block of B holds tile_n/2 gate columns then the
     # matching tile_n/2 up columns; the drain writes SiLU(gate)*up, so C is
     # [m, n/2] and every C-side extent (drain buffer, L2 C, L3 C) is halved.
@@ -597,7 +602,7 @@ def build_module(
 
                 @herd(
                     name="herd_0",
-                    sizes=[herd_m, herd_n],
+                    sizes=[herd_n, herd_m] if herd_swap else [herd_m, herd_n],
                     operands=[l1_c_data],
                     link_with=link_with_name if emit_external_call else None,
                 )
@@ -608,6 +613,8 @@ def build_module(
                     _sy,
                     _l1_c,
                 ):
+                    if herd_swap:
+                        _tx, _ty = _ty, _tx
                     l1_c_subview = subview(
                         _l1_c,
                         offsets=[_tx, _ty, 0, 0, 0, 0],
@@ -708,7 +715,7 @@ def build_module(
 
                     @herd(
                         name="herd_0",
-                        sizes=[herd_m, herd_n],
+                        sizes=[herd_n, herd_m] if herd_swap else [herd_m, herd_n],
                         operands=(
                             [l1_c_data, l2_a_data, l2_b_data, l1_bias_data]
                             if b_pad_rows
@@ -718,6 +725,8 @@ def build_module(
                     )
                     def herd_body(*herd_args):
                         _tx, _ty, _sx, _sy, _l1_c, _l2_a, _l2_b = herd_args[:7]
+                        if herd_swap:
+                            _tx, _ty = _ty, _tx
                         # L1 A/B allocated inside compute herd: unambiguous per-PE buffers
                         _l1_a = AllocOp(l1MemrefTyA, [], [])
                         _l1_b = AllocOp(l1MemrefTyB, [], [])
@@ -840,7 +849,7 @@ def build_module(
                 # (one f32_to_bf16_mn call), then DMA the bf16 tile out.
                 @herd(
                     name="herd_0",
-                    sizes=[herd_m, herd_n],
+                    sizes=[herd_n, herd_m] if herd_swap else [herd_m, herd_n],
                     operands=(
                         [l1_c_data, l2_a_data, l2_b_data, l2_c_data, l1_bias_data]
                         if b_pad_rows
@@ -850,6 +859,8 @@ def build_module(
                 )
                 def herd_body(*drain_args):
                     _tx, _ty, _sx, _sy, _l1_c, _l2_a, _l2_b, _l2_c = drain_args[:8]
+                    if herd_swap:
+                        _tx, _ty = _ty, _tx
                     if cast_out:
                         # Chunked drain: split the tile_n dim into `drain_chunks` (G)
                         # contiguous segments. Per chunk: subview the f32 accumulator,
@@ -1580,6 +1591,13 @@ if __name__ == "__main__":
         "unchanged, to isolate DMA-only wall time. Output will not match the reference.",
     )
     parser.add_argument(
+        "--herd-swap",
+        action="store_true",
+        dest="herd_swap",
+        help="(method=drain) map M onto the herd's rows and N onto its columns: "
+        "--herd-m 4 --herd-n 8 then runs on the same 8x4 cores as the default.",
+    )
+    parser.add_argument(
         "--cast-tile-n",
         type=int,
         default=2048,
@@ -1620,6 +1638,9 @@ if __name__ == "__main__":
 
     if args.b_panel_layout and (args.high_precision != "true" or method != "drain"):
         parser.error("--b-panel-layout needs --high-precision true --method drain")
+
+    if args.herd_swap and (args.high_precision != "true" or method != "drain"):
+        parser.error("--herd-swap needs --high-precision true --method drain")
 
     if args.high_precision == "false":
         # direct-codegen bf16 (low-precision tier).
@@ -1680,6 +1701,7 @@ if __name__ == "__main__":
             b_stationary=args.b_stationary,
             b_panel_layout=args.b_panel_layout,
             dma_only=args.dma_only,
+            herd_swap=args.herd_swap,
         )
         instance, n_inputs = "matmul_bf16", 2
 
