@@ -111,6 +111,11 @@ def load_q4nx_weights(model_source, config=None):
         k: (m, kk) for k, (_, m, kk) in Q4nxModel._PROJ.items()
     }, "config dims disagree with the bundle's projection table"
     embed, norm, lm_head = qm.embed_norm_lmhead()
+    # The bundle reader expands BF16 values to FP32. Convert the tied tensor
+    # once, before loading the layers, so neither an FP32 copy nor two BF16
+    # copies remain resident alongside all decoder weights.
+    embed = np.asarray(embed, bfloat16)
+    lm_head = embed
 
     layers = []
     for k in range(config.n_layers):
