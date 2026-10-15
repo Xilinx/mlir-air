@@ -3,8 +3,7 @@
 //
 // REQUIRES: ryzen_ai_npu2, peano
 //
-// Swapped-herd drain GEMM: M on the herd's 4 core rows, N on its 8 columns (same 32 cores),
-// B-stationary, at SmolVLA's O-projection tile (64x48x64).
+// Swapped-herd drain GEMM: M on the herd's 4 core rows, N on its 8 columns, B-stationary.
 // RUN: mkdir -p test_npu2_high_precision_drain_herd_swap_peano
 // RUN: cd test_npu2_high_precision_drain_herd_swap_peano
 // RUN: make -f %S/Makefile clean
