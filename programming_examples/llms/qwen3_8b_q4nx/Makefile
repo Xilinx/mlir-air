@@ -278,7 +278,7 @@ clean:
 ## and aie.dma_bd has offset_parameter but no len_parameter. That costs nothing
 ## -- the xclbin already streams the full ATTN_MAXL on readback whatever L is.
 DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
-DECODE_ELF_FLAGS := $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
 
 ## Idempotent like the xclbin target: skip when all three artifacts are present
 ## AND were built with the current flags. The stamp is keyed on LBUILD too,

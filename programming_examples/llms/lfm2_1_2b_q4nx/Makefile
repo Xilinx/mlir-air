@@ -318,7 +318,7 @@ clean:
 ## the shared engine dir) and adds shortconv, whose SC_DIM/SC_WAVES must match
 ## the builder's CONV_WAVES.
 DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
-DECODE_ELF_FLAGS := $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
 
 ## Idempotent like the xclbin target: skip when all three artifacts are present
 ## AND were built with the current flags. The stamp is keyed on LBUILD too,
