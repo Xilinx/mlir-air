@@ -36,7 +36,7 @@ DISPATCH_TIMEOUT_MS = 60000
 
 
 def parse_params(path):
-    """Read params.txt into (append_name, scale, addend, mask_name, arg_index).
+    """Read params.txt into (append_name, scale, addend, mask_name).
 
     The names are NOT fixed across models. AIR names a BD-offset parameter after
     the sequence argument it is affine in and puts the coefficients in the
@@ -58,13 +58,9 @@ def parse_params(path):
     m = re.search(r"_argoff_(\d+)_x(-?\d+)_([mp])(\d+)$", addr[0])
     if not m:
         raise RuntimeError(f"{path}: cannot read affine coefficients from {addr[0]}")
-    # AIR keys the name on the SEQUENCE ARGUMENT NUMBER, which is also the index
-    # the host must set L at -- and it is not the same for every model (llama is
-    # 5, qwen3-8b is 9). Take it from the name rather than assuming.
-    arg_index = int(m.group(1))
     scale = int(m.group(2))
     addend = int(m.group(4)) * (-1 if m.group(3) == "m" else 1)
-    return addr[0], scale, addend, core[0], arg_index
+    return addr[0], scale, addend, core[0]
 
 
 def elf_on():
@@ -104,7 +100,6 @@ class ElfDecode:
             self.append_scale,
             self.append_addend,
             self.mask_param,
-            self.scalar_arg,
         ) = parse_params(self.params_path)
         # The scale IS the model's REGION_W. If they disagree, the driver and the
         # build were made from different geometries and every KV append would land
@@ -139,9 +134,8 @@ class ElfDecode:
         )
         self.params.write(self.mask_param, np.int32(L))
         self.params.sync()
-        # Still required even though the hardware acts on the scratchpad copies:
-        # XRT patches every declared argument, and the sequence declares L.
-        self.run.set_arg(self.scalar_arg, L)
+        # L is not a kernel argument: the ELF takes only the sequence's buffers,
+        # and the scratchpad writes above are all the hardware reads.
         self.run.start()
         self.run.wait(DISPATCH_TIMEOUT_MS)
         return self.run.state()
