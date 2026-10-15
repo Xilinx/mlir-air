@@ -2981,50 +2981,68 @@ private:
 // scf.for loops that iterates over air.channel.put/get but cannot be converted
 // directly to wraps and strides. The unrolled air.channel.put/get ops form a bd
 // chain.
-// Product of the static trip counts of the scf.for loops enclosing `op`, up to
-// its launch, segment or herd; nullopt if one is dynamic.
+// Product of the static trip counts of the scf.for / affine.for loops enclosing
+// `op`, up to its launch, segment or herd; nullopt if one is dynamic.
 static std::optional<int64_t> tripsWithinHierarchy(Operation *op) {
-  int64_t trips = 1;
-  for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
-    if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(p))
-      break;
-    if (auto f = dyn_cast<scf::ForOp>(p)) {
-      auto t = air::getStaticScfForTripCountAsInt(f);
-      if (!t)
+  Operation *scope = op->getParentOp();
+  while (scope && !isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(scope))
+    scope = scope->getParentOp();
+  return air::getStaticTripCountInRange(op, scope);
+}
+
+// Sends into `get`'s channel element per launch iteration: the trip-weighted
+// count of the producers whose constant indices name the same element;
+// nullopt if any producer's (or the get's) indices are not constant.
+static std::optional<int64_t> sendsInto(air::ChannelGetOp get,
+                                        air::ChannelOp chan) {
+  auto constIndices =
+      [](air::ChannelInterface op) -> std::optional<SmallVector<int64_t>> {
+    SmallVector<int64_t> idx;
+    for (Value v : op.getIndices()) {
+      auto c = getConstantIntValue(v);
+      if (!c)
         return std::nullopt;
-      trips *= *t;
+      idx.push_back(*c);
     }
+    return idx;
+  };
+  auto getIdx = constIndices(get);
+  if (!getIdx)
+    return std::nullopt;
+  int64_t sends = 0;
+  for (auto producer : air::getChannelPutOpThroughSymbol(chan)) {
+    auto putIdx = constIndices(producer);
+    if (!putIdx)
+      return std::nullopt;
+    if (!putIdx->empty() && *putIdx != *getIdx)
+      continue;
+    auto trips = tripsWithinHierarchy(producer);
+    if (!trips)
+      return std::nullopt;
+    sends += *trips;
   }
-  return trips;
+  return sends;
 }
 
 // True if every buffer `for_op` puts from is written only by channel.gets that
-// run once, from producers that put once per launch iteration: the loop
-// re-sends a buffer filled once.
+// run once and receive one send per launch iteration: the loop re-sends a
+// buffer filled once.
 static bool isFilledOncePerLaunchIteration(scf::ForOp for_op) {
   bool any = false, once = true, written = false;
   for_op.getBody()->walk([&](air::ChannelPutOp put) {
     any = true;
     for (Operation *user : put.getMemref().getUsers()) {
-      if (isa<air::ChannelPutOp>(user) ||
+      if (isa<air::ChannelPutOp, memref::DeallocOp>(user) ||
           isa<air::ExecuteOp>(user->getParentOp()))
         continue;
       auto get = dyn_cast<air::ChannelGetOp>(user);
-      if (!get || tripsWithinHierarchy(get) != 1) {
+      auto chan = get ? air::getChannelDeclarationThroughSymbol(get) : nullptr;
+      if (!get || !chan || tripsWithinHierarchy(get) != 1 ||
+          sendsInto(get, chan) != 1) {
         once = false;
         return WalkResult::interrupt();
       }
       written = true;
-      auto chan = air::getChannelDeclarationThroughSymbol(get);
-      if (!chan) {
-        once = false;
-        return WalkResult::interrupt();
-      }
-      for (auto producer : air::getChannelPutOpThroughSymbol(chan))
-        if (tripsWithinHierarchy(producer) != 1) {
-          once = false;
-          return WalkResult::interrupt();
-        }
     }
     return WalkResult::advance();
   });

@@ -9255,6 +9255,26 @@ public:
     return result;
   }
 
+  // A lock counts up to the target's maximum; a larger init (a buffer re-sent
+  // more times per fill than that, through any lowering path) would overflow.
+  static LogicalResult checkLockInits(ModuleOp module) {
+    LogicalResult result = success();
+    module.walk([&](AIE::DeviceOp dev) {
+      int64_t maxLock = dev.getTargetModel().getMaxLockValue();
+      dev.walk([&](AIE::LockOp lock) {
+        auto init = lock.getInit();
+        if (!init || *init <= maxLock)
+          return;
+        lock.emitOpError("init ")
+            << *init << " is above the " << maxLock
+            << " a lock holds: a buffer is re-sent more times per fill than a "
+               "lock can count; split the loop over more launch iterations";
+        result = failure();
+      });
+    });
+    return result;
+  }
+
   void runOnOperation() override {
 
     if (!clTestPatterns.empty()) {
@@ -9285,12 +9305,14 @@ public:
     }
 
     if (clUseLockRaceConditionFixAuto) {
-      if (failed(lowerModuleWithBdFallback(module)))
+      if (failed(lowerModuleWithBdFallback(module)) ||
+          failed(checkLockInits(module)))
         signalPassFailure();
       return;
     }
     if (failed(lowerModule(module, clUseLockRaceConditionFix,
-                           clUseLockRaceConditionFixV2)))
+                           clUseLockRaceConditionFixV2)) ||
+        failed(checkLockInits(module)))
       signalPassFailure();
   }
 
