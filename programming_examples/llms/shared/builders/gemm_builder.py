@@ -249,6 +249,9 @@ def _build_gemm_module(
             "epilogue_gelu needs the drain method (external_bf16_out); "
             "fused-cast's cast launch runs on 8 columns, not the GEMM's 32"
         )
+        assert not (
+            b_panel_layout or herd_swap
+        ), "b_panel_layout / herd_swap are drain-only (external_bf16_out)"
         from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
             build_module_gemm_cast,
         )
