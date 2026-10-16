@@ -2261,12 +2261,18 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromChannelOp(
         getMemorySpaceAsString(channel_get.getDst());
     std::vector<air::ChannelPutOp> channel_puts =
         getTheOtherChannelOpThroughSymbol(channel_get);
-    if (!channel_puts.size()) {
+    // A segment's get from the launch may have no put: the launch-side loop
+    // ran zero times for this function's sizes and folded away. The device
+    // body is shared with functions whose launches do put to it.
+    bool fromLaunch = channel_get->getParentOfType<air::SegmentOp>() &&
+                      !channel_get->getParentOfType<air::HerdOp>();
+    if (!channel_puts.size() && !fromLaunch) {
       op->emitOpError("found channel op not in pairs");
       return 0;
     }
     std::string memorySpaceSrcStr =
-        getMemorySpaceAsString(channel_puts[0].getSrc());
+        channel_puts.size() ? getMemorySpaceAsString(channel_puts[0].getSrc())
+                            : std::string("L3");
     std::string event_name = "ChannelGetOp@" + channel_get.getChanName().str() +
                              "(" + memorySpaceDstStr + "<--" +
                              memorySpaceSrcStr + ")";
