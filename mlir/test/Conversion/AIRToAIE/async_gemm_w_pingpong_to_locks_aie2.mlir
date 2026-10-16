@@ -20,7 +20,7 @@
 // CHECK:   aie.mem(%[[VAL_7]])
 // CHECK:   aie.core(%[[VAL_7]]) {
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:     linalg.fill
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
@@ -33,13 +33,12 @@
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   }
 // CHECK:   aie.mem(%[[VAL_6]])
 // CHECK:   aie.core(%[[VAL_6]])
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:     linalg.fill
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
@@ -52,13 +51,12 @@
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   }
 // CHECK:   aie.mem(%[[VAL_5]])
 // CHECK:   aie.core(%[[VAL_5]])
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:     linalg.fill
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
@@ -71,13 +69,12 @@
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   }
 // CHECK:   aie.mem(%[[VAL_4]])
 // CHECK:   aie.core(%[[VAL_4]])
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
+// CHECK:     linalg.fill
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, %{{.*}})
@@ -90,7 +87,6 @@
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:       aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:     aie.use_lock({{.*}}, Release, %{{.*}})
 // CHECK:   }
 
@@ -101,7 +97,6 @@
 module {
   air.channel @channel_9 [1, 1]
   air.channel @channel_8 [2, 2]
-  air.channel @channel_7 [2, 2]
   air.channel @channel_6 [1, 1]
   air.channel @channel_5 [1, 1]
   air.channel @channel_4 [1, 1]
@@ -185,7 +180,10 @@ module {
               %alloc = memref.alloc() : memref<32x32xi32, 2>
               air.execute_terminator %alloc : memref<32x32xi32, 2>
             }
-            %18 = air.channel.get async [%async_token_33, %17]  @channel_7[%arg12, %arg13] (%results_34[] [] []) {id = 14 : i32} : (memref<32x32xi32, 2>)
+            %c0_i32 = arith.constant 0 : i32
+            %18 = air.execute [%async_token_33, %17] {
+              linalg.fill ins(%c0_i32 : i32) outs(%results_34 : memref<32x32xi32, 2>)
+            }
             %async_token_35, %results_36 = air.execute [%18] -> (memref<32x32xi32, 2>) {
               %alloc = memref.alloc() : memref<32x32xi32, 2>
               air.execute_terminator %alloc : memref<32x32xi32, 2>
@@ -260,7 +258,7 @@ module {
               %18 = affine.apply #map1()[%arg13]
               air.execute_terminator %18 : index
             }
-            %17 = air.channel.put async [%async_token_32, %async_token_30, %arg11]  @channel_7[%arg12, %arg13] (%results_20[%results_31, %results_33] [%c32, %c32] [%c64_14, %c1_13]) {id = 12 : i32} : (memref<64x64xi32, 1>)
+            %17 = air.wait_all async [%async_token_32, %async_token_30, %arg11]
             scf.reduce(%17 : !air.async.token) {
             ^bb0(%arg14: !air.async.token, %arg15: !air.async.token):
               %18 = air.wait_all async [%arg14, %arg15] 

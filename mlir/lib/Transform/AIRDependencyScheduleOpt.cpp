@@ -5758,6 +5758,35 @@ private:
     }
     return parent_loop_nest;
   }
+  // Whether two affine.if ops test the same condition on the same core
+  // coordinates: the same set, with operands that are the same value, equal
+  // constants, or the same tile index of their herds.
+  static bool guardSameCores(affine::AffineIfOp aIf, affine::AffineIfOp bIf) {
+    if (aIf.getIntegerSet() != bIf.getIntegerSet())
+      return false;
+    auto tileDim = [](Value v) -> std::optional<unsigned> {
+      auto arg = dyn_cast<BlockArgument>(v);
+      if (!arg)
+        return std::nullopt;
+      auto herd = dyn_cast<air::HerdOp>(arg.getOwner()->getParentOp());
+      if (!herd)
+        return std::nullopt;
+      for (auto [i, id] : llvm::enumerate(herd.getIds()))
+        if (id == arg)
+          return i;
+      return std::nullopt;
+    };
+    return llvm::all_of(llvm::zip(aIf->getOperands(), bIf->getOperands()),
+                        [&](auto pair) {
+                          auto [x, y] = pair;
+                          if (x == y)
+                            return true;
+                          if (auto cx = getConstantIntValue(x))
+                            return getConstantIntValue(y) == cx;
+                          auto dx = tileDim(x);
+                          return dx && tileDim(y) == dx;
+                        });
+  }
   bool areEquivalentControlLoops(Block *aBlock, Block *bBlock) {
     Operation *a = aBlock->getParentOp();
     Operation *b = bBlock->getParentOp();
@@ -5832,6 +5861,10 @@ private:
                       // ops. Cannot merge by for loop (i.e. in time).
       auto aIf = dyn_cast_if_present<affine::AffineIfOp>(a);
       auto bIf = dyn_cast_if_present<affine::AffineIfOp>(b);
+      // Merging moves b's ops under a's guard. The guards must pick the same
+      // cores, or the data meant for one core reaches another.
+      if (!guardSameCores(aIf, bIf))
+        return false;
       if (aBlock == aIf.getThenBlock() && bBlock == bIf.getThenBlock())
         return true;
       if (aIf.hasElse() && bIf.hasElse() && aBlock == aIf.getElseBlock() &&

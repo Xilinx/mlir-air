@@ -27,18 +27,21 @@
 // CHECK:    aie.flow(%[[shim_a]], DMA : 0, %[[mt_a]], DMA : 0)
 // CHECK:    aie.flow(%[[shim_b]], DMA : 0, %[[mt_b]], DMA : 0)
 // CHECK:    aie.flow(%[[mt_a]], DMA : 0, %[[shim_a]], DMA : 0)
-// CHECK:    aie.flow(%[[mt_a]], DMA : 1, %[[tile_0_2]], DMA : 0)
-// CHECK:    aie.flow(%[[mt_a]], DMA : 2, %[[tile_0_3]], DMA : 0)
-// CHECK:    aie.flow(%[[mt_a]], DMA : 3, %[[tile_1_2]], DMA : 0)
-// CHECK:    aie.flow(%[[mt_a]], DMA : 4, %[[tile_1_3]], DMA : 0)
 // CHECK:    aie.flow(%[[tile_0_2]], DMA : 0, %[[mt_a]], DMA : 1)
 // CHECK:    aie.flow(%[[tile_0_3]], DMA : 0, %[[mt_a]], DMA : 2)
 // CHECK:    aie.flow(%[[tile_1_2]], DMA : 0, %[[mt_a]], DMA : 3)
 // CHECK:    aie.flow(%[[tile_1_3]], DMA : 0, %[[mt_a]], DMA : 4)
-// CHECK:    aie.flow(%[[mt_b]], DMA : 0, %[[tile_0_2]], DMA : 1)
-// CHECK:    aie.flow(%[[mt_b]], DMA : 0, %[[tile_1_2]], DMA : 1)
-// CHECK:    aie.flow(%[[mt_b]], DMA : 1, %[[tile_0_3]], DMA : 1)
-// CHECK:    aie.flow(%[[mt_b]], DMA : 1, %[[tile_1_3]], DMA : 1)
+// Core (x, y) takes A's row block x on its first input and B's column block
+// y on its second: the A and B channels broadcast to different cores, so they
+// are not time-multiplexed onto one stream.
+// CHECK:    aie.flow(%[[mt_b]], DMA : 0, %[[tile_0_2]], DMA : 0)
+// CHECK:    aie.flow(%[[mt_b]], DMA : 0, %[[tile_0_3]], DMA : 0)
+// CHECK:    aie.flow(%[[mt_b]], DMA : 1, %[[tile_1_2]], DMA : 0)
+// CHECK:    aie.flow(%[[mt_b]], DMA : 1, %[[tile_1_3]], DMA : 0)
+// CHECK:    aie.flow(%[[mt_b]], DMA : 2, %[[tile_0_2]], DMA : 1)
+// CHECK:    aie.flow(%[[mt_b]], DMA : 2, %[[tile_1_2]], DMA : 1)
+// CHECK:    aie.flow(%[[mt_b]], DMA : 3, %[[tile_0_3]], DMA : 1)
+// CHECK:    aie.flow(%[[mt_b]], DMA : 3, %[[tile_1_3]], DMA : 1)
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 32)>
@@ -47,7 +50,6 @@
 module {
   air.channel @channel_9 [1, 1]
   air.channel @channel_8 [2, 2]
-  air.channel @channel_7 [2, 2]
   air.channel @channel_6 [1, 1]
   air.channel @channel_5 [1, 1]
   air.channel @channel_4 [1, 1]
@@ -131,7 +133,10 @@ module {
               %alloc = memref.alloc() : memref<32x32xi32, 2>
               air.execute_terminator %alloc : memref<32x32xi32, 2>
             }
-            %18 = air.channel.get async [%async_token_33, %17]  @channel_7[%arg12, %arg13] (%results_34[] [] []) {id = 14 : i32} : (memref<32x32xi32, 2>)
+            %c0_i32 = arith.constant 0 : i32
+            %18 = air.execute [%async_token_33, %17] {
+              linalg.fill ins(%c0_i32 : i32) outs(%results_34 : memref<32x32xi32, 2>)
+            }
             %async_token_35, %results_36 = air.execute [%18] -> (memref<32x32xi32, 2>) {
               %alloc = memref.alloc() : memref<32x32xi32, 2>
               air.execute_terminator %alloc : memref<32x32xi32, 2>
@@ -212,7 +217,7 @@ module {
               %18 = affine.apply #map1()[%arg13]
               air.execute_terminator %18 : index
             }
-            %17 = air.channel.put async [%async_token_32, %async_token_30, %arg11]  @channel_7[%arg12, %arg13] (%results_20[%results_31, %results_33] [%c32, %c32] [%c64_14, %c1_13]) {id = 12 : i32} : (memref<64x64xi32, 1>)
+            %17 = air.wait_all async [%async_token_32, %async_token_30, %arg11]
             scf.reduce(%17 : !air.async.token) {
             ^bb0(%arg14: !air.async.token, %arg15: !air.async.token):
               %18 = air.wait_all async [%arg14, %arg15] 
