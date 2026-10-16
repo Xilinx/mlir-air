@@ -12,7 +12,7 @@ belong to the earlier toolchain; they are not measurements of this port.
 
 Use the same MLIR-AIR build environment as the other `llms` examples. Source
 `utils/env_setup.sh` with your AIR, MLIR-AIE, Peano, and LLVM installations and
-source XRT's setup script. Build AIR with the two accompanying compiler fixes
+source XRT's setup script. Build AIR with the accompanying compiler fixes
 before compiling this example. Install its additional Python packages:
 
 ```sh
@@ -37,14 +37,18 @@ checkpoints, packed caches, and compiler intermediates.
 ## Commands
 
 ```sh
-make weights           # Download pinned checkpoints and pack weights
+make download          # Seed pinned models/reference and Full80 dataset once
+make weights           # Pack persistent target/drafter caches
 make compile           # Target + drafter + NPU prepass + NPU prefill
 make run               # Stream one response
 make run PROMPT="Explain speculative decoding." N_TOKENS=128
 make chat              # Prepare once, then accept and stream prompts
 make verify-host       # Acceptance, EOS and streaming checks without the NPU
 make verify            # DFlash state checks and HF BF16 top-5 comparison
-make benchmark         # Fixed 80-prompt decode benchmark
+make benchmark         # Fixed 80-prompt DFlash decode benchmark
+make compile-baseline  # Current upstream B1, for the paired study
+make full80            # Paired B1 + DFlash, identical 80 inputs
+make profile           # Short fixed-prompt NPU prefill + decode profile
 ```
 
 NPU execution is serialized with `/tmp/mlir-air-npu.lock`. `chat` treats each prompt as an
@@ -82,6 +86,7 @@ checkpoint and context-preparation weights, not all decoder projections.
 - [Benchmark inputs](benchmark/README.md): readable prompts and measurement.
 - [Compatibility](docs/compatibility.md): current upstream integration evidence.
 - [Validation](docs/validation.md): checks, reports and timing boundaries.
+- [Nightly CI](docs/ci.md): suite entrypoints, pinned resources, caching and budgets.
 
 The same-arithmetic sequential oracle checks speculative logic independently
 of B1's GEMV arithmetic. The upstream model comparator additionally checks

@@ -5,7 +5,7 @@
 # with HF_HUB_OFFLINE=1.
 #
 # Keep in sync with the model IDs in llms/*/{verify_adapter,*_inference}.py.
-# One repo id per line; blank lines and '#' comments are ignored.
+# One repo id per line, optionally repo@revision; blank lines and comments are ignored.
 
 meta-llama/Llama-3.2-1B
 meta-llama/Llama-3.2-1B-Instruct
@@ -58,6 +58,13 @@ Qwen/Qwen3-8B
 # Qwen/Qwen3-4B is already listed above for the bf16 llms/qwen3_4b example and
 # doubles as the reference `make verify` compares against.
 FastFlowLM/Qwen3-4B-NPU2
+
+# DFlash B8 pins all three snapshots. Keep the unpinned entries above as well:
+# existing examples resolve refs/main when offline; downloading only a SHA
+# does not create that ref. The HF blob cache deduplicates identical files.
+FastFlowLM/Qwen3-4B-NPU2@07651f11cac70ff5b7a81731643dee6f6e7baee1
+Qwen/Qwen3-4B@1cfa9a7208912126459214e8b04321603b3df60c
+z-lab/Qwen3-4B-DFlash-b16@b74e3a329c4d963783143b1e970d95b002be72bd
 
 # Same Q4NX packaging of Qwen2.5-3B-Instruct. Used by llms/qwen25_3b_q4, which
 # PR #1943 moved onto this bundle without listing it here -- so the offline

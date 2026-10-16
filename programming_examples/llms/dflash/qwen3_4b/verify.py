@@ -56,7 +56,7 @@ def main() -> None:
     here = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host-only", action="store_true")
-    parser.add_argument("--prompt", default="What is the capital of France?")
+    parser.add_argument("--prompt", default="Introduce me what is GPU")
     parser.add_argument("--tokens", type=int, default=32)
     parser.add_argument("--prefill", choices=("npu", "cpu"), default="npu")
     parser.add_argument(
@@ -154,15 +154,24 @@ def main() -> None:
             loop.target, input_ids, loop.tap_slots
         )
 
-    oracle = autoregressive(loop.target, prefill, args.tokens, eos_ids=EOS_IDS)
+    # Fixed-length state coverage even if the model emits EOS early.
+    oracle = autoregressive(loop.target, prefill, args.tokens, eos_ids=())
     committed = len(prefill["input_ids"]) + max(0, len(oracle.output_ids) - 1)
     oracle_kv = loop.target.read_kv(committed)
 
     loop.reset(prefill)
-    first = loop.generate(args.tokens, eos_ids=EOS_IDS)
+    round_kv_checks = []
+
+    def observe(row, active):
+        end = row["position"] + row["emitted"]
+        exact = np.array_equal(active.target.read_kv(end), oracle_kv[:, :, :end])
+        round_kv_checks.append(dict(committed_end=end, exact=bool(exact)))
+        assert exact, round_kv_checks[-1]
+
+    first = loop.generate(args.tokens, eos_ids=(), observer=observe)
     first_kv = loop.target.read_kv(committed)
     loop.reset(prefill)
-    second = loop.generate(args.tokens, eos_ids=EOS_IDS)
+    second = loop.generate(args.tokens, eos_ids=())
 
     assert first.output_ids == oracle.output_ids
     assert second.output_ids == first.output_ids
@@ -180,6 +189,7 @@ def main() -> None:
         same_b8_oracle_output_exact=True,
         committed_target_kv_exact=True,
         checked_rounds=len(first.rounds),
+        round_kv_checks=round_kv_checks,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n")

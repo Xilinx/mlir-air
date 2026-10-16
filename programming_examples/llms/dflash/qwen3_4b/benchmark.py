@@ -13,6 +13,7 @@ from model_paths import load_tokenizer
 from prepare_inputs import load_prefill
 from provenance import runtime_identity
 from runtime import load_pair
+from speculative import autoregressive
 
 
 def sha(path):
@@ -41,11 +42,16 @@ def aggregate(rows):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    for name in ("inputs", "target", "draft", "prepass", "output"):
+    for name in ("inputs", "target", "output"):
         p.add_argument("--" + name, type=Path, required=True)
+    for name in ("draft", "prepass"):
+        p.add_argument("--" + name, type=Path)
+    p.add_argument("--engine", choices=("dflash", "b1"), default="dflash")
     p.add_argument("--tokens", type=int, default=2048)
     p.add_argument("--per-dataset", type=int, choices=range(1, 17), default=16)
     a = p.parse_args()
+    if a.engine == "dflash" and (a.draft is None or a.prepass is None):
+        p.error("DFlash requires --draft and --prepass")
     if a.tokens < 2:
         p.error("--tokens must be at least 2")
     cohort = verify_inputs(a.inputs)
@@ -53,21 +59,35 @@ def main():
     # Refuse accidental mixing of runs. Each invocation gets its own file.
     stream = a.output.open("x")
     metadata = dict(
-        runtime=runtime_identity(),
+        runtime=runtime_identity(a.engine),
         status="loading",
         source_sha256=sha(__file__),
         inputs_sha256=sha(a.inputs / "cases.json"),
         manifests={
             name: sha(getattr(a, name) / "manifest.json")
-            for name in ("target", "draft", "prepass")
+            for name in (
+                ("target", "draft", "prepass") if a.engine == "dflash" else ("target",)
+            )
         },
         max_new_tokens=a.tokens,
         per_dataset=a.per_dataset,
-        batch=8,
+        batch=8 if a.engine == "dflash" else 1,
+        engine=a.engine,
         thinking=False,
         temperature=0,
-        timing="Decode excludes saved prefill, reset, warmup and its first token; includes initial and later NPU context preparation, drafting, verification and host work.",
-        official_timing="Same emitted tokens; starts immediately before the first verification, after the first preparation and draft.",
+        timing=(
+            "Decode excludes saved prefill, reset, warmup and its first token; "
+            + (
+                "includes initial and later NPU context preparation, drafting, verification and host work."
+                if a.engine == "dflash"
+                else "includes every B1 forward and host token selection."
+            )
+        ),
+        official_timing=(
+            "Same emitted tokens; starts immediately before the first verification, after the first preparation and draft."
+            if a.engine == "dflash"
+            else "Identical to the primary decode timer."
+        ),
     )
     summary_path = a.output.with_suffix(".summary.json")
     rows = []
@@ -89,22 +109,33 @@ def main():
     save()
     try:
         tokenizer = load_tokenizer()
-        loop = load_pair(a.target, a.draft, prepass_artifacts=a.prepass)
+        if a.engine == "dflash":
+            loop = load_pair(a.target, a.draft, prepass_artifacts=a.prepass)
+        else:
+            from baseline import load_baseline
+
+            target = load_baseline(a.target)
         counts = defaultdict(int)
         cases = []
         for case in cohort["cases"]:
             if counts[case["dataset"]] < a.per_dataset:
                 cases.append(case)
                 counts[case["dataset"]] += 1
-        loop.prepass.warmup()
         initial = load_prefill(a.inputs, cases[0])
-        loop.reset(initial)
-        loop.generate(17)
+        if a.engine == "dflash":
+            loop.prepass.warmup()
+            loop.reset(initial)
+            loop.generate(17)
+        else:
+            autoregressive(target, initial, 17)
         metadata["status"] = "running"
         for case in cases:
             prefill = load_prefill(a.inputs, case)
-            loop.reset(prefill)
-            g = loop.generate(a.tokens)
+            if a.engine == "dflash":
+                loop.reset(prefill)
+                g = loop.generate(a.tokens)
+            else:
+                g = autoregressive(target, prefill, a.tokens)
             emitted = len(g.output_ids) - 1
             nr = len(g.rounds)
             row = dict(

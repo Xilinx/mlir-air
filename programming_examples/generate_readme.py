@@ -561,7 +561,7 @@ _VLA_MODELS = frozenset({"smolvla", "smolvla_all"})
 # Records that are a variant of an example rather than an example of their own,
 # mapped to the directory under llms/ that implements them. smolvla_all is
 # smolvla with every stage on the NPU (run_npu2_profile_all.lit).
-_MODEL_DIRS = {"smolvla_all": "smolvla"}
+_MODEL_DIRS = {"smolvla_all": "smolvla", "qwen3_4b_dflash_b8": "dflash/qwen3_4b"}
 
 # ── LLM model registry ────────────────────────────────────────────────
 # Maps the perf.json "model" key (which matches the directory name under
@@ -571,6 +571,7 @@ _MODEL_DIRS = {"smolvla_all": "smolvla"}
 # instruct variants, and some load weights indirectly). Keep in sync with
 # programming_examples/llms/hf_models.txt.
 LLM_HF_MODELS = {
+    "dflash/qwen3_4b": "Qwen/Qwen3-4B",
     "gemma3_4b_q4nx": "FastFlowLM/Gemma3-4B-NPU2",
     "gemma4_e2b_q4nx": "FastFlowLM/Gemma4-E2B-IT-NPU2",
     "llama31_8b_q4nx": "FastFlowLM/Llama-3.1-8B-NPU2",

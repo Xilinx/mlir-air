@@ -54,6 +54,10 @@ print("Running with PYTHONPATH", config.environment["PYTHONPATH"])
 config.environment["MLIR_AIE_INSTALL_DIR"] = os.environ.get(
     "MLIR_AIE_INSTALL_DIR", config.aie_obj_root
 )
+# Match env_setup.sh for builders that also consume the AIR/Peano/LLVM roots.
+config.environment["MLIR_AIR_INSTALL_DIR"] = config.air_obj_root
+config.environment["PEANO_INSTALL_DIR"] = os.path.dirname(config.peano_tools_dir)
+config.environment["LLVM_INSTALL_DIR"] = os.path.dirname(config.llvm_tools_dir)
 
 # Makefiles and tests that shell out to Python must use the interpreter this
 # build was configured with, not whichever one PATH happens to resolve first.
@@ -203,6 +207,10 @@ if os.environ.get("HF_HUB_DISABLE_XET"):
 # manual downloadLLMWeights.yml workflow.
 if os.environ.get("HF_HUB_OFFLINE"):
     llvm_config.with_environment("HF_HUB_OFFLINE", os.environ["HF_HUB_OFFLINE"])
+
+# Cache discovery and the test subprocess must use the same persistent root.
+llvm_config.with_system_environment(["HF_HOME", "HF_HUB_CACHE", "DFLASH_CACHE_DIR",
+                                    "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS"])
 
 
 # Gate each LLM example on the weights it loads actually being present in the

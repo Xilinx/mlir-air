@@ -45,7 +45,7 @@ flock /tmp/mlir-air-npu.lock python tests/check_attention.py --run \
   --output build/attention-draft --result build/attention-draft.json
 make benchmark-data
 flock /tmp/mlir-air-npu.lock python tests/check_prepass.py \
-  --artifacts build/prepass --fixture build/benchmark_bundle/inputs/prefill/00.npz \
+  --artifacts build/prepass --fixture "$HOME/.cache/mlir-air/dflash/benchmark-16x5-v1/inputs/prefill/00.npz" \
   --output build/prepass-check.json
 ```
 
@@ -87,8 +87,32 @@ No historical B1 time is silently used as a new-machine baseline.
 
 ## Recorded self-validation
 
-On the upstream base and dependencies listed in [compatibility.md](compatibility.md),
-the Ryzen AI 9 HX 370 / NPU2 validation completed the following checks:
+On October 16, the branch was rebuilt against upstream `25e913ff` and its
+MLIR-AIE `1.4.5.dev46+ge7048fa`, Peano `22.0.0.2026101201+83ba9ea9` and
+LLVM/MLIR `24.0.0.2026100106+bdf04ebb` dependencies. Local HX370/NPU2 checks:
+
+| Check | Executed coverage |
+|---|---|
+| Compiler | 620 PASS; 7 expected failures; 7 unsupported |
+| Compile LIT | PASS: target, drafter, NPU prepass and C2048 prefill, 392.15 s |
+| Verify LIT | PASS, 271.41 s; host gates, six-prefix target/drafter state checks, NPU-prefill loop and HF model checks |
+| Complete loop | Fixed 32 tokens; exact repeat acceptance/oracle output and committed KV after each of 12 rounds |
+| HF model proxy | Two complete 32-token captures; mutual top-5 PASS at zero-based first divergences 2 and 13, visiting 3 and 14 positions |
+| Attention | 24 causal and 24 bidirectional full-output cases; repeats/isolation/visibility pass |
+| Context preparation | 40 input/row cases plus mixed positions and multi-chunk checks pass |
+| Profile LIT | PASS, 107.39 s including initialization; 18-token GPU prompt, cap256, NPU prefill, warm TTFT 4816.903 ms and decode 22.467 tokens/s |
+
+The actual profile and verification tests ran with eight CPU threads. The
+Full80 paired study is recorded separately when complete; the short profile
+does not establish Full80 throughput. These are implementation-author checks,
+not an independent or GitHub Actions evaluation.
+
+### Preserved October 15 checkpoint
+
+The October 15 validated checkpoint used upstream `cca4f090`, MLIR-AIE
+`1.4.5.dev22+g35fa6b1` and Peano `22.0.0.2026100501+94b320c0`. On the
+Ryzen AI 9 HX 370 / NPU2 it completed the following checks. This historical
+evidence does not qualify later compiler or dependency changes:
 
 | Check | Executed coverage |
 |---|---|
@@ -105,6 +129,6 @@ the Ryzen AI 9 HX 370 / NPU2 validation completed the following checks:
 The `make benchmark` pilot used one request per dataset and a 256-token cap:
 1003 emitted tokens, **48.960 pooled tokens/s**, **44.961 equal-request tokens/s**,
 and **5.091 emitted tokens/round**. This short coverage check is separate from
-the historical Full80 result in the README. Full80 and a fresh B1 comparison
-have not been rerun on this toolchain. Tests were performed by the implementation
+the historical Full80 result in the README. No Full80 or fresh B1 comparison
+was performed at that checkpoint. Tests were performed by the implementation
 author; they are self-validation, not an independent review.

@@ -48,9 +48,14 @@ def build_identity(kind):
             + list((fused / "kernels").glob("*"))
             + list((fused / "models").glob("*"))
         )
+        if kind == "baseline":
+            sources = [HERE / "build_baseline.py", HERE / "build_identity.py"] + [
+                p for p in sources if fused in p.parents
+            ]
     tools = {
         "air-opt": Path(shutil.which("air-opt")),
         "clang++": Path(os.environ["PEANO_INSTALL_DIR"]) / "bin/clang++",
+        "llvm-link": Path(shutil.which("llvm-link")),
     }
     return dict(
         sources={

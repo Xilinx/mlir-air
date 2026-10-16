@@ -36,6 +36,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--destination", type=Path, default=HERE / "build/benchmark_bundle")
     ap.add_argument("--archive", type=Path, help="Use a previously downloaded archive")
+    ap.add_argument("--offline", action="store_true", help="Require the bundle or archive to be cached")
     ap.add_argument(
         "--verify",
         type=Path,
@@ -60,8 +61,8 @@ def main():
     dest.parent.mkdir(parents=True, exist_ok=True)
     archive = args.archive or dest.parent / asset["archive"]
     if not archive.exists():
-        if args.archive:
-            raise FileNotFoundError(archive)
+        if args.archive or args.offline:
+            raise FileNotFoundError(f"Missing {archive}; run make download once with network access")
         temporary = archive.with_suffix(archive.suffix + ".partial")
         print(
             f"Downloading {asset['bytes'] / 1e6:.1f} MB from {asset['url']}", flush=True

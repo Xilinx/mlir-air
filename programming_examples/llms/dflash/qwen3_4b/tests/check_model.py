@@ -65,14 +65,14 @@ def main(a):
             all_cases = json.loads((a.inputs / "cases.json").read_text())["cases"]
             cases = [all_cases[i] for i in (0, 16)]
         else:
+            prompts = [
+                s.strip()
+                for s in (VERIFY / "prompts/instruct.txt").read_text().splitlines()
+                if s.strip() and not s.lstrip().startswith("#")
+            ][:2]
+            assert len(prompts) == 2
             cases = [
-                dict(id=f"prompt-{i}", prompt=text)
-                for i, text in enumerate(
-                    (
-                        "What is the capital of France?",
-                        "Explain why the sky appears blue.",
-                    )
-                )
+                dict(id=f"prompt-{i}", prompt=text) for i, text in enumerate(prompts)
             ]
         if a.phase == "hf":
             from huggingface_hub import snapshot_download

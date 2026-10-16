@@ -207,4 +207,13 @@ add_lit_testsuite(check-programming-examples-llms-prefill-sweep
 )
 set_target_properties(check-programming-examples-llms-prefill-sweep PROPERTIES FOLDER "Tests")
 
+# Matched-cohort studies are kept separate from short-prompt profile history.
+add_lit_testsuite(check-programming-examples-llms-full80
+  "Running paired LLM Full80 studies (sequential)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --filter "llms/.*/run_npu2_full80"
+)
+set_target_properties(check-programming-examples-llms-full80 PROPERTIES FOLDER "Tests")
+
 add_dependencies(check-all check-programming-examples)
