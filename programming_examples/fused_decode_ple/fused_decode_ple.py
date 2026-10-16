@@ -1752,8 +1752,8 @@ W_LAYER = sum(NCX * PER_COL_PH[p] * BLOCK_BF16 for p in range(NPH))  # weights /
 # real up/gate rounds and down columns, a WIDE wave (KV-shared) its q rows
 # without the k/v rounds. A SLIDING wave's heads are DH_SWA wide in a DH_A slot:
 # its q/k/v rows arrive compact (rope_compute_swa spreads them), and its v sits
-# at the front of the slot, so the attention output has every odd o-proj X
-# block zero and the o-proj streams weights for the even ones only. Everything
+# at the front of the slot, so only the first of each head's two o-proj X blocks
+# is nonzero and the o-proj streams weights for those only. Everything
 # downstream keeps the build's shape: the projection cores emit zero rounds for
 # rows with no weights and skip X blocks with none. Arm 0 is an LM-head wave.
 PER_CLASS = bool(MODEL.get("INTER_NARROW")) and not HYBRID_MIXER and not LM_HEAD
@@ -1800,6 +1800,13 @@ else:
     CLASS_GEOM = {1: (I2P, J2P, [1] * NPH)}
 DEC_ARMS = tuple(CLASS_GEOM)
 SWA_HEADS = any(a & SWA_ARM_BIT for a in DEC_ARMS)
+# A sliding head fills only the first of its two o-proj X blocks. Laying each
+# CU's X out half-major (every head's first block, then every head's second)
+# turns those into whole aligned pairs, which the double-buffered proj loop
+# needs; a full layer's o-proj weights are packed in the same order.
+if SWA_HEADS:
+    assert all(x in (1, 2) for g in CLASS_GEOM.values() for x in g[2])
+    assert DH == 2 * COL_BLOCK and Q_HEADS_PER_CU & (Q_HEADS_PER_CU - 1) == 0
 
 
 def class_per_col(arm):
@@ -5441,6 +5448,30 @@ def build_module():
 
                         def _src_attn():
                             for c in range(N_ATTN_CU):
+                                if SWA_HEADS:
+                                    # [head][block][256] -> [block][head][256];
+                                    # offsets count outer strides.
+                                    ChannelGet(
+                                        "attnO",
+                                        omtb,
+                                        indices=[idx(c)],
+                                        offsets=[
+                                            idx(c * DQ_PER_CU // COL_BLOCK),
+                                            idx(0),
+                                            idx(0),
+                                        ],
+                                        sizes=[
+                                            idx(Q_HEADS_PER_CU),
+                                            idx(DH // COL_BLOCK),
+                                            idx(COL_BLOCK),
+                                        ],
+                                        strides=[
+                                            idx(COL_BLOCK),
+                                            idx(Q_HEADS_PER_CU * COL_BLOCK),
+                                            idx(1),
+                                        ],
+                                    )
+                                    continue
                                 ChannelGet(
                                     "attnO",
                                     omtb,
@@ -6291,38 +6322,41 @@ def build_module():
                                 J2x2 = arith.muli(J2v, c2)
                                 a_acc = AllocOp(yacc_l1, [], [])
                                 CallOp(zero, [a_acc, _arm])
-                                for _j in for_(idx(0), J2x2, idx(1)):
-                                    a_x = AllocOp(xblk_l1, [], [])
-                                    ChannelGet("inX", a_x, indices=[gcx, gcy])
-                                    if nw is None:
+                                if nw is None:
+                                    for _j in for_(idx(0), J2x2, idx(1)):
+                                        a_x = AllocOp(xblk_l1, [], [])
+                                        ChannelGet("inX", a_x, indices=[gcx, gcy])
                                         a_w = AllocOp(wblk_l1, [], [])
                                         ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
                                         CallOp(acc256, [a_x, a_w, a_acc])
                                         DeallocOp(a_w)
-                                    else:
-                                        # Only X blocks j < nw with j & xm == 0
-                                        # carry weights: one get site per channel,
-                                        # the weight half in a 0/1-trip loop.
-                                        _has_w = arith.select(
-                                            arith.andi(
-                                                arith.cmpi(
-                                                    arith.CmpIPredicate.ult, _j, nw
-                                                ),
-                                                arith.cmpi(
-                                                    arith.CmpIPredicate.eq,
-                                                    arith.andi(_j, xm),
-                                                    idx(0),
-                                                ),
+                                        DeallocOp(a_x)
+                                        yield_([])
+                                    return a_acc
+                                # Only X blocks j < nw with j & xm == 0 carry
+                                # weights, and they come in aligned pairs. So the
+                                # loop takes a pair at a time, by hand, and both
+                                # weight gets sit in 0/1-trip loops with the
+                                # same bound: their BD ring alternates two buffers.
+                                for _jp in for_(idx(0), J2x2, c2):
+                                    _has_w = arith.select(
+                                        arith.andi(
+                                            arith.cmpi(
+                                                arith.CmpIPredicate.ult, _jp, nw
                                             ),
-                                            idx(1),
-                                            idx(0),
-                                        )
+                                            arith.cmpi(
+                                                arith.CmpIPredicate.eq,
+                                                arith.andi(_jp, xm),
+                                                idx(0),
+                                            ),
+                                        ),
+                                        idx(1),
+                                        idx(0),
+                                    )
+                                    for _o in range(2):
+                                        a_x = AllocOp(xblk_l1, [], [])
+                                        ChannelGet("inX", a_x, indices=[gcx, gcy])
                                         for _w in for_(idx(0), _has_w, idx(1)):
-                                            # Ping-pong gives this sometimes-run
-                                            # get two BD slots it cannot alternate.
-                                            _w.owner.owner.attributes[
-                                                "air.disable_ping_pong"
-                                            ] = UnitAttr.get()
                                             a_w = AllocOp(wblk_l1, [], [])
                                             ChannelGet(
                                                 "wL2ToL1", a_w, indices=[gcx, gcy]
@@ -6330,7 +6364,7 @@ def build_module():
                                             CallOp(acc256, [a_x, a_w, a_acc])
                                             DeallocOp(a_w)
                                             yield_([])
-                                    DeallocOp(a_x)
+                                        DeallocOp(a_x)
                                     yield_([])
                                 return a_acc
 
@@ -6395,8 +6429,8 @@ def build_module():
 
                                 # Every wave keeps the build's round count and X
                                 # stream. Rounds past its class's I2w have no
-                                # weights; of the X blocks, only every Xs-th of the
-                                # first 2*J2w*Xs has any.
+                                # weights; of the first 2*J2w*Xs X blocks, those
+                                # with j & Xm != 0 have none.
                                 def _per_arm(voc_val, of_arm):
                                     arms = [a for a in DEC_ARMS if a != 1]
                                     return index_switch(
@@ -6418,20 +6452,31 @@ def build_module():
 
                                 I2w = _per_arm(idx(VOCAB_I2), _tab(0))
                                 J2w = _per_arm(idx(VOCAB_J2), _tab(1))
+                                # Weighted X blocks come in whole pairs, so the
+                                # double-buffered loop's two get sites alternate.
                                 Xm = _per_arm(
                                     idx(0),
                                     lambda a: _psw(
                                         _ephv,
-                                        [idx(x - 1) for x in CLASS_GEOM[a][2]],
+                                        [
+                                            idx(0 if x == 1 else Q_HEADS_PER_CU)
+                                            for x in CLASS_GEOM[a][2]
+                                        ],
+                                        idx_t,
+                                    ),
+                                )
+                                Xf = _per_arm(
+                                    idx(1),
+                                    lambda a: _psw(
+                                        _ephv,
+                                        [idx(x) for x in CLASS_GEOM[a][2]],
                                         idx_t,
                                     ),
                                 )
                                 for _v1 in for_(idx(0), I2v, idx(1)):
                                     _nw = arith.select(
                                         arith.cmpi(arith.CmpIPredicate.ult, _v1, I2w),
-                                        arith.muli(
-                                            arith.muli(J2w, c2), arith.addi(Xm, idx(1))
-                                        ),
+                                        arith.muli(arith.muli(J2w, c2), Xf),
                                         idx(0),
                                     )
                                     for _e in range(PAIR_ROWS):  # 1 (non-paired)

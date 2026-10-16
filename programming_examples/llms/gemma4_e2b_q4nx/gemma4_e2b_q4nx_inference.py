@@ -121,7 +121,7 @@ def _wcache_path(uni_dec, fingerprint):
     """
     return (
         _WCACHE_DIR
-        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_swa_packed_{fingerprint}.npz"
+        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_swa_hm_packed_{fingerprint}.npz"
     )
 
 
