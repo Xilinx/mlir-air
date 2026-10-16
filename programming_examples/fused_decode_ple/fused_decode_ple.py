@@ -7075,7 +7075,63 @@ def build_module():
                             # at ~1.5k cycles each, sitting directly in front of each
                             # x-send that the 16 proj cores wait on.
                             CallOp(_rms_final, [a_xnl, a_xl, a_wl, _arm])
+
+                            def _send_x():
+                                refeed(
+                                    _xn_per_blk,
+                                    lambda: ChannelPut(
+                                        "xnorm",
+                                        a_xnl,
+                                        offsets=[0],
+                                        sizes=[K],
+                                        strides=[1],
+                                    ),
+                                )
+
+                            def _drain():
+                                ChannelGet(
+                                    "outY",
+                                    a_v,
+                                    indices=[idx(0), idx(RMS_DEST)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(K)],
+                                    strides=[idx(1)],
+                                )
+                                if PLE_BYPASS != 3:
+                                    # BISECT ONLY (3): drop the vocab arm's
+                                    # @layerOut puts, leaving the channel with a
+                                    # single put site and a single get site.
+                                    # Tests whether the per-arm put count (1 in
+                                    # decode, 9 here) is what makes air-to-aie
+                                    # drop the relay flow. Vocab is expected to
+                                    # hang; every DECODE wave should now run.
+                                    ChannelPut(
+                                        "layerOut",
+                                        a_v,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K)],
+                                        strides=[idx(1)],
+                                    )
+
+                            if _voc_blks_2k > 1:
+                                # One batch of x ahead of the logit drain, so the
+                                # projection cores start a batch while this core
+                                # waits on the previous one's logits.
+                                _send_x()
                             for _rv in for_(idx(0), idx(_voc_blks_2k), idx(1)):
+                                if _voc_blks_2k > 1:
+                                    _more = arith.cmpi(
+                                        arith.CmpIPredicate.ult,
+                                        _rv,
+                                        idx(_voc_blks_2k - 1),
+                                    )
+                                    _nx = IfOp(_more, [], has_else=False)
+                                    with InsertionPoint(_nx.thenRegion.blocks[0]):
+                                        _send_x()
+                                        yield_([])
+                                    _drain()
+                                    yield_([])
+                                    continue
                                 # a_xnl is now loop-invariant, so this IS a
                                 # re-broadcast: air-annotate-refeed collapses it to
                                 # one put whose credit is _xn_per_blk -- 4 (1B), 6
@@ -7110,39 +7166,8 @@ def build_module():
                                 # device: llama-1B emits a bit-identical 64-token
                                 # greedy id sequence vs a pre-hoist control, 3B passes
                                 # top-5 verify, gemma passes its Paris gate.
-                                refeed(
-                                    _xn_per_blk,
-                                    lambda: ChannelPut(
-                                        "xnorm",
-                                        a_xnl,
-                                        offsets=[0],
-                                        sizes=[K],
-                                        strides=[1],
-                                    ),
-                                )
-                                ChannelGet(
-                                    "outY",
-                                    a_v,
-                                    indices=[idx(0), idx(RMS_DEST)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
-                                )
-                                if PLE_BYPASS != 3:
-                                    # BISECT ONLY (3): drop the vocab arm's
-                                    # @layerOut puts, leaving the channel with a
-                                    # single put site and a single get site.
-                                    # Tests whether the per-arm put count (1 in
-                                    # decode, 9 here) is what makes air-to-aie
-                                    # drop the relay flow. Vocab is expected to
-                                    # hang; every DECODE wave should now run.
-                                    ChannelPut(
-                                        "layerOut",
-                                        a_v,
-                                        offsets=[idx(0)],
-                                        sizes=[idx(K)],
-                                        strides=[idx(1)],
-                                    )
+                                _send_x()
+                                _drain()
                                 yield_([])
                             DeallocOp(a_xl)
                             DeallocOp(a_wl)
