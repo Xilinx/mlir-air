@@ -1556,12 +1556,18 @@ def LinearizeVectorsOp : Op<Transform_Dialect, "air.linearize_vectors",
          rounding;
        - elementwise float ops wider than the native width are halved until
          they fit: 32 lanes for bf16, `f32_lanes` for ops on f32;
+       - an f32 add, sub or mul on fewer than 16 lanes whose result is only
+         replicated (a value per row, broadcast across the row) is done on
+         replicated operands instead;
        - a strided rank-1 read that is in bounds is read element by element.
     4. On AIE2P, with `f32_lanes` 32: a 32-lane bf16 x bf16 + f32
        `vector.fma` becomes `aievec.mac_elem` and a 32-lane f32 to bf16
        `arith.truncf` (default rounding) `aievec.srs`. With `f32_lanes` 64:
        the 64-lane fma becomes the `llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf`
-       intrinsic, the 64-lane truncf two `aievec.srs` (stored as two halves
+       intrinsic, `subf(c, mulf(a, b))` (with `a` widened from bf16 and `b`
+       widened from bf16 or a splat that bf16 represents exactly) the
+       matching `bf.msc.conf`, the 64-lane truncf two `aievec.srs` (stored as
+       two halves
        when its only use is a shape_cast to an in-bounds memref write), and
        `bf16(0x4300 | zext(q))` for unpacked 4-bit `q` two
        `llvm.aie2p.vshuffle` byte interleaves of `q` with 0x43. Intrinsics

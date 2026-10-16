@@ -537,6 +537,35 @@ struct SinkExtFBelowShuffle : public OpRewritePattern<vector::ShuffleOp> {
   }
 };
 
+// `shuffle(op(a, b), _)` reading only its first operand, for an f32
+// add/sub/mul on fewer than 16 lanes, as `op(shuffle(a, a), shuffle(b, b))`:
+// AIE2P has no f32 vector op that narrow, and such ops come from a value
+// computed once per row and replicated across it.
+struct SinkNarrowF32BelowShuffle : public OpRewritePattern<vector::ShuffleOp> {
+  using OpRewritePattern<vector::ShuffleOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::ShuffleOp shuffle,
+                                PatternRewriter &rewriter) const override {
+    Operation *op = shuffle.getV1().getDefiningOp();
+    if (!isa_and_present<arith::AddFOp, arith::SubFOp, arith::MulFOp>(op))
+      return failure();
+    auto vt = cast<VectorType>(op->getResult(0).getType());
+    int64_t n1 = vt.getNumElements();
+    if (!vt.getElementType().isF32() || n1 >= 16 ||
+        llvm::any_of(shuffle.getMask(), [&](int64_t m) { return m >= n1; }))
+      return failure();
+    SmallVector<Value> wide;
+    for (Value operand : op->getOperands())
+      wide.push_back(vector::ShuffleOp::create(
+          rewriter, shuffle.getLoc(), operand, operand, shuffle.getMask()));
+    Operation *widened =
+        rewriter.create(op->getLoc(), op->getName().getIdentifier(), wide,
+                        TypeRange{shuffle.getType()}, op->getAttrs());
+    rewriter.replaceOp(shuffle, widened->getResults());
+    return success();
+  }
+};
+
 // A vector.extract_strided_slice of a register (not of an insert it would
 // fold with) that is not a half of it, as a vector.shuffle: the AIE lowering
 // extracts only register halves; LLVM lowers the shuffle.
@@ -732,8 +761,12 @@ struct ByteInterleave4300 : public OpRewritePattern<arith::OrIOp> {
         if (auto zext = extSide.getDefiningOp<arith::ExtUIOp>())
           src = zext.getIn();
       }
+      // The constant may come reshaped or replicated.
+      SmallVector<int64_t> unusedLanes;
       DenseIntElementsAttr cst;
-      if (!src || !matchPattern(cstSide, m_Constant(&cst)) || !cst.isSplat() ||
+      if (!src ||
+          !matchPattern(traceLanes(cstSide, unusedLanes), m_Constant(&cst)) ||
+          !cst.isSplat() ||
           cst.getSplatValue<APInt>().getZExtValue() != 0x4300 ||
           !getElementTypeOrSelf(src.getType()).isInteger(8))
         continue;
@@ -797,6 +830,84 @@ struct FMA64ToMac : public OpRewritePattern<vector::FMAOp> {
   }
 };
 
+// `subf(c, mulf(a, b))` on 64 f32 lanes, the product used only there, with
+// a widened from bf16 and b widened from bf16 or a splat that bf16 holds
+// exactly, as one 64-lane bf16 multiply-subtract. An f32 vector subf left to
+// the AIE lowering keeps the loop around it from being a zero-overhead loop.
+struct SubMul64ToMsc : public OpRewritePattern<arith::SubFOp> {
+  using OpRewritePattern<arith::SubFOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SubFOp sub,
+                                PatternRewriter &rewriter) const override {
+    auto vt = dyn_cast<VectorType>(sub.getType());
+    if (!vt || vt.getRank() != 1 || vt.getNumElements() != 64 ||
+        !vt.getElementType().isF32())
+      return failure();
+    auto mul = sub.getRhs().getDefiningOp<arith::MulFOp>();
+    if (!mul || !mul->hasOneUse())
+      return failure();
+    Location loc = sub.getLoc();
+    auto bf16Vec = VectorType::get({64}, rewriter.getBF16Type());
+    auto asBF16 = [&](Value v) -> Value {
+      if (Value src = bf16Source(v))
+        return src;
+      SmallVector<int64_t> unusedLanes;
+      DenseFPElementsAttr cst;
+      if (!matchPattern(traceLanes(v, unusedLanes), m_Constant(&cst)) ||
+          !cst.isSplat())
+        return nullptr;
+      APFloat f = cst.getSplatValue<APFloat>();
+      bool lost = false;
+      APFloat b = f;
+      b.convert(APFloat::BFloat(), APFloat::rmNearestTiesToEven, &lost);
+      if (lost)
+        return nullptr;
+      return arith::ConstantOp::create(rewriter, loc,
+                                       DenseElementsAttr::get(bf16Vec, b));
+    };
+    Value a = bf16Source(mul.getLhs()), b;
+    if (a) {
+      b = asBF16(mul.getRhs());
+    } else if ((a = bf16Source(mul.getRhs()))) {
+      b = asBF16(mul.getLhs());
+    }
+    if (!a || !b)
+      return failure();
+    if (!canDeclareAIE2p(
+            sub, "llvm.aie2p.I1024.I1024.ACC2048.bf.msc.conf",
+            rewriter.getFunctionType(
+                {a.getType(), b.getType(), vt, rewriter.getI32Type()}, {vt})))
+      return failure();
+    Value conf = arith::ConstantOp::create(rewriter, loc,
+                                           rewriter.getI32IntegerAttr(828));
+    // An accumulator widened from bf16 is produced by the multiplier
+    // (c * 1.0) instead of two conversions on the vector unit, which stays
+    // free for other work.
+    Value acc = sub.getLhs();
+    if (Value c = bf16Source(acc)) {
+      FunctionType mulTy = rewriter.getFunctionType(
+          {c.getType(), bf16Vec, rewriter.getI32Type()}, {vt});
+      if (canDeclareAIE2p(sub, "llvm.aie2p.I1024.I1024.ACC2048.bf.mul.conf",
+                          mulTy)) {
+        Value one = arith::ConstantOp::create(
+            rewriter, loc,
+            DenseElementsAttr::get(bf16Vec, APFloat(APFloat::BFloat(), "1")));
+        Value mulConf = arith::ConstantOp::create(
+            rewriter, loc, rewriter.getI32IntegerAttr(60));
+        acc = callAIE2p(rewriter, loc, vt,
+                        "llvm.aie2p.I1024.I1024.ACC2048.bf.mul.conf",
+                        {c, one, mulConf});
+      }
+    }
+    Value msc = callAIE2p(rewriter, loc, vt,
+                          "llvm.aie2p.I1024.I1024.ACC2048.bf.msc.conf",
+                          {a, b, acc, conf});
+    rewriter.replaceOp(sub, msc);
+    rewriter.eraseOp(mul);
+    return success();
+  }
+};
+
 // A 64-lane f32 -> bf16 arith.truncf (default rounding) as two 32-lane
 // aievec.srs. When the result's only use is a shape_cast whose only use is an
 // unmasked, in-bounds, minor-identity transfer_write to a memref, the halves
@@ -834,10 +945,16 @@ struct TruncF64ToSRS : public OpRewritePattern<arith::TruncFOp> {
     if (cast && cast->hasOneUse())
       write = dyn_cast<vector::TransferWriteOp>(*cast->user_begin());
     VectorType wt = cast ? cast.getResultVectorType() : VectorType();
+    // The halves split the outermost dim of the written shape that is not a
+    // unit dim.
+    int64_t split = 0;
+    if (wt)
+      while (split < wt.getRank() && wt.getDimSize(split) == 1)
+        ++split;
     // Memref writes only: a tensor write's result would need rethreading.
     if (!write || write.getMask() ||
         !isa<MemRefType>(write.getBase().getType()) || wt.getRank() < 2 ||
-        wt.getDimSize(0) % 2 != 0 ||
+        split >= wt.getRank() - 1 || wt.getDimSize(split) % 2 != 0 ||
         !write.getPermutationMap().isMinorIdentity() ||
         write.getPermutationMap().getNumResults() != wt.getRank() ||
         write.hasOutOfBoundsDim()) {
@@ -847,9 +964,9 @@ struct TruncF64ToSRS : public OpRewritePattern<arith::TruncFOp> {
       return success();
     }
     SmallVector<int64_t> hs(wt.getShape());
-    hs[0] /= 2;
+    hs[split] /= 2;
     auto hvt = VectorType::get(hs, wt.getElementType());
-    unsigned d0 = write.getIndices().size() - wt.getRank();
+    unsigned d0 = write.getIndices().size() - wt.getRank() + split;
     rewriter.setInsertionPoint(write);
     for (int k = 0; k < 2; ++k) {
       Value v = vector::ShapeCastOp::create(rewriter, loc, hvt, parts[k]);
@@ -857,7 +974,7 @@ struct TruncF64ToSRS : public OpRewritePattern<arith::TruncFOp> {
       if (k)
         idx[d0] = arith::AddIOp::create(
             rewriter, loc, idx[d0],
-            arith::ConstantIndexOp::create(rewriter, loc, hs[0]));
+            arith::ConstantIndexOp::create(rewriter, loc, hs[split]));
       vector::TransferWriteOp::create(rewriter, loc, v, write.getBase(), idx,
                                       write.getPermutationMapAttr(),
                                       write.getInBoundsAttr());
@@ -1038,6 +1155,7 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
     unpackPatterns.add<SplitWideElementwise>(ctx, getF32Lanes());
     unpackPatterns.add<MulAddToFMA>(ctx, getContract(), /*benefit=*/2);
     unpackPatterns.add<SinkExtFBelowShuffle>(ctx, /*benefit=*/2);
+    unpackPatterns.add<SinkNarrowF32BelowShuffle>(ctx, /*benefit=*/2);
     vector::ExtractStridedSliceOp::getCanonicalizationPatterns(unpackPatterns,
                                                                ctx);
     vector::ShuffleOp::getCanonicalizationPatterns(unpackPatterns, ctx);
@@ -1061,11 +1179,14 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
     if (getF32Lanes() == 64) {
       SmallVector<Operation *> wide;
       target->walk([&](Operation *op) {
-        if (isa<vector::FMAOp, arith::TruncFOp, arith::OrIOp>(op))
+        if (isa<vector::FMAOp, arith::TruncFOp, arith::OrIOp, arith::SubFOp>(
+                op))
           wide.push_back(op);
       });
       RewritePatternSet widePatterns(ctx);
-      widePatterns.add<FMA64ToMac, TruncF64ToSRS, ByteInterleave4300>(ctx);
+      widePatterns
+          .add<FMA64ToMac, TruncF64ToSRS, ByteInterleave4300, SubMul64ToMsc>(
+              ctx);
       if (failed(
               applyOpPatternsGreedily(wide, std::move(widePatterns), config)))
         return emitDefiniteFailure()

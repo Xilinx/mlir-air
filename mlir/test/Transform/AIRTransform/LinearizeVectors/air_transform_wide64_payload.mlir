@@ -64,3 +64,66 @@ func.func @dequant64(%q: memref<32xi8>, %s: memref<64xbf16>, %b: memref<64xf32>,
   vector.transfer_write %r2, %w[%c0, %c0] {in_bounds = [true, true]} : vector<8x8xbf16>, memref<8x8xbf16>
   return
 }
+
+// A per-row base, m - 128 s on the row's 8 lanes and then replicated, is
+// computed on the replicated lanes (AIE2P has no 8-lane f32 ops), there one
+// multiply-subtract.
+// CHECK-LABEL: @narrow_base
+// CHECK-NOT: arith.{{(mulf|subf|extf)}} {{.*}} to vector<8xf32>
+// CHECK-NOT: arith.{{(mulf|subf)}} {{.*}} : vector<8xf32>
+// CHECK: call @llvm.aie2p.I1024.I1024.ACC2048.bf.msc.conf({{.*}}) : (vector<64xbf16>, vector<64xbf16>, vector<64xf32>, i32) -> vector<64xf32>
+func.func @narrow_base(%s: memref<8xbf16>, %m: memref<8xbf16>, %w: memref<64xf32>) {
+  %c0 = arith.constant 0 : index
+  %pbf = arith.constant 0.0 : bf16
+  %c128 = arith.constant dense<128.0> : vector<8xf32>
+  %sv = vector.transfer_read %s[%c0], %pbf {in_bounds = [true]} : memref<8xbf16>, vector<8xbf16>
+  %mv = vector.transfer_read %m[%c0], %pbf {in_bounds = [true]} : memref<8xbf16>, vector<8xbf16>
+  %sf = arith.extf %sv : vector<8xbf16> to vector<8xf32>
+  %mf = arith.extf %mv : vector<8xbf16> to vector<8xf32>
+  %p = arith.mulf %sf, %c128 : vector<8xf32>
+  %b = arith.subf %mf, %p : vector<8xf32>
+  %r = vector.shuffle %b, %b [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7] : vector<8xf32>, vector<8xf32>
+  vector.transfer_write %r, %w[%c0] {in_bounds = [true]} : vector<64xf32>, memref<64xf32>
+  return
+}
+
+// The halves split the outermost non-unit dim of the written shape.
+// CHECK-LABEL: @trunc_unit_lead
+// CHECK: %[[L:.*]] = aievec.srs %{{.*}}, %{{.*}} : vector<32xf32>, i32, vector<32xbf16>
+// CHECK: %[[H:.*]] = aievec.srs %{{.*}}, %{{.*}} : vector<32xf32>, i32, vector<32xbf16>
+// CHECK: vector.shape_cast %[[L]] : vector<32xbf16> to vector<1x4x8xbf16>
+// CHECK: vector.transfer_write %{{.*}}, %arg1[%c0, %c0, %c0]
+// CHECK: vector.shape_cast %[[H]] : vector<32xbf16> to vector<1x4x8xbf16>
+// CHECK: vector.transfer_write %{{.*}}, %arg1[%c0, %c4, %c0]
+func.func @trunc_unit_lead(%a: memref<64xf32>, %w: memref<1x8x8xbf16>) {
+  %c0 = arith.constant 0 : index
+  %pf = arith.constant 0.0 : f32
+  %av = vector.transfer_read %a[%c0], %pf {in_bounds = [true]} : memref<64xf32>, vector<64xf32>
+  %r = arith.truncf %av : vector<64xf32> to vector<64xbf16>
+  %r2 = vector.shape_cast %r : vector<64xbf16> to vector<1x8x8xbf16>
+  vector.transfer_write %r2, %w[%c0, %c0, %c0] {in_bounds = [true, true, true]} : vector<1x8x8xbf16>, memref<1x8x8xbf16>
+  return
+}
+
+// m - 128 s on 64 lanes, s and m widened from bf16: one multiply-subtract.
+// The accumulator, m widened, comes from the multiplier as m * 1.0.
+// CHECK-LABEL: @base_msc
+// CHECK: %[[C:.*]] = arith.constant dense<1.280000e+02> : vector<64xbf16>
+// CHECK: %[[ONE:.*]] = arith.constant dense<1.000000e+00> : vector<64xbf16>
+// CHECK: %[[M:.*]] = call @llvm.aie2p.I1024.I1024.ACC2048.bf.mul.conf(%{{.*}}, %[[ONE]], %{{.*}})
+// CHECK: call @llvm.aie2p.I1024.I1024.ACC2048.bf.msc.conf(%{{.*}}, %[[C]], %[[M]], %{{.*}})
+// CHECK-NOT: arith.subf
+// CHECK-NOT: arith.extf
+func.func @base_msc(%s: memref<64xbf16>, %m: memref<64xbf16>, %w: memref<64xf32>) {
+  %c0 = arith.constant 0 : index
+  %pbf = arith.constant 0.0 : bf16
+  %c128 = arith.constant dense<128.0> : vector<64xf32>
+  %sv = vector.transfer_read %s[%c0], %pbf {in_bounds = [true]} : memref<64xbf16>, vector<64xbf16>
+  %mv = vector.transfer_read %m[%c0], %pbf {in_bounds = [true]} : memref<64xbf16>, vector<64xbf16>
+  %sf = arith.extf %sv : vector<64xbf16> to vector<64xf32>
+  %mf = arith.extf %mv : vector<64xbf16> to vector<64xf32>
+  %p = arith.mulf %sf, %c128 : vector<64xf32>
+  %b = arith.subf %mf, %p : vector<64xf32>
+  vector.transfer_write %b, %w[%c0] {in_bounds = [true]} : vector<64xf32>, memref<64xf32>
+  return
+}
