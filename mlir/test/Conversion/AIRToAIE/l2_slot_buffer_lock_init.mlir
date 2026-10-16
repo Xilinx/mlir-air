@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu2" | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu2" -split-input-file | FileCheck %s
 
 // A memtile buffer of four slots, each filled by its own transfer and drained
 // a half at a time: all four slots can fill before any drain, so the write
@@ -55,6 +55,46 @@ module {
           memref.dealloc %buf : memref<64xi32, 2>
         }
         memref.dealloc %l2 : memref<4x128xi32, 1>
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Two slots, but three reads of the first and one of the second: once both
+// slots are full, two reads of slot 0 would let it refill before its third
+// read. The write lock keeps its usual start.
+
+// CHECK-LABEL: aie.device(npu2)
+// CHECK: aie.lock(%{{.*}}, 1) {init = 2 : i32}
+module {
+  air.channel @in [1, 1]
+  air.channel @to_core [1, 1]
+  func.func @uneven_reads(%src: memref<256xi32>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) args(%a=%src) : memref<256xi32> {
+      air.channel.put @in[] (%a[0] [128] [1]) {id = 21 : i32} : (memref<256xi32>)
+      air.channel.put @in[] (%a[128] [128] [1]) {id = 22 : i32} : (memref<256xi32>)
+      air.segment @seg0 {
+        %c1_0 = arith.constant 1 : index
+        %l2 = memref.alloc() : memref<2x128xi32, 1>
+        air.channel.get @in[] (%l2[0, 0] [1, 128] [128, 1]) {id = 1 : i32} : (memref<2x128xi32, 1>)
+        air.channel.get @in[] (%l2[1, 0] [1, 128] [128, 1]) {id = 2 : i32} : (memref<2x128xi32, 1>)
+        air.channel.put @to_core[] (%l2[0, 0] [1, 64] [128, 1]) {id = 5 : i32} : (memref<2x128xi32, 1>)
+        air.channel.put @to_core[] (%l2[0, 64] [1, 64] [128, 1]) {id = 6 : i32} : (memref<2x128xi32, 1>)
+        air.channel.put @to_core[] (%l2[0, 32] [1, 64] [128, 1]) {id = 7 : i32} : (memref<2x128xi32, 1>)
+        air.channel.put @to_core[] (%l2[1, 0] [1, 64] [128, 1]) {id = 8 : i32} : (memref<2x128xi32, 1>)
+        air.herd @herd_0 tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) {
+          %buf = memref.alloc() : memref<64xi32, 2>
+          air.channel.get @to_core[] (%buf[] [] []) {id = 13 : i32} : (memref<64xi32, 2>)
+          air.channel.get @to_core[] (%buf[] [] []) {id = 14 : i32} : (memref<64xi32, 2>)
+          air.channel.get @to_core[] (%buf[] [] []) {id = 15 : i32} : (memref<64xi32, 2>)
+          air.channel.get @to_core[] (%buf[] [] []) {id = 16 : i32} : (memref<64xi32, 2>)
+          memref.dealloc %buf : memref<64xi32, 2>
+        }
+        memref.dealloc %l2 : memref<2x128xi32, 1>
       }
     }
     return

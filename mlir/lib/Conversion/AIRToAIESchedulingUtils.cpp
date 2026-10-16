@@ -963,26 +963,17 @@ air::DMAAllocator::lookupDMAAllocation(AIE::TileLike tile,
 // Allocate a reader/writer lock pair. These may be the same or different
 // locks depending on the target device.
 // For a memtile buffer filled by several writes into disjoint static slots
-// and drained by a whole number of reads per write, every slot can be filled
-// before the first read. The write lock then starts at the number of reads:
-// each write acquires as many as its slot is read, and each read releases
-// one. Returns 0 for any other buffer.
+// and drained slot by slot, k reads per slot, every slot can be filled before
+// the first read. The write lock then starts at the number of reads: each
+// write acquires k, and each read releases one. A slot is refilled only once
+// all k of its reads have released, which holds when every read lies in one
+// slot and the reads take the slots in the order they were written. Returns 0
+// for any other buffer.
 static int64_t slotBufferWriteLockInit(Value buffer) {
-  int64_t reads = 0;
-  SmallVector<std::pair<int64_t, int64_t>> spans;
-  for (Operation *user : buffer.getUsers()) {
-    // Only the air transfers count; the DMA BDs built so far use the
-    // buffer too.
-    auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
-    if (!memcpyOp)
-      continue;
-    if (buffer == memcpyOp.getSrcMemref()) {
-      reads++;
-      continue;
-    }
-    auto chan = dyn_cast<air::ChannelInterface>(user);
-    if (!chan || chan.getMixedOffsets().empty())
-      return 0;
+  using Span = std::pair<int64_t, int64_t>;
+  auto spanOf = [](air::ChannelInterface chan) -> std::optional<Span> {
+    if (chan.getMixedOffsets().empty())
+      return std::nullopt;
     int64_t lo = 0, hi = 0;
     for (auto [o, sz, st] :
          llvm::zip(chan.getMixedOffsets(), chan.getMixedSizes(),
@@ -990,20 +981,54 @@ static int64_t slotBufferWriteLockInit(Value buffer) {
       auto oc = getConstantIntValue(o), sc = getConstantIntValue(sz),
            tc = getConstantIntValue(st);
       if (!oc || !sc || !tc)
-        return 0;
+        return std::nullopt;
       lo += *oc * *tc;
       hi += (*oc + *sc - 1) * *tc;
     }
-    spans.push_back({lo, hi});
-  }
-  int64_t writes = spans.size();
-  if (writes < 2 || reads < writes || reads % writes)
-    return 0;
-  llvm::sort(spans);
-  for (size_t i = 1; i < spans.size(); i++)
-    if (spans[i].first <= spans[i - 1].second)
+    return Span{lo, hi};
+  };
+  SmallVector<std::pair<Operation *, Span>> writes, reads;
+  for (Operation *user : buffer.getUsers()) {
+    // Only the air transfers count; the DMA BDs built so far use the
+    // buffer too.
+    auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
+    if (!memcpyOp)
+      continue;
+    auto chan = dyn_cast<air::ChannelInterface>(user);
+    std::optional<Span> span = chan ? spanOf(chan) : std::nullopt;
+    if (!span)
       return 0;
-  return reads;
+    (buffer == memcpyOp.getSrcMemref() ? reads : writes)
+        .push_back({user, *span});
+  }
+  int64_t nw = writes.size(), nr = reads.size();
+  if (nw < 2 || nr < nw || nr % nw)
+    return 0;
+  // Program order of the transfers, all in one block.
+  Block *block = writes.front().first->getBlock();
+  auto inBlock = [&](auto &p) { return p.first->getBlock() == block; };
+  if (!llvm::all_of(writes, inBlock) || !llvm::all_of(reads, inBlock))
+    return 0;
+  auto before = [](auto &a, auto &b) {
+    return a.first->isBeforeInBlock(b.first);
+  };
+  llvm::sort(writes, before);
+  llvm::sort(reads, before);
+  SmallVector<Span> slots;
+  for (auto &w : writes)
+    slots.push_back(w.second);
+  SmallVector<Span> sorted = slots;
+  llvm::sort(sorted);
+  for (size_t i = 1; i < sorted.size(); i++)
+    if (sorted[i].first <= sorted[i - 1].second)
+      return 0;
+  int64_t k = nr / nw;
+  for (auto [i, r] : llvm::enumerate(reads)) {
+    const Span &slot = slots[i / k];
+    if (r.second.first < slot.first || r.second.second > slot.second)
+      return 0;
+  }
+  return nr;
 }
 
 FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(

@@ -2644,7 +2644,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     // A rank-reducing subview: the ops after it index its result, which has
     // no dims for the dropped ones. Their offsets still address the source:
     // they become leading unit dims of the access pattern, with the source's
-    // strides.
+    // strides (a subview's offsets are in source coordinates, unscaled by its
+    // own strides).
     if (auto subview = dyn_cast<memref::SubViewOp>(memrefOpVec[0])) {
       llvm::SmallBitVector dropped = subview.getDroppedDims();
       if (dropped.any()) {
@@ -2663,11 +2664,10 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
           // At offset 0 the dim adds nothing to the address.
           if (isConstantIntValue(subview.getMixedOffsets()[i], 0))
             continue;
-          auto step = getConstantIntValue(subview.getMixedStrides()[i]);
-          if (!step || ShapedType::isDynamic(srcStrides[i]))
+          if (ShapedType::isDynamic(srcStrides[i]))
             return failure();
           droppedOffsets.push_back(initialOffsets[i]);
-          droppedStrides.push_back(srcStrides[i] * *step);
+          droppedStrides.push_back(srcStrides[i]);
         }
         initialOffsets = keptOffsets;
         initialStrides = keptStrides;
@@ -2755,7 +2755,9 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       // For each collapsed dimension, keep the offset/stride of the first
       // source dim in the group that is not a unit dim. A unit dim's offset
       // cannot be expressed on the collapsed dim: like a dim a rank-reducing
-      // subview drops, it becomes a leading unit dim with its own stride.
+      // subview drops, it becomes a leading unit dim. The offset is in the
+      // coordinates of the first view's source, whose stride is the layout
+      // stride here divided by the step taken so far.
       auto srcType = collapseShapeOp.getSrcType();
       SmallVector<int64_t> srcLayoutStrides;
       int64_t srcLayoutOffset;
@@ -2775,10 +2777,11 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
             continue;
           auto step = getConstantIntValue(initialStrides[d]);
           if (srcType.getDimSize(d) != 1 || !haveLayout || !step ||
-              ShapedType::isDynamic(srcLayoutStrides[d]))
+              *step <= 0 || ShapedType::isDynamic(srcLayoutStrides[d]) ||
+              srcLayoutStrides[d] % *step)
             return failure();
           droppedOffsets.push_back(initialOffsets[d]);
-          droppedStrides.push_back(srcLayoutStrides[d] * *step);
+          droppedStrides.push_back(srcLayoutStrides[d] / *step);
         }
         newOffsets.push_back(initialOffsets[keep]);
         newStrides.push_back(initialStrides[keep]);
