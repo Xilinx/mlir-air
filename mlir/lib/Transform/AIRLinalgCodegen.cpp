@@ -3094,6 +3094,7 @@ static bool raiseLoadBuffer(RewriterBase &rewriter, memref::AllocOp alloc) {
         return false;
       auto copy = dyn_cast<memref::CopyOp>(*view->user_begin());
       if (!copy || copy.getTarget() != view.getResult() ||
+          view.getType().getRank() != ty.getRank() ||
           llvm::any_of(view.getMixedStrides(), [](OpFoldResult s) {
             return getConstantIntValue(s) != 1;
           }))
@@ -3111,13 +3112,18 @@ static bool raiseLoadBuffer(RewriterBase &rewriter, memref::AllocOp alloc) {
   }
   if (!read || boxes.empty() || read->getBlock() != block)
     return false;
-  // Every write must come before the read, in the buffer's block.
+  // Every write runs once, in the buffer's block, before the read; the fill
+  // (or the scf.if around it) comes before every copy.
   auto before = [&](Operation *op) {
-    Operation *a = block->findAncestorOpInBlock(*op);
-    return a && a->isBeforeInBlock(read);
+    return op->getBlock() == block && op->isBeforeInBlock(read);
   };
   if ((fillRoot && !before(fillRoot)) ||
-      llvm::any_of(boxes, [&](const Box &b) { return !before(b.copy); }) ||
+      llvm::any_of(boxes,
+                   [&](const Box &b) {
+                     return !before(b.copy) ||
+                            (b.view && b.view->getBlock() != block) ||
+                            (fillRoot && b.copy->isBeforeInBlock(fillRoot));
+                   }) ||
       llvm::any_of(deallocs, [&](memref::DeallocOp d) {
         Operation *a = block->findAncestorOpInBlock(*d);
         return !a || a->isBeforeInBlock(read);
@@ -3126,12 +3132,30 @@ static bool raiseLoadBuffer(RewriterBase &rewriter, memref::AllocOp alloc) {
   // Insert the boxes in program order, so a later box overwrites an earlier
   // one.
   llvm::sort(boxes, [&](const Box &a, const Box &b) {
-    return block->findAncestorOpInBlock(*a.copy)->isBeforeInBlock(
-        block->findAncestorOpInBlock(*b.copy));
+    return a.copy->isBeforeInBlock(b.copy);
   });
 
   OpBuilder::InsertionGuard guard(rewriter);
   Location loc = read.getLoc();
+  // Each box's source is copied where the original copy was, so it is read
+  // at the same point; the parts are assembled at the read.
+  SmallVector<Value> bufs;
+  for (Box &b : boxes) {
+    rewriter.setInsertionPoint(b.copy);
+    auto viewTy = cast<MemRefType>(b.copy.getTarget().getType());
+    SmallVector<Value> dynSizes;
+    if (b.view)
+      for (OpFoldResult sz : b.view.getMixedSizes())
+        if (auto v = dyn_cast<Value>(sz))
+          dynSizes.push_back(v);
+    auto boxTy =
+        MemRefType::get(viewTy.getShape(), ty.getElementType(),
+                        MemRefLayoutAttrInterface(), ty.getMemorySpace());
+    Value buf = memref::AllocOp::create(rewriter, b.copy.getLoc(), boxTy,
+                                        dynSizes, alloc.getAlignmentAttr());
+    memref::CopyOp::create(rewriter, b.copy.getLoc(), b.copy.getSource(), buf);
+    bufs.push_back(buf);
+  }
   rewriter.setInsertionPoint(read);
   Value result = tensor::EmptyOp::create(rewriter, loc, ty.getShape(),
                                          ty.getElementType());
@@ -3140,7 +3164,7 @@ static bool raiseLoadBuffer(RewriterBase &rewriter, memref::AllocOp alloc) {
         linalg::FillOp::create(rewriter, loc, ValueRange{fill.getInputs()[0]},
                                ValueRange{result})
             .getResult(0);
-  for (Box &b : boxes) {
+  for (auto [b, buf] : llvm::zip_equal(boxes, bufs)) {
     SmallVector<OpFoldResult> offsets, sizes, strides;
     if (b.view) {
       offsets = b.view.getMixedOffsets();
@@ -3153,15 +3177,7 @@ static bool raiseLoadBuffer(RewriterBase &rewriter, memref::AllocOp alloc) {
         strides.push_back(rewriter.getIndexAttr(1));
       }
     }
-    SmallVector<int64_t> shape;
-    SmallVector<Value> dynSizes;
-    dispatchIndexOpFoldResults(sizes, dynSizes, shape);
-    auto boxTy =
-        MemRefType::get(shape, ty.getElementType(), MemRefLayoutAttrInterface(),
-                        ty.getMemorySpace());
-    Value buf = memref::AllocOp::create(rewriter, loc, boxTy, dynSizes,
-                                        alloc.getAlignmentAttr());
-    memref::CopyOp::create(rewriter, loc, b.copy.getSource(), buf);
+    auto shape = cast<MemRefType>(buf.getType()).getShape();
     Value part = bufferization::ToTensorOp::create(
         rewriter, loc, RankedTensorType::get(shape, ty.getElementType()), buf,
         /*restrict=*/true, /*writable=*/true);
@@ -3279,7 +3295,12 @@ struct FoldExtractSliceOfInsertSlice
       return failure();
     // A rank-reducing insert drops unit dims that the extract keeps at size
     // 1, so the slice of the source is expanded back to the extract's rank.
+    // An extract that drops dims as well is left alone.
     llvm::SmallBitVector dropped = insert.getDroppedDims();
+    auto rt = extract.getType();
+    if (dropped.any() &&
+        (rt.getRank() != extract.getSourceType().getRank() || dropped.all()))
+      return failure();
     SmallVector<OpFoldResult> offs, sizes, strides;
     for (auto [d, eo, ib] : llvm::enumerate(extract.getMixedOffsets(), *i)) {
       if (dropped.test(d))
@@ -3297,7 +3318,6 @@ struct FoldExtractSliceOfInsertSlice
     }
     // Each kept dim is grouped with the dropped unit dims before it; trailing
     // dropped dims join the last group.
-    auto rt = extract.getType();
     SmallVector<ReassociationIndices> groups;
     ReassociationIndices cur;
     for (int64_t d = 0; d < rt.getRank(); ++d) {
@@ -3307,8 +3327,6 @@ struct FoldExtractSliceOfInsertSlice
         cur.clear();
       }
     }
-    if (groups.empty())
-      return failure();
     groups.back().append(cur.begin(), cur.end());
     SmallVector<int64_t> shape;
     for (int64_t d = 0; d < rt.getRank(); ++d)
@@ -3407,8 +3425,8 @@ struct FoldExtractSliceOfUnitExpand
     // including those of all-unit groups; its type must be the old result
     // type.
     auto full = RankedTensorType::get(staticSizes, srcType.getElementType());
-    if (full.getNumElements() != extract.getType().getNumElements() ||
-        !full.hasStaticShape() || !extract.getType().hasStaticShape())
+    if (!full.hasStaticShape() || !extract.getType().hasStaticShape() ||
+        full.getNumElements() != extract.getType().getNumElements())
       return failure();
     SmallVector<int64_t> nonUnitFull, nonUnitRes;
     for (int64_t v : full.getShape())
@@ -3420,17 +3438,20 @@ struct FoldExtractSliceOfUnitExpand
     if (nonUnitFull != nonUnitRes ||
         extract.getType().getRank() > full.getRank())
       return failure();
+    // Reshape back to the old result's unit dims.
+    std::optional<SmallVector<ReassociationIndices>> reassoc;
+    if (full != extract.getType()) {
+      reassoc = getReassociationIndicesForReshape(full, extract.getType());
+      if (!reassoc)
+        return failure();
+    }
     auto direct =
         tensor::ExtractSliceOp::create(rewriter, extract.getLoc(), full,
                                        expand.getSrc(), offs, sizes, strides);
-    if (full == extract.getType()) {
+    if (!reassoc) {
       rewriter.replaceOp(extract, direct.getResult());
       return success();
     }
-    // Reshape back to the old result's unit dims.
-    auto reassoc = getReassociationIndicesForReshape(full, extract.getType());
-    if (!reassoc)
-      return failure();
     if (full.getRank() > extract.getType().getRank())
       rewriter.replaceOpWithNewOp<tensor::CollapseShapeOp>(
           extract, extract.getType(), direct.getResult(), *reassoc);
@@ -3516,6 +3537,34 @@ transform::ShareAllocOp::apply(transform::TransformRewriter &rewriter,
       return emitDefiniteFailure()
              << "targets must have one element type, count and memory space";
   }
+  // The kept buffer takes the largest alignment asked for, and is freed
+  // where the last of the buffers was.
+  std::optional<uint64_t> align;
+  for (auto a : allocs)
+    if (auto al = a.getAlignment())
+      align = std::max(align.value_or(0), *al);
+  if (align)
+    rewriter.modifyOpInPlace(kept, [&] { kept.setAlignment(*align); });
+  SmallVector<memref::DeallocOp> deallocs;
+  for (auto a : allocs)
+    for (Operation *user : a->getUsers())
+      if (auto d = dyn_cast<memref::DeallocOp>(user))
+        deallocs.push_back(d);
+  Operation *lastFree = nullptr;
+  for (memref::DeallocOp d : deallocs) {
+    Operation *anc = block->findAncestorOpInBlock(*d);
+    if (!anc)
+      return emitDefiniteFailure()
+             << "targets must be freed in their block or a region inside it";
+    if (!lastFree || lastFree->isBeforeInBlock(anc))
+      lastFree = anc;
+  }
+  if (lastFree) {
+    rewriter.setInsertionPointAfter(lastFree);
+    memref::DeallocOp::create(rewriter, lastFree->getLoc(), kept.getResult());
+    for (memref::DeallocOp d : deallocs)
+      rewriter.eraseOp(d);
+  }
   for (auto a : ArrayRef(allocs).drop_front()) {
     MemRefType t = a.getType();
     Value v = kept.getResult();
@@ -3533,9 +3582,6 @@ transform::ShareAllocOp::apply(transform::TransformRewriter &rewriter,
       v = memref::ExpandShapeOp::create(rewriter, a.getLoc(), t.getShape(), v,
                                         fromFlat);
     }
-    for (Operation *user : llvm::make_early_inc_range(a->getUsers()))
-      if (isa<memref::DeallocOp>(user))
-        rewriter.eraseOp(user);
     rewriter.replaceOp(a, v);
   }
   results.set(llvm::cast<OpResult>(getResult()), {kept.getOperation()});
@@ -3709,35 +3755,46 @@ struct BubbleSliceThroughCollapse
           return getConstantIntValue(o).has_value();
         }))
       return failure();
-    Location loc = slice.getLoc();
-    SmallVector<OpFoldResult> offsets, sizes, strides;
+    if (srcType.getNumElements() == 0)
+      return failure();
+    // Per group, the number of elements in its inner dims; checked for every
+    // group before any IR is created.
+    SmallVector<int64_t> inners;
     for (auto [i, group] :
          llvm::enumerate(collapse.getReassociationIndices())) {
       OpFoldResult off = slice.getMixedOffsets()[i];
-      OpFoldResult size = slice.getMixedSizes()[i];
       if (!isConstantIntValue(slice.getMixedStrides()[i], 1))
         return failure();
       int64_t inner = 1;
       for (int64_t d : ArrayRef(group).drop_front())
         inner *= srcType.getDimSize(d);
-      auto s = getConstantIntValue(size);
-      if (!s || *s % inner != 0)
+      auto s = getConstantIntValue(slice.getMixedSizes()[i]);
+      if (!s || *s % inner != 0 ||
+          *s / inner > srcType.getDimSize(group.front()))
         return failure();
       if (auto c = getConstantIntValue(off)) {
         if (*c % inner != 0)
           return failure();
+      } else if (!isMultipleOf(cast<Value>(off), inner)) {
+        return failure();
+      }
+      inners.push_back(inner);
+    }
+    Location loc = slice.getLoc();
+    SmallVector<OpFoldResult> offsets, sizes, strides;
+    for (auto [i, group] :
+         llvm::enumerate(collapse.getReassociationIndices())) {
+      OpFoldResult off = slice.getMixedOffsets()[i];
+      int64_t inner = inners[i];
+      int64_t s = *getConstantIntValue(slice.getMixedSizes()[i]);
+      if (auto c = getConstantIntValue(off)) {
         offsets.push_back(rewriter.getIndexAttr(*c / inner));
       } else {
-        Value v = cast<Value>(off);
-        if (!isMultipleOf(v, inner))
-          return failure();
         AffineExpr d0 = rewriter.getAffineDimExpr(0);
         offsets.push_back(affine::makeComposedFoldedAffineApply(
             rewriter, loc, d0.floorDiv(inner), {off}));
       }
-      if (*s / inner > srcType.getDimSize(group.front()))
-        return failure();
-      sizes.push_back(rewriter.getIndexAttr(*s / inner));
+      sizes.push_back(rewriter.getIndexAttr(s / inner));
       strides.push_back(rewriter.getIndexAttr(1));
       for (int64_t d : ArrayRef(group).drop_front()) {
         offsets.push_back(rewriter.getIndexAttr(0));

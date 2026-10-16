@@ -121,3 +121,44 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// Left alone: an extract that drops a dim the insert also dropped; a slice of
+// a unit expand with a dynamic size; one whose unit dims have no reshape to
+// the result.
+// CHECK-LABEL: @both_drop
+// CHECK: %[[I:.*]] = tensor.insert_slice
+// CHECK: tensor.extract_slice %[[I]][0, 0, 0] [2, 1, 8] [1, 1, 1] : tensor<4x2x8xf32> to tensor<2x8xf32>
+func.func @both_drop(%s: tensor<4x8xf32>, %d: tensor<4x2x8xf32>) -> tensor<2x8xf32> {
+  %i = tensor.insert_slice %s into %d[0, 0, 0] [4, 1, 8] [1, 1, 1] : tensor<4x8xf32> into tensor<4x2x8xf32>
+  %e = tensor.extract_slice %i[0, 0, 0] [2, 1, 8] [1, 1, 1] : tensor<4x2x8xf32> to tensor<2x8xf32>
+  return %e : tensor<2x8xf32>
+}
+
+// CHECK-LABEL: @dynamic_unit_expand
+// CHECK: tensor.expand_shape
+// CHECK: tensor.extract_slice
+func.func @dynamic_unit_expand(%x: tensor<4x32xf32>, %n: index) -> tensor<?x32x1xf32> {
+  %e = tensor.expand_shape %x [[0], [1, 2]] output_shape [4, 32, 1] : tensor<4x32xf32> into tensor<4x32x1xf32>
+  %s = tensor.extract_slice %e[0, 0, 0] [%n, 32, 1] [1, 1, 1] : tensor<4x32x1xf32> to tensor<?x32x1xf32>
+  return %s : tensor<?x32x1xf32>
+}
+
+// CHECK-LABEL: @no_reshape_to_result
+// CHECK: %[[E:.*]] = tensor.expand_shape
+// CHECK-NEXT: %[[S:.*]] = tensor.extract_slice %[[E]]
+// CHECK-NEXT: return %[[S]]
+func.func @no_reshape_to_result(%x: tensor<1x4xf32>) -> tensor<4x1xf32> {
+  %e = tensor.expand_shape %x [[0], [1, 2]] output_shape [1, 4, 1] : tensor<1x4xf32> into tensor<1x4x1xf32>
+  %s = tensor.extract_slice %e[0, 0, 0] [1, 4, 1] [1, 1, 1] : tensor<1x4x1xf32> to tensor<4x1xf32>
+  return %s : tensor<4x1xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.fold_extract_slice_of_insert_slice %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}

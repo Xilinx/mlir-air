@@ -81,3 +81,33 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// The kept buffer takes the larger alignment and is freed after the last use
+// of either buffer.
+// CHECK-LABEL: @align_and_free
+// CHECK: %[[A:.*]] = memref.alloc() alignment = 64 : memref<16xf32>
+// CHECK: memref.store %{{.*}}, %[[A]]
+// CHECK-NOT: memref.dealloc
+// CHECK: memref.store %{{.*}}, %[[A]]
+// CHECK-NEXT: memref.dealloc %[[A]]
+// CHECK-NOT: memref.dealloc
+func.func @align_and_free(%x: f32) {
+  %c0 = arith.constant 0 : index
+  %a = memref.alloc() alignment = 16 : memref<16xf32>
+  memref.store %x, %a[%c0] : memref<16xf32>
+  memref.dealloc %a : memref<16xf32>
+  %b = memref.alloc() alignment = 64 : memref<16xf32>
+  memref.store %x, %b[%c0] : memref<16xf32>
+  memref.dealloc %b : memref<16xf32>
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %allocs = transform.structured.match ops{["memref.alloc"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %one = transform.air.share_alloc %allocs : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}

@@ -11,10 +11,10 @@
 // value filled, the in-mask box copied over it.
 
 // CHECK-LABEL: func.func @constant_mask
-// CHECK: %[[E:.*]] = tensor.empty() : tensor<64x128xf32>
-// CHECK: %[[F:.*]] = linalg.fill ins(%{{.*}} : f32) outs(%[[E]] : tensor<64x128xf32>)
 // CHECK: %[[BUF:.*]] = memref.alloc() : memref<40x96xf32>
 // CHECK: memref.copy %{{.*}}, %[[BUF]]
+// CHECK: %[[E:.*]] = tensor.empty() : tensor<64x128xf32>
+// CHECK: %[[F:.*]] = linalg.fill ins(%{{.*}} : f32) outs(%[[E]] : tensor<64x128xf32>)
 // CHECK: %[[T:.*]] = bufferization.to_tensor %[[BUF]] restrict writable : memref<40x96xf32> to tensor<40x96xf32>
 // CHECK: %[[R:.*]] = tensor.insert_slice %[[T]] into %[[F]][0, 0] [40, 96] [1, 1]
 // CHECK: return %[[R]]
@@ -44,9 +44,9 @@ module attributes {transform.with_named_sequence} {
 
 // CHECK-LABEL: func.func @dynamic_mask
 // CHECK-NOT: scf.if
-// CHECK: %[[F:.*]] = linalg.fill {{.*}} -> tensor<64x128xf32>
 // CHECK: %[[BUF:.*]] = memref.alloc(%[[N:.*]]) : memref<64x?xf32>
 // CHECK: memref.copy %{{.*}}, %[[BUF]]
+// CHECK: %[[F:.*]] = linalg.fill {{.*}} -> tensor<64x128xf32>
 // CHECK: %[[T:.*]] = bufferization.to_tensor %[[BUF]] restrict writable : memref<64x?xf32> to tensor<64x?xf32>
 // CHECK: tensor.insert_slice %[[T]] into %[[F]][0, 0] [64, %[[N]]] [1, 1]
 func.func @dynamic_mask(%src: memref<64x128xf32, strided<[300, 1], offset: ?>>, %n: index) -> tensor<64x128xf32> {
@@ -127,7 +127,8 @@ module attributes {transform.with_named_sequence} {
 // -----
 
 // Left alone: a second reader, a write after the read, a read without
-// restrict.
+// restrict, a copy that does not always run, a fill after a copy, a
+// rank-reducing view.
 
 // CHECK-LABEL: func.func @second_reader
 // CHECK: memref.alloc() : memref<8x32xf32>
@@ -160,6 +161,71 @@ func.func @not_restrict(%a: memref<8x20xf32>) -> tensor<8x32xf32> {
   %d0 = memref.subview %buf[0, 0] [8, 20] [1, 1] : memref<8x32xf32> to memref<8x20xf32, strided<[32, 1]>>
   memref.copy %a, %d0 : memref<8x20xf32> to memref<8x20xf32, strided<[32, 1]>>
   %t = bufferization.to_tensor %buf : memref<8x32xf32> to tensor<8x32xf32>
+  return %t : tensor<8x32xf32>
+}
+
+// CHECK-LABEL: func.func @conditional_copy
+// CHECK: memref.alloc() : memref<8x32xf32>
+// CHECK: bufferization.to_tensor %{{.*}} : memref<8x32xf32>
+func.func @conditional_copy(%a: memref<8x20xf32>, %c: i1) -> tensor<8x32xf32> {
+  %buf = memref.alloc() : memref<8x32xf32>
+  %d0 = memref.subview %buf[0, 0] [8, 20] [1, 1] : memref<8x32xf32> to memref<8x20xf32, strided<[32, 1]>>
+  scf.if %c {
+    memref.copy %a, %d0 : memref<8x20xf32> to memref<8x20xf32, strided<[32, 1]>>
+  }
+  %t = bufferization.to_tensor %buf restrict writable : memref<8x32xf32> to tensor<8x32xf32>
+  return %t : tensor<8x32xf32>
+}
+
+// CHECK-LABEL: func.func @fill_after_copy
+// CHECK: memref.alloc() : memref<8x32xf32>
+// CHECK: bufferization.to_tensor %{{.*}} : memref<8x32xf32>
+func.func @fill_after_copy(%a: memref<8x20xf32>) -> tensor<8x32xf32> {
+  %cst = arith.constant 0.000000e+00 : f32
+  %buf = memref.alloc() : memref<8x32xf32>
+  %d0 = memref.subview %buf[0, 0] [8, 20] [1, 1] : memref<8x32xf32> to memref<8x20xf32, strided<[32, 1]>>
+  memref.copy %a, %d0 : memref<8x20xf32> to memref<8x20xf32, strided<[32, 1]>>
+  linalg.fill ins(%cst : f32) outs(%buf : memref<8x32xf32>)
+  %t = bufferization.to_tensor %buf restrict writable : memref<8x32xf32> to tensor<8x32xf32>
+  return %t : tensor<8x32xf32>
+}
+
+// CHECK-LABEL: func.func @rank_reducing_view
+// CHECK: memref.alloc() : memref<8x32xf32>
+// CHECK: bufferization.to_tensor %{{.*}} : memref<8x32xf32>
+func.func @rank_reducing_view(%a: memref<20xf32>) -> tensor<8x32xf32> {
+  %buf = memref.alloc() : memref<8x32xf32>
+  %d0 = memref.subview %buf[0, 0] [1, 20] [1, 1] : memref<8x32xf32> to memref<20xf32, strided<[1]>>
+  memref.copy %a, %d0 : memref<20xf32> to memref<20xf32, strided<[1]>>
+  %t = bufferization.to_tensor %buf restrict writable : memref<8x32xf32> to tensor<8x32xf32>
+  return %t : tensor<8x32xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.raise_load_buffer_to_tensor %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// The source is written after the copy and before the read: the box is
+// copied where the original copy was, so it holds the earlier values.
+
+// CHECK-LABEL: func.func @source_written_later
+// CHECK: %[[BUF:.*]] = memref.alloc() : memref<8x20xf32>
+// CHECK: memref.copy %[[A:.*]], %[[BUF]]
+// CHECK: linalg.fill {{.*}} outs(%[[A]] : memref<8x20xf32>)
+// CHECK: bufferization.to_tensor %[[BUF]] restrict writable
+func.func @source_written_later(%a: memref<8x20xf32>) -> tensor<8x32xf32> {
+  %cst = arith.constant 0.000000e+00 : f32
+  %buf = memref.alloc() : memref<8x32xf32>
+  %d0 = memref.subview %buf[0, 0] [8, 20] [1, 1] : memref<8x32xf32> to memref<8x20xf32, strided<[32, 1]>>
+  memref.copy %a, %d0 : memref<8x20xf32> to memref<8x20xf32, strided<[32, 1]>>
+  linalg.fill ins(%cst : f32) outs(%a : memref<8x20xf32>)
+  %t = bufferization.to_tensor %buf restrict writable : memref<8x32xf32> to tensor<8x32xf32>
   return %t : tensor<8x32xf32>
 }
 
