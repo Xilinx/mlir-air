@@ -1038,7 +1038,12 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
   let options = [
     ListOption<"clAggressiveMode", "aggressive-mode", "std::string",
             "List of memory spaces to enable aggressive channel fusion with. Available options include ['L1', 'L2', 'L3'].",
-            "llvm::cl::ZeroOrMore">
+            "llvm::cl::ZeroOrMore">,
+    Option<"clSequentialLoops", "sequential-loops", "bool", /*default=*/"false",
+           "Only merge channels that two loops, run one after the other, "
+           "drive with equal transfers between the same places. The merge "
+           "renames channels and moves no ops. Meant to run after "
+           "air-split-l2-memref, which splits each loop's buffers on its own.">
   ];
 }
 

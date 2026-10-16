@@ -2072,6 +2072,15 @@ std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
       if (air::getOffsetsAsValues(ci).size() !=
           air::getOffsetsAsValues(cj).size())
         continue;
+      // Two transfers on the same channel instance go to the same consumer,
+      // so the parts of the buffer they read do not mark a split; only
+      // transfers on different instances do.
+      if (ci.getChanName() == cj.getChanName() &&
+          llvm::equal(ci.getIndices(), cj.getIndices(), [](Value a, Value b) {
+            auto ca = getConstantIntValue(a), cb = getConstantIntValue(b);
+            return a == b || (ca && cb && *ca == *cb);
+          }))
+        continue;
       auto offsetZip = llvm::zip_equal(air::getOffsetsAsValues(ci),
                                        air::getOffsetsAsValues(cj));
       auto d =

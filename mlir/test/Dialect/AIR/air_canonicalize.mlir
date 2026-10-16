@@ -466,6 +466,54 @@ func.func @dma_compose_expand_shape() {
   return 
 }
 
+// A rank-reducing subview's dropped dim keeps its offset, on its own stride.
+// CHECK: func.func @dma_compose_rank_reducing_subview
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%arg0, 0, 64, 0, 0, 0] [1, 4, 2, 4, 2, 4] [2560, 64, 32, 8, 4, 1])
+func.func @dma_compose_rank_reducing_subview(%i: index) {
+  %0 = memref.alloc() : memref<6x80x32xi16, 1>
+  %1 = memref.alloc() : memref<4x2x4x2x4xi16, 2>
+  %sv = memref.subview %0[%i, 64, 0] [1, 8, 32] [1, 1, 1] : memref<6x80x32xi16, 1> to memref<8x32xi16, strided<[32, 1], offset: ?>, 1>
+  %ex = memref.expand_shape %sv [[0, 1], [2, 3, 4]] output_shape [4, 2, 4, 2, 4] : memref<8x32xi16, strided<[32, 1], offset: ?>, 1> into memref<4x2x4x2x4xi16, strided<[64, 32, 8, 4, 1], offset: ?>, 1>
+  air.dma_memcpy_nd (%1[] [] [], %ex[] [] []) : (memref<4x2x4x2x4xi16, 2>, memref<4x2x4x2x4xi16, strided<[64, 32, 8, 4, 1], offset: ?>, 1>)
+  return
+}
+
+// So does a unit dim that a collapse_shape folds into the next one.
+// CHECK: func.func @dma_compose_collapse_unit_dim
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%arg0, 0, 64, 0, 0, 0] [1, 4, 2, 4, 2, 4] [2560, 64, 32, 8, 4, 1])
+func.func @dma_compose_collapse_unit_dim(%i: index) {
+  %0 = memref.alloc() : memref<6x80x32xi16, 1>
+  %1 = memref.alloc() : memref<4x2x4x2x4xi16, 2>
+  %sv = memref.subview %0[%i, 64, 0] [1, 8, 32] [1, 1, 1] : memref<6x80x32xi16, 1> to memref<1x8x32xi16, strided<[2560, 32, 1], offset: ?>, 1>
+  %ex = memref.expand_shape %sv [[0], [1, 2], [3, 4, 5]] output_shape [1, 4, 2, 4, 2, 4] : memref<1x8x32xi16, strided<[2560, 32, 1], offset: ?>, 1> into memref<1x4x2x4x2x4xi16, strided<[2560, 64, 32, 8, 4, 1], offset: ?>, 1>
+  %c = memref.collapse_shape %ex [[0, 1], [2], [3], [4], [5]] : memref<1x4x2x4x2x4xi16, strided<[2560, 64, 32, 8, 4, 1], offset: ?>, 1> into memref<4x2x4x2x4xi16, strided<[64, 32, 8, 4, 1], offset: ?>, 1>
+  air.dma_memcpy_nd (%1[] [] [], %c[] [] []) : (memref<4x2x4x2x4xi16, 2>, memref<4x2x4x2x4xi16, strided<[64, 32, 8, 4, 1], offset: ?>, 1>)
+  return
+}
+
+// With a step in the subview, the dropped dim's offset is still in source
+// rows: row 1 of a 4x8 source starts at element 8.
+// CHECK: func.func @dma_compose_rank_reducing_strided_subview
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[1, 0] [1, 8] [8, 1])
+func.func @dma_compose_rank_reducing_strided_subview() {
+  %0 = memref.alloc() : memref<4x8xi16, 1>
+  %1 = memref.alloc() : memref<8xi16, 2>
+  %sv = memref.subview %0[1, 0] [1, 8] [2, 1] : memref<4x8xi16, 1> to memref<8xi16, strided<[1], offset: 8>, 1>
+  air.dma_memcpy_nd (%1[] [] [], %sv[] [] []) : (memref<8xi16, 2>, memref<8xi16, strided<[1], offset: 8>, 1>)
+  return
+}
+
+// CHECK: func.func @dma_compose_collapse_strided_unit_dim
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[1, 0] [1, 8] [8, 1])
+func.func @dma_compose_collapse_strided_unit_dim() {
+  %0 = memref.alloc() : memref<4x8xi16, 1>
+  %1 = memref.alloc() : memref<8xi16, 2>
+  %sv = memref.subview %0[1, 0] [1, 8] [2, 1] : memref<4x8xi16, 1> to memref<1x8xi16, strided<[16, 1], offset: 8>, 1>
+  %c = memref.collapse_shape %sv [[0, 1]] : memref<1x8xi16, strided<[16, 1], offset: 8>, 1> into memref<8xi16, strided<[1], offset: 8>, 1>
+  air.dma_memcpy_nd (%1[] [] [], %c[] [] []) : (memref<8xi16, 2>, memref<8xi16, strided<[1], offset: 8>, 1>)
+  return
+}
+
 // CHECK: func.func @dma_compose_cast
 // CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[] [] [])
 func.func @dma_compose_cast() {

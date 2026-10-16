@@ -6905,6 +6905,25 @@ public:
     return false;
   }
 
+  /// Whether `op` is a channel get and every get on its channel in the same
+  /// isolated region (the core) fills a different buffer.
+  static bool getsFillDistinctBuffers(Operation *op) {
+    auto get = dyn_cast<air::ChannelGetOp>(op);
+    if (!get)
+      return false;
+    Operation *root = op->getParentWithTrait<OpTrait::IsIsolatedFromAbove>();
+    if (!root)
+      return false;
+    llvm::SmallPtrSet<Value, 4> seen;
+    bool distinct = true;
+    root->walk([&](air::ChannelGetOp g) {
+      if (g.getChanName() == get.getChanName() &&
+          !seen.insert(g.getMemref()).second)
+        distinct = false;
+    });
+    return distinct;
+  }
+
   /// Walks ops in the block and finds the last reader/writer. Returns the last
   /// operation in the same block that accesses `destBuffer`.
   Operation *findLastReadOrWriteOp(Operation *memcpyOp, Value destBuffer) {
@@ -6918,35 +6937,38 @@ public:
         destBuffer != memcpyOpIf.getDstMemref())
       return nullptr;
 
-    // Iterate over operations after the memcpyOp
-    Operation *lastAccessOp = nullptr;
+    // Iterate over operations after the memcpyOp. A dealloc does not touch
+    // the buffer's contents, so it counts only when nothing else accesses the
+    // buffer; otherwise a dealloc at the end of a loop body would hold the
+    // buffer until then, long after its last reader. The release lets the
+    // channel's DMA fill its next buffer. That is the buffer being released
+    // only when the core's gets on the channel fill distinct buffers in turn,
+    // as the DMA does; otherwise the dealloc still counts as an access.
+    bool freeIsAccess = !getsFillDistinctBuffers(memcpyOp);
+    Operation *lastAccessOp = nullptr, *lastFreeOp = nullptr;
     SetVector<Value> bufferViews;
     bufferViews.insert(destBuffer);
-    for (Operation *op = memcpyOpIf->getNextNode(); op != nullptr;
-         op = op->getNextNode()) {
+    auto visit = [&](Operation *o, Operation *top) {
       // Save buffer views.
-      if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(op)) {
+      if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(o)) {
         if (llvm::is_contained(bufferViews, view.getViewSource()))
           bufferViews.insert(view->getResult(0));
       }
-
-      if (isReadOrWriteToBuffer(op, bufferViews))
-        lastAccessOp = op;
-
+      if (!isReadOrWriteToBuffer(o, bufferViews))
+        return;
+      if (isa<memref::DeallocOp>(o) && !freeIsAccess)
+        lastFreeOp = top;
+      else
+        lastAccessOp = top;
+    };
+    for (Operation *op = memcpyOpIf->getNextNode(); op != nullptr;
+         op = op->getNextNode()) {
+      visit(op, op);
       // Check within any regions of this operation
-      for (Region &region : op->getRegions()) {
-        region.walk([&](Operation *o) {
-          // Save buffer views.
-          if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(o)) {
-            if (llvm::is_contained(bufferViews, view.getViewSource()))
-              bufferViews.insert(view->getResult(0));
-          }
-          if (isReadOrWriteToBuffer(o, bufferViews))
-            lastAccessOp = op;
-        });
-      }
+      for (Region &region : op->getRegions())
+        region.walk([&](Operation *o) { visit(o, op); });
     }
-    return lastAccessOp;
+    return lastAccessOp ? lastAccessOp : lastFreeOp;
   }
 
   LogicalResult allocateCoreLocksPerMemcpyOp(
