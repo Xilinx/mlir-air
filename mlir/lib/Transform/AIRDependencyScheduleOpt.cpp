@@ -6305,9 +6305,34 @@ private:
     if (aChanOps.size() != bChanOps.size())
       return true;
     for (auto [aOtherOp, bOtherOp] : llvm::zip_equal(aChanOps, bChanOps))
+      if (!sameGuardsBelow(aOtherOp, aRegion, bOtherOp, bRegion))
+        return false;
+    for (auto [aOtherOp, bOtherOp] : llvm::zip_equal(aChanOps, bChanOps))
       if (!mergeChannelOps(rewriter, aOtherOp, bOtherOp, dryRun))
         return false;
     return true;
+  }
+  // Whether `a` and `b` sit under affine.if guards, up to `aRoot` and `bRoot`,
+  // that pick the same cores, each in the same branch. Every pair of channel
+  // ops in two fused nests moves b's op next to a's, under a's guards.
+  static bool sameGuardsBelow(Operation *a, Region *aRoot, Operation *b,
+                              Region *bRoot) {
+    auto guards = [](Operation *op, Region *root) {
+      SmallVector<std::pair<affine::AffineIfOp, bool>> out;
+      for (Region *r = op->getParentRegion(); r && r != root;
+           r = r->getParentRegion())
+        if (auto ifOp = dyn_cast<affine::AffineIfOp>(r->getParentOp()))
+          out.push_back({ifOp, r == &ifOp.getThenRegion()});
+      return out;
+    };
+    auto aGuards = guards(a, aRoot);
+    auto bGuards = guards(b, bRoot);
+    if (aGuards.size() != bGuards.size())
+      return false;
+    return llvm::all_of(llvm::zip_equal(aGuards, bGuards), [](auto pair) {
+      auto [x, y] = pair;
+      return x.second == y.second && guardSameCores(x.first, y.first);
+    });
   }
   void mergeChannelOpsTemporally(air::ChannelInterface a,
                                  air::ChannelInterface b,
