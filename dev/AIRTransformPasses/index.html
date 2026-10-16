@@ -4156,7 +4156,8 @@ loop hierarchy, where every parent loops must have matching loop bounds. The
 possible by time-multiplexing air.channel.puts and air.channel.gets to share the same
 air.channel symbol.</p>
 <h4 id="options_6">Options<a class="headerlink" href="#options_6" title="Permanent link">&para;</a></h4>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>-aggressive-mode : List of memory spaces to enable aggressive channel fusion with. Available options include ['L1', 'L2', 'L3'].
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>-aggressive-mode  : List of memory spaces to enable aggressive channel fusion with. Available options include ['L1', 'L2', 'L3'].
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>-sequential-loops : Only merge channels that two loops, run one after the other, drive with equal transfers between the same places. The merge renames channels and moves no ops. Meant to run after air-split-l2-memref, which splits each loop's buffers on its own.
 </code></pre></div>
 <h3 id="-air-fuse-nested-herd"><code>-air-fuse-nested-herd</code><a class="headerlink" href="#-air-fuse-nested-herd" title="Permanent link">&para;</a></h3>
 <p><em>Fuse a perfectly nested pair of air.herd loops into a single air.herd.</em></p>
