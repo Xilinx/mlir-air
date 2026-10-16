@@ -389,6 +389,166 @@ def RemoveUninitializedCopyOp : Op<Transform_Dialect, "air.remove_uninitialized_
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
+def RaiseLoadBufferToTensorOp : Op<Transform_Dialect, "air.raise_load_buffer_to_tensor",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Rewrite a buffer built by a fill and box copies as tensor ops";
+  let description = [{
+    Looks for `memref.alloc` ops in the target that are written only by an
+    optional `linalg.fill` of the whole buffer (possibly alone in an `scf.if`)
+    and by `memref.copy` ops into boxes of the buffer, and are then read once,
+    by a `bufferization.to_tensor` with `restrict`. The tensor read is
+    rewritten as the fill value (or a `tensor.empty` when there is no fill)
+    with each copied box inserted by `tensor.insert_slice`, in copy order.
+    Each box is copied into a buffer of its own size and read through
+    `bufferization.to_tensor`.
+
+    A masked Triton load lowers to such a buffer: the `other` value is filled
+    in when the mask cuts the tile, and the in-mask box is copied over it.
+    As tensor values, a box read back out of the result folds to the copied
+    data, and a fill nothing reads becomes dead.
+
+    A fill under a condition is raised as if it always ran. Where it does not
+    run, the elements no copy writes are uninitialized, and the fill value is
+    one of the values they may hold.
+
+    A buffer with any other use, a write after the read, or a box with
+    non-unit strides is left unchanged.
+
+    Returns the target.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def FoldExtractSliceOfInsertSliceOp : Op<Transform_Dialect, "air.fold_extract_slice_of_insert_slice",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Read slices of an assembled tensor from the parts it was built from";
+  let description = [{
+    Applies, within the target, patterns that read a `tensor.extract_slice`
+    of a `tensor.insert_slice` from the operand that holds the extracted box.
+    The boxes need static sizes and unit strides; the extract's offsets may be
+    values with known bounds, such as an induction variable.
+
+    - Disjoint boxes: the extract reads the insert's destination.
+    - The inserted box contains the extracted one, at constant offsets: the
+      extract reads the insert's source. A rank-reducing insert is undone by
+      a `tensor.expand_shape` of that read.
+    - `insert(x at S, insert(y at T, insert(w at S, z)))` with S and T
+      disjoint becomes `insert(y at T, insert(x at S, z))`.
+    - A slice of a `tensor.expand_shape` that only adds unit dims reads the
+      expand's source.
+
+    The same box read back with the inserted value's type is left to the
+    `tensor.extract_slice` folder. A value assembled from parts then reads
+    each part where it was made, and a part no one reads becomes dead.
+
+    Returns the target.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def SwapTransposeWithCollapseOp : Op<Transform_Dialect, "air.swap_transpose_with_collapse",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Move transposes above the collapse_shape ops they read";
+  let description = [{
+    Applies, within the target, a pattern that rewrites a `linalg.transpose`
+    of a `tensor.collapse_shape` as a `tensor.collapse_shape` of a transpose
+    of the uncollapsed tensor, when every dim the transpose moves is a whole
+    reassociation group. The new transpose moves each group's dims together.
+    A transpose that the collapse separated from another one then reads it
+    directly, and the two can compose.
+
+    Returns the target.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def BubbleSliceThroughCollapseOp : Op<Transform_Dialect, "air.bubble_slice_through_collapse",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Move extract_slice ops above their producers, including through collapse_shape at non-constant offsets";
+  let description = [{
+    Applies, within the target, the patterns of
+    `transform.apply_patterns.tensor.bubble_up_extract_slice` together with
+    one for a `tensor.extract_slice` of a `tensor.collapse_shape` whose
+    offsets are not all constants. The upstream patterns handle constant
+    offsets only. The added pattern moves the slice above the collapse when,
+    in each collapsed dim, the slice takes whole rows of the group's inner
+    dims: its size is a multiple of their product and its offset provably is
+    one (a constant, an `scf.for` induction variable whose lower bound and
+    step are, or sums and products of such).
+
+    A loop over the packets of a collapsed dim then slices the tensor before
+    the collapse, so the slice can be fused into the loop with its producer.
+
+    Returns the target.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def UnswitchLoopOp : Op<Transform_Dialect, "air.unswitch_loop",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Hoist a loop-invariant select condition out of a loop";
+  let description = [{
+    Each target is an `scf.for`. When an `arith.select` in the loop is decided
+    by an `i1` defined outside it (directly, or through a `vector.broadcast`
+    of it), the loop is replaced by an `scf.if` on that condition with a copy
+    of the loop in each branch. In the first copy every select on the
+    condition is replaced by its true operand, in the second by its false
+    operand. The operand a copy no longer uses then becomes dead, so work
+    done for only one value of a run-time flag (an optional activation, say)
+    costs nothing when the flag has the other value.
+
+    Loops without such a condition are left unchanged.
+
+    Returns the new `scf.if` ops and the unchanged loops.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def ShareAllocOp : Op<Transform_Dialect, "air.share_alloc",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Use one buffer for several allocations that are never live together";
+  let description = [{
+    The targets are `memref.alloc` ops in one block, with static identity
+    layouts, one memory space, and the same element type and element count.
+    The first target is kept, moved ahead of the others in the block, and the
+    others are replaced by it: an alloc of the same type directly, one of a
+    different shape through a `memref.collapse_shape` of the kept buffer to
+    one dimension and a `memref.expand_shape` to its own shape. Their
+    `memref.dealloc` ops are erased.
+
+    The transform does not check lifetimes. The caller asserts that no two of
+    the buffers hold live values at the same time, as for the buffers of two
+    loops that run one after the other.
+
+    Returns the kept alloc.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
 def EliminateCascadeMemcpyOp : Op<Transform_Dialect, "air.eliminate_cascade_memcpy",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
@@ -1395,7 +1555,8 @@ def CoalesceSlicesOp : Op<Transform_Dialect, "air.coalesce_slices",
   let summary = "Read sibling slices of one tensor through a single copy";
   let description = [{
     Groups the `tensor.extract_slice` ops that produce the inputs of the
-    `target` ops, directly or through a `tensor.expand_shape`, by source. A
+    `target` ops, directly or through `tensor.expand_shape` and
+    `tensor.collapse_shape` ops, by source. A
     group of two or more unit-stride slices in one block, whose offsets in
     each dimension are either the same value or constants, is rewritten as
     one `linalg.copy` of the slices' bounding region into a `tensor.empty`,
@@ -1404,6 +1565,12 @@ def CoalesceSlicesOp : Op<Transform_Dialect, "air.coalesce_slices",
     `affine.delinearize_index` and `arith.addi` / `arith.muli` by constants.
     The region may not hold more elements than the slices it replaces.
 
+    In each dimension listed in `full_dims`, the region instead spans the
+    whole source, which must have a static size there, and the slices'
+    offsets must be constants. A group may then be a single slice. This is
+    for data whose transfer must cover the whole extent even though only
+    part of it is read, such as a packet with an unused tail.
+
     Promoting the returned copies (with
     `transform.structured.bufferize_to_allocation`) then moves the region
     with one DMA instead of one per slice.
@@ -1411,9 +1578,10 @@ def CoalesceSlicesOp : Op<Transform_Dialect, "air.coalesce_slices",
     Returns the new `linalg.copy` ops.
   }];
 
-  let arguments = (ins TransformHandleTypeInterface:$target);
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   DefaultValuedAttr<DenseI64ArrayAttr, "{}">:$full_dims);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$target (`full_dims` `=` $full_dims^)? attr-dict `:` functional-type(operands, results)";
 }
 
 def FoldIterArgsIntoInductionVarOp : Op<Transform_Dialect, "air.fold_iter_args_into_induction_var",
