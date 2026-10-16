@@ -2720,7 +2720,8 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         skipZeroStride(skipZeroStride) {}
 
   // Whether `get` writes an L2 buffer that puts read, at an offset that moves
-  // with the loop's induction variable, over a small number of trips.
+  // with the loop's induction variable, over a small number of trips, and
+  // the puts read it slot by slot: none reads more than one trip's write.
   static bool fillsSlotPerTrip(scf::ForOp forOp, air::ChannelInterface get) {
     auto ty = dyn_cast<BaseMemRefType>(get.getMemref().getType());
     if (!ty || !air::isL2(ty))
@@ -2749,8 +2750,34 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     };
     if (!llvm::any_of(air::getOffsetsAsValues(get), reaches))
       return false;
-    return llvm::any_of(get.getMemref().getUsers(),
-                        [](Operation *u) { return isa<air::ChannelPutOp>(u); });
+    auto volume = [&](air::ChannelInterface op) -> std::optional<int64_t> {
+      auto sizes = op.getMixedSizes();
+      if (sizes.empty())
+        return ty.hasStaticShape() ? std::optional<int64_t>(ty.getNumElements())
+                                   : std::nullopt;
+      int64_t v = 1;
+      for (OpFoldResult sz : sizes) {
+        auto c = getConstantIntValue(sz);
+        if (!c)
+          return std::nullopt;
+        v *= *c;
+      }
+      return v;
+    };
+    auto slot = volume(get);
+    if (!slot)
+      return false;
+    bool anyPut = false;
+    for (Operation *u : get.getMemref().getUsers()) {
+      auto put = dyn_cast<air::ChannelPutOp>(u);
+      if (!put)
+        continue;
+      auto v = volume(put);
+      if (!v || *v > *slot)
+        return false;
+      anyPut = true;
+    }
+    return anyPut;
   }
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
