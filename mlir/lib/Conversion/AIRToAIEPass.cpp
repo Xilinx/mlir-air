@@ -7017,9 +7017,9 @@ public:
         if (rep == air::kUnsupportedRunTimeRepeatCount)
           return task_ops.front()->emitOpError(
               "repeats a run-time number of times, but also a fixed number of "
-              "times within it or in other run-time loops than the transfers "
-              "before it on its DMA channel; one circular BD chain cannot "
-              "express that");
+              "times within it, or in run-time loops with other bounds than "
+              "those of the transfers before it on its DMA channel; one "
+              "circular BD chain cannot express that");
       if (!infiniteBDLoopMode)
         for (auto &[rep, task_ops] : repeat_counts)
           if (rep == air::kRunTimeRepeatCount)

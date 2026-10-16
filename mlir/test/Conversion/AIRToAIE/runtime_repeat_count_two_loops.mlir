@@ -7,8 +7,8 @@
 
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" -verify-diagnostics
 
-// Two run-time loops one after the other on one DMA channel. A circular BD
-// chain would alternate their transfers.
+// Two run-time loops with different trip counts (n and n / 2) on one DMA
+// channel. A circular BD chain would run their transfers equally often.
 // expected-error@unknown {{'aie.memtile_dma' op failed to generate dma bd program}}
 
 air.channel @r0 [1, 1]
@@ -29,8 +29,8 @@ func.func @two_runtime_loops(%n: i32) {
       scf.for %i = %c0 to %k step %c1_0 {
         air.channel.put @r0[] (%l2[%c0] [%c8] [%c1_0]) : (memref<16xbf16, 1>)
       }
-      scf.for %i = %c0 to %k step %c1_0 {
-        // expected-error@+1 {{in other run-time loops than the transfers before it}}
+      scf.for %i = %c0 to %k step %c2 {
+        // expected-error@+1 {{in run-time loops with other bounds than those of the transfers before it}}
         air.channel.put @r0[] (%l2[%c8] [%c8] [%c1_0]) : (memref<16xbf16, 1>)
       }
       %d_ = air.execute {memref.dealloc %l2 : memref<16xbf16, 1>}
