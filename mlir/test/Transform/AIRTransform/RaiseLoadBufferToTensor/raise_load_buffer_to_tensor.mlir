@@ -236,3 +236,27 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// The target is the buffer's alloc itself: it is not raised, and the result
+// handle still holds it.
+
+// CHECK-LABEL: func.func @alloc_target
+// CHECK: memref.alloc() {kept} : memref<8x32xf32>
+func.func @alloc_target(%a: memref<8x20xf32>) -> tensor<8x32xf32> {
+  %buf = memref.alloc() : memref<8x32xf32>
+  %d0 = memref.subview %buf[0, 0] [8, 20] [1, 1] : memref<8x32xf32> to memref<8x20xf32, strided<[32, 1]>>
+  memref.copy %a, %d0 : memref<8x20xf32> to memref<8x20xf32, strided<[32, 1]>>
+  %t = bufferization.to_tensor %buf restrict writable : memref<8x32xf32> to tensor<8x32xf32>
+  return %t : tensor<8x32xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %a = transform.structured.match ops{["memref.alloc"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.raise_load_buffer_to_tensor %a : (!transform.any_op) -> !transform.any_op
+    transform.annotate %r "kept" : !transform.any_op
+    transform.yield
+  }
+}

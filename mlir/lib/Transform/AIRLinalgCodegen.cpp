@@ -3205,8 +3205,12 @@ DiagnosedSilenceableFailure transform::RaiseLoadBufferToTensorOp::apply(
     transform::TransformResults &results, transform::TransformState &state) {
   SmallVector<Operation *> targets;
   for (Operation *target : state.getPayloadOps(getTarget())) {
+    // The target itself stays: the result handle holds it.
     SmallVector<memref::AllocOp> allocs;
-    target->walk([&](memref::AllocOp alloc) { allocs.push_back(alloc); });
+    target->walk([&](memref::AllocOp alloc) {
+      if (alloc.getOperation() != target)
+        allocs.push_back(alloc);
+    });
     for (memref::AllocOp alloc : allocs)
       raiseLoadBuffer(rewriter, alloc);
     targets.push_back(target);
@@ -3517,6 +3521,30 @@ transform::ShareAllocOp::apply(transform::TransformRewriter &rewriter,
   for (auto a : allocs)
     if (a->getBlock() != block)
       return emitDefiniteFailure() << "targets must be in one block";
+  // The shared buffer is freed once, after the last free of a target, which
+  // needs every target freed directly, or none.
+  int freed = 0;
+  for (auto a : allocs) {
+    bool direct = llvm::any_of(
+        a->getUsers(), [](Operation *u) { return isa<memref::DeallocOp>(u); });
+    freed += direct;
+    SmallVector<Value> aliases;
+    for (Operation *u : a->getUsers())
+      if (isa<ViewLikeOpInterface, CastOpInterface>(u))
+        llvm::append_range(aliases, u->getResults());
+    while (!aliases.empty()) {
+      Value v = aliases.pop_back_val();
+      for (Operation *u : v.getUsers()) {
+        if (isa<memref::DeallocOp>(u))
+          return emitDefiniteFailure()
+                 << "targets must not be freed through a view or cast";
+        if (isa<ViewLikeOpInterface, CastOpInterface>(u))
+          llvm::append_range(aliases, u->getResults());
+      }
+    }
+  }
+  if (freed != 0 && freed != (int)allocs.size())
+    return emitDefiniteFailure() << "either every target or none must be freed";
   // Keep the first target, moved ahead of the others in the block.
   memref::AllocOp kept = allocs.front();
   for (auto a : allocs)
@@ -3608,8 +3636,14 @@ DiagnosedSilenceableFailure
 transform::UnswitchLoopOp::apply(transform::TransformRewriter &rewriter,
                                  transform::TransformResults &results,
                                  transform::TransformState &state) {
+  // Unswitching a loop clones the loops inside it, so targets must not nest.
+  auto targets = llvm::to_vector(state.getPayloadOps(getTarget()));
+  for (Operation *a : targets)
+    for (Operation *b : targets)
+      if (a != b && a->isAncestor(b))
+        return emitDefiniteFailure() << "targets must not be nested";
   SmallVector<Operation *> transformed;
-  for (Operation *target : state.getPayloadOps(getTarget())) {
+  for (Operation *target : targets) {
     auto loop = dyn_cast<scf::ForOp>(target);
     if (!loop)
       return emitDefiniteFailure() << "target must be an scf.for";

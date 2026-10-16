@@ -111,3 +111,50 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// One buffer is freed and the other is returned: a shared free would end the
+// second one's life too early.
+func.func @mixed_free(%x: f32) -> memref<16xf32> {
+  %c0 = arith.constant 0 : index
+  %a = memref.alloc() : memref<16xf32>
+  memref.store %x, %a[%c0] : memref<16xf32>
+  memref.dealloc %a : memref<16xf32>
+  %b = memref.alloc() : memref<16xf32>
+  memref.store %x, %b[%c0] : memref<16xf32>
+  return %b : memref<16xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %allocs = transform.structured.match ops{["memref.alloc"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    // expected-error@+1 {{either every target or none must be freed}}
+    %one = transform.air.share_alloc %allocs : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// The first buffer is freed through a cast, which sharing would not move.
+func.func @free_through_cast(%x: f32) {
+  %c0 = arith.constant 0 : index
+  %a = memref.alloc() : memref<16xf32>
+  memref.store %x, %a[%c0] : memref<16xf32>
+  %ac = memref.cast %a : memref<16xf32> to memref<?xf32>
+  memref.dealloc %ac : memref<?xf32>
+  %b = memref.alloc() : memref<16xf32>
+  memref.store %x, %b[%c0] : memref<16xf32>
+  memref.dealloc %b : memref<16xf32>
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %allocs = transform.structured.match ops{["memref.alloc"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    // expected-error@+1 {{targets must not be freed through a view or cast}}
+    %one = transform.air.share_alloc %allocs : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}

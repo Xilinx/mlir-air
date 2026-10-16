@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -transform-interpreter -split-input-file %s | FileCheck %s
+// RUN: air-opt -transform-interpreter -split-input-file -verify-diagnostics %s | FileCheck %s
 
 // A select on a flag defined outside the loop: the loop runs in two copies
 // under scf.if, and the copy for a clear flag no longer computes the value
@@ -70,6 +70,31 @@ func.func @varying(%m: memref<4x32xf32>) {
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
     %l = transform.structured.match ops{["scf.for"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %u = transform.air.unswitch_loop %l : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// Nested targets: unswitching the outer loop would clone the inner one.
+func.func @nested(%c: i1, %a: f32, %b: f32, %m: memref<16x16xf32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c16 = arith.constant 16 : index
+  scf.for %i = %c0 to %c16 step %c1 {
+    scf.for %j = %c0 to %c16 step %c1 {
+      %v = arith.select %c, %a, %b : f32
+      memref.store %v, %m[%i, %j] : memref<16x16xf32>
+    }
+  }
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %l = transform.structured.match ops{["scf.for"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    // expected-error@+1 {{targets must not be nested}}
     %u = transform.air.unswitch_loop %l : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
