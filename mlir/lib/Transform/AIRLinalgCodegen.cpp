@@ -4965,6 +4965,90 @@ AffineMap linearIndexMap(MemRefType type) {
   return AffineMap::get(type.getRank(), 0, e);
 }
 
+// The distance, in elements of `type`, from the address of `b` to that of
+// `a` on the first trip of `forOp`, if it is a constant.
+std::optional<int64_t> constantOffsetBetween(MemRefType type, ArrayRef<Value> a,
+                                             ArrayRef<Value> b,
+                                             scf::ForOp forOp) {
+  auto lb = getConstantIntValue(forOp.getLowerBound());
+  if (!lb)
+    return std::nullopt;
+  AffineMap lin = linearIndexMap(type);
+  unsigned n = lin.getNumDims();
+  MLIRContext *ctx = forOp.getContext();
+  AffineExpr ea = lin.getResult(0);
+  AffineExpr eb = lin.getResult(0).shiftDims(n, n);
+  AffineMap map = AffineMap::get(2 * n, 0, ea - eb, ctx);
+  SmallVector<Value> operands(a.begin(), a.end());
+  operands.append(b.begin(), b.end());
+  affine::fullyComposeAffineMapAndOperands(&map, &operands);
+  affine::canonicalizeMapAndOperands(&map, &operands);
+  Value iv = forOp.getInductionVar();
+  SmallVector<AffineExpr> dims, syms;
+  for (unsigned d = 0; d < map.getNumDims(); ++d)
+    dims.push_back(operands[d] == iv ? getAffineConstantExpr(*lb, ctx)
+                                     : getAffineDimExpr(d, ctx));
+  for (unsigned k = 0; k < map.getNumSymbols(); ++k)
+    syms.push_back(operands[map.getNumDims() + k] == iv
+                       ? getAffineConstantExpr(*lb, ctx)
+                       : getAffineSymbolExpr(k, ctx));
+  auto c = dyn_cast<AffineConstantExpr>(
+      simplifyAffineExpr(map.getResult(0).replaceDimsAndSymbols(dims, syms),
+                         map.getNumDims(), map.getNumSymbols()));
+  if (!c)
+    return std::nullopt;
+  return c.getValue();
+}
+
+// How many elements of `type` the address of `indices` moves per trip of
+// `forOp`, if that is the same constant on every trip even though no single
+// index is linear in the induction variable (as with a delinearized induction
+// variable); std::nullopt otherwise. Needs constant loop bounds.
+std::optional<int64_t> constantOffsetPerTrip(MemRefType type,
+                                             ArrayRef<Value> indices,
+                                             scf::ForOp forOp) {
+  auto lb = getConstantIntValue(forOp.getLowerBound());
+  auto ub = getConstantIntValue(forOp.getUpperBound());
+  auto step = getConstantIntValue(forOp.getStep());
+  if (!lb || !ub || !step || *step <= 0 || *ub <= *lb ||
+      (*ub - *lb) / *step > 4096)
+    return std::nullopt;
+  AffineMap map = linearIndexMap(type);
+  SmallVector<Value> operands(indices.begin(), indices.end());
+  affine::fullyComposeAffineMapAndOperands(&map, &operands);
+  affine::canonicalizeMapAndOperands(&map, &operands);
+  Value iv = forOp.getInductionVar();
+  for (Value o : operands)
+    if (o != iv && !forOp.isDefinedOutsideOfLoop(o))
+      return std::nullopt;
+  MLIRContext *ctx = forOp.getContext();
+  unsigned nd = map.getNumDims(), ns = map.getNumSymbols();
+  auto at = [&](int64_t v) {
+    SmallVector<AffineExpr> dims, syms;
+    for (unsigned d = 0; d < nd; ++d)
+      dims.push_back(operands[d] == iv ? getAffineConstantExpr(v, ctx)
+                                       : getAffineDimExpr(d, ctx));
+    for (unsigned k = 0; k < ns; ++k)
+      syms.push_back(operands[nd + k] == iv ? getAffineConstantExpr(v, ctx)
+                                            : getAffineSymbolExpr(k, ctx));
+    return map.getResult(0).replaceDimsAndSymbols(dims, syms);
+  };
+  AffineExpr first = at(*lb);
+  std::optional<int64_t> perTrip;
+  int64_t trip = 1;
+  for (int64_t v = *lb + *step; v < *ub; v += *step, ++trip) {
+    auto delta =
+        dyn_cast<AffineConstantExpr>(simplifyAffineExpr(at(v) - first, nd, ns));
+    if (!delta)
+      return std::nullopt;
+    if (!perTrip)
+      perTrip = delta.getValue();
+    if (delta.getValue() != trip * *perTrip)
+      return std::nullopt;
+  }
+  return perTrip.value_or(0);
+}
+
 bool dependsOnLoopIVForHoist(Value val, Value loopIV) {
   if (val == loopIV)
     return true;
@@ -5072,6 +5156,7 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
       SmallVector<int64_t> strides;
       if (flattenable)
         strides = memrefType.getStridesAndOffset().first;
+      bool perIndexLinear = true;
       for (size_t dimIdx = 0; dimIdx < indices.size(); ++dimIdx) {
         Value idx = indices[dimIdx];
         if (!dependsOnLoopIVForHoist(idx, loopIV))
@@ -5083,10 +5168,25 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
         std::optional<int64_t> coefficient = linearIVCoefficient(idx, forOp);
         if (!flattenable || !coefficient || !loopStep ||
             !isComputableAtLowerBound(idx, forOp)) {
-          unsupported = true;
+          perIndexLinear = false;
           break;
         }
         constantStride += strides[dimIdx] * *coefficient * *loopStep;
+      }
+      if (!perIndexLinear) {
+        if (!flattenable || !llvm::all_of(indices, [&](Value idx) {
+              return isComputableAtLowerBound(idx, forOp);
+            })) {
+          unsupported = true;
+          break;
+        }
+        // The indices together may still move the access by a constant on
+        // every trip; if they do not, the access is left as it is.
+        std::optional<int64_t> perTrip =
+            constantOffsetPerTrip(memrefType, indices, forOp);
+        if (!perTrip)
+          continue;
+        constantStride = *perTrip;
       }
       if (unsupported)
         break;
@@ -5101,14 +5201,42 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
       continue;
     }
 
+    // Accesses to one memref that move by the same stride and lie a constant
+    // apart share one pointer: a follower addresses its leader's pointer plus
+    // that constant. One pointer per stream, rather than per access, keeps
+    // the loop within the core's pointer registers.
+    SmallVector<int64_t> leaderOf(transferOps.size(), -1);
+    SmallVector<int64_t> offsetFromLeader(transferOps.size(), 0);
+    for (size_t i = 0; i < transferOps.size(); ++i) {
+      const auto &info = transferOps[i];
+      if (!info.hasIVDependentIndices)
+        continue;
+      for (size_t j = 0; j < i; ++j) {
+        const auto &lead = transferOps[j];
+        if (!lead.hasIVDependentIndices || leaderOf[j] != -1 ||
+            lead.base != info.base ||
+            lead.constantStride != info.constantStride)
+          continue;
+        if (auto delta = constantOffsetBetween(info.memrefType, info.indices,
+                                               lead.indices, forOp)) {
+          leaderOf[i] = j;
+          offsetFromLeader[i] = *delta;
+          break;
+        }
+      }
+    }
+    // The index of the iter_arg holding each leader's pointer.
+    SmallVector<int64_t> iterArgOf(transferOps.size(), -1);
+
     // Prepare to add iter_args for each transfer operation with IV-dependent
     // indices
     SmallVector<Value> newInitArgs;
     SmallVector<Value> flatMemrefs;
 
-    for (const auto &info : transferOps) {
-      if (!info.hasIVDependentIndices)
+    for (const auto &[infoIdx, info] : llvm::enumerate(transferOps)) {
+      if (!info.hasIVDependentIndices || leaderOf[infoIdx] != -1)
         continue;
+      iterArgOf[infoIdx] = newInitArgs.size();
 
       rewriter.setInsertionPoint(forOp);
       flatMemrefs.push_back(collapseToRank1(rewriter, loc, info.base));
@@ -5197,17 +5325,30 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
         [&](OpBuilder &b, Location yieldLoc,
             ArrayRef<BlockArgument> newBbArgs) -> SmallVector<Value> {
       SmallVector<Value> yieldValues;
+      // The pointer updates go at the end of the body, after the last access
+      // (the builder is positioned there when this is called). Updating a
+      // pointer right after its first access would make the later accesses
+      // address back from the updated value.
+      OpBuilder::InsertPoint atYield = b.saveInsertionPoint();
 
       // Process each transfer operation with IV-dependent indices
-      size_t iterArgIdx = 0;
       for (size_t i = 0; i < transferOps.size(); ++i) {
         const auto &info = transferOps[i];
         if (!info.hasIVDependentIndices)
           continue;
 
-        BlockArgument ptrIterArg =
+        bool follower = leaderOf[i] != -1;
+        int64_t iterArgIdx = follower ? iterArgOf[leaderOf[i]] : iterArgOf[i];
+        BlockArgument leaderPtr =
             newBbArgs[newBbArgs.size() - newInitArgs.size() + iterArgIdx];
         Value flatMemref = flatMemrefs[iterArgIdx];
+        Value ptrIterArg = leaderPtr;
+        if (follower && offsetFromLeader[i] != 0) {
+          b.setInsertionPoint(info.op);
+          ptrIterArg = arith::AddIOp::create(
+              b, loc, leaderPtr,
+              arith::ConstantIndexOp::create(b, loc, offsetFromLeader[i]));
+        }
 
         // Flatten vector type
         int64_t numElements = getVectorNumElements(info.vectorType);
@@ -5240,14 +5381,16 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
               inBoundsAttr);
         }
 
+        if (follower)
+          continue;
         // Compute next pointer value: current_ptr + constant_stride
+        OpBuilder::InsertionGuard atYieldGuard(b);
+        b.restoreInsertionPoint(atYield);
         Value strideConst =
             arith::ConstantIndexOp::create(b, yieldLoc, info.constantStride);
         Value nextPtr =
-            arith::AddIOp::create(b, yieldLoc, ptrIterArg, strideConst);
+            arith::AddIOp::create(b, yieldLoc, leaderPtr, strideConst);
         yieldValues.push_back(nextPtr);
-
-        iterArgIdx++;
       }
 
       return yieldValues;
