@@ -1169,11 +1169,8 @@ def main():
                 O_FFN_BACKEND,
             )
 
-            # The stock bf16 rms_gemms_rope/o_ffn stitchers link external GEMM
-            # microkernels chosen per GEMM spec. Build them before caching so
-            # prepare_air_project stages them into air_project/ (mirrors
-            # llama32_1b_prefill.compile_all_kernels); the int4/bfp16 branches
-            # use their own kernels and don't need these.
+            # The bf16 stitchers link external GEMM objects; build them before
+            # caching. The int4/bfp16 branches use their own kernels.
             from air_examples.llms.shared.builders.gemm_builder import (
                 compile_gemm_objects,
             )

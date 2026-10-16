@@ -176,7 +176,7 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
     from air_examples.llms.shared.builders.o_ffn_multi import o_ffn_gemm_specs
 
     # External microkernels FIRST — aircc picks them up from cwd. One mm.o per
-    # GEMM spec; in_proj is drain at its registry tile_n/tile_k_l1 (see below).
+    # GEMM spec; in_proj runs drain at its registry tile_n/tile_k_l1.
     in_proj = gemm_registry_config(seq_len, emb_dim, 3 * conv_dim, "bf16", "high")
     compile_gemm_objects(
         rms_qkv_qknorm_rope_gemm_specs(seq_len, emb_dim, q_dim, kv_dim)

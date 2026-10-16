@@ -175,10 +175,8 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
     print(f"Compiling prefill kernels (seq_len={seq_len})...")
     print(f"{'='*60}\n")
 
-    # External-GEMM mm.o variants — compile FIRST (before any compile_and_cache, so
-    # prepare_air_project copies them into air_project/ for every ELF that links
-    # them). Each GEMM's method, tiles and mm.o come from its own registry spec, so
-    # methods (and drain tile_m) can mix and co-link in ONE ELF.
+    # External GEMM objects, compiled before any compile_and_cache so every ELF
+    # that links one finds it. One object per distinct GEMM spec.
     from air_examples.llms.shared.builders.gemm_builder import compile_gemm_objects
     from air_examples.llms.shared.builders.rms_gemms_rope_multi import (
         rms_gemms_rope_gemm_specs,
