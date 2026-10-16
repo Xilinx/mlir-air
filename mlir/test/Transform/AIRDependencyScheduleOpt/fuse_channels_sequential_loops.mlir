@@ -287,3 +287,70 @@ module {
     return
   }
 }
+
+// -----
+
+// Three loops into one core buffer, run A, B, C on the memtile side and A, C,
+// B on the core. B joins A; C is then ordered against A and B together and
+// stays apart.
+
+// CHECK-LABEL: func.func @three_loops
+// CHECK: air.channel.put {{.*}} @chan_a[]
+// CHECK: air.channel.put {{.*}} @chan_a[]
+// CHECK: air.channel.put {{.*}} @chan_c[]
+// CHECK: air.herd
+// CHECK: air.channel.get {{.*}} @chan_a[]
+// CHECK: air.channel.get {{.*}} @chan_c[]
+// CHECK: air.channel.get {{.*}} @chan_a[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  air.channel @chan_c [1, 1]
+  func.func @three_loops(%nq: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%aq=%nq) : index {
+      %1 = air.segment @seg async args(%sq=%aq) : index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %tb, %z = air.execute -> (memref<8x2560xi16, 1>) {
+          %a = memref.alloc() : memref<8x2560xi16, 1>
+          air.execute_terminator %a : memref<8x2560xi16, 1>
+        }
+        %pa = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %tb) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_a[] (%z[0, 0] [1, 2560] [2560, 1]) : (memref<8x2560xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %pb = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %pa) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_b[] (%z[1, 0] [1, 2560] [2560, 1]) : (memref<8x2560xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %pc = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %pb) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_c[] (%z[2, 0] [1, 2560] [2560, 1]) : (memref<8x2560xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %5 = air.herd @herd async tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) args(%hq=%sq) : index {
+          %c0_1 = arith.constant 0 : index
+          %c1_1 = arith.constant 1 : index
+          %ta, %ba = air.execute -> (memref<2560xi16, 2>) {
+            %a = memref.alloc() : memref<2560xi16, 2>
+            air.execute_terminator %a : memref<2560xi16, 2>
+          }
+          %ga = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_a[] (%ba[] [] []) : (memref<2560xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+          %gc = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %ga) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_c[] (%ba[] [] []) : (memref<2560xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+          %gb = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %gc) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_b[] (%ba[] [] []) : (memref<2560xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}

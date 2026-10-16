@@ -967,8 +967,9 @@ air::DMAAllocator::lookupDMAAllocation(AIE::TileLike tile,
 // the first read. The write lock then starts at the number of reads: each
 // write acquires k, and each read releases one. A slot is refilled only once
 // all k of its reads have released, which holds when every read lies in one
-// slot and the reads take the slots in the order they were written. Returns 0
-// for any other buffer.
+// slot and the reads take the slots in the order they were written, on one
+// channel (reads on several channels run independently). Returns 0 for any
+// other buffer.
 static int64_t slotBufferWriteLockInit(Value buffer) {
   using Span = std::pair<int64_t, int64_t>;
   auto spanOf = [](air::ChannelInterface chan) -> std::optional<Span> {
@@ -1003,6 +1004,17 @@ static int64_t slotBufferWriteLockInit(Value buffer) {
   }
   int64_t nw = writes.size(), nr = reads.size();
   if (nw < 2 || nr < nw || nr % nw)
+    return 0;
+  // All writes on one channel instance, and all reads on one.
+  auto oneChannel = [](auto &ops) {
+    auto first = cast<air::ChannelInterface>(ops.front().first);
+    return llvm::all_of(ops, [&](auto &p) {
+      auto c = cast<air::ChannelInterface>(p.first);
+      return c.getChanName() == first.getChanName() &&
+             llvm::equal(c.getIndices(), first.getIndices());
+    });
+  };
+  if (!oneChannel(writes) || !oneChannel(reads))
     return 0;
   // Program order of the transfers, all in one block.
   Block *block = writes.front().first->getBlock();

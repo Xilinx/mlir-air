@@ -100,3 +100,43 @@ module {
     return
   }
 }
+
+// -----
+
+// Two slots, each drained on its own channel: the drains run independently,
+// so one could free a credit that refills the other slot before its drain.
+// The write lock keeps its usual start.
+
+// CHECK-LABEL: aie.device(npu2)
+// CHECK: aie.lock(%{{.*}}, 1) {init = 1 : i32}
+module {
+  air.channel @in [1, 1]
+  air.channel @to_core0 [1, 1]
+  air.channel @to_core1 [1, 1]
+  func.func @two_drain_channels(%src: memref<256xi32>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) args(%a=%src) : memref<256xi32> {
+      air.channel.put @in[] (%a[0] [128] [1]) {id = 21 : i32} : (memref<256xi32>)
+      air.channel.put @in[] (%a[128] [128] [1]) {id = 22 : i32} : (memref<256xi32>)
+      air.segment @seg0 {
+        %c1_0 = arith.constant 1 : index
+        %l2 = memref.alloc() : memref<2x128xi32, 1>
+        air.channel.get @in[] (%l2[0, 0] [1, 128] [128, 1]) {id = 1 : i32} : (memref<2x128xi32, 1>)
+        air.channel.get @in[] (%l2[1, 0] [1, 128] [128, 1]) {id = 2 : i32} : (memref<2x128xi32, 1>)
+        air.channel.put @to_core0[] (%l2[0, 0] [1, 128] [128, 1]) {id = 5 : i32} : (memref<2x128xi32, 1>)
+        air.channel.put @to_core1[] (%l2[1, 0] [1, 128] [128, 1]) {id = 6 : i32} : (memref<2x128xi32, 1>)
+        air.herd @herd_0 tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) {
+          %buf = memref.alloc() : memref<128xi32, 2>
+          %buf1 = memref.alloc() : memref<128xi32, 2>
+          air.channel.get @to_core0[] (%buf[] [] []) {id = 13 : i32} : (memref<128xi32, 2>)
+          air.channel.get @to_core1[] (%buf1[] [] []) {id = 14 : i32} : (memref<128xi32, 2>)
+          memref.dealloc %buf : memref<128xi32, 2>
+          memref.dealloc %buf1 : memref<128xi32, 2>
+        }
+        memref.dealloc %l2 : memref<2x128xi32, 1>
+      }
+    }
+    return
+  }
+}
+

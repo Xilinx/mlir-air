@@ -2586,12 +2586,42 @@ static std::vector<Operation *> getComposableMemrefChain(Value memref) {
 // there is nothing to do leaves dead constants behind on every attempt. The
 // greedy rewrite driver then sees the IR change on each sweep and never
 // reaches a fixpoint -- an outright hang, not just wasted work.
+// Whether composing `chain` may turn the offset of a dim it drops (by a
+// rank-reducing subview, or a unit dim a collapse_shape folds) into a leading
+// unit dim, which ComposeMemrefOp only does for an implicit access pattern.
+static bool chainMayDropOffsetDims(ArrayRef<Operation *> chain) {
+  auto subview = dyn_cast<memref::SubViewOp>(chain.front());
+  if (!subview || llvm::all_of(subview.getMixedOffsets(), [](OpFoldResult o) {
+        return isConstantIntValue(o, 0);
+      }))
+    return false;
+  if (subview.getDroppedDims().any())
+    return true;
+  return llvm::any_of(chain, [](Operation *op) {
+    auto collapse = dyn_cast<memref::CollapseShapeOp>(op);
+    if (!collapse)
+      return false;
+    return llvm::any_of(
+        collapse.getReassociationIndices(), [&](ReassociationIndices g) {
+          return llvm::count_if(g,
+                                [&](int64_t d) {
+                                  return collapse.getSrcType().getDimSize(d) ==
+                                         1;
+                                }) > 0 &&
+                 g.size() > 1;
+        });
+  });
+}
+
 static bool memcpyAccessPatternNeedsRewrite(Value memref,
                                             ArrayRef<OpFoldResult> offsets,
                                             ArrayRef<OpFoldResult> sizes,
                                             ArrayRef<OpFoldResult> strides) {
-  // Mirrors ComposeMemrefOp's early exits.
-  if (!getComposableMemrefChain(memref).empty())
+  // Mirrors ComposeMemrefOp's early exits, and its refusal to add leading
+  // unit dims to an explicit access pattern.
+  std::vector<Operation *> chain = getComposableMemrefChain(memref);
+  bool explicitPattern = !offsets.empty() || !sizes.empty() || !strides.empty();
+  if (!chain.empty() && !(explicitPattern && chainMayDropOffsetDims(chain)))
     return true;
   // Mirrors canonicalizeEmptyLists.
   if (offsets.empty() && sizes.empty() && strides.empty())

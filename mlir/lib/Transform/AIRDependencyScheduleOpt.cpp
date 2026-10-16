@@ -6093,6 +6093,8 @@ private:
       air::ChannelOp a = channelOps[i];
       if (merged.count(a))
         continue;
+      // The gets and puts of a and of every channel merged into it so far:
+      // a further channel must be ordered against all of them.
       auto aGets = getChannelGetOpThroughSymbol(a);
       if (aGets.empty())
         continue;
@@ -6115,6 +6117,8 @@ private:
             }))
           continue;
         merged[b] = a;
+        llvm::append_range(aGets, bGets);
+        llvm::append_range(aPuts, bPuts);
       }
     }
   }
