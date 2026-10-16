@@ -83,3 +83,26 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// An offset n * 6 with n unbounded may wrap, so it need not be a multiple of
+// 6: left alone.
+// CHECK-LABEL: @unbounded_offset
+// CHECK: tensor.collapse_shape
+// CHECK: tensor.extract_slice
+func.func @unbounded_offset(%t: tensor<2x6xf32>, %n: index) -> tensor<6xf32> {
+  %c6 = arith.constant 6 : index
+  %o = arith.muli %n, %c6 : index
+  %c = tensor.collapse_shape %t [[0, 1]] : tensor<2x6xf32> into tensor<12xf32>
+  %s = tensor.extract_slice %c[%o] [6] [1] : tensor<12xf32> to tensor<6xf32>
+  return %s : tensor<6xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.bubble_slice_through_collapse %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}

@@ -260,3 +260,25 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// A copy of the buffer onto itself is left alone.
+
+// CHECK-LABEL: func.func @self_copy
+// CHECK: memref.copy %[[B:.*]], %[[B]]
+// CHECK: bufferization.to_tensor %[[B]]
+func.func @self_copy() -> tensor<8x32xf32> {
+  %buf = memref.alloc() : memref<8x32xf32>
+  memref.copy %buf, %buf : memref<8x32xf32> to memref<8x32xf32>
+  %t = bufferization.to_tensor %buf restrict writable : memref<8x32xf32> to tensor<8x32xf32>
+  return %t : tensor<8x32xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.raise_load_buffer_to_tensor %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}

@@ -3086,7 +3086,8 @@ static bool raiseLoadBuffer(RewriterBase &rewriter, memref::AllocOp alloc) {
       fill = f;
       fillRoot = root;
     } else if (auto copy = dyn_cast<memref::CopyOp>(user)) {
-      if (copy.getTarget() != alloc.getResult())
+      if (copy.getTarget() != alloc.getResult() ||
+          copy.getSource() == alloc.getResult())
         return false;
       boxes.push_back({copy, nullptr});
     } else if (auto view = dyn_cast<memref::SubViewOp>(user)) {
@@ -3580,12 +3581,10 @@ transform::ShareAllocOp::apply(transform::TransformRewriter &rewriter,
         deallocs.push_back(d);
   Operation *lastFree = nullptr;
   for (memref::DeallocOp d : deallocs) {
-    Operation *anc = block->findAncestorOpInBlock(*d);
-    if (!anc)
-      return emitDefiniteFailure()
-             << "targets must be freed in their block or a region inside it";
-    if (!lastFree || lastFree->isBeforeInBlock(anc))
-      lastFree = anc;
+    if (d->getBlock() != block)
+      return emitDefiniteFailure() << "targets must be freed in their block";
+    if (!lastFree || lastFree->isBeforeInBlock(d))
+      lastFree = d;
   }
   if (lastFree) {
     rewriter.setInsertionPointAfter(lastFree);
@@ -3600,15 +3599,19 @@ transform::ShareAllocOp::apply(transform::TransformRewriter &rewriter,
     if (t != keptTy) {
       // Go through one dimension: any two shapes with the same number of
       // elements are reshapes of it.
-      SmallVector<ReassociationIndices> toFlat(1);
-      for (int64_t i = 0; i < keptTy.getRank(); i++)
-        toFlat[0].push_back(i);
-      v = memref::CollapseShapeOp::create(rewriter, a.getLoc(), v, toFlat);
-      SmallVector<ReassociationIndices> fromFlat(1);
-      for (int64_t i = 0; i < t.getRank(); i++)
-        fromFlat[0].push_back(i);
-      v = memref::ExpandShapeOp::create(rewriter, a.getLoc(), t.getShape(), v,
-                                        fromFlat);
+      if (keptTy.getRank() > 1) {
+        SmallVector<ReassociationIndices> toFlat(1);
+        for (int64_t i = 0; i < keptTy.getRank(); i++)
+          toFlat[0].push_back(i);
+        v = memref::CollapseShapeOp::create(rewriter, a.getLoc(), v, toFlat);
+      }
+      if (t.getRank() > 1) {
+        SmallVector<ReassociationIndices> fromFlat(1);
+        for (int64_t i = 0; i < t.getRank(); i++)
+          fromFlat[0].push_back(i);
+        v = memref::ExpandShapeOp::create(rewriter, a.getLoc(), t.getShape(), v,
+                                          fromFlat);
+      }
     }
     rewriter.replaceOp(a, v);
   }
@@ -3757,6 +3760,20 @@ static bool isMultipleOf(Value v, int64_t m) {
     return true;
   if (auto c = getConstantIntValue(v))
     return *c % m == 0;
+  // Integer arithmetic wraps, which keeps divisibility only by a power of two.
+  // For other divisors, `v` must provably stay far inside the index range.
+  if (!llvm::isPowerOf2_64(m)) {
+    auto bound = [&](presburger::BoundType t) {
+      return ValueBoundsConstraintSet::computeConstantBound(
+          t, {v, std::nullopt}, /*stopCondition=*/nullptr,
+          ValueBoundsOptions{/*closedUB=*/true});
+    };
+    FailureOr<int64_t> lo = bound(presburger::BoundType::LB);
+    FailureOr<int64_t> hi = bound(presburger::BoundType::UB);
+    constexpr int64_t kSafe = int64_t(1) << 31;
+    if (failed(lo) || failed(hi) || *lo < -kSafe || *hi > kSafe)
+      return false;
+  }
   if (auto arg = dyn_cast<BlockArgument>(v))
     if (auto loop = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp()))
       if (arg == loop.getInductionVar())
