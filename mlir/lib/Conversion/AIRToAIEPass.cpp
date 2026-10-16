@@ -19,6 +19,7 @@
 #include "aie/Dialect/AIE/Transforms/AIEPlacer.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -5073,17 +5074,34 @@ public:
     // An integer segment argument is a run-time scalar, such as a loop's trip
     // count. The device has no value for it: memtile DMAs that repeat it must
     // form a buffer rotation, which runs as a circular BD chain and takes no
-    // count, and the shim side runs it from the instruction sequence.
+    // count, and the shim side runs it from the instruction sequence. So is
+    // an index argument that a loop's bounds or step are computed from.
+    auto boundsLoop = [](Value v) {
+      SetVector<Operation *> slice;
+      getForwardSlice(v, &slice);
+      return llvm::any_of(slice, [&](Operation *op) {
+        auto loop = dyn_cast<scf::ForOp>(op);
+        if (!loop)
+          return false;
+        return llvm::any_of(ValueRange{loop.getLowerBound(),
+                                       loop.getUpperBound(), loop.getStep()},
+                            [&](Value b) {
+                              return b == v ||
+                                     (b.getDefiningOp() &&
+                                      slice.contains(b.getDefiningOp()));
+                            });
+      });
+    };
     for (auto func : module.getOps<func::FuncOp>()) {
       func.walk([&](air::SegmentOp segOp) {
         for (unsigned i = 0, e = segOp.getNumKernelOperands(); i < e; i++) {
           Value karg = segOp.getKernelArgument(i);
           if (remap.contains(karg))
             continue;
-          if (isa<IndexType>(karg.getType()))
+          if (isa<IndexType>(karg.getType()) && !boundsLoop(karg))
             remap.map(karg, arith::ConstantIndexOp::create(
                                 builder, builder.getUnknownLoc(), 0));
-          else if (isa<IntegerType>(karg.getType()))
+          else if (isa<IntegerType, IndexType>(karg.getType()))
             remap.map(karg,
                       ub::PoisonOp::create(builder, builder.getUnknownLoc(),
                                            karg.getType()));
@@ -6995,6 +7013,13 @@ public:
       // the run -- there is no repeat count to program and we generate BDs in
       // infinite loop mode instead.
       bool infiniteBDLoopMode = repeat_counts.size() == 1;
+      for (auto &[rep, task_ops] : repeat_counts)
+        if (rep == air::kUnsupportedRunTimeRepeatCount)
+          return task_ops.front()->emitOpError(
+              "repeats a run-time number of times, but also a fixed number of "
+              "times within it or in other run-time loops than the transfers "
+              "before it on its DMA channel; one circular BD chain cannot "
+              "express that");
       if (!infiniteBDLoopMode)
         for (auto &[rep, task_ops] : repeat_counts)
           if (rep == air::kRunTimeRepeatCount)

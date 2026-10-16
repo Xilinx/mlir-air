@@ -55,6 +55,11 @@ int64_t get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
 // run time. A channel whose transfers all share it runs as one circular BD
 // chain, which needs no count; any other channel cannot be programmed.
 constexpr int kRunTimeRepeatCount = std::numeric_limits<int>::min();
+// The repeat count of a transfer in a loop with a run-time trip count that one
+// circular BD chain cannot express: the transfer also repeats a fixed number
+// of times per trip, or other transfers on the channel are in other run-time
+// loops.
+constexpr int kUnsupportedRunTimeRepeatCount = kRunTimeRepeatCount + 1;
 
 // Given a vector of memcpy operations, split them into BD tasks paired with the
 // repeat count each task runs at, relative to a common ancestor region. Tasks

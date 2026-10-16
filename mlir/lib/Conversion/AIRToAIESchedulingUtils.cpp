@@ -427,9 +427,14 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   // the earlier loop's chain and ran them before every task in between -- so a
   // three-phase egress [A x4, B x32, C x4] emitted A and C interleaved up front
   // and B afterwards. Counts stayed right, order did not.
+  // The run-time loops around the first transfer in one. A circular BD chain
+  // repeats the whole chain once per trip, so every transfer in a run-time
+  // loop must be in the same loops and run once per trip.
+  std::optional<SmallVector<Operation *>> chainLoops;
   for (auto o : memcpyIOpVec) {
     int tripCount = 1;
     bool runTimeCount = false;
+    SmallVector<Operation *> runTimeLoops;
     Region *currRegion = o->getParentRegion();
     while (commonRegion->isAncestor(currRegion)) {
       Operation *parent = currRegion->getParentOp();
@@ -442,10 +447,18 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
         tripCount *= *air::getStaticScfForTripCountAsInt(scfFor);
       } else if (scfFor) {
         runTimeCount = true;
+        runTimeLoops.push_back(scfFor);
       }
     }
     // In English, repeat count is trip count minus one.
-    int rep = runTimeCount ? air::kRunTimeRepeatCount : tripCount - 1;
+    int rep = tripCount - 1;
+    if (runTimeCount) {
+      if (!chainLoops)
+        chainLoops = runTimeLoops;
+      rep = tripCount == 1 && *chainLoops == runTimeLoops
+                ? air::kRunTimeRepeatCount
+                : air::kUnsupportedRunTimeRepeatCount;
+    }
     if (repeatCounts.empty() || repeatCounts.back().first != rep)
       repeatCounts.emplace_back(rep, llvm::SetVector<Operation *>());
     repeatCounts.back().second.insert(o);
