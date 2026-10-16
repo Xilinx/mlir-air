@@ -258,6 +258,7 @@ class XRTBackend(AirBackend):
         lower_linalg_to_func: str = None,
         derive_library_call: bool = False,
         air_loop_fusion: bool = False,
+        fuse_sequential_loops: bool = False,
         runtime_loop_tiling_sizes: list[int] = [],
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
@@ -291,6 +292,7 @@ class XRTBackend(AirBackend):
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
             derive_library_call: with lower_linalg_to_func, name the callee after the op and its operand types rather than MLIR's "op_has_no_registered_library_name" placeholder. The kernel object must export the derived name.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
+            fuse_sequential_loops: configure aircc to let loops that run one after the other and stream equal transfers between the same places share their channels (aircc --fuse-sequential-loops).
             runtime_loop_tiling_sizes: tile sizes forwarded to aircc as --air-runtime-loop-tiling-sizes, which the shim DMA BD optimization pass (air-opt-shim-dma-bds) consumes as shim-dma-tile-sizes. Omit or pass an empty list to skip tiling.
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
@@ -341,6 +343,7 @@ class XRTBackend(AirBackend):
         self.lower_linalg_to_func = lower_linalg_to_func
         self.derive_library_call = derive_library_call
         self.air_loop_fusion = air_loop_fusion
+        self.fuse_sequential_loops = fuse_sequential_loops
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
@@ -549,6 +552,8 @@ class XRTBackend(AirBackend):
 
             if self.air_loop_fusion:
                 aircc_options += ["--air-loop-fusion"]
+            if self.fuse_sequential_loops:
+                aircc_options += ["--fuse-sequential-loops"]
 
             if self.omit_auto_broadcast:
                 aircc_options += ["--omit-auto-broadcast"]

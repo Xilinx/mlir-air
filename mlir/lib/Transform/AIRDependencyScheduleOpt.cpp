@@ -6036,11 +6036,12 @@ private:
     }
     return t;
   }
+  // The transfers of `ops`, in order.
   template <typename OpT>
-  static std::set<Transfer> transfersOf(const std::vector<OpT> &ops) {
-    std::set<Transfer> s;
+  static SmallVector<Transfer> transfersOf(const std::vector<OpT> &ops) {
+    SmallVector<Transfer> s;
     for (auto op : ops)
-      s.insert(transferOf(op));
+      s.push_back(transferOf(op));
     return s;
   }
   // Maps each channel that inSequentialLoops pairs with an earlier one to that
@@ -6059,7 +6060,8 @@ private:
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
         air::ChannelOp b = channelOps[j];
         if (merged.count(b) || a.getSize() != b.getSize() ||
-            a->getAttr("broadcast_shape") != b->getAttr("broadcast_shape"))
+            a->getAttr("broadcast_shape") != b->getAttr("broadcast_shape") ||
+            !haveSameChannelType(a, b))
           continue;
         auto bGets = getChannelGetOpThroughSymbol(b);
         auto bPuts = getChannelPutOpThroughSymbol(b);
@@ -6079,11 +6081,11 @@ private:
 
   // Whether channels a and b are driven by two loops that run one after the
   // other and move equal transfers between the same places. On each side,
-  // every op of a is in a different loop than every op of b, and the ops run
-  // on the same cores and move the same volume. Gets into core memory must
-  // fill the same buffers with the same access patterns. One channel can
-  // then carry both loops' transfers in program order; this is the case of
-  // two specializations of a loop of which only one runs.
+  // every op of a is in a different loop than every op of b, a's loops come
+  // first on both sides or b's do, and the ops run on the same cores and
+  // move the same volume. Gets into core memory must fill the same buffers
+  // with the same access patterns. One channel can then carry both loops'
+  // transfers in program order, as for two specializations of a loop.
   static bool inSequentialLoops(std::vector<air::ChannelGetOp> aGets,
                                 std::vector<air::ChannelGetOp> bGets,
                                 std::vector<air::ChannelPutOp> aPuts,
@@ -6146,35 +6148,39 @@ private:
         sig.push_back(b.getAsOpaquePointer());
       return sig;
     };
-    auto sideOk = [&](auto &xs, auto &ys) {
+    // 1 if all of xs's loops come before ys's, -1 if after, 0 if neither.
+    auto sideOrder = [&](auto &xs, auto &ys) {
       auto sp = space(xs.front());
       auto vol = volume(xs.front());
       if (!vol)
-        return false;
+        return 0;
       auto alike = [&](auto op) {
         return space(op) == sp && volume(op) == vol;
       };
       if (!llvm::all_of(xs, alike) || !llvm::all_of(ys, alike))
-        return false;
+        return 0;
       std::set<SmallVector<const void *>> wx, wy;
       for (auto x : xs)
         wx.insert(where(x));
       for (auto y : ys)
         wy.insert(where(y));
       if (wx != wy)
-        return false;
-      // Each op of one side is in a different loop than each op of the
-      // other. Either loop order works: only one of them runs.
+        return 0;
+      int order = 0;
       for (auto x : xs)
-        for (auto y : ys)
-          if (!loopsOrder(x, y))
-            return false;
-      return true;
+        for (auto y : ys) {
+          int o = loopsOrder(x, y);
+          if (!o || (order && o != order))
+            return 0;
+          order = o;
+        }
+      return order;
     };
     // A loop that cannot run for this function's sizes may have had its
     // launch-side puts folded away; then only the gets are compared.
-    if (!sideOk(aGets, bGets) ||
-        (!aPuts.empty() && !bPuts.empty() && !sideOk(aPuts, bPuts)))
+    int getOrder = sideOrder(aGets, bGets);
+    if (!getOrder || (!aPuts.empty() && !bPuts.empty() &&
+                      sideOrder(aPuts, bPuts) != getOrder))
       return false;
     // Gets into core memory must use the same buffers in the same way.
     if (space(aGets.front()) == air::MemorySpace::L1)
@@ -6197,27 +6203,31 @@ private:
     return false;
   }
 
-  // Whether a and b are in one herd with only affine.if ops between them and
-  // the block that holds both. A core that runs both then runs them in
-  // program order.
-  static bool inProgramOrderOnOneCore(Operation *a, Operation *b) {
+  // When a and b are in one herd with only affine.if ops between them and
+  // the block that holds both, a core that runs both runs them in program
+  // order: 1 if a comes first, -1 if b does. 0 otherwise.
+  static int programOrderOnOneCore(Operation *a, Operation *b) {
     auto herd = a->getParentOfType<air::HerdOp>();
     if (!herd || herd != b->getParentOfType<air::HerdOp>())
-      return false;
+      return 0;
     Region *common = a->getParentRegion();
     while (common && !common->isAncestor(b->getParentRegion()))
       common = common->getParentOp()->getParentRegion();
     if (!common || !herd.getBody().isAncestor(common))
-      return false;
+      return 0;
     for (Operation *op : {a, b}) {
       Operation *anchor = common->findAncestorOpInRegion(*op);
       for (Operation *p = op; p != anchor;) {
         p = p->getParentOp();
         if (!isa<affine::AffineIfOp>(p))
-          return false;
+          return 0;
       }
     }
-    return true;
+    Operation *aAnchor = common->findAncestorOpInRegion(*a);
+    Operation *bAnchor = common->findAncestorOpInRegion(*b);
+    if (aAnchor == bAnchor)
+      return 0;
+    return aAnchor->isBeforeInBlock(bAnchor) ? 1 : -1;
   }
 
   // With `dryRun`, only reports whether the merge is possible.
@@ -6269,8 +6279,9 @@ private:
                                            Operation *b, bool dryRun = false) {
     // A core already runs them one after the other; the renamed channel
     // takes them in that order. Moving b next to a would make the core wait
-    // for b's data before the work between them.
-    if (inProgramOrderOnOneCore(a, b))
+    // for b's data before the work between them. The producer side is merged
+    // a first, so this holds only when the core takes a first too.
+    if (programOrderOnOneCore(a, b) == 1)
       return true;
     if (!a->getParentOfType<LoopLikeOpInterface>())
       return true;
@@ -6961,10 +6972,9 @@ struct ShrinkMemrefSizesByAccessPattern
         air::getDataAccessShapeFromMemcpyOp(memref, users);
     auto memref_shape = getTensorShape(memref.getType());
 
-    // The bounds come from sizes and strides alone, because an offset is
-    // taken to be a tile index that the lowering replicates per tile. An
-    // offset that a loop walks, or a nonzero constant one, can reach past
-    // those bounds (for example the slots of a buffer that holds several
+    // The bounds come from sizes and strides alone: an offset that a loop
+    // walks is taken per trip. A nonzero constant offset is not, and can reach
+    // past those bounds (for example the slots of a buffer that holds several
     // transfers), so such buffers are not shrunk below it.
     if (!offsetsStayInBounds(users, memref_shape, overall_access_bounds))
       return failure();
@@ -7078,8 +7088,8 @@ struct ShrinkMemrefSizesByAccessPattern
   }
 
 private:
-  // Whether, in each memref dim, every channel op's offset that a loop walks
-  // or that is a nonzero constant, plus the op's size, stays within `bounds`.
+  // Whether, in each memref dim, every channel op's nonzero constant offset,
+  // plus the op's size, stays within `bounds`.
   static bool offsetsStayInBounds(ArrayRef<Operation *> users,
                                   ArrayRef<int> shape,
                                   ArrayRef<int64_t> bounds) {
@@ -7095,9 +7105,7 @@ private:
       auto strides = chanOp.getMixedStrides();
       for (auto [o, sz, st] : llvm::zip(offs, sizes, strides)) {
         auto oc = getConstantIntValue(o);
-        auto v = dyn_cast<Value>(o);
-        bool walked = v && dependsOnLoopInductionVar(v);
-        if (!walked && (!oc || *oc == 0))
+        if (!oc || *oc == 0)
           continue;
         auto stc = getConstantIntValue(st), szc = getConstantIntValue(sz);
         if (!stc || !szc)
@@ -7106,57 +7114,12 @@ private:
         if (it == natural.end())
           return false;
         int64_t d = it - natural.begin();
-        int64_t hi;
-        if (oc) {
-          hi = *oc;
-        } else {
-          FailureOr<int64_t> ub =
-              ValueBoundsConstraintSet::computeConstantBound(
-                  presburger::BoundType::UB, {v, std::nullopt},
-                  /*stopCondition=*/nullptr,
-                  ValueBoundsOptions{/*closedUB=*/true});
-          if (failed(ub))
-            return false;
-          hi = *ub;
-        }
+        int64_t hi = *oc;
         if (hi + *szc > bounds[d])
           return false;
       }
     }
     return true;
-  }
-
-  // Whether `v` is computed from an scf.for induction variable, looking into
-  // the bodies of the ops that compute it (such as air.execute).
-  static bool dependsOnLoopInductionVar(Value v) {
-    SmallVector<Value> work{v};
-    DenseSet<Value> seen;
-    while (!work.empty()) {
-      Value x = work.pop_back_val();
-      if (!seen.insert(x).second)
-        continue;
-      if (auto arg = dyn_cast<BlockArgument>(x)) {
-        // A herd's tile indices do not count as loop induction variables.
-        if (auto loop = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp()))
-          if (loop.getInductionVar() == x)
-            return true;
-        continue;
-      }
-      Operation *def = x.getDefiningOp();
-      if (!def)
-        continue;
-      for (Value o : def->getOperands())
-        if (!isa<air::AsyncTokenType>(o.getType()))
-          work.push_back(o);
-      def->walk([&](Operation *inner) {
-        if (inner == def)
-          return;
-        for (Value o : inner->getOperands())
-          if (!isa<air::AsyncTokenType>(o.getType()))
-            work.push_back(o);
-      });
-    }
-    return false;
   }
 
   template <typename T>

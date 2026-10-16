@@ -208,6 +208,14 @@ static cl::opt<bool> deriveLibraryCall(
              "kernel object to export the derived name."),
     cl::init(false), cl::cat(airCompilerOptions));
 
+static cl::opt<bool> fuseSequentialLoops(
+    "fuse-sequential-loops",
+    cl::desc("After air-split-l2-memref, let loops that run one after the "
+             "other and stream equal transfers between the same places share "
+             "their channels (air-fuse-channels sequential-loops). For "
+             "designs with several variants of one loop, of which one runs"),
+    cl::init(false), cl::cat(airCompilerOptions));
+
 static cl::opt<bool>
     airLoopFusion("air-loop-fusion",
                   cl::desc("Add air-loop-fusion pass to the pipeline"),
@@ -972,9 +980,8 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
        << "max-launch-channels-s2mm=" << cap << "})"
        << ",canonicalize,cse";
     os << ",air-isolate-async-dma-loop-nests{scope=launch},canonicalize,cse";
-    // After the split, two loops that run one after the other and stream the
-    // same way into the same cores share their channels.
-    os << ",air-fuse-channels{sequential-loops=true},canonicalize,cse";
+    if (fuseSequentialLoops)
+      os << ",air-fuse-channels{sequential-loops=true},canonicalize,cse";
   }
 
   // Loop fusion or alloc/dealloc optimization
