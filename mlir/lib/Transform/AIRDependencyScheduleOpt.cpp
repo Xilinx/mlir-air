@@ -6036,12 +6036,25 @@ private:
     }
     return t;
   }
-  // The transfers of `ops`, in order.
+  // The transfers of `ops` in order, cut to the shortest prefix that the
+  // whole sequence repeats: the rotation of buffers the ops go through, the
+  // same however many times a loop body was unrolled.
   template <typename OpT>
-  static SmallVector<Transfer> transfersOf(const std::vector<OpT> &ops) {
+  static SmallVector<Transfer> rotationOf(const std::vector<OpT> &ops) {
     SmallVector<Transfer> s;
     for (auto op : ops)
       s.push_back(transferOf(op));
+    for (size_t p = 1; p < s.size(); p++) {
+      if (s.size() % p)
+        continue;
+      bool repeats = true;
+      for (size_t i = p; i < s.size() && repeats; i++)
+        repeats = s[i] == s[i % p];
+      if (repeats) {
+        s.resize(p);
+        break;
+      }
+    }
     return s;
   }
   // Maps each channel that inSequentialLoops pairs with an earlier one to that
@@ -6083,9 +6096,10 @@ private:
   // other and move equal transfers between the same places. On each side,
   // every op of a is in a different loop than every op of b, a's loops come
   // first on both sides or b's do, and the ops run on the same cores and
-  // move the same volume. Gets into core memory must fill the same buffers
-  // with the same access patterns. One channel can then carry both loops'
-  // transfers in program order, as for two specializations of a loop.
+  // move the same volume. Gets into core memory must go through the same
+  // rotation of buffers, with the same access patterns. One channel can then
+  // carry both loops' transfers in program order, as for two specializations of
+  // a loop.
   static bool inSequentialLoops(std::vector<air::ChannelGetOp> aGets,
                                 std::vector<air::ChannelGetOp> bGets,
                                 std::vector<air::ChannelPutOp> aPuts,
@@ -6182,9 +6196,9 @@ private:
     if (!getOrder || (!aPuts.empty() && !bPuts.empty() &&
                       sideOrder(aPuts, bPuts) != getOrder))
       return false;
-    // Gets into core memory must use the same buffers in the same way.
+    // Gets into core memory must go through the same rotation of buffers.
     if (space(aGets.front()) == air::MemorySpace::L1)
-      return transfersOf(aGets) == transfersOf(bGets);
+      return rotationOf(aGets) == rotationOf(bGets);
     return true;
   }
 
