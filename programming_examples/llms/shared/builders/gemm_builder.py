@@ -220,6 +220,35 @@ def disambiguate_by_tile_n(specs):
     return out
 
 
+def compile_gemm_objects(specs):
+    """Compile one external mm.o per distinct obj among the given GEMM specs.
+
+    Pass the specs exactly as the builders use them (after any tile override or
+    disambiguate_by_tile_n). Direct-codegen specs link no object and are skipped.
+    mm.o bakes DIM_M/N/K in, so specs sharing an obj must share its tiles.
+    """
+    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
+
+    objs = {}
+    for s in specs:
+        if s["method"] == "direct":
+            continue
+        key = (s["tile_m"], s["tile_n"], s["tile_k_l1"], s["sym_suffix"])
+        if objs.setdefault(s["obj"], key) != key:
+            raise ValueError(
+                f"{s['obj']} needed at (tile_m, tile_n, tile_k_l1, suffix)="
+                f"{key} and {objs[s['obj']]}"
+            )
+    for obj, (tile_m, tile_n, tile_k_l1, sfx) in objs.items():
+        compile_gemm_mm(
+            tile_m=tile_m,
+            tile_n=tile_n,
+            tile_k_l1=tile_k_l1,
+            sym_suffix=sfx,
+            out_name=obj,
+        )
+
+
 def _build_gemm_module(
     m,
     k,

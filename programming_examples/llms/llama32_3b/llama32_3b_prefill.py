@@ -107,13 +107,15 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=False, rope_dim=None):
     print(f"Compiling prefill kernels (seq_len={seq_len}, Llama-3.2-3B)...")
     print(f"{'='*60}\n")
 
-    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
-
-    compile_gemm_mm(
-        tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
+    from air_examples.llms.shared.builders.gemm_builder import compile_gemm_objects
+    from air_examples.llms.shared.builders.rms_gemms_rope_multi import (
+        rms_gemms_rope_gemm_specs,
     )
-    compile_gemm_mm(
-        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    from air_examples.llms.shared.builders.o_ffn_multi import o_ffn_gemm_specs
+
+    compile_gemm_objects(
+        rms_gemms_rope_gemm_specs(seq_len, emb_dim, kv_dim)
+        + o_ffn_gemm_specs(seq_len, emb_dim, hidden_dim)
     )
 
     # 1. RMSNorm + QKV GEMMs + RoPE Q+K: one ELF (registry-driven per-GEMM method).

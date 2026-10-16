@@ -674,32 +674,22 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=True):
         f"\n{'='*60}\nCompiling Qwen2.5 prefill kernels (seq_len={seq_len})...\n{'='*60}\n"
     )
 
-    from air_examples.llms.shared.infra.external_kernels import (
-        compile_gemm_mm,
-        compile_rope,
+    from air_examples.llms.shared.infra.external_kernels import compile_rope
+    from air_examples.llms.shared.builders.gemm_builder import compile_gemm_objects
+    from air_examples.llms.shared.builders.rms_qkv_bias_rope_multi import (
+        rms_qkv_bias_rope_gemm_specs,
     )
 
-    # Compile exactly the external recipes selected for this length; every
-    # external GEMM is built at tile_n=128 (N-padded). Gate/Up direct-codegen
-    # needs NO external .o. rope.o for head_dim=64.
-    compiled = set()
-    for k, n in (
-        (emb_dim, q_dim),
-        (emb_dim, kv_dim),
-        (emb_dim, emb_dim),
-        (hidden_dim, emb_dim),
-    ):
-        spec = _gemm_spec(seq_len, k, n, "high")
-        if spec["obj"] in compiled:
-            continue
-        compiled.add(spec["obj"])
-        compile_gemm_mm(
-            tile_m=spec["tile_m"],
-            tile_n=128,
-            tile_k_l1=spec["tile_k_l1"],
-            sym_suffix=spec["sym_suffix"],
-            out_name=spec["obj"],
-        )
+    # One mm.o per external GEMM spec. Every external GEMM is built at
+    # tile_n=128 (N-padded); Gate/Up direct-codegen needs NO external .o.
+    q_pad, kv_pad = _padded_qkv_dims(q_dim, kv_dim)
+    compile_gemm_objects(
+        rms_qkv_bias_rope_gemm_specs(seq_len, emb_dim, q_dim, kv_dim, q_pad, kv_pad)
+        + [
+            dict(_gemm_spec(seq_len, k, emb_dim, "high"), tile_n=128)
+            for k in (emb_dim, hidden_dim)
+        ]
+    )
     compile_rope()
 
     print("\n--- rms_qkv_bias_rope (FUSED: RMSNorm+QKV+bias+RoPE, 9 launches) ---")

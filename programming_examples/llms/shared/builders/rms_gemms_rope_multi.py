@@ -186,6 +186,16 @@ def _build_rope_2d(
 # ---------------------------------------------------------------------------
 
 
+def rms_gemms_rope_gemm_specs(seq_len, emb_dim, kv_dim):
+    """Q, K, V GEMM specs, as build_rms_gemms_rope_module builds them."""
+    from air_examples.llms.shared.builders.gemm_builder import gemm_registry_config
+
+    return [
+        gemm_registry_config(seq_len, emb_dim, n, "bf16", "high")
+        for n in (emb_dim, kv_dim, kv_dim)
+    ]
+
+
 def build_rms_gemms_rope_module(
     seq_len=2048,
     emb_dim=2048,
@@ -218,10 +228,7 @@ def build_rms_gemms_rope_module(
             %arg11: q_roped     (seq_len, emb_dim)       RoPE Q output (2D)
             %arg12: k_roped     (seq_len, kv_dim)        RoPE K output (2D)
     """
-    from air_examples.llms.shared.builders.gemm_builder import (
-        _build_gemm_module,
-        gemm_registry_config,
-    )
+    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
     from air_examples.weighted_rms_norm.weighted_rms_norm import (
         build_module as build_rms,
     )
@@ -231,9 +238,7 @@ def build_rms_gemms_rope_module(
     # Q (large) resolves to fused-cast (_m64), K/V (small) to drain (_m32); both
     # co-link in one ELF (distinct symbols + mm_*.o; each air.launch reconfigures
     # L1/L2 so launch buffers don't accumulate). Adapts automatically to other models.
-    q_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
-    k_spec = gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high")
-    v_spec = gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high")
+    q_spec, k_spec, v_spec = rms_gemms_rope_gemm_specs(seq_len, emb_dim, kv_dim)
 
     def _gemm_kw_and_tiles(spec):
         return (

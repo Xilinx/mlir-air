@@ -177,16 +177,17 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
 
     # External-GEMM mm.o variants — compile FIRST (before any compile_and_cache, so
     # prepare_air_project copies them into air_project/ for every ELF that links
-    # them). The per-GEMM-method builders reference SUFFIXED symbols + filenames so
-    # drain (_m32 / mm_m32.o, tile_m=32) and fused-cast (_m64 / mm_m64.o, tile_m=64)
-    # can co-link in ONE ELF (rms mixes them; o_ffn is all-fused).
-    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
-
-    compile_gemm_mm(
-        tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
+    # them). Each GEMM's method, tiles and mm.o come from its own registry spec, so
+    # methods (and drain tile_m) can mix and co-link in ONE ELF.
+    from air_examples.llms.shared.builders.gemm_builder import compile_gemm_objects
+    from air_examples.llms.shared.builders.rms_gemms_rope_multi import (
+        rms_gemms_rope_gemm_specs,
     )
-    compile_gemm_mm(
-        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    from air_examples.llms.shared.builders.o_ffn_multi import o_ffn_gemm_specs
+
+    compile_gemm_objects(
+        rms_gemms_rope_gemm_specs(seq_len, emb_dim, kv_dim)
+        + o_ffn_gemm_specs(seq_len, emb_dim, hidden_dim)
     )
 
     # Fused-cast GEMM requires seq_len % (tile_m * herd_m) == 0 with tile_m<=64.
