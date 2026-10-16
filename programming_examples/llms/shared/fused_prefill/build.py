@@ -1,15 +1,18 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Build a model's fused prefill: kernels, every op's insts, and an optional
-LM-head device. A model's spec module provides
+"""Build a model's fused prefill: kernels, the device with one runtime
+sequence per op, and an optional LM-head device. A model's spec module provides
 
   CFG            device.Config
   gemm_shapes()  (k, n_pad, act, wq) of every GEMM
-  ATTN_POINTS    attention calibration points, name -> (heads, nkv, q0, k0)
+  ATTN_POINTS    attention points, name -> (heads, nkv, q0, k0); only the
+                 heads are used: attention takes (nkv, q0, k0) at run time
   lm_build()     optional: the LM-head device module (built as op "lm")
 
-Every op compiles the same device, so all builds must produce the same device
-configuration; the CDOs are compared and the build fails if they differ.
+Each op is one func whose segment @seg holds only its own herds, all in one
+module, so aircc builds the device once with a runtime sequence per func. The
+sequences come out as a C++ TXN builder (fused_prefill.txn.h), called with an
+attention op's (nkv, q0, k0) at dispatch.
 """
 
 import argparse
@@ -83,6 +86,52 @@ def module(spec, op, shape):
     if op == "lm":
         return spec.lm_build()
     return D.build(spec.CFG, op, *shape)
+
+
+def seq_name(op, shape):
+    """Name of the runtime sequence for an op. GEMMs get one per shape. An
+    attention op's lengths are run-time arguments, so its points share one
+    sequence, keyed by the first shape entry only."""
+    return op_name(op, shape if op == "g" else shape[:1])
+
+
+def _link(texts):
+    """Merge modules into one, keeping each shared declaration once."""
+    from air.ir import Context, Location, Module
+
+    with Context(), Location.unknown():
+        mods = [Module.parse(t) for t in texts]
+        base, seen = mods[0], {}
+
+        def key(op):
+            if "sym_name" in op.attributes:
+                return str(op.attributes["sym_name"])
+
+        for op in base.body.operations:
+            seen[key(op)] = op.get_asm(print_generic_op_form=True)
+        for m in mods[1:]:
+            for op in list(m.body.operations):
+                k, text = key(op), op.get_asm(print_generic_op_form=True)
+                if k in seen:
+                    if seen[k] != text:
+                        raise ValueError(f"ops declare {k} differently")
+                    continue
+                seen[k] = text
+                base.body.append(op)
+        return str(base)
+
+
+def fused_module(spec):
+    """Build one module holding a func for each op in the spec."""
+    texts, done = [], set()
+    for op, shape in ops(spec):
+        name = seq_name(op, shape)
+        if name in done:
+            continue
+        done.add(name)
+        lch = D.build(spec.CFG, op, *shape, name=name, own=True)
+        texts.append(str(lch.build(target="npu2")))
+    return _link(texts)
 
 
 def _peano():
@@ -209,30 +258,39 @@ def build_kernels(out, cfg):
 
 
 def _compile(args):
-    """One op in its own work dir (aircc writes air_project/ to the cwd)."""
-    spec_name, out, op, shape = args
+    """The fused device ("fused_prefill") or the LM head ("lm"), in its own
+    work dir (aircc writes air_project/ to the cwd)."""
+    spec_name, out, name = args
     from air.backend.xrt import XRTBackend
+    from air.ir import Context, Module
 
     spec = load_spec(spec_name)
-    name = op_name(op, shape)
     work = Path(out) / "work" / name
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     for o in Path(out).glob("*.o"):
         os.symlink(o, work / o.name)
     os.chdir(work)
-    mod = module(spec, op, shape).build(target="npu2")
+    fused = name == "fused_prefill"
     be = XRTBackend(
         verbose=False,
         omit_while_true_loop=False,
         output_format="xclbin",
         kernel_name="MLIR_AIE",
         instance_name=name,
+        emit_txn_cpp=fused,
     )
-    be.compile(mod, output_binary_name=name, insts=f"{name}.insts.bin")
+    if fused:
+        with Context():
+            mod = Module.parse(fused_module(spec))
+            art = be.compile(mod, output_binary_name=name)
+        shutil.move(work / art.txn_header, Path(out) / f"{name}.txn.h")
+    else:
+        mod = module(spec, "lm", ()).build(target="npu2")
+        be.compile(mod, output_binary_name=name, insts=f"{name}.insts.bin")
+        shutil.move(work / f"{name}.insts.bin", Path(out) / f"{name}.insts.bin")
     be.unload()
-    for ext in (".xclbin", ".insts.bin"):
-        shutil.move(work / f"{name}{ext}", Path(out) / f"{name}{ext}")
+    shutil.move(work / f"{name}.xclbin", Path(out) / f"{name}.xclbin")
     cdo = b"".join(
         p.read_bytes() for p in sorted((work / "air_project/cdo_seg").glob("*.bin"))
     )
@@ -250,26 +308,20 @@ def main(spec_name, argv=None):
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     build_kernels(out, spec.CFG)
-    todo = [(spec_name, str(out), op, s) for op, s in ops(spec)]
+    todo = [(spec_name, str(out), "fused_prefill")]
     if hasattr(spec, "lm_build"):
-        todo.append((spec_name, str(out), "lm", ()))
+        todo.append((spec_name, str(out), "lm"))
     with ProcessPoolExecutor(a.j) as ex:
         digests = dict(ex.map(_compile, todo))
-    fused = {d for n, d in digests.items() if not n.startswith("lm")}
-    if len(fused) != 1:
-        raise SystemExit(
-            f"fused prefill builds disagree on the device configuration: {digests}"
-        )
+    heads = spec.ATTN_POINTS["base"][0]
     manifest = dict(
         gemm=[op_name("g", s) for s in spec.gemm_shapes()],
-        attn={
-            a: {k: op_name(a, p) for k, p in spec.ATTN_POINTS.items()}
-            for a in D.attn_ops(spec.CFG)
-        },
-        attn_points=spec.ATTN_POINTS,
+        attn={a: seq_name(a, (heads,)) for a in D.attn_ops(spec.CFG)},
+        heads=heads,
         lm="lm" if hasattr(spec, "lm_build") else None,
-        device=fused.pop(),
+        device=digests["fused_prefill"],
         max_len=getattr(spec, "max_len", None),
     )
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
-    print(f"built {len(todo)} ops into {out}")
+    nops = len(manifest["gemm"]) + len(manifest["attn"]) + bool(manifest["lm"])
+    print(f"built {nops} ops into {out}")
