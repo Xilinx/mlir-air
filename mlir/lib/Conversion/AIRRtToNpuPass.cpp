@@ -3951,7 +3951,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // With output-elf, each device's sequence is named after the device, so
     // one func per device.
-    llvm::DenseMap<Operation *, func::FuncOp> elfDeviceFunc;
+    llvm::DenseMap<Operation *, std::string> elfDeviceFunc;
     for (auto funcOp : funcOps) {
       // Identify launch regions (affine.for with affine_opt_label containing
       // segment_load/herd_load)
@@ -3977,11 +3977,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
       if (clOutputElf)
         for (auto &[device, _] : deviceToRegions) {
-          auto [it, fresh] = elfDeviceFunc.try_emplace(device, funcOp);
+          auto [it, fresh] =
+              elfDeviceFunc.try_emplace(device, funcOp.getName().str());
           if (fresh)
             continue;
           funcOp.emitError("drives device @")
-              << device.getSymName() << ", as @" << it->second.getName()
+              << device.getSymName() << ", as @" << it->second
               << " does; output-elf supports one func per device";
           return failure();
         }

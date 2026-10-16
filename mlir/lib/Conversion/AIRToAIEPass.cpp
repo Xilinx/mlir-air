@@ -1975,6 +1975,11 @@ static void renameChannels(Operation *root,
 // channels of `seg`'s func are renamed to `body`'s, so its launch drives the
 // device's channels.
 static bool repeatsBody(air::SegmentOp body, air::SegmentOp seg) {
+  // The channels are renamed throughout seg's func, which must not hold the
+  // body it repeats.
+  if (body->getParentOfType<func::FuncOp>() ==
+      seg->getParentOfType<func::FuncOp>())
+    return false;
   auto names = pairChannels(body, seg);
   if (failed(names))
     return false;

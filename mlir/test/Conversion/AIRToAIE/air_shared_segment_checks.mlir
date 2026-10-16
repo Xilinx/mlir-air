@@ -245,3 +245,62 @@ module {
     return
   }
 }
+
+// -----
+
+// Two launches of one func repeat a body with their channels swapped. A
+// repeat renames channels across its func, which would rename the other
+// launch too, so a repeat must be in another func: these are two bodies, and
+// their herds clash.
+
+module {
+  air.channel @A [1, 1]
+  air.channel @B [1, 1]
+  func.func @two_launches(%arg0: memref<128xi32>, %arg1: memref<128xi32>) {
+    %lA = air.launch async () in () args(%in=%arg0, %out=%arg1) : memref<128xi32>, memref<128xi32> {
+      %c1 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %cn = arith.constant 0 : index
+      %p = air.channel.put async @A[] (%in[%cn] [%c64] [%c1]) : (memref<128xi32>)
+      %g = air.channel.get async @B[] (%out[%cn] [%c64] [%c1]) : (memref<128xi32>)
+      // expected-note@+1 {{the other body}}
+      %s = air.segment @seg async attributes {x_loc = 0 : i64, x_size = 2 : i64, y_loc = 2 : i64, y_size = 1 : i64} {
+        %c1_1 = arith.constant 1 : index
+        %h = air.herd @ha async tile (%tx, %ty) in (%sx=%c1_1, %sy=%c1_1) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+          %t0, %a = air.execute -> (memref<64xi32, 2>) {
+            %m = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %m : memref<64xi32, 2>
+          }
+          %get = air.channel.get async [%t0] @A[] (%a[] [] []) : (memref<64xi32, 2>)
+          %put = air.channel.put async [%get] @B[] (%a[] [] []) : (memref<64xi32, 2>)
+          %d0 = air.execute [%put] {
+            memref.dealloc %a : memref<64xi32, 2>
+          }
+        }
+      }
+    }
+    %lB = air.launch async () in () args(%in=%arg0, %out=%arg1) : memref<128xi32>, memref<128xi32> {
+      %c1 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %cn = arith.constant 0 : index
+      %p = air.channel.put async @B[] (%in[%cn] [%c64] [%c1]) : (memref<128xi32>)
+      %g = air.channel.get async @A[] (%out[%cn] [%c64] [%c1]) : (memref<128xi32>)
+      %s = air.segment @seg async attributes {x_loc = 0 : i64, x_size = 2 : i64, y_loc = 2 : i64, y_size = 1 : i64} {
+        %c1_1 = arith.constant 1 : index
+        // expected-error@+1 {{is also in another body of segment @seg, which differs from this one}}
+        %h = air.herd @ha async tile (%tx, %ty) in (%sx=%c1_1, %sy=%c1_1) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+          %t0, %a = air.execute -> (memref<64xi32, 2>) {
+            %m = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %m : memref<64xi32, 2>
+          }
+          %get = air.channel.get async [%t0] @B[] (%a[] [] []) : (memref<64xi32, 2>)
+          %put = air.channel.put async [%get] @A[] (%a[] [] []) : (memref<64xi32, 2>)
+          %d0 = air.execute [%put] {
+            memref.dealloc %a : memref<64xi32, 2>
+          }
+        }
+      }
+    }
+    return
+  }
+}
