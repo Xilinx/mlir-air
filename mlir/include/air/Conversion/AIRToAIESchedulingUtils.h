@@ -8,6 +8,7 @@
 #define AIR_TO_AIE_SCHEDULING_UTILS_H
 
 #include "air/Conversion/PassDetail.h"
+#include <limits>
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "air/Dialect/AIR/AIRDialect.h"
@@ -49,6 +50,16 @@ bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 
 int64_t get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
                     ArrayRef<OpFoldResult> memcpy_strides);
+
+// The repeat count of a transfer in a loop whose trip count is known only at
+// run time. A channel whose transfers all share it runs as one circular BD
+// chain, which needs no count; any other channel cannot be programmed.
+constexpr int kRunTimeRepeatCount = std::numeric_limits<int>::min();
+// The repeat count of a transfer in a loop with a run-time trip count that one
+// circular BD chain cannot express: the transfer also repeats a fixed number
+// of times per trip, or other transfers on the channel are in run-time loops
+// with other bounds.
+constexpr int kUnsupportedRunTimeRepeatCount = kRunTimeRepeatCount + 1;
 
 // Given a vector of memcpy operations, split them into BD tasks paired with the
 // repeat count each task runs at, relative to a common ancestor region. Tasks

@@ -870,8 +870,12 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
             contiguous = false;
           below *= sz;
         }
+        // A dimension outside the run-time one with stride 0 only repeats the
+        // transfer; the repeat count covers it, so it does not break the
+        // contiguous run.
         for (unsigned i = 0; i < dim; i++)
-          if (*getConstantIntValue(mixedLengths[i]) != 1)
+          if (*getConstantIntValue(mixedLengths[i]) != 1 &&
+              *getConstantIntValue(mixedStrides[i]) != 0)
             contiguous = false;
         int64_t thisStride = *getConstantIntValue(mixedStrides[dim]);
         if (contiguous && thisStride == below) {
@@ -1376,6 +1380,31 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
               } else {
                 vVal =
                     arith::ExtUIOp::create(rewriter, op.getLoc(), i32Ty, oper);
+              }
+            }
+            // A float RTP is written as its bit pattern, which is how the
+            // core reads it: an f32 fills the slot, a 16-bit float its low
+            // half.
+            if (auto fty = dyn_cast<FloatType>(oper.getType())) {
+              auto i32Ty = rewriter.getI32Type();
+              unsigned w = fty.getWidth();
+              if (auto constOp = dyn_cast_if_present<arith::ConstantOp>(
+                      oper.getDefiningOp())) {
+                APInt bits = cast<FloatAttr>(constOp.getValue())
+                                 .getValue()
+                                 .bitcastToAPInt()
+                                 .zextOrTrunc(32);
+                vVal = arith::ConstantOp::create(
+                    rewriter, op.getLoc(), i32Ty,
+                    rewriter.getI32IntegerAttr(bits.getZExtValue()));
+              } else if (w == 32) {
+                vVal = arith::BitcastOp::create(rewriter, op.getLoc(), i32Ty,
+                                                oper);
+              } else if (w == 16) {
+                Value b16 = arith::BitcastOp::create(
+                    rewriter, op.getLoc(), rewriter.getI16Type(), oper);
+                vVal =
+                    arith::ExtUIOp::create(rewriter, op.getLoc(), i32Ty, b16);
               }
             }
             // AIRToAIE routes a herd's *runtime* scalars through the

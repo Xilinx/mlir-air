@@ -667,6 +667,29 @@ private:
   }
 };
 
+// Collects the run-time values that the loop control value `v` is computed
+// from into `leaves`, and the pure ops between them and `v`, in def-use order,
+// into `ops`. Cloning those ops into the herd keeps the bound's form (`x * 2`)
+// visible to the herd's loop analyses; only the leaves become herd operands.
+static void collectControlLeaves(Value v, SmallVectorImpl<Value> &leaves,
+                                 SetVector<Operation *> &ops,
+                                 unsigned depth = 0) {
+  Operation *def = v.getDefiningOp();
+  if (getConstantIntValue(v)) {
+    if (def)
+      ops.insert(def);
+    return;
+  }
+  if (!def || depth > 8 || def->getNumRegions() || !mlir::isPure(def)) {
+    if (!llvm::is_contained(leaves, v))
+      leaves.push_back(v);
+    return;
+  }
+  for (Value o : def->getOperands())
+    collectControlLeaves(o, leaves, ops, depth + 1);
+  ops.insert(def);
+}
+
 // Hoist the herd out of a parent scf.for loop.
 FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
                                              Region *destRegion,
@@ -708,6 +731,19 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
     } else
       remap.map(herdOp.getKernelArgument(i), herdOp.getKernelOperand(i));
   }
+  // Loop bounds, starts and steps are copied into the herd with the pure ops
+  // computing them; a run-time value they start from moves in as an operand,
+  // as any value the herd body reads from outside does.
+  SmallVector<Value> controlLeaves, controlOperands;
+  SetVector<Operation *> controlOps;
+  for (auto loop : llvm::reverse(for_loop_nest))
+    for (Value v : {loop.getLowerBound(), loop.getUpperBound(), loop.getStep()})
+      if (v.getParentRegion()->isAncestor(outerMostLoop->getParentRegion()))
+        collectControlLeaves(v, controlLeaves, controlOps);
+  for (Value v : controlLeaves)
+    if (v.getParentRegion()->isAncestor(outerMostLoop->getParentRegion()))
+      controlOperands.push_back(v);
+  herdOperands.append(controlOperands);
   auto forRegionIterOperands = outerMostLoop.getOperands().drop_front(
       outerMostLoop.getNumControlOperands());
   auto newHerdOp = air::HerdOp::create(builder, loc, forRegionIterOperands,
@@ -718,6 +754,9 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   for (unsigned i = 0; i < sparseKernelArgIndices.size(); i++)
     remap.map(herdOp.getKernelArgument(sparseKernelArgIndices[i]),
               newHerdOp.getKernelArgument(i));
+  for (auto [i, v] : llvm::enumerate(controlOperands))
+    remap.map(v,
+              newHerdOp.getKernelArgument(sparseKernelArgIndices.size() + i));
 
   // Replace uses of tokens in for loop nest with air.wait_all located at the
   // start of air.herd body.
@@ -734,14 +773,8 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
             .getAsyncToken();
     remap.map(val, newAsyncToken);
   }
-  for (auto loop : llvm::reverse(for_loop_nest)) {
-    if (auto definingOp = loop.getUpperBound().getDefiningOp())
-      builder.clone(*definingOp, remap);
-    if (auto definingOp = loop.getLowerBound().getDefiningOp())
-      builder.clone(*definingOp, remap);
-    if (auto definingOp = loop.getStep().getDefiningOp())
-      builder.clone(*definingOp, remap);
-  }
+  for (Operation *op : controlOps)
+    builder.clone(*op, remap);
 
   // Splice herd block into inner-most for loop.
   scf::ForOp innerMostLoop = for_loop_nest.front();
@@ -3071,6 +3104,10 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
     };
 
     if (!containsOnlyAIRChannels(for_op.getBody()))
+      return failure();
+
+    // A loop with a run-time trip count cannot be unrolled into a BD chain.
+    if (!air::getStaticScfForTripCountAsInt(for_op))
       return failure();
 
     // Check if the loop is ping-pong buffered. Ping-pong buffered loop's body
@@ -5798,6 +5835,12 @@ private:
       auto a_for = dyn_cast_if_present<scf::ForOp>(a);
       auto b_for = dyn_cast_if_present<scf::ForOp>(b);
       if (a_for == b_for)
+        return true;
+      // Loops with the same (possibly run-time) bound values have the same
+      // trip count.
+      if (a_for.getLowerBound() == b_for.getLowerBound() &&
+          a_for.getUpperBound() == b_for.getUpperBound() &&
+          a_for.getStep() == b_for.getStep())
         return true;
       std::optional<int64_t> aLbCstOp =
           mlir::getConstantIntValue(a_for.getLowerBound());
