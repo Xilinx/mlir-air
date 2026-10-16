@@ -253,6 +253,36 @@ def _build_bias_add_1d(n_cols, np_dtype, herd_x=1, vector_size=16, target="npu2"
 # ===========================================================================
 
 
+def rms_qkv_bias_rope_gemm_specs(
+    seq_len, emb_dim, q_dim, kv_dim, q_pad=None, kv_pad=None, gemm_spec_fn=None
+):
+    """Q, K, V GEMM specs, as build_rms_qkv_bias_rope_module builds them."""
+    from air_examples.llms.shared.builders.gemm_builder import gemm_registry_config
+
+    if q_pad is None:
+        q_pad = q_dim
+    if kv_pad is None:
+        kv_pad = kv_dim
+    # Per-GEMM config (off-registry shapes: injected spec fn; else registry).
+    # Build at the PADDED N (q_pad/kv_pad), forcing tile_n=128 like the split
+    # rms_qkv builder (the only numerically-correct drain tile_n).
+    if gemm_spec_fn is not None:
+        q_spec = dict(gemm_spec_fn(seq_len, emb_dim, q_pad))
+        k_spec = dict(gemm_spec_fn(seq_len, emb_dim, kv_pad))
+        v_spec = dict(gemm_spec_fn(seq_len, emb_dim, kv_pad))
+    else:
+        q_spec = dict(gemm_registry_config(seq_len, emb_dim, q_dim, "bf16", "high"))
+        k_spec = dict(gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high"))
+        v_spec = dict(gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high"))
+    # Force tile_n=128 for the N-padded drain GEMMs (matches split rms_qkv).
+    if q_pad != q_dim:
+        q_spec["tile_n"] = 128
+    if kv_pad != kv_dim:
+        k_spec["tile_n"] = 128
+        v_spec["tile_n"] = 128
+    return [q_spec, k_spec, v_spec]
+
+
 def build_rms_qkv_bias_rope_module(
     seq_len,
     emb_dim,
@@ -304,10 +334,7 @@ def build_rms_qkv_bias_rope_module(
 
     Returns (module, scratch_for).
     """
-    from air_examples.llms.shared.builders.gemm_builder import (
-        _build_gemm_module,
-        gemm_registry_config,
-    )
+    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
     from air_examples.llms.shared.builders.rms_gemms_rope_multi import _build_rope_2d
     from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
@@ -330,23 +357,9 @@ def build_rms_qkv_bias_rope_module(
     assert q_dim == n_heads * head_dim, (q_dim, n_heads, head_dim)
     assert kv_dim == n_kv_heads * head_dim, (kv_dim, n_kv_heads, head_dim)
 
-    # Per-GEMM config (off-registry shapes: injected spec fn; else registry).
-    # Build at the PADDED N (q_pad/kv_pad), forcing tile_n=128 like the split
-    # rms_qkv builder (the only numerically-correct drain tile_n).
-    if gemm_spec_fn is not None:
-        q_spec = dict(gemm_spec_fn(seq_len, emb_dim, q_pad))
-        k_spec = dict(gemm_spec_fn(seq_len, emb_dim, kv_pad))
-        v_spec = dict(gemm_spec_fn(seq_len, emb_dim, kv_pad))
-    else:
-        q_spec = dict(gemm_registry_config(seq_len, emb_dim, q_dim, "bf16", "high"))
-        k_spec = dict(gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high"))
-        v_spec = dict(gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high"))
-    # Force tile_n=128 for the N-padded drain GEMMs (matches split rms_qkv).
-    if q_pad != q_dim:
-        q_spec["tile_n"] = 128
-    if kv_pad != kv_dim:
-        k_spec["tile_n"] = 128
-        v_spec["tile_n"] = 128
+    q_spec, k_spec, v_spec = rms_qkv_bias_rope_gemm_specs(
+        seq_len, emb_dim, q_dim, kv_dim, q_pad, kv_pad, gemm_spec_fn
+    )
 
     def _kw_tiles(spec):
         return (

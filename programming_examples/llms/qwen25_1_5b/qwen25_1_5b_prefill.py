@@ -619,20 +619,21 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
         f"\n{'='*60}\nCompiling Qwen2.5-1.5B prefill kernels (seq_len={seq_len})...\n{'='*60}\n"
     )
 
-    from air_examples.llms.shared.infra.external_kernels import (
-        compile_gemm_mm,
-        compile_rope,
-    )
+    from air_examples.llms.shared.infra.external_kernels import compile_rope
+    from air_examples.llms.shared.builders.gemm_builder import compile_gemm_objects
 
-    # mm.o variants for the external GEMMs:
-    #   _m32 drain    tile_n=64  (K/V projections)
-    #   _m64 fused    tile_n=128 (Q, O, Down projections)
-    # Gate/Up direct-codegen needs NO external .o. rope.o for head_dim=128.
-    compile_gemm_mm(
-        tile_m=32, tile_n=64, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
-    )
-    compile_gemm_mm(
-        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    # One mm.o per external GEMM spec (Q/K/V, O, Down); Gate/Up direct-codegen
+    # needs NO external .o. rope.o for head_dim=128.
+    compile_gemm_objects(
+        [
+            _gemm_spec(seq_len, k, n, "high")
+            for k, n in (
+                (emb_dim, q_dim),
+                (emb_dim, kv_dim),
+                (emb_dim, emb_dim),
+                (hidden_dim, emb_dim),
+            )
+        ]
     )
     compile_rope()
     from air_examples.llms.shared.infra.external_kernels import compile_silu_and_mul

@@ -93,6 +93,16 @@ def build_rms_qkv_qknorm_rope_module(seq_len, config):
 # ---------------------------------------------------------------------------
 
 
+def _o_ffn_gemm_specs(seq_len, emb_dim, q_dim, hidden_dim):
+    """O, Gate/Up, Down GEMM specs, as build_o_ffn_qwen_module builds them."""
+    from air_examples.llms.shared.builders.gemm_builder import gemm_registry_config
+
+    return [
+        gemm_registry_config(seq_len, k, n, "bf16", "high")
+        for k, n in ((q_dim, emb_dim), (emb_dim, hidden_dim), (hidden_dim, emb_dim))
+    ]
+
+
 def build_o_ffn_qwen_module(
     seq_len,
     emb_dim,
@@ -128,10 +138,7 @@ def build_o_ffn_qwen_module(
       %arg14 output    (seq*emb_dim,)
       %arg15..18  f32 C-scratch (proj[seq,emb], gate[seq,hid], up[seq,hid], down[seq,emb])
     """
-    from air_examples.llms.shared.builders.gemm_builder import (
-        _build_gemm_module,
-        gemm_registry_config,
-    )
+    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
     from air_examples.llms.shared.builders.o_ffn_multi import (
         _build_add_2d_to_1d,
         _build_add_2d_to_2d,
@@ -161,9 +168,7 @@ def build_o_ffn_qwen_module(
     n_total = seq_len * emb_dim
 
     # O GEMM is decoupled: M=seq, K=q_dim, N=emb_dim.
-    o_spec = gemm_registry_config(seq_len, q_dim, emb_dim, "bf16", "high")
-    g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
-    d_spec = gemm_registry_config(seq_len, hidden_dim, emb_dim, "bf16", "high")
+    o_spec, g_spec, d_spec = _o_ffn_gemm_specs(seq_len, emb_dim, q_dim, hidden_dim)
 
     def _tiles(spec):
         return (
@@ -397,17 +402,16 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
         f"\n{'='*60}\nCompiling Qwen3 prefill kernels (seq_len={seq_len})...\n{'='*60}\n"
     )
 
-    from air_examples.llms.shared.infra.external_kernels import (
-        compile_gemm_mm,
-        compile_rope,
+    from air_examples.llms.shared.infra.external_kernels import compile_rope
+    from air_examples.llms.shared.builders.gemm_builder import compile_gemm_objects
+    from air_examples.llms.shared.builders.rms_qkv_qknorm_rope_multi import (
+        rms_qkv_qknorm_rope_gemm_specs,
     )
 
-    # mm.o variants for GEMM co-linking; rope.o (head_dim=128) for the rope ELFs.
-    compile_gemm_mm(
-        tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
-    )
-    compile_gemm_mm(
-        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    # One mm.o per GEMM spec for co-linking; rope.o (head_dim=128) for the rope ELFs.
+    compile_gemm_objects(
+        rms_qkv_qknorm_rope_gemm_specs(seq_len, emb_dim, q_dim, kv_dim)
+        + _o_ffn_gemm_specs(seq_len, emb_dim, q_dim, hidden_dim)
     )
     compile_rope()
 
