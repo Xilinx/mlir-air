@@ -1893,7 +1893,9 @@ static bool accessReachableInCore(Operation *op) {
 }
 
 // Whether two segment bodies are the same, up to the values their launches
-// pass in and the ops' own identifiers (`id`, `air.l2_buffer_id`).
+// pass in, the ops' own identifiers (`id`, `air.l2_buffer_id`) and the lock
+// choices on L2 buffers. A repeated body adds no buffers or locks: the device
+// holds the first body's, whose lock choices are the ones lowered.
 static bool isSameSegment(air::SegmentOp a, air::SegmentOp b) {
   DenseMap<Value, Value> same;
   auto check = [&](Value x, Value y) {
@@ -1902,8 +1904,11 @@ static bool isSameSegment(air::SegmentOp a, air::SegmentOp b) {
   auto mark = [&](Value x, Value y) { same[x] = y; };
   auto attrsOf = [](Operation *op) {
     NamedAttrList attrs(op->getDiscardableAttrDictionary());
-    attrs.erase("id");
-    attrs.erase(air::attrs::L2BufferId);
+    for (StringRef name :
+         {StringRef("id"), StringRef(air::attrs::L2BufferId),
+          StringRef(air::attrs::ChainLock), StringRef(air::attrs::CountedLock),
+          StringRef(air::attrs::NoChainLock)})
+      attrs.erase(name);
     return attrs.getDictionary(op->getContext());
   };
   SmallVector<Operation *> opsA, opsB;
@@ -2007,6 +2012,21 @@ LogicalResult createAIEModulesAndOutlineCores(
   // those herds. Each func is then one runtime sequence of the device.
   llvm::StringMap<AIE::DeviceOp> devicesByName;
   llvm::StringMap<SmallVector<air::SegmentOp>> bodiesByName;
+  llvm::StringMap<int> nameCount;
+  for (auto seg : segments)
+    if (auto n =
+            seg->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      nameCount[n.getValue()]++;
+  // The tiles a herd is placed on, when known: col, row, cols, rows.
+  auto footprint = [](air::HerdOp h) -> std::optional<std::array<int64_t, 4>> {
+    auto x = h->getAttrOfType<IntegerAttr>("x_loc");
+    auto y = h->getAttrOfType<IntegerAttr>("y_loc");
+    if (!x || !y)
+      return std::nullopt;
+    return std::array<int64_t, 4>{x.getInt(), y.getInt(),
+                                  (int64_t)h.getNumCols(),
+                                  (int64_t)h.getNumRows()};
+  };
   for (auto seg : segments) {
     // Validate segment unroll factors - Y-dimension unrolling is not supported
     if (failed(validateSegmentUnrollFactors(seg)))
@@ -2014,15 +2034,27 @@ LogicalResult createAIEModulesAndOutlineCores(
 
     auto name =
         seg->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
-    if (name && devicesByName.count(name.getValue())) {
+    if (name && nameCount.lookup(name.getValue()) > 1) {
       auto unroll = getSegmentUnrollFactors(seg);
       if (failed(unroll) || unroll->first * unroll->second != 1)
         return seg.emitOpError("shares its name with another segment, so it "
                                "must not be unrolled");
+    }
+    if (name && devicesByName.count(name.getValue())) {
       auto &bodies = bodiesByName[name.getValue()];
       if (llvm::any_of(bodies,
-                       [&](air::SegmentOp b) { return repeatsBody(b, seg); }))
+                       [&](air::SegmentOp b) { return repeatsBody(b, seg); })) {
+        // The device's DMA allocations are linked to the first body's
+        // air.dma_memcpy_nd ops by id; a repeat has others.
+        WalkResult direct = seg.walk([&](air::DmaMemcpyNdOp op) {
+          op.emitOpError("is in a repeat of another body of segment @")
+              << name.getValue() << "; a shared body needs channels";
+          return WalkResult::interrupt();
+        });
+        if (direct.wasInterrupted())
+          return failure();
         continue;
+      }
       AIE::DeviceOp aie_dev = devicesByName[name.getValue()];
       for (auto b : bodies) {
         WalkResult clash = seg.walk([&](air::HerdOp h) {
@@ -2037,6 +2069,32 @@ LogicalResult createAIEModulesAndOutlineCores(
           return WalkResult::interrupt();
         });
         if (clash.wasInterrupted())
+          return failure();
+      }
+      // Herds of distinct bodies are all on the device, each with its own
+      // cores: they must not share tiles.
+      for (auto b : bodies) {
+        WalkResult overlap = seg.walk([&](air::HerdOp h) {
+          auto fh = footprint(h);
+          if (!fh)
+            return WalkResult::advance();
+          WalkResult inner = b.walk([&](air::HerdOp o) {
+            auto fo = footprint(o);
+            if (!fo || (*fh)[0] >= (*fo)[0] + (*fo)[2] ||
+                (*fo)[0] >= (*fh)[0] + (*fh)[2] ||
+                (*fh)[1] >= (*fo)[1] + (*fo)[3] ||
+                (*fo)[1] >= (*fh)[1] + (*fh)[3])
+              return WalkResult::advance();
+            auto diag = h.emitOpError("shares tiles with a herd in another "
+                                      "body of segment @")
+                        << name.getValue();
+            diag.attachNote(o.getLoc()) << "the other herd";
+            return WalkResult::interrupt();
+          });
+          return inner.wasInterrupted() ? WalkResult::interrupt()
+                                        : WalkResult::advance();
+        });
+        if (overlap.wasInterrupted())
           return failure();
       }
       bodies.push_back(seg);
@@ -9142,14 +9200,18 @@ public:
       }
 
       else if (clUseObjFifo) {
-        // ObjectFifo metadata linkage
-        auto f = h->getParentOfType<func::FuncOp>();
+        // ObjectFifo metadata linkage, for every func that drives the device
+        SmallVector<func::FuncOp, 4> funcs(deviceFuncs.begin(),
+                                           deviceFuncs.end());
+        if (funcs.empty())
+          funcs.push_back(h->getParentOfType<func::FuncOp>());
 
         std::vector<air::ChannelInterface> channel_ops;
-        f.walk([&](air::ChannelInterface o) {
-          if (!o->getParentOfType<air::HerdOp>())
-            channel_ops.push_back(o);
-        });
+        for (auto f : funcs)
+          f.walk([&](air::ChannelInterface o) {
+            if (!o->getParentOfType<air::HerdOp>())
+              channel_ops.push_back(o);
+          });
         for (auto &n : shimTileAlloc.chan_names)
           labelAIRDmaOpsWithMetadataObjFifo(channel_ops, n, chan_to_chan_map);
       }

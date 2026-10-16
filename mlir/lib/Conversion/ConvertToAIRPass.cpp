@@ -1599,13 +1599,14 @@ static void getHerdNames(ModuleOp module) {
 
 static void getSegmentNames(ModuleOp module) {
   std::vector<std::string> seg_syms;
+  // record existing symbol names, in every func before any is generated;
+  // segments sharing a name are one device
+  module.walk([&](air::SegmentOp op) {
+    if (auto attr =
+            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      seg_syms.push_back(attr.getValue().str());
+  });
   for (auto f : module.getOps<func::FuncOp>()) {
-    // record existing symbol names; segments sharing a name are one device
-    f.walk([&](air::SegmentOp op) {
-      if (auto attr =
-              op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-        seg_syms.push_back(attr.getValue().str());
-    });
     // generate missing symbol names
     f.walk([&](air::SegmentOp op) {
       if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {

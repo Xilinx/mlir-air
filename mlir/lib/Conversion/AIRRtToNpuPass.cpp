@@ -2746,7 +2746,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     ModuleOp module = getOperation();
 
     // Move func op to the end of device op's body
-    moveFuncOpToEndOfDeviceOp(module);
+    if (failed(moveFuncOpToEndOfDeviceOp(module))) {
+      signalPassFailure();
+      return;
+    }
 
     // Early cleanup: remove dead device compute ops (L1/L2 memory ops, pure
     // compute) that won't be converted to NPU ops. This is a performance
@@ -3932,7 +3935,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     });
   }
 
-  void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
+  LogicalResult moveFuncOpToEndOfDeviceOp(ModuleOp module) {
     // Collect all func ops that need to be processed
     SmallVector<func::FuncOp> funcOps;
     module.walk([&](func::FuncOp f) {
@@ -3946,6 +3949,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         funcOps.push_back(f);
     });
 
+    // With output-elf, each device's sequence is named after the device, so
+    // one func per device.
+    llvm::DenseMap<Operation *, func::FuncOp> elfDeviceFunc;
     for (auto funcOp : funcOps) {
       // Identify launch regions (affine.for with affine_opt_label containing
       // segment_load/herd_load)
@@ -3969,6 +3975,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       for (auto &region : regions) {
         deviceToRegions[region.device].push_back(&region);
       }
+      if (clOutputElf)
+        for (auto &[device, _] : deviceToRegions) {
+          auto [it, fresh] = elfDeviceFunc.try_emplace(device, funcOp);
+          if (fresh)
+            continue;
+          funcOp.emitError("drives device @")
+              << device.getSymName() << ", as @" << it->second.getName()
+              << " does; output-elf supports one func per device";
+          return failure();
+        }
 
       // If all regions target the same device and we're not forcing main
       // device generation, just move the entire func to that device
@@ -3984,8 +4000,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (device.getDevice() != deviceType) {
           funcOp.emitError("Multiple devices with different device types "
                            "are not supported");
-          signalPassFailure();
-          return;
+          return failure();
         }
       }
 
@@ -4045,6 +4060,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // Erase the original function
       funcOp.erase();
     }
+    return success();
   }
 
   // Wrap existing aie.device ops with a main device when emit-main-device is
