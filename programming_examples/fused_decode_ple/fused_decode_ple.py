@@ -1116,6 +1116,10 @@ PLE_SHARED_RES = (
 # Default OFF because it spends a shim MM2S for nothing; kept because flipping
 # the pairing is what proved the port sharing is not the fault.
 PLE_UP_CHAN = PLE and int(_os.environ.get("DECODE_PLE_UP_CHAN", "0"))
+# The gate core takes its weights on both S2MM: half on @pleW, half on a circuit
+# channel of its own. That needs its second S2MM free, so @pliOut becomes a
+# shared-L1 hand-off from the proj core, its neighbour.
+PLE_GATE_2CH = PLE_SHARED_RES
 # DIAGNOSTIC (DECODE_PLE_UP_W_FIRST=1): have the up core drain its whole weight
 # stream BEFORE it blocks on @gateOut, instead of after. Numerically wrong -- the
 # macs run against an uninitialised @gateOut buffer -- but every channel's volume
@@ -1719,6 +1723,8 @@ if PLE:
     )
     PLE_UP_LOC = (PLE_UP_COL, PLE_UP_ROW)
     PLE_RELAY_PCOL = 3
+    # memtile (and so shim) column of the gate core's second weight stream
+    PLE_GATE2_PCOL = 5
     _ATTN_COLS_USED = {_l[0] for _l in ATTN_CU_LOC}
     for _nm, _loc in (
         ("gate", PLE_GATE_LOC),
@@ -1965,6 +1971,9 @@ def build_module():
             # both a @pleX target and a @pliOut source, and a dispatch in eight
             # then read it mid-refill.
             plefw_l1 = MemRefType.get([K + PLE_SCALE_PAD], bf16, memory_space=l1)
+            plepf_l1 = MemRefType.get(
+                [PLI_D + K + PLE_SCALE_PAD], bf16, memory_space=l1
+            )
         glu_x_l1 = MemRefType.get([GLU_SLICE], bf16, memory_space=l1)  # 1024 [up|gate]
         glu_hid_l1 = MemRefType.get([GLU_HID], bf16, memory_space=l1)  # 512 silu*up
         # ATTN S1 rope (reference rope_compute): qkv(3072 QKV out)+lut(64) -> q(2048),
@@ -2048,7 +2057,7 @@ def build_module():
             [(NCY // (2 if W_DUAL_CHAN else 1)) * BLOCK_BF16], bf16, memory_space=l2
         )
         grp_l2 = MemRefType.get([GRP_ROWS], bf16, memory_space=l2)
-        if PLE_UP_L2:
+        if PLE_UP_L2 or PLE_GATE_2CH:
             pleblk_l2 = MemRefType.get([PLE_BLK], bf16, memory_space=l2)
         main_l2 = MemRefType.get([MAIN_ROWS], bf16, memory_space=l2)
         relay_l2 = MemRefType.get(
@@ -2168,6 +2177,9 @@ def build_module():
                 # mismatch -- measured on the shortconv mixer, where 2 staging
                 # calls against 1 consumer hung.
                 ple_res_in = _ple_fn("ple_res_in", [plex_l1, plepk_l1])
+                if PLE_GATE_2CH:
+                    ple_pf_out = _ple_fn("ple_pf_out", [plev_l1, plefw_l1, plepf_l1])
+                    ple_pf_in = _ple_fn("ple_pf_in", [plepf_l1, plepk_l1])
                 ple_res_out = FuncOp(
                     "ple_res_out", ([rms_l1, plex_l1], []), visibility="private"
                 )
@@ -2520,8 +2532,13 @@ def build_module():
             if not PLE_SHARED_RES:
                 channel_decl("toPle", size=[1])
             channel_decl("gateOut", size=[1])
-            if PLE_BYPASS != 5:
+            if PLE_BYPASS != 5 and not PLE_GATE_2CH:
                 channel_decl("pliOut", size=[1])
+            if PLE_GATE_2CH:
+                # host -> memtile -> gate core. The memtile's column picks the
+                # shim, which has to be one @pleW is not on.
+                channel_decl("pleWgIn", size=[1])
+                channel_decl("pleWg", size=[1])
             # Weight/parameter feed. ONE packet channel id-demuxed to the
             # three PLE cores, NOT one channel per feed.
             #
@@ -3261,7 +3278,21 @@ def build_module():
                                     # dest 0 (gate): its own weights, then the
                                     # UP core's norm weight and scale, which this
                                     # core forwards in the @gateOut bundle.
-                                    if _w_fed("gate"):
+                                    if PLE_GATE_2CH:
+                                        # The first half of the output tiles on
+                                        # @pleW, the second on @pleWg.
+                                        _half = PLE_NBLK_DOWN // 2
+                                        _pw(PLE_DEST_GATE, 0, _half)
+                                        ChannelPut(
+                                            "pleWgIn",
+                                            PLEW,
+                                            offsets=[
+                                                arith.addi(_pb, idx(_half * PLE_BLK))
+                                            ],
+                                            sizes=[idx(_half * PLE_BLK)],
+                                            strides=[idx(1)],
+                                        )
+                                    elif _w_fed("gate"):
                                         _pw(PLE_DEST_GATE, 0, PLE_NBLK_DOWN)
 
                                 def _feed_up():
@@ -5638,6 +5669,8 @@ def build_module():
                         _pleres = None
                         if PLE_SHARED_RES:
                             _pleres = AllocOp(plex_l1, [], [])
+                        # proj (3,3) -> gate (3,2): pli, norm weight and scale.
+                        _plepf = AllocOp(plepf_l1, [], []) if PLE_GATE_2CH else None
 
                         # ---- @layerOut relay memtile (see the channel decl) ----
                         plerelay_l2 = MemRefType.get([K + PLI_D], bf16, memory_space=l2)
@@ -5755,6 +5788,29 @@ def build_module():
                             # (up core puts @pleOut) TIMEOUT, rung 6 (identical
                             # but the put removed) COMPLETED. One producer per
                             # channel is the rule.
+                            if PLE_GATE_2CH:
+
+                                def _gfifo_dec():
+                                    for _ in for_(
+                                        idx(0), idx(PLE_NBLK_DOWN // 2), idx(1)
+                                    ):
+                                        b = AllocOp(pleblk_l2, [], [])
+                                        b.operation.attributes["air.memtile_col"] = (
+                                            IntegerAttr.get(T.i32(), PLE_GATE2_PCOL)
+                                        )
+                                        ChannelGet("pleWgIn", b, indices=[idx(0)])
+                                        ChannelPut("pleWg", b, indices=[idx(0)])
+                                        DeallocOp(b)
+                                        yield_([])
+                                    yield_([])
+
+                                index_switch(
+                                    [],
+                                    arith.index_cast(idx_t, _seg_arm),
+                                    [0],
+                                    case_body_builder=lambda op, i, cv: yield_([]),
+                                    default_body_builder=lambda op: _gfifo_dec(),
+                                )
                             if PLE_UP_L2:
 
                                 def _upfifo_dec():
@@ -5862,12 +5918,64 @@ def build_module():
                                 )
                                 yield_([])
 
+                        def _ple_gate_2ch(acc, y, x):
+                            """The gate projection with its weights on both of
+                            the core's S2MM: tile t from @pleW, tile t + half
+                            from @pleWg, block by block, so each stream fills
+                            while the core works on the other's block."""
+                            half = PLI_D // PLE_M_BLK // 2
+                            acc2 = AllocOp(pleacc_l1, [], [])
+                            for _i in for_(idx(0), idx(half), idx(1)):
+                                CallOp(ple_zero, [acc])
+                                CallOp(ple_zero, [acc2])
+                                for _j in for_(idx(0), idx(K // PLE_K_BLK), idx(1)):
+                                    _jc = arith.index_cast(T.i32(), _j)
+                                    for _a, _get in (
+                                        (
+                                            acc,
+                                            lambda b: ChannelGet(
+                                                "pleW",
+                                                b,
+                                                indices=[idx(0), idx(PLE_DEST_GATE)],
+                                            ),
+                                        ),
+                                        (
+                                            acc2,
+                                            lambda b: ChannelGet(
+                                                "pleWg", b, indices=[idx(0)]
+                                            ),
+                                        ),
+                                    ):
+                                        wb = AllocOp(pleblk_l1, [], [])
+                                        _get(wb)
+                                        CallOp(ple_mac_down, [_a, wb, x, _jc])
+                                        DeallocOp(wb)
+                                    yield_([])
+                                _ic = arith.index_cast(T.i32(), _i)
+                                CallOp(ple_flush_down, [y, acc, _ic])
+                                CallOp(
+                                    ple_flush_down,
+                                    [
+                                        y,
+                                        acc2,
+                                        arith.addi(
+                                            _ic,
+                                            arith.ConstantOp(
+                                                IntegerAttr.get(T.i32(), half), None
+                                            ).result,
+                                        ),
+                                    ],
+                                )
+                                yield_([])
+                            DeallocOp(acc2)
+
                         # ---- gate core ----
                         @herd(
                             name="plegate",
                             sizes=[1, 1],
                             operands=(
                                 [_arm_ple, _pleres.result]
+                                + ([_plepf.result] if PLE_GATE_2CH else [])
                                 if PLE_SHARED_RES
                                 else [_arm_ple]
                             ),
@@ -5940,11 +6048,19 @@ def build_module():
                                     ChannelGet("toPle", a_x, indices=[idx(0)])
                                 a_g = AllocOp(plev_l1, [], [])
                                 acc = AllocOp(pleacc_l1, [], [])
-                                _ple_proj_down(
-                                    acc, a_g, PLE_DEST_GATE, a_x, PLI_D // PLE_M_BLK
-                                )
+                                if PLE_GATE_2CH:
+                                    _ple_gate_2ch(acc, a_g, a_x)
+                                    CallOp(ple_pf_in, [_sh[1], a_x])
+                                else:
+                                    _ple_proj_down(
+                                        acc,
+                                        a_g,
+                                        PLE_DEST_GATE,
+                                        a_x,
+                                        PLI_D // PLE_M_BLK,
+                                    )
                                 CallOp(ple_gate_act, [a_g, _arm])
-                                if PLE_SHARED_RES:
+                                if PLE_SHARED_RES and not PLE_GATE_2CH:
                                     # DEFERRED TO HERE, and it is load-bearing.
                                     #
                                     # A core must be able to drain its whole
@@ -5964,7 +6080,11 @@ def build_module():
                                 # receives [residual ++ pli*gate] and needs no
                                 # third input.
                                 CallOp(ple_gate_into, [a_x, a_g])
-                                if PLE_SHARED_RES and not PLE_NO_PLIOUT:
+                                if (
+                                    PLE_SHARED_RES
+                                    and not PLE_NO_PLIOUT
+                                    and not PLE_GATE_2CH
+                                ):
                                     # The up core's norm weight and scale ride
                                     # THIS core's @pleW stream and go out in the
                                     # bundle. FastFlowLM routes them the same
@@ -6014,8 +6134,13 @@ def build_module():
                         )
 
                         # ---- per-layer input (projection of the EMBEDDING) ----
-                        @herd(name="pleproj", sizes=[1, 1], operands=[_arm_ple])
-                        def pleproj_h(tx, ty, _sx, _sy, _arm):
+                        @herd(
+                            name="pleproj",
+                            sizes=[1, 1],
+                            operands=[_arm_ple]
+                            + ([_plepf.result] if PLE_GATE_2CH else []),
+                        )
+                        def pleproj_h(tx, ty, _sx, _sy, _arm, *_sh):
                             def _dec():
                                 if PLE_BYPASS:
                                     yield_([])
@@ -6057,7 +6182,9 @@ def build_module():
                                     a_fw = AllocOp(plefw_l1, [], [])
                                     ChannelGet("pleX", a_fw, indices=[idx(0)])
                                 CallOp(ple_proj_tail, [a_p, a_e, a_nw])
-                                if not PLE_NO_PLIOUT:
+                                if PLE_GATE_2CH:
+                                    CallOp(ple_pf_out, [a_p, a_fw, _sh[0]])
+                                elif not PLE_NO_PLIOUT:
                                     ChannelPut(
                                         "pliOut",
                                         a_p,
