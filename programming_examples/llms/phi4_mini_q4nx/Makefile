@@ -108,6 +108,7 @@ help:
 	@echo ""
 	@echo "More targets:"
 	@echo "  make verify           Top-k token-set inclusion gate: NPU q4nx vs HF bf16 (2 prompts x 32 tokens, k=5)"
+	@echo "  make verify-replay    Same gate, prompt replayed through the decode (its 4-bit LM head)"
 	@echo "  make verify-full      Same gate over the full 8-prompt set"
 	@echo "  make diagnosis        Single-prompt lens through the shared runner (informational)"
 	@echo "  make gen              Paris gate: greedy decode of \"The capital of France is\""
@@ -208,6 +209,11 @@ verify:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL) --max-prompts 2
+
+## `verify` with the prompt replayed through the decode instead of prefilled, so
+## the first token comes from the decode's 4-bit LM head.
+verify-replay:
+	Q4NX_VERIFY_NO_PREFILL=1 $(MAKE) --no-print-directory -f $(srcdir)/Makefile verify
 
 ## Full-sweep variant of `make verify` (all prompts in the prompt file).
 verify-full:

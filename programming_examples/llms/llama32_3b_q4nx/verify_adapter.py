@@ -8,12 +8,13 @@ attention + KV cache on the AIE array (no CPU attention, no host KV). The
 reference is the HF **bf16** checkpoint, so the shared gate compares NPU-q4nx vs
 HF-bf16 top-k token-set inclusion — the closest proxy for "matches FLM's 3B".
 
-`prefill()` mirrors the production driver: prompts of at least PREFILL_MIN_TOKENS
-run through the batched NPU prefill (llama32_3b_q4nx_prefill), whose per-layer
-roped-K / raw-V seed the decode's device KV cache; shorter prompts are replayed
-through the decode (cheaper than a padded prefill). `decode_step()` then dispatches
-one fused token. Q4NX_VERIFY_FORCE_PREFILL=1 forces the prefill path for handoff
-coverage; Q4NX_VERIFY_NO_PREFILL=1 forces the replay path. `layer_intermediates` / `final_hidden_normed` are not produced --
+`prefill()` runs every prompt through the batched NPU prefill (the fused prefill
+when FUSED_PREFILL_DIR holds a build, else the per-op one), seeds the decode's KV
+cache from it, and `decode_step()` dispatches one fused token.
+Q4NX_VERIFY_NO_PREFILL=1 (`make verify-replay`) replays the prompt through the
+decode instead, so the first token comes from the decode's 4-bit LM head.
+
+`layer_intermediates` / `final_hidden_normed` are not produced --
 the fused decode runs all 28 layers in one dispatch, so the per-layer `diagnosis`
 lens is unavailable here; the token-set gate is the PASS/FAIL signal.
 
@@ -41,7 +42,6 @@ from llama32_3b_weights import LlamaConfig  # noqa: E402
 from runners import fused_prefill  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 from q4nx_decode_3b import FusedDecode3B  # noqa: E402
-from llama32_3b_q4nx_inference import PREFILL_MIN_TOKENS  # noqa: E402
 
 MODEL_CHOICES = {
     "base": "meta-llama/Llama-3.2-3B",
@@ -57,8 +57,6 @@ Q4NX_MODEL_SOURCE = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Llama-3.2-3B
 DECODE_TEMPLATES = os.environ.get("DECODE_TEMPLATES", str(_THIS_DIR))
 # Padded prefill length (the prefill ELFs are compiled for it).
 PREFILL_SEQ_LEN = int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
-# Same crossover the production driver uses (see llama32_3b_q4nx_inference).
-PREFILL_MIN_TOKENS = int(os.environ.get("Q4NX_PREFILL_MIN", "96"))
 
 
 def resolve_model(model_choice_or_id: str) -> str:
@@ -88,18 +86,30 @@ class FusedDecodeRunner:
             raise RuntimeError(
                 f"max_seq {max_seq} exceeds decode ATTN_MAXL {self._dec.ATTN_MAXL}"
             )
-        # Mirror the production driver: it only uses the batched prefill for prompts
-        # at least PREFILL_MIN_TOKENS long (a padded prefill costs more than replaying
-        # a short prompt through the decode). Building it unconditionally here would
-        # gate a path users never hit for short prompts. Q4NX_VERIFY_FORCE_PREFILL=1
-        # forces it on (covers the prefill->decode KV handoff); NO_PREFILL=1 forces off.
-        self._force_pf = os.environ.get("Q4NX_VERIFY_FORCE_PREFILL") == "1"
+        # The two paths score different LM heads on the first token, so log which
+        # one ran.
         self._no_pf = os.environ.get("Q4NX_VERIFY_NO_PREFILL") == "1"
+        if self._no_pf:
+            print(
+                "[verify] path: REPLAY through the decode (Q4NX_VERIFY_NO_PREFILL=1)",
+                flush=True,
+            )
         self._model_source = model_source
-        self._pf = None  # built lazily: only a long enough prompt needs it
+        self._pf = None  # built on the first prompt
 
     def _prefiller(self):
         if self._pf is None:
+            d = fused_prefill.build_dir()
+            print(
+                "[verify] path: prefill -> decode, "
+                + (
+                    f"fused prefill from {d}"
+                    if d
+                    else "per-op prefill (no fused build in FUSED_PREFILL_DIR="
+                    f"{os.environ.get('FUSED_PREFILL_DIR', '')!r})"
+                ),
+                flush=True,
+            )
             self._pf = fused_prefill.load("llama32_3b_q4nx", self._model_source)
         if self._pf is None:
             from llama32_3b_q4nx_prefill import LlamaQ4nxPrefill
@@ -113,9 +123,7 @@ class FusedDecodeRunner:
 
     def prefill(self, prompt_tokens: np.ndarray) -> PrefillRecord:
         toks = [int(t) for t in np.asarray(prompt_tokens).reshape(-1)]
-        # the fused prefill costs what its chunks cost, so it takes every prompt
-        long = len(toks) >= PREFILL_MIN_TOKENS or fused_prefill.build_dir()
-        if not self._no_pf and (self._force_pf or long):
+        if not self._no_pf:
             pf = self._prefiller()
             pf.clear_context()
             logits = np.asarray(pf.prefill(toks), np.float32)
