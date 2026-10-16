@@ -6677,12 +6677,18 @@ leading dims during LLVM lowering into one narrow op per innermost row.
      rounding;</li>
 <li>elementwise float ops wider than the native width are halved until
      they fit: 32 lanes for bf16, <code>f32_lanes</code> for ops on f32;</li>
+<li>an f32 add, sub or mul on fewer than 16 lanes whose result is only
+     replicated (a value per row, broadcast across the row) is done on
+     replicated operands instead;</li>
 <li>a strided rank-1 read that is in bounds is read element by element.</li>
 <li>On AIE2P, with <code>f32_lanes</code> 32: a 32-lane bf16 x bf16 + f32
    <code>vector.fma</code> becomes <code>aievec.mac_elem</code> and a 32-lane f32 to bf16
    <code>arith.truncf</code> (default rounding) <code>aievec.srs</code>. With <code>f32_lanes</code> 64:
    the 64-lane fma becomes the <code>llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf</code>
-   intrinsic, the 64-lane truncf two <code>aievec.srs</code> (stored as two halves
+   intrinsic, <code>subf(c, mulf(a, b))</code> (with <code>a</code> widened from bf16 and <code>b</code>
+   widened from bf16 or a splat that bf16 represents exactly) the
+   matching <code>bf.msc.conf</code> under the same condition as the fma, the 64-lane truncf two <code>aievec.srs</code> (stored as
+   two halves
    when its only use is a shape_cast to an in-bounds memref write), and
    <code>bf16(0x4300 | zext(q))</code> for unpacked 4-bit <code>q</code> two
    <code>llvm.aie2p.vshuffle</code> byte interleaves of <code>q</code> with 0x43. Intrinsics
