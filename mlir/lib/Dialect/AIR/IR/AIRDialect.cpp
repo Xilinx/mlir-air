@@ -2631,6 +2631,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   auto constOne =
       getValueOrCreateConstantIndexOp(rewriter, loc, rewriter.getIndexAttr(1));
   SmallVector<Value> initialOffsets, initialStrides;
+  SmallVector<Value> droppedOffsets;
+  SmallVector<int64_t> droppedStrides;
   if (isa<ViewLikeOpInterface>(memrefOpVec[0]) &&
       isa<OffsetSizeAndStrideOpInterface>(memrefOpVec[0])) {
     auto viewLikeOp = dyn_cast_if_present<ViewLikeOpInterface>(memrefOpVec[0]);
@@ -2639,6 +2641,38 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     input_memref = viewLikeOp.getViewSource();
     extractOffsetsFromOp(offSizStrOp, rewriter, initialOffsets);
     extractStridesFromOp(offSizStrOp, rewriter, initialStrides);
+    // A rank-reducing subview: the ops after it index its result, which has
+    // no dims for the dropped ones. Their offsets still address the source:
+    // they become leading unit dims of the access pattern, with the source's
+    // strides.
+    if (auto subview = dyn_cast<memref::SubViewOp>(memrefOpVec[0])) {
+      llvm::SmallBitVector dropped = subview.getDroppedDims();
+      if (dropped.any()) {
+        SmallVector<int64_t> srcStrides;
+        int64_t srcOffset;
+        if (failed(subview.getSourceType().getStridesAndOffset(srcStrides,
+                                                               srcOffset)))
+          return failure();
+        SmallVector<Value> keptOffsets, keptStrides;
+        for (unsigned i = 0; i < dropped.size(); ++i) {
+          if (!dropped[i]) {
+            keptOffsets.push_back(initialOffsets[i]);
+            keptStrides.push_back(initialStrides[i]);
+            continue;
+          }
+          // At offset 0 the dim adds nothing to the address.
+          if (isConstantIntValue(subview.getMixedOffsets()[i], 0))
+            continue;
+          auto step = getConstantIntValue(subview.getMixedStrides()[i]);
+          if (!step || ShapedType::isDynamic(srcStrides[i]))
+            return failure();
+          droppedOffsets.push_back(initialOffsets[i]);
+          droppedStrides.push_back(srcStrides[i] * *step);
+        }
+        initialOffsets = keptOffsets;
+        initialStrides = keptStrides;
+      }
+    }
   } else if (auto transposeOp =
                  dyn_cast_if_present<memref::TransposeOp>(memrefOpVec[0])) {
     input_memref = transposeOp.getIn();
@@ -2719,17 +2753,35 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     } else if (auto collapseShapeOp =
                    dyn_cast_if_present<memref::CollapseShapeOp>(memrefOp)) {
       // For each collapsed dimension, keep the offset/stride of the first
-      // source dim in the group.
+      // source dim in the group that is not a unit dim. A unit dim's offset
+      // cannot be expressed on the collapsed dim: like a dim a rank-reducing
+      // subview drops, it becomes a leading unit dim with its own stride.
+      auto srcType = collapseShapeOp.getSrcType();
+      SmallVector<int64_t> srcLayoutStrides;
+      int64_t srcLayoutOffset;
+      bool haveLayout = succeeded(
+          srcType.getStridesAndOffset(srcLayoutStrides, srcLayoutOffset));
       SmallVector<Value> newOffsets, newStrides;
-      size_t srcIdx = 0;
-      for (size_t i = 0; i < collapseShapeOp.getReassociationIndices().size();
-           ++i) {
-        // The first source dim in the group determines the collapsed
-        // offset/stride.
-        newOffsets.push_back(initialOffsets[srcIdx]);
-        newStrides.push_back(initialStrides[srcIdx]);
-        // Skip to the next group.
-        srcIdx += collapseShapeOp.getReassociationIndices()[i].size();
+      for (ReassociationIndices group :
+           collapseShapeOp.getReassociationIndices()) {
+        int64_t keep = group.front();
+        for (int64_t d : group)
+          if (srcType.getDimSize(d) != 1) {
+            keep = d;
+            break;
+          }
+        for (int64_t d : group) {
+          if (d == keep || isConstantIntValue(initialOffsets[d], 0))
+            continue;
+          auto step = getConstantIntValue(initialStrides[d]);
+          if (srcType.getDimSize(d) != 1 || !haveLayout || !step ||
+              ShapedType::isDynamic(srcLayoutStrides[d]))
+            return failure();
+          droppedOffsets.push_back(initialOffsets[d]);
+          droppedStrides.push_back(srcLayoutStrides[d] * *step);
+        }
+        newOffsets.push_back(initialOffsets[keep]);
+        newStrides.push_back(initialStrides[keep]);
       }
       initialOffsets = newOffsets;
       initialStrides = newStrides;
@@ -2745,6 +2797,13 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   // Memref type at the sink memref op.
   MemRefType sink_memref_ty =
       llvm::cast<MemRefType>(memrefOpVec.back()->getResultTypes().front());
+
+  // Leading unit dims for dropped dimensions are only added when the access
+  // pattern comes from the sink's type, with no explicit offsets, sizes or
+  // strides.
+  if (!droppedOffsets.empty() &&
+      (!strides.empty() || !sizes.empty() || !offsets.empty()))
+    return failure();
 
   // // Compose sizes and strides from the output memref type's layout.
   if (strides.empty())
@@ -2768,6 +2827,17 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
                                initialOffsets, initialStrides);
   }
   offsets = initialOffsets;
+  if (!droppedOffsets.empty())
+    while (offsets.size() < strides.size())
+      offsets.insert(offsets.begin(), constZero);
+  for (auto [o, st] :
+       llvm::reverse(llvm::zip(droppedOffsets, droppedStrides))) {
+    offsets.insert(offsets.begin(), o);
+    sizes.insert(sizes.begin(), constOne);
+    strides.insert(strides.begin(),
+                   getValueOrCreateConstantIndexOp(rewriter, loc,
+                                                   rewriter.getIndexAttr(st)));
+  }
 
   return canonicalizeAIRDmaOperands(rewriter, offsets, sizes, strides,
                                     sink_memref_ty);

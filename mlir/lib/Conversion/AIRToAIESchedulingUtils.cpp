@@ -962,6 +962,50 @@ air::DMAAllocator::lookupDMAAllocation(AIE::TileLike tile,
 
 // Allocate a reader/writer lock pair. These may be the same or different
 // locks depending on the target device.
+// For a memtile buffer filled by several writes into disjoint static slots
+// and drained by a whole number of reads per write, every slot can be filled
+// before the first read. The write lock then starts at the number of reads:
+// each write acquires as many as its slot is read, and each read releases
+// one. Returns 0 for any other buffer.
+static int64_t slotBufferWriteLockInit(Value buffer) {
+  int64_t reads = 0;
+  SmallVector<std::pair<int64_t, int64_t>> spans;
+  for (Operation *user : buffer.getUsers()) {
+    // Only the air transfers count; the DMA BDs built so far use the
+    // buffer too.
+    auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
+    if (!memcpyOp)
+      continue;
+    if (buffer == memcpyOp.getSrcMemref()) {
+      reads++;
+      continue;
+    }
+    auto chan = dyn_cast<air::ChannelInterface>(user);
+    if (!chan || chan.getMixedOffsets().empty())
+      return 0;
+    int64_t lo = 0, hi = 0;
+    for (auto [o, sz, st] :
+         llvm::zip(chan.getMixedOffsets(), chan.getMixedSizes(),
+                   chan.getMixedStrides())) {
+      auto oc = getConstantIntValue(o), sc = getConstantIntValue(sz),
+           tc = getConstantIntValue(st);
+      if (!oc || !sc || !tc)
+        return 0;
+      lo += *oc * *tc;
+      hi += (*oc + *sc - 1) * *tc;
+    }
+    spans.push_back({lo, hi});
+  }
+  int64_t writes = spans.size();
+  if (writes < 2 || reads < writes || reads % writes)
+    return 0;
+  llvm::sort(spans);
+  for (size_t i = 1; i < spans.size(); i++)
+    if (spans[i].first <= spans[i - 1].second)
+      return 0;
+  return reads;
+}
+
 FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
     air::MemcpyInterface &memcpyOp, AIE::TileLike tile, Operation *bufferOp,
     bool lockRaceConditionFix, bool lockRaceConditionFixV2) {
@@ -1173,6 +1217,8 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
     init_pair =
         getLockValuePair(target_model, bufferOp->getResult(0), air_chan);
   auto init = std::max(init_pair.first, init_pair.second);
+  if (tileIsMemTile && UsesSemaphoreLocks)
+    init = std::max(init, slotBufferWriteLockInit(bufferOp->getResult(0)));
 
   // Consumerless memtile drain: emit ONE self-recycling lock (returned as both
   // pair elements) so the receiving BD acquires AND releases the same lock and

@@ -412,8 +412,21 @@ class LinalgPackToAIRDma : public OpRewritePattern<linalg::PackOp> {
     SmallVector<int64_t> transpPerm;
     Value tile = nullptr;
 
-    if (llvm::any_of(innerDimsPos,
-                     [destShape](int64_t i) { return destShape[i] != 1; })) {
+    // The pack is a plain transpose when every tiled dim has one outer tile
+    // and the outer dims keep their order. destShape is indexed by outer
+    // position, which outer_dims_perm moves away from the source dim.
+    auto outerPerm = op.getOuterDimsPerm();
+    auto outerSize = [&](int64_t srcDim) {
+      if (outerPerm.empty())
+        return destShape[srcDim];
+      return destShape[llvm::find(outerPerm, srcDim) - outerPerm.begin()];
+    };
+    bool identityOuter =
+        outerPerm.empty() ||
+        llvm::equal(outerPerm, llvm::seq<int64_t>(0, outerPerm.size()));
+    if (!identityOuter || llvm::any_of(innerDimsPos, [&](int64_t i) {
+          return outerSize(i) != 1;
+        })) {
       auto packMeta = computePackingMetadata(dstType.getRank(), innerDimsPos);
       auto perm = getPackUnpackStripMinedPerm(destShape, innerDimsPos,
                                               op.getOuterDimsPerm());
@@ -462,8 +475,20 @@ class LinalgUnPackToAIRDma : public OpRewritePattern<linalg::UnPackOp> {
     SmallVector<int64_t> transpPerm;
     Value tile = nullptr;
 
-    if (llvm::any_of(innerDimsPos,
-                     [srcShape](int64_t i) { return srcShape[i] != 1; })) {
+    // As for pack: a plain transpose only with one outer tile per tiled dim
+    // and the outer dims in order.
+    auto outerPerm = op.getOuterDimsPerm();
+    auto outerSize = [&](int64_t dstDim) {
+      if (outerPerm.empty())
+        return srcShape[dstDim];
+      return srcShape[llvm::find(outerPerm, dstDim) - outerPerm.begin()];
+    };
+    bool identityOuter =
+        outerPerm.empty() ||
+        llvm::equal(outerPerm, llvm::seq<int64_t>(0, outerPerm.size()));
+    if (!identityOuter || llvm::any_of(innerDimsPos, [&](int64_t i) {
+          return outerSize(i) != 1;
+        })) {
       // Non-degenerate case: transpose from packed layout to strip-mined.
       auto perm = getPackUnpackStripMinedPerm(srcShape, innerDimsPos,
                                               op.getOuterDimsPerm());

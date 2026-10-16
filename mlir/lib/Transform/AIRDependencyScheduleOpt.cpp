@@ -34,6 +34,7 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -566,17 +567,52 @@ private:
 // An alloc is a hoisting target if it, or its parent air.execute, carries the
 // "hoist_alloc" attribute. Shared by the pattern and its seeding walk so the
 // two never drift apart.
-static bool isMarkedForHoist(memref::AllocOp allocOp) {
+static bool isMarkedForHoist(memref::AllocOp allocOp,
+                             StringRef attr = "hoist_alloc") {
   auto exec = allocOp->getParentOfType<air::ExecuteOp>();
-  return allocOp->hasAttr("hoist_alloc") ||
-         (exec && exec->hasAttr("hoist_alloc"));
+  return allocOp->hasAttr(attr) || (exec && exec->hasAttr(attr));
+}
+
+// An L1 buffer the core reads within the loop and that no channel or DMA
+// touches. Ping-pong has no transfer to overlap with it, so it moves out of
+// the loop once instead of being doubled. Its first access in the body is a
+// full write, which isUnsafeToDuplicate checks.
+static bool isCoreScratch(memref::AllocOp alloc) {
+  if (!air::isL1(alloc.getType()))
+    return false;
+  Value v = alloc.getResult();
+  if (auto exec = alloc->getParentOfType<air::ExecuteOp>())
+    v = exec->getResult(1);
+  bool read = false;
+  SmallVector<Value> worklist = {v};
+  while (!worklist.empty()) {
+    Value cur = worklist.pop_back_val();
+    for (Operation *user : cur.getUsers()) {
+      if (isa<air::ChannelInterface, air::DmaMemcpyNdOp>(user))
+        return false;
+      if (auto view = dyn_cast<ViewLikeOpInterface>(user)) {
+        if (view.getViewSource() == cur)
+          worklist.push_back(view->getResult(0));
+        continue;
+      }
+      // A buffer passed into a nested region can be read through the region's
+      // arguments; that is not followed, so it is not scratch.
+      if (user->getNumRegions())
+        return false;
+      if (auto effects = dyn_cast<MemoryEffectOpInterface>(user))
+        read |= effects.getEffectOnValue<MemoryEffects::Read>(cur).has_value();
+    }
+  }
+  return read;
 }
 
 struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
-  HoistMemallocInForPattern(MLIRContext *ctx, bool keepMemrefDealloc)
-      : OpRewritePattern(ctx), keepMemrefDealloc(keepMemrefDealloc) {}
+  HoistMemallocInForPattern(MLIRContext *ctx, bool keepMemrefDealloc,
+                            StringRef attr = "hoist_alloc")
+      : OpRewritePattern(ctx), keepMemrefDealloc(keepMemrefDealloc),
+        attr(attr) {}
 
   LogicalResult matchAndRewrite(memref::AllocOp alloc_op,
                                 PatternRewriter &rewriter) const override {
@@ -597,7 +633,7 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
     }
 
     // Check if alloc is the target
-    if (!isMarkedForHoist(alloc_op))
+    if (!isMarkedForHoist(alloc_op, attr))
       return failure();
 
     // Get parent for loop
@@ -633,13 +669,15 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
       dealloc_exec->moveAfter(for_op);
 
     // Erase alloc hoisting attr
-    alloc_op->removeAttr("hoist_alloc");
+    alloc_op->removeAttr(attr);
+    alloc_exec->removeAttr(attr);
 
     return success();
   }
 
 private:
   bool keepMemrefDealloc;
+  std::string attr;
 
   void skipOverOpInDependencyGraph(OpBuilder &builder, Operation *op,
                                    mlir::Region &region) const {
@@ -1888,8 +1926,11 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     uint64_t total = 0;
     herd.getBody().walk([&](memref::AllocOp a) { total += l1AllocBytes(a); });
     uint64_t duplicated = 0;
-    forOp.getBody()->walk(
-        [&](memref::AllocOp a) { duplicated += l1AllocBytes(a); });
+    forOp.getBody()->walk([&](memref::AllocOp a) {
+      auto exec = a->getParentOfType<air::ExecuteOp>();
+      if (!exec || exec->getParentOp() != forOp || !isCoreScratch(a))
+        duplicated += l1AllocBytes(a);
+    });
     return total + duplicated > budget;
   }
 
@@ -1961,6 +2002,8 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     SmallVector<Operation *> allocs;
     for (auto exec : forOp.getOps<air::ExecuteOp>()) {
       for (auto alloc : exec.getOps<memref::AllocOp>()) {
+        if (isCoreScratch(alloc))
+          continue;
         auto ty = llvm::cast<MemRefType>(alloc.getType());
         if (!omitMemorySpace.empty()) {
           if (omitMemorySpace == "L1" && air::isL1(ty))
@@ -2108,6 +2151,10 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     for (auto op : alloc_ops) {
       op->setAttr("hoist_alloc", rewriter.getBoolAttr(true));
     }
+    for (auto exec : for_op.getOps<air::ExecuteOp>())
+      for (auto alloc : exec.getOps<memref::AllocOp>())
+        if (isCoreScratch(alloc))
+          alloc->setAttr("hoist_alloc_once", rewriter.getBoolAttr(true));
 
     return success();
   }
@@ -2672,6 +2719,40 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         enableRepeatAtHighestDim(enableRepeatAtHighestDim),
         skipZeroStride(skipZeroStride) {}
 
+  // Whether `get` writes an L2 buffer that puts read, at an offset that moves
+  // with the loop's induction variable, over a small number of trips.
+  static bool fillsSlotPerTrip(scf::ForOp forOp, air::ChannelInterface get) {
+    auto ty = dyn_cast<BaseMemRefType>(get.getMemref().getType());
+    if (!ty || !air::isL2(ty))
+      return false;
+    auto trips = air::getStaticScfForTripCountAsInt(forOp);
+    if (!trips || *trips < 2 || *trips > 8)
+      return false;
+    Value iv = forOp.getInductionVar();
+    auto reaches = [&](Value v) {
+      SmallVector<Value> work{v};
+      DenseSet<Value> seen;
+      while (!work.empty()) {
+        Value x = work.pop_back_val();
+        if (x == iv)
+          return true;
+        if (!seen.insert(x).second)
+          continue;
+        if (Operation *def = x.getDefiningOp())
+          def->walk([&](Operation *o) {
+            for (Value operand : o->getOperands())
+              if (!isa<air::AsyncTokenType>(operand.getType()))
+                work.push_back(operand);
+          });
+      }
+      return false;
+    };
+    if (!llvm::any_of(air::getOffsetsAsValues(get), reaches))
+      return false;
+    return llvm::any_of(get.getMemref().getUsers(),
+                        [](Operation *u) { return isa<air::ChannelPutOp>(u); });
+  }
+
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
     auto loc = for_op->getLoc();
@@ -2687,6 +2768,14 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       return failure();
     air::ChannelInterface channel_op =
         *(for_op.getBody()->getOps<air::ChannelInterface>().begin());
+
+    // Do not fold a get that fills a different slot of an L2 buffer each
+    // trip while puts drain the buffer. One BD per slot (the unroll below)
+    // gives each slot its own lock handshake, so a drained slot refills while
+    // the others still drain; a single folded BD would wait for all of them.
+    if (isa<air::ChannelGetOp>(channel_op.getOperation()) &&
+        fillsSlotPerTrip(for_op, channel_op))
+      return failure();
 
     // Fold for loops into channel op's wrap and stride fields
     SmallVector<Value> offsets = air::getOffsetsAsValues(channel_op);
@@ -4188,6 +4277,7 @@ public:
       // Check if loop is the target
       op->removeAttr("unroll");
       op->removeAttr("hoist_alloc");
+      op->removeAttr("hoist_alloc_once");
       op->removeAttr("unrolled_iteration");
       op->removeAttr("isolated");
       op->removeAttr("ping_pong");
@@ -4364,6 +4454,14 @@ public:
     for (auto f : funcOps)
       runOpAnnotationPatterns(f);
     LLVM_DEBUG(llvm::dbgs() << "After annotation:\n" << module << "\n");
+    // Move core scratch buffers out of their loops before the unroll, so
+    // that they are not duplicated.
+    for (auto f : funcOps) {
+      RewritePatternSet patterns(&getContext());
+      patterns.insert<HoistMemallocInForPattern>(
+          f.getContext(), clKeepMemrefDealloc, "hoist_alloc_once");
+      (void)applyPatternsGreedily(f, std::move(patterns));
+    }
     for (auto f : funcOps)
       runLoopUnroll(f);
     LLVM_DEBUG(llvm::dbgs() << "After unroll:\n" << module << "\n");
@@ -4845,6 +4943,20 @@ public:
     invalidateChannelIndex();
     if (channelOps.empty())
       return;
+    if (clSequentialLoops) {
+      std::map<air::ChannelOp, air::ChannelOp> merged;
+      mergeChannelsOfSequentialLoops(channelOps, merged);
+      for (auto &entry : merged) {
+        air::ChannelOp from = entry.first, root = entry.second;
+        while (merged.count(root))
+          root = merged[root];
+        (void)mlir::SymbolTable::replaceAllSymbolUses(
+            from.getOperation(), mlir::SymbolTable::getSymbolName(root),
+            from->getParentOfType<ModuleOp>());
+      }
+      invalidateChannelIndex();
+      return;
+    }
     // Rename symbols
     // TODO: make this greedy
     // Captures `this` to invalidate the channel index: this rewrites chan_name
@@ -5902,6 +6014,212 @@ private:
     return true;
   }
 
+  // A channel op's transfer: its memref, indices, offsets, sizes and strides,
+  // compared by SSA value or constant.
+  using Transfer = SmallVector<std::pair<const void *, int64_t>>;
+  static Transfer transferOf(air::ChannelInterface op) {
+    Transfer t;
+    auto add = [&](OpFoldResult v) {
+      if (auto c = getConstantIntValue(v))
+        t.push_back({nullptr, *c});
+      else
+        t.push_back({cast<Value>(v).getAsOpaquePointer(), 0});
+    };
+    t.push_back({op.getMemref().getAsOpaquePointer(), -1});
+    for (Value v : op.getIndices())
+      add(v);
+    for (auto range :
+         {op.getMixedOffsets(), op.getMixedSizes(), op.getMixedStrides()}) {
+      t.push_back({nullptr, -2});
+      for (OpFoldResult v : range)
+        add(v);
+    }
+    return t;
+  }
+  template <typename OpT>
+  static std::set<Transfer> transfersOf(const std::vector<OpT> &ops) {
+    std::set<Transfer> s;
+    for (auto op : ops)
+      s.insert(transferOf(op));
+    return s;
+  }
+  // Maps each channel that inSequentialLoops pairs with an earlier one to that
+  // channel. Only symbols are renamed afterwards; no op moves.
+  void mergeChannelsOfSequentialLoops(
+      std::vector<air::ChannelOp> &channelOps,
+      std::map<air::ChannelOp, air::ChannelOp> &merged) {
+    for (unsigned i = 0; i < channelOps.size(); i++) {
+      air::ChannelOp a = channelOps[i];
+      if (merged.count(a))
+        continue;
+      auto aGets = getChannelGetOpThroughSymbol(a);
+      if (aGets.empty())
+        continue;
+      auto aPuts = getChannelPutOpThroughSymbol(a);
+      for (unsigned j = i + 1; j < channelOps.size(); j++) {
+        air::ChannelOp b = channelOps[j];
+        if (merged.count(b) || a.getSize() != b.getSize() ||
+            a->getAttr("broadcast_shape") != b->getAttr("broadcast_shape"))
+          continue;
+        auto bGets = getChannelGetOpThroughSymbol(b);
+        auto bPuts = getChannelPutOpThroughSymbol(b);
+        if (!inSequentialLoops(aGets, bGets, aPuts, bPuts))
+          continue;
+        // The two arms of an if choose between channels; those stay apart.
+        if (llvm::any_of(aPuts, [&](air::ChannelPutOp p) {
+              return llvm::any_of(bPuts, [&](air::ChannelPutOp q) {
+                return inOppositeArms(p, q);
+              });
+            }))
+          continue;
+        merged[b] = a;
+      }
+    }
+  }
+
+  // Whether channels a and b are driven by two loops that run one after the
+  // other and move equal transfers between the same places. On each side,
+  // every op of a is in a different loop than every op of b, and the ops run
+  // on the same cores and move the same volume. Gets into core memory must
+  // fill the same buffers with the same access patterns. One channel can
+  // then carry both loops' transfers in program order; this is the case of
+  // two specializations of a loop of which only one runs.
+  static bool inSequentialLoops(std::vector<air::ChannelGetOp> aGets,
+                                std::vector<air::ChannelGetOp> bGets,
+                                std::vector<air::ChannelPutOp> aPuts,
+                                std::vector<air::ChannelPutOp> bPuts) {
+    if (aGets.empty() || bGets.empty())
+      return false;
+    auto space = [](air::ChannelInterface op) {
+      return air::getMemorySpace(
+          cast<BaseMemRefType>(op.getMemref().getType()));
+    };
+    auto volume = [](air::ChannelInterface op) -> std::optional<int64_t> {
+      auto sizes = op.getMixedSizes();
+      if (sizes.empty()) {
+        auto ty = cast<BaseMemRefType>(op.getMemref().getType());
+        if (!ty.hasStaticShape())
+          return std::nullopt;
+        return ty.getNumElements();
+      }
+      int64_t v = 1;
+      for (OpFoldResult sz : sizes) {
+        auto c = getConstantIntValue(sz);
+        if (!c)
+          return std::nullopt;
+        v *= *c;
+      }
+      return v;
+    };
+    // Compares the loops holding x and y: their ancestors in the innermost
+    // block that contains both must be two different scf.for ops. Returns 1
+    // if x's loop comes first, -1 if y's does, and 0 otherwise.
+    auto loopsOrder = [](Operation *x, Operation *y) {
+      Region *r = x->getParentRegion();
+      while (r && !r->isAncestor(y->getParentRegion()))
+        r = r->getParentOp()->getParentRegion();
+      if (!r)
+        return 0;
+      Operation *ax = r->findAncestorOpInRegion(*x);
+      Operation *ay = r->findAncestorOpInRegion(*y);
+      if (!ax || !ay || ax == ay || ax->getBlock() != ay->getBlock() ||
+          !isa<scf::ForOp>(ax) || !isa<scf::ForOp>(ay))
+        return 0;
+      return ax->isBeforeInBlock(ay) ? 1 : -1;
+    };
+    // Which cores run an op: the affine.if arms around it, and for a
+    // broadcast put the cores it broadcasts to.
+    auto where = [](Operation *op) {
+      SmallVector<const void *> sig;
+      for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
+        auto ifOp = dyn_cast<affine::AffineIfOp>(p);
+        if (!ifOp)
+          continue;
+        sig.push_back(ifOp.getIntegerSet().getAsOpaquePointer());
+        for (Value v : ifOp.getOperands())
+          sig.push_back(v.getAsOpaquePointer());
+        sig.push_back(ifOp.getThenRegion().isAncestor(op->getParentRegion())
+                          ? (const void *)1
+                          : (const void *)2);
+      }
+      if (auto b = op->getAttr("broadcast_set"))
+        sig.push_back(b.getAsOpaquePointer());
+      return sig;
+    };
+    auto sideOk = [&](auto &xs, auto &ys) {
+      auto sp = space(xs.front());
+      auto vol = volume(xs.front());
+      if (!vol)
+        return false;
+      auto alike = [&](auto op) {
+        return space(op) == sp && volume(op) == vol;
+      };
+      if (!llvm::all_of(xs, alike) || !llvm::all_of(ys, alike))
+        return false;
+      std::set<SmallVector<const void *>> wx, wy;
+      for (auto x : xs)
+        wx.insert(where(x));
+      for (auto y : ys)
+        wy.insert(where(y));
+      if (wx != wy)
+        return false;
+      // Each op of one side is in a different loop than each op of the
+      // other. Either loop order works: only one of them runs.
+      for (auto x : xs)
+        for (auto y : ys)
+          if (!loopsOrder(x, y))
+            return false;
+      return true;
+    };
+    // A loop that cannot run for this function's sizes may have had its
+    // launch-side puts folded away; then only the gets are compared.
+    if (!sideOk(aGets, bGets) ||
+        (!aPuts.empty() && !bPuts.empty() && !sideOk(aPuts, bPuts)))
+      return false;
+    // Gets into core memory must use the same buffers in the same way.
+    if (space(aGets.front()) == air::MemorySpace::L1)
+      return transfersOf(aGets) == transfersOf(bGets);
+    return true;
+  }
+
+  // Whether a and b sit in the two arms of one scf.if or affine.if.
+  static bool inOppositeArms(Operation *a, Operation *b) {
+    for (Operation *p = a->getParentOp(); p; p = p->getParentOp()) {
+      if (!isa<scf::IfOp, affine::AffineIfOp>(p) || !p->isAncestor(b))
+        continue;
+      Region *ra = a->getParentRegion(), *rb = b->getParentRegion();
+      while (ra->getParentOp() != p)
+        ra = ra->getParentOp()->getParentRegion();
+      while (rb->getParentOp() != p)
+        rb = rb->getParentOp()->getParentRegion();
+      return ra != rb;
+    }
+    return false;
+  }
+
+  // Whether a and b are in one herd with only affine.if ops between them and
+  // the block that holds both. A core that runs both then runs them in
+  // program order.
+  static bool inProgramOrderOnOneCore(Operation *a, Operation *b) {
+    auto herd = a->getParentOfType<air::HerdOp>();
+    if (!herd || herd != b->getParentOfType<air::HerdOp>())
+      return false;
+    Region *common = a->getParentRegion();
+    while (common && !common->isAncestor(b->getParentRegion()))
+      common = common->getParentOp()->getParentRegion();
+    if (!common || !herd.getBody().isAncestor(common))
+      return false;
+    for (Operation *op : {a, b}) {
+      Operation *anchor = common->findAncestorOpInRegion(*op);
+      for (Operation *p = op; p != anchor;) {
+        p = p->getParentOp();
+        if (!isa<affine::AffineIfOp>(p))
+          return false;
+      }
+    }
+    return true;
+  }
+
   // With `dryRun`, only reports whether the merge is possible.
   bool mergeChannelOps(RewriterBase &rewriter, air::ChannelInterface a,
                        air::ChannelInterface b, bool dryRun = false) {
@@ -5949,6 +6267,11 @@ private:
   // With `dryRun`, only reports whether every pair can be merged.
   bool fuseParentRegionNestByIneterleaving(RewriterBase &rewriter, Operation *a,
                                            Operation *b, bool dryRun = false) {
+    // A core already runs them one after the other; the renamed channel
+    // takes them in that order. Moving b next to a would make the core wait
+    // for b's data before the work between them.
+    if (inProgramOrderOnOneCore(a, b))
+      return true;
     if (!a->getParentOfType<LoopLikeOpInterface>())
       return true;
     if (!b->getParentOfType<LoopLikeOpInterface>())
@@ -6638,6 +6961,14 @@ struct ShrinkMemrefSizesByAccessPattern
         air::getDataAccessShapeFromMemcpyOp(memref, users);
     auto memref_shape = getTensorShape(memref.getType());
 
+    // The bounds come from sizes and strides alone, because an offset is
+    // taken to be a tile index that the lowering replicates per tile. An
+    // offset that a loop walks, or a nonzero constant one, can reach past
+    // those bounds (for example the slots of a buffer that holds several
+    // transfers), so such buffers are not shrunk below it.
+    if (!offsetsStayInBounds(users, memref_shape, overall_access_bounds))
+      return failure();
+
     bool shrinkMemref = false;
     bool boundsAreAllOnes = true;
     for (unsigned i = 0; i < memref_shape.size(); i++) {
@@ -6747,6 +7078,87 @@ struct ShrinkMemrefSizesByAccessPattern
   }
 
 private:
+  // Whether, in each memref dim, every channel op's offset that a loop walks
+  // or that is a nonzero constant, plus the op's size, stays within `bounds`.
+  static bool offsetsStayInBounds(ArrayRef<Operation *> users,
+                                  ArrayRef<int> shape,
+                                  ArrayRef<int64_t> bounds) {
+    SmallVector<int64_t> natural(shape.size(), 1);
+    for (int d = (int)shape.size() - 2; d >= 0; d--)
+      natural[d] = natural[d + 1] * shape[d + 1];
+    for (Operation *user : users) {
+      auto chanOp = dyn_cast<air::ChannelInterface>(user);
+      if (!chanOp)
+        continue;
+      auto offs = chanOp.getMixedOffsets();
+      auto sizes = chanOp.getMixedSizes();
+      auto strides = chanOp.getMixedStrides();
+      for (auto [o, sz, st] : llvm::zip(offs, sizes, strides)) {
+        auto oc = getConstantIntValue(o);
+        auto v = dyn_cast<Value>(o);
+        bool walked = v && dependsOnLoopInductionVar(v);
+        if (!walked && (!oc || *oc == 0))
+          continue;
+        auto stc = getConstantIntValue(st), szc = getConstantIntValue(sz);
+        if (!stc || !szc)
+          return false;
+        auto it = llvm::find(natural, *stc);
+        if (it == natural.end())
+          return false;
+        int64_t d = it - natural.begin();
+        int64_t hi;
+        if (oc) {
+          hi = *oc;
+        } else {
+          FailureOr<int64_t> ub =
+              ValueBoundsConstraintSet::computeConstantBound(
+                  presburger::BoundType::UB, {v, std::nullopt},
+                  /*stopCondition=*/nullptr,
+                  ValueBoundsOptions{/*closedUB=*/true});
+          if (failed(ub))
+            return false;
+          hi = *ub;
+        }
+        if (hi + *szc > bounds[d])
+          return false;
+      }
+    }
+    return true;
+  }
+
+  // Whether `v` is computed from an scf.for induction variable, looking into
+  // the bodies of the ops that compute it (such as air.execute).
+  static bool dependsOnLoopInductionVar(Value v) {
+    SmallVector<Value> work{v};
+    DenseSet<Value> seen;
+    while (!work.empty()) {
+      Value x = work.pop_back_val();
+      if (!seen.insert(x).second)
+        continue;
+      if (auto arg = dyn_cast<BlockArgument>(x)) {
+        // A herd's tile indices do not count as loop induction variables.
+        if (auto loop = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp()))
+          if (loop.getInductionVar() == x)
+            return true;
+        continue;
+      }
+      Operation *def = x.getDefiningOp();
+      if (!def)
+        continue;
+      for (Value o : def->getOperands())
+        if (!isa<air::AsyncTokenType>(o.getType()))
+          work.push_back(o);
+      def->walk([&](Operation *inner) {
+        if (inner == def)
+          return;
+        for (Value o : inner->getOperands())
+          if (!isa<air::AsyncTokenType>(o.getType()))
+            work.push_back(o);
+      });
+    }
+    return false;
+  }
+
   template <typename T>
   void push_back_if_unique(SmallVector<T> &vec, T entry) const {
     if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {

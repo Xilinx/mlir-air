@@ -972,6 +972,9 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
        << "max-launch-channels-s2mm=" << cap << "})"
        << ",canonicalize,cse";
     os << ",air-isolate-async-dma-loop-nests{scope=launch},canonicalize,cse";
+    // After the split, two loops that run one after the other and stream the
+    // same way into the same cores share their channels.
+    os << ",air-fuse-channels{sequential-loops=true},canonicalize,cse";
   }
 
   // Loop fusion or alloc/dealloc optimization
