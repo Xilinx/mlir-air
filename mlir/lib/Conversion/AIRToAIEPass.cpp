@@ -4251,9 +4251,20 @@ static void unifyOnChipArmBuffers(scf::IndexSwitchOp sw, ArmChannelMap &byChan,
     if (!sameTy)
       continue;
 
+    // Preserve placement/alignment/lifetime requirements when creating the
+    // shared allocation. Buffers on different memtiles cannot be unified.
+    auto firstAlloc = firstBuf.getDefiningOp<memref::AllocOp>();
+    if (!firstAlloc || !llvm::all_of(ops, [&](air::ChannelInterface ci) {
+          auto alloc = ci.getMemref().getDefiningOp<memref::AllocOp>();
+          return alloc && alloc->getAttrDictionary() ==
+                              firstAlloc->getAttrDictionary();
+        }))
+      continue;
+
     // Hoist one shared buffer above the switch.
     OpBuilder b(sw);
     Value shared = memref::AllocOp::create(b, sw.getLoc(), memrefTy);
+    shared.getDefiningOp()->setAttrs(firstAlloc->getAttrs());
 
     // Redirect every distinct arm buffer to the shared buffer, erasing the
     // per-arm alloc + its deallocs.
@@ -4331,8 +4342,15 @@ static void unifyIndexSwitchArmBuffers(AIE::DeviceOp d) {
       });
     }
 
-    breakIndexSwitchGetPutRelays(sw, regions);
-    dedicateArmVaryingGetChannels(sw, byChan, opRegion);
+    // Relay breaking inserts a core-executed copy; dedication sets compute
+    // tile port pins. Neither applies to segment-level L2 DMA, potentially on
+    // several memtiles. In particular, pinning an L2 get's channel declaration
+    // would constrain its producing core to a channel numbered across the
+    // entire segment. L2 forwarding uses shared-buffer DMA locks directly.
+    if (sw->getParentOfType<AIE::CoreOp>()) {
+      breakIndexSwitchGetPutRelays(sw, regions);
+      dedicateArmVaryingGetChannels(sw, byChan, opRegion);
+    }
     unifyOnChipArmBuffers(sw, byChan, opRegion);
   }
 }
