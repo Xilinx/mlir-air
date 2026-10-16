@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide64.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide64_nocontract.mlir' %s | FileCheck %s --check-prefix=NOCONTRACT
 
 // w = bf16(bf16(0x4300 | q) * s + base) on 64 lanes, with f32_lanes = 64:
 // 0x4300 | q as two byte interleaves with 0x43 (vshuffle modes 20 and 21),
@@ -114,6 +115,12 @@ func.func @trunc_unit_lead(%a: memref<64xf32>, %w: memref<1x8x8xbf16>) {
 // CHECK: call @llvm.aie2p.I1024.I1024.ACC2048.bf.msc.conf(%{{.*}}, %[[C]], %[[M]], %{{.*}})
 // CHECK-NOT: arith.subf
 // CHECK-NOT: arith.extf
+// Without `contract`, the product keeps its own rounding.
+// NOCONTRACT-LABEL: @base_msc
+// NOCONTRACT-NOT: bf.msc.conf
+// NOCONTRACT: arith.subf
+// NOCONTRACT-NOT: bf.msc.conf
+// NOCONTRACT-LABEL: @base_msc_flags
 func.func @base_msc(%s: memref<64xbf16>, %m: memref<64xbf16>, %w: memref<64xf32>) {
   %c0 = arith.constant 0 : index
   %pbf = arith.constant 0.0 : bf16
@@ -124,6 +131,26 @@ func.func @base_msc(%s: memref<64xbf16>, %m: memref<64xbf16>, %w: memref<64xf32>
   %mf = arith.extf %mv : vector<64xbf16> to vector<64xf32>
   %p = arith.mulf %sf, %c128 : vector<64xf32>
   %b = arith.subf %mf, %p : vector<64xf32>
+  vector.transfer_write %b, %w[%c0] {in_bounds = [true]} : vector<64xf32>, memref<64xf32>
+  return
+}
+
+// Both ops allow contraction, so the multiply-subtract is used without
+// `contract` on the transform.
+// CHECK-LABEL: @base_msc_flags
+// CHECK: bf.msc.conf
+// NOCONTRACT: call @llvm.aie2p.I1024.I1024.ACC2048.bf.msc.conf
+// NOCONTRACT-NOT: arith.subf
+func.func @base_msc_flags(%s: memref<64xbf16>, %m: memref<64xbf16>, %w: memref<64xf32>) {
+  %c0 = arith.constant 0 : index
+  %pbf = arith.constant 0.0 : bf16
+  %c128 = arith.constant dense<128.0> : vector<64xf32>
+  %sv = vector.transfer_read %s[%c0], %pbf {in_bounds = [true]} : memref<64xbf16>, vector<64xbf16>
+  %mv = vector.transfer_read %m[%c0], %pbf {in_bounds = [true]} : memref<64xbf16>, vector<64xbf16>
+  %sf = arith.extf %sv : vector<64xbf16> to vector<64xf32>
+  %mf = arith.extf %mv : vector<64xbf16> to vector<64xf32>
+  %p = arith.mulf %sf, %c128 fastmath<contract> : vector<64xf32>
+  %b = arith.subf %mf, %p fastmath<contract> : vector<64xf32>
   vector.transfer_write %b, %w[%c0] {in_bounds = [true]} : vector<64xf32>, memref<64xf32>
   return
 }

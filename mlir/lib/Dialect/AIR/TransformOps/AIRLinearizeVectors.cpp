@@ -834,8 +834,10 @@ struct FMA64ToMac : public OpRewritePattern<vector::FMAOp> {
 // a widened from bf16 and b widened from bf16 or a splat that bf16 holds
 // exactly, as one 64-lane bf16 multiply-subtract. An f32 vector subf left to
 // the AIE lowering keeps the loop around it from being a zero-overhead loop.
+// Like MulAddToFMA, only where contraction is allowed.
 struct SubMul64ToMsc : public OpRewritePattern<arith::SubFOp> {
-  using OpRewritePattern<arith::SubFOp>::OpRewritePattern;
+  SubMul64ToMsc(MLIRContext *ctx, bool contract)
+      : OpRewritePattern<arith::SubFOp>(ctx), contract(contract) {}
 
   LogicalResult matchAndRewrite(arith::SubFOp sub,
                                 PatternRewriter &rewriter) const override {
@@ -846,8 +848,20 @@ struct SubMul64ToMsc : public OpRewritePattern<arith::SubFOp> {
     auto mul = sub.getRhs().getDefiningOp<arith::MulFOp>();
     if (!mul || !mul->hasOneUse())
       return failure();
+    auto mayContract = [&](Operation *op) {
+      if (contract)
+        return true;
+      auto fm = dyn_cast<arith::ArithFastMathInterface>(op);
+      return fm && bitEnumContainsAll(fm.getFastMathFlagsAttr().getValue(),
+                                      arith::FastMathFlags::contract);
+    };
+    if (!mayContract(sub) || !mayContract(mul))
+      return failure();
     Location loc = sub.getLoc();
     auto bf16Vec = VectorType::get({64}, rewriter.getBF16Type());
+    // b as bf16: a widened value, or a splat constant made only once the
+    // match has succeeded.
+    std::optional<APFloat> bSplat;
     auto asBF16 = [&](Value v) -> Value {
       if (Value src = bf16Source(v))
         return src;
@@ -858,12 +872,11 @@ struct SubMul64ToMsc : public OpRewritePattern<arith::SubFOp> {
         return nullptr;
       APFloat f = cst.getSplatValue<APFloat>();
       bool lost = false;
-      APFloat b = f;
-      b.convert(APFloat::BFloat(), APFloat::rmNearestTiesToEven, &lost);
+      f.convert(APFloat::BFloat(), APFloat::rmNearestTiesToEven, &lost);
       if (lost)
         return nullptr;
-      return arith::ConstantOp::create(rewriter, loc,
-                                       DenseElementsAttr::get(bf16Vec, b));
+      bSplat = f;
+      return v;
     };
     Value a = bf16Source(mul.getLhs()), b;
     if (a) {
@@ -873,11 +886,15 @@ struct SubMul64ToMsc : public OpRewritePattern<arith::SubFOp> {
     }
     if (!a || !b)
       return failure();
-    if (!canDeclareAIE2p(
-            sub, "llvm.aie2p.I1024.I1024.ACC2048.bf.msc.conf",
-            rewriter.getFunctionType(
-                {a.getType(), b.getType(), vt, rewriter.getI32Type()}, {vt})))
+    if (!canDeclareAIE2p(sub, "llvm.aie2p.I1024.I1024.ACC2048.bf.msc.conf",
+                         rewriter.getFunctionType(
+                             {a.getType(), bSplat ? bf16Vec : b.getType(), vt,
+                              rewriter.getI32Type()},
+                             {vt})))
       return failure();
+    if (bSplat)
+      b = arith::ConstantOp::create(rewriter, loc,
+                                    DenseElementsAttr::get(bf16Vec, *bSplat));
     Value conf = arith::ConstantOp::create(rewriter, loc,
                                            rewriter.getI32IntegerAttr(828));
     // An accumulator widened from bf16 is produced by the multiplier
@@ -906,6 +923,9 @@ struct SubMul64ToMsc : public OpRewritePattern<arith::SubFOp> {
     rewriter.eraseOp(mul);
     return success();
   }
+
+private:
+  bool contract;
 };
 
 // A 64-lane f32 -> bf16 arith.truncf (default rounding) as two 32-lane
@@ -1184,9 +1204,8 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
           wide.push_back(op);
       });
       RewritePatternSet widePatterns(ctx);
-      widePatterns
-          .add<FMA64ToMac, TruncF64ToSRS, ByteInterleave4300, SubMul64ToMsc>(
-              ctx);
+      widePatterns.add<FMA64ToMac, TruncF64ToSRS, ByteInterleave4300>(ctx);
+      widePatterns.add<SubMul64ToMsc>(ctx, getContract());
       if (failed(
               applyOpPatternsGreedily(wide, std::move(widePatterns), config)))
         return emitDefiniteFailure()

@@ -1566,7 +1566,7 @@ def LinearizeVectorsOp : Op<Transform_Dialect, "air.linearize_vectors",
        the 64-lane fma becomes the `llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf`
        intrinsic, `subf(c, mulf(a, b))` (with `a` widened from bf16 and `b`
        widened from bf16 or a splat that bf16 represents exactly) the
-       matching `bf.msc.conf`, the 64-lane truncf two `aievec.srs` (stored as
+       matching `bf.msc.conf` under the same condition as the fma, the 64-lane truncf two `aievec.srs` (stored as
        two halves
        when its only use is a shape_cast to an in-bounds memref write), and
        `bf16(0x4300 | zext(q))` for unpacked 4-bit `q` two
