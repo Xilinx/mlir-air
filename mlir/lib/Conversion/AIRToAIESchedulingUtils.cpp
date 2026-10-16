@@ -429,6 +429,7 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   // and B afterwards. Counts stayed right, order did not.
   for (auto o : memcpyIOpVec) {
     int tripCount = 1;
+    bool runTimeCount = false;
     Region *currRegion = o->getParentRegion();
     while (commonRegion->isAncestor(currRegion)) {
       Operation *parent = currRegion->getParentOp();
@@ -439,10 +440,12 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
         tripCount *= *air::getStaticAffineForTripCountAsInt(affineFor);
       } else if (scfFor && air::getStaticScfForTripCountAsInt(scfFor)) {
         tripCount *= *air::getStaticScfForTripCountAsInt(scfFor);
+      } else if (scfFor) {
+        runTimeCount = true;
       }
     }
     // In English, repeat count is trip count minus one.
-    int rep = tripCount - 1;
+    int rep = runTimeCount ? air::kRunTimeRepeatCount : tripCount - 1;
     if (repeatCounts.empty() || repeatCounts.back().first != rep)
       repeatCounts.emplace_back(rep, llvm::SetVector<Operation *>());
     repeatCounts.back().second.insert(o);

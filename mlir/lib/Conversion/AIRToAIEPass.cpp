@@ -5070,16 +5070,23 @@ public:
     // aie.device's isolated-from-above region.  At the device level the
     // actual offsets are handled by the shimDMA / NPU instruction sequence,
     // so zero is the correct placeholder.
+    // An integer segment argument is a run-time scalar, such as a loop's trip
+    // count. The device has no value for it: memtile DMAs that repeat it must
+    // form a buffer rotation, which runs as a circular BD chain and takes no
+    // count, and the shim side runs it from the instruction sequence.
     for (auto func : module.getOps<func::FuncOp>()) {
       func.walk([&](air::SegmentOp segOp) {
         for (unsigned i = 0, e = segOp.getNumKernelOperands(); i < e; i++) {
           Value karg = segOp.getKernelArgument(i);
-          if (!isa<IndexType>(karg.getType()))
-            continue;
           if (remap.contains(karg))
             continue;
-          remap.map(karg, arith::ConstantIndexOp::create(
-                              builder, builder.getUnknownLoc(), 0));
+          if (isa<IndexType>(karg.getType()))
+            remap.map(karg, arith::ConstantIndexOp::create(
+                                builder, builder.getUnknownLoc(), 0));
+          else if (isa<IntegerType>(karg.getType()))
+            remap.map(karg,
+                      ub::PoisonOp::create(builder, builder.getUnknownLoc(),
+                                           karg.getType()));
         }
       });
     }
@@ -6988,6 +6995,13 @@ public:
       // the run -- there is no repeat count to program and we generate BDs in
       // infinite loop mode instead.
       bool infiniteBDLoopMode = repeat_counts.size() == 1;
+      if (!infiniteBDLoopMode)
+        for (auto &[rep, task_ops] : repeat_counts)
+          if (rep == air::kRunTimeRepeatCount)
+            return task_ops.front()->emitOpError(
+                "repeats a run-time number of times on a DMA channel with "
+                "other tasks; its BD repeat count would be fixed in the "
+                "configuration");
 
       unsigned taskId = 0;
       // For every BD task

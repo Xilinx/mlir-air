@@ -822,8 +822,29 @@ ParseResult air::LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
+// A launch body runs on the host, so a constant passed into it is rebuilt
+// inside the body, where later passes see its value. Segment and herd
+// operands are left alone: they reach the cores as run-time values.
+static LogicalResult
+rematerializeConstantLaunchArgs(air::LaunchOp op, PatternRewriter &rewriter) {
+  bool changed = false;
+  Block &body = op.getBody().front();
+  for (unsigned i = 0, e = op.getNumKernelOperands(); i < e; i++) {
+    BlockArgument arg = op.getKernelArgument(i);
+    Operation *def = op.getKernelOperand(i).getDefiningOp();
+    if (arg.use_empty() || !def || !def->hasTrait<OpTrait::ConstantLike>())
+      continue;
+    rewriter.setInsertionPointToStart(&body);
+    Operation *c = rewriter.clone(*def);
+    rewriter.replaceAllUsesWith(arg, c->getResult(0));
+    changed = true;
+  }
+  return success(changed);
+}
+
 void air::LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                 MLIRContext *context) {
+  patterns.add(rematerializeConstantLaunchArgs);
   patterns.add(canonicalizeHierarchyOpArgs<LaunchOp>);
   patterns.add(CanonicalizeAsyncOpDeps<LaunchOp>);
   patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<LaunchOp>);
