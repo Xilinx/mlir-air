@@ -323,4 +323,5 @@ def main(spec_name, argv=None):
         max_len=getattr(spec, "max_len", None),
     )
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
-    print(f"built the fused prefill device into {out}")
+    nops = len(manifest["gemm"]) + len(manifest["attn"]) + bool(manifest["lm"])
+    print(f"built {nops} ops into {out}")

@@ -110,9 +110,7 @@ class Engine:
         self.dev = xrt.device(0)
         self.fp = Ctx(self.dev, self.dir / "fused_prefill.xclbin")
         # every op's runtime sequence of the device, as C++ that builds its insts
-        self.txn = TxnBuilder(
-            str(self.dir / "fused_prefill.txn.h"), workdir=str(self.dir / "txn")
-        )
+        self.txn = TxnBuilder(str(self.dir / "fused_prefill.txn.h"))
         self.dev_t, self.by_op = 0.0, {}
         self.suspended = False
         self.dummy = [self.fp.bo(4096, i) for i in range(self.nargs)]
