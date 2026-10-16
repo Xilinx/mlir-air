@@ -1,7 +1,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 """Host side of the fused prefill device: one hw_context, the GEMM weight
-sites, attention with insts generated per chunk, and the KV records.
+sites, attention with insts built per chunk by the compiler's TXN builder, and
+the KV records.
 
 A model's prefill subclasses Engine and runs a layer at a time over the
 prompt's 128-token chunks: gemm_start and attn_start queue one chunk's op,
@@ -17,9 +18,10 @@ import numpy as np
 import pyxrt as xrt
 from ml_dtypes import bfloat16
 
+from air.backend.txn_builder import TxnBuilder
+
 from . import device as D
 from . import hostops as H
-from . import insts as I
 from . import packing as P
 
 TO, FROM = (
@@ -99,7 +101,6 @@ class Engine:
         self.cfg = cfg
         self.man = json.loads((self.dir / "manifest.json").read_text())
         self.max_len = max_len
-        self.cols = D.cols(cfg)
         # first kernel BO argument of each group: the GEMM's, then the
         # attention groups' in config order
         self.slot = {"g": 0}
@@ -107,7 +108,11 @@ class Engine:
         self.nargs = 3 + 3 * len(cfg.attn)
         H.load(str(self.dir))
         self.dev = xrt.device(0)
-        self.fp = Ctx(self.dev, self.dir / f"{self.man['gemm'][0]}.xclbin")
+        self.fp = Ctx(self.dev, self.dir / "fused_prefill.xclbin")
+        # every op's runtime sequence of the device, as C++ that builds its insts
+        self.txn = TxnBuilder(
+            str(self.dir / "fused_prefill.txn.h"), workdir=str(self.dir / "txn")
+        )
         self.dev_t, self.by_op = 0.0, {}
         self.suspended = False
         self.dummy = [self.fp.bo(4096, i) for i in range(self.nargs)]
@@ -116,9 +121,9 @@ class Engine:
 
     # ---- device plumbing ----
 
-    def _insts(self, name, group):
-        raw = (self.dir / f"{name}.insts.bin").read_bytes()
-        return np.frombuffer(I.strip_columns(raw, self.cols[group]), np.uint32)
+    def _insts(self, name, *args):
+        """The insts of op `name`'s runtime sequence, for its run-time args."""
+        return np.asarray(self.txn(f"seg_{name}", *args), np.uint32)
 
     def _go(self, run, tag, out):
         # Unless out's first cache line is flushed before the dispatch, the
@@ -168,7 +173,7 @@ class Engine:
         s = self.sites[site]
         if act not in s["runs"]:
             name = f"g_{s['k']}_{s['npd']}_{act}_{s['wq']}"
-            ins = self._insts(name, "g")
+            ins = self._insts(name)
             ib, _ = self.fp.insts(ins)
             bos = list(self.dummy)
             bos[0:3] = [self.abuf[s["k"]]["a"], s["w"], s["c"]]
@@ -203,7 +208,7 @@ class Engine:
         key = (name, role, c)
         if key not in self.chunk_runs:
             if name not in self.chunk_bufs:
-                ins = self._insts(name, "g")
+                ins = self._insts(name)
                 self.chunk_bufs[name] = (self.fp.insts(ins)[0], len(ins))
             ib, n = self.chunk_bufs[name]
             ck = ("c", role, s["npd"], c)
@@ -254,30 +259,11 @@ class Engine:
 
     def attn_setup(self):
         self.attn = {}
-        pts = {
-            k: dict(zip(("heads", "nkv", "q0", "k0"), v))
-            for k, v in self.man["attn_points"].items()
-        }
         for op, groups in D.attn_ops(self.cfg).items():
-            names = self.man["attn"][op]
-            base = self._insts(names["base"], op).tobytes()
-            var = {
-                p: (self._insts(names[p], op).tobytes(), pts[p][p] - pts["base"][p])
-                for p in ("nkv", "q0", "k0")
-            }
-            tmpl = I.LinearInsts(
-                base, {p: pts["base"][p] for p in ("nkv", "q0", "k0")}, var
-            )
-            chk = pts["check"]
-            if not np.array_equal(
-                tmpl.at(nkv=chk["nkv"], q0=chk["q0"], k0=chk["k0"]),
-                self._insts(names["check"], op),
-            ):
-                raise RuntimeError(
-                    f"attention {op}: insts are not linear in (nkv, q0, k0)"
-                )
             self.attn[op] = dict(
-                tmpl=tmpl, groups=groups, hg=pts["base"]["heads"] // len(groups)
+                seq=self.man["attn"][op],
+                groups=groups,
+                hg=self.man["heads"] // len(groups),
             )
 
     def _attn_part(self, g, hg, s, bos):
@@ -310,7 +296,8 @@ class Engine:
                 parts.append(
                     self._attn_part(self.cfg.attn[a], at["hg"], self.slot[a], bos)
                 )
-            ib, iv = fp.insts(at["tmpl"].at(**at["tmpl"].point))
+            # the stream's length does not depend on (nkv, q0, k0)
+            ib, iv = fp.insts(self._insts(at["seq"], 1, 0, 0))
             self.chunk_attn[key] = dict(
                 parts=parts, ib=ib, iv=iv, run=fp.run(ib, iv.size, bos), pt=None
             )
@@ -338,7 +325,7 @@ class Engine:
             p["o"].sync(TO, 64, 0)
         pt = (self._nkv(g, nend - k0), q0, k0)
         if ch["pt"] != pt:
-            ch["iv"][:] = at["tmpl"].at(nkv=pt[0], q0=q0, k0=k0)
+            ch["iv"][:] = self._insts(at["seq"], *pt)
             ch["ib"].sync(TO)
             ch["pt"] = pt
         ch["run"].r.start()
