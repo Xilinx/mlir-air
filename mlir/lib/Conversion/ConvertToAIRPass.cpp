@@ -1600,18 +1600,11 @@ static void getHerdNames(ModuleOp module) {
 static void getSegmentNames(ModuleOp module) {
   std::vector<std::string> seg_syms;
   for (auto f : module.getOps<func::FuncOp>()) {
-    // record existing symbol names
+    // record existing symbol names; segments sharing a name are one device
     f.walk([&](air::SegmentOp op) {
       if (auto attr =
-              op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-        std::string name = attr.getValue().str();
-        if (std::find(seg_syms.begin(), seg_syms.end(), name) !=
-            seg_syms.end()) {
-          op->emitOpError("unexpected duplicate symbol.");
-          return;
-        }
-        seg_syms.push_back(name);
-      }
+              op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+        seg_syms.push_back(attr.getValue().str());
     });
     // generate missing symbol names
     f.walk([&](air::SegmentOp op) {

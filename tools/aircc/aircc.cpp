@@ -1522,11 +1522,23 @@ static LogicalResult runAieCompilation() {
       SmallString<256> headerFile(tmpDir);
       sys::path::append(headerFile, "npu." + airMlirFilename);
       sys::path::replace_extension(headerFile, "txn.h");
-      // One runtime sequence per header: a design with several would need the
-      // host to pick among them, and none of the decoders has more than one.
-      // Picking one silently would hand the host a builder for whichever
-      // sequence sorted first, so make it an error rather than a warning.
-      if (seqFiles.size() > 1) {
+      // aiecc writes one module per runtime sequence, and each holds every
+      // sequence of its device: several funcs sharing a device give several
+      // identical files and one header with a builder per sequence.
+      SmallVector<std::string> contents;
+      for (StringRef f : seqFiles) {
+        auto buf = MemoryBuffer::getFile(f);
+        if (!buf) {
+          llvm::errs() << "Error: cannot read " << f << "\n";
+          return failure();
+        }
+        contents.push_back((*buf)->getBuffer().str());
+      }
+      if (llvm::any_of(contents, [&](const std::string &c) {
+            return c != contents[0];
+          })) {
+        // Picking one silently would hand the host a builder for whichever
+        // sequence sorted first, so make it an error rather than a warning.
         llvm::errs() << "Error: --emit-txn-cpp found " << seqFiles.size()
                      << " runtime sequences and cannot choose between them:\n";
         for (StringRef f : seqFiles)

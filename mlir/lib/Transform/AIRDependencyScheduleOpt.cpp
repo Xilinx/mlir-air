@@ -5128,7 +5128,17 @@ public:
     module.walk([&](air::ChannelOp op) { channelOps.push_back(op); });
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
     for (auto f : funcOps) {
-      runOnFunction(f, channelOps);
+      // Only the channels this function uses. Channels of other functions
+      // are fused when those functions are processed; checking every pair of
+      // module channels for every function grows with the cube of the number
+      // of functions.
+      llvm::DenseSet<StringRef> used;
+      f.walk([&](air::ChannelInterface op) { used.insert(op.getChanName()); });
+      std::vector<air::ChannelOp> fChannels;
+      for (auto c : channelOps)
+        if (used.contains(c.getSymName()))
+          fChannels.push_back(c);
+      runOnFunction(f, fChannels);
       // Canonicalization patterns.
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
