@@ -237,6 +237,15 @@ static inline void aie_round_nearest_even() {
 // base + slope * L -- reproduces it unchanged at every L.
 #define ATTN_RTP_L_MASK 0xFFFFF
 
+// Parts the context is split into across attention CUs; each part's partial
+// softmax sums are merged after the block loop.
+#ifndef ATTN_KV_PARTS
+#define ATTN_KV_PARTS 1
+#endif
+// Where the qk -> kv score message carries the running max: after the scores
+// and the correction factors.
+#define ATTN_S_M_OFF (Q_HEADS_PADDED_PER_CU * 16 + 16)
+
 // The first key position the current token may attend: the token sits at L-1,
 // and with a window W it sees keys j with (L-1) - j < W, i.e. j >= L - W.
 static inline int attn_window_lo(int rtp) {

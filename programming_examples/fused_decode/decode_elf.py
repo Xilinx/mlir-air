@@ -35,6 +35,27 @@ KERNEL_NAME = "main:q4nx_decode"
 DISPATCH_TIMEOUT_MS = 60000
 
 
+# AIR names a length parameter after the sequence argument it holds.
+_LEN_PARAM = re.compile(r"_arglen_\d+$")
+
+
+def _entries(path):
+    lines = [ln.split() for ln in Path(path).read_text().split("\n") if ln.strip()]
+    return [ln for ln in lines[1:] if len(ln) >= 4]
+
+
+def parse_length_param(path):
+    """Name of the KV readback's block-count parameter, or None.
+
+    A DECODE_RT_ROUNDS build reads back ceil(L/16) KV blocks; the host writes
+    that count per token.
+    """
+    found = [ln[0] for ln in _entries(path) if _LEN_PARAM.search(ln[0])]
+    if len(found) > 1:
+        raise RuntimeError(f"{path}: more than one length parameter: {found}")
+    return found[0] if found else None
+
+
 def parse_params(path):
     """Read params.txt into (append_name, scale, addend, mask_name).
 
@@ -44,11 +65,11 @@ def parse_params(path):
     gemma's 512 gives `..._x512_m512`. Hardcoding either writes the wrong KV
     address for the other, silently. Classify by the kind column instead --
     `addr` is the BD offset, `core` the herd RTP -- and take the arithmetic from
-    the suffix rather than assuming it.
+    the suffix rather than assuming it. A readback length parameter is `addr`
+    kind too; see parse_length_param.
     """
-    lines = [ln.split() for ln in Path(path).read_text().split("\n") if ln.strip()]
-    entries = [ln for ln in lines[1:] if len(ln) >= 4]
-    addr = [ln[0] for ln in entries if ln[3] == "addr"]
+    entries = _entries(path)
+    addr = [ln[0] for ln in entries if ln[3] == "addr" and not _LEN_PARAM.search(ln[0])]
     core = [ln[0] for ln in entries if ln[3] == "core"]
     if len(addr) != 1 or len(core) != 1:
         raise RuntimeError(
@@ -101,6 +122,7 @@ class ElfDecode:
             self.append_addend,
             self.mask_param,
         ) = parse_params(self.params_path)
+        self.length_param = parse_length_param(self.params_path)
         # The scale IS the model's REGION_W. If they disagree, the driver and the
         # build were made from different geometries and every KV append would land
         # in the wrong place -- which reads as bad numerics, not as a mismatch.
@@ -133,6 +155,8 @@ class ElfDecode:
             self.append_param, np.int32(L * self.append_scale + self.append_addend)
         )
         self.params.write(self.mask_param, np.int32(L))
+        if self.length_param:
+            self.params.write(self.length_param, np.int32((L + 15) // 16))
         self.params.sync()
         # L is not a kernel argument: the ELF takes only the sequence's buffers,
         # and the scratchpad writes above are all the hardware reads.

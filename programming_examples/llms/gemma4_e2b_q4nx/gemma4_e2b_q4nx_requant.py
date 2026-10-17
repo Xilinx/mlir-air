@@ -126,6 +126,16 @@ def layer_rope_w(pos, L, fd, rope_freqs):
     return np.concatenate([c, s]).astype(np.float32), dh
 
 
+def _halfmajor_cols(fd, blk):
+    """Source column of each o-proj column once every CU's heads are laid out
+    half-major, for columns counted in units where an X block is `blk` wide."""
+    qh, dh = fd.Q_HEADS_PER_CU, fd.DH_A * blk // fd.COL_BLOCK
+    c, r = np.divmod(np.arange(fd.NUM_Q_HEADS * dh), qh * dh)
+    b, r = np.divmod(r, qh * blk)
+    h, e = np.divmod(r, blk)
+    return (c * qh + h) * dh + b * blk + e
+
+
 def pack_layer_weights(fd, L, w):
     """One layer's projections as the decode slab layer L streams.
 
@@ -191,6 +201,14 @@ def pack_layer_weights(fd, L, w):
     down = _each(
         w["down"], lambda a: _pad_cols(a, inter), lambda a: _pad_cols(a, inter // G)
     )
+
+    if fd.SWA_HEADS and not swa:
+        # The device takes the o-proj X half-major.
+        o = _each(
+            o,
+            lambda a: a[:, _halfmajor_cols(fd, fd.COL_BLOCK)],
+            lambda a: a[:, _halfmajor_cols(fd, fd.COL_BLOCK // G)],
+        )
 
     qmats = [None] * NPH
     qmats[0] = _cat(*qkv)

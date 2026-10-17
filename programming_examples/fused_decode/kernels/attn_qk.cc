@@ -491,8 +491,10 @@ void attn_qk_blk(bf16 *__restrict q, bf16 *__restrict k_block,
   // window in units of 16 keys (0 = full attention). See attn_window_lo().
   const int lo = attn_window_lo(L);
   L &= ATTN_RTP_L_MASK;
+#if ATTN_KV_PARTS == 1
   if (blk == lo / 16)
     aie::store_v(m_state, neg_inf); // reset running max for a new query
+#endif
   int rem = L - blk * 16;
   // Block fully beyond the current KV length L (rem<=0): every key is masked,
   // so it contributes nothing -- but running _attn_qk on an all-masked block
@@ -515,5 +517,19 @@ void attn_qk_blk(bf16 *__restrict q, bf16 *__restrict k_block,
                                         mask, is_first);
   float *c = (float *)(s_block + Q_HEADS_PADDED_PER_CU * 16);
   aie::store_v(c, aie::load_v<8>(c_state));
+#if ATTN_KV_PARTS > 1
+  // The running max rides behind c: the kv core needs it to merge its partial
+  // sums with the other part's.
+  aie::store_v(s_block + ATTN_S_M_OFF, aie::load_v<16>(m_state));
+#endif
 }
+
+#if ATTN_KV_PARTS > 1
+// With the context split across parts, a part's first block need not be the
+// window's, so the state is cleared before the block loop instead.
+ATTN_ENTRY
+void attn_qk_reset(bf16 *__restrict m_state) {
+  aie::store_v(m_state, aie::broadcast<bf16, 16>(-0x1.FEp127f));
+}
+#endif
 }

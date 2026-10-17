@@ -292,6 +292,8 @@ profile-prefill:
 ##
 ## An empty KV_SRC is silently the identity map, so a failed derivation would
 ## rebuild the bug rather than fail. Refuse it; the engine asserts the length.
+RB_STEP = cd $(DEC) && DECODE_MODEL=gemma4-e2b VOCAB_CHUNK_I2=27 DECODE_GOLDEN=1 DECODE_GOLDEN_L=$(LBUILD) FUSED_DECODE_PRINT_CONST=RB_STEP $(PYTHON) fused_decode_ple.py | tail -1
+
 _compile_decode_build:
 	@test -n "$(SWEEP_KV_SRC)" || { echo "cannot derive the KV sharing map from gemma4_e2b_q4nx_weights.kv_source_layer -- refusing to build an identity-mapped template" >&2; exit 1; }
 	@set -e; for L in $(LBUILD) $(LREF); do \
@@ -304,10 +306,11 @@ _compile_decode_build:
 	  if [ -f $(DEC)/decode.rt_pair ]; then mv -f $(DEC)/decode.rt_pair $(srcdir)/decode_L$$L.rt_pair; fi; \
 	done
 	@# The cores run ceil(L/16) KV blocks (DECODE_RT_ROUNDS), so the host cuts the
-	@# readback to match; this one-block-shorter build locates its length words.
-	@# decode_L<N>.rt_rounds tells the consumers this template needs that .rb.
-	@set -e; R=$$(( ($(LBUILD) + 15) / 16 - 1 )); rm -f $(srcdir)/decode_L$(LBUILD).rb.insts.bin; \
-	echo 1 > $(srcdir)/decode_L$(LBUILD).rt_rounds; \
+	@# readback to match; this shorter build locates its length words.
+	@# decode_L<N>.rt_rounds tells the consumers this template needs that .rb, and
+	@# holds the blocks it drops: a position-split readback only moves in steps.
+	@set -e; S=$$($(RB_STEP)); R=$$(( ($(LBUILD) + 15) / 16 - S )); rm -f $(srcdir)/decode_L$(LBUILD).rb.insts.bin; \
+	echo $$S > $(srcdir)/decode_L$(LBUILD).rt_rounds; \
 	if [ $$R -ge 1 ]; then \
 	  DECODE_RT_ROUNDS=1 DECODE_RT_WINDOW=1 DECODE_RB_ROUNDS=$$R $(MAKE) --no-print-directory -C $(DEC) compile-decode \
 	    LBUILD=$(LBUILD) UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) \
@@ -316,12 +319,12 @@ _compile_decode_build:
 	  rm -f $(DEC)/decode.xclbin; \
 	fi
 	@# A sliding-window wave's cores start at the block its window opens in
-	@# (DECODE_RT_WINDOW); this build, with that wave's readback one block later,
+	@# (DECODE_RT_WINDOW); this build, with that wave's readback later,
 	@# locates the words the host moves. decode_L<N>.rt_window holds the window.
-	@set -e; W=$(SLIDING_WINDOW); rm -f $(srcdir)/decode_L$(LBUILD).sw.insts.bin; \
+	@set -e; S=$$($(RB_STEP)); W=$(SLIDING_WINDOW); rm -f $(srcdir)/decode_L$(LBUILD).sw.insts.bin; \
 	echo $$W > $(srcdir)/decode_L$(LBUILD).rt_window; \
 	if [ $(LBUILD) -gt $$W ]; then \
-	  DECODE_RT_ROUNDS=1 DECODE_RT_WINDOW=1 DECODE_RB_SWA_SKIP=1 $(MAKE) --no-print-directory -C $(DEC) compile-decode \
+	  DECODE_RT_ROUNDS=1 DECODE_RT_WINDOW=1 DECODE_RB_SWA_SKIP=$$S $(MAKE) --no-print-directory -C $(DEC) compile-decode \
 	    LBUILD=$(LBUILD) UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) \
 	    PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR); \
 	  mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_L$(LBUILD).sw.insts.bin; \

@@ -82,6 +82,15 @@ DECODE_ENV := DECODE_MODEL=$(DECODE_MODEL) VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) \
 GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE $(PYTHON) $(DECODE_DRIVER) 2>/dev/null | tail -1)
 PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
 
+# What the decode build adds to DECODE_ENV; compile-decode-elf sets it, and its
+# kernels prerequisite sees the same value.
+BUILD_ENV =
+
+# Split attention across KV positions: the kernels need the builder's part count,
+# which depends on the build (an ELF is never split), so it is read per target.
+ATTN_KV_PARTS = $(shell $(DECODE_ENV) $(BUILD_ENV) FUSED_DECODE_PRINT_CONST=KV_PARTS $(PYTHON) $(DECODE_DRIVER) 2>/dev/null | tail -1)
+PEANO_KFLAGS = $(PEANO_KBASE) $(if $(ATTN_KV_PARTS),-DATTN_KV_PARTS=$(ATTN_KV_PARTS))
+
 .PHONY: help compile-decode compile-decode-elf kernels preflight-peano clean
 
 help:
@@ -126,14 +135,14 @@ preflight-peano:
 kernels: preflight-peano
 	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
 	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KFLAGS) -O2 -c $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
 	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -$(ATTN_OPT) -DDECODE_INLINE_ATTN -S -emit-llvm \
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KFLAGS) -$(ATTN_OPT) -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
 	@echo ">>> PLE kernels (Peano -O2): $(PLE_KERNELS)"
 	@for k in $(PLE_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
+	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KFLAGS) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
 	@echo "Kernels built (GLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))."
 
 ## Kernels + one decode template into this dir (decode.xclbin + decode.insts.bin).
@@ -166,10 +175,11 @@ compile-decode: kernels
 
 ## Full-ELF decode: one artifact for every L up to ATTN_MAXL, with L written to
 ## the scratchpad per dispatch. Not idempotent, like compile-decode.
+compile-decode-elf: BUILD_ENV = DECODE_DYNSEQ=1 DECODE_OUTPUT_FORMAT=elf
 compile-decode-elf: kernels
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), UNI_DEC=$(UNI_DEC)$(if $(KV_SRC), KV_SRC=$(KV_SRC),)$(if $(LAYERS), LAYERS=$(LAYERS),), L via the scratchpad)"
 	@rm -f $(srcdir)/decode.elf $(srcdir)/params.txt $(srcdir)/decode_scratchpad.*
-	@cd $(srcdir) && $(DECODE_ENV) DECODE_DYNSEQ=1 DECODE_OUTPUT_FORMAT=elf \
+	@cd $(srcdir) && $(DECODE_ENV) $(BUILD_ENV) \
 	  $(PYTHON) $(DECODE_DRIVER) >/tmp/ple_decode_elf_L$(LBUILD).log 2>&1; \
 	  if [ -f $(srcdir)/decode.elf ] && [ -s $(srcdir)/params.txt ]; then \
 	    mv -f $(srcdir)/decode.elf $(srcdir)/decode_scratchpad.elf; \

@@ -87,6 +87,12 @@ def device_slab(L, w):
         return out
 
     o = rq._each(w["o"], lambda a: slots(a, 1), lambda a: slots(a, G))
+    if fd.SWA_HEADS:
+        o = rq._each(
+            o,
+            lambda a: a[:, rq._halfmajor_cols(fd, fd.COL_BLOCK)],
+            lambda a: a[:, rq._halfmajor_cols(fd, fd.COL_BLOCK // G)],
+        )
     full = 2 * fd.MODEL["INTER_NARROW"]
     up = rq._each(w["up"], lambda a: rq._pad_rows(a, full))
     gate = rq._each(w["gate"], lambda a: rq._pad_rows(a, full))
@@ -132,7 +138,10 @@ for L in (0, 4, 15, 19):
                 a = got[p][c][h].reshape(i2[p], 2 * j2[p], -1)
                 b = ref[p][c][h].reshape(fd.I2P[p], 2 * fd.J2P[p], -1)
                 read = np.zeros(b.shape[:2], bool)
-                read[: i2[p], : 2 * j2[p] * xs[p] : xs[p]] = True
+                j = np.arange(2 * j2[p] * xs[p])
+                if xs[p] > 1:
+                    j = j[(j & fd.Q_HEADS_PER_CU) == 0]
+                read[np.ix_(np.arange(i2[p]), j)] = True
                 ok &= np.array_equal(a.reshape(-1, b.shape[2]), b[read])
                 ok &= bool(np.all(b[~read].reshape(-1, BLK) == ZERO_BLOCK))
     print(
