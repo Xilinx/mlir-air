@@ -19,7 +19,6 @@
 #include "aie/Dialect/AIE/Transforms/AIEPlacer.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
-#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -5305,22 +5304,25 @@ public:
     // count. The device has no value for it: memtile DMAs that repeat it must
     // form a buffer rotation, which runs as a circular BD chain and takes no
     // count, and the shim side runs it from the instruction sequence. So is
-    // an index argument that a loop's bounds or step are computed from.
+    // an index argument that a loop's bounds or step are computed from. Only
+    // through use chains, not into the regions of the ops on them: a herd that
+    // takes the argument, or a switch on it, holds loops of its own.
     auto boundsLoop = [](Value v) {
-      SetVector<Operation *> slice;
-      getForwardSlice(v, &slice);
-      return llvm::any_of(slice, [&](Operation *op) {
-        auto loop = dyn_cast<scf::ForOp>(op);
-        if (!loop)
-          return false;
-        return llvm::any_of(ValueRange{loop.getLowerBound(),
-                                       loop.getUpperBound(), loop.getStep()},
-                            [&](Value b) {
-                              return b == v ||
-                                     (b.getDefiningOp() &&
-                                      slice.contains(b.getDefiningOp()));
-                            });
-      });
+      SmallVector<Value> work{v};
+      DenseSet<Value> seen{v};
+      while (!work.empty()) {
+        Value x = work.pop_back_val();
+        for (Operation *user : x.getUsers()) {
+          if (auto loop = dyn_cast<scf::ForOp>(user))
+            if (x == loop.getLowerBound() || x == loop.getUpperBound() ||
+                x == loop.getStep())
+              return true;
+          for (Value r : user->getResults())
+            if (seen.insert(r).second)
+              work.push_back(r);
+        }
+      }
+      return false;
     };
     for (auto func : module.getOps<func::FuncOp>()) {
       func.walk([&](air::SegmentOp segOp) {
