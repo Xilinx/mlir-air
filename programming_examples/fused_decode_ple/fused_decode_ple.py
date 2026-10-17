@@ -1120,7 +1120,7 @@ PLE_UP_CHAN = PLE and int(_os.environ.get("DECODE_PLE_UP_CHAN", "0"))
 # The gate core takes its weights on both S2MM: half on @pleW, half on a circuit
 # channel of its own. That needs its second S2MM free, so @pliOut becomes a
 # shared-L1 hand-off from the proj core, its neighbour.
-PLE_GATE_2CH = PLE_SHARED_RES
+PLE_GATE_2CH = PLE_SHARED_RES and not PLE_BYPASS
 # The gate core also runs the up projection and its tail, on the same two
 # weight streams, and drains the layer output itself. The up core is not built.
 PLE_FUSE_UP = PLE_GATE_2CH
@@ -1325,9 +1325,10 @@ REGION_STRIDE = ATTN_MAXL * REGION_W  # per-group region span (one K or V region
 # contexts are bound by the KV readback streams, and each part adds its own.
 # Block ranges round to KV_PARTS pairs so every slice is whole pairs.
 KV_PARTS = int(_os.environ.get("DECODE_KV_PARTS", MODEL.get("KV_PARTS", 1)))
-if ATTN_ROUNDS % (2 * KV_PARTS) or DYNSEQ:
-    # Too short a template to split (the layer gate's), or a readback whose
-    # block count is a runtime value the split does not divide.
+if ATTN_ROUNDS % (2 * KV_PARTS) or ATTN_ROUNDS <= 2 * KV_PARTS or DYNSEQ:
+    # Too short a template to split and still have blocks left in its .rb
+    # calibration build, or a readback whose block count is a runtime value
+    # the split does not divide.
     KV_PARTS = 1
 if KV_PARTS > 1:
     assert KV_PARTS == 2 and KV_REPLICATED and N_ATTN_CU == 2 and NGRP == 1
