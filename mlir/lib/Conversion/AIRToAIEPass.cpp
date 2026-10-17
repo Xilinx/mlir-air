@@ -5305,10 +5305,16 @@ public:
     // count. The device has no value for it: memtile DMAs that repeat it must
     // form a buffer rotation, which runs as a circular BD chain and takes no
     // count, and the shim side runs it from the instruction sequence. So is
-    // an index argument that a loop's bounds or step are computed from.
+    // an index argument that a loop's bounds or step are computed from. Not
+    // through a comparison: a bound picked by one is a choice between fixed
+    // counts, such as a per-wave arm selected from the launch index.
     auto boundsLoop = [](Value v) {
       SetVector<Operation *> slice;
-      getForwardSlice(v, &slice);
+      ForwardSliceOptions options;
+      options.filter = [](Operation *op) {
+        return !isa<arith::CmpIOp, arith::CmpFOp>(op);
+      };
+      getForwardSlice(v, &slice, options);
       return llvm::any_of(slice, [&](Operation *op) {
         auto loop = dyn_cast<scf::ForOp>(op);
         if (!loop)
