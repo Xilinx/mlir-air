@@ -82,6 +82,10 @@ DECODE_ENV := DECODE_MODEL=$(DECODE_MODEL) VOCAB_CHUNK_I2=$(VOCAB_CHUNK_I2) \
 GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE $(PYTHON) $(DECODE_DRIVER) 2>/dev/null | tail -1)
 PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
 
+# Split attention across KV positions: the kernels need the builder's part count.
+ATTN_KV_PARTS := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=KV_PARTS $(PYTHON) $(DECODE_DRIVER) 2>/dev/null | tail -1)
+PEANO_KBASE += $(if $(ATTN_KV_PARTS),-DATTN_KV_PARTS=$(ATTN_KV_PARTS))
+
 .PHONY: help compile-decode kernels preflight-peano clean
 
 help:

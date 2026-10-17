@@ -308,6 +308,7 @@ _MODELS = {
         KV_PER_CU=1,  # the one real kv head, replicated to each of the 2 CUs
         KV_REPLICATED=True,  # so read the copy back once and fan it to both
         KV_BLOCK_PAIRS=True,  # attention takes KV blocks two at a time
+        KV_PARTS=2,  # and splits the context across two sets of CUs
         N_ATTN_CU=2,
         NPH=4,
         I2P=[12, 3, 48, 3],
@@ -1116,6 +1117,13 @@ PLE_SHARED_RES = (
 # Default OFF because it spends a shim MM2S for nothing; kept because flipping
 # the pairing is what proved the port sharing is not the fault.
 PLE_UP_CHAN = PLE and int(_os.environ.get("DECODE_PLE_UP_CHAN", "0"))
+# The gate core takes its weights on both S2MM: half on @pleW, half on a circuit
+# channel of its own. That needs its second S2MM free, so @pliOut becomes a
+# shared-L1 hand-off from the proj core, its neighbour. It also runs the up
+# projection and its tail on the same two streams and drains the layer output
+# itself, so the up core is not built. The bypass diagnostics keep the old
+# topology.
+PLE_FUSED_GATE = PLE_SHARED_RES and not PLE_BYPASS
 # DIAGNOSTIC (DECODE_PLE_UP_W_FIRST=1): have the up core drain its whole weight
 # stream BEFORE it blocks on @gateOut, instead of after. Numerically wrong -- the
 # macs run against an uninitialised @gateOut buffer -- but every channel's volume
@@ -1311,6 +1319,38 @@ KV_REPLICATED = MODEL.get("KV_REPLICATED", False)
 KV_COPIES = len(ATTN_COL_GROUPS[0][1]) if KV_REPLICATED else 1
 REGION_W = len(ATTN_COL_GROUPS[0][1]) * KVPC_DH // KV_COPIES
 REGION_STRIDE = ATTN_MAXL * REGION_W  # per-group region span (one K or V region)
+# Split the context across KV_PARTS sets of CUs: part p takes the p-th equal
+# slice of the block range, on its own readback streams and its own CUs, and
+# each head group's parts are merged on a core of its own afterwards. Long
+# contexts are bound by the KV readback streams, and each part adds its own.
+# Block ranges round to KV_PARTS pairs so every slice is whole pairs.
+KV_PARTS = MODEL.get("KV_PARTS", 1)
+if ATTN_ROUNDS % (2 * KV_PARTS) or ATTN_ROUNDS <= 2 * KV_PARTS or DYNSEQ:
+    # Too short a template to split and still have blocks left in its .rb
+    # calibration build, or a readback whose block count is a runtime value
+    # the split does not divide.
+    KV_PARTS = 1
+if KV_PARTS > 1:
+    assert KV_PARTS == 2 and KV_REPLICATED and N_ATTN_CU == 2 and NGRP == 1
+    assert KV_PAIRS and ATTN_ROUNDS % (2 * KV_PARTS) == 0, ATTN_ROUNDS
+# Block granularity of every wave's range: one block, a pair, or a pair per part.
+KV_BLK_ALIGN = 2 * KV_PARTS if KV_PARTS > 1 else (2 if KV_PAIRS else 1)
+N_CU_ALL = N_ATTN_CU * KV_PARTS
+# Blocks the readback-calibration builds (.rb / .sw) move by: a split readback
+# only takes whole pairs per part.
+RB_STEP = KV_BLK_ALIGN if KV_PARTS > 1 else 1
+# (qk col, qk row, kv row) of the CUs of parts >= 1, head group by head group,
+# and the (col, row) of each head group's merge core.
+ATTN_CU_LOC_P1 = [(2, 4, 5), (3, 4, 5)]
+ATTN_MERGE_LOC = [(5, 4), (5, 5)]
+# Memtile columns of part 1's K and V re-block: the shim columns with an MM2S
+# left once rmsW joins the rms packet group.
+KV_PART_MCOL = (2, 5)
+
+
+def _kv_chan(name, part):
+    """A KV readback channel of `part`."""
+    return f"{name}_p{part}" if part else name
 
 
 # The append's S2MM walk; extra copies stride past the K and V regions.
@@ -1719,6 +1759,8 @@ if PLE:
     )
     PLE_UP_LOC = (PLE_UP_COL, PLE_UP_ROW)
     PLE_RELAY_PCOL = 3
+    # memtile (and so shim) column of the gate core's second weight stream
+    PLE_GATE2_PCOL = 5
     _ATTN_COLS_USED = {_l[0] for _l in ATTN_CU_LOC}
     for _nm, _loc in (
         ("gate", PLE_GATE_LOC),
@@ -1752,8 +1794,8 @@ W_LAYER = sum(NCX * PER_COL_PH[p] * BLOCK_BF16 for p in range(NPH))  # weights /
 # real up/gate rounds and down columns, a WIDE wave (KV-shared) its q rows
 # without the k/v rounds. A SLIDING wave's heads are DH_SWA wide in a DH_A slot:
 # its q/k/v rows arrive compact (rope_compute_swa spreads them), and its v sits
-# at the front of the slot, so the attention output has every odd o-proj X
-# block zero and the o-proj streams weights for the even ones only. Everything
+# at the front of the slot, so only the first of each head's two o-proj X blocks
+# is nonzero and the o-proj streams weights for those only. Everything
 # downstream keeps the build's shape: the projection cores emit zero rounds for
 # rows with no weights and skip X blocks with none. Arm 0 is an LM-head wave.
 PER_CLASS = bool(MODEL.get("INTER_NARROW")) and not HYBRID_MIXER and not LM_HEAD
@@ -1800,6 +1842,13 @@ else:
     CLASS_GEOM = {1: (I2P, J2P, [1] * NPH)}
 DEC_ARMS = tuple(CLASS_GEOM)
 SWA_HEADS = any(a & SWA_ARM_BIT for a in DEC_ARMS)
+# A sliding head fills only the first of its two o-proj X blocks. Laying each
+# CU's X out half-major (every head's first block, then every head's second)
+# turns those into whole aligned pairs, which the double-buffered proj loop
+# needs; a full layer's o-proj weights are packed in the same order.
+if SWA_HEADS:
+    assert all(x in (1, 2) for g in CLASS_GEOM.values() for x in g[2])
+    assert DH == 2 * COL_BLOCK and Q_HEADS_PER_CU & (Q_HEADS_PER_CU - 1) == 0
 
 
 def class_per_col(arm):
@@ -1958,6 +2007,9 @@ def build_module():
             # both a @pleX target and a @pliOut source, and a dispatch in eight
             # then read it mid-refill.
             plefw_l1 = MemRefType.get([K + PLE_SCALE_PAD], bf16, memory_space=l1)
+            plepf_l1 = MemRefType.get(
+                [PLI_D + K + PLE_SCALE_PAD], bf16, memory_space=l1
+            )
         glu_x_l1 = MemRefType.get([GLU_SLICE], bf16, memory_space=l1)  # 1024 [up|gate]
         glu_hid_l1 = MemRefType.get([GLU_HID], bf16, memory_space=l1)  # 512 silu*up
         # ATTN S1 rope (reference rope_compute): qkv(3072 QKV out)+lut(64) -> q(2048),
@@ -2041,7 +2093,7 @@ def build_module():
             [(NCY // (2 if W_DUAL_CHAN else 1)) * BLOCK_BF16], bf16, memory_space=l2
         )
         grp_l2 = MemRefType.get([GRP_ROWS], bf16, memory_space=l2)
-        if PLE_UP_L2:
+        if PLE_UP_L2 or PLE_FUSED_GATE:
             pleblk_l2 = MemRefType.get([PLE_BLK], bf16, memory_space=l2)
         main_l2 = MemRefType.get([MAIN_ROWS], bf16, memory_space=l2)
         relay_l2 = MemRefType.get(
@@ -2161,6 +2213,9 @@ def build_module():
                 # mismatch -- measured on the shortconv mixer, where 2 staging
                 # calls against 1 consumer hung.
                 ple_res_in = _ple_fn("ple_res_in", [plex_l1, plepk_l1])
+                if PLE_FUSED_GATE:
+                    ple_pf_out = _ple_fn("ple_pf_out", [plev_l1, plefw_l1, plepf_l1])
+                    ple_pf_in = _ple_fn("ple_pf_in", [plepf_l1, plepk_l1])
                 ple_res_out = FuncOp(
                     "ple_res_out", ([rms_l1, plex_l1], []), visibility="private"
                 )
@@ -2226,6 +2281,31 @@ def build_module():
             "attn_kv_fin", ([y_l1, lden_l1, ao_l1], []), visibility="private"
         )
         _set_attn_link(attn_kv_fin, "attn_kv")
+        if KV_PARTS > 1:
+            # a CU's partial result: y / l, then l and the running max as floats
+            aop_l1 = MemRefType.get(
+                [DQ_PADDED_PER_CU + 4 * Q_HEADS_PADDED_PER_CU], bf16, memory_space=l1
+            )
+            attn_qk_reset = FuncOp("attn_qk_reset", ([m_l1], []), visibility="private")
+            _set_attn_link(attn_qk_reset, "attn_qk")
+            attn_kv_reset = FuncOp(
+                "attn_kv_reset", ([y_l1, lden_l1, m_l1], []), visibility="private"
+            )
+            attn_kv_blk_m = FuncOp(
+                "attn_kv_blk_m",
+                ([as_l1, av_l1, y_l1, lden_l1, m_l1, i32, i32], []),
+                visibility="private",
+            )
+            attn_kv_fin_part = FuncOp(
+                "attn_kv_fin_part",
+                ([y_l1, lden_l1, m_l1, aop_l1], []),
+                visibility="private",
+            )
+            attn_merge = FuncOp(
+                "attn_merge", ([aop_l1, aop_l1, ao_l1], []), visibility="private"
+            )
+            for _f in (attn_kv_reset, attn_kv_blk_m, attn_kv_fin_part, attn_merge):
+                _set_attn_link(_f, "attn_kv")
         if MIX_TO_CU:
             # Hybrid only: overwrite this CU's o with its slice of the ShortConv
             # mixer output when the wave's arm says ShortConv. The pick has to
@@ -2251,7 +2331,11 @@ def build_module():
             channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
         else:
             channel_decl("rmsX", size=[1])
-        channel_decl("rmsW", size=[1])
+        if KV_PARTS > 1:
+            # Shares the rms core's packet shim MM2S, freeing one for the KV parts.
+            channel_decl("rmsW", size=[1], channel_type="npu_dma_packet")
+        else:
+            channel_decl("rmsW", size=[1])
         if POST_RMS:
             # Separate channel for the post_attention_layernorm weight. A single
             # rmsW FIFO re-fed twice does NOT pair in AIR (both gets read the same
@@ -2303,7 +2387,13 @@ def build_module():
         # switched, never both, so AIRToAIE separates the two by itself
         # (TileDMAAllocator::spreadCollapsedPacketChannels) and reproduces this
         # exact placement.
-        channel_decl("toAttnQ", size=[N_ATTN_CU])
+        if KV_PARTS > 1:
+            # A head group's parts take the same Q.
+            Channel(
+                "toAttnQ", size=[N_ATTN_CU, 1], broadcast_shape=[N_ATTN_CU, KV_PARTS]
+            )
+        else:
+            channel_decl("toAttnQ", size=[N_ATTN_CU])
         # rope k/v -> kv memtiles. PACKET so one rope MM2S can fan to memtiles on
         # MULTIPLE cols (mem_3_1 + mem_4_1) -- the reference routes rope k/v as
         # packets (id14/15) for exactly this multi-destination fan-out. A circuit
@@ -2314,16 +2404,17 @@ def build_module():
             channel_type="npu_dma_packet",
         )
         if KV_REPLICATED:
-            # Every CU reads the same head, so each block goes out as one broadcast.
+            # Every CU reads the same head, so each block goes out as one broadcast
+            # (per part: a part's blocks go to that part's CUs).
             assert NGRP == 1, "KV_REPLICATED broadcasts across a single group"
-            Channel("toK", size=[1, 1], broadcast_shape=[1, N_ATTN_CU])
-            Channel("toV", size=[1, 1], broadcast_shape=[1, N_ATTN_CU])
+            Channel("toK", size=[KV_PARTS, 1], broadcast_shape=[KV_PARTS, N_ATTN_CU])
+            Channel("toV", size=[KV_PARTS, 1], broadcast_shape=[KV_PARTS, N_ATTN_CU])
         else:
             channel_decl("toK", size=[N_ATTN_CU])
             channel_decl("toV", size=[N_ATTN_CU])
         if KV_PAIRS:
             # Two blocks per iteration need a score hand-over per block.
-            channel_decl("toS", size=[N_ATTN_CU])
+            channel_decl("toS", size=[N_CU_ALL])
         if MULTIBLK:
             # the reference full-faithful KV cache (DDR): rope appends this token's roped
             # K/V into the cache (appendK/appendV -> KVC at APPEND_OFF); the whole
@@ -2348,11 +2439,18 @@ def build_module():
             if KV_SPLIT:
                 # the reference mem_3_1: K and V on SEPARATE shim->memtile flows (one each per
                 # col group of 2 CUs), so their memtile S2MM fills are independent.
-                channel_decl("inKV_K", size=[len(ATTN_COL_GROUPS)])
-                channel_decl("inKV_V", size=[len(ATTN_COL_GROUPS)])
+                # One channel per part, not one bundle: AIR wires a bundle's
+                # sub-channels to the wrong memtiles when those sit in
+                # different columns.
+                for _p in range(KV_PARTS):
+                    channel_decl(_kv_chan("inKV_K", _p), size=[len(ATTN_COL_GROUPS)])
+                    channel_decl(_kv_chan("inKV_V", _p), size=[len(ATTN_COL_GROUPS)])
             else:
                 channel_decl("inKV", size=[N_ATTN_CU])
         channel_decl("attnO", size=[N_ATTN_CU])
+        if KV_PARTS > 1:
+            # each CU's partial result -> its head group's merge core
+            channel_decl("attnP", size=[N_CU_ALL])
         if MIX_TO_CU:
             # ShortConv mixer -> all four CU kv cores, one BROADCAST put of the
             # whole CONV_DIM (each CU keeps its own slice in C). A broadcast is
@@ -2512,9 +2610,15 @@ def build_module():
             # there. A memtile has more DMA channels and no such restriction.
             if not PLE_SHARED_RES:
                 channel_decl("toPle", size=[1])
-            channel_decl("gateOut", size=[1])
-            if PLE_BYPASS != 5:
+            if not PLE_FUSED_GATE:
+                channel_decl("gateOut", size=[1])
+            if PLE_BYPASS != 5 and not PLE_FUSED_GATE:
                 channel_decl("pliOut", size=[1])
+            if PLE_FUSED_GATE:
+                # host -> memtile -> gate core. The memtile's column picks the
+                # shim, which has to be one @pleW is not on.
+                channel_decl("pleWgIn", size=[1])
+                channel_decl("pleWg", size=[1])
             # Weight/parameter feed. ONE packet channel id-demuxed to the
             # three PLE cores, NOT one channel per feed.
             #
@@ -2539,7 +2643,7 @@ def build_module():
                 channel_decl("pleX", size=[1])
                 channel_decl(
                     "pleW",
-                    size=[1, 2 if PLE_UP_CHAN else 3],
+                    size=[1, 2 if PLE_UP_CHAN or PLE_FUSED_GATE else 3],
                     channel_type="npu_dma_packet",
                 )
                 if PLE_UP_CHAN:
@@ -3254,10 +3358,34 @@ def build_module():
                                     # dest 0 (gate): its own weights, then the
                                     # UP core's norm weight and scale, which this
                                     # core forwards in the @gateOut bundle.
-                                    if _w_fed("gate"):
+                                    if PLE_FUSED_GATE:
+                                        # The first half of the output tiles on
+                                        # @pleW, the second on @pleWg.
+                                        _half = PLE_NBLK_DOWN // 2
+
+                                        def _wg(blk0, n):
+                                            ChannelPut(
+                                                "pleWgIn",
+                                                PLEW,
+                                                offsets=[
+                                                    arith.addi(_pb, idx(blk0 * PLE_BLK))
+                                                ],
+                                                sizes=[idx(n * PLE_BLK)],
+                                                strides=[idx(1)],
+                                            )
+
+                                        _pw(PLE_DEST_GATE, 0, _half)
+                                        _wg(_half, _half)
+                                        # the up projection, split the same way
+                                        _u0, _uh = 2 * PLE_NBLK_DOWN, PLE_NBLK_UP // 2
+                                        _pw(PLE_DEST_GATE, _u0, _uh)
+                                        _wg(_u0 + _uh, _uh)
+                                    elif _w_fed("gate"):
                                         _pw(PLE_DEST_GATE, 0, PLE_NBLK_DOWN)
 
                                 def _feed_up():
+                                    if PLE_FUSED_GATE:
+                                        return
                                     # dest 2 (up): ONE uniform block size, and
                                     # nothing else. The norm weight and scale
                                     # ride the gate's stream now -- see there.
@@ -3579,6 +3707,64 @@ def build_module():
                                                 _loi(_kbase, e),
                                                 _skb(RB_SWA_SKIP * 16 * REGION_W),
                                             )
+                                        if KV_PARTS > 1:
+                                            # Part p's slice of the range, one BD per
+                                            # part and K/V.
+                                            _blkw = 16 * REGION_W
+                                            assert _cb % (2 * KV_PARTS) == 0
+                                            assert RB_SWA_SKIP % (2 * KV_PARTS) == 0
+
+                                            def _cbh():
+                                                n = idx(_cb // KV_PARTS)
+                                                if RB_SWA_SKIP:
+                                                    n = arith.subi(
+                                                        n, _skb(RB_SWA_SKIP // KV_PARTS)
+                                                    )
+                                                return n
+
+                                            for gi in range(NGRP):
+                                                for _p in range(KV_PARTS):
+                                                    for _ch, _roff, _dep in (
+                                                        (
+                                                            _kv_chan("inKV_K", _p),
+                                                            _kreg_off(gi),
+                                                            appended[0],
+                                                        ),
+                                                        (
+                                                            _kv_chan("inKV_V", _p),
+                                                            _vreg_off(gi),
+                                                            appended[1],
+                                                        ),
+                                                    ):
+                                                        _off = _rbo(_roff + _coff)
+                                                        if _p:
+                                                            _off = arith.addi(
+                                                                _off,
+                                                                arith.muli(
+                                                                    _cbh(),
+                                                                    idx(_p * _blkw),
+                                                                ),
+                                                            )
+                                                        ChannelPut(
+                                                            _ch,
+                                                            KVC,
+                                                            indices=[idx(gi)],
+                                                            async_token=AsyncTokenType.get(),
+                                                            async_dependencies=[_dep],
+                                                            offsets=[_off],
+                                                            sizes=[
+                                                                _cbh(),
+                                                                idx(_rows),
+                                                                idx(_run),
+                                                            ],
+                                                            strides=[
+                                                                idx(_blkw),
+                                                                idx(_run),
+                                                                idx(1),
+                                                            ],
+                                                        )
+                                            _ci += _cb
+                                            continue
                                         # Contiguous either way; _KV1D just states it as 1-D.
                                         # Spelled inline (not hoisted) so the default path's
                                         # constant emission order -- and thus the emitted IR --
@@ -4663,7 +4849,9 @@ def build_module():
                                     # CU c reads its Q_HEADS_PER_CU heads starting at head
                                     # c*Q_HEADS_PER_CU (stride DH) -> linear base
                                     # c*Q_HEADS_PER_CU*DH = c*DQ_PER_CU. dc stride 8, de 1.
-                                    indices=[idx(c)],
+                                    indices=(
+                                        [idx(c), idx(0)] if KV_PARTS > 1 else [idx(c)]
+                                    ),
                                     # rope emits PADDED Q (each CU's block is
                                     # Q_HEADS_PADDED_PER_CU heads incl ATTN_GROUPS_PADDING
                                     # zeros); CU c's block starts at c*Q_HEADS_PADDED_PER_CU.
@@ -4777,8 +4965,104 @@ def build_module():
                                 DeallocOp(akbs[c])
                                 DeallocOp(avbs[c])
 
+                        def _emit_part_herds(cus, leaf, Lc, core_arm, seg_arm_i):
+                            """Part 1's CUs, as their own herd, and the merge cores
+                            that fold each head group's two partial results into
+                            its @attnO."""
+                            shs = [t[0] for t in cus[N_ATTN_CU:]]
+                            (_q0, _r0, _), (_q1, _, _) = ATTN_CU_LOC_P1
+                            assert _q1 == _q0 + 1
+
+                            def _gate(arm, body):
+                                if seg_arm_i is None:
+                                    body()
+                                    return
+                                _arm_only(arith.index_cast(idx_t, arm), {2}, body)
+
+                            def _p1(tx, ty, sl, Lh, arm=None):
+                                _isc0 = arith.cmpi(arith.CmpIPredicate.eq, tx, idx(0))
+                                _ifc = IfOp(_isc0, [], has_else=True)
+                                for _br, _g in (
+                                    (_ifc.thenRegion, 0),
+                                    (_ifc.elseRegion, 1),
+                                ):
+                                    with InsertionPoint(_br.blocks[0]):
+                                        leaf(ty, N_ATTN_CU + _g, sl[_g], Lh, 0, arm)
+                                        yield_([])
+
+                            _ops = [t.result for t in shs] + [Lc]
+                            if seg_arm_i is not None:
+                                _ops.append(core_arm)
+
+                            @herd(name="attn_blk_p1", sizes=[2, 2], operands=_ops)
+                            def attn_p1(_tx, _ty, _sx, _sy, *_a):
+                                sl = list(_a[:N_ATTN_CU])
+                                Lh = _a[N_ATTN_CU]
+                                arm = (
+                                    _a[N_ATTN_CU + 1] if seg_arm_i is not None else None
+                                )
+                                _gate(arm, lambda: _p1(_tx, _ty, sl, Lh, arm))
+
+                            attn_p1.attributes["x_loc"] = IntegerAttr.get(T.i64(), _q0)
+                            attn_p1.attributes["y_loc"] = IntegerAttr.get(T.i64(), _r0)
+
+                            def _merge(g):
+                                p0 = AllocOp(aop_l1, [], [])
+                                ChannelGet("attnP", p0, indices=[idx(g)])
+                                p1 = AllocOp(aop_l1, [], [])
+                                ChannelGet("attnP", p1, indices=[idx(g + N_ATTN_CU)])
+                                o = AllocOp(ao_l1, [], [])
+                                CallOp(attn_merge, [p0, p1, o])
+                                ChannelPut(
+                                    "attnO",
+                                    o,
+                                    indices=[idx(g)],
+                                    # o un-interleave, as the CU's own put does
+                                    offsets=[idx(0), idx(0), idx(0)],
+                                    sizes=[
+                                        idx(Q_HEADS_PER_CU),
+                                        idx(DH // 8),
+                                        idx(8),
+                                    ],
+                                    strides=[
+                                        idx(8),
+                                        idx(Q_HEADS_PER_CU * 8),
+                                        idx(1),
+                                    ],
+                                )
+                                DeallocOp(p0)
+                                DeallocOp(p1)
+                                DeallocOp(o)
+
+                            def _mg(ty):
+                                _is0 = arith.cmpi(arith.CmpIPredicate.eq, ty, idx(0))
+                                _ifm = IfOp(_is0, [], has_else=True)
+                                for _br, _g in (
+                                    (_ifm.thenRegion, 0),
+                                    (_ifm.elseRegion, 1),
+                                ):
+                                    with InsertionPoint(_br.blocks[0]):
+                                        _merge(_g)
+                                        yield_([])
+
+                            _mops = [core_arm] if seg_arm_i is not None else []
+                            (_mc, _mr0), (_mc1, _mr1) = ATTN_MERGE_LOC
+                            assert _mc1 == _mc and _mr1 == _mr0 + 1
+
+                            @herd(name="attn_merge", sizes=[1, 2], operands=_mops)
+                            def attn_mg(_tx, _ty, _sx, _sy, *_a):
+                                arm = _a[0] if _a else None
+                                _gate(arm, lambda: _mg(_ty))
+
+                            attn_mg.attributes["x_loc"] = IntegerAttr.get(T.i64(), _mc)
+                            attn_mg.attributes["y_loc"] = IntegerAttr.get(T.i64(), _mr0)
+
                         def _make_cu(c):
-                            col, qk_row, kv_row = ATTN_CU_LOC[c]
+                            col, qk_row, kv_row = (
+                                ATTN_CU_LOC[c]
+                                if c < N_ATTN_CU
+                                else ATTN_CU_LOC_P1[c - N_ATTN_CU]
+                            )
                             a_sh = AllocOp(as_l1, [], [])
 
                             if MULTIBLK:
@@ -4814,32 +5098,50 @@ def build_module():
                                         # the lead produces toK/toV for every CU in the group. This
                                         # removes the shared-buffer backward edge (qk-K no longer
                                         # lock-chained to kv-V drain).
-                                        _gi = ATTN_CU_GROUP[c]
+                                        _kvp = c // N_ATTN_CU
+                                        _gi = ATTN_CU_GROUP[c % N_ATTN_CU]
                                         _gcol, _cus = ATTN_COL_GROUPS[_gi]
-                                        if c != _cus[0]:
+                                        if c % N_ATTN_CU != _cus[0]:
                                             return
                                         _gw = (
                                             KVPC_DH
                                             if KV_REPLICATED
                                             else len(_cus) * KVPC_DH
                                         )
-                                        for _blk in for_(idx(0), _seg_rounds(), idx(1)):
+                                        for _blk in for_(
+                                            idx(0),
+                                            (
+                                                idx(ATTN_ROUNDS // KV_PARTS)
+                                                if _kvp > 0 or KV_PARTS > 1
+                                                else _seg_rounds()
+                                            ),
+                                            idx(1),
+                                        ):
+                                            _mcol = (
+                                                (col, col)
+                                                if _kvp == 0
+                                                else KV_PART_MCOL
+                                            )
                                             _kbuf = AllocOp(kvblk_l2, [], [])
                                             _kbuf.operation.attributes[
                                                 "air.memtile_col"
-                                            ] = IntegerAttr.get(T.i32(), col)
+                                            ] = IntegerAttr.get(T.i32(), _mcol[0])
                                             _vbuf = AllocOp(kvblk_l2, [], [])
                                             _vbuf.operation.attributes[
                                                 "air.memtile_col"
-                                            ] = IntegerAttr.get(T.i32(), col)
+                                            ] = IntegerAttr.get(T.i32(), _mcol[1])
                                             ChannelGet(
-                                                "inKV_K", _kbuf, indices=[idx(_gi)]
+                                                _kv_chan("inKV_K", _kvp),
+                                                _kbuf,
+                                                indices=[idx(_gi)],
                                             )
                                             ChannelGet(
-                                                "inKV_V", _vbuf, indices=[idx(_gi)]
+                                                _kv_chan("inKV_V", _kvp),
+                                                _vbuf,
+                                                indices=[idx(_gi)],
                                             )
                                             _dsts = (
-                                                [(0, lambda: [idx(0), idx(0)])]
+                                                [(0, lambda: [idx(_kvp), idx(0)])]
                                                 if KV_REPLICATED
                                                 else [
                                                     (
@@ -4989,7 +5291,10 @@ def build_module():
                                         _c1 = lambda v: arith.ConstantOp(
                                             IntegerAttr.get(i32, v), None
                                         ).result
-                                        _q = arith.andi(arith.addi(_q, _c1(1)), _c1(-2))
+                                        _q = arith.andi(
+                                            arith.addi(_q, _c1(KV_BLK_ALIGN - 1)),
+                                            _c1(-KV_BLK_ALIGN),
+                                        )
                                     return arith.index_cast(idx_t, _q)
 
                                 def _core_first(Lh):
@@ -5012,14 +5317,32 @@ def build_module():
                                     )
                                     _lo = arith.shrui(arith.subi(L, w), _c(4))
                                     if KV_PAIRS:
-                                        _lo = arith.andi(_lo, _c(-2))
+                                        _lo = arith.andi(_lo, _c(-KV_BLK_ALIGN))
                                     return arith.index_cast(
                                         idx_t, arith.select(_open, _lo, _c(0))
                                     )
 
+                                def _part_range(Lh, _c, _n):
+                                    """CU _c's blocks up to _n: its part's half."""
+                                    _f = _core_first(Lh)
+                                    if KV_PARTS == 1:
+                                        return _f, _n
+                                    _mid = arith.addi(
+                                        _f, arith.divui(arith.subi(_n, _f), idx(2))
+                                    )
+                                    return (_f, _mid) if _c < N_ATTN_CU else (_mid, _n)
+
                                 def _qk_body(sh, Lh, _c, _arm=None):
                                     a_q = AllocOp(aq_l1, [], [])
-                                    ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
+                                    ChannelGet(
+                                        "toAttnQ",
+                                        a_q,
+                                        indices=(
+                                            [idx(_c % N_ATTN_CU), idx(_c // N_ATTN_CU)]
+                                            if KV_PARTS > 1
+                                            else [idx(_c)]
+                                        ),
+                                    )
                                     a_m = AllocOp(m_l1, [], [])
                                     a_cc = AllocOp(c_l1, [], [])
                                     # RUNTIME-L block count = ceil(Lh/16) from the RTP-L herd
@@ -5030,8 +5353,11 @@ def build_module():
                                     # survives to core codegen as a real runtime loop.
                                     _nblk_qk = _core_rounds(Lh)
                                     _step = 2 if KV_PAIRS else 1
+                                    if KV_PARTS > 1:
+                                        CallOp(attn_qk_reset, [a_m])
                                     for _blk in for_(
-                                        _core_first(Lh), _nblk_qk, idx(_step)
+                                        *_part_range(Lh, _c, _nblk_qk),
+                                        idx(_step),
                                     ):
                                         # Not left to the ping-pong pass: its remainder trip on a
                                         # runtime count reads the wrong buffer. KV_PAIRS unrolls by
@@ -5042,7 +5368,10 @@ def build_module():
                                                 "toK",
                                                 a_k,
                                                 indices=(
-                                                    [idx(0), idx(_c)]
+                                                    [
+                                                        idx(_c // N_ATTN_CU),
+                                                        idx(_c % N_ATTN_CU),
+                                                    ]
                                                     if KV_REPLICATED
                                                     else [idx(_c)]
                                                 ),
@@ -5165,13 +5494,19 @@ def build_module():
                                 def _kv_body(sh, Lh, _c, _arm=None):
                                     a_y = AllocOp(y_l1, [], [])
                                     a_l = AllocOp(lden_l1, [], [])
-                                    a_o = AllocOp(ao_l1, [], [])
+                                    a_o = AllocOp(
+                                        aop_l1 if KV_PARTS > 1 else ao_l1, [], []
+                                    )
+                                    if KV_PARTS > 1:
+                                        a_mm = AllocOp(m_l1, [], [])
+                                        CallOp(attn_kv_reset, [a_y, a_l, a_mm])
                                     # RUNTIME-L block count = ceil(Lh/16) (see _qk_body). Core
                                     # loops per RTP-L; matched by the shim readback push count.
                                     _nblk_kv = _core_rounds(Lh)
                                     _step = 2 if KV_PAIRS else 1
                                     for _blk in for_(
-                                        _core_first(Lh), _nblk_kv, idx(_step)
+                                        *_part_range(Lh, _c, _nblk_kv),
+                                        idx(_step),
                                     ):
                                         # Unrolled by hand as in _qk_body.
                                         for _o in range(_step):
@@ -5180,7 +5515,10 @@ def build_module():
                                                 "toV",
                                                 a_v,
                                                 indices=(
-                                                    [idx(0), idx(_c)]
+                                                    [
+                                                        idx(_c // N_ATTN_CU),
+                                                        idx(_c % N_ATTN_CU),
+                                                    ]
                                                     if KV_REPLICATED
                                                     else [idx(_c)]
                                                 ),
@@ -5196,10 +5534,24 @@ def build_module():
                                                 ChannelGet(
                                                     "toS", a_s, indices=[idx(_c)]
                                                 )
-                                                CallOp(
-                                                    attn_kv_blk,
-                                                    [a_s, a_v, a_y, a_l, blk_c, Lh],
-                                                )
+                                                if KV_PARTS > 1:
+                                                    CallOp(
+                                                        attn_kv_blk_m,
+                                                        [
+                                                            a_s,
+                                                            a_v,
+                                                            a_y,
+                                                            a_l,
+                                                            a_mm,
+                                                            blk_c,
+                                                            Lh,
+                                                        ],
+                                                    )
+                                                else:
+                                                    CallOp(
+                                                        attn_kv_blk,
+                                                        [a_s, a_v, a_y, a_l, blk_c, Lh],
+                                                    )
                                                 DeallocOp(a_s)
                                             else:
                                                 CallOp(
@@ -5208,7 +5560,10 @@ def build_module():
                                                 )
                                             DeallocOp(a_v)
                                         yield_([])
-                                    CallOp(attn_kv_fin, [a_y, a_l, a_o])
+                                    if KV_PARTS > 1:
+                                        CallOp(attn_kv_fin_part, [a_y, a_l, a_mm, a_o])
+                                    else:
+                                        CallOp(attn_kv_fin, [a_y, a_l, a_o])
                                     if MIX_TO_CU:
                                         # Take the mixer's broadcast and, on a
                                         # ShortConv wave, overwrite o with this
@@ -5274,7 +5629,13 @@ def build_module():
                                     # The wasted attention compute on a ShortConv
                                     # wave is largely free -- the CU is paced by
                                     # the KV readback DMA, which we pay anyway.
-                                    _put_o()
+                                    if KV_PARTS > 1:
+                                        # the whole partial, to this head group's
+                                        # merge core
+                                        ChannelPut("attnP", a_o, indices=[idx(_c)])
+                                        DeallocOp(a_mm)
+                                    else:
+                                        _put_o()
                                     DeallocOp(a_o)
                                     DeallocOp(a_y)
                                     DeallocOp(a_l)
@@ -5285,7 +5646,7 @@ def build_module():
                                 # ONE [2,4] block herd after the loop (see below).
                                 return (a_sh, col, qk_row, L_c, _qk_body, _kv_body)
 
-                        _cus = [_make_cu(c) for c in range(N_ATTN_CU)]
+                        _cus = [_make_cu(c) for c in range(N_CU_ALL)]
                         # Fuse ALL 8 attn cores into ONE [2,4] block over the contiguous
                         # cols 3,4. tx=0 -> col3 (cu0 rows2,3; cu1 rows4,5), tx=1 -> col4
                         # (cu2 rows2,3; cu3 rows4,5). Column by tx==0, pair by ty<2, role
@@ -5298,7 +5659,7 @@ def build_module():
                         # attn_kv.ll on kv rows) -- no herd link_with. gate-off index_switch on
                         # the per-wave arm keeps vocab idle. This is the attn floor: cols 3,4
                         # are one contiguous block, so 8 -> 1.
-                        _sh = [t[0] for t in _cus]
+                        _sh = [t[0] for t in _cus[:N_ATTN_CU]]
                         _Lc = _cus[0][3]
                         _qkb = _cus[0][4]
                         _kvb = _cus[0][5]
@@ -5404,6 +5765,11 @@ def build_module():
                         )
                         attn_blk.attributes["y_loc"] = IntegerAttr.get(T.i64(), 2)
 
+                        if KV_PARTS > 1:
+                            _emit_part_herds(
+                                _cus, _attn_leaf, _Lc, _core_arm, _seg_arm_i
+                            )
+
                     # o gather memtile (reference mem_5_1 o_buffer): gather the 4
                     # CUs' o (512 each, already natural [qh,dh] from the egress
                     # reorder) into 2048, then ONE egress -> host (oGathered). This
@@ -5441,6 +5807,30 @@ def build_module():
 
                         def _src_attn():
                             for c in range(N_ATTN_CU):
+                                if SWA_HEADS:
+                                    # [head][block][256] -> [block][head][256];
+                                    # offsets count outer strides.
+                                    ChannelGet(
+                                        "attnO",
+                                        omtb,
+                                        indices=[idx(c)],
+                                        offsets=[
+                                            idx(c * DQ_PER_CU // COL_BLOCK),
+                                            idx(0),
+                                            idx(0),
+                                        ],
+                                        sizes=[
+                                            idx(Q_HEADS_PER_CU),
+                                            idx(DH // COL_BLOCK),
+                                            idx(COL_BLOCK),
+                                        ],
+                                        strides=[
+                                            idx(COL_BLOCK),
+                                            idx(Q_HEADS_PER_CU * COL_BLOCK),
+                                            idx(1),
+                                        ],
+                                    )
+                                    continue
                                 ChannelGet(
                                     "attnO",
                                     omtb,
@@ -5607,6 +5997,8 @@ def build_module():
                         _pleres = None
                         if PLE_SHARED_RES:
                             _pleres = AllocOp(plex_l1, [], [])
+                        # proj (3,3) -> gate (3,2): pli, norm weight and scale.
+                        _plepf = AllocOp(plepf_l1, [], []) if PLE_FUSED_GATE else None
 
                         # ---- @layerOut relay memtile (see the channel decl) ----
                         plerelay_l2 = MemRefType.get([K + PLI_D], bf16, memory_space=l2)
@@ -5724,6 +6116,37 @@ def build_module():
                             # (up core puts @pleOut) TIMEOUT, rung 6 (identical
                             # but the put removed) COMPLETED. One producer per
                             # channel is the rule.
+                            if PLE_FUSED_GATE:
+
+                                def _gfifo_dec():
+                                    for _ in for_(
+                                        idx(0),
+                                        idx(
+                                            (
+                                                PLE_NBLK_DOWN
+                                                + (PLE_NBLK_UP if PLE_FUSED_GATE else 0)
+                                            )
+                                            // 2
+                                        ),
+                                        idx(1),
+                                    ):
+                                        b = AllocOp(pleblk_l2, [], [])
+                                        b.operation.attributes["air.memtile_col"] = (
+                                            IntegerAttr.get(T.i32(), PLE_GATE2_PCOL)
+                                        )
+                                        ChannelGet("pleWgIn", b, indices=[idx(0)])
+                                        ChannelPut("pleWg", b, indices=[idx(0)])
+                                        DeallocOp(b)
+                                        yield_([])
+                                    yield_([])
+
+                                index_switch(
+                                    [],
+                                    arith.index_cast(idx_t, _seg_arm),
+                                    [0],
+                                    case_body_builder=lambda op, i, cv: yield_([]),
+                                    default_body_builder=lambda op: _gfifo_dec(),
+                                )
                             if PLE_UP_L2:
 
                                 def _upfifo_dec():
@@ -5831,12 +6254,117 @@ def build_module():
                                 )
                                 yield_([])
 
+                        def _ple_gate_2ch(acc, y, x, wbufs):
+                            """The gate projection with its weights on both of
+                            the core's S2MM: tile t from @pleW, tile t + half
+                            from @pleWg, block by block, so each stream fills
+                            while the core works on the other's block."""
+                            half = PLI_D // PLE_M_BLK // 2
+                            acc2 = AllocOp(pleacc_l1, [], [])
+                            for _i in for_(idx(0), idx(half), idx(1)):
+                                CallOp(ple_zero, [acc])
+                                CallOp(ple_zero, [acc2])
+                                for _j in for_(idx(0), idx(K // PLE_K_BLK), idx(1)):
+                                    _jc = arith.index_cast(T.i32(), _j)
+                                    for _k, (_a, _get) in enumerate(
+                                        (
+                                            (
+                                                acc,
+                                                lambda b: ChannelGet(
+                                                    "pleW",
+                                                    b,
+                                                    indices=[
+                                                        idx(0),
+                                                        idx(PLE_DEST_GATE),
+                                                    ],
+                                                ),
+                                            ),
+                                            (
+                                                acc2,
+                                                lambda b: ChannelGet(
+                                                    "pleWg", b, indices=[idx(0)]
+                                                ),
+                                            ),
+                                        )
+                                    ):
+                                        wb = wbufs[_k]
+                                        _get(wb)
+                                        CallOp(ple_mac_down, [_a, wb, x, _jc])
+                                        if not wbufs:
+                                            DeallocOp(wb)
+                                    yield_([])
+                                _ic = arith.index_cast(T.i32(), _i)
+                                CallOp(ple_flush_down, [y, acc, _ic])
+                                CallOp(
+                                    ple_flush_down,
+                                    [
+                                        y,
+                                        acc2,
+                                        arith.addi(
+                                            _ic,
+                                            arith.ConstantOp(
+                                                IntegerAttr.get(T.i32(), half), None
+                                            ).result,
+                                        ),
+                                    ],
+                                )
+                                yield_([])
+                            DeallocOp(acc2)
+
+                        def _ple_up_2ch(acc, y, x, wbufs):
+                            """The up projection on the gate core's two weight
+                            streams, tiles i and i + half."""
+                            half = PLE_NBLK_UP // 2
+                            for _i in for_(idx(0), idx(half), idx(1)):
+                                _ic = arith.index_cast(T.i32(), _i)
+                                for _k, (_get, _o) in enumerate(
+                                    (
+                                        (
+                                            lambda b: ChannelGet(
+                                                "pleW",
+                                                b,
+                                                indices=[idx(0), idx(PLE_DEST_GATE)],
+                                            ),
+                                            0,
+                                        ),
+                                        (
+                                            lambda b: ChannelGet(
+                                                "pleWg", b, indices=[idx(0)]
+                                            ),
+                                            half,
+                                        ),
+                                    )
+                                ):
+                                    _get(wbufs[_k])
+                                    CallOp(ple_zero, [acc])
+                                    CallOp(ple_mac_up_at, [acc, wbufs[_k], x])
+                                    CallOp(
+                                        ple_flush_up,
+                                        [
+                                            y,
+                                            acc,
+                                            (
+                                                arith.addi(
+                                                    _ic,
+                                                    arith.ConstantOp(
+                                                        IntegerAttr.get(T.i32(), _o),
+                                                        None,
+                                                    ).result,
+                                                )
+                                                if _o
+                                                else _ic
+                                            ),
+                                        ],
+                                    )
+                                yield_([])
+
                         # ---- gate core ----
                         @herd(
                             name="plegate",
                             sizes=[1, 1],
                             operands=(
                                 [_arm_ple, _pleres.result]
+                                + ([_plepf.result] if PLE_FUSED_GATE else [])
                                 if PLE_SHARED_RES
                                 else [_arm_ple]
                             ),
@@ -5909,11 +6437,24 @@ def build_module():
                                     ChannelGet("toPle", a_x, indices=[idx(0)])
                                 a_g = AllocOp(plev_l1, [], [])
                                 acc = AllocOp(pleacc_l1, [], [])
-                                _ple_proj_down(
-                                    acc, a_g, PLE_DEST_GATE, a_x, PLI_D // PLE_M_BLK
-                                )
+                                if PLE_FUSED_GATE:
+                                    # One weight buffer per stream, shared by
+                                    # both projections' gets: each stream then
+                                    # lands every block in the same place, so
+                                    # its BD ring cannot fall out of step.
+                                    _wbs = [AllocOp(pleblk_l1, [], []) for _ in "ab"]
+                                    _ple_gate_2ch(acc, a_g, a_x, _wbs)
+                                    CallOp(ple_pf_in, [_sh[1], a_x])
+                                else:
+                                    _ple_proj_down(
+                                        acc,
+                                        a_g,
+                                        PLE_DEST_GATE,
+                                        a_x,
+                                        PLI_D // PLE_M_BLK,
+                                    )
                                 CallOp(ple_gate_act, [a_g, _arm])
-                                if PLE_SHARED_RES:
+                                if PLE_SHARED_RES and not PLE_FUSED_GATE:
                                     # DEFERRED TO HERE, and it is load-bearing.
                                     #
                                     # A core must be able to drain its whole
@@ -5933,7 +6474,11 @@ def build_module():
                                 # receives [residual ++ pli*gate] and needs no
                                 # third input.
                                 CallOp(ple_gate_into, [a_x, a_g])
-                                if PLE_SHARED_RES and not PLE_NO_PLIOUT:
+                                if (
+                                    PLE_SHARED_RES
+                                    and not PLE_NO_PLIOUT
+                                    and not PLE_FUSED_GATE
+                                ):
                                     # The up core's norm weight and scale ride
                                     # THIS core's @pleW stream and go out in the
                                     # bundle. FastFlowLM routes them the same
@@ -5952,15 +6497,30 @@ def build_module():
                                         sizes=[idx(K + PLE_SCALE_PAD)],
                                         strides=[idx(1)],
                                     )
-                                ChannelPut(
-                                    "gateOut",
-                                    a_x,
-                                    offsets=[idx(0)],
-                                    sizes=[
-                                        idx(PLE_PK if PLE_SHARED_RES else K + PLI_D)
-                                    ],
-                                    strides=[idx(1)],
-                                )
+                                if PLE_FUSED_GATE:
+                                    a_y = AllocOp(plex_l1, [], [])
+                                    _ple_up_2ch(acc, a_y, a_x, _wbs)
+                                    CallOp(ple_up_tail_pk, [a_y, a_x, _arm])
+                                    ChannelPut(
+                                        "pleOut",
+                                        a_y,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K)],
+                                        strides=[idx(1)],
+                                    )
+                                    DeallocOp(a_y)
+                                    for _b in _wbs:
+                                        DeallocOp(_b)
+                                else:
+                                    ChannelPut(
+                                        "gateOut",
+                                        a_x,
+                                        offsets=[idx(0)],
+                                        sizes=[
+                                            idx(PLE_PK if PLE_SHARED_RES else K + PLI_D)
+                                        ],
+                                        strides=[idx(1)],
+                                    )
                                 DeallocOp(a_x)
                                 DeallocOp(a_g)
                                 DeallocOp(acc)
@@ -5983,8 +6543,13 @@ def build_module():
                         )
 
                         # ---- per-layer input (projection of the EMBEDDING) ----
-                        @herd(name="pleproj", sizes=[1, 1], operands=[_arm_ple])
-                        def pleproj_h(tx, ty, _sx, _sy, _arm):
+                        @herd(
+                            name="pleproj",
+                            sizes=[1, 1],
+                            operands=[_arm_ple]
+                            + ([_plepf.result] if PLE_FUSED_GATE else []),
+                        )
+                        def pleproj_h(tx, ty, _sx, _sy, _arm, *_sh):
                             def _dec():
                                 if PLE_BYPASS:
                                     yield_([])
@@ -6026,7 +6591,9 @@ def build_module():
                                     a_fw = AllocOp(plefw_l1, [], [])
                                     ChannelGet("pleX", a_fw, indices=[idx(0)])
                                 CallOp(ple_proj_tail, [a_p, a_e, a_nw])
-                                if not PLE_NO_PLIOUT:
+                                if PLE_FUSED_GATE:
+                                    CallOp(ple_pf_out, [a_p, a_fw, _sh[0]])
+                                elif not PLE_NO_PLIOUT:
                                     ChannelPut(
                                         "pliOut",
                                         a_p,
@@ -6062,146 +6629,152 @@ def build_module():
                         )
 
                         # ---- up projection + layer output ----
-                        @herd(name="pleup", sizes=[1, 1], operands=[_arm_ple])
-                        def pleup_h(tx, ty, _sx, _sy, _arm):
-                            def _dec():
-                                if PLE_BYPASS and PLE_BYPASS not in (5, 6):
-                                    yield_([])
-                                    return
-                                if PLE_BYPASS in (5, 6):
-                                    # BISECT ONLY. 5 forwards to @pleOut; 6 DEAD
-                                    # ENDS here and the layer output leaves the
-                                    # rms core on @layerOut the way the passing
-                                    # no-PLE build does. The pair splits "the
-                                    # shared-L1 hand-off and the gate->up chain"
-                                    # from "@pleOut", which is the one channel
-                                    # with two arm-exclusive producers feeding a
-                                    # single shim S2MM -- and which rung 4 never
-                                    # touched.
-                                    a_b = AllocOp(
+                        if not PLE_FUSED_GATE:
+
+                            @herd(name="pleup", sizes=[1, 1], operands=[_arm_ple])
+                            def pleup_h(tx, ty, _sx, _sy, _arm):
+                                def _dec():
+                                    if PLE_BYPASS and PLE_BYPASS not in (5, 6):
+                                        yield_([])
+                                        return
+                                    if PLE_BYPASS in (5, 6):
+                                        # BISECT ONLY. 5 forwards to @pleOut; 6 DEAD
+                                        # ENDS here and the layer output leaves the
+                                        # rms core on @layerOut the way the passing
+                                        # no-PLE build does. The pair splits "the
+                                        # shared-L1 hand-off and the gate->up chain"
+                                        # from "@pleOut", which is the one channel
+                                        # with two arm-exclusive producers feeding a
+                                        # single shim S2MM -- and which rung 4 never
+                                        # touched.
+                                        a_b = AllocOp(
+                                            plepk_l1 if PLE_SHARED_RES else plegate_l1,
+                                            [],
+                                            [],
+                                        )
+                                        ChannelGet("gateOut", a_b, indices=[idx(0)])
+                                        if PLE_BYPASS == 5:
+                                            # chunked to match the host drain
+                                            _bn = K // PLE_OUT_CHUNKS
+                                            for _bc in range(PLE_OUT_CHUNKS):
+                                                ChannelPut(
+                                                    "pleOut",
+                                                    a_b,
+                                                    offsets=[idx(_bc * _bn)],
+                                                    sizes=[idx(_bn)],
+                                                    strides=[idx(1)],
+                                                )
+                                        DeallocOp(a_b)
+                                        yield_([])
+                                        return
+
+                                    def _upw(buf):
+                                        if not _w_fed("up"):
+                                            return
+                                        """This core's weight stream.
+
+                                        Its own channel under PLE_UP_CHAN, otherwise
+                                        destination 2 of the shared @pleW.
+                                        """
+                                        if PLE_UP_L2:
+                                            ChannelGet("pleWup", buf, indices=[idx(0)])
+                                        elif PLE_UP_CHAN:
+                                            ChannelGet("pleWu", buf, indices=[idx(0)])
+                                        else:
+                                            ChannelGet(
+                                                "pleW",
+                                                buf,
+                                                indices=[idx(0), idx(PLE_DEST_UP)],
+                                            )
+
+                                    # [residual ++ pli*gate]; the gate was already
+                                    # applied on the gate core.
+                                    a_rg = AllocOp(
                                         plepk_l1 if PLE_SHARED_RES else plegate_l1,
                                         [],
                                         [],
                                     )
-                                    ChannelGet("gateOut", a_b, indices=[idx(0)])
-                                    if PLE_BYPASS == 5:
-                                        # chunked to match the host drain
-                                        _bn = K // PLE_OUT_CHUNKS
-                                        for _bc in range(PLE_OUT_CHUNKS):
+                                    if not PLE_UP_W_FIRST:
+                                        ChannelGet("gateOut", a_rg, indices=[idx(0)])
+                                    a_y = AllocOp(plex_l1, [], [])
+                                    acc = AllocOp(pleacc_l1, [], [])
+                                    # PLI_D == PLE_K_BLK, so one input block per
+                                    # output tile and no j loop.
+                                    for _i in for_(idx(0), idx(K // PLE_M_BLK), idx(1)):
+                                        CallOp(ple_zero, [acc])
+                                        wb = AllocOp(pleblk_l1, [], [])
+                                        _upw(wb)
+                                        CallOp(ple_mac_up_at, [acc, wb, a_rg])
+                                        DeallocOp(wb)
+                                        CallOp(
+                                            ple_flush_up,
+                                            [a_y, acc, arith.index_cast(T.i32(), _i)],
+                                        )
+                                        yield_([])
+                                    if PLE_SHARED_RES:
+                                        if PLE_UP_W_FIRST:
+                                            ChannelGet(
+                                                "gateOut", a_rg, indices=[idx(0)]
+                                            )
+                                        # residual, norm weight and scale all come
+                                        # out of the one bundle.
+                                        CallOp(ple_up_tail_pk, [a_y, a_rg, _arm])
+                                        a_nw = a_sc = None
+                                    else:
+                                        a_nw = AllocOp(plex_l1, [], [])
+                                        _upw(a_nw)
+                                        a_sc = AllocOp(plescale_l1, [], [])
+                                        _upw(a_sc)
+                                        if PLE_UP_W_FIRST:
+                                            ChannelGet(
+                                                "gateOut", a_rg, indices=[idx(0)]
+                                            )
+                                        # residual = the K-wide head of @gateOut.
+                                        CallOp(
+                                            ple_up_tail_at,
+                                            [a_y, a_rg, a_nw, a_sc, _arm],
+                                        )
+                                    if PLE_OUT_CHUNKS > 1:
+                                        _cn = K // PLE_OUT_CHUNKS
+                                        for _c in range(PLE_OUT_CHUNKS):
                                             ChannelPut(
                                                 "pleOut",
-                                                a_b,
-                                                offsets=[idx(_bc * _bn)],
-                                                sizes=[idx(_bn)],
+                                                a_y,
+                                                offsets=[idx(_c * _cn)],
+                                                sizes=[idx(_cn)],
                                                 strides=[idx(1)],
                                             )
-                                    DeallocOp(a_b)
-                                    yield_([])
-                                    return
-
-                                def _upw(buf):
-                                    if not _w_fed("up"):
-                                        return
-                                    """This core's weight stream.
-
-                                    Its own channel under PLE_UP_CHAN, otherwise
-                                    destination 2 of the shared @pleW.
-                                    """
-                                    if PLE_UP_L2:
-                                        ChannelGet("pleWup", buf, indices=[idx(0)])
-                                    elif PLE_UP_CHAN:
-                                        ChannelGet("pleWu", buf, indices=[idx(0)])
                                     else:
-                                        ChannelGet(
-                                            "pleW",
-                                            buf,
-                                            indices=[idx(0), idx(PLE_DEST_UP)],
-                                        )
-
-                                # [residual ++ pli*gate]; the gate was already
-                                # applied on the gate core.
-                                a_rg = AllocOp(
-                                    plepk_l1 if PLE_SHARED_RES else plegate_l1,
-                                    [],
-                                    [],
-                                )
-                                if not PLE_UP_W_FIRST:
-                                    ChannelGet("gateOut", a_rg, indices=[idx(0)])
-                                a_y = AllocOp(plex_l1, [], [])
-                                acc = AllocOp(pleacc_l1, [], [])
-                                # PLI_D == PLE_K_BLK, so one input block per
-                                # output tile and no j loop.
-                                for _i in for_(idx(0), idx(K // PLE_M_BLK), idx(1)):
-                                    CallOp(ple_zero, [acc])
-                                    wb = AllocOp(pleblk_l1, [], [])
-                                    _upw(wb)
-                                    CallOp(ple_mac_up_at, [acc, wb, a_rg])
-                                    DeallocOp(wb)
-                                    CallOp(
-                                        ple_flush_up,
-                                        [a_y, acc, arith.index_cast(T.i32(), _i)],
-                                    )
-                                    yield_([])
-                                if PLE_SHARED_RES:
-                                    if PLE_UP_W_FIRST:
-                                        ChannelGet("gateOut", a_rg, indices=[idx(0)])
-                                    # residual, norm weight and scale all come
-                                    # out of the one bundle.
-                                    CallOp(ple_up_tail_pk, [a_y, a_rg, _arm])
-                                    a_nw = a_sc = None
-                                else:
-                                    a_nw = AllocOp(plex_l1, [], [])
-                                    _upw(a_nw)
-                                    a_sc = AllocOp(plescale_l1, [], [])
-                                    _upw(a_sc)
-                                    if PLE_UP_W_FIRST:
-                                        ChannelGet("gateOut", a_rg, indices=[idx(0)])
-                                    # residual = the K-wide head of @gateOut.
-                                    CallOp(
-                                        ple_up_tail_at,
-                                        [a_y, a_rg, a_nw, a_sc, _arm],
-                                    )
-                                if PLE_OUT_CHUNKS > 1:
-                                    _cn = K // PLE_OUT_CHUNKS
-                                    for _c in range(PLE_OUT_CHUNKS):
                                         ChannelPut(
                                             "pleOut",
                                             a_y,
-                                            offsets=[idx(_c * _cn)],
-                                            sizes=[idx(_cn)],
+                                            offsets=[idx(0)],
+                                            sizes=[idx(K)],
                                             strides=[idx(1)],
                                         )
-                                else:
-                                    ChannelPut(
-                                        "pleOut",
-                                        a_y,
-                                        offsets=[idx(0)],
-                                        sizes=[idx(K)],
-                                        strides=[idx(1)],
-                                    )
-                                DeallocOp(a_rg)
-                                DeallocOp(a_y)
-                                DeallocOp(acc)
-                                if a_nw is not None:
-                                    DeallocOp(a_nw)
-                                    DeallocOp(a_sc)
-                                yield_([])
+                                    DeallocOp(a_rg)
+                                    DeallocOp(a_y)
+                                    DeallocOp(acc)
+                                    if a_nw is not None:
+                                        DeallocOp(a_nw)
+                                        DeallocOp(a_sc)
+                                    yield_([])
 
-                            index_switch(
-                                [],
-                                arith.index_cast(idx_t, _arm),
-                                [0],
-                                case_body_builder=lambda op, i, cv: yield_([]),
-                                default_body_builder=lambda op: _dec(),
+                                index_switch(
+                                    [],
+                                    arith.index_cast(idx_t, _arm),
+                                    [0],
+                                    case_body_builder=lambda op, i, cv: yield_([]),
+                                    default_body_builder=lambda op: _dec(),
+                                )
+
+                            pleup_h.attributes["link_with"] = StringAttr.get("ple.o")
+                            pleup_h.attributes["x_loc"] = IntegerAttr.get(
+                                T.i64(), PLE_UP_LOC[0]
                             )
-
-                        pleup_h.attributes["link_with"] = StringAttr.get("ple.o")
-                        pleup_h.attributes["x_loc"] = IntegerAttr.get(
-                            T.i64(), PLE_UP_LOC[0]
-                        )
-                        pleup_h.attributes["y_loc"] = IntegerAttr.get(
-                            T.i64(), PLE_UP_LOC[1]
-                        )
+                            pleup_h.attributes["y_loc"] = IntegerAttr.get(
+                                T.i64(), PLE_UP_LOC[1]
+                            )
 
                     if GLU_DEST >= 0:
                         # GLU output -> down memtile accumulate (8192). FAITHFUL: feed
@@ -6291,38 +6864,41 @@ def build_module():
                                 J2x2 = arith.muli(J2v, c2)
                                 a_acc = AllocOp(yacc_l1, [], [])
                                 CallOp(zero, [a_acc, _arm])
-                                for _j in for_(idx(0), J2x2, idx(1)):
-                                    a_x = AllocOp(xblk_l1, [], [])
-                                    ChannelGet("inX", a_x, indices=[gcx, gcy])
-                                    if nw is None:
+                                if nw is None:
+                                    for _j in for_(idx(0), J2x2, idx(1)):
+                                        a_x = AllocOp(xblk_l1, [], [])
+                                        ChannelGet("inX", a_x, indices=[gcx, gcy])
                                         a_w = AllocOp(wblk_l1, [], [])
                                         ChannelGet("wL2ToL1", a_w, indices=[gcx, gcy])
                                         CallOp(acc256, [a_x, a_w, a_acc])
                                         DeallocOp(a_w)
-                                    else:
-                                        # Only X blocks j < nw with j & xm == 0
-                                        # carry weights: one get site per channel,
-                                        # the weight half in a 0/1-trip loop.
-                                        _has_w = arith.select(
-                                            arith.andi(
-                                                arith.cmpi(
-                                                    arith.CmpIPredicate.ult, _j, nw
-                                                ),
-                                                arith.cmpi(
-                                                    arith.CmpIPredicate.eq,
-                                                    arith.andi(_j, xm),
-                                                    idx(0),
-                                                ),
+                                        DeallocOp(a_x)
+                                        yield_([])
+                                    return a_acc
+                                # Only X blocks j < nw with j & xm == 0 carry
+                                # weights, and they come in aligned pairs. So the
+                                # loop takes a pair at a time, by hand, and both
+                                # weight gets sit in 0/1-trip loops with the
+                                # same bound: their BD ring alternates two buffers.
+                                for _jp in for_(idx(0), J2x2, c2):
+                                    _has_w = arith.select(
+                                        arith.andi(
+                                            arith.cmpi(
+                                                arith.CmpIPredicate.ult, _jp, nw
                                             ),
-                                            idx(1),
-                                            idx(0),
-                                        )
+                                            arith.cmpi(
+                                                arith.CmpIPredicate.eq,
+                                                arith.andi(_jp, xm),
+                                                idx(0),
+                                            ),
+                                        ),
+                                        idx(1),
+                                        idx(0),
+                                    )
+                                    for _o in range(2):
+                                        a_x = AllocOp(xblk_l1, [], [])
+                                        ChannelGet("inX", a_x, indices=[gcx, gcy])
                                         for _w in for_(idx(0), _has_w, idx(1)):
-                                            # Ping-pong gives this sometimes-run
-                                            # get two BD slots it cannot alternate.
-                                            _w.owner.owner.attributes[
-                                                "air.disable_ping_pong"
-                                            ] = UnitAttr.get()
                                             a_w = AllocOp(wblk_l1, [], [])
                                             ChannelGet(
                                                 "wL2ToL1", a_w, indices=[gcx, gcy]
@@ -6330,7 +6906,7 @@ def build_module():
                                             CallOp(acc256, [a_x, a_w, a_acc])
                                             DeallocOp(a_w)
                                             yield_([])
-                                    DeallocOp(a_x)
+                                        DeallocOp(a_x)
                                     yield_([])
                                 return a_acc
 
@@ -6395,8 +6971,8 @@ def build_module():
 
                                 # Every wave keeps the build's round count and X
                                 # stream. Rounds past its class's I2w have no
-                                # weights; of the X blocks, only every Xs-th of the
-                                # first 2*J2w*Xs has any.
+                                # weights; of the first 2*J2w*Xs X blocks, those
+                                # with j & Xm != 0 have none.
                                 def _per_arm(voc_val, of_arm):
                                     arms = [a for a in DEC_ARMS if a != 1]
                                     return index_switch(
@@ -6418,20 +6994,31 @@ def build_module():
 
                                 I2w = _per_arm(idx(VOCAB_I2), _tab(0))
                                 J2w = _per_arm(idx(VOCAB_J2), _tab(1))
+                                # Weighted X blocks come in whole pairs, so the
+                                # double-buffered loop's two get sites alternate.
                                 Xm = _per_arm(
                                     idx(0),
                                     lambda a: _psw(
                                         _ephv,
-                                        [idx(x - 1) for x in CLASS_GEOM[a][2]],
+                                        [
+                                            idx(0 if x == 1 else Q_HEADS_PER_CU)
+                                            for x in CLASS_GEOM[a][2]
+                                        ],
+                                        idx_t,
+                                    ),
+                                )
+                                Xf = _per_arm(
+                                    idx(1),
+                                    lambda a: _psw(
+                                        _ephv,
+                                        [idx(x) for x in CLASS_GEOM[a][2]],
                                         idx_t,
                                     ),
                                 )
                                 for _v1 in for_(idx(0), I2v, idx(1)):
                                     _nw = arith.select(
                                         arith.cmpi(arith.CmpIPredicate.ult, _v1, I2w),
-                                        arith.muli(
-                                            arith.muli(J2w, c2), arith.addi(Xm, idx(1))
-                                        ),
+                                        arith.muli(arith.muli(J2w, c2), Xf),
                                         idx(0),
                                     )
                                     for _e in range(PAIR_ROWS):  # 1 (non-paired)
@@ -6791,7 +7378,63 @@ def build_module():
                             # at ~1.5k cycles each, sitting directly in front of each
                             # x-send that the 16 proj cores wait on.
                             CallOp(_rms_final, [a_xnl, a_xl, a_wl, _arm])
+
+                            def _send_x():
+                                refeed(
+                                    _xn_per_blk,
+                                    lambda: ChannelPut(
+                                        "xnorm",
+                                        a_xnl,
+                                        offsets=[0],
+                                        sizes=[K],
+                                        strides=[1],
+                                    ),
+                                )
+
+                            def _drain():
+                                ChannelGet(
+                                    "outY",
+                                    a_v,
+                                    indices=[idx(0), idx(RMS_DEST)],
+                                    offsets=[idx(0)],
+                                    sizes=[idx(K)],
+                                    strides=[idx(1)],
+                                )
+                                if PLE_BYPASS != 3:
+                                    # BISECT ONLY (3): drop the vocab arm's
+                                    # @layerOut puts, leaving the channel with a
+                                    # single put site and a single get site.
+                                    # Tests whether the per-arm put count (1 in
+                                    # decode, 9 here) is what makes air-to-aie
+                                    # drop the relay flow. Vocab is expected to
+                                    # hang; every DECODE wave should now run.
+                                    ChannelPut(
+                                        "layerOut",
+                                        a_v,
+                                        offsets=[idx(0)],
+                                        sizes=[idx(K)],
+                                        strides=[idx(1)],
+                                    )
+
+                            if _voc_blks_2k > 1:
+                                # One batch of x ahead of the logit drain, so the
+                                # projection cores start a batch while this core
+                                # waits on the previous one's logits.
+                                _send_x()
                             for _rv in for_(idx(0), idx(_voc_blks_2k), idx(1)):
+                                if _voc_blks_2k > 1:
+                                    _more = arith.cmpi(
+                                        arith.CmpIPredicate.ult,
+                                        _rv,
+                                        idx(_voc_blks_2k - 1),
+                                    )
+                                    _nx = IfOp(_more, [], has_else=False)
+                                    with InsertionPoint(_nx.thenRegion.blocks[0]):
+                                        _send_x()
+                                        yield_([])
+                                    _drain()
+                                    yield_([])
+                                    continue
                                 # a_xnl is now loop-invariant, so this IS a
                                 # re-broadcast: air-annotate-refeed collapses it to
                                 # one put whose credit is _xn_per_blk -- 4 (1B), 6
@@ -6826,39 +7469,8 @@ def build_module():
                                 # device: llama-1B emits a bit-identical 64-token
                                 # greedy id sequence vs a pre-hoist control, 3B passes
                                 # top-5 verify, gemma passes its Paris gate.
-                                refeed(
-                                    _xn_per_blk,
-                                    lambda: ChannelPut(
-                                        "xnorm",
-                                        a_xnl,
-                                        offsets=[0],
-                                        sizes=[K],
-                                        strides=[1],
-                                    ),
-                                )
-                                ChannelGet(
-                                    "outY",
-                                    a_v,
-                                    indices=[idx(0), idx(RMS_DEST)],
-                                    offsets=[idx(0)],
-                                    sizes=[idx(K)],
-                                    strides=[idx(1)],
-                                )
-                                if PLE_BYPASS != 3:
-                                    # BISECT ONLY (3): drop the vocab arm's
-                                    # @layerOut puts, leaving the channel with a
-                                    # single put site and a single get site.
-                                    # Tests whether the per-arm put count (1 in
-                                    # decode, 9 here) is what makes air-to-aie
-                                    # drop the relay flow. Vocab is expected to
-                                    # hang; every DECODE wave should now run.
-                                    ChannelPut(
-                                        "layerOut",
-                                        a_v,
-                                        offsets=[idx(0)],
-                                        sizes=[idx(K)],
-                                        strides=[idx(1)],
-                                    )
+                                _send_x()
+                                _drain()
                                 yield_([])
                             DeallocOp(a_xl)
                             DeallocOp(a_wl)
@@ -7198,7 +7810,7 @@ def run():
     # Tells the host to pad each wave's readback to an even block count.
     if KV_PAIRS:
         with open("decode.rt_pair", "w") as f:
-            f.write("2\n")
+            f.write(f"{KV_BLK_ALIGN}\n")
     elif _os.path.exists("decode.rt_pair"):
         _os.remove("decode.rt_pair")
     print(f"[q4nx_decode] emitted {art.output_binary} + {art.insts}")

@@ -286,4 +286,22 @@ void ple_res_in(bf16 *restrict shared, bf16 *restrict packed) {
     aie::store_v(packed + i, aie::load_v<16>(shared + i));
 }
 
+// pli and the up core's norm weight and scale, from the proj core to the gate
+// core through shared L1. [pli(PLI_D) | norm weight, scale(MODEL_DIM + 32)]
+// is the layout the gate's bundle holds them in, so each side is one copy.
+// The shared buffer is the LAST operand on the writing side only.
+constexpr int PLE_PF = PLI_D + MODEL_DIM + 32;
+
+void ple_pf_out(bf16 *restrict pli, bf16 *restrict fw, bf16 *restrict shared) {
+  for (int i = 0; i < PLI_D; i += 16)
+    aie::store_v(shared + i, aie::load_v<16>(pli + i));
+  for (int i = PLI_D; i < PLE_PF; i += 16)
+    aie::store_v(shared + i, aie::load_v<16>(fw + i - PLI_D));
+}
+
+void ple_pf_in(bf16 *restrict shared, bf16 *restrict packed) {
+  for (int i = 0; i < PLE_PF; i += 16)
+    aie::store_v(packed + MODEL_DIM + i, aie::load_v<16>(shared + i));
+}
+
 } // extern "C"
