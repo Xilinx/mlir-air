@@ -1,5 +1,9 @@
 # Execution and mapping
 
+This page follows a request and its state. The [code map](docs/code-map.md)
+locates each implementation file; [From B1 to B8](docs/b8-megakernel.md) explains
+the operator changes, storage and data-supply decisions behind the megakernel.
+
 ## One request
 
 1. Tokenize with Qwen3's chat template and `enable_thinking=False`.
@@ -61,6 +65,11 @@ projection arithmetic, per-layer weight identities and decode timing boundaries.
 
 ## Selected B8 floorplan
 
+The whole AIR graph is in [batch_graph.py](batch_graph.py), with the attention
+subgraph in [fused_attention_graph.py](fused_attention_graph.py) and tile
+arithmetic in [kernels/](kernels/). The [B1-to-B8 design guide](docs/b8-megakernel.md)
+connects the following choices to formulas, buffer sizes and source functions.
+
 The projection subsystem retains the B1 decoder's quantized weight stream.
 Sixteen compute tiles in columns 0, 1, 6 and 7 perform thin B8 matrix products.
 Each Q4 block is dequantized once and reused across eight rows. Weight buffers
@@ -96,7 +105,8 @@ drafter's newly committed context slots are replaced with K/V projected from
 committed target features. Host acceptance never adds rejected features to the
 next context-preparation call.
 
-The target exports every row's vocabulary logits and selected layer boundaries.
+The target exports every row's vocabulary logits and retains layer boundaries;
+the host reads the five boundaries needed for context preparation.
 Logits are gathered as `[vocabulary chunk, token, within-chunk vocabulary]` and
 converted to `[token, vocabulary]` on the host. Hidden states use
 `[layer boundary, token, hidden]`. The KV ABI uses

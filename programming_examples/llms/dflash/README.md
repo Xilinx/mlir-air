@@ -15,6 +15,9 @@ studies are not required to build it. Additional models will get separate
 subdirectories with their own checkpoint and geometry declarations.
 
 - [Architecture](qwen3_4b/ARCHITECTURE.md): execution, data layout, and NPU mapping.
+- [Code map](qwen3_4b/docs/code-map.md): file roles and build/runtime entry points.
+- [B1 to B8 megakernel](qwen3_4b/docs/b8-megakernel.md): operator changes and the
+  storage, layout and data-supply choices behind the selected mapping.
 - [Compatibility](qwen3_4b/docs/compatibility.md): toolchain and compiler changes.
 - [Benchmark](qwen3_4b/benchmark/README.md): fixed inputs and measurement boundary.
 

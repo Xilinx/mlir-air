@@ -94,10 +94,13 @@ checkpoint and context-preparation weights, not all decoder projections.
 ## What to read
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): model flow, state and tile responsibilities.
-- `speculative.py`: complete greedy draft/verify/commit loop.
-- `runtime.py` and `target_runtime.py`: model setup and device invocation.
-- `batch_graph.py`, `fused_attention_graph.py`, `kernels/`: selected megakernel.
-- `build_bfp_prepass.py` and `bfp_context_prepass.py`: context preparation.
+- [Code map](docs/code-map.md): file responsibilities, build/request call graph,
+  shared upstream code and validation entry points.
+- [From B1 to B8](docs/b8-megakernel.md): operator changes, weight reuse,
+  activation storage, parallel attention, hardware constraints and source anchors.
+- [speculative.py](speculative.py): complete greedy draft/verify/commit loop.
+- [batch_graph.py](batch_graph.py), [fused_attention_graph.py](fused_attention_graph.py),
+  [kernels/](kernels/): AIR mapping and compute-tile implementation.
 - [Benchmark inputs](benchmark/README.md): readable prompts and measurement.
 - [Compatibility](docs/compatibility.md): current upstream integration evidence.
 - [Validation](docs/validation.md): checks, reports and timing boundaries.
