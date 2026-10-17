@@ -111,8 +111,19 @@ class TargetDecoder:
             if model_weights is not None
             else weights.Q4nxModel(resolve_target_model(model_source))
         )
-        embed, final_norm, _ = self.model.embed_norm_lmhead()
-        self.embed = np.asarray(embed, dtype=bfloat16).reshape(-1, self.hidden_size)
+        if model_weights is None:
+            # The bundle stores this tensor as BF16. The generic accessor
+            # expands it to FP32, creating a large temporary while prefill and
+            # decoder BOs are resident. Keep its original bits for embedding.
+            name = "model.embed_tokens.weight"
+            if self.model._hdr[name]["dtype"] != "BF16":
+                raise ValueError("Qwen3-4B requires a BF16 embedding tensor")
+            self.embed = self.model._raw_i16(name).view(bfloat16)
+            final_norm = self.model.bf16("model.norm.weight")
+        else:
+            embed, final_norm, _ = self.model.embed_norm_lmhead()
+            self.embed = np.asarray(embed, dtype=bfloat16)
+        self.embed = self.embed.reshape(-1, self.hidden_size)
         self.qk = [self.model.layer_qk_norm(i) for i in range(self.layers)]
         self.rope = np.empty(
             (self.layers, self.batch, self.g["rope_width"]), dtype=bfloat16
@@ -180,7 +191,8 @@ class TargetDecoder:
         self.bo["r"].write(r.view(np.int16), 0)
         self.bo["r"].sync(self.TO)
         for name in ("x", "y", "kv"):
-            self.bo[name].write(np.zeros(self.n[name], np.int16), 0)
+            # Initialize every element without a second, capacity-sized array.
+            np.frombuffer(self.bo[name].map(), np.int16, count=self.n[name]).fill(0)
             self.bo[name].sync(self.TO)
         print(
             json.dumps(
