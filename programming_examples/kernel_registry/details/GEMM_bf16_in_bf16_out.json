@@ -5501,6 +5501,78 @@
       "best": {
         "high": "drain"
       }
+    },
+    {
+      "M": 256,
+      "K": 1152,
+      "N": 1152,
+      "used_by": "PI0 SigLIP vision Q/K/V/O proj",
+      "_note": "PI0 SigLIP vision tower, 256 tokens/image (issue #2109). Measured 2026-10-16 on NPU2, run.py drain, A-stationary (A read from DRAM once per launch). Best stock drain tile, KernelCache xclbin n=100 with weights resident: 32/128/32/144 at 261 us vs 240 us A-stationary (-8%).",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 128,
+            "tile_k_l1": 64,
+            "tile_n": 96
+          },
+          "a_stationary": true,
+          "gflops": 3518,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 256,
+      "K": 1152,
+      "N": 4352,
+      "used_by": "PI0 SigLIP vision mlp fc1",
+      "_note": "PI0 SigLIP vision tower, 256 tokens/image (issue #2109). Measured 2026-10-16 on NPU2, run.py drain, A-stationary (A read from DRAM once per launch). Best stock drain tile, KernelCache xclbin n=100 with weights resident: 32/128/64/64 at 1017 us vs 690 us A-stationary (-32%); tile_n is capped at 64 (17 N trips), so stock re-reads A 17x.",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 64
+          },
+          "a_stationary": true,
+          "gflops": 3831,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
+    },
+    {
+      "M": 256,
+      "K": 4352,
+      "N": 1152,
+      "used_by": "PI0 SigLIP vision mlp fc2",
+      "_note": "PI0 SigLIP vision tower, 256 tokens/image (issue #2109). Measured 2026-10-16 on NPU2, run.py drain, A-stationary (A read from DRAM once per launch). Best stock drain tile, KernelCache xclbin n=100 with weights resident: 32/128/32/144 at 536 us vs 515 us A-stationary (-4%).",
+      "methods": {
+        "drain": {
+          "tile": {
+            "tile_m": 32,
+            "tile_k_l2": 128,
+            "tile_k_l1": 32,
+            "tile_n": 144
+          },
+          "a_stationary": true,
+          "gflops": 6451,
+          "mean_rel_L1": 0.0094,
+          "tier": "high"
+        }
+      },
+      "best": {
+        "high": "drain"
+      }
     }
   ]
 }

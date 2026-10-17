@@ -86,8 +86,9 @@ def gemm_config(M, K, N, output_dtype="bf16", precision="high"):
                 out["herd"] = list(m["herd"])
             # Layout knobs (absent = False): herd_swap (M on the herd's 4 rows, N on
             # its 8 columns), b_stationary (B resident in L2, tile_k_l2 == K),
-            # b_panel (B pre-packed panel-contiguous).
-            for k in ("herd_swap", "b_stationary", "b_panel"):
+            # b_panel (B pre-packed panel-contiguous), a_stationary (A resident in
+            # L2 for the whole N loop, B streamed in tile_k_l2 chunks).
+            for k in ("herd_swap", "b_stationary", "b_panel", "a_stationary"):
                 if k in m:
                     out[k] = bool(m[k])
             return out
