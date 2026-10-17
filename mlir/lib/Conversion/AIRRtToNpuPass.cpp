@@ -383,14 +383,25 @@ static Value peelStaticAddends(Value v, OpBuilder &builder, Location loc,
 // Two BDs may share one parameter only if they need the same number written,
 // so these coefficients identify the parameter alongside the argument number.
 // Returns the sequence argument, or null if the term is not affine in one.
+// With `widenOnly`, a narrowing cast also returns null: the host writes the
+// argument itself, so a cast that can change its value cannot be peeled.
 static BlockArgument affineInSequenceArg(Value v, int64_t &scale,
-                                         int64_t &addend) {
+                                         int64_t &addend,
+                                         bool widenOnly = false) {
   scale = 1;
   addend = 0;
+  auto width = [](Type t) -> unsigned {
+    return t.isIndex() ? IndexType::kInternalStorageBitWidth
+                       : t.getIntOrFloatBitWidth();
+  };
   while (Operation *def = v.getDefiningOp()) {
     if (llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
                   arith::ExtSIOp, arith::BitcastOp>(def)) {
-      v = def->getOperand(0);
+      Value src = def->getOperand(0);
+      if (widenOnly &&
+          width(def->getResult(0).getType()) < width(src.getType()))
+        return nullptr;
+      v = src;
       continue;
     }
     if (!llvm::isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(def))
@@ -480,7 +491,8 @@ static StringAttr declareBlockArgLengthParameter(ModuleOp module, Value length,
                                                  int64_t &unit, int64_t &base) {
   if (!module)
     return nullptr;
-  BlockArgument blockArg = affineInSequenceArg(length, unit, base);
+  BlockArgument blockArg =
+      affineInSequenceArg(length, unit, base, /*widenOnly=*/true);
   if (!blockArg || unit <= 0 || base < 0)
     return nullptr;
   auto name = builder.getStringAttr("__air_param_arglen_" +
@@ -3487,7 +3499,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     };
     auto pattern = [](AIE::DMABDOp bd) -> std::optional<Pattern> {
       if (bd.getOffset() || bd.getLen() || !bd.getSizes().empty() ||
-          !bd.getStrides().empty())
+          !bd.getStrides().empty() || bd.getOffsetParameterAttr() ||
+          bd.getLengthParameterAttr())
         return std::nullopt;
       auto offset = bd.getStaticOffset();
       if (!offset)

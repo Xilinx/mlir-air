@@ -94,3 +94,87 @@ module {
     return
   }
 }
+
+// -----
+
+// A narrowing cast can change the argument's value, which the host writes
+// unchanged: the length stays a runtime BD word.
+
+// ELF-LABEL: aie.runtime_sequence @seg_narrow_sequence
+// ELF-NOT:     length_parameter
+// ELF:         aie.dma_bd(%{{.*}} offset = 0 len = %{{.*}})
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "seg_narrow"}
+  func.func @narrow(%arg0: memref<1048576xbf16>, %nrows: i64) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c16_i64 = arith.constant 16 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c1024_i64 = arith.constant 1024 : i64
+    %t = arith.trunci %nrows : i64 to i8
+    %n = arith.extui %t : i8 to i64
+    %p = airrt.segment_load "seg_narrow" : i64
+    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %n, %c16_i64, %c64_i64], [%c0_i64, %c1024_i64, %c64_i64, %c1_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<1048576xbf16>)
+    return
+  }
+}
+
+// -----
+
+// shim_drain_weave's @mid, with the feed that reads the drain back sized by a
+// length parameter. Its static length of 0 is not its footprint, so it still
+// counts as reading the drain: channel B is woven in, and the drain's await
+// travels with that feed.
+
+// ELF-LABEL: aie.runtime_sequence @midp_seg_sequence
+// ELF: %[[A0:.*]] = aiex.dma_configure_task_for @midp_a
+// ELF: %[[B0:.*]] = aiex.dma_configure_task_for @midp_b
+// ELF: %[[A1:.*]] = aiex.dma_configure_task_for @midp_a
+// ELF: %[[B1:.*]] = aiex.dma_configure_task_for @midp_b
+// ELF: %[[D:.*]] = aiex.dma_configure_task_for @midp_out
+// ELF: %[[A2:.*]] = aiex.dma_configure_task_for @midp_a
+// ELF: %[[B2:.*]] = aiex.dma_configure_task_for @midp_b
+// ELF: %[[A3:.*]] = aiex.dma_configure_task_for @midp_a
+// ELF: %[[B3:.*]] = aiex.dma_configure_task_for @midp_b
+// ELF: %[[B4:.*]] = aiex.dma_configure_task_for @midp_b
+// ELF: aiex.dma_await_task(%[[D]])
+// ELF: %[[A4:.*]] = aiex.dma_configure_task_for @midp_a
+// ELF: length_parameter = @__air_param_arglen_3
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    %shim_noc_tile_1_0 = aie.tile(1, 0)
+    aie.shim_dma_allocation @midp_out(%shim_noc_tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @midp_a(%shim_noc_tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @midp_b(%shim_noc_tile_1_0, MM2S, 0)
+  } {sym_name = "midp_seg"}
+  airrt.module_metadata{}
+  func.func @midp(%arg0: memref<64xi32>, %arg1: memref<1024xi32>, %arg2: memref<64xi32>, %nrows: i64) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c512_i64 = arith.constant 512 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c3_i32 = arith.constant 3 : i32
+    %c4_i32 = arith.constant 4 : i32
+    %p = airrt.segment_load "midp_seg" : i64
+    %0 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %2 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c512_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_out} : (i32, i64, i64, memref<1024xi32>) : !airrt.event
+    %3 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %4 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    airrt.wait_all %2
+    %5 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %nrows, %c64_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) {metadata = @midp_a} : (i32, i64, i64, memref<1024xi32>) : !airrt.event
+    %6 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %7 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %8 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %9 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %10 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    airrt.wait_all %0, %1, %3, %4, %5, %6, %7, %8, %9, %10
+    return
+  }
+}
