@@ -495,8 +495,16 @@ hoistAIRHierToScfParallel(OpBuilder builder, Location loc, MLIRContext *ctx,
   if (isAsyncOp(hierAsyncIfOp)) {
     scf_par = scf::ParallelOp::create(builder, loc, lbs, ubs, steps, deps_in);
     generateYieldAndOrReduceToScfLoop(builder, ctx, scf_par);
-    hierAsyncIfOp.getAsyncToken().replaceAllUsesWith(
-        air::getAsyncTokenFromOp(scf_par));
+    // Users of the hierarchy wait on the hoisted loop and on the hierarchy
+    // itself: the hierarchy's own work (e.g. a herd writing an L1 buffer a
+    // later herd reads) stays ordered before them.
+    Value hierToken = hierAsyncIfOp.getAsyncToken();
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointAfter(hierOp);
+    auto joinOp = air::WaitAllOp::create(
+        builder, loc, air::AsyncTokenType::get(ctx),
+        SmallVector<Value>{air::getAsyncTokenFromOp(scf_par), hierToken});
+    hierToken.replaceAllUsesExcept(joinOp.getAsyncToken(), joinOp);
   } else
     scf_par = scf::ParallelOp::create(builder, loc, lbs, ubs, steps);
 
