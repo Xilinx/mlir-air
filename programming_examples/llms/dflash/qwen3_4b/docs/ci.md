@@ -126,11 +126,12 @@ performance history.
 
 ## Runtime budget
 
-The October 17 standalone Full20 LIT passed in **830.53 seconds (13.8 minutes)**
+The October 17 Full20 LIT on upstream base `4bf1d78f` passed in
+**827.82 seconds (13.8 minutes)**
 with cached device builds. Its B1 process took 9.8 minutes and DFlash 3.9 minutes;
 the LIT also checked resources and existing artifacts. Allow about 15 minutes
 for a warm Full20 run, with a 30-minute LIT timeout. Full20's measured pooled
-throughputs are 15.738 / 42.234 tokens/s (B1 / DFlash), or 2.684×. Its smaller
+throughputs are 15.775 / 42.240 tokens/s (B1 / DFlash), or 2.678×. Its smaller
 cohort is a separate performance series from Full80.
 
 The October 16 HX370 run measured 37.6 minutes for the B1 process and 14.7
@@ -144,7 +145,7 @@ Budget 50–60 minutes for the optional warm Full80 study, at least an additiona
 seven minutes for a fully cold device build, and 90 minutes for the Full80 LIT
 timeout. Downloads are seeded separately. The full nightly job limit remains
 540 minutes to accommodate an explicitly requested Full80 run as well.
-These measurements are local; the nightly/Krackan runner
-needs its own execution. Local jobs used a 20 GiB memory cap: the largest
-observed verification/profile job peak was about 18.2 GiB, and Full80 about
-7.9 GiB. These are observed job peaks, not a total-system memory requirement.
+These measurements are local; the nightly/Krackan runner needs its own execution.
+Local jobs used a 20 GiB memory cap. Current-base verification/profile sampled
+peaks were 17.4/17.1 GiB, and Full20 7.9 GiB; the earlier Full80 peak was also
+about 7.9 GiB. These are observed job peaks, not a total-system memory requirement.

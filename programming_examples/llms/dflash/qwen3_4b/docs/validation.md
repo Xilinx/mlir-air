@@ -89,6 +89,51 @@ No historical B1 time is silently used as a new-machine baseline.
 
 ## Recorded self-validation
 
+### Current upstream base, October 17
+
+The submission is rebased on upstream `4bf1d78f`, with a fresh AIR compiler and
+fresh target, drafter, prepass and prefill builds. Dependency wheel pins and
+the three model revisions are unchanged. Local HX370/NPU2 checks:
+
+| Check | Executed coverage |
+|---|---|
+| Compiler | 647 PASS; 7 expected failures; 7 unsupported |
+| Compile LIT | PASS; target, drafter, prepass and C2048 prefill, 388.33 s |
+| Verify LIT | PASS, 270.86 s; host gates, six-prefix state checks, NPU-prefill loop and HF model checks |
+| Complete loop | Exact repeated decisions, 32-token same-B8 sequential oracle and committed KV after all 12 rounds |
+| HF model proxy | Two full 32-token captures; mutual top-5 PASS at first divergences 2 and 13, visiting 3 and 14 positions |
+| Attention | 24 causal and 24 bidirectional full-output cases; repeats/isolation/visibility pass |
+| Context preparation | 40 input/row cases plus mixed positions and multi-chunk checks pass |
+| Output preservation | Target/drafter case records, non-timing loop fields and both NPU/HF chosen-token/top-5 captures match the October 16 run |
+| Profile LIT | PASS, 104.82 s including initialization; 18-token GPU prompt, cap256, NPU prefill, warm TTFT 5047.138 ms and decode 22.429 tokens/s |
+| Full20 LIT | PASS, 827.82 s; 20 actual B1 requests and 20 DFlash requests, with paired identities and round accounting checked |
+
+Initialization now shares resident MLP weights before LM-head setup, reads the
+original BF16 embedding without an FP32 temporary, and clears mapped BOs without
+a second KV-sized array. All 388,956,160 embedding elements match the previous
+conversion path exactly. Verify completed under the original 20 GiB job cap and
+memory-pressure guard, with a sampled peak of 17.4 GiB. Decoder arithmetic,
+checkpoint revisions, test tolerances and benchmark timing are unchanged.
+
+| Dataset (4 requests each) | B1 tok/s | DFlash tok/s | Pooled speedup | Emitted/round |
+|---|---:|---:|---:|---:|
+| GSM8K | 15.862 | 50.398 | 3.177× | 5.251 |
+| MATH-500 | 15.726 | 55.685 | 3.541× | 6.069 |
+| HumanEval | 15.719 | 48.276 | 3.071× | 5.195 |
+| MBPP | 15.833 | 48.953 | 3.092× | 5.076 |
+| MT-Bench, first turn | 15.822 | 19.853 | 1.255× | 2.084 |
+| **Overall, 20 requests** | **15.775** | **42.240** | **2.678×** | **4.490** |
+
+Proposed-token acceptance is 50.130%. Both engines' 20 output arrays and all
+1,870 DFlash non-timing round traces match the previous Full20. The B1 and
+DFlash processes take 9.75 and 3.88 minutes. Full80 was not rerun on this base;
+its earlier measurements below retain their own source/toolchain identity.
+The workflow/result-collector sources are unchanged from the validated Full20
+integration. These are local implementation-author checks; GitHub Actions and
+a second NPU2 machine have not executed this branch.
+
+### Previous upstream base, October 16
+
 On October 16, the branch was rebuilt against upstream `25e913ff` and its
 MLIR-AIE `1.4.5.dev46+ge7048fa`, Peano `22.0.0.2026101201+83ba9ea9` and
 LLVM/MLIR `24.0.0.2026100106+bdf04ebb` dependencies. Local HX370/NPU2 checks:

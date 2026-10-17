@@ -51,7 +51,7 @@ verification. [ARCHITECTURE.md](../ARCHITECTURE.md) describes that state flow.
 | [target_runtime.py](../target_runtime.py) | `TargetDecoder` loads either role's artifacts/weights, owns XRT buffers, runs B8 `verify()`, returns all logits, reads hidden boundaries and seeds/appends/restores KV. The method name `verify()` is also used for the drafter forward. |
 | [decode_dynseq.py](../decode_dynseq.py) | `DynseqInstsGen` uses the compiler-generated transaction builder to construct instructions for the current KV length. |
 | [streaming.py](../streaming.py) | Converts newly committed token IDs into incremental text while retaining incomplete tokenizer fragments. |
-| [npu_prefill.py](../npu_prefill.py) | `NpuPrefill` reuses the existing Qwen3-4B Q4NX NPU prefill and captures the hidden boundaries needed by DFlash. |
+| [npu_prefill.py](../npu_prefill.py) | `NpuPrefill` reuses the existing Qwen3-4B Q4NX NPU prefill and captures the hidden boundaries needed by DFlash. It shares uploaded MLP weights before LM-head initialization to reduce peak host memory. |
 | [prefill_reference.py](../prefill_reference.py) | CPU prompt forward with hidden taps, used by the CPU-prefill path. |
 
 ## B8 graph and build configuration

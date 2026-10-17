@@ -1,7 +1,7 @@
 # Upstream compatibility
 
 This example is based on upstream MLIR-AIR commit
-`25e913ff5b81aa09215e18332a8be3c157a774fe` (October 16, 2026). It uses the
+`4bf1d78ff1ab2addd000452b29b37d3c1eb8672f` (October 17, 2026). It uses the
 normal AIR environment and its pinned dependencies. The accompanying compiler
 fixes must be built into AIR before compiling this example.
 
@@ -37,10 +37,15 @@ Both are supported upstream APIs.
 
 These are AIR source changes, not environment-variable workarounds. Build this
 branch's AIR compiler before building DFlash. The full MLIR test suite passes
-620 tests, with 7 expected failures and 7 unsupported tests. The actual DFlash
+647 tests, with 7 expected failures and 7 unsupported tests. The actual DFlash
 compile LIT completes target, drafter, prepass and prefill on these dependencies.
 Device validation and performance evidence are recorded separately in
 [validation.md](validation.md).
+
+This integration includes the seven upstream commits since the previous
+`25e913ff` validation. Dependency wheel pins are unchanged, but AIR is rebuilt
+and target, drafter, prepass and prefill artifacts are compiled from scratch.
+The three fixes above still apply on the new base.
 
 Other historical DFlash-branch compiler patches are not prerequisites here:
 upstream already preserves the constant bias in dynamic DMA offsets; the B8
@@ -67,6 +72,15 @@ FP32 embedding throughout layer loading and returned two separate BF16 copies.
 The change preserves every weight value and makes the returned embedding and
 LM head share storage, as required by this model's tied-weight configuration.
 It reduces initialization memory without changing the compiler or device code.
+
+The DFlash prefill adapter additionally shares the already-uploaded MLP weight
+BOs before the upstream loader allocates its LM-head partitions. It checks exact
+weight equality before replacing host arrays with read-only BO views. Moving
+this existing sharing step earlier releases about 5 GiB of duplicate host
+storage before the next allocation phase; model arithmetic is unchanged.
+Decoder initialization reads the bundle's BF16 embedding directly and clears
+its mapped input/output/KV BOs in place. This avoids an intermediate FP32
+embedding and a second capacity-sized zero array while prefill is resident.
 
 ## Weights and arithmetic
 
