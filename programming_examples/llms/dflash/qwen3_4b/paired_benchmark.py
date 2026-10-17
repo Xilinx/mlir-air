@@ -30,9 +30,7 @@ def main():
             counts[case["dataset"]] += 1
     expected_counts = {name: a.per_dataset for name in cohort["dataset_order"]}
     assert counts == expected_counts
-    expected_ids = {
-        c["id"]: (c["cache_sha256"], len(c["input_ids"])) for c in cases
-    }
+    expected_ids = {c["id"]: (c["cache_sha256"], len(c["input_ids"])) for c in cases}
     requests = 5 * a.per_dataset
     assert len(expected_ids) == requests
     a.output.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +69,9 @@ def main():
             summary["status"] == "completed"
             and summary["completed"] == len(rows) == requests
         )
-        assert {k: v["requests"] for k, v in summary["per_dataset"].items()} == expected_counts
+        assert {
+            k: v["requests"] for k, v in summary["per_dataset"].items()
+        } == expected_counts
         assert Counter(r["dataset"] for r in rows) == expected_counts
         ids[engine] = {r["id"]: (r["prefill_sha256"], r["input_tokens"]) for r in rows}
         assert ids[engine] == expected_ids, "Engine did not measure the fixed cohort"

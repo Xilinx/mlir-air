@@ -213,8 +213,15 @@ if os.environ.get("HF_HUB_OFFLINE"):
     llvm_config.with_environment("HF_HUB_OFFLINE", os.environ["HF_HUB_OFFLINE"])
 
 # Cache discovery and the test subprocess must use the same persistent root.
-llvm_config.with_system_environment(["HF_HOME", "HF_HUB_CACHE", "DFLASH_CACHE_DIR",
-                                    "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS"])
+llvm_config.with_system_environment(
+    [
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "DFLASH_CACHE_DIR",
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+    ]
+)
 
 
 # Gate each LLM example on the weights it loads actually being present in the

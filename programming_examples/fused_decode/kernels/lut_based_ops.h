@@ -931,8 +931,8 @@ __attribute__((always_inline)) v16accfloat getExpBf16(v16bfloat16 x) {
   // erroneous factor of e (even exp(-epsilon) > 1 in online softmax).
   // Remove the fractional bits explicitly so address generation is exact in
   // every rounding mode. Preserve them for the fractional table below.
-  auto integer_input = aie::bit_and(input.cast_to<uint16>(),
-                                   aie::broadcast<uint16, 16>(0xff00));
+  auto integer_input =
+      aie::bit_and(input.cast_to<uint16>(), aie::broadcast<uint16, 16>(0xff00));
   I_val_vec = lookup_i.fetch(integer_input);
   F_val_vec = lookup_f.fetch(input.cast_to<uint16>());
   exp_val = aie::mul(I_val_vec, F_val_vec);

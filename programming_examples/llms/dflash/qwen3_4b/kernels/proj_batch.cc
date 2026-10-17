@@ -25,14 +25,15 @@ void proj_qmm_mm_acc(bf16 *__restrict x, bf16 *__restrict packed,
 // Keep the GEMM accumulator resident, but drain one token per short packet.
 // Packet routing metadata is still generated from the AIR put's dest operand.
 extern "C" void proj_qmm_mm_flush_token(float *__restrict acc,
-                                       bf16 *__restrict packet,
-                                       int token, int unused) {
+                                        bf16 *__restrict packet, int token,
+                                        int unused) {
   (void)unused;
   aie_round_nearest_even();
   constexpr int width = Q4NX_ROW_BLOCK_SIZE;
   alignas(aie::vector_decl_align) float row[width];
   AIE_LOOP_UNROLL_FULL
   for (int j = 0; j < width / 8; ++j)
-    aie::store_v(row + j * 8, aie::load_v<8>(acc + j * PROJ_MM_BATCH * 8 + token * 8));
+    aie::store_v(row + j * 8,
+                 aie::load_v<8>(acc + j * PROJ_MM_BATCH * 8 + token * 8));
   copy_float_to_bf16<width>(packet + 16, row);
 }

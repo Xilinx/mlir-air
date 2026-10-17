@@ -7,10 +7,10 @@ static_assert(ATTN_QUERY_TILE >= 2 && ATTN_QUERY_TILE % 2 == 0);
 
 #include "attn_reuse_pv.h"
 
-static inline __attribute__((always_inline))
-void dflash_pv_full_tile(bf16 *__restrict scores, bf16 *__restrict values,
-                         float *__restrict output, float *__restrict denominator,
-                         int block) {
+static inline __attribute__((always_inline)) void
+dflash_pv_full_tile(bf16 *__restrict scores, bf16 *__restrict values,
+                    float *__restrict output, float *__restrict denominator,
+                    int block) {
   aie_round_nearest_even();
-  dflash_pv_reuse_v(scores,values,output,denominator,block);
+  dflash_pv_reuse_v(scores, values, output, denominator, block);
 }

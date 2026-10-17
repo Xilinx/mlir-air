@@ -54,7 +54,6 @@ static inline void q4k_unpack_block(const q4k_block_t *A, bf16 *__restrict W) {
 
       aie::store_v(W + ((2 * R) * NCB + cb) * 64, aie::filter_even(w, 8));
       aie::store_v(W + ((2 * R + 1) * NCB + cb) * 64, aie::filter_odd(w, 8));
-
     }
 }
 

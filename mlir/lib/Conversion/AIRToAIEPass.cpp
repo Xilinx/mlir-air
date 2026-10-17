@@ -4256,8 +4256,8 @@ static void unifyOnChipArmBuffers(scf::IndexSwitchOp sw, ArmChannelMap &byChan,
     auto firstAlloc = firstBuf.getDefiningOp<memref::AllocOp>();
     if (!firstAlloc || !llvm::all_of(ops, [&](air::ChannelInterface ci) {
           auto alloc = ci.getMemref().getDefiningOp<memref::AllocOp>();
-          return alloc && alloc->getAttrDictionary() ==
-                              firstAlloc->getAttrDictionary();
+          return alloc &&
+                 alloc->getAttrDictionary() == firstAlloc->getAttrDictionary();
         }))
       continue;
 
