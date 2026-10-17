@@ -75,9 +75,15 @@ class NpuPrefill(Qwen3Q4nxPrefill):
         from model_paths import TARGET_MODEL, resolve_target_model
 
         super().load_weights(model=resolve_target_model(model or TARGET_MODEL))
-        self._reuse_resident_mlp_weights()
         if shared_embedding is not None:
             self.share_embedding(shared_embedding)
+
+    def _preload_lm_head_gemv(self):
+        # The upstream loader calls this after uploading all block weights.
+        # Release duplicate host MLP storage before allocating LM-head buffers,
+        # while keeping the same per-layer resident BOs and exact weight values.
+        self._reuse_resident_mlp_weights()
+        super()._preload_lm_head_gemv()
 
     def share_embedding(self, shared_embedding):
         shared = np.asarray(shared_embedding)
