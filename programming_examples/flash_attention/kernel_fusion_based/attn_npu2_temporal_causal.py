@@ -202,7 +202,9 @@ def build_launch(
     alias_qpair_gp = dv_chunks > 1 and dk_chunks == 1 and dv == 2 * dk_tile
     alias_qpair_kv = full_d_dma and 2 * tile_size_q * dk_tile == lkp * dk
 
-    fold_core_rounds = num_lq_iters * q_tiles_per_core > 4
+    # Unrolled, four rounds of the head_dim 128 body do not fit in program
+    # memory. Folded they run as fast.
+    fold_core_rounds = num_lq_iters * q_tiles_per_core >= 4
     n_ob = (
         1
         if fold_core_rounds or q_tiles_per_core > 1

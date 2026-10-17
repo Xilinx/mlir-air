@@ -258,11 +258,13 @@ class XRTBackend(AirBackend):
         lower_linalg_to_func: str = None,
         derive_library_call: bool = False,
         air_loop_fusion: bool = False,
+        fuse_sequential_loops: bool = False,
         runtime_loop_tiling_sizes: list[int] = [],
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
         use_lock_race_condition_fix: bool = False,
         use_lock_race_condition_fix_v2: bool = False,
+        use_lock_race_condition_fix_auto: bool | None = None,
         coalesce_shim_dma: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
@@ -290,10 +292,12 @@ class XRTBackend(AirBackend):
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
             derive_library_call: with lower_linalg_to_func, name the callee after the op and its operand types rather than MLIR's "op_has_no_registered_library_name" placeholder. The kernel object must export the derived name.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
+            fuse_sequential_loops: configure aircc to let loops that run one after the other and stream equal transfers between the same places share their channels (aircc --fuse-sequential-loops).
             runtime_loop_tiling_sizes: tile sizes forwarded to aircc as --air-runtime-loop-tiling-sizes, which the shim DMA BD optimization pass (air-opt-shim-dma-bds) consumes as shim-dma-tile-sizes. Omit or pass an empty list to skip tiling.
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
+            use_lock_race_condition_fix_auto: pick a lock race fix per shared L2 buffer (see aircc --use-lock-race-condition-fix-auto). None (default) leaves the choice to aircc; True or False sets it.
             coalesce_shim_dma: configure aircc to coalesce consecutive contiguous shim DMA transfers on the same channel (marked air.preserve_shim_dma_order) into a single wide transfer, reducing host-issued DMA task triplets. Opt-in: only enable for feeds verified numerically equivalent when coalesced.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
@@ -339,16 +343,24 @@ class XRTBackend(AirBackend):
         self.lower_linalg_to_func = lower_linalg_to_func
         self.derive_library_call = derive_library_call
         self.air_loop_fusion = air_loop_fusion
+        self.fuse_sequential_loops = fuse_sequential_loops
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
-        if use_lock_race_condition_fix and use_lock_race_condition_fix_v2:
+        if (
+            int(bool(use_lock_race_condition_fix))
+            + int(bool(use_lock_race_condition_fix_v2))
+            + int(bool(use_lock_race_condition_fix_auto))
+            > 1
+        ):
             raise AirBackendError(
-                "use_lock_race_condition_fix and use_lock_race_condition_fix_v2 "
-                "are mutually exclusive; enable at most one"
+                "use_lock_race_condition_fix, use_lock_race_condition_fix_v2 and "
+                "use_lock_race_condition_fix_auto are mutually exclusive; enable "
+                "at most one"
             )
         self.use_lock_race_condition_fix = use_lock_race_condition_fix
         self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
+        self.use_lock_race_condition_fix_auto = use_lock_race_condition_fix_auto
         self.coalesce_shim_dma = coalesce_shim_dma
         self.trace_offset = trace_offset
         self.trace_size = trace_size
@@ -540,6 +552,8 @@ class XRTBackend(AirBackend):
 
             if self.air_loop_fusion:
                 aircc_options += ["--air-loop-fusion"]
+            if self.fuse_sequential_loops:
+                aircc_options += ["--fuse-sequential-loops"]
 
             if self.omit_auto_broadcast:
                 aircc_options += ["--omit-auto-broadcast"]
@@ -553,6 +567,12 @@ class XRTBackend(AirBackend):
 
             if self.use_lock_race_condition_fix_v2:
                 aircc_options += ["--use-lock-race-condition-fix-v2"]
+
+            if self.use_lock_race_condition_fix_auto is not None:
+                aircc_options += [
+                    "--use-lock-race-condition-fix-auto="
+                    + ("true" if self.use_lock_race_condition_fix_auto else "false")
+                ]
 
             if self.coalesce_shim_dma:
                 aircc_options += ["--coalesce-shim-dma"]

@@ -20,6 +20,9 @@ It enapsulates data structures and functions available in the runtime and
 can be lowered to a combination of standard and LLVM dialects.
   }];
   let useDefaultTypePrinterParser = 1;
+  // The op assembly formats print inherent attributes in `attr-dict`, which
+  // the strict-properties default rejects.
+  let useStrictPropertiesInAssemblyFormat = 0;
 }
 
 def AIRRt_Event : DialectType<

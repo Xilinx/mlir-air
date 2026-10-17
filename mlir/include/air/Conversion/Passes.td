@@ -228,6 +228,15 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
           "the memtile DMA. Mutually exclusive with use-lock-race-condition-fix. "
           "Requires upstream to preserve the shared L2 buffer (typically via "
           "`air.no_split` on the alloc).">,
+    Option<"clUseLockRaceConditionFixAuto", "use-lock-race-condition-fix-auto",
+          "bool", /*default=*/"false",
+          "Pick a lock race fix per shared L2 buffer: "
+          "use-lock-race-condition-fix when each transfer on its many side has "
+          "a channel of its own, the plain counted lock when a channel moves "
+          "several of them, and the chain locks of "
+          "use-lock-race-condition-fix-v2 only for a buffer whose extra BDs do "
+          "not fit the memtile's BD pool. Mutually exclusive with the other "
+          "two.">,
     Option<"clStackSize", "stack-size", "unsigned", /*default=*/"2048",
           "Stack size in bytes to allocate per AIE core. Must be large enough "
           "to hold the full call chain stack depth including callee frames. "
@@ -450,7 +459,8 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
           "paced feeds ahead of the sibling-channel interleave, so enable it "
           "only for feeds verified numerically equivalent when coalesced.">
   ];
-  let dependentDialects = ["xilinx::AIEX::AIEXDialect"];
+  let dependentDialects = ["xilinx::AIEX::AIEXDialect",
+                           "mlir::affine::AffineDialect"];
 }
 
 def AIRSplitDevices : Pass<"air-split-devices", "ModuleOp"> {
@@ -497,10 +507,11 @@ def AIRWrapFuncWithParallelPass : Pass<"air-wrap-func-with-parallel", "func::Fun
   let constructor = "xilinx::air::createAIRWrapFuncWithParallelPass()";
   let description = [{
     Wraps the body of a given func.func operation inside an scf.parallel loop.
-    The pass assumes that: 
-    (1) The function arguments consist of: M memref arguments, N loop upper bounds, N loop induction variable indices.
-    (2) The scf.parallel loop is constructed using the N upper bounds and induction variable indices.
-    (3) The scf.parallel loop is inserted at the beginning of the function, wrapping all existing operations.
+    The function's last 2N arguments are the N grid sizes followed by the N
+    grid indices, as triton-shared appends them; memref and scalar arguments
+    before them are left alone. The loop's upper bounds come from
+    `loop-bounds`, its induction variables replace the N index arguments, and
+    it wraps all existing operations.
   }];
   let options = [
     ListOption<"clLoopBounds", "loop-bounds", "unsigned",

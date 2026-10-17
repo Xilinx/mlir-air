@@ -12,24 +12,10 @@ identity permutation map and a padding constant, ``math.tanh``, and a
 ``transfer_write``. Here the emitter builds that loop, and the subviews are not
 needed at all: air.api reads at an offset directly.
 
-The emitted op is unchanged: ``math.tanh`` on ``vector<VECTOR_SIZExbf16>``,
+The emitted op is unchanged: ``math.tanh`` on a ``VECTOR_SIZE``-lane vector,
 lowering ``math.tanh -> aievec.tanh -> xllvm.intr.aie2p.tanh``.
 
-Three constraints here are hardware, not style, and the example must not drift
-off them:
-
-* **npu2 only.** On npu1 ``math.tanh`` lowers to a C call via ``emitc.include``,
-  which the peano path cannot translate. Both lits are already
-  ``REQUIRES: ryzen_ai_npu2`` and the predecessor fails on npu1 identically --
-  an inherited limit, not a regression.
-* **bf16 only, and vector only.** Scalar bf16 tanh does not legalize either
-  (``s16 G_FTANH``), so the emitter's usual scalar fallback is the *unsafe*
-  direction here rather than a safety net. ``tile_n`` must stay a multiple of
-  the vector width or the fallback turns a working kernel into a build failure,
-  which is why that is asserted below rather than left to chance.
-* f32 tanh does not legalize at all, so ``np_dtype_in`` is checked rather than
-  honoured -- the opposite call from the arithmetic siblings in this directory,
-  and for a reason that is about the backend, not the object file.
+npu2 only. bf16 or f32; ``--vector-size 0`` runs the scalar path.
 
 Two differences from the predecessor worth naming:
 
@@ -47,26 +33,16 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from air import api as air
-from air.api.types import bf16
+from air.api.types import bf16, f32
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
 
 NUM_TILES = 2
+DTYPES = {"bf16": (bf16, bfloat16), "f32": (f32, np.float32)}
 
 
-def build_module(n, tile_n, np_dtype_in, vector_size=16):
+def build_module(n, tile_n, dt=bf16, vector_size=16):
     assert n % (tile_n * NUM_TILES) == 0
-    # Not a stylistic assert: a tile that is not a multiple of the width sends
-    # the emitter down its scalar fallback, and scalar bf16 tanh does not
-    # legalize -- so the fallback fails to build rather than running slowly.
-    assert tile_n % vector_size == 0
-    if np_dtype_in is not bfloat16:
-        raise ValueError(
-            f"math.tanh legalizes only for bf16 vectors on AIE2P (f32 fails "
-            f"with G_FTANH), so np_dtype_in must be ml_dtypes.bfloat16, "
-            f"got {np_dtype_in!r}"
-        )
-    dt = bf16
 
     A = air.tensor([n], dt)
     C = air.tensor([n], dt)
@@ -104,7 +80,6 @@ if __name__ == "__main__":
     N = 65536
     TILE_N = 1024
     VECTOR_SIZE = 16
-    INPUT_DATATYPE = bfloat16
 
     parser = argparse.ArgumentParser(
         prog="run.py",
@@ -119,6 +94,9 @@ if __name__ == "__main__":
         type=int,
         default=VECTOR_SIZE,
         help="Vector size for SIMD operations",
+    )
+    parser.add_argument(
+        "--dtype", type=str, choices=sorted(DTYPES), default="bf16", help="Data type"
     )
     parser.add_argument(
         "--arch",
@@ -154,14 +132,15 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    launch = build_module(args.n, args.tile_n, INPUT_DATATYPE, args.vector_size)
+    dt, np_dtype = DTYPES[args.dtype]
+    launch = build_module(args.n, args.tile_n, dt, args.vector_size)
     mlir_module = launch.build(target=args.target)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
 
     np.random.seed(42)
-    input_a = np.random.uniform(-4.0, 4.0, args.n).astype(INPUT_DATATYPE)
+    input_a = np.random.uniform(-4.0, 4.0, args.n).astype(np_dtype)
 
     if args.compile_mode == "compile-and-run":
         num_samples = 100
@@ -170,7 +149,7 @@ if __name__ == "__main__":
         # Reference: compute tanh in f32 precision
         sampled_values = np.array(
             [np.tanh(input_a[i].astype(np.float32)) for i in zip(*sampled_indices)],
-            dtype=INPUT_DATATYPE,
+            dtype=np_dtype,
         )
         sampled_data = {
             "shape": (args.n,),

@@ -1169,26 +1169,21 @@ def main():
                 O_FFN_BACKEND,
             )
 
-            # The stock bf16 rms_gemms_rope/o_ffn stitchers link the external
-            # GEMM microkernels mm_m32.o (K/V drain) + mm_m64.o (fused-cast).
-            # Build them before caching so prepare_air_project stages them into
-            # air_project/ (mirrors llama32_1b_prefill.compile_all_kernels); the
-            # int4/bfp16 branches use their own kernels and don't need these.
-            from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
-
-            compile_gemm_mm(
-                tile_m=32,
-                tile_n=128,
-                tile_k_l1=32,
-                sym_suffix="_m32",
-                out_name="mm_m32.o",
+            # The bf16 stitchers link external GEMM objects; build them before
+            # caching. The int4/bfp16 branches use their own kernels.
+            from air_examples.llms.shared.builders.gemm_builder import (
+                compile_gemm_objects,
             )
-            compile_gemm_mm(
-                tile_m=64,
-                tile_n=128,
-                tile_k_l1=32,
-                sym_suffix="_m64",
-                out_name="mm_m64.o",
+            from air_examples.llms.shared.builders.rms_gemms_rope_multi import (
+                rms_gemms_rope_gemm_specs,
+            )
+            from air_examples.llms.shared.builders.o_ffn_multi import (
+                o_ffn_gemm_specs,
+            )
+
+            compile_gemm_objects(
+                rms_gemms_rope_gemm_specs(seq_len, emb_dim, kv_dim)
+                + o_ffn_gemm_specs(seq_len, emb_dim, hidden_dim)
             )
 
             if _need("rms_gemms_rope"):

@@ -63,6 +63,7 @@ _FLOAT_OPS = {
 # buffer reaching one of these is a user error rather than something to coerce.
 _FLOAT_UNARY_OPS = {
     "tanh": math_dialect.tanh,
+    "erf": math_dialect.erf,
     "exp": math_dialect.exp,
     "rsqrt": math_dialect.rsqrt,
 }

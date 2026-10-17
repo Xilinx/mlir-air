@@ -8,9 +8,10 @@ configured device, laid out like FastFlowLM's fused_prefill.
 
 The herds loop forever and take their work from RTPs, and the memtile
 channels are count-free rings, so one PDI serves every op and shape and the
-ops differ only in their insts. build() emits the insts of one op;
-insts.strip_columns then drops the other groups' columns, so those cores stay
-parked.
+ops differ only in their insts. build(own=True) emits one op's func, whose
+segment holds only that op's herds; the funcs of all ops share segment @seg,
+which aircc builds as one device with a runtime sequence per op. A dispatch
+drives only its op's columns, so the other cores stay parked.
 
 An op's rounds loop inside the cores and are the outer axis of its shim
 patterns, so each op is a single launch.
@@ -22,6 +23,7 @@ from air import api as air
 from air.api.types import bf16, f32, i8, i32
 
 M = 128  # rows per chunk
+KV_CAP = 1 << 16  # KV tokens an op with a run-time KV length can address
 MM = 8  # aie2p mmul block
 
 # GEMM: herd 6 x 4, core tile TM x TN, K step TK; a round is NR output columns
@@ -81,13 +83,6 @@ def attn_ops(cfg):
     return cfg.ops or {a: (a,) for a in cfg.attn}
 
 
-def cols(cfg):
-    """op name -> the columns its dispatches keep."""
-    out = {"g": set(range(GCOL0, GCOL0 + GNC))}
-    out.update({op: {cfg.attn[a].col for a in gs} for op, gs in attn_ops(cfg).items()})
-    return out
-
-
 def attn_rows(g):
     """q rows of one attention round."""
     return NQT * g.lkp
@@ -110,7 +105,7 @@ def q_tile(g):
     return g.lkp * g.dh * 9 // 16
 
 
-def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts):
+def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts, rtps):
     ksteps = k // TK
     zero, mmul, cast, cast_act, dq, cp = kern
     npk = 1 if wq else 4  # B packets per K step: int4, or bf16 in 32-K slices
@@ -141,13 +136,15 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts):
             )
 
     puts.append(shim)
+    # computed in the launch, so the segment body does not depend on the shape
+    kq = air.rtp(wave * 0 + (ksteps // 2) * wq)
+    kb = air.rtp(wave * 0 + (ksteps // 2) * (1 - wq))
+    nr = air.rtp(wave * 0 + rounds)
+    actp = air.rtp(wave * 0 + act)
+    plain = air.rtp(wave * 0 + (1 - act))
+    rtps += [kq, kb, nr, actp, plain]
 
     def body(seg):
-        kq = air.rtp(wave * 0 + (ksteps // 2) * wq)
-        kb = air.rtp(wave * 0 + (ksteps // 2) * (1 - wq))
-        nr = air.rtp(wave * 0 + rounds)
-        actp = air.rtp(wave * 0 + act)
-        plain = air.rtp(wave * 0 + (1 - act))
 
         def blk(v, r, c):
             return v.reshape(r // MM, MM, c // MM, MM).transpose(2, 0, 1, 3)
@@ -236,22 +233,52 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts):
     return body
 
 
+def _rtp(wave, v):
+    """An RTP from a build-time int, or from a run-time scalar argument."""
+    return air.rtp(wave * 0 + v if isinstance(v, int) else v.value)
+
+
 def _kv_put(kvin, KV, g, nkv, rounds):
+    """nkv: an int, or a run-time scalar."""
+    if not isinstance(nkv, int):
+        return _kv_put_runtime(kvin, KV, g, nkv, rounds)
     n = nkv * kv_rec(g)
     if g.kv_heads == 1:
         kvin.put(KV[0:n].broadcast_to(rounds, n))
     else:
         # rounds walk the heads kv-head-major: each KV head's records
-        # repeat for its group's rounds
-        h = g.kv_heads
-        kvin.put(
-            KV.reshape(h, 1, g.max_blocks * kv_rec(g))[0:h, 0:1, 0:n].broadcast_to(
-                h, rounds // h, n
-            )
-        )
+        # repeat for its group's rounds. Each head is its own put, so its
+        # start goes in the buffer offset: as a BD stride, max_blocks
+        # records overflow the shim BD's stride field at long max_len.
+        h, span = g.kv_heads, g.max_blocks * kv_rec(g)
+        for i in range(h):
+            kvin.put(KV[i * span : i * span + n].broadcast_to(rounds // h, n))
 
 
-def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs):
+def _kv_put_runtime(kvin, KV, g, nkv, rounds):
+    """KV put where nkv is a run-time scalar: one shim transfer of nkv records
+    per KV head, repeated `rounds` times. Built with ChannelPut directly since
+    air.api slices only take static sizes."""
+    from air.dialects.air import ChannelPut
+    from air.dialects.arith import ConstantOp, IndexCastOp, MulIOp
+    from air.ir import IndexType, IntegerAttr
+
+    idx = IndexType.get()
+    c = lambda v: ConstantOp(idx, IntegerAttr.get(idx, v)).result  # noqa: E731
+    n = MulIOp(IndexCastOp(idx, nkv.value).result, c(kv_rec(g))).result
+    h = g.kv_heads
+    kvin._declare()
+    ChannelPut(
+        kvin.name,
+        KV.value,
+        offsets=[c(0), c(0), c(0)],
+        sizes=[c(h), c(rounds // h), n],
+        strides=[c(g.max_blocks * kv_rec(g)), c(0), c(1)],
+        indices=kvin._indices(None, "put"),
+    )
+
+
+def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs, rtps):
     """Attention, one head per round, the column's cores splitting the
     round's q rows. The cores read nkv K blocks starting at block k0; the
     chunk's first q block is q0. Both are RTPs, in units of lkp rows."""
@@ -294,23 +321,25 @@ def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs)
     gp2l2 = air.channel(f"{name}Gp2L2", size=[NQT])
     gpout = air.channel(f"{name}GpOut", size=[1])
 
+    nk = _rtp(wave, nkv)
+
     def shim():
         qin.put(Q[0 : rounds * R, 0:dh])
         _kv_put(kvin, KV, g, nkv, rounds)
         gpout.get(O[0 : rounds * R, 0:dh])
 
     puts.append(shim)
+    nr = air.rtp(wave * 0 + rounds)
+    qb0 = _rtp(wave, q0)
+    kb0 = _rtp(wave, k0)
+    params = [nk, nr, qb0, kb0]
+    wb = None
+    if g.window_rtp:
+        wb = air.rtp(wave * 0 + win // lkp)
+        params.append(wb)
+    rtps += params
 
     def body(seg):
-        nk = air.rtp(wave * 0 + nkv)
-        nr = air.rtp(wave * 0 + rounds)
-        qb0 = air.rtp(wave * 0 + q0)
-        kb0 = air.rtp(wave * 0 + k0)
-        params = [nk, nr, qb0, kb0]
-        wb = None
-        if g.window_rtp:
-            wb = air.rtp(wave * 0 + win // lkp)
-            params.append(wb)
         q_l2 = air.alloc([R, dh], bf16, scope=seg.private(), column=col, split=False)
         k_l2 = air.alloc([lkp, dh], bf16, scope=seg.private(), column=col)
         v_l2 = [
@@ -399,7 +428,9 @@ def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs)
     return body
 
 
-def _attention_bfp16(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs):
+def _attention_bfp16(
+    name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs, rtps
+):
     """_attention on attn_bfp16.cc: q, K and V arrive as bfp16 (the host packs
     them), K and V of a block land together and one call runs the block."""
     col, dh, lkp = g.col, g.dh, g.lkp
@@ -429,14 +460,25 @@ def _attention_bfp16(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, ex
         gpout.get(O[0 : rounds * R, 0:dh])
 
     puts.append(shim)
-
-    def body(seg):
+    if isinstance(nkv, int):
         assert nkv % 2 == 0, nkv
         nk2 = air.rtp(wave * 0 + nkv // 2)
-        nr = air.rtp(wave * 0 + rounds)
-        qb0 = air.rtp(wave * 0 + q0)
-        kb0 = air.rtp(wave * 0 + k0)
-        wb = air.rtp(wave * 0 + win // lkp)
+    else:  # the host passes an even nkv
+        from air.dialects.arith import ConstantOp, ShRUIOp
+        from air.ir import IntegerAttr, IntegerType
+
+        one = ConstantOp(
+            IntegerType.get_signless(32),
+            IntegerAttr.get(IntegerType.get_signless(32), 1),
+        ).result
+        nk2 = air.rtp(ShRUIOp(nkv.value, one).result)
+    nr = air.rtp(wave * 0 + rounds)
+    qb0 = _rtp(wave, q0)
+    kb0 = _rtp(wave, k0)
+    wb = air.rtp(wave * 0 + win // lkp)
+    rtps += [nk2, nr, qb0, kb0, wb]
+
+    def body(seg):
         qt, kt = q_tile(g), kv_rec(g) // 2
         q_l2 = air.alloc([NQT * qt], bf16, scope=seg.private(), column=col, split=False)
         k_l2 = air.alloc([kt], bf16, scope=seg.private(), column=col)
@@ -496,13 +538,20 @@ def _kv_tensor(g, nkv):
     return air.tensor([g.kv_heads * g.max_blocks * kv_rec(g)], bf16)
 
 
-def build(cfg, op, *shape):
+def build(cfg, op, *shape, name="fused_prefill", own=False):
     """The module for one op; the other groups get minimal shapes.
 
     op 'g': (k, n, act, wq), C[128, n] = A[128, k] @ W, with the activation
             drain if act and int4 weight packets if wq (bf16 otherwise)
     op <attention op>: (heads, nkv, q0, k0), attention for one chunk
+
+    With own, the segment holds only the op's own groups: the device is then
+    the union of every op's segment @seg (see air-to-aie), and the op's func
+    drives only its groups' columns.
     """
+    drive = ({"g"} if op == "g" else set(attn_ops(cfg)[op])) if own else None
+    # with own, an attention op takes (nkv, q0, k0) at run time
+    runtime = own and op != "g"
     g = dict(k=2 * TK, n=NR, act=0, wq=1, rounds=1)
     at = {
         a: dict(
@@ -552,23 +601,39 @@ def build(cfg, op, *shape):
                 if ga.kern == "bfp16"
                 else air.tensor([at[a]["rounds"] * attn_rows(ga), ga.dh], bf16)
             ),
-            _kv_tensor(ga, at[a]["nkv"]),
+            _kv_tensor(ga, KV_CAP // ga.lkp if runtime else at[a]["nkv"]),
             air.tensor([at[a]["rounds"] * attn_rows(ga), ga.dh], bf16),
         )
         for a, ga in cfg.attn.items()
     }
+    if runtime:
+        scalars = {n: air.tensor([], i32, name=n) for n in ("nkv", "q0", "k0")}
+        for a in drive:
+            at[a].update(scalars)
 
-    with air.launch(
-        repeat=1, name="fused_prefill", attrs=["air.preserve_shim_dma_order"]
-    ) as lch:
+    with air.launch(repeat=1, name=name, attrs=["air.preserve_shim_dma_order"]) as lch:
 
         @lch.body
         def _(wave):
-            puts, externs = [], {}
-            bodies = [
-                _gemm(wave, *gt, g["k"], g["act"], g["wq"], g["rounds"], kern, puts)
-            ]
+            puts, externs, rtps = [], {}, []
+            bodies = []
+            if drive is None or "g" in drive:
+                bodies.append(
+                    _gemm(
+                        wave,
+                        *gt,
+                        g["k"],
+                        g["act"],
+                        g["wq"],
+                        g["rounds"],
+                        kern,
+                        puts,
+                        rtps,
+                    )
+                )
             for a, ga in cfg.attn.items():
+                if drive is not None and a not in drive:
+                    continue
                 p = at[a]
                 fn = _attention_bfp16 if ga.kern == "bfp16" else _attention
                 bodies.append(
@@ -584,11 +649,12 @@ def build(cfg, op, *shape):
                         p["rounds"],
                         puts,
                         externs,
+                        rtps,
                     )
                 )
             for p in puts:
                 p()
-            with air.segment(name="seg") as seg:
+            with air.segment(name="seg", params=rtps) as seg:
 
                 @seg.body
                 def _():

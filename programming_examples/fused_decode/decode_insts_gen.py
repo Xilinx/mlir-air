@@ -31,6 +31,10 @@ A build whose sliding-window cores also start at the block their window opens in
 (DECODE_RT_WINDOW) leaves decode_L<N>.rt_window, holding the window, and
 decode_L<N>.sw.insts.bin, rebuilt with each sliding wave's readback one block
 later; that difference moves the readback's start with the window.
+
+A build whose attention cores take KV blocks in pairs leaves decode_L<N>.rt_pair:
+every wave's block count is even, so the readback rounds its end up and a
+sliding wave's start down to an even block.
 """
 
 import os
@@ -118,6 +122,10 @@ class DecodeInstsGen:
                     "DECODE_RT_ROUNDS but has no decode_L<N>.rb.insts.bin, so its "
                     "readback cannot be cut to the cores' block count; rebuild it"
                 )
+            t["pair"] = any(
+                os.path.exists(os.path.join(artifact_dir, f"decode_L{L}.rt_pair"))
+                for L in t["Ls"]
+            )
             t["sw"] = None
             for L in t["Ls"]:
                 wf = os.path.join(artifact_dir, f"decode_L{L}.rt_window")
@@ -243,9 +251,13 @@ class DecodeInstsGen:
         out = t["base"][idx].astype(np.int64)
         out += (L - t["base_L"]) * t["slope"][idx]
         if t["rb"] is not None:
-            out += ((L + 15) // 16 - t["rb_rounds"]) * t["rb"][idx]
+            rounds = (L + 15) // 16
+            rounds += rounds & 1 if t["pair"] else 0
+            out += (rounds - t["rb_rounds"]) * t["rb"][idx]
         if t["sw"] is not None and L > t["window"]:
-            out += ((L - t["window"]) // 16) * t["sw"][idx]
+            skip = (L - t["window"]) // 16
+            skip -= skip & 1 if t["pair"] else 0
+            out += skip * t["sw"][idx]
         return out.astype(np.uint32)
 
     def calibrated_windows(self):

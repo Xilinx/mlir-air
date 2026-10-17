@@ -133,37 +133,69 @@ def _declare_flash_kernels(causal=False):
     )
 
 
-def _declare_flash_channels(NS, H, NQ):
+def _declare_flash_channels(NS, H, NQ, Hr=1):
     """The memtile-relay, cascade and output-gather channels every schedule
     declares in the order the predecessor declares them (the order they print
-    in)."""
+    in). With Hr > 1 row groups (q_in_segment) the relay and output channels are
+    per row group, returned as [r][s] / [r] lists, and the cascade spans Hr * NS
+    rows."""
+    Hc = H // Hr
+
+    def nm(base, r, s=None):
+        return base + ("" if Hr == 1 else f"_{r}") + ("" if s is None else f"_{s}")
+
     qk2l1, qkin, v2l1, vin = [], [], [], []
-    for s in range(NS):
-        qk2l1.append(
-            air.channel(f"QK2L1_{s}", size=[H, 1, 1], broadcast_shape=[H, 1, NQ])
+    for r in range(Hr):
+        qk2l1.append([])
+        qkin.append([])
+        v2l1.append([])
+        vin.append([])
+        for s in range(NS):
+            qk2l1[r].append(
+                air.channel(
+                    nm("QK2L1", r, s), size=[Hc, 1, 1], broadcast_shape=[Hc, 1, NQ]
+                )
+            )
+            qkin[r].append(air.channel(nm("QKIn", r, s), size=[Hc]))
+        for s in range(NS):
+            v2l1[r].append(
+                air.channel(
+                    nm("V2L1", r, s), size=[Hc, 1, 1], broadcast_shape=[Hc, 1, NQ]
+                )
+            )
+            vin[r].append(air.channel(nm("VIn", r, s), size=[Hc]))
+    ncs = max(Hr * NS - 1, 1) if Hr > 1 else NS - 1
+    cascade_gp = air.channel("cascade_gp", size=[NQ, ncs], channel_type="npu_cascade")
+    cascade_up = air.channel("cascade_up", size=[NQ, ncs], channel_type="npu_cascade")
+    cascade_sp = air.channel("cascade_sp", size=[NQ, ncs], channel_type="npu_cascade")
+    gp2l2 = air.channel("Gp2L2", size=[NQ, Hr])
+    gpout = [air.channel(nm("GpOut", r), size=[Hc]) for r in range(Hr)]
+    if Hr == 1:
+        return (
+            qk2l1[0],
+            qkin[0],
+            v2l1[0],
+            vin[0],
+            cascade_gp,
+            cascade_up,
+            cascade_sp,
+            gp2l2,
+            gpout[0],
         )
-        qkin.append(air.channel(f"QKIn_{s}", size=[H]))
-    for s in range(NS):
-        v2l1.append(
-            air.channel(f"V2L1_{s}", size=[H, 1, 1], broadcast_shape=[H, 1, NQ])
-        )
-        vin.append(air.channel(f"VIn_{s}", size=[H]))
-    cascade_gp = air.channel(
-        "cascade_gp", size=[NQ, NS - 1], channel_type="npu_cascade"
-    )
-    cascade_up = air.channel(
-        "cascade_up", size=[NQ, NS - 1], channel_type="npu_cascade"
-    )
-    cascade_sp = air.channel(
-        "cascade_sp", size=[NQ, NS - 1], channel_type="npu_cascade"
-    )
-    gp2l2 = air.channel("Gp2L2", size=[NQ, 1])
-    gpout = air.channel("GpOut", size=[H])
     return qk2l1, qkin, v2l1, vin, cascade_gp, cascade_up, cascade_sp, gp2l2, gpout
 
 
 def _declare_flash_tensors(
-    lq, lk, dk, dv, num_heads, num_kv_heads, fused_qkv, n_images
+    lq,
+    lk,
+    dk,
+    dv,
+    num_heads,
+    num_kv_heads,
+    fused_qkv,
+    n_images,
+    attn_mask=False,
+    v_cols=None,
 ):
     """Q/K/V/GP L3 tensors + head-column bases, shared by every schedule.
 
@@ -175,6 +207,10 @@ def _declare_flash_tensors(
     the same shape cost three device reconfigurations, and each head is a
     column range either way, so attention reads its blocks straight out of the
     wide buffer instead of three copied-apart ones.
+
+    v_cols: only V is read out of a wide [lk, v_cols] tensor (its heads are the
+    last num_kv_heads*dv columns), for when Q and K come from separate
+    post-RoPE buffers but V is still the tail of the fused QKV GEMM output.
     """
     emb_q = num_heads * dk
     emb_k = num_kv_heads * dk
@@ -188,10 +224,13 @@ def _declare_flash_tensors(
     else:
         Q = air.tensor([n_images * lq, emb_q], bf16)
         K = air.tensor([n_images * lk, emb_k], bf16)
-        V = air.tensor([n_images * lk, emb_v], bf16)
-        q_base = k_base = v_base = 0
+        V = air.tensor([n_images * lk, v_cols or emb_v], bf16)
+        q_base = k_base = 0
+        v_base = (v_cols or emb_v) - emb_v
+    # Inputs must be declared before the output, so the mask sits ahead of GP.
+    MASK = air.tensor([lq, lk], bf16) if attn_mask else None
     GP = air.tensor([n_images * lq, emb_out], bf16)
-    return Q, K, V, GP, q_base, k_base, v_base
+    return Q, K, V, GP, q_base, k_base, v_base, MASK
 
 
 def _make_cascade_merge(
@@ -213,6 +252,8 @@ def _make_cascade_merge(
     add_gp_g,
     accum_sp_r_s,
     zero_fill_sp,
+    merge_gp=None,
+    merge_gp_div=None,
 ):
     """Fold the neighbour cascade stage's partials into ours -- identical for
     every schedule, since the cascade is private to one segment instance
@@ -220,7 +261,7 @@ def _make_cascade_merge(
     holding the merged result; the caller either forwards them north or
     normalises and drains them south."""
 
-    def merge():
+    def merge(final=False):
         gp_c = air.alloc([tile_size_q, dv_tile], bf16, scope=h.private())
         up_c = air.alloc([tile_size_q, 1], bf16, scope=h.private())
         sp_c = air.alloc([tile_size_q, 1], bf16, scope=h.private())
@@ -234,14 +275,20 @@ def _make_cascade_merge(
         exp_up_minus_u(up_c, up, rc)
         rl = air.alloc([tile_size_q, 1], bf16, scope=h.private())
         exp_up_minus_u(up_s, up, rl)
-        mul_r_gp(rc, gp_c)
-        mul_r_gp(rl, gp)
-        add_gp_g(gp, gp_c)
+        if merge_gp is None:
+            mul_r_gp(rc, gp_c)
+            mul_r_gp(rl, gp)
+            add_gp_g(gp, gp_c)
+        elif not (final and merge_gp_div is not None):
+            merge_gp(rc, gp_c, rl, gp)  # gp_c = gp_c * rc + gp * rl
         st = air.alloc([tile_size_q, 1], bf16, scope=h.private())
         zero_fill_sp(st)
         accum_sp_r_s(sp_c, rc, st)
         accum_sp_r_s(sp, rl, st)
         vector_copy(0, st, sp_c)
+        if final and merge_gp_div is not None:
+            # last stage: the divide by the softmax sum rides in the row factors
+            merge_gp_div(rc, gp_c, rl, gp, sp_c)
         return gp_c, sp_c
 
     return merge
@@ -263,7 +310,42 @@ def build_launch(
     fused_qkv=False,
     n_images=1,
     q_in_segment=False,
+    attn_mask=False,
+    v_cols=None,
+    heads_in_segment=1,
+    q_bcast=False,
+    fused_merge=False,
+    heads_rows=1,
+    q_launch=1,
 ):
+    """heads_rows / q_launch: q_in_segment only, see _build_launch_q_in_segment.
+
+    fused_merge: q_in_segment only. Use the merge_gp / merge_gp_div kernels
+    (compile attn_npu2.o with -DQK_PRETRANSPOSE -DFUSED_MERGE) for the cascade merge and the
+    final normalization.
+
+    q_bcast: see _build_launch_q_bcast.
+
+    heads_in_segment: loop this many head groups inside the segment and the
+    herd per launch iteration instead of one, so a wave streams several heads
+    without re-arming the shim DMAs between them. The mask, identical for every
+    head, is then sent and captured once per wave. Bounded by the 16 BDs of a
+    shim tile: every head in a wave holds its Q/K/V BDs until the wave ends.
+
+    attn_mask: take an extra [lq, lk] bf16 input (arg 3, ahead of the output)
+    that is added to the scores before the softmax. 0 keeps a (query, key) pair;
+    bf16 lowest (0xff7f) drops it, and a row dropped entirely comes out as the
+    uniform average over all keys, like an additive float-min mask on the host.
+    Each core's block travels the Q/K channel exactly like its Q tile.
+
+    v_cols: V is a wide [lk, v_cols] tensor holding the V heads in its last
+    num_kv_heads*dv columns (see _declare_flash_tensors)."""
+    assert not (attn_mask and q_in_segment), "attn_mask is not wired into q_in_segment"
+    assert not (v_cols and (q_in_segment or fused_qkv)), "v_cols is for separate Q/K"
+    if not q_in_segment:
+        assert (
+            heads_rows == 1 and q_launch == 1
+        ), "heads_rows / q_launch need q_in_segment"
     if q_in_segment:
         return _build_launch_q_in_segment(
             lk=lk,
@@ -280,6 +362,29 @@ def build_launch(
             num_heads_per_unroll=num_heads_per_unroll,
             fused_qkv=fused_qkv,
             n_images=n_images,
+            fused_merge=fused_merge,
+            heads_rows=heads_rows,
+            q_launch=q_launch,
+        )
+    if q_bcast:
+        return _build_launch_q_bcast(
+            lk=lk,
+            lkp=lkp,
+            lq=lq,
+            lqp=lqp,
+            dk=dk,
+            dv=dv,
+            num_q_tiles=num_q_tiles,
+            num_cascade_stages=num_cascade_stages,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            causal=causal,
+            num_heads_per_unroll=num_heads_per_unroll,
+            fused_qkv=fused_qkv,
+            n_images=n_images,
+            attn_mask=attn_mask,
+            v_cols=v_cols,
+            heads_in_segment=heads_in_segment,
         )
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
     assert (
@@ -303,6 +408,14 @@ def build_launch(
             f"tile_size_q={lqp // num_q_tiles}, lkp={lkp}"
         )
 
+    if attn_mask:
+        assert not causal, "attn_mask replaces the causal mask, not both"
+        assert n_images == 1, "attn_mask is one [lq, lk] mask"
+        assert lk == lkp * num_cascade_stages, "attn_mask needs one K chunk per stage"
+        assert (
+            lqp // num_q_tiles == lkp
+        ), "attn_mask block must be the [lkp, lkp] G tile"
+
     # Skipping fully-future blocks is unconditional under causal here.
     causal_skip = causal
     window_blocks = None
@@ -320,6 +433,18 @@ def build_launch(
         f"({num_heads_per_unroll})"
     )
     num_head_groups = num_heads // num_heads_per_unroll
+    wave = heads_in_segment
+    if wave > 1:
+        assert not causal, "heads_in_segment does not carry the causal counters"
+        assert dv_chunks == 1 and n_images == 1, "heads_in_segment needs a 2-D grid"
+        assert num_head_groups % wave == 0, (
+            f"head groups ({num_head_groups}) must be divisible by "
+            f"heads_in_segment ({wave})"
+        )
+    mask_once = attn_mask and wave > 1
+
+    def head_group_loop():
+        return air.sequential(0, wave) if wave > 1 else (None,)
 
     num_lq_iters = lq // lqp
     tile_size_q = lqp // num_q_tiles
@@ -369,8 +494,8 @@ def build_launch(
     ) = _declare_flash_channels(NS, H, NQ)
 
     # ---------------------------------------------------------------- tensors
-    Q, K, V, GP, q_base, k_base, v_base = _declare_flash_tensors(
-        lq, lk, dk, dv, num_heads, num_kv_heads, fused_qkv, n_images
+    Q, K, V, GP, q_base, k_base, v_base, MASK = _declare_flash_tensors(
+        lq, lk, dk, dv, num_heads, num_kv_heads, fused_qkv, n_images, attn_mask, v_cols
     )
 
     # Independent self-attention problems stacked along ROWS -- SmolVLA attends
@@ -380,7 +505,7 @@ def build_launch(
         f"n_images ({n_images}) and dv_chunks ({dv_chunks}) both need the third "
         "launch axis"
     )
-    grid = [range(num_lq_iters), range(num_head_groups)]
+    grid = [range(num_lq_iters), range(num_head_groups // wave)]
     if dv_chunks > 1:
         grid.append(range(dv_chunks))
     elif n_images > 1:
@@ -391,9 +516,29 @@ def build_launch(
         # they agree -- so the third coordinate is bound to 0 when the value
         # dimension fits in one tile and there is no third axis.
         def run(lx, ly, lz, img):
+            if mask_once:
+                for head_local in range(H):
+                    for s in range(NS):
+                        qkin[s].put(
+                            MASK[lx * lqp : lx * lqp + lqp, s * lkp : s * lkp + lkp]
+                            .reshape(NQ, tile_size_q, 1, lkp)
+                            .transpose(0, 2, 1, 3),
+                            indices=[head_local],
+                        )
+            if wave > 1:
+                head_bases = [ly * (wave * H) + j * H for j in range(wave)]
+            else:
+                head_bases = [ly * H]
+            for head_base in head_bases:
+                send_head_group(lx, head_base, lz, img)
 
-            head_base = ly * H
+            with air.segment([range(H), range(1)], name="attn_seg") as seg:
+                segment_body(seg)
 
+            for head_base in head_bases:
+                recv_head_group(lx, head_base, lz, img)
+
+        def send_head_group(lx, head_base, lz, img):
             for head_local in range(H):
                 head_idx = head_base + head_local
                 kv_head_idx = (
@@ -419,6 +564,17 @@ def build_launch(
                         indices=[head_local],
                     )
 
+                # Mask: stage s's key columns, split into the NQ query tiles
+                # the same way Q is.
+                if attn_mask and not mask_once:
+                    for s in range(NS):
+                        qkin[s].put(
+                            MASK[lx * lqp : lx * lqp + lqp, s * lkp : s * lkp + lkp]
+                            .reshape(NQ, tile_size_q, 1, lkp)
+                            .transpose(0, 2, 1, 3),
+                            indices=[head_local],
+                        )
+
                 # K: the same split over this stage's chunks.
                 for s in range(NS):
                     row = img * lk + s * lk_per_stage
@@ -440,62 +596,68 @@ def build_launch(
                         indices=[head_local],
                     )
 
-            with air.segment([range(H), range(1)], name="attn_seg") as seg:
+        def segment_body(seg):
 
-                @seg.body
-                def _(seg_x, seg_y):
-                    qk_l2 = [
-                        air.alloc([lkp, dk_tile], bf16, scope=seg.private())
-                        for _ in range(NS)
-                    ]
-                    v_l2 = [
-                        air.alloc([lkp, dv_tile], bf16, scope=seg.private())
-                        for _ in range(NS)
-                    ]
-                    gp_l2 = air.alloc([lqp, dv_tile], bf16, scope=seg.private())
+            @seg.body
+            def _(seg_x, seg_y):
+                qk_l2 = [
+                    air.alloc([lkp, dk_tile], bf16, scope=seg.private())
+                    for _ in range(NS)
+                ]
+                v_l2 = [
+                    air.alloc([lkp, dv_tile], bf16, scope=seg.private())
+                    for _ in range(NS)
+                ]
+                gp_l2 = air.alloc([lqp, dv_tile], bf16, scope=seg.private())
 
-                    # L1, allocated here so it survives the whole segment and
-                    # reaches the herd as an operand.
-                    q_saved = [
-                        air.alloc([tile_size_q, dk_tile], bf16, scope=seg.per_core())
-                        for _ in range(dk_chunks)
-                    ]
-                    qk = air.alloc([lkp, dk_tile], bf16, scope=seg.per_core())
-                    v_l1 = air.alloc([lkp, dv_tile], bf16, scope=seg.per_core())
-                    g = air.alloc([tile_size_q, lkp], bf16, scope=seg.per_core())
-                    gp = air.alloc([tile_size_q, dv_tile], bf16, scope=seg.per_core())
-                    up = air.alloc([tile_size_q, 1], bf16, scope=seg.per_core())
-                    sp = air.alloc([tile_size_q, 1], bf16, scope=seg.per_core())
-                    ctr = (
-                        air.alloc(
-                            [4 if dv_chunks > 1 else 3], i32, scope=seg.per_core()
+                # L1, allocated here so it survives the whole segment and
+                # reaches the herd as an operand.
+                q_saved = [
+                    air.alloc([tile_size_q, dk_tile], bf16, scope=seg.per_core())
+                    for _ in range(dk_chunks)
+                ]
+                m_saved = (
+                    air.alloc([tile_size_q, lkp], bf16, scope=seg.per_core())
+                    if attn_mask
+                    else None
+                )
+                qk = air.alloc([lkp, dk_tile], bf16, scope=seg.per_core())
+                v_l1 = air.alloc([lkp, dv_tile], bf16, scope=seg.per_core())
+                g = air.alloc([tile_size_q, lkp], bf16, scope=seg.per_core())
+                gp = air.alloc([tile_size_q, dv_tile], bf16, scope=seg.per_core())
+                up = air.alloc([tile_size_q, 1], bf16, scope=seg.per_core())
+                sp = air.alloc([tile_size_q, 1], bf16, scope=seg.per_core())
+                ctr = (
+                    air.alloc([4 if dv_chunks > 1 else 3], i32, scope=seg.per_core())
+                    if causal
+                    else None
+                )
+
+                # The memtile relay. One get per L3 send, one put per L1
+                # receive, and the put re-describes the [lkp, dk_tile] tile
+                # in the 4x8 blocks the mmul instruction consumes.
+                def relay_qk(s, n):
+                    for _ in air.sequential(0, n):
+                        qkin[s].get(qk_l2[s], indices=[seg_x])
+                        qk2l1[s].put(
+                            qk_l2[s]
+                            .reshape(lkp // M, M, dk_tile // M, M)
+                            .transpose(2, 0, 1, 3),
+                            indices=[seg_x, 0, 0],
                         )
-                        if causal
-                        else None
-                    )
 
-                    # The memtile relay. One get per L3 send, one put per L1
-                    # receive, and the put re-describes the [lkp, dk_tile] tile
-                    # in the 4x8 blocks the mmul instruction consumes.
-                    for s in range(NS):
-                        for _ in air.sequential(0, NQ * dk_chunks):
-                            qkin[s].get(qk_l2[s], indices=[seg_x])
-                            qk2l1[s].put(
-                                qk_l2[s]
-                                .reshape(lkp // M, M, dk_tile // M, M)
-                                .transpose(2, 0, 1, 3),
-                                indices=[seg_x, 0, 0],
-                            )
-                        for _ in air.sequential(0, chunks_per_stage * dk_chunks):
-                            qkin[s].get(qk_l2[s], indices=[seg_x])
-                            qk2l1[s].put(
-                                qk_l2[s]
-                                .reshape(lkp // M, M, dk_tile // M, M)
-                                .transpose(2, 0, 1, 3),
-                                indices=[seg_x, 0, 0],
-                            )
+                for s in range(NS):
+                    if mask_once:
+                        relay_qk(s, NQ)
+                    for _ in head_group_loop():
+                        relay_qk(
+                            s,
+                            NQ * dk_chunks + (NQ if attn_mask and not mask_once else 0),
+                        )
+                        relay_qk(s, chunks_per_stage * dk_chunks)
 
-                    for s in range(NS):
+                for s in range(NS):
+                    for _ in head_group_loop():
                         for _ in air.sequential(0, chunks_per_stage):
                             vin[s].get(v_l2[s], indices=[seg_x])
                             v2l1[s].put(
@@ -505,15 +667,16 @@ def build_launch(
                                 indices=[seg_x, 0, 0],
                             )
 
-                    with air.herd(
-                        [range(NQ), range(NS)],
-                        name="herd_0",
-                        shape=(NQ, NS),
-                        link_with=KERNEL,
-                    ) as h:
+                with air.herd(
+                    [range(NQ), range(NS)],
+                    name="herd_0",
+                    shape=(NQ, NS),
+                    link_with=KERNEL,
+                ) as h:
 
-                        @h.body
-                        def _(tx, ty):
+                    @h.body
+                    def _(tx, ty):
+                        def head_group():
                             zero_fill_gp(gp)
                             zero_fill_sp(sp)
                             neg_inf_fill_up(up)
@@ -539,6 +702,16 @@ def build_launch(
                                             qk2l1[s].get(qk, indices=[seg_x, ty, tx])
                                     with ops.branch(tx == qt):
                                         copy_tile(qk, q_saved[dk_c])
+
+                            # Mask selective capture, same shape as Q's. The
+                            # relay's put leaves it in G's 8x8 tiled layout.
+                            if attn_mask and not mask_once:
+                                for qt in range(NQ):
+                                    for s in range(NS):
+                                        with ops.branch(ty == s):
+                                            qk2l1[s].get(qk, indices=[seg_x, ty, tx])
+                                    with ops.branch(tx == qt):
+                                        copy_tile(qk, m_saved)
 
                             for chunk in air.sequential(0, chunks_per_stage):
                                 # This block's place in the mask. q_block is a
@@ -601,6 +774,8 @@ def build_launch(
                                             )
                                         else:
                                             apply_mask(g, q_block, kv_block)
+                                    if attn_mask:
+                                        add_gp_g(m_saved, g)
                                     s_tmp = air.alloc(
                                         [tile_size_q, 1], bf16, scope=h.private()
                                     )
@@ -672,7 +847,12 @@ def build_launch(
                                 # nested ifs, for the reason above.
                                 head_next = ctr[2:3] + 1
                                 wrapped = head_next >= num_head_groups
-                                q_adv = ops.select(wrapped, ctr[0:1] + NQ, ctr[0:1])
+                                # Wrap so the next run starts at q block 0.
+                                q_next = ctr[0:1] + NQ
+                                q_next = ops.select(
+                                    q_next >= num_lq_iters * NQ, 0, q_next
+                                )
+                                q_adv = ops.select(wrapped, q_next, ctr[0:1])
                                 head_adv = ops.select(wrapped, 0, head_next)
                                 if dv_chunks > 1:
                                     last_dv = ctr[3:4] >= dv_chunks - 1
@@ -683,7 +863,18 @@ def build_launch(
                                     ctr[0:1] = q_adv
                                     ctr[2:3] = head_adv
 
-                    # Gather the NQ column results into the L2 output tile.
+                        if mask_once:
+                            for qt in range(NQ):
+                                for s in range(NS):
+                                    with ops.branch(ty == s):
+                                        qk2l1[s].get(qk, indices=[seg_x, ty, tx])
+                                with ops.branch(tx == qt):
+                                    copy_tile(qk, m_saved)
+                        for _ in head_group_loop():
+                            head_group()
+
+                # Gather the NQ column results into the L2 output tile.
+                for _ in head_group_loop():
                     for col in air.parallel(0, NQ):
                         gp2l2.get(
                             gp_l2[
@@ -694,6 +885,7 @@ def build_launch(
 
                     gpout.put(gp_l2, indices=[seg_x])
 
+        def recv_head_group(lx, head_base, lz, img):
             for head_local in range(H):
                 head_idx = head_base + head_local
                 out_row = img * lq + lx * lqp
@@ -739,6 +931,9 @@ def _build_launch_q_in_segment(
     num_heads_per_unroll,
     fused_qkv,
     n_images,
+    fused_merge=False,
+    heads_rows=1,
+    q_launch=1,
 ):
     """The same FlashAttention design with the q-block loop inside the segment.
 
@@ -749,6 +944,14 @@ def _build_launch_q_in_segment(
     is an ``air.sequential`` in the segment and the herd, so the grid is
     ``head_groups (* n_images)`` and each wave streams ``lq // lqp`` q blocks
     (K/V are still re-sent from DRAM per q block). The output is bit-identical.
+
+    heads_rows (Hr): the herd's rows hold Hr head groups of NS cascade stages each
+    (core ty = r * NS + s), so Hc = H // Hr heads go along the columns (segment
+    unroll) and Hr along the rows; the cascade stays inside a row group. Needs
+    Hc * NQ <= 8 and Hr * NS <= 4. heads_rows=1 is the column-only layout.
+
+    q_launch: split the q blocks over that many launch iterations, which bounds
+    the shim BDs the output gathers hold per iteration.
 
     Supported: non-causal, ``dk == dv == lkp``, MHA or GQA, ``fused_qkv``,
     ``n_images``. Not supported (asserted): causal, head_dim > lkp.
@@ -764,12 +967,19 @@ def _build_launch_q_in_segment(
     H = num_heads_per_unroll
     assert num_heads % H == 0
     num_head_groups = num_heads // H
+    Hr = heads_rows
+    assert H % Hr == 0
+    Hc = H // Hr
 
     tile_size_q = lqp // num_q_tiles
-    num_lq_iters = lq // lqp
+    assert (lq // lqp) % q_launch == 0
+    num_lq_iters = lq // lqp // q_launch  # q blocks per launch iteration
     num_chunks = lk // lkp
     NS = num_cascade_stages
     NQ = num_q_tiles
+    if Hr > 1:
+        assert Hc * NQ <= 8 and Hr * NS <= 4, (Hc, NQ, Hr, NS)
+        assert NS >= 2, "a row group needs a first and a last cascade stage"
     chunks_per_stage = num_chunks // NS
     lk_per_stage = lkp * chunks_per_stage
     g_flat = tile_size_q * lkp
@@ -792,6 +1002,14 @@ def _build_launch_q_in_segment(
         add_gp_g,
         _apply_mask,  # unused: causal is asserted False above
     ) = _declare_flash_kernels(causal=False)
+    merge_gp_k = air.extern("merge_gp", link_with=KERNEL) if fused_merge else None
+    merge_gp_div_k = (
+        air.extern("merge_gp_div", link_with=KERNEL) if fused_merge else None
+    )
+
+    matmul_a_b_z = (
+        air.extern("matmul_a_b_bf16_z", link_with=KERNEL) if fused_merge else None
+    )
 
     (
         qk2l1,
@@ -803,22 +1021,27 @@ def _build_launch_q_in_segment(
         cascade_sp,
         gp2l2,
         gpout,
-    ) = _declare_flash_channels(NS, H, NQ)
+    ) = _declare_flash_channels(NS, H, NQ, Hr)
+    if Hr == 1:  # one row group: index everything as [r][...] below
+        qk2l1, qkin, v2l1, vin, gpout = [qk2l1], [qkin], [v2l1], [vin], [gpout]
 
-    Q, K, V, GP, q_base, k_base, v_base = _declare_flash_tensors(
+    Q, K, V, GP, q_base, k_base, v_base, _ = _declare_flash_tensors(
         lq, lk, dk, dv, num_heads, num_kv_heads, fused_qkv, n_images
     )
 
     grid = [range(1), range(num_head_groups)]
     if n_images > 1:
         grid.append(range(n_images))
+    if q_launch > 1:
+        grid.append(range(q_launch))
 
     with air.launch(grid, name="attention_bf16") as launch:
 
-        def run(ly, img):
+        def run(ly, img, qh):
             head_base = ly * H
 
             for head_local in range(H):
+                hc, r = head_local % Hc, head_local // Hc
                 head_idx = head_base + head_local
                 kv_head_idx = (
                     head_idx if gqa_group_size == 1 else head_idx // gqa_group_size
@@ -830,43 +1053,52 @@ def _build_launch_q_in_segment(
                 # Per q block, in the order the segment consumes them: Q and K for
                 # every stage, then V for every stage.
                 for qi in range(num_lq_iters):
-                    q_row = img * lq + qi * lqp
+                    q_row = img * lq + (qh * num_lq_iters + qi) * lqp
                     for s in range(NS):
-                        qkin[s].put(
+                        qkin[r][s].put(
                             Q[q_row : q_row + lqp, q_col : q_col + dk]
                             .reshape(NQ, tile_size_q, 1, dk)
                             .transpose(0, 2, 1, 3),
-                            indices=[head_local],
+                            indices=[hc],
                         )
                         row = img * lk + s * lk_per_stage
-                        qkin[s].put(
+                        qkin[r][s].put(
                             K[row : row + lk_per_stage, k_col : k_col + dk]
                             .reshape(chunks_per_stage, lkp, 1, dk)
                             .transpose(0, 2, 1, 3),
-                            indices=[head_local],
+                            indices=[hc],
                         )
                     for s in range(NS):
                         row = img * lk + s * lk_per_stage
-                        vin[s].put(
+                        vin[r][s].put(
                             V[row : row + lk_per_stage, v_col : v_col + dv].reshape(
                                 chunks_per_stage, lkp, dv
                             ),
-                            indices=[head_local],
+                            indices=[hc],
                         )
 
-            with air.segment([range(H), range(1)], name="attn_seg") as seg:
+            with air.segment([range(Hc), range(1)], name="attn_seg") as seg:
 
                 @seg.body
                 def _(seg_x, seg_y):
                     qk_l2 = [
-                        air.alloc([lkp, dk], bf16, scope=seg.private())
-                        for _ in range(NS)
+                        [
+                            air.alloc([lkp, dk], bf16, scope=seg.private())
+                            for _ in range(NS)
+                        ]
+                        for _ in range(Hr)
                     ]
                     v_l2 = [
-                        air.alloc([lkp, dv], bf16, scope=seg.private())
-                        for _ in range(NS)
+                        [
+                            air.alloc([lkp, dv], bf16, scope=seg.private())
+                            for _ in range(NS)
+                        ]
+                        for _ in range(Hr)
                     ]
-                    gp_l2 = air.alloc([lqp, dv], bf16, scope=seg.private())
+                    gp_l2 = [
+                        air.alloc([lqp, dv], bf16, scope=seg.private())
+                        for _ in range(Hr)
+                    ]
 
                     q_saved = air.alloc([tile_size_q, dk], bf16, scope=seg.per_core())
                     qk = air.alloc([lkp, dk], bf16, scope=seg.per_core())
@@ -877,34 +1109,44 @@ def _build_launch_q_in_segment(
                     sp = air.alloc([tile_size_q, 1], bf16, scope=seg.per_core())
 
                     for _ in air.sequential(0, num_lq_iters):
-                        for s in range(NS):
-                            for _ in air.sequential(0, NQ + chunks_per_stage):
-                                qkin[s].get(qk_l2[s], indices=[seg_x])
-                                qk2l1[s].put(
-                                    qk_l2[s]
-                                    .reshape(lkp // M, M, dk // M, M)
-                                    .transpose(2, 0, 1, 3),
-                                    indices=[seg_x, 0, 0],
-                                )
-                        for s in range(NS):
-                            for _ in air.sequential(0, chunks_per_stage):
-                                vin[s].get(v_l2[s], indices=[seg_x])
-                                v2l1[s].put(
-                                    v_l2[s]
-                                    .reshape(lkp // M, M, dv // M, M)
-                                    .transpose(2, 0, 1, 3),
-                                    indices=[seg_x, 0, 0],
-                                )
+                        for r in range(Hr):
+                            for s in range(NS):
+                                for _ in air.sequential(0, NQ + chunks_per_stage):
+                                    qkin[r][s].get(qk_l2[r][s], indices=[seg_x])
+                                    qk2l1[r][s].put(
+                                        qk_l2[r][s]
+                                        .reshape(lkp // M, M, dk // M, M)
+                                        .transpose(2, 0, 1, 3),
+                                        indices=[seg_x, 0, 0],
+                                    )
+                        for r in range(Hr):
+                            for s in range(NS):
+                                for _ in air.sequential(0, chunks_per_stage):
+                                    vin[r][s].get(v_l2[r][s], indices=[seg_x])
+                                    v2l1[r][s].put(
+                                        v_l2[r][s]
+                                        .reshape(lkp // M, M, dv // M, M)
+                                        .transpose(2, 0, 1, 3),
+                                        indices=[seg_x, 0, 0],
+                                    )
 
                     with air.herd(
-                        [range(NQ), range(NS)],
+                        [range(NQ), range(Hr * NS)],
                         name="herd_0",
-                        shape=(NQ, NS),
+                        shape=(NQ, Hr * NS),
                         link_with=KERNEL,
                     ) as h:
 
                         @h.body
                         def _(tx, ty):
+                            def get_into(chans, buf):
+                                for r in range(Hr):
+                                    for s in range(NS):
+                                        with ops.branch(ty == r * NS + s):
+                                            chans[r][s].get(
+                                                buf, indices=[seg_x, ty, tx]
+                                            )
+
                             for _ in air.sequential(0, num_lq_iters):
                                 zero_fill_gp(gp)
                                 zero_fill_sp(sp)
@@ -913,21 +1155,19 @@ def _build_launch_q_in_segment(
                                 # Q selective capture: receive all NQ sends, keep
                                 # the one this column owns.
                                 for qt in range(NQ):
-                                    for s in range(NS):
-                                        with ops.branch(ty == s):
-                                            qk2l1[s].get(qk, indices=[seg_x, ty, tx])
+                                    get_into(qk2l1, qk)
                                     with ops.branch(tx == qt):
                                         copy_tile(qk, q_saved)
 
                                 for chunk in air.sequential(0, chunks_per_stage):
-                                    zero_fill_g(g.reshape(g_flat))
-                                    for s in range(NS):
-                                        with ops.branch(ty == s):
-                                            qk2l1[s].get(qk, indices=[seg_x, ty, tx])
-                                    matmul_a_b(q_saved, qk, g.reshape(g_flat))
-                                    for s in range(NS):
-                                        with ops.branch(ty == s):
-                                            v2l1[s].get(v_l1, indices=[seg_x, ty, tx])
+                                    if matmul_a_b_z is None:
+                                        zero_fill_g(g.reshape(g_flat))
+                                    get_into(qk2l1, qk)
+                                    if matmul_a_b_z is None:
+                                        matmul_a_b(q_saved, qk, g.reshape(g_flat))
+                                    else:
+                                        matmul_a_b_z(q_saved, qk, g.reshape(g_flat))
+                                    get_into(v2l1, v_l1)
                                     s_tmp = air.alloc(
                                         [tile_size_q, 1], bf16, scope=h.private()
                                     )
@@ -940,7 +1180,380 @@ def _build_launch_q_in_segment(
                                     accum_sp_r_s(sp, r_tmp, s_tmp)
                                     vector_copy(0, s_tmp, sp)
 
-                                # Cascade merge, north to south (as in build_launch).
+                                def merge():
+                                    return _make_cascade_merge(
+                                        h,
+                                        tx,
+                                        ty,
+                                        tile_size_q,
+                                        dv,  # q_in_segment asserts dv == lkp, i.e. dv IS dv_tile
+                                        gp,
+                                        up,
+                                        sp,
+                                        cascade_gp,
+                                        cascade_up,
+                                        cascade_sp,
+                                        vector_copy,
+                                        maximum_up_u,
+                                        exp_up_minus_u,
+                                        mul_r_gp,
+                                        add_gp_g,
+                                        accum_sp_r_s,
+                                        zero_fill_sp,
+                                        merge_gp=merge_gp_k,
+                                        merge_gp_div=merge_gp_div_k,
+                                    )
+
+                                def last():  # northmost stage of a row group
+                                    cascade_gp.put(gp, indices=[tx, ty - 1])
+                                    cascade_up.put(up, indices=[tx, ty - 1])
+                                    cascade_sp.put(sp, indices=[tx, ty - 1])
+
+                                def first(r):  # southmost: merge, normalise, drain
+                                    gp_c, sp_c = merge()(final=True)
+                                    if merge_gp_div_k is None:
+                                        div_gp_sp(sp_c, gp_c)
+                                    gp2l2.put(
+                                        gp_c.reshape(
+                                            dv // M, tile_size_q // M, M, M
+                                        ).transpose(1, 2, 0, 3),
+                                        indices=[tx, r],
+                                    )
+
+                                def mid():  # merge and forward south
+                                    gp_c, _sp_c = merge()()
+                                    cascade_gp.put(gp_c, indices=[tx, ty - 1])
+                                    cascade_up.put(up, indices=[tx, ty - 1])
+                                    cascade_sp.put(_sp_c, indices=[tx, ty - 1])
+
+                                # Cascade merge, north to south inside each row
+                                # group: one if / else-if chain over every group's
+                                # last and first stage; the middle stages (any
+                                # group) share the final else. Cascade indices stay
+                                # expressions of the symbolic ty.
+                                arms = []
+                                for r in range(Hr):
+                                    arms.append((r * NS + NS - 1, last, ()))
+                                    arms.append((r * NS, first, (r,)))
+                                tail = mid if (NS > 2 or (Hr == 1 and NS > 1)) else None
+
+                                def chain(rest):
+                                    v, act, a = rest[0]
+                                    if len(rest) == 1 and tail is None:
+                                        with ops.branch(ty == v):
+                                            act(*a)
+                                        return
+                                    with ops.branch(ty == v) as br:
+                                        act(*a)
+                                    with br.otherwise():
+                                        if len(rest) == 1:
+                                            tail()
+                                        else:
+                                            chain(rest[1:])
+
+                                chain(arms)
+
+                    for _ in air.sequential(0, num_lq_iters):
+                        for r in range(Hr):
+                            for col in air.parallel(0, NQ):
+                                gp2l2.get(
+                                    gp_l2[r][
+                                        col * tile_size_q : col * tile_size_q
+                                        + tile_size_q,
+                                        :,
+                                    ],
+                                    indices=[col, r],
+                                )
+                            gpout[r].put(gp_l2[r], indices=[seg_x])
+
+            for head_local in range(H):
+                hc, r = head_local % Hc, head_local // Hc
+                head_idx = head_base + head_local
+                for qi in range(num_lq_iters):
+                    out_row = img * lq + (qh * num_lq_iters + qi) * lqp
+                    out_col = head_idx * dv
+                    gpout[r].get(
+                        GP[out_row : out_row + lqp, out_col : out_col + dv],
+                        indices=[hc],
+                    )
+
+        if n_images > 1 and q_launch > 1:
+
+            @launch.body
+            def _(lx, ly, li, lh):
+                run(ly, li, lh)
+
+        elif n_images > 1:
+
+            @launch.body
+            def _(lx, ly, li):
+                run(ly, li, 0)
+
+        elif q_launch > 1:
+
+            @launch.body
+            def _(lx, ly, lh):
+                run(ly, 0, lh)
+
+        else:
+
+            @launch.body
+            def _(lx, ly):
+                run(ly, 0, 0)
+
+    return launch
+
+
+def _build_launch_q_bcast(
+    lk,
+    lkp,
+    lq,
+    lqp,
+    dk,
+    dv,
+    num_q_tiles,
+    num_cascade_stages,
+    num_heads,
+    num_kv_heads,
+    causal,
+    num_heads_per_unroll,
+    fused_qkv,
+    n_images,
+    attn_mask,
+    v_cols,
+    heads_in_segment,
+):
+    """build_launch's design with Q on its own channel.
+
+    The shipped schedule sends Q over each stage's Q/K channel, which
+    broadcasts along the stage's NQ cores, so every core receives all NQ Q
+    tiles and keeps one -- per head each core takes in NQ Q tiles plus one K
+    and one V tile. Here K, V (and the mask, once per wave) share the per-stage
+    broadcast channel, and Q gets a per-column channel broadcast over the NS
+    stages: DRAM sends each head's Q block once, the memtile splits it into
+    the NQ column tiles, and each core receives only its own. Same herd,
+    microkernels and cascade merge; the output is bit-identical.
+
+    Supported: non-causal, dk == dv == lkp, n_images == 1.
+    """
+    assert not causal, "q_bcast does not support causal masking"
+    assert dk == lkp and dv == lkp, "q_bcast needs dk == dv == lkp"
+    assert n_images == 1, "q_bcast takes one image"
+    assert lq % lqp == 0 and lqp % num_q_tiles == 0
+    assert lk % (lkp * num_cascade_stages) == 0
+    if num_kv_heads is None:
+        num_kv_heads = num_heads
+    assert num_heads % num_kv_heads == 0
+    gqa_group_size = num_heads // num_kv_heads
+    H = num_heads_per_unroll
+    assert num_heads % H == 0
+    num_head_groups = num_heads // H
+    wave = heads_in_segment
+    assert num_head_groups % wave == 0
+
+    NQ = num_q_tiles
+    NS = num_cascade_stages
+    tile_size_q = lqp // NQ
+    num_lq_iters = lq // lqp
+    chunks_per_stage = lk // lkp // NS
+    lk_per_stage = lkp * chunks_per_stage
+    g_flat = tile_size_q * lkp
+    if attn_mask:
+        assert chunks_per_stage == 1, "attn_mask needs one K chunk per stage"
+        assert tile_size_q == lkp, "attn_mask block must be the [lkp, lkp] G tile"
+
+    def head_group_loop():
+        return air.sequential(0, wave) if wave > 1 else (None,)
+
+    (
+        zero_fill_g,
+        zero_fill_gp,
+        zero_fill_sp,
+        neg_inf_fill_up,
+        matmul_a_b,
+        matmul_g_b,
+        fused_softmax,
+        maximum_up_u,
+        exp_up_minus_u,
+        mul_r_gp,
+        accum_sp_r_s,
+        vector_copy,
+        copy_tile,
+        div_gp_sp,
+        add_gp_g,
+        _apply_mask,
+    ) = _declare_flash_kernels(causal=False)
+
+    kv2l1 = [
+        air.channel(f"KV2L1_{s}", size=[H, 1, 1], broadcast_shape=[H, 1, NQ])
+        for s in range(NS)
+    ]
+    kvin = [air.channel(f"KVIn_{s}", size=[H]) for s in range(NS)]
+    q2l1 = air.channel("Q2L1", size=[H, 1, NQ], broadcast_shape=[H, NS, NQ])
+    qin = [air.channel(f"QIn_{c}", size=[H]) for c in range(NQ)]
+    cascade_gp = air.channel(
+        "cascade_gp", size=[NQ, NS - 1], channel_type="npu_cascade"
+    )
+    cascade_up = air.channel(
+        "cascade_up", size=[NQ, NS - 1], channel_type="npu_cascade"
+    )
+    cascade_sp = air.channel(
+        "cascade_sp", size=[NQ, NS - 1], channel_type="npu_cascade"
+    )
+    gp2l2 = air.channel("Gp2L2", size=[NQ, 1])
+    gpout = air.channel("GpOut", size=[H])
+
+    Q, K, V, GP, q_base, k_base, v_base, MASK = _declare_flash_tensors(
+        lq, lk, dk, dv, num_heads, num_kv_heads, fused_qkv, n_images, attn_mask, v_cols
+    )
+
+    def blocked(t, rows=lkp):
+        """A [rows, dk] tile re-described in the 8x8 blocks mmul consumes."""
+        return t.reshape(rows // M, M, dk // M, M).transpose(2, 0, 1, 3)
+
+    with air.launch(
+        [range(num_lq_iters), range(num_head_groups // wave)], name="attention_bf16"
+    ) as launch:
+
+        @launch.body
+        def _(lx, ly):
+            q_row = lx * lqp
+            # The mask rides the Q channel as column col's NS stage blocks:
+            # a core DMA channel cycles one BD chain, so a once-per-wave
+            # prelude only stays in step if it lands in the loop's buffer.
+            if attn_mask:
+                for head_local in range(H):
+                    for col in range(NQ):
+                        row = q_row + col * tile_size_q
+                        qin[col].put(
+                            MASK[row : row + tile_size_q, 0:lk]
+                            .reshape(tile_size_q, NS, lkp)
+                            .transpose(1, 0, 2),
+                            indices=[head_local],
+                        )
+            if wave > 1:
+                head_bases = [ly * (wave * H) + j * H for j in range(wave)]
+            else:
+                head_bases = [ly * H]
+            for head_base in head_bases:
+                for head_local in range(H):
+                    head_idx = head_base + head_local
+                    kv_head_idx = (
+                        head_idx if gqa_group_size == 1 else head_idx // gqa_group_size
+                    )
+                    q_col = q_base + head_idx * dk
+                    k_col = k_base + kv_head_idx * dk
+                    v_col = v_base + kv_head_idx * dv
+                    for col in range(NQ):
+                        row = q_row + col * tile_size_q
+                        qin[col].put(
+                            Q[row : row + tile_size_q, q_col : q_col + dk],
+                            indices=[head_local],
+                        )
+                    for s in range(NS):
+                        for c in range(chunks_per_stage):
+                            row = s * lk_per_stage + c * lkp
+                            kvin[s].put(
+                                K[row : row + lkp, k_col : k_col + dk],
+                                indices=[head_local],
+                            )
+                            kvin[s].put(
+                                V[row : row + lkp, v_col : v_col + dv],
+                                indices=[head_local],
+                            )
+
+            with air.segment([range(H), range(1)], name="attn_seg") as seg:
+
+                @seg.body
+                def _(seg_x, seg_y):
+                    q_l2 = [
+                        air.alloc([tile_size_q, dk], bf16, scope=seg.private())
+                        for _ in range(NQ)
+                    ]
+                    kv_l2 = [
+                        air.alloc([lkp, dk], bf16, scope=seg.private())
+                        for _ in range(NS)
+                    ]
+                    gp_l2 = air.alloc([lqp, dv], bf16, scope=seg.private())
+
+                    q_saved = air.alloc([tile_size_q, dk], bf16, scope=seg.per_core())
+                    m_saved = (
+                        air.alloc([tile_size_q, lkp], bf16, scope=seg.per_core())
+                        if attn_mask
+                        else None
+                    )
+                    k_l1 = air.alloc([lkp, dk], bf16, scope=seg.per_core())
+                    v_l1 = air.alloc([lkp, dv], bf16, scope=seg.per_core())
+                    g = air.alloc([tile_size_q, lkp], bf16, scope=seg.per_core())
+                    gp = air.alloc([tile_size_q, dv], bf16, scope=seg.per_core())
+                    up = air.alloc([tile_size_q, 1], bf16, scope=seg.per_core())
+                    sp = air.alloc([tile_size_q, 1], bf16, scope=seg.per_core())
+
+                    for s in range(NS):
+                        for _ in head_group_loop():
+                            for _ in air.sequential(0, 2 * chunks_per_stage):
+                                kvin[s].get(kv_l2[s], indices=[seg_x])
+                                kv2l1[s].put(blocked(kv_l2[s]), indices=[seg_x, 0, 0])
+
+                    for col in range(NQ):
+                        if attn_mask:
+                            for _ in air.sequential(0, NS):
+                                qin[col].get(q_l2[col], indices=[seg_x])
+                                q2l1.put(
+                                    blocked(q_l2[col], tile_size_q),
+                                    indices=[seg_x, 0, col],
+                                )
+                        for _ in head_group_loop():
+                            qin[col].get(q_l2[col], indices=[seg_x])
+                            q2l1.put(
+                                blocked(q_l2[col], tile_size_q), indices=[seg_x, 0, col]
+                            )
+
+                    with air.herd(
+                        [range(NQ), range(NS)],
+                        name="herd_0",
+                        shape=(NQ, NS),
+                        link_with=KERNEL,
+                    ) as h:
+
+                        @h.body
+                        def _(tx, ty):
+                            def get_kv(buf):
+                                for s in range(NS):
+                                    with ops.branch(ty == s):
+                                        kv2l1[s].get(buf, indices=[seg_x, ty, tx])
+
+                            if attn_mask:
+                                for s in range(NS):
+                                    q2l1.get(q_saved, indices=[seg_x, ty, tx])
+                                    with ops.branch(ty == s):
+                                        copy_tile(q_saved, m_saved)
+
+                            for _ in head_group_loop():
+                                zero_fill_gp(gp)
+                                zero_fill_sp(sp)
+                                neg_inf_fill_up(up)
+                                q2l1.get(q_saved, indices=[seg_x, ty, tx])
+
+                                for _ in air.sequential(0, chunks_per_stage):
+                                    zero_fill_g(g.reshape(g_flat))
+                                    get_kv(k_l1)
+                                    matmul_a_b(q_saved, k_l1, g.reshape(g_flat))
+                                    get_kv(v_l1)
+                                    if attn_mask:
+                                        add_gp_g(m_saved, g)
+                                    s_tmp = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
+                                    )
+                                    r_tmp = air.alloc(
+                                        [tile_size_q, 1], bf16, scope=h.private()
+                                    )
+                                    fused_softmax(g.reshape(g_flat), up, s_tmp, r_tmp)
+                                    mul_r_gp(r_tmp, gp)
+                                    matmul_g_b(g.reshape(g_flat), v_l1, gp)
+                                    accum_sp_r_s(sp, r_tmp, s_tmp)
+                                    vector_copy(0, s_tmp, sp)
+
                                 with ops.branch(ty == NS - 1) as north:
                                     cascade_gp.put(gp, indices=[tx, ty - 1])
                                     cascade_up.put(up, indices=[tx, ty - 1])
@@ -952,7 +1565,7 @@ def _build_launch_q_in_segment(
                                         tx,
                                         ty,
                                         tile_size_q,
-                                        dv,  # q_in_segment asserts dv == lkp, i.e. dv IS dv_tile
+                                        dv,
                                         gp,
                                         up,
                                         sp,
@@ -984,7 +1597,7 @@ def _build_launch_q_in_segment(
                                         cascade_up.put(up, indices=[tx, ty - 1])
                                         cascade_sp.put(_sp_c, indices=[tx, ty - 1])
 
-                    for _ in air.sequential(0, num_lq_iters):
+                    for _ in head_group_loop():
                         for col in air.parallel(0, NQ):
                             gp2l2.get(
                                 gp_l2[
@@ -995,27 +1608,13 @@ def _build_launch_q_in_segment(
                             )
                         gpout.put(gp_l2, indices=[seg_x])
 
-            for head_local in range(H):
-                head_idx = head_base + head_local
-                for qi in range(num_lq_iters):
-                    out_row = img * lq + qi * lqp
-                    out_col = head_idx * dv
+            for head_base in head_bases:
+                for head_local in range(H):
+                    head_idx = head_base + head_local
                     gpout.get(
-                        GP[out_row : out_row + lqp, out_col : out_col + dv],
+                        GP[q_row : q_row + lqp, head_idx * dv : head_idx * dv + dv],
                         indices=[head_local],
                     )
-
-        if n_images > 1:
-
-            @launch.body
-            def _(lx, ly, li):
-                run(ly, li)
-
-        else:
-
-            @launch.body
-            def _(lx, ly):
-                run(ly, 0)
 
     return launch
 
@@ -1076,6 +1675,16 @@ def parse_args():
         help="If >0, time the kernel over this many iters and report latency "
         "and achieved TFLOP/s alongside the correctness check",
     )
+    parser.add_argument("--heads-rows", type=int, default=1, dest="heads_rows")
+    parser.add_argument("--q-launch", type=int, default=1, dest="q_launch")
+    parser.add_argument("--n-images", type=int, default=1, dest="n_images")
+    parser.add_argument(
+        "--fused-merge",
+        action="store_true",
+        dest="fused_merge",
+        help="merge_gp / merge_gp_div and the zero-init Q@K^T; build the kernel "
+        "with EXTRA_KERNEL_FLAGS='-DQK_PRETRANSPOSE -DFUSED_MERGE'",
+    )
     parser.add_argument(
         "--output-format",
         type=str,
@@ -1117,6 +1726,10 @@ def main():
         causal=causal,
         num_heads_per_unroll=args.num_heads_per_unroll,
         q_in_segment=args.q_in_segment,
+        n_images=args.n_images,
+        heads_rows=args.heads_rows,
+        q_launch=args.q_launch,
+        fused_merge=args.fused_merge,
     )
     mlir_module = launch.build(target="npu2")
     if args.print_module_only:
@@ -1135,34 +1748,36 @@ def main():
     #
     # N(0,1) rather than uniform(0, 4), matching the GPU SDPA test standard
     # (PyTorch uses randn), so the check sees a signed distribution.
-    input_q = rng.standard_normal((lq, num_heads * dk)).astype(bfloat16)
-    input_k = rng.standard_normal((lk, num_kv_heads * dk)).astype(bfloat16)
-    input_v = rng.standard_normal((lk, num_kv_heads * dv)).astype(bfloat16)
+    n_img = args.n_images
+    input_q = rng.standard_normal((n_img * lq, num_heads * dk)).astype(bfloat16)
+    input_k = rng.standard_normal((n_img * lk, num_kv_heads * dk)).astype(bfloat16)
+    input_v = rng.standard_normal((n_img * lk, num_kv_heads * dv)).astype(bfloat16)
 
     inv_sqrt_dk = 1.0 / sqrt(dk)
-    sdpa_output_hf = np.zeros((num_heads, lq, dv), dtype=bfloat16)
-    for head in range(num_heads):
-        kv_h = head // gqa_group_size
-        qf = input_q[:, head * dk : (head + 1) * dk].astype(np.float32)
-        kf = input_k[:, kv_h * dk : (kv_h + 1) * dk].astype(np.float32)
-        vf = input_v[:, kv_h * dv : (kv_h + 1) * dv].astype(np.float32)
-        scores = qf @ kf.T * inv_sqrt_dk
-        if causal:
-            mask = np.triu(np.ones(scores.shape, dtype=bool), k=1)
-            scores = np.where(mask, -1e9, scores)
-        mx = np.max(scores, axis=-1, keepdims=True)
-        p = np.exp(scores - mx)
-        p = p / np.sum(p, axis=-1, keepdims=True)
-        sdpa_output_hf[head] = (p @ vf).astype(bfloat16)
+    expected = np.zeros((n_img * lq, num_heads * dv), dtype=bfloat16)
+    for img in range(n_img):
+        qr, kr = slice(img * lq, (img + 1) * lq), slice(img * lk, (img + 1) * lk)
+        for head in range(num_heads):
+            kv_h = head // gqa_group_size
+            qf = input_q[qr, head * dk : (head + 1) * dk].astype(np.float32)
+            kf = input_k[kr, kv_h * dk : (kv_h + 1) * dk].astype(np.float32)
+            vf = input_v[kr, kv_h * dv : (kv_h + 1) * dv].astype(np.float32)
+            scores = qf @ kf.T * inv_sqrt_dk
+            if causal:
+                mask = np.triu(np.ones(scores.shape, dtype=bool), k=1)
+                scores = np.where(mask, -1e9, scores)
+            mx = np.max(scores, axis=-1, keepdims=True)
+            p = np.exp(scores - mx)
+            p = p / np.sum(p, axis=-1, keepdims=True)
+            # seq-first on the way out too: [n_img * lq, num_heads * dv]
+            expected[qr, head * dv : (head + 1) * dv] = (p @ vf).astype(bfloat16)
 
-    # And seq-first on the way out too: [lq, num_heads * dv].
-    expected = sdpa_output_hf.transpose(1, 0, 2).reshape(lq, num_heads * dv).copy()
-
-    # The output is 2-D, so the runtime loop tiling is 2-D.
-    tiling = [1, 1]
+    # One tiling entry per launch dimension (an image axis and a q_launch axis
+    # each add one), or the extra axis survives as a runtime-sequence scf.for.
+    tiling = [1] * (2 + (n_img > 1) + (args.q_launch > 1))
     # Q@K^T scales with dk and P@V with dv, each 2*num_heads*lq*lk*<dim>;
     # causal masking roughly halves the effective work.
-    perf_flops = 2.0 * num_heads * lq * lk * (dk + dv)
+    perf_flops = 2.0 * n_img * num_heads * lq * lk * (dk + dv)
     if causal:
         perf_flops *= 0.5
     if args.compile_mode == "compile-only":

@@ -126,14 +126,10 @@ static LogicalResult canonicalizeHierarchyOpArgs(T op,
 //===----------------------------------------------------------------------===//
 
 void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
-  // Runtime-sequence ordering markers (input-feed hoist; append->readback RAW
-  // barrier and its participating appends), consumed by AIRRtToNpu.
+  // Runtime-sequence ordering marker (input-feed hoist), consumed by
+  // AIRRtToNpu.
   if (auto rh = src->getAttr(attrs::RuntimeHoist))
     dst->setAttr(attrs::RuntimeHoist, rh);
-  if (auto aa = src->getAttr(attrs::AwaitAppends))
-    dst->setAttr(attrs::AwaitAppends, aa);
-  if (auto ab = src->getAttr(attrs::AppendBarrier))
-    dst->setAttr(attrs::AppendBarrier, ab);
   // Producer-side re-feed count (single-buffer count-free re-broadcast), read
   // by AIRToAIE's lock allocators.
   if (auto rc = src->getAttrOfType<IntegerAttr>(attrs::RefeedCount))
@@ -826,8 +822,29 @@ ParseResult air::LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
+// A launch body runs on the host, so a constant passed into it is rebuilt
+// inside the body, where later passes see its value. Segment and herd
+// operands are left alone: they reach the cores as run-time values.
+static LogicalResult
+rematerializeConstantLaunchArgs(air::LaunchOp op, PatternRewriter &rewriter) {
+  bool changed = false;
+  Block &body = op.getBody().front();
+  for (unsigned i = 0, e = op.getNumKernelOperands(); i < e; i++) {
+    BlockArgument arg = op.getKernelArgument(i);
+    Operation *def = op.getKernelOperand(i).getDefiningOp();
+    if (arg.use_empty() || !def || !def->hasTrait<OpTrait::ConstantLike>())
+      continue;
+    rewriter.setInsertionPointToStart(&body);
+    Operation *c = rewriter.clone(*def);
+    rewriter.replaceAllUsesWith(arg, c->getResult(0));
+    changed = true;
+  }
+  return success(changed);
+}
+
 void air::LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                 MLIRContext *context) {
+  patterns.add(rematerializeConstantLaunchArgs);
   patterns.add(canonicalizeHierarchyOpArgs<LaunchOp>);
   patterns.add(CanonicalizeAsyncOpDeps<LaunchOp>);
   patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<LaunchOp>);
@@ -2590,12 +2607,42 @@ static std::vector<Operation *> getComposableMemrefChain(Value memref) {
 // there is nothing to do leaves dead constants behind on every attempt. The
 // greedy rewrite driver then sees the IR change on each sweep and never
 // reaches a fixpoint -- an outright hang, not just wasted work.
+// Whether composing `chain` may turn the offset of a dim it drops (by a
+// rank-reducing subview, or a unit dim a collapse_shape folds) into a leading
+// unit dim, which ComposeMemrefOp only does for an implicit access pattern.
+static bool chainMayDropOffsetDims(ArrayRef<Operation *> chain) {
+  auto subview = dyn_cast<memref::SubViewOp>(chain.front());
+  if (!subview || llvm::all_of(subview.getMixedOffsets(), [](OpFoldResult o) {
+        return isConstantIntValue(o, 0);
+      }))
+    return false;
+  if (subview.getDroppedDims().any())
+    return true;
+  return llvm::any_of(chain, [](Operation *op) {
+    auto collapse = dyn_cast<memref::CollapseShapeOp>(op);
+    if (!collapse)
+      return false;
+    return llvm::any_of(
+        collapse.getReassociationIndices(), [&](ReassociationIndices g) {
+          return llvm::count_if(g,
+                                [&](int64_t d) {
+                                  return collapse.getSrcType().getDimSize(d) ==
+                                         1;
+                                }) > 0 &&
+                 g.size() > 1;
+        });
+  });
+}
+
 static bool memcpyAccessPatternNeedsRewrite(Value memref,
                                             ArrayRef<OpFoldResult> offsets,
                                             ArrayRef<OpFoldResult> sizes,
                                             ArrayRef<OpFoldResult> strides) {
-  // Mirrors ComposeMemrefOp's early exits.
-  if (!getComposableMemrefChain(memref).empty())
+  // Mirrors ComposeMemrefOp's early exits, and its refusal to add leading
+  // unit dims to an explicit access pattern.
+  std::vector<Operation *> chain = getComposableMemrefChain(memref);
+  bool explicitPattern = !offsets.empty() || !sizes.empty() || !strides.empty();
+  if (!chain.empty() && !(explicitPattern && chainMayDropOffsetDims(chain)))
     return true;
   // Mirrors canonicalizeEmptyLists.
   if (offsets.empty() && sizes.empty() && strides.empty())
@@ -2635,6 +2682,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   auto constOne =
       getValueOrCreateConstantIndexOp(rewriter, loc, rewriter.getIndexAttr(1));
   SmallVector<Value> initialOffsets, initialStrides;
+  SmallVector<Value> droppedOffsets;
+  SmallVector<int64_t> droppedStrides;
   if (isa<ViewLikeOpInterface>(memrefOpVec[0]) &&
       isa<OffsetSizeAndStrideOpInterface>(memrefOpVec[0])) {
     auto viewLikeOp = dyn_cast_if_present<ViewLikeOpInterface>(memrefOpVec[0]);
@@ -2643,6 +2692,38 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     input_memref = viewLikeOp.getViewSource();
     extractOffsetsFromOp(offSizStrOp, rewriter, initialOffsets);
     extractStridesFromOp(offSizStrOp, rewriter, initialStrides);
+    // A rank-reducing subview: the ops after it index its result, which has
+    // no dims for the dropped ones. Their offsets still address the source:
+    // they become leading unit dims of the access pattern, with the source's
+    // strides (a subview's offsets are in source coordinates, unscaled by its
+    // own strides).
+    if (auto subview = dyn_cast<memref::SubViewOp>(memrefOpVec[0])) {
+      llvm::SmallBitVector dropped = subview.getDroppedDims();
+      if (dropped.any()) {
+        SmallVector<int64_t> srcStrides;
+        int64_t srcOffset;
+        if (failed(subview.getSourceType().getStridesAndOffset(srcStrides,
+                                                               srcOffset)))
+          return failure();
+        SmallVector<Value> keptOffsets, keptStrides;
+        for (unsigned i = 0; i < dropped.size(); ++i) {
+          if (!dropped[i]) {
+            keptOffsets.push_back(initialOffsets[i]);
+            keptStrides.push_back(initialStrides[i]);
+            continue;
+          }
+          // At offset 0 the dim adds nothing to the address.
+          if (isConstantIntValue(subview.getMixedOffsets()[i], 0))
+            continue;
+          if (ShapedType::isDynamic(srcStrides[i]))
+            return failure();
+          droppedOffsets.push_back(initialOffsets[i]);
+          droppedStrides.push_back(srcStrides[i]);
+        }
+        initialOffsets = keptOffsets;
+        initialStrides = keptStrides;
+      }
+    }
   } else if (auto transposeOp =
                  dyn_cast_if_present<memref::TransposeOp>(memrefOpVec[0])) {
     input_memref = transposeOp.getIn();
@@ -2723,17 +2804,38 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     } else if (auto collapseShapeOp =
                    dyn_cast_if_present<memref::CollapseShapeOp>(memrefOp)) {
       // For each collapsed dimension, keep the offset/stride of the first
-      // source dim in the group.
+      // source dim in the group that is not a unit dim. A unit dim's offset
+      // cannot be expressed on the collapsed dim: like a dim a rank-reducing
+      // subview drops, it becomes a leading unit dim. The offset is in the
+      // coordinates of the first view's source, whose stride is the layout
+      // stride here divided by the step taken so far.
+      auto srcType = collapseShapeOp.getSrcType();
+      SmallVector<int64_t> srcLayoutStrides;
+      int64_t srcLayoutOffset;
+      bool haveLayout = succeeded(
+          srcType.getStridesAndOffset(srcLayoutStrides, srcLayoutOffset));
       SmallVector<Value> newOffsets, newStrides;
-      size_t srcIdx = 0;
-      for (size_t i = 0; i < collapseShapeOp.getReassociationIndices().size();
-           ++i) {
-        // The first source dim in the group determines the collapsed
-        // offset/stride.
-        newOffsets.push_back(initialOffsets[srcIdx]);
-        newStrides.push_back(initialStrides[srcIdx]);
-        // Skip to the next group.
-        srcIdx += collapseShapeOp.getReassociationIndices()[i].size();
+      for (ReassociationIndices group :
+           collapseShapeOp.getReassociationIndices()) {
+        int64_t keep = group.front();
+        for (int64_t d : group)
+          if (srcType.getDimSize(d) != 1) {
+            keep = d;
+            break;
+          }
+        for (int64_t d : group) {
+          if (d == keep || isConstantIntValue(initialOffsets[d], 0))
+            continue;
+          auto step = getConstantIntValue(initialStrides[d]);
+          if (srcType.getDimSize(d) != 1 || !haveLayout || !step ||
+              *step <= 0 || ShapedType::isDynamic(srcLayoutStrides[d]) ||
+              srcLayoutStrides[d] % *step)
+            return failure();
+          droppedOffsets.push_back(initialOffsets[d]);
+          droppedStrides.push_back(srcLayoutStrides[d] / *step);
+        }
+        newOffsets.push_back(initialOffsets[keep]);
+        newStrides.push_back(initialStrides[keep]);
       }
       initialOffsets = newOffsets;
       initialStrides = newStrides;
@@ -2749,6 +2851,13 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   // Memref type at the sink memref op.
   MemRefType sink_memref_ty =
       llvm::cast<MemRefType>(memrefOpVec.back()->getResultTypes().front());
+
+  // Leading unit dims for dropped dimensions are only added when the access
+  // pattern comes from the sink's type, with no explicit offsets, sizes or
+  // strides.
+  if (!droppedOffsets.empty() &&
+      (!strides.empty() || !sizes.empty() || !offsets.empty()))
+    return failure();
 
   // // Compose sizes and strides from the output memref type's layout.
   if (strides.empty())
@@ -2772,6 +2881,17 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
                                initialOffsets, initialStrides);
   }
   offsets = initialOffsets;
+  if (!droppedOffsets.empty())
+    while (offsets.size() < strides.size())
+      offsets.insert(offsets.begin(), constZero);
+  for (auto [o, st] :
+       llvm::reverse(llvm::zip(droppedOffsets, droppedStrides))) {
+    offsets.insert(offsets.begin(), o);
+    sizes.insert(sizes.begin(), constOne);
+    strides.insert(strides.begin(),
+                   getValueOrCreateConstantIndexOp(rewriter, loc,
+                                                   rewriter.getIndexAttr(st)));
+  }
 
   return canonicalizeAIRDmaOperands(rewriter, offsets, sizes, strides,
                                     sink_memref_ty);

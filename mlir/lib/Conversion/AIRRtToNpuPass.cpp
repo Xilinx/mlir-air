@@ -239,8 +239,8 @@ static void assignLaunchWaveIndices(mlir::ModuleOp module) {
 
 // Compute and stamp the reset decision on every device. MUST run after
 // moveFuncOpToEndOfDeviceOp (so the control funcs, hence the launch_end
-// markers, are inside their devices) and before generateNpuWaitFromAIRRtWaitAll
-// / unrollAffineFors (which erase the markers and strip the loops).
+// markers, are inside their devices) and before lowerLaunchEnds /
+// unrollAffineFors (which erase the markers and strip the loops).
 static void markDevicesNeedingLockReset(mlir::ModuleOp module) {
   module.walk([&](xilinx::AIE::DeviceOp device) {
     if (deviceHasRepeatCountDMAs(device) || deviceHasSingleTripCascade(device))
@@ -465,7 +465,7 @@ static StringAttr declareBlockArgOffsetParameter(ModuleOp module, Value offset,
     xilinx::AIEX::ScratchpadParameterOp::create(
         builder, module.getLoc(), name, TypeAttr::get(builder.getI32Type()),
         /*state_table_idx=*/nullptr, /*kind=*/nullptr, /*min_value=*/nullptr,
-        /*max_value=*/nullptr);
+        /*max_value=*/nullptr, /*joint_bounds=*/nullptr);
   }
   return name;
 }
@@ -491,7 +491,7 @@ static StringAttr declareBlockArgLengthParameter(ModuleOp module, Value length,
     xilinx::AIEX::ScratchpadParameterOp::create(
         builder, module.getLoc(), name, TypeAttr::get(builder.getI32Type()),
         /*state_table_idx=*/nullptr, /*kind=*/nullptr, /*min_value=*/nullptr,
-        /*max_value=*/nullptr);
+        /*max_value=*/nullptr, /*joint_bounds=*/nullptr);
   }
   return name;
 }
@@ -742,7 +742,7 @@ struct FoldConstIndexSwitchPattern
     // If the switch carried an async drain token (a fused per-wave mode switch
     // wrapping host feeds is made async upstream so shim-dma-bds can build the
     // launch_end drain), sever the drain's dependency on it. At this stage feed
-    // synchronization is handled by NpuDmaWaitOp on channels; the launch_end
+    // synchronization comes from the transfers' own events; the launch_end
     // wait_all only needs its marker attribute (already counted by
     // markDevicesNeedingLockReset). Rebuild each consuming airrt.wait_all
     // without the switch-token operand, so the token becomes dead and the
@@ -896,8 +896,12 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
             contiguous = false;
           below *= sz;
         }
+        // A dimension outside the run-time one with stride 0 only repeats the
+        // transfer; the repeat count covers it, so it does not break the
+        // contiguous run.
         for (unsigned i = 0; i < dim; i++)
-          if (*getConstantIntValue(mixedLengths[i]) != 1)
+          if (*getConstantIntValue(mixedLengths[i]) != 1 &&
+              *getConstantIntValue(mixedStrides[i]) != 0)
             contiguous = false;
         int64_t thisStride = *getConstantIntValue(mixedStrides[dim]);
         if (contiguous && thisStride == below) {
@@ -1084,13 +1088,6 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // weight stream.
     if (op->hasAttr(air::attrs::RuntimeHoist))
       configTaskOp->setAttr(air::attrs::RuntimeHoist, rewriter.getUnitAttr());
-    if (op->hasAttr(air::attrs::AwaitAppends))
-      configTaskOp->setAttr(air::attrs::AwaitAppends, rewriter.getUnitAttr());
-    // Carry the append-barrier marker so the append->readback ordering step can
-    // find this append's completion await and move it before the tagged
-    // readback (see the air.await_appends barrier below).
-    if (op->hasAttr(air::attrs::AppendBarrier))
-      configTaskOp->setAttr(air::attrs::AppendBarrier, rewriter.getUnitAttr());
     // Carry the coalesced-feed marker so the double-buffered await synthesis
     // paces this merged channel at depth 1 (no cross-run overlap).
     if (op->hasAttr(air::attrs::CoalescedShimFeed))
@@ -1250,13 +1247,12 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     AIEX::DMAStartTaskOp::create(rewriter, op.getLoc(),
                                  configTaskOp.getResult());
 
-    // NOTE: We do NOT generate DMAAwaitTaskOp here. Awaits are generated
-    // by AIRRtWaitAllOpToAwaitPattern AFTER DMA conversion, at the location
-    // of the WaitAllOp (clustered together), replicating the original behavior
-    // where NpuDmaWaitOp was generated at WaitAllOp location.
-
-    // Erase the original op
-    rewriter.eraseOp(op);
+    // The task stands for the transfer: the wait_alls naming the transfer's
+    // event await or free it (AIRRtWaitAllOpConversion).
+    if (op->getNumResults())
+      rewriter.replaceOp(op, configTaskOp.getResult());
+    else
+      rewriter.eraseOp(op);
 
     return success();
   }
@@ -1443,6 +1439,31 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
                     arith::ExtUIOp::create(rewriter, op.getLoc(), i32Ty, oper);
               }
             }
+            // A float RTP is written as its bit pattern, which is how the
+            // core reads it: an f32 fills the slot, a 16-bit float its low
+            // half.
+            if (auto fty = dyn_cast<FloatType>(oper.getType())) {
+              auto i32Ty = rewriter.getI32Type();
+              unsigned w = fty.getWidth();
+              if (auto constOp = dyn_cast_if_present<arith::ConstantOp>(
+                      oper.getDefiningOp())) {
+                APInt bits = cast<FloatAttr>(constOp.getValue())
+                                 .getValue()
+                                 .bitcastToAPInt()
+                                 .zextOrTrunc(32);
+                vVal = arith::ConstantOp::create(
+                    rewriter, op.getLoc(), i32Ty,
+                    rewriter.getI32IntegerAttr(bits.getZExtValue()));
+              } else if (w == 32) {
+                vVal = arith::BitcastOp::create(rewriter, op.getLoc(), i32Ty,
+                                                oper);
+              } else if (w == 16) {
+                Value b16 = arith::BitcastOp::create(
+                    rewriter, op.getLoc(), rewriter.getI16Type(), oper);
+                vVal =
+                    arith::ExtUIOp::create(rewriter, op.getLoc(), i32Ty, b16);
+              }
+            }
             // AIRToAIE routes a herd's *runtime* scalars through the
             // scratchpad instead of this buffer, so that the value never has
             // to be encoded into a static instruction stream (see
@@ -1485,9 +1506,10 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
         if (!lockOp)
           continue;
 
-        auto setLockOp =
-            AIEX::SetLockOp::create(rewriter, op.getLoc(), lockOp.getResult(),
-                                    rewriter.getI32IntegerAttr(1));
+        Value one = arith::ConstantIntOp::create(rewriter, op.getLoc(),
+                                                 rewriter.getI32Type(), 1);
+        auto setLockOp = AIEX::SetLockOp::create(rewriter, op.getLoc(),
+                                                 lockOp.getResult(), one);
         if (waveAttr)
           setLockOp->setAttr(air::attrs::LaunchWave, waveAttr);
       }
@@ -1588,68 +1610,67 @@ public:
   }
 };
 
-// Erase remaining WaitAllOps that weren't converted to NpuDmaWaitOp.
-// These are pure synchronization ops that don't generate NPU ops.
-// For WaitAllOps with "air.launch_end" attribute, we may need to insert
-// aiex.npu.load_pdi to reset the DMA engine / cascade state if:
-// 1. output-elf mode is enabled, AND
-// 2. deviceNeedsLockReset(device) -- i.e. the device has core/memtile DMAs
-//    with repeat_count > 0, OR is a single-trip cascade launch.
+// Whether shim channel `metadata` of `device` moves data to the host.
+static bool isDeviceToHostShimChannel(AIE::DeviceOp device,
+                                      StringRef metadata) {
+  if (auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(device, metadata))
+    return alloc.getChannelDir() == AIE::DMAChannelDir::S2MM;
+  // An objectfifo whose consumer is a shim tile.
+  if (auto objFifo = device.lookupSymbol<AIE::ObjectFifoCreateOp>(metadata))
+    for (auto consumerTile : objFifo.getConsumerTiles())
+      if (isShimTileValue(consumerTile))
+        return true;
+  return false;
+}
+
+// A wait_all on shim transfers becomes, at its position, an await of each
+// device-to-host task it names (wait for completion, free the BD) and a free
+// of each host-to-device one (no wait). A paced host-to-device task is
+// awaited by synthesizeDoubleBufferedAwaits instead. Operands that are not
+// transfers -- other wait_alls -- lower to nothing.
 class AIRRtWaitAllOpConversion : public OpConversionPattern<airrt::WaitAllOp> {
 public:
-  AIRRtWaitAllOpConversion(MLIRContext *context, bool outputElf,
-                           PatternBenefit benefit = 1)
-      : OpConversionPattern<airrt::WaitAllOp>(context, benefit),
-        outputElf(outputElf) {}
+  using OpConversionPattern<airrt::WaitAllOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(airrt::WaitAllOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Check if this is a launch_end wait_all
-    if (op->hasAttr("air.launch_end")) {
-      // Find the parent device
-      auto device = op->getParentOfType<AIE::DeviceOp>();
-      if (device) {
-        // Only apply for NPU2 family devices
-        const AIE::AIETargetModel &tm = device.getTargetModel();
-        if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          // A fused multi-iteration launch (scf.for over air.launch stitching N
-          // iterations into one dispatch) needs the between-iteration shim
-          // drain on the xclbin (non-elf) path too: otherwise consecutive
-          // iterations overlap and a finite-depth device lock deadlocks after a
-          // few iterations.
-          bool multiIter = deviceHasMultiIterLaunch(device);
-          if (outputElf && deviceNeedsLockReset(device)) {
-            // Insert aiex.npu.load_pdi to reset DMA engine / cascade state
-            // (repeat_count DMAs, or a single-trip cascade launch).
-            rewriter.setInsertionPoint(op);
-            auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
-                                                    device.getSymName());
-            AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef,
-                                       IntegerAttr(), IntegerAttr(),
-                                       IntegerAttr(), AIEX::ExpandModeAttr());
-          } else if (outputElf || multiIter) {
-            // No PDI reload needed (no repeat_count DMAs), but still need
-            // between-iteration synchronization to prevent the next
-            // iteration's shim DMA configuration from racing with the
-            // current iteration's compute (issue #1373; extended to the
-            // multi-iteration xclbin path).
-            rewriter.setInsertionPoint(op);
-            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>())
-              AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
-                                         alloc.getSymName());
-          }
-        }
-      }
+    auto device = op->getParentOfType<AIE::DeviceOp>();
+    if (!device) {
+      rewriter.eraseOp(op);
+      return success();
     }
-
-    // Erase the op - synchronization is handled by NpuDmaWaitOp/load_pdi
+    auto channelOf = [](AIEX::DMAConfigureTaskForOp task) {
+      return task.getAlloc().getLeafReference().getValue();
+    };
+    // A channel retires its tasks in the order they were issued, so the
+    // tasks named on one channel are released in that order.
+    SmallVector<AIEX::DMAConfigureTaskForOp> named;
+    llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>>
+        inIssueOrder;
+    for (Value v : adaptor.getOperands())
+      if (auto task = v.getDefiningOp<AIEX::DMAConfigureTaskForOp>()) {
+        named.push_back(task);
+        inIssueOrder[channelOf(task)].push_back(task);
+      }
+    for (auto &[channel, tasks] : inIssueOrder)
+      if (llvm::all_equal(llvm::map_range(
+              tasks, [](Operation *t) { return t->getBlock(); })))
+        llvm::sort(tasks, [](Operation *a, Operation *b) {
+          return a->isBeforeInBlock(b);
+        });
+    llvm::StringMap<unsigned> next;
+    for (auto namedTask : named) {
+      StringRef channel = channelOf(namedTask);
+      auto task = inIssueOrder[channel][next[channel]++];
+      if (isDeviceToHostShimChannel(device, channel))
+        AIEX::DMAAwaitTaskOp::create(rewriter, op.getLoc(), task.getResult());
+      else if (!task->hasAttr(air::attrs::PreserveShimDmaOrder))
+        AIEX::DMAFreeTaskOp::create(rewriter, op.getLoc(), task.getResult());
+    }
     rewriter.eraseOp(op);
     return success();
   }
-
-private:
-  bool outputElf;
 };
 
 // Convert FuncOp control function into aiex.runtime_sequence op.
@@ -1727,111 +1748,6 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
-};
-
-// Pattern to convert WaitAllOp to NpuDmaWaitOp(s).
-// This runs BEFORE DMA conversion. NpuDmaWaitOp takes a symbol reference,
-// so it can be created before DMAConfigureTaskForOp exists.
-// Later, after DMA conversion, we convert:
-//   - S2MM waits to DMAAwaitTaskOp (wait + free BD)
-//   - MM2S waits to DMAFreeTaskOp (just free BD, no wait needed)
-struct AIRRtWaitAllOpToNpuWaitPattern
-    : public OpRewritePattern<airrt::WaitAllOp> {
-public:
-  AIRRtWaitAllOpToNpuWaitPattern(MLIRContext *context, bool outputElf,
-                                 PatternBenefit benefit = 1)
-      : OpRewritePattern<airrt::WaitAllOp>(context, benefit),
-        outputElf(outputElf) {}
-
-  LogicalResult matchAndRewrite(airrt::WaitAllOp op,
-                                PatternRewriter &rewriter) const override {
-    // Only match if at least one operand is a DmaMemcpyNdOp
-    if (llvm::none_of(op->getOperands(), [](Value oper) {
-          return (bool)oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
-        }))
-      return failure();
-
-    bool isLaunchEnd = op->hasAttr("air.launch_end");
-    bool multiIter = false;
-    if (isLaunchEnd) {
-      if (auto device = op->getParentOfType<AIE::DeviceOp>())
-        if (llvm::isa<AIE::BaseNPU2TargetModel>(device.getTargetModel()))
-          multiIter = deviceHasMultiIterLaunch(device);
-    }
-
-    llvm::SmallDenseSet<StringRef> waitedChannels;
-    for (auto oper : op->getOperands()) {
-      auto airrtDmaOp = oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
-      if (!airrtDmaOp)
-        continue;
-      auto metadataAttr =
-          airrtDmaOp->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata");
-      if (!metadataAttr)
-        continue;
-
-      // Generate NpuDmaWaitOp for ALL channels (both S2MM and MM2S)
-      // The conversion to DMAAwaitTaskOp vs DMAFreeTaskOp happens later
-      // based on channel direction
-      StringRef metadata = metadataAttr.getValue();
-      AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
-      waitedChannels.insert(metadata);
-    }
-
-    // Check if this is a launch_end wait_all and needs between-iteration sync
-    if (op->hasAttr("air.launch_end")) {
-      auto device = op->getParentOfType<AIE::DeviceOp>();
-      if (device) {
-        // Only apply for NPU2 family devices
-        const AIE::AIETargetModel &tm = device.getTargetModel();
-        if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          // A fused multi-iteration launch (scf.for over air.launch, e.g. N
-          // stitched iterations) must fence every iteration boundary even on
-          // the xclbin (non-elf) path: without it consecutive iterations
-          // overlap and a finite-depth device lock deadlocks after a few
-          // iterations.
-          if (outputElf && deviceNeedsLockReset(device)) {
-            auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
-                                                    device.getSymName());
-            AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef,
-                                       IntegerAttr(), IntegerAttr(),
-                                       IntegerAttr(), AIEX::ExpandModeAttr());
-          } else if (outputElf || multiIter) {
-            // No PDI reload needed, but emit NpuDmaWaitOp for any shim
-            // channels not already waited on to synchronize before the
-            // next iteration (issue #1373; extended to the multi-iteration
-            // xclbin path so each launch iteration fully drains).
-            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>())
-              if (!waitedChannels.contains(alloc.getSymName()))
-                AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
-                                           alloc.getSymName());
-          }
-        }
-      }
-    }
-
-    // The WaitAllOp may have uses (other WaitAllOps depending on its result).
-    // Replace with a new WaitAllOp with no operands to break the dependency
-    // chain. This is safe because the synchronization is now handled by
-    // NpuDmaWaitOp.
-    if (op->getNumResults() > 0 && !op->use_empty()) {
-      // Create a replacement WaitAllOp with no DMA operands (only non-DMA deps)
-      SmallVector<Value> nonDmaOpers;
-      for (auto oper : op->getOperands()) {
-        if (!oper.getDefiningOp<airrt::DmaMemcpyNdOp>())
-          nonDmaOpers.push_back(oper);
-      }
-      auto newWaitAll = airrt::WaitAllOp::create(
-          rewriter, op.getLoc(), airrt::EventType::get(op->getContext()),
-          nonDmaOpers);
-      rewriter.replaceOp(op, newWaitAll->getResult(0));
-    } else {
-      rewriter.eraseOp(op);
-    }
-    return success();
-  }
-
-private:
-  bool outputElf;
 };
 
 AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
@@ -2028,11 +1944,6 @@ AIE::DeviceOp createMainDeviceWrapper(
   return mainDevice;
 }
 
-// AIE2 hardware constraints.
-const std::vector<int> AIE2_WRAP_UPPER_BOUNDS = {64, 1024, 1024, 1024};
-const int AIE2_STRIDE_UPPER_BOUND = 1048576;
-const int AIE2_DIM_COUNT = 4;
-
 // Largest divisor of `n` that is at most `limit` (0 if none, i.e. limit < 1).
 static int64_t largestDivisorUpTo(int64_t n, int64_t limit) {
   for (int64_t d = std::min(n, limit); d >= 1; d--)
@@ -2045,7 +1956,7 @@ static int64_t largestDivisorUpTo(int64_t n, int64_t limit) {
 // out of it.
 //
 // tileIllegalWrapDim splits an over-long dim into exactly two factors, then
-// hands everything past AIE2_DIM_COUNT to the affine.for unroller below, which
+// hands everything past what one BD holds to the affine.for unroller, which
 // costs one shim BD per iteration. Splitting a single dim can leave a partition
 // that is legal but needlessly fine-grained, because it never reconsiders the
 // dims NEXT to the one it split. gelu_and_mul at 4096x10240 (Gemma-3-4B's GeGLU
@@ -2062,14 +1973,16 @@ static int64_t largestDivisorUpTo(int64_t n, int64_t limit) {
 // of it -- turns the example into [2, 32, 16, 8, 640]: the same transfer in two
 // BDs instead of sixteen.
 //
-// Only ever applied when the list is already over AIE2_DIM_COUNT (so BDs were
+// Only ever applied when the list is already over the BD's dims (so BDs were
 // going to be unrolled regardless) and only when it strictly reduces the unroll
 // count without lengthening the list, so it cannot make a working design worse.
 static void minimizeUnrolledBdCount(SmallVector<OpFoldResult> &offsets,
                                     SmallVector<OpFoldResult> &wraps,
                                     SmallVector<OpFoldResult> &strides,
-                                    OpBuilder &builder) {
-  if (wraps.size() <= (size_t)AIE2_DIM_COUNT)
+                                    OpBuilder &builder,
+                                    const air::DmaBdLimits &limits) {
+  const size_t dimCount = limits.listDims();
+  if (wraps.size() <= dimCount)
     return;
   SmallVector<int64_t> w, s;
   for (auto [wrap, stride] : llvm::zip_equal(wraps, strides)) {
@@ -2107,10 +2020,9 @@ static void minimizeUnrolledBdCount(SmallVector<OpFoldResult> &offsets,
 
   // wraps[0] of the emitted BD must fit the position-0 bound; the dim built on
   // top of the innermost factor must keep its stride under the ceiling.
-  const int64_t maxOuter = AIE2_WRAP_UPPER_BOUNDS[0] - 1;
+  const int64_t maxOuter = limits.maxWrapAt(0);
   const int64_t maxInner =
-      std::min<int64_t>(AIE2_WRAP_UPPER_BOUNDS[1] - 1,
-                        (int64_t)AIE2_STRIDE_UPPER_BOUND / runStride);
+      std::min<int64_t>(limits.maxWrapAt(1), limits.maxStride / runStride);
   int64_t bestOuter = 0, bestInner = 0, bestVolume = 0;
   for (int64_t inner = std::min(runExtent, maxInner); inner >= 1; inner--) {
     if (inner * maxOuter <= bestVolume)
@@ -2146,12 +2058,12 @@ static void minimizeUnrolledBdCount(SmallVector<OpFoldResult> &offsets,
   }
 
   // Validate the descriptor the unroller will actually emit. It peels leading
-  // dims until AIE2_DIM_COUNT remain, so the positional wrap bounds and the
+  // dims until dimCount remain, so the positional wrap bounds and the
   // stride ceiling apply to the TAIL of the list -- the dim that ends up at BD
   // position 0 is not necessarily the outer factor chosen above (with an unroll
   // count of 1 the pair shifts left by one and the inner factor lands there).
-  auto bdStartOf = [](size_t n) -> unsigned {
-    return n > (size_t)AIE2_DIM_COUNT ? n - AIE2_DIM_COUNT : 0;
+  auto bdStartOf = [&](size_t n) -> unsigned {
+    return n > dimCount ? n - dimCount : 0;
   };
   auto bdCount = [&](ArrayRef<int64_t> ws) {
     int64_t bds = 1;
@@ -2162,8 +2074,7 @@ static void minimizeUnrolledBdCount(SmallVector<OpFoldResult> &offsets,
   auto isLegalBd = [&](ArrayRef<int64_t> ws, ArrayRef<int64_t> ss) {
     unsigned bdStart = bdStartOf(ws.size());
     for (unsigned j = bdStart; j < ws.size(); j++)
-      if (ws[j] >= AIE2_WRAP_UPPER_BOUNDS[j - bdStart] ||
-          ss[j] > AIE2_STRIDE_UPPER_BOUND)
+      if (ws[j] > limits.maxWrapAt(j - bdStart) || !limits.strideFits(ss[j]))
         return false;
     return true;
   };
@@ -2195,14 +2106,40 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   SmallVector<OpFoldResult> stride_list = dma.getMixedStrides();
   if (air::isContiguousRowMajorOrRepeated(wrap_list, stride_list))
     return false;
+  air::DmaBdLimits limits = air::getDmaBdLimits(dma, air::MemorySpace::L3);
   for (unsigned i = 0; i < wrap_list.size(); i++) {
     if (auto const_val = getConstantIntValue(wrap_list[i])) {
-      // Detected wrap that goes beyond the AIE2 hardware limit.
-      if (*const_val >= AIE2_WRAP_UPPER_BOUNDS[i])
+      // Wrap over the limit for its position.
+      if (*const_val > limits.maxWrapAt(i))
         return true;
     }
   }
   return false;
+}
+
+// Make the wait_alls that name `transfer` name the `pieces` it was split into
+// instead. Its event is used only by wait_alls: this pass drops the events
+// carried through region results and loop arguments before splitting.
+static void replaceTransferEvent(airrt::DmaMemcpyNdOp transfer,
+                                 ArrayRef<airrt::DmaMemcpyNdOp> pieces) {
+  if (!transfer->getNumResults())
+    return;
+  Value event = transfer->getResult(0);
+  SmallVector<Operation *> users(event.getUsers());
+  for (Operation *user : users) {
+    assert(isa<airrt::WaitAllOp>(user) &&
+           "a shim transfer's event is only waited on");
+    SmallVector<Value> operands;
+    for (Value v : user->getOperands()) {
+      if (v != event) {
+        operands.push_back(v);
+        continue;
+      }
+      for (auto piece : pieces)
+        operands.push_back(piece->getResult(0));
+    }
+    user->setOperands(operands);
+  }
 }
 
 LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
@@ -2217,24 +2154,25 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       llvm::dyn_cast<BaseMemRefType>(memcpy_op.getMemref().getType());
   int innerAlignment =
       memrefTy ? air::getDmaInnerElementAlignment(memrefTy, memcpy_op) : 1;
+  air::DmaBdLimits limits =
+      air::getDmaBdLimits(memcpy_op, air::MemorySpace::L3);
 
   for (int i = wraps.size() - 1; i >= 0; i--) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
     auto const_stride = *getConstantIntValue(strides[i]);
-    if (const_wrap >= AIE2_WRAP_UPPER_BOUNDS[i]) {
+    if (const_wrap > limits.maxWrapAt(i)) {
       // Found dimension with illegal wrap. Prefers smaller outer wrap as
       // long as stride fits. For stride==1, force the inner wrap to a
       // multiple of innerAlignment elements so its byte size stays aligned
       // to the shim address granularity (otherwise aie.dma_bd rejects it).
       int alignment = (const_stride == 1) ? innerAlignment : 1;
       int a_wrap = air::findLargestAlignedFactor(
-          const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1, alignment);
+          const_wrap, limits.maxWrapAt(i), alignment);
       if (a_wrap == 0) {
         return memcpy_op.emitOpError()
                << "cannot tile dim " << i << " of size " << const_wrap
                << " into shim-legal chunks: no factor in [" << alignment << ", "
-               << (AIE2_WRAP_UPPER_BOUNDS[i] - 1) << "] is a multiple of "
-               << alignment
+               << limits.maxWrapAt(i) << "] is a multiple of " << alignment
                << " elements. Reshape the transfer or pad the inner dimension.";
       }
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
@@ -2244,12 +2182,10 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       if (volume != 1)
         new_a_stride %=
             volume; // Avoids striding out of memory size, if memref is ranked
-      int inner_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
-                           ? (b_wrap)
-                           : (a_wrap);
-      int outer_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
-                           ? (a_wrap)
-                           : (b_wrap);
+      int inner_wrap =
+          (!limits.strideFits(new_a_stride) && i != 0) ? (b_wrap) : (a_wrap);
+      int outer_wrap =
+          (!limits.strideFits(new_a_stride) && i != 0) ? (a_wrap) : (b_wrap);
       wraps[i] = builder.getI64IntegerAttr(inner_wrap);
       wraps.insert(wraps.begin() + i, builder.getI64IntegerAttr(outer_wrap));
       auto new_const_stride = const_stride * inner_wrap;
@@ -2281,13 +2217,13 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
 
   // The split above factors one dim at a time, which can leave more BDs to
   // unroll below than the shim's descriptor limits actually require.
-  minimizeUnrolledBdCount(offsets, wraps, strides, builder);
+  minimizeUnrolledBdCount(offsets, wraps, strides, builder, limits);
 
   // Unroll highest dimensions of wrap and stride, if the new dimension count
-  // goes beyond 4.
+  // goes beyond what one BD holds.
   SmallVector<affine::AffineForOp> for_loop_nest;
   Value inner_affine_for_iv = nullptr;
-  while (wraps.size() > AIE2_DIM_COUNT) {
+  while (wraps.size() > (size_t)limits.listDims()) {
     affine::AffineForOp inner_affine_for = nullptr;
     auto const_offset = *getConstantIntValue(offsets[0]);
     auto const_lowest_offset = *getConstantIntValue(offsets.back());
@@ -2343,16 +2279,29 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
             .getResult();
   }
   auto newOp = airrt::DmaMemcpyNdOp::create(
-      builder, loc, SmallVector<Type>{}, memcpy_op.getId(), memcpy_op.getX(),
-      memcpy_op.getY(), memcpy_op.getMemref(), offsets, wraps, strides);
+      builder, loc, SmallVector<Type>(memcpy_op->getResultTypes()),
+      memcpy_op.getId(), memcpy_op.getX(), memcpy_op.getY(),
+      memcpy_op.getMemref(), offsets, wraps, strides);
   // Only discardable attrs carry over; the static_* arrays are inherent and
   // already set by the builder above.
   newOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
 
-  // Unroll the affine loop nest.
-  for (auto forOp : llvm::reverse(for_loop_nest)) {
-    (void)loopUnrollFull(forOp);
+  // Unroll the loop nest. The copies it leaves ahead of the transfer are the
+  // transfer's pieces.
+  SmallVector<airrt::DmaMemcpyNdOp> pieces;
+  if (for_loop_nest.empty()) {
+    pieces.push_back(newOp);
+  } else {
+    Operation *before = for_loop_nest.front()->getPrevNode();
+    for (auto forOp : llvm::reverse(for_loop_nest))
+      (void)loopUnrollFull(forOp);
+    for (Operation *o = before ? before->getNextNode()
+                               : &memcpy_op->getBlock()->front();
+         o != memcpy_op.getOperation(); o = o->getNextNode())
+      if (auto piece = dyn_cast<airrt::DmaMemcpyNdOp>(o))
+        pieces.push_back(piece);
   }
+  replaceTransferEvent(memcpy_op, pieces);
 
   memcpy_op.erase();
   return success();
@@ -2628,10 +2577,10 @@ static void coalesceShimDmaOrder(ModuleOp module) {
   }
 }
 
-// AIE2 shim BDs encode each dimension's stride in a 20-bit field, so a stride
-// above AIE2_STRIDE_UPPER_BOUND cannot be expressed at all. Unlike an illegal
-// wrap, an illegal stride cannot be tiled away: splitting the dim leaves the
-// stride unchanged.
+// Shim BDs encode each dimension's stride in a fixed-width field, so a stride
+// above the limit cannot be expressed at all. Unlike an illegal wrap, an
+// illegal stride cannot be tiled away: splitting the dim leaves the stride
+// unchanged.
 //
 // It CAN be turned into base offsets. A dim (wrap W, stride S) contributes the
 // address set {(off + k) * S : k in [0, W)}, so the transfer is equivalent to W
@@ -2644,26 +2593,28 @@ static void coalesceShimDmaOrder(ModuleOp module) {
 // a KV cache laid out region-major strides its per-group dim by
 // ATTN_MAXL*REGION_W, which crosses the 20-bit field once the context is long
 // enough, while the dim itself stays tiny (one entry per KV group). A large W
-// is left alone rather than silently exploding the runtime sequence.
-const int AIE2_STRIDE_UNROLL_LIMIT = 16;
+// is left alone rather than silently exploding the runtime sequence: W may not
+// exceed the shim tile's BD count.
 
 // Index of the outermost dim whose stride exceeds the hardware field, or
 // std::nullopt. Dims of wrap 1 are ignored: they contribute a single address
 // and the stride is dead, so the BD builder drops them.
 static std::optional<unsigned>
 findIllegalStrideDim(SmallVector<OpFoldResult> wraps,
-                     SmallVector<OpFoldResult> strides) {
+                     SmallVector<OpFoldResult> strides,
+                     const air::DmaBdLimits &limits) {
   for (unsigned i = 0; i < strides.size(); i++) {
     auto s = getConstantIntValue(strides[i]);
     auto w = getConstantIntValue(wraps[i]);
-    if (s && w && *s > AIE2_STRIDE_UPPER_BOUND && *w > 1)
+    if (s && w && !limits.strideFits(*s) && *w > 1)
       return i;
   }
   return std::nullopt;
 }
 
 bool violatesAIE2StrideLimit(airrt::DmaMemcpyNdOp dma) {
-  return findIllegalStrideDim(dma.getMixedLengths(), dma.getMixedStrides())
+  return findIllegalStrideDim(dma.getMixedLengths(), dma.getMixedStrides(),
+                              air::getDmaBdLimits(dma, air::MemorySpace::L3))
       .has_value();
 }
 
@@ -2676,33 +2627,7 @@ static void splitDimIntoPieces(airrt::DmaMemcpyNdOp memcpy_op, unsigned i,
   SmallVector<OpFoldResult> offsets = memcpy_op.getMixedOffsets();
   SmallVector<OpFoldResult> wraps = memcpy_op.getMixedLengths();
   SmallVector<OpFoldResult> strides = memcpy_op.getMixedStrides();
-  // generateAwaitsFromWaitAllOps matches waits to configure tasks FIFO per
-  // channel -- the Nth wait for a channel awaits the Nth config for it. This
-  // rewrite turns one config into `wrap` of them, so the channel needs `wrap`
-  // waits or the pairing shifts: the original wait would land on the first
-  // piece, every later transfer on the channel would be awaited one slot
-  // early, and the tail pieces would go unawaited -- on an S2MM channel that
-  // is both a missed completion token and a BD that is never freed. Emit the
-  // extra waits alongside the extra configs so the 1:1 invariant survives.
-  //
-  // Only on a channel that is already waited: adding waits to a fire-and-
-  // forget channel would impose synchronisation the design never asked for.
-  StringRef waitedSym;
-  if (auto metadata = memcpy_op->getAttrOfType<FlatSymbolRefAttr>("metadata"))
-    if (auto func = memcpy_op->getParentOfType<func::FuncOp>())
-      func.walk([&](AIEX::NpuDmaWaitOp wait) {
-        if (wait.getSymbol() == metadata.getValue())
-          waitedSym = metadata.getValue();
-      });
-
-  // The op's !airrt.event is optional and, unlike tileIllegalWrapDim (which
-  // rewrites in place), this replaces the op -- so the result has to be
-  // carried across. The pieces are issued in program order on one channel, so
-  // the last one completing implies all of them have; give it the event and
-  // let it stand in for the original. This mirrors how coalesceShimDmaOrder
-  // redirects the event tokens of the ops it merges away.
-  SmallVector<Type> eventTy(memcpy_op->getResultTypes());
-  airrt::DmaMemcpyNdOp lastOp;
+  SmallVector<airrt::DmaMemcpyNdOp> pieces;
   for (int64_t k = 0; k < constWrap; k++) {
     SmallVector<OpFoldResult> newOffsets(offsets), newWraps(wraps),
         newStrides(strides);
@@ -2717,36 +2642,17 @@ static void splitDimIntoPieces(airrt::DmaMemcpyNdOp memcpy_op, unsigned i,
                                     builder, loc, builder.getI64IntegerAttr(k)))
               .getResult();
     newWraps[i] = builder.getI64IntegerAttr(1);
-    bool isLast = k + 1 == constWrap;
-    lastOp = airrt::DmaMemcpyNdOp::create(
-        builder, loc, isLast ? eventTy : SmallVector<Type>{}, memcpy_op.getId(),
-        memcpy_op.getX(), memcpy_op.getY(), memcpy_op.getMemref(), newOffsets,
-        newWraps, newStrides);
-    // Ordering/barrier markers must ride along on every piece, or the split
-    // silently drops the append barrier and the shim order constraint.
-    lastOp->setAttrs(memcpy_op->getDiscardableAttrDictionary());
+    auto piece = airrt::DmaMemcpyNdOp::create(
+        builder, loc, SmallVector<Type>(memcpy_op->getResultTypes()),
+        memcpy_op.getId(), memcpy_op.getX(), memcpy_op.getY(),
+        memcpy_op.getMemref(), newOffsets, newWraps, newStrides);
+    // Ordering markers must ride along on every piece, or the split silently
+    // drops the shim order constraint.
+    piece->setAttrs(memcpy_op->getDiscardableAttrDictionary());
+    pieces.push_back(piece);
   }
-  // Where they go does not change the pairing -- FIFO orders waits among
-  // themselves, and anywhere after the pieces and before the transfer's own
-  // wait gives piece k the kth of these and the last piece the original wait.
-  // It does change when the awaits execute, so prefer the transfer's own wait:
-  // a design that deliberately waits late keeps the overlap it asked for
-  // instead of being synchronised early. Only in the same block, though -- a
-  // wait in a nested region (a per-iteration drain inside an scf.for, say)
-  // would multiply these by the trip count and unbalance the very pairing they
-  // exist to preserve. Falling back to right after the pieces is always valid:
-  // every piece dominates them, which the pairing's dominance guard requires.
-  if (!waitedSym.empty()) {
-    for (Operation *o = memcpy_op->getNextNode(); o; o = o->getNextNode())
-      if (auto wait = dyn_cast<AIEX::NpuDmaWaitOp>(o))
-        if (wait.getSymbol() == waitedSym) {
-          builder.setInsertionPoint(wait);
-          break;
-        }
-    for (int64_t k = 1; k < constWrap; k++)
-      AIEX::NpuDmaWaitOp::create(builder, loc, waitedSym);
-  }
-  memcpy_op->replaceAllUsesWith(lastOp);
+  // The waits on the transfer wait on every piece.
+  replaceTransferEvent(memcpy_op, pieces);
   memcpy_op.erase();
 }
 
@@ -2773,7 +2679,9 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
   SmallVector<OpFoldResult> strides = memcpy_op.getMixedStrides();
 
   folded = false;
-  auto dim = findIllegalStrideDim(wraps, strides);
+  air::DmaBdLimits limits =
+      air::getDmaBdLimits(memcpy_op, air::MemorySpace::L3);
+  auto dim = findIllegalStrideDim(wraps, strides, limits);
   if (!dim)
     return success();
   unsigned i = *dim;
@@ -2792,11 +2700,11 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
     return success();
   // Only a middle dim of a BD whose 4th dim is unused is dropped once its wrap
   // becomes 1; anywhere else the over-limit stride would still be encoded.
-  if (strides.size() != AIE2_DIM_COUNT || i == 0 || i + 1 == strides.size() ||
-      *outerStride != 0)
+  if (strides.size() != (size_t)limits.listDims() || i == 0 ||
+      i + 1 == strides.size() || *outerStride != 0)
     return success();
   // Folding costs one descriptor per entry of the folded dim.
-  if (*constWrap > AIE2_STRIDE_UNROLL_LIMIT)
+  if (*constWrap > limits.numBDs)
     return success();
   // The pieces are issued back to back, so an enclosing dim that still walks is
   // traversed inside each piece instead of around them: (d,k) order becomes
@@ -2821,10 +2729,10 @@ LogicalResult unrollIllegalStrideDim(airrt::DmaMemcpyNdOp memcpy_op,
 // pieces are issued in that dim's order.
 static std::optional<unsigned>
 findWalkOutsideRepeat(SmallVector<OpFoldResult> wraps,
-                      SmallVector<OpFoldResult> strides) {
-  if (wraps.size() != AIE2_DIM_COUNT)
+                      SmallVector<OpFoldResult> strides, unsigned dimCount) {
+  if (wraps.size() != dimCount)
     return std::nullopt;
-  for (unsigned d = 1; d + 1 < AIE2_DIM_COUNT; d++) {
+  for (unsigned d = 1; d + 1 < dimCount; d++) {
     auto w = getConstantIntValue(wraps[d]);
     auto st = getConstantIntValue(strides[d]);
     if (!w || !st || *w <= 1 || *st != 0)
@@ -2842,18 +2750,20 @@ findWalkOutsideRepeat(SmallVector<OpFoldResult> wraps,
 LogicalResult enforceRepeatOutermost(ModuleOp module) {
   // Each split removes one walking dim outside a repeat; iterate to a
   // fixpoint, bounded by the dim count.
-  for (unsigned round = 0; round < AIE2_DIM_COUNT; round++) {
+  air::DmaBdLimits limits = air::getDmaBdLimits(module, air::MemorySpace::L3);
+  unsigned dimCount = limits.listDims();
+  for (unsigned round = 0; round < dimCount; round++) {
     SmallVector<std::pair<airrt::DmaMemcpyNdOp, unsigned>> targets;
     module.walk([&](airrt::DmaMemcpyNdOp dma) {
       if (auto e = findWalkOutsideRepeat(dma.getMixedLengths(),
-                                         dma.getMixedStrides()))
+                                         dma.getMixedStrides(), dimCount))
         targets.push_back({dma, *e});
     });
     if (targets.empty())
       return success();
     for (auto [op, e] : targets) {
       auto wrap = getConstantIntValue(op.getMixedLengths()[e]);
-      if (!wrap || *wrap > AIE2_STRIDE_UNROLL_LIMIT)
+      if (!wrap || *wrap > limits.numBDs)
         return op->emitOpError("a repeated dim inside a walking dim of ")
                << (wrap ? *wrap : -1)
                << " entries cannot be expressed as shim tasks";
@@ -2866,7 +2776,9 @@ LogicalResult enforceRepeatOutermost(ModuleOp module) {
 LogicalResult enforceAIE2StrideLimit(ModuleOp module) {
   // One pass peels one dim; a transfer with several illegal strides needs
   // several. Iterate to a fixpoint, bounded by the dim count.
-  for (unsigned round = 0; round < AIE2_DIM_COUNT; round++) {
+  unsigned dimCount =
+      air::getDmaBdLimits(module, air::MemorySpace::L3).listDims();
+  for (unsigned round = 0; round < dimCount; round++) {
     SmallVector<airrt::DmaMemcpyNdOp> targets;
     module.walk([&](func::FuncOp f) {
       f.walk([&](airrt::DmaMemcpyNdOp dma) {
@@ -2920,7 +2832,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     ModuleOp module = getOperation();
 
     // Move func op to the end of device op's body
-    moveFuncOpToEndOfDeviceOp(module);
+    if (failed(moveFuncOpToEndOfDeviceOp(module))) {
+      signalPassFailure();
+      return;
+    }
 
     // Early cleanup: remove dead device compute ops (L1/L2 memory ops, pure
     // compute) that won't be converted to NPU ops. This is a performance
@@ -3005,13 +2920,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       (void)applyPatternsGreedily(module, std::move(p));
     }
 
-    // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
-    // This must happen BEFORE DMA conversion because:
-    // 1. WaitAllOp has SSA operands to DmaMemcpyNdOp event tokens
-    // 2. NpuDmaWaitOp uses symbol reference (can be created before DMA
-    // conversion)
-    // 3. After this, DMA tokens can be safely purged
-
     // Decide the per-launch lock/DMA reset for each device now, while the
     // launch_end markers (and the loops that mark a multi-iteration launch) are
     // still present: the conversion below erases the markers and
@@ -3025,14 +2933,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     assignLaunchWaveIndices(module);
 
     // Coalesce contiguous same-channel paced shim feeds into wider
-    // transfers before the wait-generation and wrap-enforcement steps, so
-    // fewer DMA tasks and awaits are emitted. Runs after wave tagging (the kept
-    // op keeps its wave attribute) and before WaitAll->wait conversion (erased
-    // ops' event tokens are redirected to the merged op).
+    // transfers before the wrap-enforcement steps, so fewer DMA tasks and
+    // awaits are emitted. Runs after wave tagging (the kept op keeps its wave
+    // attribute); erased ops' event tokens are redirected to the merged op.
     if (clCoalesceShimDma)
       coalesceShimDmaOrder(module);
 
-    generateNpuWaitFromAIRRtWaitAll(module);
+    lowerLaunchEnds(module);
 
     // Enforce AIE2 hardware constraints.
     if (failed(enforceAIE2WrapLimit(module))) {
@@ -3133,7 +3040,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                  L1AffineStoreOpConversion, HostMemRefCopyOpConversion,
                  AIRRtAllocOpConversion, AIRRtDeallocOpConversion>(ctx);
     patterns.add<DmaToNpuPattern>(ctx, clOutputElf);
-    patterns.add<AIRRtWaitAllOpConversion>(ctx, clOutputElf);
+    patterns.add<AIRRtWaitAllOpConversion>(ctx);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
@@ -3156,11 +3063,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     (void)applyPatternsGreedily(module, std::move(castPattern));
     bufferMemrefToSequenceArgs(module);
 
-    // Convert NpuDmaWaitOp → DMAAwaitTaskOp AFTER DMA conversion.
-    // NpuDmaWaitOp was placed at WaitAllOp locations (clustered), and now we
-    // replace each one with DMAAwaitTaskOp referencing the corresponding
-    // DMAConfigureTaskForOp result.
-    generateAwaitsFromWaitAllOps(module);
+    paceShimFeeds(module);
 
     // Renumber npu dma ops
     renumberNpuDmaOps(module.getBody());
@@ -3274,8 +3177,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
         // One arm group per launch. Both things that can delimit a launch
         // boundary are cuts of this block's op list, emitted from the SAME
-        // air.launch_end marker: AIRRtWaitAllOpConversion turns each marker
-        // into an aiex.npu.load_pdi (ELF + lock reset) or into dma_waits
+        // air.launch_end marker: lowerLaunchEnds turns each marker into an
+        // aiex.npu.load_pdi (ELF + lock reset) or into drain waits
         // (plain xclbin), while assignLaunchWaveIndices turns markers into a
         // wave index on each op. So cut on either signal: a load_pdi, or a
         // change of wave. Single dispatch has neither and stays one group.
@@ -3367,7 +3270,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // to each fused wave by hoisting the wave's output-S2MM configure+start
     // ahead of the wave's first input feed (after the arm/set_lock block the
     // RTP hoist just placed). The output drain (dma_await_task) stays at the
-    // wave boundary (emitted by generateAwaitsFromWaitAllOps). Gated to fused
+    // wave boundary (emitted for the launch end's wait). Gated to fused
     // multi-iteration launches so single-dispatch sequences are byte-identical.
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
@@ -3440,16 +3343,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     });
 
-    // Hoist input DMA feeds (air.runtime_hoist) and enforce the
-    // append->readback barrier (air.await_appends). These opt-in orderings
-    // target a single configuration region, so anchor them at the global front
-    // of the sequence.
+    // Hoist input DMA feeds (air.runtime_hoist). This opt-in ordering targets
+    // a single configuration region, so anchor it at the front of the block.
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       if (seq.getBody().empty())
         return;
-      // Rolled, the hoisted feeds and the append/readback pair live in the
-      // loop body or a select arm, so scoping to the entry block finds nothing
-      // and the append barrier is silently not applied.
+      // Rolled, the hoisted feeds live in a loop body or a select arm, so
+      // every block is visited, not just the entry block.
       SmallVector<Block *> blocks;
       seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
       for (Block *blkPtr : blocks) {
@@ -3495,88 +3395,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             c->emitWarning("air.runtime_hoist: no matching dma_start_task; the "
                            "feed was hoisted but its start was not, so the "
                            "requested ordering may not take effect");
-        }
-
-        // air.await_appends barrier: a same-L3 write-after-write / read-after-
-        // write ordering that the async dependence graph cannot express. A
-        // shared- DDR readback tagged `air.await_appends` must observe values
-        // written by one or more device-side appends (S2MM drains into that
-        // same DDR buffer), but an append's completion await is deferred to the
-        // launch terminator, so the readback -- issued in program order after
-        // the append START -- would race the append S2MM and read a stale slot.
-        // Each participating append is tagged `air.append_barrier`; move those
-        // appends' completion awaits to just BEFORE the tagged readback's
-        // start, so the runtime blocks on append completion before reading
-        // back.
-        //
-        // A runtime sequence may contain one or MORE independent readbacks
-        // (e.g. an unrolled loop with N append/readback pairs). Each append's
-        // completion await is moved before the FIRST tagged readback start that
-        // follows the append in program order -- the readback that consumes it.
-        // Collapsing every append onto the first readback would move a later
-        // readback's append await ahead of an earlier readback, violating SSA
-        // dominance and the append->readback ordering. With a single readback
-        // this reduces to moving every append's await before that one readback.
-        SmallVector<AIEX::DMAConfigureTaskForOp> awaitCfgs;
-        for (auto &o : blk)
-          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
-            if (c->hasAttr(air::attrs::AwaitAppends))
-              awaitCfgs.push_back(c);
-        if (!awaitCfgs.empty()) {
-          // First dma_start_task among a configure task's users, if any.
-          auto getStart = [](AIEX::DMAConfigureTaskForOp c) {
-            for (auto *u : c.getResult().getUsers())
-              if (auto s = dyn_cast<AIEX::DMAStartTaskOp>(u))
-                return s;
-            return AIEX::DMAStartTaskOp(nullptr);
-          };
-          // Program-order index for every op in the block. Only awaits are
-          // relocated below (append/readback starts stay put), so the indices
-          // used for the interval decisions remain valid throughout.
-          DenseMap<Operation *, unsigned> order;
-          unsigned idx = 0;
-          for (auto &o : blk)
-            order[&o] = idx++;
-          // Tagged readback starts, in program order.
-          SmallVector<AIEX::DMAStartTaskOp> barrierStarts;
-          for (auto c : awaitCfgs) {
-            if (auto s = getStart(c))
-              barrierStarts.push_back(s);
-            else
-              c->emitWarning("air.await_appends: tagged readback has no "
-                             "dma_start_task; the "
-                             "append barrier cannot be applied");
-          }
-          bool anyAppendAwait = false;
-          for (auto &o : blk) {
-            auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o);
-            if (!cfg || !cfg->hasAttr(air::attrs::AppendBarrier))
-              continue;
-            AIEX::DMAAwaitTaskOp aAwait = nullptr;
-            for (auto *u : cfg.getResult().getUsers())
-              if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(u))
-                aAwait = aw;
-            if (!aAwait)
-              continue;
-            anyAppendAwait = true;
-            AIEX::DMAStartTaskOp aStart = getStart(cfg);
-            unsigned apos = order[aStart ? aStart.getOperation() : &o];
-            AIEX::DMAStartTaskOp target = nullptr;
-            unsigned best = std::numeric_limits<unsigned>::max();
-            for (auto s : barrierStarts) {
-              unsigned sp = order[s.getOperation()];
-              if (sp > apos && sp < best) {
-                best = sp;
-                target = s;
-              }
-            }
-            if (target)
-              aAwait->moveBefore(target);
-          }
-          if (!anyAppendAwait && !barrierStarts.empty())
-            barrierStarts.front()->emitWarning(
-                "air.await_appends: readback tagged but no air.append_barrier "
-                "appends found to await; no ordering was enforced");
         }
       }
     });
@@ -3661,36 +3479,49 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     });
   }
 
-  // The linear element range one buffer descriptor touches, or std::nullopt
-  // when its offset, length or dimensions are only known at runtime.
-  static std::optional<std::pair<int64_t, int64_t>>
-  bdAccessRange(AIE::DMABDOp bd) {
-    if (bd.getOffset() || bd.getLen() || !bd.getSizes().empty() ||
-        !bd.getStrides().empty())
-      return std::nullopt;
-    auto offset = bd.getStaticOffset();
-    if (!offset)
-      return std::nullopt;
-    auto sizes = bd.getStaticSizesAttr();
-    auto strides = bd.getStaticStridesAttr();
-    if (!sizes || !strides || sizes.empty()) {
-      auto len = bd.getStaticLen();
-      if (!len)
+  // Whether two buffer descriptors touch a common element of their buffer;
+  // std::nullopt when an offset, length or dimension is only known at runtime.
+  static std::optional<bool> bdsIntersect(AIE::DMABDOp a, AIE::DMABDOp b) {
+    struct Pattern {
+      SmallVector<OpFoldResult> offsets, sizes, strides;
+    };
+    auto pattern = [](AIE::DMABDOp bd) -> std::optional<Pattern> {
+      if (bd.getOffset() || bd.getLen() || !bd.getSizes().empty() ||
+          !bd.getStrides().empty())
         return std::nullopt;
-      return std::make_pair(int64_t(*offset), int64_t(*offset) + *len);
-    }
-    Builder b(bd.getContext());
-    SmallVector<OpFoldResult> zeros, sz, st;
-    for (auto [size, stride] :
-         llvm::zip(sizes.asArrayRef(), strides.asArrayRef())) {
-      zeros.push_back(b.getIndexAttr(0));
-      sz.push_back(b.getIndexAttr(size));
-      st.push_back(b.getIndexAttr(stride));
-    }
-    auto range = air::getLinearAccessRange(zeros, sz, st);
-    if (!range)
+      auto offset = bd.getStaticOffset();
+      if (!offset)
+        return std::nullopt;
+      Builder b(bd.getContext());
+      Pattern p;
+      auto sizes = bd.getStaticSizesAttr();
+      auto strides = bd.getStaticStridesAttr();
+      if (!sizes || !strides || sizes.empty()) {
+        auto len = bd.getStaticLen();
+        if (!len)
+          return std::nullopt;
+        p.offsets = {b.getIndexAttr(*offset)};
+        p.sizes = {b.getIndexAttr(*len)};
+        p.strides = {b.getIndexAttr(1)};
+        return p;
+      }
+      // The offset as a leading dimension of one element.
+      p.offsets = {b.getIndexAttr(*offset)};
+      p.sizes = {b.getIndexAttr(1)};
+      p.strides = {b.getIndexAttr(1)};
+      for (auto [size, stride] :
+           llvm::zip(sizes.asArrayRef(), strides.asArrayRef())) {
+        p.offsets.push_back(b.getIndexAttr(0));
+        p.sizes.push_back(b.getIndexAttr(size));
+        p.strides.push_back(b.getIndexAttr(stride));
+      }
+      return p;
+    };
+    auto pa = pattern(a), pb = pattern(b);
+    if (!pa || !pb)
       return std::nullopt;
-    return std::make_pair(range->first + *offset, range->second + *offset);
+    return air::accessesIntersect(pa->offsets, pa->sizes, pa->strides,
+                                  pb->offsets, pb->sizes, pb->strides);
   }
 
   // Lay out a launch's shim tasks so the control program never waits on a task
@@ -3737,15 +3568,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
       // A feed whose position is already load-bearing is left alone, and fences
       // the burst it sits in: `air.runtime_hoist` was deliberately moved to the
-      // front, the paced/coalesced feeds are bounded by
-      // synthesizeDoubleBufferedAwaits, and the append-barrier feeds carry a
-      // write-after-write ordering the dependence graph cannot express.
+      // front, and the paced/coalesced feeds are bounded by
+      // synthesizeDoubleBufferedAwaits.
       auto channelDir = [&](AIEX::DMAConfigureTaskForOp cfg)
           -> std::optional<AIE::DMAChannelDir> {
         for (StringRef a :
              {air::attrs::RuntimeHoist, air::attrs::PreserveShimDmaOrder,
-              air::attrs::CoalescedShimFeed, air::attrs::AppendBarrier,
-              air::attrs::AwaitAppends})
+              air::attrs::CoalescedShimFeed})
           if (cfg->hasAttr(a))
             return std::nullopt;
         auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(
@@ -3776,7 +3605,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         drain.getBody().walk([&](AIE::DMABDOp w) {
           feed.getBody().walk([&](AIE::DMABDOp r) {
             if (w.getBuffer() == r.getBuffer() &&
-                air::mayOverlap(bdAccessRange(w), bdAccessRange(r)))
+                bdsIntersect(w, r).value_or(true))
               overlap = true;
           });
         });
@@ -4040,8 +3869,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             }
             // A drain await in front of a feed that reads the drain's region
             // travels with that feed; any other await is an ordering point.
-            // The awaits in front of a feed go together: air-to-std awaits a
-            // channel's older drains along with the one the feed reads.
+            // The awaits in front of a feed go together: they are for the
+            // drains it reads.
             SmallVector<AIEX::DMAAwaitTaskOp> group = {await};
             Operation *next = o.getNextNode();
             while (next && (isMemoryEffectFree(next) ||
@@ -4192,7 +4021,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     });
   }
 
-  void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
+  LogicalResult moveFuncOpToEndOfDeviceOp(ModuleOp module) {
     // Collect all func ops that need to be processed
     SmallVector<func::FuncOp> funcOps;
     module.walk([&](func::FuncOp f) {
@@ -4206,6 +4035,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         funcOps.push_back(f);
     });
 
+    // With output-elf, each device's sequence is named after the device, so
+    // one func per device.
+    llvm::DenseMap<Operation *, std::string> elfDeviceFunc;
     for (auto funcOp : funcOps) {
       // Identify launch regions (affine.for with affine_opt_label containing
       // segment_load/herd_load)
@@ -4229,6 +4061,17 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       for (auto &region : regions) {
         deviceToRegions[region.device].push_back(&region);
       }
+      if (clOutputElf)
+        for (auto &[device, _] : deviceToRegions) {
+          auto [it, fresh] =
+              elfDeviceFunc.try_emplace(device, funcOp.getName().str());
+          if (fresh)
+            continue;
+          funcOp.emitError("drives device @")
+              << device.getSymName() << ", as @" << it->second
+              << " does; output-elf supports one func per device";
+          return failure();
+        }
 
       // If all regions target the same device and we're not forcing main
       // device generation, just move the entire func to that device
@@ -4244,8 +4087,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (device.getDevice() != deviceType) {
           funcOp.emitError("Multiple devices with different device types "
                            "are not supported");
-          signalPassFailure();
-          return;
+          return failure();
         }
       }
 
@@ -4305,6 +4147,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // Erase the original function
       funcOp.erase();
     }
+    return success();
   }
 
   // Wrap existing aie.device ops with a main device when emit-main-device is
@@ -4517,156 +4360,120 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
   }
 
-  // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
-  // This must happen BEFORE DMA conversion.
-  void generateNpuWaitFromAIRRtWaitAll(ModuleOp module) {
-    auto ctx = module.getContext();
+  // Lower each air.launch_end. Between launch iterations every shim channel
+  // the launch used is drained, so the next iteration's configuration cannot
+  // race this one's transfers (issue #1373), or the device is reset when its
+  // locks need it. The drain waits on each of the launch's transfers the
+  // launch end does not wait on itself. A transfer in a nested block -- an
+  // arm of a feed select, a rolled loop body -- is waited at the end of that
+  // block, the last point its event is visible.
+  void lowerLaunchEnds(ModuleOp module) {
+    SmallVector<airrt::WaitAllOp> launchEnds;
+    module.walk([&](airrt::WaitAllOp w) {
+      if (w->hasAttr("air.launch_end"))
+        launchEnds.push_back(w);
+    });
+    // Each launch's transfers, per block and channel in program order, read
+    // while every launch end still marks where its launch begins.
+    using Transfers = llvm::MapVector<
+        Block *, llvm::MapVector<StringRef, SmallVector<airrt::DmaMemcpyNdOp>>>;
+    SmallVector<Transfers> launches;
+    for (auto launchEnd : launchEnds) {
+      SmallVector<Operation *> window;
+      for (Operation *o = launchEnd->getPrevNode();
+           o && !(isa<airrt::WaitAllOp>(o) && o->hasAttr("air.launch_end"));
+           o = o->getPrevNode())
+        window.push_back(o);
+      Transfers &transfers = launches.emplace_back();
+      for (Operation *o : llvm::reverse(window))
+        o->walk([&](airrt::DmaMemcpyNdOp dma) {
+          if (auto md = dma->getAttrOfType<FlatSymbolRefAttr>("metadata"))
+            transfers[dma->getBlock()][md.getValue()].push_back(dma);
+        });
+    }
 
-    // Apply the pattern to convert WaitAllOp → NpuDmaWaitOp
-    RewritePatternSet patterns(ctx);
-    patterns.insert<AIRRtWaitAllOpToNpuWaitPattern>(ctx, clOutputElf);
-    (void)applyPatternsGreedily(module, std::move(patterns));
-
-    // Now that WaitAllOps with DMA operands are erased, purge DMA async
-    // tokens (they no longer have uses from WaitAllOps)
-    purgeDmaAsyncTokens(module);
+    for (auto [launchEnd, transfers] : llvm::zip(launchEnds, launches)) {
+      launchEnd->removeAttr("air.launch_end");
+      auto device = launchEnd->getParentOfType<AIE::DeviceOp>();
+      if (!device ||
+          !llvm::isa<AIE::BaseNPU2TargetModel>(device.getTargetModel()))
+        continue;
+      OpBuilder b(launchEnd->getContext());
+      b.setInsertionPointAfter(launchEnd);
+      if (clOutputElf && deviceNeedsLockReset(device)) {
+        auto deviceRef = FlatSymbolRefAttr::get(launchEnd->getContext(),
+                                                device.getSymName());
+        AIEX::NpuLoadPdiOp::create(b, launchEnd.getLoc(), deviceRef,
+                                   IntegerAttr(), IntegerAttr(), IntegerAttr(),
+                                   AIEX::ExpandModeAttr());
+        continue;
+      }
+      if (!clOutputElf && !deviceHasMultiIterLaunch(device))
+        continue;
+      llvm::SmallPtrSet<Operation *, 8> waited;
+      for (Value v : launchEnd->getOperands())
+        if (Operation *def = v.getDefiningOp())
+          waited.insert(def);
+      // The device's shim allocations in declaration order, then any other
+      // channel the launch's transfers name (an object FIFO).
+      llvm::SetVector<StringRef> channels;
+      for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>())
+        channels.insert(alloc.getSymName());
+      for (auto &[blk, byChannel] : transfers)
+        for (auto &[channel, dmas] : byChannel)
+          channels.insert(channel);
+      for (StringRef channel : channels) {
+        for (auto &[blk, byChannel] : transfers) {
+          auto it = byChannel.find(channel);
+          if (it == byChannel.end())
+            continue;
+          SmallVector<Value> events;
+          for (auto &dma : it->second)
+            if (!waited.contains(dma))
+              events.push_back(withEvent(dma));
+          if (events.empty())
+            continue;
+          if (blk == launchEnd->getBlock()) {
+            auto wait = airrt::WaitAllOp::create(b, launchEnd.getLoc(),
+                                                 TypeRange{}, events);
+            b.setInsertionPointAfter(wait);
+          } else {
+            OpBuilder atEnd(blk->getTerminator());
+            airrt::WaitAllOp::create(atEnd, launchEnd.getLoc(), TypeRange{},
+                                     events);
+          }
+        }
+      }
+    }
   }
 
-  // Convert NpuDmaWaitOp → DMAAwaitTaskOp or DMAFreeTaskOp AFTER DMA
-  // conversion. This processes NpuDmaWaitOp ops and DMAConfigureTaskForOp ops
-  // in order, matching each wait to its corresponding configure task by
-  // channel. The key insight: waits and configures for the same channel must
-  // be matched in FIFO order - the Nth wait for channel X awaits the Nth
-  // config for X.
-  //
-  // For S2MM (output) channels: generate DMAAwaitTaskOp (wait + free BD)
-  // For MM2S (input) channels: generate DMAFreeTaskOp (just free BD, no wait)
-  void generateAwaitsFromWaitAllOps(ModuleOp module) {
+  // The event of `dma`, giving it one if it has none.
+  static Value withEvent(airrt::DmaMemcpyNdOp &dma) {
+    if (dma->getNumResults())
+      return dma->getResult(0);
+    OpBuilder b(dma);
+    auto withResult = airrt::DmaMemcpyNdOp::create(
+        b, dma.getLoc(), airrt::EventType::get(dma->getContext()), dma.getId(),
+        dma.getX(), dma.getY(), dma.getMemref(), dma.getMixedOffsets(),
+        dma.getMixedLengths(), dma.getMixedStrides());
+    withResult->setAttrs(dma->getDiscardableAttrDictionary());
+    dma->erase();
+    dma = withResult;
+    return withResult->getResult(0);
+  }
+
+  // Pace the shim feeds that are kept in order, after the awaits and frees
+  // the conversion emits.
+  void paceShimFeeds(ModuleOp module) {
     // Either container is possible here: the rolled path has already turned
     // the control func into its runtime_sequence.
     SmallVector<Operation *> funcOps;
     module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
     module.walk([&](AIE::RuntimeSequenceOp s) { funcOps.push_back(s); });
-
-    for (auto f : funcOps) {
-      auto device = f->getParentOfType<AIE::DeviceOp>();
-      if (!device)
-        continue;
-
-      if (f->getRegion(0).empty())
-        continue;
-
-      mlir::DominanceInfo domInfo(f);
-
-      // First pass: collect all DMAConfigureTaskForOp per channel in order
-      // Map from metadata symbol -> list of ConfigTasks in order
-      llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>>
-          channelToConfigTasks;
-
-      // Also track per-channel indices for matching
-      llvm::DenseMap<StringRef, unsigned> channelToNextConfigIdx;
-
-      // Walk the function body in order
-      f->walk([&](AIEX::DMAConfigureTaskForOp configTask) {
-        auto allocSymbol = configTask.getAlloc();
-        StringRef metadata = allocSymbol.getLeafReference().getValue();
-        channelToConfigTasks[metadata].push_back(configTask);
-      });
-
-      // Initialize indices
-      for (auto &kv : channelToConfigTasks) {
-        channelToNextConfigIdx[kv.first] = 0;
-      }
-
-      // Second pass: process NpuDmaWaitOp ops in order
-      // For each wait, find the next unconsumed ConfigTask for that channel
-      SmallVector<AIEX::NpuDmaWaitOp> waitOps;
-      f->walk([&](AIEX::NpuDmaWaitOp waitOp) { waitOps.push_back(waitOp); });
-
-      for (auto waitOp : waitOps) {
-        StringRef metadata = waitOp.getSymbol();
-
-        // Determine channel direction
-        // First try ShimDMAAllocationOp
-        auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, metadata);
-        bool isS2MM = false;
-        if (allocOp) {
-          isS2MM = allocOp.getChannelDir() == AIE::DMAChannelDir::S2MM;
-        } else {
-          // Check for objectfifo - if consumer is shim tile, it's S2MM
-          auto objFifo = device.lookupSymbol<AIE::ObjectFifoCreateOp>(metadata);
-          if (objFifo) {
-            for (auto consumerTileOp : objFifo.getConsumerTiles()) {
-              if (isShimTileValue(consumerTileOp)) {
-                isS2MM = true;
-                break;
-              }
-            }
-          }
-        }
-
-        // Find the next ConfigTask for this channel.
-        //
-        // The Nth wait for a channel awaits its Nth config in FIFO order, BUT
-        // only if that config dominates the wait. A fused multi-iteration
-        // launch with HETEROGENEOUS waves (some waves use a channel and
-        // others do not) emits a per-iteration all-shim
-        // boundary drain that waits on EVERY channel at each boundary. For a
-        // channel with no config in the current wave, FIFO would otherwise pair
-        // that boundary wait with a config from a LATER wave -- producing a
-        // dma_await_task whose config operand does not dominate it
-        // (use-before-def). That invalid IR is not caught until
-        // ControlFuncConversion clones the func (the clone leaves the await
-        // referencing the un-mapped original config, crossing into the new
-        // runtime_sequence -> erase-with-uses assert). Guard the match on
-        // dominance: if the next unconsumed config does not dominate this wait,
-        // leave it for a later (dominated) wait and emit no await here.
-        AIEX::DMAConfigureTaskForOp matchingConfigTask = nullptr;
-        auto it = channelToConfigTasks.find(metadata);
-        if (it != channelToConfigTasks.end()) {
-          auto &configTasks = it->second;
-          unsigned &nextIdx = channelToNextConfigIdx[metadata];
-          if (nextIdx < configTasks.size() &&
-              domInfo.properlyDominates(configTasks[nextIdx].getOperation(),
-                                        waitOp.getOperation())) {
-            matchingConfigTask = configTasks[nextIdx];
-            nextIdx++;
-          }
-        }
-
-        if (matchingConfigTask) {
-          OpBuilder builder(waitOp);
-          // Block dominance is satisfied by an op in a sibling region -- a
-          // configure in one arm of a rolled feed select -- but its result is
-          // not visible outside that arm. Await at the end of the arm instead.
-          if (!matchingConfigTask->getParentRegion()->isAncestor(
-                  waitOp->getParentRegion()))
-            builder.setInsertionPoint(
-                matchingConfigTask->getBlock()->getTerminator());
-          if (isS2MM) {
-            // S2MM (output): await task - waits for completion AND frees BD
-            AIEX::DMAAwaitTaskOp::create(builder, waitOp.getLoc(),
-                                         matchingConfigTask.getResult());
-          } else if (matchingConfigTask->hasAttr(
-                         air::attrs::PreserveShimDmaOrder)) {
-            // MM2S, paced: do not emit a fire-and-free here. Bounded
-            // double-buffered awaits are synthesized in
-            // synthesizeDoubleBufferedAwaits() below.
-          } else {
-            // MM2S (input): free task - just frees BD for reuse, no wait
-            AIEX::DMAFreeTaskOp::create(builder, waitOp.getLoc(),
-                                        matchingConfigTask.getResult());
-          }
-        }
-        // Erase the NpuDmaWaitOp regardless of whether we found a match
-        waitOp->erase();
-      }
-
-      // Emit bounded double-buffered awaits for paced (lockstep-coupled) MM2S
-      // shim feeds. Must run after the default await/free emission above so it
-      // can rely on the per-task config ops being in final program order.
-      synthesizeDoubleBufferedAwaits(f, device, /*depth=*/2);
-    }
+    for (auto f : funcOps)
+      if (auto device = f->getParentOfType<AIE::DeviceOp>())
+        if (!f->getRegion(0).empty())
+          synthesizeDoubleBufferedAwaits(f, device, /*depth=*/2);
   }
 
   // For shim feeds marked `air.preserve_shim_dma_order`, replace fire-and-free
@@ -4922,25 +4729,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           seg.push_back(ct);
         }
         flush();
-      }
-    }
-  }
-
-  // Purge DMA async tokens - they are no longer needed after WaitAllOp
-  // processing. Call this BEFORE DMA conversion.
-  void purgeDmaAsyncTokens(ModuleOp module) {
-    SmallVector<airrt::DmaMemcpyNdOp> dmas;
-    module.walk([&](airrt::DmaMemcpyNdOp dma) { dmas.push_back(dma); });
-    for (auto dma : dmas) {
-      if (dma->getNumResults()) {
-        OpBuilder builder(dma);
-        SmallVector<Type, 1> tys;
-        auto newOp = airrt::DmaMemcpyNdOp::create(
-            builder, dma->getLoc(), tys, dma.getId(), dma.getX(), dma.getY(),
-            dma.getMemref(), dma.getMixedOffsets(), dma.getMixedLengths(),
-            dma.getMixedStrides());
-        newOp->setAttrs(dma->getDiscardableAttrDictionary());
-        dma->erase();
       }
     }
   }

@@ -10,6 +10,7 @@
 #define AIR_DEPENDENCY_SCHEDULE_OPT_H
 
 #include "air/Transform/PassDetail.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -53,6 +54,8 @@ createAIRFuseChannels(const AIRFuseChannelsOptions &);
 
 std::unique_ptr<mlir::Pass> createAIREnforceChannelFifoOrder();
 
+std::unique_ptr<mlir::Pass> createAIRVerifyChannelFifoOrder();
+
 std::unique_ptr<mlir::Pass> createAIRIsolateAsyncDmaLoopNests();
 
 std::unique_ptr<mlir::Pass> createAIRLoopFusion();
@@ -77,12 +80,12 @@ void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns);
 // Populate patterns for canonicalizing offsets, sizes and strides in air
 // channel_interface operations.
 void populateAIRCanonicalizeChannelWrapAndStridePatterns(
-    RewritePatternSet &patterns, int &maxSize, int &maxNumDims,
+    RewritePatternSet &patterns, const DmaBdLimits &limits,
     bool &enableRepeatAtHighestDim);
 
 // Apply AIRSpecializeChannelWrapAndStridePattern on region.
 void applyAIRSpecializeChannelWrapAndStridePattern(
-    Region *region, int maxNumDims, int maxSize, bool enableForLoopUnrolling,
+    Region *region, const DmaBdLimits &limits, bool enableForLoopUnrolling,
     bool enableRepeatAtHighestDim, bool skipZeroStride = false);
 
 // Populate patterns for fusing scf.for loops within air.launch.

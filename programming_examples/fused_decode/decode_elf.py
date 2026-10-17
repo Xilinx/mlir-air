@@ -36,7 +36,7 @@ DISPATCH_TIMEOUT_MS = 60000
 
 
 # AIR names a length parameter after the sequence argument it holds.
-_LEN_PARAM = re.compile(r"_arglen_(\d+)$")
+_LEN_PARAM = re.compile(r"_arglen_\d+$")
 
 
 def _entries(path):
@@ -45,21 +45,19 @@ def _entries(path):
 
 
 def parse_length_param(path):
-    """(name, arg_index) of the KV readback's block-count parameter, or None.
+    """Name of the KV readback's block-count parameter, or None.
 
-    A DECODE_RT_ROUNDS build reads back ceil(L/16) KV blocks, a count it takes
-    as its own sequence argument; the host writes it to both.
+    A DECODE_RT_ROUNDS build reads back ceil(L/16) KV blocks; the host writes
+    that count per token.
     """
     found = [ln[0] for ln in _entries(path) if _LEN_PARAM.search(ln[0])]
     if len(found) > 1:
         raise RuntimeError(f"{path}: more than one length parameter: {found}")
-    if not found:
-        return None
-    return found[0], int(_LEN_PARAM.search(found[0]).group(1))
+    return found[0] if found else None
 
 
 def parse_params(path):
-    """Read params.txt into (append_name, scale, addend, mask_name, arg_index).
+    """Read params.txt into (append_name, scale, addend, mask_name).
 
     The names are NOT fixed across models. AIR names a BD-offset parameter after
     the sequence argument it is affine in and puts the coefficients in the
@@ -81,13 +79,9 @@ def parse_params(path):
     m = re.search(r"_argoff_(\d+)_x(-?\d+)_([mp])(\d+)$", addr[0])
     if not m:
         raise RuntimeError(f"{path}: cannot read affine coefficients from {addr[0]}")
-    # AIR keys the name on the SEQUENCE ARGUMENT NUMBER, which is also the index
-    # the host must set L at -- and it is not the same for every model (llama is
-    # 5, qwen3-8b is 9). Take it from the name rather than assuming.
-    arg_index = int(m.group(1))
     scale = int(m.group(2))
     addend = int(m.group(4)) * (-1 if m.group(3) == "m" else 1)
-    return addr[0], scale, addend, core[0], arg_index
+    return addr[0], scale, addend, core[0]
 
 
 def elf_on():
@@ -127,7 +121,6 @@ class ElfDecode:
             self.append_scale,
             self.append_addend,
             self.mask_param,
-            self.scalar_arg,
         ) = parse_params(self.params_path)
         self.length_param = parse_length_param(self.params_path)
         # The scale IS the model's REGION_W. If they disagree, the driver and the
@@ -163,13 +156,10 @@ class ElfDecode:
         )
         self.params.write(self.mask_param, np.int32(L))
         if self.length_param:
-            self.params.write(self.length_param[0], np.int32((L + 15) // 16))
+            self.params.write(self.length_param, np.int32((L + 15) // 16))
         self.params.sync()
-        # Still required even though the hardware acts on the scratchpad copies:
-        # XRT patches every declared argument, and the sequence declares L.
-        self.run.set_arg(self.scalar_arg, L)
-        if self.length_param:
-            self.run.set_arg(self.length_param[1], (L + 15) // 16)
+        # L is not a kernel argument: the ELF takes only the sequence's buffers,
+        # and the scratchpad writes above are all the hardware reads.
         self.run.start()
         self.run.wait(DISPATCH_TIMEOUT_MS)
         return self.run.state()

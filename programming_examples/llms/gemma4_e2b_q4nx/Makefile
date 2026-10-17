@@ -290,6 +290,8 @@ _compile_decode_build:
 	    PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR); \
 	  mv -f $(DEC)/decode.xclbin    $(srcdir)/decode_L$$L.xclbin; \
 	  mv -f $(DEC)/decode.insts.bin $(srcdir)/decode_L$$L.insts.bin; \
+	  rm -f $(srcdir)/decode_L$$L.rt_pair; \
+	  if [ -f $(DEC)/decode.rt_pair ]; then mv -f $(DEC)/decode.rt_pair $(srcdir)/decode_L$$L.rt_pair; fi; \
 	done
 	@# The cores run ceil(L/16) KV blocks (DECODE_RT_ROUNDS), so the host cuts the
 	@# readback to match; this one-block-shorter build locates its length words.
@@ -456,6 +458,6 @@ sublayer-ref:
 clean:
 	@$(MAKE) --no-print-directory -C $(DEC) clean
 	rm -rf $(srcdir)/__pycache__ $(srcdir)/build_peano $(srcdir)/build_chess 2>/dev/null || true
-	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin $(srcdir)/decode_L*.rt_rounds $(srcdir)/decode_L*.rt_window 2>/dev/null || true
+	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin $(srcdir)/decode_L*.rt_rounds $(srcdir)/decode_L*.rt_window $(srcdir)/decode_L*.rt_pair 2>/dev/null || true
 	rm -rf $(srcdir)/_q4nx_cache_seq* $(CURDIR)/_q4nx_cache_seq* $(srcdir)/build_peano $(FUSED_DIR) 2>/dev/null || true
 	@echo "Gemma4 caches and the PLE decode build removed."

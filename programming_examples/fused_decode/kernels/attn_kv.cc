@@ -23,13 +23,28 @@
 typedef float y_acc_dtype;
 ATTN_HOT void calculate_l(bf16 *__restrict pS, float *__restrict c,
                           float *__restrict l);
-template <unsigned colQ, unsigned r, unsigned s, unsigned t>
+template <unsigned colQ, unsigned r, unsigned s, unsigned t,
+          bool RESCALE = true>
 ATTN_HOT void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
                       y_acc_dtype *__restrict pY, float *__restrict c);
 template <unsigned N>
 void scale_div_aie(bf16 *a, bf16 *o, float *l);
 template <typename T_in, typename T_out, int N>
 void passThrough_aie(T_in *restrict in0, T_out *restrict out);
+
+#ifndef ATTN_LAZY_RESCALE
+#define ATTN_LAZY_RESCALE 0
+#endif
+
+// A block that moves no head's running max leaves every c at exactly 1, and
+// then the rescale of y can be skipped. Compared as bit patterns: a float
+// compare is a library call on this core.
+static inline bool attn_rescale_needed(const float *c, int n) {
+  uint32_t diff = 0;
+  for (int h = 0; h < n; h++)
+    diff |= __builtin_bit_cast(uint32_t, c[h]) ^ 0x3F800000u;
+  return diff != 0;
+}
 
 constexpr int s_prod_lock = 4;
 constexpr int s_cons_lock = 5;
@@ -189,7 +204,7 @@ void calculate_l(bf16 *__restrict pS, float *__restrict c,
   // aie::store_v(l, l_out.template to_vector<float>());
 }
 
-template <unsigned colQ, unsigned r, unsigned s, unsigned t>
+template <unsigned colQ, unsigned r, unsigned s, unsigned t, bool RESCALE>
 ATTN_HOT void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
                       y_acc_dtype *__restrict pY, float *__restrict c) {
 
@@ -215,7 +230,7 @@ ATTN_HOT void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
     bf16 *__restrict pV1 = pV;
     bf16 *__restrict pV2 = pV + MMUL::size_B * colQ;
     // (1) correction pass (pure vector; CORRECT dies after this scope)
-    {
+    if constexpr (RESCALE) {
       aie::vector<y_acc_dtype, 64> CORRECT = aie::concat(
           aie::broadcast<float, 8>(c[0]), aie::broadcast<float, 8>(c[1]),
           aie::broadcast<float, 8>(c[2]), aie::broadcast<float, 8>(c[3]),
@@ -338,7 +353,7 @@ void calculate_l(bf16 *__restrict pS, float *__restrict c,
 }
 
 typedef float y_acc_dtype;
-template <unsigned colQ, unsigned r, unsigned s, unsigned t>
+template <unsigned colQ, unsigned r, unsigned s, unsigned t, bool RESCALE>
 void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
              y_acc_dtype *__restrict pY, float *__restrict c) {
   aie_round_nearest_even();
@@ -385,8 +400,13 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
 
     aie::accum<accfloat, MMUL::size_C> ACC_Y00;
     aie::accum<accfloat, MMUL::size_C> ACC_Y01;
-    ACC_Y00 = aie::mul(CORRECT, acc_Y00);
-    ACC_Y01 = aie::mul(CORRECT, acc_Y01);
+    if constexpr (RESCALE) {
+      ACC_Y00 = aie::mul(CORRECT, acc_Y00);
+      ACC_Y01 = aie::mul(CORRECT, acc_Y01);
+    } else {
+      ACC_Y00.from_vector(acc_Y00);
+      ACC_Y01.from_vector(acc_Y01);
+    }
 
     MMUL Y00(ACC_Y00);
     MMUL Y01(ACC_Y01);
@@ -421,8 +441,13 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
 
     aie::accum<accfloat, MMUL::size_C> ACC_Y02;
     aie::accum<accfloat, MMUL::size_C> ACC_Y03;
-    ACC_Y02 = aie::mul(CORRECT, acc_Y02);
-    ACC_Y03 = aie::mul(CORRECT, acc_Y03);
+    if constexpr (RESCALE) {
+      ACC_Y02 = aie::mul(CORRECT, acc_Y02);
+      ACC_Y03 = aie::mul(CORRECT, acc_Y03);
+    } else {
+      ACC_Y02.from_vector(acc_Y02);
+      ACC_Y03.from_vector(acc_Y03);
+    }
 
     MMUL Y02(ACC_Y02);
     MMUL Y03(ACC_Y03);
@@ -526,7 +551,7 @@ void calculate_l(bf16 *__restrict pS, float *__restrict c,
 }
 
 typedef float y_acc_dtype;
-template <unsigned colQ, unsigned r, unsigned s, unsigned t>
+template <unsigned colQ, unsigned r, unsigned s, unsigned t, bool RESCALE>
 #if !defined(__chess__)
 __attribute__((noinline))
 #endif
@@ -555,7 +580,7 @@ void attn_fv(bf16 *__restrict pS, bf16 *__restrict pV,
     aie::vector<bf16, MMUL::size_A> S1 =
         aie::concat(aie::filter_odd(S_up, 8), aie::filter_odd(S_down, 8));
     // (1) correction pass
-    {
+    if constexpr (RESCALE) {
       aie::vector<y_acc_dtype, 64> CORRECT = aie::concat(
           aie::broadcast<float, 8>(c[0]), aie::broadcast<float, 8>(c[1]),
           aie::broadcast<float, 8>(c[2]), aie::broadcast<float, 8>(c[3]),
@@ -771,7 +796,12 @@ void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
   calculate_l(s_block, c, l_state);
 #endif
 #ifndef SKIP_ATTN_FV
-  attn_fv<DH / 8, GQA_R, GQA_S, GQA_T>(s_block, v_block, y_state, c);
+#if ATTN_LAZY_RESCALE
+  if (!attn_rescale_needed(c, Q_HEADS_PADDED_PER_CU))
+    attn_fv<DH / 8, GQA_R, GQA_S, GQA_T, false>(s_block, v_block, y_state, c);
+  else
+#endif
+    attn_fv<DH / 8, GQA_R, GQA_S, GQA_T>(s_block, v_block, y_state, c);
 #endif
 }
 

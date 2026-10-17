@@ -25,7 +25,9 @@ class Desc(NamedTuple):
     gemma: bool = False  # norms around both sublayers, GELU
     window: int = 0  # sliding window of the layers that are not global
     global_every: int = 0  # layer L is global when (L + 1) % global_every == 0
-    max_len: int = 2048  # KV records per head; longer prompts take the per-op prefill
+    # KV records per head, so the longest prompt; a build can set its own
+    # (dense_main.py build --max-len). Longer prompts take the per-op prefill.
+    max_len: int = 2048
     lkp: int = 32
     family: str = "dense"  # "lfm2": lfm2.py
     tol: float = 0.99  # verify's logit cosine gate against the fp32 reference
@@ -42,6 +44,7 @@ class Spec(NamedTuple):
     CFG: D.Config
     ATTN_POINTS: dict
     shapes: tuple
+    max_len: int
 
     def gemm_shapes(self):
         return list(self.shapes)
@@ -83,7 +86,9 @@ def spec(desc):
         (desc.d, n(n1 - n0), 0, 0 if desc.tied else 1)
         for n0, n1 in D.n_split(desc.vocab)
     }
-    return Spec(cfg, attn_points(desc.heads, even=bfp), tuple(sorted(shapes)))
+    return Spec(
+        cfg, attn_points(desc.heads, even=bfp), tuple(sorted(shapes)), desc.max_len
+    )
 
 
 MODELS = {

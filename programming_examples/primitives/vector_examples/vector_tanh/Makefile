@@ -13,17 +13,20 @@ OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 # AIE_TARGET: aie2p (default) — hardware tanh is AIE2P-only
 AIE_TARGET ?= aie2p
 
-# VECTOR_SIZE: 16 (default) or 32
+# VECTOR_SIZE: 16 (default) or 32; 0 runs the scalar path
 VECTOR_SIZE ?= 16
+
+# DTYPE: bf16 (default) or f32
+DTYPE ?= bf16
 
 all: run
 
 print:
-	${powershell} $(PYTHON) ${srcdir}/vector_tanh.py $(OUTPUT_FORMAT_FLAG) -p --vector-size $(VECTOR_SIZE) --arch $(AIE_TARGET)
+	${powershell} $(PYTHON) ${srcdir}/vector_tanh.py $(OUTPUT_FORMAT_FLAG) -p --vector-size $(VECTOR_SIZE) --dtype $(DTYPE) --arch $(AIE_TARGET)
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_tanh.py $(OUTPUT_FORMAT_FLAG) --vector-size $(VECTOR_SIZE) --arch $(AIE_TARGET)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/vector_tanh.py $(OUTPUT_FORMAT_FLAG) --vector-size $(VECTOR_SIZE) --dtype $(DTYPE) --arch $(AIE_TARGET)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

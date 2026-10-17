@@ -71,6 +71,16 @@ def repack_gemm_b_with_bias(w, bias, tile_k_l1):
     return out
 
 
+def repack_gemm_b_panel_layout(w, tile_k_l2, tile_n, herd_n):
+    """Host side of b_panel_layout: see pack_b_panel_layout in
+    matrix_multiplication/bf16_in_bf16_out/run.py."""
+    from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
+        pack_b_panel_layout,
+    )
+
+    return pack_b_panel_layout(w, tile_k_l2, tile_n, herd_n)
+
+
 def gemm_registry_config(m, k, n, output_dtype="bf16", precision="high"):
     """Full per-shape build recipe from the registry: the chosen method's spec
     (build_kwargs / suffix / launches) MERGED with the registry tile sizes. This is
@@ -84,22 +94,37 @@ def gemm_registry_config(m, k, n, output_dtype="bf16", precision="high"):
     from air_examples.kernel_registry.registry_lookup import gemm_config
 
     cfg = gemm_config(m, k, n, output_dtype, precision)
-    return _spec_with_tiles(cfg["method"], cfg["tile"])
+    return _spec_with_tiles(cfg["method"], cfg["tile"], cfg)
 
 
-def _spec_with_tiles(method, tile):
+def _spec_with_tiles(method, tile, layout=None):
     """Merge a method's build spec with the registry tile (a named dict
-    {tile_m, tile_k_l2, tile_k_l1, tile_n}). tile_m is dictated by the method
-    (drain=32 / fused=64) and matches spec['tile_m'] (asserted for safety).
+    {tile_m, tile_k_l2, tile_k_l1, tile_n}) and layout knobs (herd_swap,
+    b_stationary, b_panel; absent = False). fused-cast's tile_m is fixed by its
+    cast launch; drain takes the registry's tile_m.
     """
     spec = dict(gemm_method_spec(method))
-    assert (
-        tile["tile_m"] == spec["tile_m"]
-    ), f"registry tile_m={tile['tile_m']} != method '{method}' tile_m={spec['tile_m']}"
+    if method == "fused-cast":
+        assert (
+            tile["tile_m"] == spec["tile_m"]
+        ), f"registry tile_m={tile['tile_m']} != fused-cast tile_m={spec['tile_m']}"
     spec["method"] = method
+    spec["tile_m"] = tile["tile_m"]
+    if method == "drain" and tile["tile_m"] != _DRAIN_TILE_M:
+        # mm.o bakes DIM_M in, so a non-default drain tile_m gets its own object
+        sfx = f"_m{tile['tile_m']}d"
+        spec["sym_suffix"], spec["obj"] = sfx, f"mm{sfx}.o"
+        spec["build_kwargs"] = dict(
+            spec["build_kwargs"], sym_suffix=sfx, link_with_name=spec["obj"]
+        )
     spec["tile_k_l2"] = tile["tile_k_l2"]
     spec["tile_k_l1"] = tile["tile_k_l1"]
     spec["tile_n"] = tile["tile_n"]
+    layout = layout or {}
+    for k in ("herd_swap", "b_stationary", "b_panel"):
+        spec[k] = bool(layout.get(k, False))
+    if spec["herd_swap"]:
+        spec["build_kwargs"] = dict(spec["build_kwargs"], herd_swap=True)
     return spec
 
 
@@ -183,7 +208,7 @@ def disambiguate_by_tile_n(specs):
     for s in specs:
         if len(tile_n_by_method[s["method"]]) > 1:
             s = dict(s)
-            tag = "m32" if s["method"] == "drain" else "m64"
+            tag = s["sym_suffix"].lstrip("_")
             suffix = f"_{tag}_n{s['tile_n']}"
             obj = f"mm_{tag}_n{s['tile_n']}.o"
             s["sym_suffix"] = suffix
@@ -193,6 +218,35 @@ def disambiguate_by_tile_n(specs):
             s["build_kwargs"]["link_with_name"] = obj
         out.append(s)
     return out
+
+
+def compile_gemm_objects(specs):
+    """Compile one external mm.o per distinct obj among the given GEMM specs.
+
+    Pass the specs exactly as the builders use them (after any tile override or
+    disambiguate_by_tile_n). Direct-codegen specs link no object and are skipped.
+    mm.o bakes DIM_M/N/K in, so specs sharing an obj must share its tiles.
+    """
+    from air_examples.llms.shared.infra.external_kernels import compile_gemm_mm
+
+    objs = {}
+    for s in specs:
+        if s["method"] == "direct":
+            continue
+        key = (s["tile_m"], s["tile_n"], s["tile_k_l1"], s["sym_suffix"])
+        if objs.setdefault(s["obj"], key) != key:
+            raise ValueError(
+                f"{s['obj']} needed at (tile_m, tile_n, tile_k_l1, suffix)="
+                f"{key} and {objs[s['obj']]}"
+            )
+    for obj, (tile_m, tile_n, tile_k_l1, sfx) in objs.items():
+        compile_gemm_mm(
+            tile_m=tile_m,
+            tile_n=tile_n,
+            tile_k_l1=tile_k_l1,
+            sym_suffix=sfx,
+            out_name=obj,
+        )
 
 
 def _build_gemm_module(
@@ -214,6 +268,9 @@ def _build_gemm_module(
     n_out=None,
     n_out_offset=0,
     b_stationary=False,
+    epilogue_swiglu=False,
+    b_panel_layout=False,
+    herd_swap=False,
 ):
     """Build a high-precision BF16-in/BF16-out GEMM via the external mm.o microkernel.
 
@@ -236,6 +293,9 @@ def _build_gemm_module(
             "epilogue_gelu needs the drain method (external_bf16_out); "
             "fused-cast's cast launch runs on 8 columns, not the GEMM's 32"
         )
+        assert not (
+            b_panel_layout or herd_swap
+        ), "b_panel_layout / herd_swap are drain-only (external_bf16_out)"
         from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
             build_module_gemm_cast,
         )
@@ -283,6 +343,9 @@ def _build_gemm_module(
             n_out=n_out,
             n_out_offset=n_out_offset,
             b_stationary=b_stationary,
+            epilogue_swiglu=epilogue_swiglu,
+            b_panel_layout=b_panel_layout,
+            herd_swap=herd_swap,
         )
 
     raise ValueError(

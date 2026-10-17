@@ -5,7 +5,7 @@
 #
 # Same driver contract as the other llms/ examples: run/profile/chat drive the
 # unified prefill+decode inference driver, and verify plugs into the shared
-# verify/ subsystem (top-k token-set inclusion, NPU q4_0 vs HF bf16).
+# verify/ subsystem (top-k token-set inclusion, NPU q4_0 vs the Q4_0 HF reference).
 #
 # LFM2 is a HYBRID conv-attention decoder: of its 16 layers only 6 are attention
 # (indices 2,5,8,10,12,14) and the other 10 are Lfm2ShortConv, a gated causal
@@ -21,7 +21,7 @@
 #   make compile        — Build/cache the prefill ELFs (no weights needed)
 #   make compile-decode — Build the fused decode templates (~15 min; no weights)
 #   make run            — Run inference: NPU prefill + fused NPU decode
-#   make verify         — Top-k token-set inclusion gate: NPU q4_0 vs HF bf16
+#   make verify         — Top-k token-set inclusion gate: NPU q4_0 vs the Q4_0 HF reference
 #
 # Config: 16 layers (6 attention + 10 ShortConv), emb=2048, 32 heads / 8 KV
 #         heads, head_dim=64, hidden=8192, conv_dim=2048, k=3 taps,
@@ -42,8 +42,8 @@ N_TOKENS ?= 1000
 PROMPT   ?= What is the capital of France?
 MODEL    ?= instruct
 # Weight source. LFM2 publishes ONE checkpoint (no separate base/instruct), and
-# it is BOTH the NPU weight source (quantized to Q4_0 on load) and the bf16
-# reference `make verify` compares against.
+# it is BOTH the NPU weight source (quantized to Q4_0 on load) and the
+# reference `make verify` compares against (with the same Q4_0 weights).
 MODEL_SOURCE ?= LiquidAI/LFM2-1.2B
 export LFM2_MODEL_SOURCE := $(MODEL_SOURCE)
 
@@ -156,9 +156,9 @@ help:
 	@echo "  make profile          Run with profiling breakdown"
 	@echo ""
 	@echo "Correctness:"
-	@echo "  make verify           Top-k token-set inclusion gate: NPU q4_0 vs HF bf16 (2 prompts x 32 tokens, k=5)"
+	@echo "  make verify           Top-k token-set inclusion gate: NPU q4_0 vs the Q4_0 HF reference (2 prompts x 32 tokens, k=5)"
 	@echo "  make verify-full      Same gate over the full prompt set"
-	@echo "  make diagnosis        Per-layer cosine vs HF bf16 (single prompt, informational)"
+	@echo "  make diagnosis        Per-layer cosine vs the Q4_0 HF reference (single prompt, informational)"
 	@echo "  make verify-paris     Fast weight-integrity smoke: prefill first-token argmax gate"
 	@echo "  make decode-gate      Decode-ONLY numerics (no prefill); localises a failure to a layer"
 	@echo ""
@@ -249,9 +249,9 @@ chat:
 	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) \
 		--run-only --interactive --n-tokens $(N_TOKENS) --model $(MODEL)
 
-# ---- shared verify subsystem (top-k token-set inclusion, NPU q4_0 vs HF bf16) ----
+# ---- shared verify subsystem (top-k token-set inclusion, NPU q4_0 vs the Q4_0 HF reference) ----
 
-## Top-k token-set inclusion gate (NPU q4_0 vs HF bf16, 2 prompts x 32 tokens, k=5).
+## Top-k token-set inclusion gate (NPU q4_0 vs the Q4_0 HF reference, 2 prompts x 32 tokens, k=5).
 verify:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
@@ -263,7 +263,7 @@ verify-full:
 	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL)
 
-## Diagnosis lens (per-layer cosine vs HF bf16, single prompt, informational).
+## Diagnosis lens (per-layer cosine vs the Q4_0 HF reference, single prompt, informational).
 diagnosis:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
@@ -309,21 +309,17 @@ clean:
 	rm -rf $(srcdir)/../verify/reports 2>/dev/null || true
 	@echo "Build dirs, caches, verify/reports/ and decode templates removed. Rebuild with 'make compile'."
 
-## Full-ELF decode: ONE artifact for every context length in [1, ATTN_MAXL].
-## The KV append offset and the attention mask threshold become mlir-aie
-## scratchpad parameters the host writes per dispatch, so there is no
-## instruction stream to patch. Select it at run time with DECODE_ELF=1.
+## Full-ELF decode: one artifact for every context length up to LBUILD. The host
+## passes L each token through the mlir-aie scratchpad instead of patching an
+## instruction stream, so there are no templates to calibrate.
 ##
-## Mirrors _compile_decode_build: LFM2 builds its kernels into $(srcdir) (not
-## the shared engine dir) and adds shortconv, whose SC_DIM/SC_WAVES must match
-## the builder's CONV_WAVES.
+## Like _compile_decode_build, this builds the kernels into $(srcdir) and adds
+## shortconv, whose SC_DIM/SC_WAVES must match the builder's CONV_WAVES.
 DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
-DECODE_ELF_FLAGS := $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
 
-## Idempotent like the xclbin target: skip when all three artifacts are present
-## AND were built with the current flags. The stamp is keyed on LBUILD too,
-## because that is what the ELF bakes in -- a warm artifact from another LBUILD
-## would be silently reused at the wrong ATTN_MAXL. `make clean` forces a rebuild.
+## Skipped when the artifacts exist and were built with the same flags. LBUILD
+## is part of the stamp because the ELF bakes in ATTN_MAXL.
 .PHONY: compile-decode-elf _compile_decode_elf_build
 compile-decode-elf:
 	@if [ -f $(srcdir)/decode_scratchpad.elf ] && [ -f $(srcdir)/decode_scratchpad.params.txt ] \
@@ -368,9 +364,7 @@ _compile_decode_elf_build:
 	@echo "Full-ELF build complete: $(srcdir)/decode_scratchpad.elf"
 	@cat $(srcdir)/decode_scratchpad.params.txt
 
-# The full ELF is the default decode path (DECODE_ELF=0 selects the xclbin), so
-# "build the decode" has to build it too. Stated as an extra prerequisite rather
-# than folded into the recipe, which stays the xclbin template build.
+# The ELF is a decode artifact like the templates, so compile-decode builds it.
 compile-decode: compile-decode-elf
 
 FUSED_MODEL := lfm2_1_2b_q4nx

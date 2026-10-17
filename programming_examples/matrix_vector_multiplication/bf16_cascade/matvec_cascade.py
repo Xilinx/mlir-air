@@ -300,7 +300,6 @@ def main():
             verbose=args.verbose,
             omit_while_true_loop=False,
             runtime_loop_tiling_sizes=[4, 4],
-            use_lock_race_condition_fix=True,
             target_device=launch.target,
         )
         backend.compile(mlir_module)
@@ -321,7 +320,6 @@ def main():
         output_format=args.output_format,
         instance_name="matvec_cascade_bf16",
         debug_ir=args.debug_ir,
-        use_lock_race_condition_fix=True,
         target_device=launch.target,
     )
     return runner.run_test(

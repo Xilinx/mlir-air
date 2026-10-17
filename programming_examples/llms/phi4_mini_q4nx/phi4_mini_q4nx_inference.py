@@ -8,8 +8,8 @@ with an on-device KV cache -> o-proj -> FFN, x32 layers, then the LM head, all i
 ONE dispatch per token via the `fused_decode` superkernel. There is no CPU
 attention and no host-side KV cache.
 
-Weights come from FastFlowLM's 4-bit `model.q4nx` bundle, re-quantized once into
-the decode's q4k-cascade layout and cached (see q4nx_decode_phi4).
+Weights come from FastFlowLM's 4-bit `model.q4nx` bundle, packed once into the
+decode's q4k-cascade layout and cached (see q4nx_decode_phi4).
 
 The prompt runs as ONE batched NPU prefill (phi4_mini_q4nx_prefill) whose per-layer
 roped-K / raw-V seed the decode's device KV cache, then generation continues one
@@ -39,6 +39,7 @@ for _p in (str(_FUSED), str(_THIS_DIR)):
         sys.path.insert(0, _p)
 
 from q4nx_decode_phi4 import FusedDecodePhi4, EOS_IDS  # noqa: E402
+import decode_elf  # noqa: E402  (on sys.path via q4nx_decode_phi4)
 
 MODEL_TYPE = "PHI4_4B"
 # NPU weight source: the self-contained model.q4nx bundle (HF repo id or local
@@ -189,12 +190,14 @@ def build_prefiller(args, prompt_len=None):
 
 
 def build_decoder(args) -> FusedDecodePhi4:
+    # Check for the artifact this run loads: the ELF or the xclbin templates.
+    want = "decode_scratchpad.elf" if decode_elf.elf_on() else "decode_L"
     if not os.path.isdir(args.templates) or not any(
-        f.startswith("decode_L") for f in os.listdir(args.templates)
+        f.startswith(want) for f in os.listdir(args.templates)
     ):
         raise SystemExit(
-            f"No decode templates in {args.templates}. Run `make compile-decode` "
-            f"first (or pass --templates)."
+            f"No {want}* decode artifact in {args.templates}. Run "
+            f"`make compile-decode` first (or pass --templates)."
         )
     print(f"\nLoading Q4NX weights ({args.model_source}) + decode templates ...")
     return FusedDecodePhi4(

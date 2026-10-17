@@ -1,0 +1,12 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// q_in_segment with two head groups on the herd's rows (4 heads in flight, 2 cascade
+// stages each), the q blocks split over 2 launch iterations, and the fused cascade merge.
+// RUN: mkdir -p test_npu2_peano_seqfirst_heads_rows
+// RUN: cd test_npu2_peano_seqfirst_heads_rows
+// RUN: make -f %S/Makefile clean PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile run SCRIPT=attn_npu2_seqfirst.py LK=1024 LQ=1024 NUM_HEADS=12 NUM_KV_HEADS=12 EXTRA_PY_FLAGS="--q-in-segment --num-heads-per-unroll 4 --num-cascade-stages 2 --heads-rows 2 --q-launch 2 --fused-merge" EXTRA_KERNEL_FLAGS="-DQK_PRETRANSPOSE -DFUSED_MERGE" PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PASS!

@@ -1,16 +1,16 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# SmolVLA on NPU2 (MLIR-AIR) — SigLIP vision encoder + connector on the NPU.
+# SmolVLA on NPU2 (MLIR-AIR).
 #
-# Pipeline: NPU vision tower + connector -> CPU prefix assembly -> CPU language
-# backbone -> CPU action expert, all in ONE process. The backbone and the action
-# expert stay on the CPU because they measure SLOWER on the NPU at their shapes
-# (seq 241 and seq 50); see README.md.
+# Pipeline, all in one process: NPU vision tower + connector -> CPU prefix
+# assembly -> language backbone -> action expert. The backbone and the action
+# expert run on the CPU by default and on the NPU with the *-all targets
+# (--npu-all); see README.md.
 #
-# Correctness is a continuous-output REGRESSION gate on the (1,50,6) action
-# chunk against the unmodified CPU model — not the token-set gate the
-# autoregressive LLM siblings use, because SmolVLA does not emit tokens.
+# Correctness is a regression gate on the continuous (1,50,6) action chunk
+# against the unmodified CPU model, not the token-set gate the autoregressive
+# LLM examples use: SmolVLA does not emit tokens.
 #
 # One process: with the mlir-air environment sourced and requirements.txt
 # installed, one interpreter has torch + lerobot AND air + pyxrt, so the NPU
@@ -20,8 +20,8 @@
 # On a machine where several sessions share one NPU, wrap the device-touching
 # targets the way the sibling examples are wrapped:
 #     flock -x -w 1800 /tmp/mlir-air-npu.lock make verify
-# The recipes deliberately do NOT take that lock themselves — doing so would
-# deadlock exactly that invocation. `shared/infra/cache.py` separately holds
+# The recipes do not take that lock themselves; if they did, that invocation
+# would deadlock. `shared/infra/cache.py` separately holds
 # /tmp/npu.lock around each dispatch, which keeps concurrent runs correct; the
 # outer lock is what keeps a timing run from being interleaved with someone
 # else's.
@@ -58,17 +58,19 @@ CAMERAS        ?= 3
 DATASET        ?= lerobot/droid_100
 FRAMES         ?= 100
 
-.PHONY: help compile cpu-baseline run verify profile clean
+.PHONY: help compile cpu-baseline run verify profile run-all verify-all profile-all compile-expert clean
 
 help:
 	@echo "=================================================================="
-	@echo " SmolVLA on NPU2 — SigLIP vision encoder on the NPU, one process"
+	@echo " SmolVLA on NPU2: vision on the NPU, or every stage with *-all"
 	@echo "=================================================================="
 	@echo "  make compile   Build every vision ELF (no NPU dispatch, no download)"
 	@echo "  make cpu-baseline  Run the unmodified CPU model; dumps it for inspection"
 	@echo "  make run       One end-to-end forward; prints the chunk shape and magnitude"
 	@echo "  make verify    THE GATE: action chunk vs the pure-CPU model (PASS/FAIL)"
 	@echo "  make profile   CPU vs NPU, interleaved + warmed, with the ELF breakdown"
+	@echo "  make run-all / verify-all / profile-all   EXPERIMENTAL: vision + backbone + action expert"
+	@echo "                 all on the NPU (--npu-all); needs the expert ELFs: make compile-expert"
 	@echo "  make clean     Remove the kernel cache and build artifacts"
 	@echo ""
 	@echo "  run / verify take INPUT=synthetic|real and CAMERAS=1|2|3"
@@ -90,7 +92,7 @@ compile:
 ## Run the unmodified lerobot model on CPU and dump the action chunk to
 ## smolvla_oracle.npz. For inspecting what the baseline does -- `make verify`
 ## does NOT read this file, it computes its reference live.
-## CPU only — no NPU, so no lock.
+## CPU only: no NPU, so no lock.
 cpu-baseline:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_cpu_baseline.py
@@ -122,7 +124,32 @@ profile:
 	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py \
 		--profile --reps $(REPS) --cameras $(CAMERAS)
 
+## Experimental all-NPU path (vision + language backbone + action expert, --npu-all): the
+## same targets as above with every stage on the NPU; see the README, "The all-NPU path".
+## verify-all is the same gate.
+run-all:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py --npu-all \
+		--input $(INPUT) --cameras $(CAMERAS) --dataset $(DATASET)
+
+verify-all:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && SMOLVLA_NPU_ALL=1 $(LEROBOT_PYTHON) $(srcdir)/verify_adapter.py \
+		--input $(INPUT) --cameras $(CAMERAS) \
+		--dataset $(DATASET) --frames $(FRAMES)
+
+profile-all:
+	@mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && $(LEROBOT_PYTHON) $(srcdir)/smolvla_inference.py --npu-all \
+		--profile --reps $(REPS) --cameras $(CAMERAS)
+
+## Build the action expert's two engine ELFs (prefix and step, 16 layers), which the *-all
+## targets need. Uses the aircc and Peano of the sourced environment.
+compile-expert:
+	cd $(srcdir)/experimental && $(LEROBOT_PYTHON) expert_v2_probe.py --layers 16 --compile-only
+
 clean:
 	rm -rf $(srcdir)/$(BUILD_DIR) $(srcdir)/__pycache__
+	rm -rf $(srcdir)/experimental/build $(srcdir)/experimental/__pycache__
 	rm -rf $(srcdir)/../verify/reports
-	@echo "$(BUILD_DIR)/ and verify/reports/ removed. Run 'make compile' to rebuild."
+	@echo "$(BUILD_DIR)/, experimental/build/ and verify/reports/ removed. Run 'make compile' to rebuild."

@@ -1040,161 +1040,6 @@ bool air::chainEndpointsShareStage(Operation *a, Operation *b) {
   return ka && kb && *ka == *kb;
 }
 
-bool air::isSerializedChainBuffer(Value memref, bool *isFanIn) {
-  auto ty = memref ? llvm::dyn_cast<MemRefType>(memref.getType()) : nullptr;
-  if (!ty || !air::isL2(ty))
-    return false;
-  int numWriters = 0, numReaders = 0;
-  classifyChainBuffer(memref, numWriters, numReaders);
-  if (numWriters > 1 && numReaders == 1) {
-    if (isFanIn)
-      *isFanIn = true;
-    return true;
-  }
-  if (numWriters == 1 && numReaders > 1) {
-    // The opt-out rides on the memref.alloc. Which op defines this Value
-    // depends on the pipeline stage: before air.execute is lowered away the
-    // memcpys name the execute's result, and the alloc is inside it.
-    Operation *def = memref.getDefiningOp();
-    if (auto exec = dyn_cast_if_present<air::ExecuteOp>(def))
-      for (auto alloc : exec.getOps<memref::AllocOp>())
-        def = alloc.getOperation();
-    if (def && def->hasAttr(air::attrs::NoChainLock))
-      return false;
-    if (isFanIn)
-      *isFanIn = false;
-    return true;
-  }
-  return false;
-}
-
-llvm::MapVector<Operation *, SmallVector<Value>>
-air::getHerdsFeedingBuffers(Operation *scope,
-                            llvm::function_ref<bool(Value)> isTarget) {
-  llvm::StringMap<SmallVector<air::ChannelGetOp>> getsBySymbol;
-  scope->walk([&](air::ChannelGetOp get) {
-    getsBySymbol[get.getChanName()].push_back(get);
-  });
-
-  llvm::MapVector<Operation *, SmallVector<Value>> found;
-  scope->walk([&](air::HerdOp herd) {
-    // Worklist of buffers the herd's data can reach. `visited` bounds the walk:
-    // the scope holds finitely many memrefs.
-    llvm::DenseSet<Value> visited;
-    SmallVector<Value> worklist;
-    auto pushDestinations = [&](air::MemcpyInterface memcpyOp) {
-      auto push = [&](Value v) {
-        if (v && visited.insert(v).second)
-          worklist.push_back(v);
-      };
-      if (auto put = dyn_cast<air::ChannelPutOp>(memcpyOp.getOperation())) {
-        auto it = getsBySymbol.find(put.getChanName());
-        if (it != getsBySymbol.end())
-          for (auto get : it->second)
-            push(get.getMemref());
-        return;
-      }
-      push(memcpyOp.getDstMemref());
-    };
-
-    // Seed with the herd's outgoing edges. A channel get is inbound -- its
-    // destination is a buffer inside the herd -- so it is not one.
-    herd.walk([&](air::MemcpyInterface memcpyOp) {
-      if (!isa<air::ChannelGetOp>(memcpyOp.getOperation()))
-        pushDestinations(memcpyOp);
-    });
-
-    while (!worklist.empty()) {
-      Value buf = worklist.pop_back_val();
-      // Keep walking past a target: a herd can feed several, and a diagnostic
-      // that names only the first would point at an arbitrary one.
-      if (isTarget(buf))
-        found[herd.getOperation()].push_back(buf);
-      for (auto *user : buf.getUsers()) {
-        auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
-        if (memcpyOp && memcpyOp.getSrcMemref() == buf)
-          pushDestinations(memcpyOp);
-      }
-    }
-  });
-  return found;
-}
-
-llvm::DenseSet<Operation *>
-air::getLoadBearingPingPongLoops(Operation *herd,
-                                 llvm::function_ref<bool(scf::ForOp)> isCand) {
-  llvm::DenseSet<Operation *> loadBearing;
-  if (!herd)
-    return loadBearing;
-  // A ring is per (tile, direction, logical flow), and a logical flow is the
-  // channel declaration plus its bundle indices -- the same notion AIRToAIE
-  // sizes chains with. Bucket by declaration and direction first; puts advance
-  // an MM2S ring the way gets advance an S2MM one.
-  llvm::MapVector<std::pair<Operation *, int>,
-                  SmallVector<air::ChannelInterface>>
-      byFlow;
-  herd->walk([&](air::ChannelInterface chan) {
-    auto *decl = air::getChannelDeclarationThroughSymbol(chan).getOperation();
-    int dir = isa<air::ChannelPutOp>(chan.getOperation()) ? 1 : 0;
-    byFlow[{decl, dir}].push_back(chan);
-  });
-
-  for (auto &entry : byFlow) {
-    // Split a bucket by bundle index only where every index is provably
-    // constant. An index we cannot evaluate is pooled with the rest instead of
-    // being called distinct: over-grouping keeps a ping-pong that was not
-    // needed, under-grouping drops one that was, and only the latter is silent.
-    llvm::MapVector<SmallVector<int64_t>, SmallVector<scf::ForOp>> rings;
-    SmallVector<int64_t> pooled{std::numeric_limits<int64_t>::min()};
-    for (auto chan : entry.second) {
-      SmallVector<int64_t> key;
-      for (auto v : chan.getIndices()) {
-        auto c = getConstantIntValue(v);
-        if (!c) {
-          key = pooled;
-          break;
-        }
-        key.push_back(*c);
-      }
-      rings[key].push_back(chan->getParentOfType<scf::ForOp>());
-    }
-    if (rings.count(pooled) && rings.size() > 1) {
-      for (auto &r : rings)
-        if (r.first != pooled)
-          llvm::append_range(rings[pooled], r.second);
-      rings.remove_if([&](auto &r) { return r.first != pooled; });
-    }
-
-    for (auto &ring : rings) {
-      auto &loops = ring.second;
-      // One loop visits the endpoints in ring order; sibling loops each pin to
-      // a single slot while the ring advances past them.
-      if (loops.size() < 2 || llvm::all_equal(loops))
-        continue;
-      // Unrolling only realigns a ring it reaches in full: an endpoint outside
-      // any loop, or in one that will not be labeled, leaves the ring broken
-      // either way. Nested loops are not siblings -- unrolling an ancestor
-      // does not interleave it with its descendant -- so they do not qualify.
-      bool rescuable = llvm::all_of(loops, [&](scf::ForOp f) {
-        return f && isCand(f) && llvm::none_of(loops, [&](scf::ForOp g) {
-                 return g && g != f && g->isAncestor(f.getOperation());
-               });
-      });
-      if (!rescuable)
-        continue;
-      for (auto f : loops)
-        loadBearing.insert(f.getOperation());
-    }
-  }
-  return loadBearing;
-}
-
-bool air::pingPongIsLoadBearing(Operation *herd) {
-  return !getLoadBearingPingPongLoops(herd, [](scf::ForOp) {
-            return true;
-          }).empty();
-}
-
 FailureOr<StringRef> air::getChannelType(air::MemcpyInterface memcpyIfOp) {
   if (!memcpyIfOp)
     return failure();
@@ -1828,6 +1673,52 @@ int air::getDmaInnerElementAlignment(BaseMemRefType memrefTy, Operation *op) {
   return addrGenBits / elemBits;
 }
 
+air::DmaBdLimits air::getDmaBdLimits(const AIE::AIETargetModel &tm,
+                                     air::MemorySpace space) {
+  air::DmaBdLimits limits;
+#if AIR_ENABLE_AIE
+  AIE::AIETileType tile = space == MemorySpace::L1 ? AIE::AIETileType::CoreTile
+                          : space == MemorySpace::L2
+                              ? AIE::AIETileType::MemTile
+                              : AIE::AIETileType::ShimNOCTile;
+  limits.granuleBits = tm.getAddressGenGranularity();
+  limits.numBDs = tm.getNumBDs(tile);
+  limits.maxLen = tm.getDmaBdMaxLen(tile);
+  limits.maxStride = int64_t(1) << tm.getDmaBdStepBits(tile);
+  // Without multi-dimensional BDs a transfer is one contiguous run.
+  if (!tm.hasProperty(AIE::AIETargetModel::UsesMultiDimensionalBDs)) {
+    limits.dims = 1;
+    return limits;
+  }
+  limits.dims = tm.getBDMaxDims(tile);
+  limits.maxWrap = (int64_t(1) << tm.getDmaBdWrapBits(tile)) - 1;
+  if (tm.hasProperty(AIE::AIETargetModel::UsesBDIteration))
+    limits.maxIterWrap = (int64_t(1) << tm.getDmaBdIterBits(tile)) - 1;
+#endif
+  return limits;
+}
+
+air::DmaBdLimits air::getDmaBdLimits(Operation *op, air::MemorySpace space) {
+#if AIR_ENABLE_AIE
+  auto dev = dyn_cast<AIE::DeviceOp>(op);
+  if (!dev)
+    dev = op->getParentOfType<AIE::DeviceOp>();
+  auto module = dyn_cast<ModuleOp>(op);
+  if (!module)
+    module = op->getParentOfType<ModuleOp>();
+  if (!dev && module)
+    for (auto d : module.getOps<AIE::DeviceOp>()) {
+      dev = d;
+      break;
+    }
+  if (dev)
+    return getDmaBdLimits(dev.getTargetModel(), space);
+  return getDmaBdLimits(AIE::getTargetModel(AIE::AIEDevice::npu1), space);
+#else
+  return air::DmaBdLimits();
+#endif
+}
+
 // See header for the resolution rules.
 bool air::isDeviceToHostShimDMA(Operation *op) {
 #if AIR_ENABLE_AIE
@@ -1908,6 +1799,142 @@ bool air::mayOverlap(std::optional<std::pair<int64_t, int64_t>> a,
   return a->first < b->second && b->first < a->second;
 }
 
+// The contiguous element runs [start, end) of a constant access pattern,
+// sorted by start; std::nullopt if any offset, size or stride is not a
+// constant, a stride is negative, or there are more than `maxRuns` runs.
+static std::optional<SmallVector<std::pair<int64_t, int64_t>>>
+getAccessRuns(ArrayRef<OpFoldResult> offsets, ArrayRef<OpFoldResult> sizes,
+              ArrayRef<OpFoldResult> strides, int64_t maxRuns) {
+  if (offsets.size() != sizes.size() || sizes.size() != strides.size())
+    return std::nullopt;
+  int64_t base = 0;
+  SmallVector<std::pair<int64_t, int64_t>> dims; // (size, stride)
+  for (auto [o, sz, st] : llvm::zip(offsets, sizes, strides)) {
+    auto co = getConstantIntValue(o), csz = getConstantIntValue(sz),
+         cst = getConstantIntValue(st);
+    if (!co || !csz || !cst || *cst < 0)
+      return std::nullopt;
+    if (*csz == 0)
+      return SmallVector<std::pair<int64_t, int64_t>>{};
+    base += *co * *cst;
+    if (*csz > 1 && *cst > 0)
+      dims.push_back({*csz, *cst});
+  }
+  // Fold the innermost dimensions that lay their elements end to end into
+  // one run; a pattern with no dimension left reads a single element.
+  int64_t runLen = 1;
+  while (!dims.empty() && dims.back().second == runLen) {
+    runLen *= dims.back().first;
+    dims.pop_back();
+  }
+  int64_t count = 1;
+  for (auto [sz, st] : dims) {
+    count *= sz;
+    if (count > maxRuns)
+      return std::nullopt;
+  }
+  SmallVector<std::pair<int64_t, int64_t>> runs;
+  runs.reserve(count);
+  for (int64_t i = 0; i < count; i++) {
+    int64_t start = base, rest = i;
+    for (auto [sz, st] : llvm::reverse(dims)) {
+      start += (rest % sz) * st;
+      rest /= sz;
+    }
+    runs.push_back({start, start + runLen});
+  }
+  llvm::sort(runs);
+  return runs;
+}
+
+std::optional<bool> air::accessesIntersect(ArrayRef<OpFoldResult> offsets0,
+                                           ArrayRef<OpFoldResult> sizes0,
+                                           ArrayRef<OpFoldResult> strides0,
+                                           ArrayRef<OpFoldResult> offsets1,
+                                           ArrayRef<OpFoldResult> sizes1,
+                                           ArrayRef<OpFoldResult> strides1) {
+  // Patterns of different shapes (one canonicalized, one flattened) would
+  // otherwise fall back to linear ranges, and an interleaved pattern's range
+  // covers elements it never touches.
+  constexpr int64_t maxRuns = 4096;
+  auto runs0 = getAccessRuns(offsets0, sizes0, strides0, maxRuns);
+  auto runs1 = getAccessRuns(offsets1, sizes1, strides1, maxRuns);
+  if (runs0 && runs1) {
+    for (size_t i = 0, j = 0; i < runs0->size() && j < runs1->size();) {
+      auto [s0, e0] = (*runs0)[i];
+      auto [s1, e1] = (*runs1)[j];
+      if (e0 <= s1)
+        i++;
+      else if (e1 <= s0)
+        j++;
+      else
+        return true;
+    }
+    return false;
+  }
+  auto sameStrides = [&]() {
+    if (strides0.size() != strides1.size())
+      return false;
+    for (auto [a, b] : llvm::zip(strides0, strides1)) {
+      auto ca = getConstantIntValue(a), cb = getConstantIntValue(b);
+      if (!ca || !cb || *ca != *cb)
+        return false;
+    }
+    return true;
+  };
+  // With equal strides, two patterns that are disjoint in one dimension are
+  // disjoint in memory if each stride is larger than the furthest element the
+  // smaller-stride dimensions reach; otherwise index i of one dimension can
+  // land where index i + 1 does.
+  if (sameStrides() && offsets0.size() == strides0.size() &&
+      offsets1.size() == strides1.size()) {
+    unsigned rank = offsets0.size();
+    SmallVector<std::pair<int64_t, int64_t>> dims0, dims1;
+    SmallVector<int64_t> strides;
+    for (unsigned i = 0; i < rank; i++) {
+      auto r0 = getLinearAccessRange({offsets0[i]}, {sizes0[i]}, {strides0[i]},
+                                     /*overLoops=*/true);
+      auto r1 = getLinearAccessRange({offsets1[i]}, {sizes1[i]}, {strides1[i]},
+                                     /*overLoops=*/true);
+      if (!r0 || !r1)
+        break;
+      dims0.push_back(*r0);
+      dims1.push_back(*r1);
+      strides.push_back(*getConstantIntValue(strides0[i]));
+    }
+    auto nested = [&]() {
+      for (unsigned i = 0; i < rank; i++) {
+        if (strides[i] < 0 || dims0[i].first < 0 || dims1[i].first < 0)
+          return false;
+        int64_t reach = 0;
+        for (unsigned j = 0; j < rank; j++) {
+          if (j == i || strides[j] > strides[i])
+            continue;
+          if (strides[j] == strides[i] && strides[i] > 0)
+            return false;
+          reach += std::max(dims0[j].second, dims1[j].second) - 1;
+        }
+        if (strides[i] > 0 && reach >= strides[i])
+          return false;
+      }
+      return true;
+    };
+    if (dims0.size() == rank && nested()) {
+      for (unsigned i = 0; i < rank; i++)
+        if (!mayOverlap(dims0[i], dims1[i]))
+          return false;
+      return true;
+    }
+  }
+  auto r0 = getLinearAccessRange(offsets0, sizes0, strides0,
+                                 /*overLoops=*/true);
+  auto r1 = getLinearAccessRange(offsets1, sizes1, strides1,
+                                 /*overLoops=*/true);
+  if (!r0 || !r1)
+    return std::nullopt;
+  return mayOverlap(r0, r1);
+}
+
 // Largest factor of 'num' that is <= 'max' and a multiple of 'alignment'.
 // See header for rationale.
 int air::findLargestAlignedFactor(int num, int max, int alignment) {
@@ -1924,15 +1951,37 @@ int air::findLargestAlignedFactor(int num, int max, int alignment) {
   return 0;
 }
 
-// Canonicalize wrap and stride lists by removing redundant dimensions.
-LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
-                                                 SmallVector<Value> &offsets,
-                                                 SmallVector<Value> &sizes,
-                                                 SmallVector<Value> &strides,
-                                                 int memref_volume, int maxSize,
-                                                 int innerAlignment) {
-  // AIE2 hardware constraints. TODO: import these info from target model.
-  const int AIE2_STRIDE_UPPER_BOUND = 1048576;
+// Whether `extent` steps of `stride` elements, as one dimension, come out of
+// the maxWrap split in canonicalizeWrapAndStrideList with every stride within
+// limits.maxStride. Mirrors that split for a strided (stride > 1) dimension;
+// anything it does not cover counts as not legal.
+static bool splitsWithinStrideLimit(int64_t extent, int64_t stride,
+                                    const air::DmaBdLimits &limits,
+                                    int64_t memrefVolume) {
+  auto reduce = [&](int64_t v) {
+    return memrefVolume != 1 ? v % memrefVolume : v;
+  };
+  int64_t maxWrap = limits.maxWrap;
+  if (!limits.strideFits(stride))
+    return false;
+  if (maxWrap <= 0 || extent <= maxWrap)
+    return true;
+  if (stride == 1 || extent > std::numeric_limits<int>::max())
+    return false;
+  int64_t a = air::findLargestFactor(extent, maxWrap);
+  if (extent % a)
+    return false;
+  int64_t b = extent / a;
+  bool swap = !limits.strideFits(reduce(stride * a));
+  int64_t inner = swap ? b : a, outer = swap ? a : b;
+  return outer <= maxWrap && limits.strideFits(reduce(stride * inner));
+}
+
+LogicalResult air::canonicalizeWrapAndStrideList(
+    OpBuilder &builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
+    SmallVector<Value> &strides, int memref_volume,
+    const air::DmaBdLimits &limits, int innerAlignment) {
+  int maxSize = limits.maxWrap;
   bool listsHaveChanged = false;
   OpBuilder::InsertionGuard guard(builder);
   // Match offsets size with sizes and strides
@@ -1958,6 +2007,25 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
     auto isNonConst = [](Value v) { return !getConstantIntValue(v); };
     if (llvm::any_of(sizes, isNonConst) || llvm::any_of(strides, isNonConst))
       return listsHaveChanged ? success() : failure();
+  }
+
+  // A dimension whose stride no descriptor can hold, and which continues the
+  // dimension inside it, is one walk with that dimension. Merge the two here
+  // when the maxSize split below then factors the walk with legal strides;
+  // otherwise leave both for the lowering to unroll.
+  for (int i = sizes.size() - 1; i >= 1; i--) {
+    auto outerSize = *getConstantIntValue(sizes[i - 1]);
+    auto outerStride = *getConstantIntValue(strides[i - 1]);
+    auto innerSize = *getConstantIntValue(sizes[i]);
+    auto innerStride = *getConstantIntValue(strides[i]);
+    if (!limits.strideFits(outerStride) &&
+        outerStride == innerSize * innerStride &&
+        splitsWithinStrideLimit(outerSize * innerSize, innerStride, limits,
+                                memref_volume)) {
+      listsHaveChanged |= eraseWrapNStrideDim(builder, SmallVector<int>{i - 1},
+                                              offsets, sizes, strides)
+                              .succeeded();
+    }
   }
 
   // If maxSize is given, check whether any size value goes beyond maxSize.
@@ -1994,10 +2062,8 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
     if (memref_volume != 1)
       new_a_stride %= memref_volume; // Avoids striding out of memory size, if
                                      // memref is ranked
-    int inner_wrap =
-        (new_a_stride > AIE2_STRIDE_UPPER_BOUND) ? (b_wrap) : (a_wrap);
-    int outer_wrap =
-        (new_a_stride > AIE2_STRIDE_UPPER_BOUND) ? (a_wrap) : (b_wrap);
+    int inner_wrap = !limits.strideFits(new_a_stride) ? (b_wrap) : (a_wrap);
+    int outer_wrap = !limits.strideFits(new_a_stride) ? (a_wrap) : (b_wrap);
     sizes[i] = arith::ConstantIndexOp::create(builder, builder.getUnknownLoc(),
                                               inner_wrap);
     sizes.insert(sizes.begin() + i,
@@ -2092,10 +2158,83 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder &builder,
 // Fold perfectly nested for loops as extra entries in wraps and strides. This
 // method does not directly mutate the for op nor the data movement operation.
 // It only generates the offsets, wraps and strides list after loop folding.
+// The coefficient c such that `v` = c * `iv` + (terms independent of `iv`),
+// or nullopt if `v` depends on `iv` in any other way, for example through a
+// division by a constant.
+static std::optional<int64_t> ivCoefficient(Value v, Value iv,
+                                            unsigned depth = 0) {
+  if (v == iv)
+    return 1;
+  if (depth > 32)
+    return std::nullopt;
+  // Another argument of the loop's own block, such as an iter_arg, can
+  // change every iteration; other block arguments are fixed across it.
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    auto ivArg = dyn_cast<BlockArgument>(iv);
+    if (ivArg && arg.getOwner() == ivArg.getOwner())
+      return std::nullopt;
+    return 0;
+  }
+  Operation *op = v.getDefiningOp();
+  // An air.execute returns its token first, then what its region yields.
+  if (auto exec = dyn_cast<air::ExecuteOp>(op)) {
+    unsigned idx = cast<OpResult>(v).getResultNumber();
+    if (idx == 0)
+      return std::nullopt;
+    return ivCoefficient(exec.getBody().getTerminator()->getOperand(idx - 1),
+                         iv, depth + 1);
+  }
+  if (getConstantIntValue(v))
+    return 0;
+  SmallVector<std::optional<int64_t>> c;
+  for (Value operand : op->getOperands())
+    c.push_back(ivCoefficient(operand, iv, depth + 1));
+  bool independent =
+      llvm::all_of(c, [](std::optional<int64_t> x) { return x && *x == 0; });
+  if (independent)
+    return 0;
+  if (isa<CastOpInterface>(op) && op->getNumOperands() == 1)
+    return c[0];
+  if (isa<arith::AddIOp, arith::SubIOp>(op)) {
+    if (!c[0] || !c[1])
+      return std::nullopt;
+    return isa<arith::AddIOp>(op) ? *c[0] + *c[1] : *c[0] - *c[1];
+  }
+  if (isa<arith::MulIOp>(op)) {
+    auto lhs = getConstantIntValue(op->getOperand(0));
+    auto rhs = getConstantIntValue(op->getOperand(1));
+    if (rhs && c[0])
+      return *c[0] * *rhs;
+    if (lhs && c[1])
+      return *c[1] * *lhs;
+    return std::nullopt;
+  }
+  if (auto apply = dyn_cast<affine::AffineApplyOp>(op)) {
+    // A linear map of operands that are each linear in the IV: sum, over the
+    // distinct operands, the map's coefficient times the operand's.
+    int64_t total = 0;
+    llvm::SmallPtrSet<Value, 4> seen;
+    for (auto [operand, coef] : llvm::zip(apply.getOperands(), c)) {
+      if (!coef)
+        return std::nullopt;
+      if (*coef == 0 || !seen.insert(operand).second)
+        continue;
+      auto mapCoef = air::getAffineApplyCoefficient(apply, operand);
+      int64_t term;
+      if (!mapCoef || llvm::MulOverflow(*mapCoef, *coef, term) ||
+          llvm::AddOverflow(total, term, total))
+        return std::nullopt;
+    }
+    return total;
+  }
+  return std::nullopt;
+}
+
 LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
-    SmallVector<Value> &strides, Value memref, bool skipZeroStride) {
+    SmallVector<Value> &strides, Value memref, const air::DmaBdLimits &limits,
+    bool skipZeroStride) {
   auto loc = for_op->getLoc();
 
   // Fold for loops into channel op's wrap and stride fields
@@ -2124,38 +2263,29 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
         loop_lower_bound = *cst_lower_bound;
       stepSize = *mlir::getConstantIntValue(sfo.getStep());
     }
+    // The loop advances the address by the sum, over the offsets, of each
+    // offset's coefficient in the IV times its stride. An offset that is not
+    // linear in the IV has no single stride to fold.
     int64_t ind_var_factor = 0;
     for (int i = offsets.size() - 1; i >= 0; i--) {
+      if (!iv)
+        break;
+      std::optional<int64_t> coefficient = ivCoefficient(offsets[i], iv);
+      if (!coefficient)
+        return failure();
+      if (*coefficient == 0)
+        continue;
+      auto stride = getConstantIntValue(strides[i]);
+      if (!stride)
+        return failure();
+      ind_var_factor += *stride * *coefficient * stepSize;
       Value offsetVal = offsets[i];
-      // Propagate through cast op
-      if (auto cast = offsetVal.getDefiningOp<CastOpInterface>()) {
+      if (auto cast = offsetVal.getDefiningOp<CastOpInterface>())
         if (cast->getNumOperands() == 1)
           offsetVal = cast->getOperand(0);
-      }
-      if (iv && offsetVal == iv) {
-        ind_var_factor = *getConstantIntValue(strides[i]) * stepSize;
+      if (offsetVal == iv)
         offsets[i] =
             arith::ConstantIndexOp::create(builder, loc, loop_lower_bound);
-        break;
-      } else if (iv && offsetVal.getDefiningOp()) {
-        Operation *iv_consumer = offsetVal.getDefiningOp();
-        if (auto exec = dyn_cast_if_present<air::ExecuteOp>(iv_consumer))
-          iv_consumer = &exec.getChildOps().front();
-        if (auto affop =
-                dyn_cast_if_present<affine::AffineApplyOp>(iv_consumer)) {
-          if (!llvm::is_contained(affop.getOperands(), iv))
-            continue;
-          // A map that is not linear in the IV has no single stride to fold.
-          auto coefficient = air::getAffineApplyCoefficient(affop, iv);
-          if (!coefficient)
-            return failure();
-          ind_var_factor =
-              *getConstantIntValue(strides[i]) * *coefficient * stepSize;
-        } else if (auto arithop =
-                       dyn_cast_if_present<arith::AddIOp>(iv_consumer)) {
-          ind_var_factor = stepSize;
-        }
-      }
     }
     // Skip loops that don't affect the channel offset (stride=0).
     // LLVM 23's canonicalize no longer hoists loop-invariant channel ops,
@@ -2197,15 +2327,28 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     Value new_stride =
         arith::ConstantIndexOp::create(builder, loc, new_stride_value);
 
-    // Check for compliance with DMA BD hardware limitation (<= 1M). Note that
-    // the exception is when stepSize = previous highest wrap, because in that
-    // case the large stride shall simply get canonicalized away.
-    if (llvm::divideCeilSigned(
-            new_stride_value * getElementSizeInBytes(memref.getType()), 4) >
-        0x100000) {
-      if (stepSize != *getConstantIntValue(wraps[0])) {
+    // Check for compliance with the BD stride limit. The exception is a loop
+    // that continues the outermost dimension, stepping by its whole extent: the
+    // two are one contiguous walk, which canonicalizeWrapAndStrideList
+    // re-splits, so the fold is admitted when that split comes out legal.
+    if (!limits.strideFits(limits.bytesToGranules(
+            new_stride_value * getElementSizeInBytes(memref.getType())))) {
+      auto outerWrap =
+          wraps.empty() ? std::nullopt : getConstantIntValue(wraps[0]);
+      auto outerStride =
+          strides.empty() ? std::nullopt : getConstantIntValue(strides[0]);
+      int trips = 0;
+      if (auto afo = dyn_cast_if_present<affine::AffineForOp>(o))
+        trips = getStaticAffineForTripCountAsInt(afo).value_or(0);
+      else if (auto sfo = dyn_cast_if_present<scf::ForOp>(o))
+        trips = getStaticScfForTripCountAsInt(sfo).value_or(0);
+      bool continuesOuterDim =
+          outerWrap && outerStride && trips > 0 &&
+          new_stride_value == *outerWrap * *outerStride &&
+          splitsWithinStrideLimit(trips * *outerWrap, *outerStride, limits,
+                                  getTensorVolume(memref.getType()));
+      if (!continuesOuterDim && (!outerWrap || stepSize != *outerWrap))
         return failure();
-      }
     }
 
     // Insert new dimension into the wraps and strides list.

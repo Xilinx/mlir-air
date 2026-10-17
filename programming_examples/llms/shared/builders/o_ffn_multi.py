@@ -189,6 +189,28 @@ def _build_add_2d_to_1d(
 # ---------------------------------------------------------------------------
 
 
+def o_ffn_gemm_specs(seq_len, emb_dim, hidden_dim):
+    """O, Gate/Up, Down GEMM specs, as build_o_ffn_module builds them."""
+    from air_examples.llms.shared.builders.gemm_builder import (
+        gemm_registry_config,
+        disambiguate_by_tile_n,
+    )
+
+    o_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
+    g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
+    d_spec = gemm_registry_config(seq_len, hidden_dim, emb_dim, "bf16", "high")
+
+    # Guard against a genuine ELF-merge hazard: two GEMMs sharing a method
+    # (drain or fused-cast) but resolving to DIFFERENT tile_n cannot safely
+    # share the same sym_suffix/mm.o (DIM_N is baked at compile time into the
+    # external object). This is a no-op (identical specs returned) whenever
+    # all GEMMs of a given method already share one tile_n -- true for every
+    # existing caller of this builder (e.g. llama's uniform tile_n=128) -- and
+    # only rewrites sym_suffix/obj when a real collision exists (e.g. SmolVLA's
+    # O/Down at tile_n=80 vs Gate/Up at tile_n=128, all "drain").
+    return disambiguate_by_tile_n([o_spec, g_spec, d_spec])
+
+
 def build_o_ffn_module(
     seq_len=2048,
     emb_dim=2048,
@@ -249,11 +271,7 @@ def _build_o_ffn(
     vit_o_ffn / vit_ln_qkv, which use exactly that to go faster at the same
     bit-identical output.)
     """
-    from air_examples.llms.shared.builders.gemm_builder import (
-        _build_gemm_module,
-        gemm_registry_config,
-        disambiguate_by_tile_n,
-    )
+    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
     from air_examples.weighted_rms_norm.weighted_rms_norm import (
         build_module as build_rms,
     )
@@ -262,19 +280,7 @@ def _build_o_ffn(
     # (fused-cast vs drain) AND all tiles are looked up per shape — never hardcoded.
     # The lookup is per-shape so this adapts automatically to other models. Distinct
     # _m64/_m32 symbols + mm_*.o let any method mix co-link in one ELF.
-    o_spec = gemm_registry_config(seq_len, emb_dim, emb_dim, "bf16", "high")
-    g_spec = gemm_registry_config(seq_len, emb_dim, hidden_dim, "bf16", "high")
-    d_spec = gemm_registry_config(seq_len, hidden_dim, emb_dim, "bf16", "high")
-
-    # Guard against a genuine ELF-merge hazard: two GEMMs sharing a method
-    # (drain or fused-cast) but resolving to DIFFERENT tile_n cannot safely
-    # share the same sym_suffix/mm.o (DIM_N is baked at compile time into the
-    # external object). This is a no-op (identical specs returned) whenever
-    # all GEMMs of a given method already share one tile_n -- true for every
-    # existing caller of this builder (e.g. llama's uniform tile_n=128) -- and
-    # only rewrites sym_suffix/obj when a real collision exists (e.g. SmolVLA's
-    # O/Down at tile_n=80 vs Gate/Up at tile_n=128, all "drain").
-    o_spec, g_spec, d_spec = disambiguate_by_tile_n([o_spec, g_spec, d_spec])
+    o_spec, g_spec, d_spec = o_ffn_gemm_specs(seq_len, emb_dim, hidden_dim)
 
     def _tiles(spec):
         return (

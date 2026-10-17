@@ -25,7 +25,8 @@ for _p in (str(_DEC), str(_1B), str(_HERE)):
         sys.path.insert(0, _p)
 
 
-import decode_staircase as stair  # noqa: E402  (needs the sys.path above)
+import decode_elf  # noqa: E402  (needs the sys.path above)
+import decode_staircase as stair  # noqa: E402
 
 
 def phi4_rope(n_pos, model_source):
@@ -60,7 +61,7 @@ def phi4_rope(n_pos, model_source):
 DECODE_MODEL = "phi4-mini"
 
 
-def load_fd(model_type="PHI4_4B"):
+def load_fd(model_type="PHI4_4B", attn_maxl=2048):
     """Load the fused_decode module for the 3B geometry (unified decode+lm_head,
     decode path enabled). `model_type` is the C++ -DMODEL_TYPE name; the Python
     generator selects the same model with DECODE_MODEL."""
@@ -70,7 +71,7 @@ def load_fd(model_type="PHI4_4B"):
         LM_HEAD="0",
         NLAYERS="1",
         DECODE_GOLDEN="1",
-        DECODE_GOLDEN_L="2048",
+        DECODE_GOLDEN_L=str(attn_maxl),
     )
     spec = importlib.util.spec_from_file_location(
         "fuphi4", str(_DEC / "fused_decode.py")
@@ -84,7 +85,7 @@ def ensure_requant_cache(model_source, fd, n_layers, wcache_dir=None, verbose=Tr
     """Return the q4k-cascade requant cache path, building it ONCE if missing. Keyed by
     (n_layers, VOCAB_I2, bundle fingerprint): the lm_head pack depends on VOCAB_I2, so a
     stale chunk size must not be silently reused, and the fingerprint ties the cache to the
-    exact model.q4nx it was requantized from. Without it a warm cache survives a Hub
+    exact model.q4nx it was packed from. Without it a warm cache survives a Hub
     re-export -- the machine keeps the old weights while a fresh one builds from the new
     bundle, same code, different numbers.
 
@@ -103,12 +104,12 @@ def ensure_requant_cache(model_source, fd, n_layers, wcache_dir=None, verbose=Tr
     # a warm single-channel cache would feed the dual-channel xclbin the wrong
     # blocks.
     w2 = "_w2ch" if getattr(fd, "W_DUAL_CHAN", 0) else ""
-    cache = wc / f"q4nx_phi4_decode_L{n_layers}_v{fd.VOCAB_I2}{w2}_{fp}.npz"
+    cache = wc / f"q4nx_phi4_decode_L{n_layers}_v{fd.VOCAB_I2}{w2}_packed_{fp}.npz"
     if cache.exists():
         return str(cache)
     if verbose:
         print(
-            f"[q4nx-phi4] requantizing {n_layers} decode layers + lm_head "
+            f"[q4nx-phi4] packing {n_layers} decode layers + lm_head "
             f"(VOCAB_I2={fd.VOCAB_I2}); cached ONCE to {cache}",
             flush=True,
         )
@@ -183,7 +184,18 @@ class FusedDecodePhi4:
         import pyxrt as xrt
 
         self.xrt = xrt
-        fd = load_fd(model_type)
+        # One ELF serves every L, so ATTN_MAXL comes from its build stamp rather
+        # than from the templates.
+        self.elf_mode = decode_elf.elf_on()
+        elf_maxl = None
+        if self.elf_mode:
+            stamp = Path(templates) / "decode_scratchpad.maxl"
+            if not stamp.exists():
+                raise RuntimeError(
+                    f"DECODE_ELF=1 needs {stamp}; run `make compile-decode-elf`"
+                )
+            elf_maxl = int(stamp.read_text().split()[0])
+        fd = load_fd(model_type, elf_maxl or 2048)
         self.fd = fd
         self.N_LAYERS = fd.UNI_DEC
         self.DH = fd.DH
@@ -210,8 +222,12 @@ class FusedDecodePhi4:
 
         from decode_insts_gen import DecodeInstsGen
 
-        self.gen = DecodeInstsGen(str(templates), max_L=max_L)
-        self.windows = stair.resolve_windows(self.gen)
+        if self.elf_mode:
+            self.gen = None
+            self.windows = [elf_maxl]
+        else:
+            self.gen = DecodeInstsGen(str(templates), max_L=max_L)
+            self.windows = stair.resolve_windows(self.gen)
         # BOs and the rope table are sized for the largest window and shared by all.
         self.ATTN_MAXL = max(self.windows)
         self.ROPE_W = fd.ROPE_W_LEN  # 96: partial rotary, not DH
@@ -235,16 +251,28 @@ class FusedDecodePhi4:
         self.dev = xrt.device(0)
         self.TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.FROM = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
-        self._kern = stair.open_windows(self.dev, xrt, self.gen, self.windows)
         self.cur_maxl = self.ATTN_MAXL
-        self.kern = self._kern[self.cur_maxl][1]
-        g = self.kern.group_id
-        HO = xrt.bo.host_only
-        self.x_bo = xrt.bo(self.dev, self.K * 2, HO, g(3))
-        self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
-        self.r_bo = xrt.bo(self.dev, RMS_SIZE * 2, HO, g(5))
-        self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
-        self.kvc = xrt.bo(self.dev, self.N_LAYERS * self.LREG * 2, HO, g(7))
+        if self.elf_mode:
+            # L reaches the device through the scratchpad, so the buffers are bound
+            # to one persistent run, once.
+            self._elfdec = decode_elf.ElfDecode(templates, self.dev, xrt, fd.REGION_W)
+            self.kern = self._elfdec.kern
+            self.x_bo = xrt.ext.bo(self.dev, self.K * 2)
+            self.w_bo = xrt.ext.bo(self.dev, W.size * 2)
+            self.r_bo = xrt.ext.bo(self.dev, RMS_SIZE * 2)
+            self.y_bo = xrt.ext.bo(self.dev, self.ny * 2)
+            self.kvc = xrt.ext.bo(self.dev, self.N_LAYERS * self.LREG * 2)
+            self._elfdec.bind((self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc))
+        else:
+            self._kern = stair.open_windows(self.dev, xrt, self.gen, self.windows)
+            self.kern = self._kern[self.cur_maxl][1]
+            g = self.kern.group_id
+            HO = xrt.bo.host_only
+            self.x_bo = xrt.bo(self.dev, self.K * 2, HO, g(3))
+            self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
+            self.r_bo = xrt.bo(self.dev, RMS_SIZE * 2, HO, g(5))
+            self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
+            self.kvc = xrt.bo(self.dev, self.N_LAYERS * self.LREG * 2, HO, g(7))
 
         self.w_bo.write(Wv16, 0)
         self.w_bo.sync(self.TO)
@@ -258,13 +286,16 @@ class FusedDecodePhi4:
         self.r_bo.sync(self.TO)
         self.rms_lut_off = int(rms_slabs.size)
 
-        # Per window: insts base + the L-dependent word slope (RTP-L + KV-append
-        # offsets, from that window's two builds) and its own instruction BO.
-        self._ist = stair.make_insts_states(self.gen, xrt, self.dev, g(1), self.windows)
         self._geom = stair.KVGeometry(
             self.N_LAYERS, KVSZ_TOK, fd.REGION_W, fd.NGRP, self.LREG
         )
-        self._use_window(self.cur_maxl)
+        if not self.elf_mode:
+            # Per window: insts base + the L-dependent word slope (RTP-L + KV-append
+            # offsets, from that window's two builds) and its own instruction BO.
+            self._ist = stair.make_insts_states(
+                self.gen, xrt, self.dev, g(1), self.windows
+            )
+            self._use_window(self.cur_maxl)
 
     def _use_window(self, m):
         """Point the active kernel / insts state at window `m` (no KV movement)."""
@@ -320,7 +351,8 @@ class FusedDecodePhi4:
         """One decode step at context length L=p+1: patch insts for L, feed embed[tok] +
         the position-p rope LUT, run the fused decode, return the vocab logits."""
         L = p + 1
-        self.insts_size = stair.patch_insts(self._st, L, self.xrt, self.TO)
+        if not self.elf_mode:  # the ELF takes L from the scratchpad instead
+            self.insts_size = stair.patch_insts(self._st, L, self.xrt, self.TO)
         x0 = np.asarray(self.embed[tok], bfloat16)
         h = self.ROPE_W // 2
         lut = np.empty(self.ROPE_W, dtype=bfloat16)
@@ -330,16 +362,19 @@ class FusedDecodePhi4:
         self.r_bo.sync(self.TO, self.ROPE_W * 2, self.rms_lut_off * 2)
         self.x_bo.write(x0.view(np.int16), 0)
         self.x_bo.sync(self.TO)
-        st = self.kern(
-            3,
-            self.ib,
-            self.insts_size,
-            self.x_bo,
-            self.w_bo,
-            self.r_bo,
-            self.y_bo,
-            self.kvc,
-        ).wait(60000)
+        if self.elf_mode:
+            st = self._elfdec.dispatch(L, np)
+        else:
+            st = self.kern(
+                3,
+                self.ib,
+                self.insts_size,
+                self.x_bo,
+                self.w_bo,
+                self.r_bo,
+                self.y_bo,
+                self.kvc,
+            ).wait(60000)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")
         voc_n = self.fd.UNI_LM * self.VP

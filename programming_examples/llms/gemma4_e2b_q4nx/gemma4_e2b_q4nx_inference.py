@@ -18,10 +18,11 @@ debugging fallback, not a mode to benchmark.
 
 TWO THINGS ARE SPECIFIC TO THIS MODEL and have no analogue in the sibling drivers:
 
-  Mixed head dims in one uniform cache. Every KV row on device is REGION_W=1024
-  wide = N_ATTN_CU(2) * DH_A(512), and the single MQA head is replicated into both
-  halves. A sliding layer's head is only 256 wide and does NOT sit contiguously in
-  its 512-wide slot: it is scattered as [real_lo | zeros | real_hi | zeros] so the
+  Mixed head dims in one uniform cache. Every KV row on device is REGION_W=512
+  wide = DH_A, one copy of the single MQA head that both attention CUs read
+  (the copy the device appends for the second CU is never read). A sliding
+  layer's head is only 256 wide and does NOT sit contiguously in its
+  512-wide slot: it is scattered as [real_lo | zeros | real_hi | zeros] so the
   rope kernel's fixed (i, i+256) pairing lands on the real (i, i+128) pairs.
   seed_kv() is the only place that knows this, and getting it wrong does not
   raise -- it seeds plausible garbage.
@@ -83,7 +84,7 @@ _DECODE_DIR = Path(os.environ.get("Q4NX_GEMMA4_DECODE_DIR", str(_HERE)))
 # The packed decode weights. Repo-local and keyed on the geometry that shaped
 # them, because a cache packed for a different layer count or vocab chunking is
 # not detectably wrong at dispatch time -- it just feeds the kernels the wrong
-# blocks. ~1.8 GB, and packing it from the bundle takes the better part of an hour.
+# blocks.
 _WCACHE_DIR = Path(
     os.environ.get("Q4NX_GEMMA4_WCACHE_DIR", str(_HERE / ".decode_wcache"))
 )
@@ -120,7 +121,7 @@ def _wcache_path(uni_dec, fingerprint):
     """
     return (
         _WCACHE_DIR
-        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_swa_{fingerprint}.npz"
+        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_swa_packed_{fingerprint}.npz"
     )
 
 
@@ -140,7 +141,7 @@ def _ensure_wcache(model, fd, uni_dec, qm, verbose=True):
         if verbose:
             print(
                 f"[inference] packing decode weights -> {path} "
-                f"(one-time, {uni_dec} layers + LM head; this takes ~an hour)",
+                f"(one-time, {uni_dec} layers + LM head)",
                 flush=True,
             )
         rq.build_requant_cache(
@@ -317,8 +318,8 @@ class FusedDecoder:
 
         `ks`/`vs` are PER-LAYER LISTS of (P, head_dim), not a stacked array: head_dim
         is 256 on the 28 sliding layers and 512 on the 7 full ones, so they do not
-        stack. Each device row is REGION_W wide and holds the single MQA head twice,
-        once per attention CU.
+        stack. Each device row is REGION_W wide and holds the single MQA head once;
+        both attention CUs are fed from it.
 
         A 256-wide K head does NOT sit contiguously in its 512-wide slot. Every
         layer is built at the widest layer's geometry and the narrow heads are
@@ -353,7 +354,6 @@ class FusedDecoder:
                     )
                 rows = self.KV[L, reg * RS : reg * RS + P * RW].reshape(P, RW)
                 rows[:, p] = src.astype(self.bf16)
-                rows[:, self.DH_A + p] = src.astype(self.bf16)
         TO = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.kvc.write(np.ascontiguousarray(self.KV).reshape(-1).view(np.int16), 0)
         self.kvc.sync(TO)

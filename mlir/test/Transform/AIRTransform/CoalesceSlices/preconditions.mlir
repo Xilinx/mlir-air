@@ -81,3 +81,54 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// One slice of a packet's first 64 rows; full_dims = [0] copies all 80 rows
+// of the packet, and the slice reads its rows from that copy.
+// CHECK-LABEL: @full_dims_one_slice
+// CHECK: %[[R:.*]] = tensor.extract_slice %arg0[0, 0] [80, 32] [1, 1]
+// CHECK: %[[C:.*]] = linalg.copy ins(%[[R]] : tensor<80x32xi16>)
+// CHECK: tensor.extract_slice %[[C]][0, 0] [64, 32] [1, 1]
+func.func @full_dims_one_slice(%t: tensor<80x32xi16>) -> tensor<64x32xbf16> {
+  %a = tensor.extract_slice %t[0, 0] [64, 32] [1, 1] : tensor<80x32xi16> to tensor<64x32xi16>
+  %e = tensor.empty() : tensor<64x32xbf16>
+  %r = linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>], iterator_types = ["parallel", "parallel"]} ins(%a : tensor<64x32xi16>) outs(%e : tensor<64x32xbf16>) {
+  ^bb0(%x: i16, %o: bf16):
+    %v = arith.bitcast %x : i16 to bf16
+    linalg.yield %v : bf16
+  } -> tensor<64x32xbf16>
+  return %r : tensor<64x32xbf16>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %g = transform.structured.match ops{["linalg.generic"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %c = transform.air.coalesce_slices %g full_dims = [0] : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// Without full_dims a single slice stays.
+// CHECK-LABEL: @one_slice
+// CHECK-NOT: linalg.copy
+func.func @one_slice(%t: tensor<80x32xi16>) -> tensor<64x32xbf16> {
+  %a = tensor.extract_slice %t[0, 0] [64, 32] [1, 1] : tensor<80x32xi16> to tensor<64x32xi16>
+  %e = tensor.empty() : tensor<64x32xbf16>
+  %r = linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>], iterator_types = ["parallel", "parallel"]} ins(%a : tensor<64x32xi16>) outs(%e : tensor<64x32xbf16>) {
+  ^bb0(%x: i16, %o: bf16):
+    %v = arith.bitcast %x : i16 to bf16
+    linalg.yield %v : bf16
+  } -> tensor<64x32xbf16>
+  return %r : tensor<64x32xbf16>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %g = transform.structured.match ops{["linalg.generic"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %c = transform.air.coalesce_slices %g : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}

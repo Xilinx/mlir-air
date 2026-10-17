@@ -27,6 +27,23 @@ np.random.seed(42)
 range_ = for_
 
 
+def pack_b_panel_layout(w, tile_k_l2, tile_n, herd_n):
+    """(K, N) weights -> the layout build_module(b_panel_layout=True) reads: each
+    (K-chunk, N-launch-block) slab, shape (herd_n, tile_k_l2, tile_n), stored as one
+    contiguous run, K-chunk outer. With b_pad_rows, pass the bias-packed array and
+    tile_k_l2 = (tile_k_l2 // tile_k_l1) * (tile_k_l1 + pad_rows)."""
+    k, n = w.shape
+    assert k % tile_k_l2 == 0 and n % (tile_n * herd_n) == 0
+    n_kchunks, n_nblocks = k // tile_k_l2, n // (tile_n * herd_n)
+    w5 = w.reshape(n_kchunks, tile_k_l2, n_nblocks, herd_n, tile_n)
+    panels = w5.transpose(
+        0, 2, 3, 1, 4
+    )  # (n_kchunks, n_nblocks, herd_n, tile_k_l2, tile_n)
+    return np.ascontiguousarray(panels).reshape(
+        n_kchunks * n_nblocks, herd_n, tile_k_l2, tile_n
+    )
+
+
 def pack_b_with_bias(w, bias, tile_k_l1, pad_rows):
     """(K, N) weights + (N,) bias -> ((K/tile_k_l1) * (tile_k_l1 + pad_rows), N).
 
@@ -83,7 +100,15 @@ def build_module(
     n_out=None,
     n_out_offset=0,
     b_stationary=False,
+    epilogue_swiglu=False,
+    b_panel_layout=False,
+    herd_swap=False,
 ):
+    # herd_swap: M on the herd's rows, N on its columns (herd extents [herd_n, herd_m]);
+    # each herd body swaps the ids back.
+    # epilogue_swiglu: each tile_n block of B holds tile_n/2 gate columns then the
+    # matching tile_n/2 up columns; the drain writes SiLU(gate)*up, so C is
+    # [m, n/2] and every C-side extent (drain buffer, L2 C, L3 C) is halved.
     # b_stationary: keep the weight tile stationary in L2 (external drain path, one K slab).
     # N stays a launch dimension; each launch fills B once (K x tile_n per herd column) and
     # loops over the M tiles inside the segment, streaming only A. B is then read from DRAM
@@ -99,6 +124,9 @@ def build_module(
         k,
         tile_k_l2,
     )
+    # b_panel_layout: B arrives pre-packed (pack_b_panel_layout), one contiguous run per
+    # (K-chunk, N-launch-block) panel, so each L3->L2 fill is a single burst.
+    assert not b_panel_layout or n % (tile_n * herd_n) == 0, (n, tile_n, herd_n)
     if emit_external_call:
         # Manual-CallOp external-mm.o path (also usable inside a fused multi-launch
         # ELF, where the whole-module air-linalg-to-func pass can't run). The L1 C
@@ -142,10 +170,16 @@ def build_module(
     # at a column offset, so a wide GEMM can be split into narrower ones that
     # still produce one contiguous result. Only C is affected; A and B keep their
     # own extents. Defaults reproduce the unsplit layout exactly.
-    n_out_eff = n if n_out is None else n_out
-    assert n_out_offset + n <= n_out_eff, (n_out_offset, n, n_out_eff)
+    tile_n_c = tile_n // 2 if epilogue_swiglu else tile_n
+    n_c = n // 2 if epilogue_swiglu else n
+    n_out_eff = n_c if n_out is None else n_out
+    assert n_out_offset + n_c <= n_out_eff, (n_out_offset, n_c, n_out_eff)
     a_size = [m, k]
-    b_size = [(k // tile_k_l1) * tile_k_l1_pad, n]
+    if b_panel_layout:
+        n_kchunks_panel, n_nblocks_panel = k // tile_k_l2, n // (tile_n * herd_n)
+        b_size = [n_kchunks_panel * n_nblocks_panel, herd_n, tile_k_l2_pad, tile_n]
+    else:
+        b_size = [(k // tile_k_l1) * tile_k_l1_pad, n]
     c_size = [m, n_out_eff]
     xrt_dtype_in = type_mapper(np_dtype_in)
     xrt_dtype_out = type_mapper(np_dtype_out)
@@ -173,6 +207,12 @@ def build_module(
         assert (tile_n // drain_chunks) % mmul_mkn[
             2
         ] == 0, "tile_n/drain_chunks must be a multiple of mmul n"
+    if epilogue_swiglu:
+        assert cast_out and drain_chunks == 1, "epilogue_swiglu needs the drain path"
+        assert not (
+            b_pad_rows or epilogue_gelu or n_out
+        ), "epilogue_swiglu is standalone"
+        assert tile_n % (2 * mmul_mkn[2]) == 0, "tile_n/2 must be a multiple of mmul n"
 
     # L3 MemRefTypes
     memrefTyA = MemRefType.get(a_size, xrt_dtype_in)
@@ -268,7 +308,7 @@ def build_module(
     # compute herd's A/B). The f32 accumulator subview is cast into it (in
     # `drain_chunks` segments along tile_n), then DMA'd out. Plain (non-strided)
     # layout. With drain_chunks=G the buffer is 1/G of the full tile.
-    tile_n_chunk = tile_n // drain_chunks if cast_out else tile_n
+    tile_n_chunk = tile_n_c // drain_chunks if cast_out else tile_n
     c_l1_chunk_size = [
         1,
         1,
@@ -338,6 +378,8 @@ def build_module(
                 _drain_sym = (
                     "f32_to_bf16_gelu_mn" if epilogue_gelu else "f32_to_bf16_mn"
                 )
+                if epilogue_swiglu:
+                    _drain_sym = "f32_to_bf16_swiglu_mn"
                 if b_pad_rows:
                     _drain_sym = (
                         "f32_to_bf16_bias_gelu_mn"
@@ -406,7 +448,7 @@ def build_module(
                 # L2 MemRefTypes
                 a_size_l2 = [herd_m, 1, tile_m, tile_k_l2]
                 b_size_l2 = [1, herd_n, tile_k_l2_pad, tile_n]
-                c_size_l2 = [herd_m, herd_n, tile_m, tile_n]
+                c_size_l2 = [herd_m, herd_n, tile_m, tile_n_c]
                 l2_mem_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L2)
                 l2MemrefTyA = MemRefType.get(
                     shape=a_size_l2,
@@ -479,13 +521,28 @@ def build_module(
                 if b_stationary:
                     launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
                     # B tile: filled once per launch, stays resident in L2 for the whole M loop.
-                    dma_memcpy_nd(
-                        l2_b_data,
-                        l3_b_data_s,
-                        src_offsets=[0, 0, 0, launch_offset_y],
-                        src_sizes=[1, herd_n, tile_k_l2_pad, tile_n],
-                        src_strides=[n * tile_k_l2_pad, tile_n, n, 1],
-                    )
+                    # b_stationary has one K-chunk, so the panel index is the N-launch index.
+                    if b_panel_layout:
+                        dma_memcpy_nd(
+                            l2_b_data,
+                            l3_b_data_s,
+                            src_offsets=[launch_ivy_s, 0, 0, 0],
+                            src_sizes=[1, herd_n, tile_k_l2_pad, tile_n],
+                            src_strides=[
+                                herd_n * tile_k_l2_pad * tile_n,
+                                tile_k_l2_pad * tile_n,
+                                tile_n,
+                                1,
+                            ],
+                        )
+                    else:
+                        dma_memcpy_nd(
+                            l2_b_data,
+                            l3_b_data_s,
+                            src_offsets=[0, 0, 0, launch_offset_y],
+                            src_sizes=[1, herd_n, tile_k_l2_pad, tile_n],
+                            src_strides=[n * tile_k_l2_pad, tile_n, n, 1],
+                        )
                     _m_loop = range_(0, m // tile_m // herd_m)
                     launch_ivx_s = next(_m_loop)
                     launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
@@ -511,12 +568,26 @@ def build_module(
                         ),
                         [launch_ivy_s],
                     )
+                elif epilogue_swiglu:
+                    launch_offset_y_c = affine_apply(
+                        AffineMap.get(
+                            0,
+                            1,
+                            [
+                                AffineExpr.get_mul(
+                                    AffineSymbolExpr.get(0),
+                                    AffineConstantExpr.get(tile_n_c * herd_n),
+                                )
+                            ],
+                        ),
+                        [launch_ivy_s],
+                    )
                 else:
                     launch_offset_y_c = launch_offset_y
 
                 @herd(
                     name="herd_0",
-                    sizes=[herd_m, herd_n],
+                    sizes=[herd_n, herd_m] if herd_swap else [herd_m, herd_n],
                     operands=[l1_c_data],
                     link_with=link_with_name if emit_external_call else None,
                 )
@@ -527,6 +598,8 @@ def build_module(
                     _sy,
                     _l1_c,
                 ):
+                    if herd_swap:
+                        _tx, _ty = _ty, _tx
                     l1_c_subview = subview(
                         _l1_c,
                         offsets=[_tx, _ty, 0, 0, 0, 0],
@@ -584,18 +657,49 @@ def build_module(
                         src_sizes=[herd_m, 1, tile_m, tile_k_l2],
                         src_strides=[k * tile_m, tile_k_l2, k, 1],
                     )
-                    _fill_b = (lambda *a, **kw: None) if b_stationary else dma_memcpy_nd
-                    _fill_b(
-                        l2_b_data,
-                        l3_b_data_s,
-                        src_offsets=[0, 0, reduction_offset_b, launch_offset_y],
-                        src_sizes=[1, herd_n, tile_k_l2_pad, tile_n],
-                        src_strides=[n * tile_k_l2_pad, tile_n, n, 1],
-                    )
+                    if not b_stationary:
+                        if b_panel_layout:
+                            # panel = K-chunk * n_nblocks_panel + N-launch-block, as packed.
+                            panel_idx = affine_apply(
+                                AffineMap.get(
+                                    0,
+                                    2,
+                                    [
+                                        AffineExpr.get_add(
+                                            AffineExpr.get_mul(
+                                                AffineSymbolExpr.get(0),
+                                                AffineConstantExpr.get(n_nblocks_panel),
+                                            ),
+                                            AffineSymbolExpr.get(1),
+                                        )
+                                    ],
+                                ),
+                                [i, launch_ivy_s],
+                            )
+                            dma_memcpy_nd(
+                                l2_b_data,
+                                l3_b_data_s,
+                                src_offsets=[panel_idx, 0, 0, 0],
+                                src_sizes=[1, herd_n, tile_k_l2_pad, tile_n],
+                                src_strides=[
+                                    herd_n * tile_k_l2_pad * tile_n,
+                                    tile_k_l2_pad * tile_n,
+                                    tile_n,
+                                    1,
+                                ],
+                            )
+                        else:
+                            dma_memcpy_nd(
+                                l2_b_data,
+                                l3_b_data_s,
+                                src_offsets=[0, 0, reduction_offset_b, launch_offset_y],
+                                src_sizes=[1, herd_n, tile_k_l2_pad, tile_n],
+                                src_strides=[n * tile_k_l2_pad, tile_n, n, 1],
+                            )
 
                     @herd(
                         name="herd_0",
-                        sizes=[herd_m, herd_n],
+                        sizes=[herd_n, herd_m] if herd_swap else [herd_m, herd_n],
                         operands=(
                             [l1_c_data, l2_a_data, l2_b_data, l1_bias_data]
                             if b_pad_rows
@@ -605,6 +709,8 @@ def build_module(
                     )
                     def herd_body(*herd_args):
                         _tx, _ty, _sx, _sy, _l1_c, _l2_a, _l2_b = herd_args[:7]
+                        if herd_swap:
+                            _tx, _ty = _ty, _tx
                         # L1 A/B allocated inside compute herd: unambiguous per-PE buffers
                         _l1_a = AllocOp(l1MemrefTyA, [], [])
                         _l1_b = AllocOp(l1MemrefTyB, [], [])
@@ -723,7 +829,7 @@ def build_module(
                 # (one f32_to_bf16_mn call), then DMA the bf16 tile out.
                 @herd(
                     name="herd_0",
-                    sizes=[herd_m, herd_n],
+                    sizes=[herd_n, herd_m] if herd_swap else [herd_m, herd_n],
                     operands=(
                         [l1_c_data, l2_a_data, l2_b_data, l2_c_data, l1_bias_data]
                         if b_pad_rows
@@ -733,6 +839,8 @@ def build_module(
                 )
                 def herd_body(*drain_args):
                     _tx, _ty, _sx, _sy, _l1_c, _l2_a, _l2_b, _l2_c = drain_args[:8]
+                    if herd_swap:
+                        _tx, _ty = _ty, _tx
                     if cast_out:
                         # Chunked drain: split the tile_n dim into `drain_chunks` (G)
                         # contiguous segments. Per chunk: subview the f32 accumulator,
@@ -750,7 +858,11 @@ def build_module(
                                 sizes=[
                                     1,
                                     1,
-                                    n_chunk_blk,
+                                    (
+                                        tile_n // mmul_mkn[2]
+                                        if epilogue_swiglu
+                                        else n_chunk_blk
+                                    ),
                                     tile_m // mmul_mkn[0],
                                     mmul_mkn[0],
                                     mmul_mkn[2],
@@ -782,9 +894,9 @@ def build_module(
                                 dst_offsets=[_tx, _ty, 0, g * tile_n_chunk],
                                 dst_sizes=[1, 1, tile_m, tile_n_chunk],
                                 dst_strides=[
-                                    herd_n * tile_m * tile_n,
-                                    tile_m * tile_n,
-                                    tile_n,
+                                    herd_n * tile_m * tile_n_c,
+                                    tile_m * tile_n_c,
+                                    tile_n_c,
                                     1,
                                 ],
                                 src_offsets=[0, 0, 0, 0, 0, 0],
@@ -841,11 +953,16 @@ def build_module(
                     l3_c_data_s,
                     l2_c_data,
                     dst_offsets=[launch_offset_x, launch_offset_y_c],
-                    dst_sizes=[herd_m * tile_m, herd_n * tile_n],
+                    dst_sizes=[herd_m * tile_m, herd_n * tile_n_c],
                     dst_strides=[n_out_eff, 1],
                     src_offsets=[0, 0, 0, 0],
-                    src_sizes=[herd_m, tile_m, herd_n, tile_n],
-                    src_strides=[tile_m * herd_n * tile_n, tile_n, tile_m * tile_n, 1],
+                    src_sizes=[herd_m, tile_m, herd_n, tile_n_c],
+                    src_strides=[
+                        tile_m * herd_n * tile_n_c,
+                        tile_n_c,
+                        tile_m * tile_n_c,
+                        1,
+                    ],
                 )
 
                 if b_stationary:
@@ -1439,6 +1556,21 @@ if __name__ == "__main__":
         "(--tile-k-l2 == --k), N stays a launch dim, M loops inside the segment.",
     )
     parser.add_argument(
+        "--b-panel-layout",
+        action="store_true",
+        dest="b_panel_layout",
+        help="(method=drain) lay B out offline so each (K-chunk, N-launch-block) slab is "
+        "one dense contiguous DRAM run: the L3->L2 DMA becomes one burst per panel instead "
+        "of tile_k_l2 separate tile_n-element bursts. Orthogonal to --b-stationary.",
+    )
+    parser.add_argument(
+        "--herd-swap",
+        action="store_true",
+        dest="herd_swap",
+        help="(method=drain) map M onto the herd's rows and N onto its columns: "
+        "--herd-m 4 --herd-n 8 then runs on the same 8x4 cores as the default.",
+    )
+    parser.add_argument(
         "--cast-tile-n",
         type=int,
         default=2048,
@@ -1476,6 +1608,12 @@ if __name__ == "__main__":
 
     if args.b_stationary and (args.high_precision != "true" or method != "drain"):
         parser.error("--b-stationary needs --high-precision true --method drain")
+
+    if args.b_panel_layout and (args.high_precision != "true" or method != "drain"):
+        parser.error("--b-panel-layout needs --high-precision true --method drain")
+
+    if args.herd_swap and (args.high_precision != "true" or method != "drain"):
+        parser.error("--herd-swap needs --high-precision true --method drain")
 
     if args.high_precision == "false":
         # direct-codegen bf16 (low-precision tier).
@@ -1534,6 +1672,8 @@ if __name__ == "__main__":
             b_pad_rows=args.b_pad_rows,
             epilogue_gelu=args.epilogue_gelu,
             b_stationary=args.b_stationary,
+            b_panel_layout=args.b_panel_layout,
+            herd_swap=args.herd_swap,
         )
         instance, n_inputs = "matmul_bf16", 2
 
@@ -1550,6 +1690,9 @@ if __name__ == "__main__":
         bias = (np.random.randn(N) * scale).astype(bfloat16)
         ref_f32 = ref_f32 + bias.astype(np.float32)
         b_in = pack_b_with_bias(input_b, bias, tk1, args.b_pad_rows)
+    if args.b_panel_layout:
+        tk2_pad = (tk2 // tk1) * (tk1 + args.b_pad_rows)
+        b_in = pack_b_panel_layout(b_in, tk2_pad, tn, hn)
     if args.epilogue_gelu:
         ref_f32 = (
             0.5

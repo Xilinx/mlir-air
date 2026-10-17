@@ -52,3 +52,29 @@ func.func @through_expand(%t: tensor<2x10x64xi16>, %n: index) -> tensor<2x8x8xi1
   } -> tensor<2x8x8xi16>
   return %r : tensor<2x8x8xi16>
 }
+
+// Slices reaching the inputs through an expand_shape and then a
+// collapse_shape (a unit dim folded away) are coalesced too; both reshapes
+// stay on the new slices.
+// CHECK-LABEL: @through_expand_collapse
+// CHECK: %[[C:.*]] = linalg.copy
+// CHECK: %[[Q:.*]] = tensor.extract_slice %[[C]][0, 0, 0] [1, 8, 8]
+// CHECK: tensor.expand_shape %[[Q]]
+// CHECK: %[[S:.*]] = tensor.extract_slice %[[C]][0, 8, 0] [1, 1, 8]
+// CHECK: tensor.expand_shape %[[S]]
+func.func @through_expand_collapse(%t: tensor<6x10x8xi16>, %n: index) -> tensor<2x4x8xi16> {
+  %q1 = tensor.extract_slice %t[%n, 0, 0] [1, 8, 8] [1, 1, 1] : tensor<6x10x8xi16> to tensor<1x8x8xi16>
+  %q2 = tensor.expand_shape %q1 [[0], [1, 2], [3]] output_shape [1, 2, 4, 8] : tensor<1x8x8xi16> into tensor<1x2x4x8xi16>
+  %q = tensor.collapse_shape %q2 [[0, 1], [2], [3]] : tensor<1x2x4x8xi16> into tensor<2x4x8xi16>
+  %s1 = tensor.extract_slice %t[%n, 8, 0] [1, 1, 8] [1, 1, 1] : tensor<6x10x8xi16> to tensor<1x1x8xi16>
+  %s2 = tensor.expand_shape %s1 [[0], [1], [2, 3]] output_shape [1, 1, 1, 8] : tensor<1x1x8xi16> into tensor<1x1x1x8xi16>
+  %s = tensor.collapse_shape %s2 [[0, 1, 2], [3]] : tensor<1x1x1x8xi16> into tensor<1x8xi16>
+  %init = tensor.empty() : tensor<2x4x8xi16>
+  %r = linalg.generic {indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>, affine_map<(d0, d1, d2) -> (0, d2)>, affine_map<(d0, d1, d2) -> (d0, d1, d2)>], iterator_types = ["parallel", "parallel", "parallel"]}
+      ins(%q, %s : tensor<2x4x8xi16>, tensor<1x8xi16>) outs(%init : tensor<2x4x8xi16>) {
+  ^bb0(%a: i16, %b: i16, %o: i16):
+    %x = arith.muli %a, %b : i16
+    linalg.yield %x : i16
+  } -> tensor<2x4x8xi16>
+  return %r : tensor<2x4x8xi16>
+}

@@ -448,18 +448,19 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     )
 
     from air_examples.llms.shared.infra.external_kernels import (
-        compile_gemm_mm,
         compile_rope,
         compile_gelu_and_mul,
     )
+    from air_examples.llms.shared.builders.gemm_builder import compile_gemm_objects
+    from air_examples.llms.shared.builders.rms_qkv_qknorm_rope_multi import (
+        rms_qkv_qknorm_rope_gemm_specs,
+    )
 
     # External microkernels, compiled FIRST so prepare_air_project copies them
-    # into air_project/ for every ELF that links them.
-    compile_gemm_mm(
-        tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
-    )
-    compile_gemm_mm(
-        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    # into air_project/ for every ELF that links them. One mm.o per GEMM spec.
+    compile_gemm_objects(
+        rms_qkv_qknorm_rope_gemm_specs(seq_len, D, DQ, DK)
+        + [gemm_spec(seq_len, k, n) for k, n in ((DQ, D), (D, INTER), (INTER, D))]
     )
     compile_rope()  # rope_halfsplit.cc; head_dim is a runtime arg
     compile_gelu_and_mul()

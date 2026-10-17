@@ -8,6 +8,7 @@
 #define AIR_TO_AIE_SCHEDULING_UTILS_H
 
 #include "air/Conversion/PassDetail.h"
+#include <limits>
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "air/Dialect/AIR/AIRDialect.h"
@@ -49,6 +50,16 @@ bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 
 int64_t get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
                     ArrayRef<OpFoldResult> memcpy_strides);
+
+// The repeat count of a transfer in a loop whose trip count is known only at
+// run time. A channel whose transfers all share it runs as one circular BD
+// chain, which needs no count; any other channel cannot be programmed.
+constexpr int kRunTimeRepeatCount = std::numeric_limits<int>::min();
+// The repeat count of a transfer in a loop with a run-time trip count that one
+// circular BD chain cannot express: the transfer also repeats a fixed number
+// of times per trip, or other transfers on the channel are in run-time loops
+// with other bounds.
+constexpr int kUnsupportedRunTimeRepeatCount = kRunTimeRepeatCount + 1;
 
 // Given a vector of memcpy operations, split them into BD tasks paired with the
 // repeat count each task runs at, relative to a common ancestor region. Tasks
@@ -101,24 +112,9 @@ getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref,
 // option.
 bool isChainLockCandidate(AIE::BufferOp buf);
 
-// Refuse a design whose serialized chain lock has a ping-ponged producer.
-//
-// The chain orders its stages, so a producer running a round ahead parks a
-// packet holding a switchbox arbiter; if the router shared that arbiter with an
-// earlier stage -- routine, a column can have more masters than arbiters --
-// that stage never reaches its port and the chain deadlocks.
-//
-// air-label-scf-for-to-ping-pong already declines these herds. This is the
-// backstop, and it must run after specializeL2MemrefsIntoMemtiles: the
-// labeller predicts the chain many passes earlier, and partitioning an L2
-// buffer can turn a MIMO shape into a fan-in that no earlier check would see.
-// It also covers fan-out, which the labeller leaves alone. It does NOT catch a
-// producer the shared walk misses, since both use that walk.
-//
-// Emitting such a design is worse than refusing it -- the failure is an
-// intermittent hang, not a wrong answer a test can see. Caller gates on
-// use_lock_race_condition_fix_v2.
-mlir::LogicalResult verifyChainLockProducers(mlir::Operation *scope);
+// Whether `buf` gets the chain-lock template: it must be a candidate, and
+// either v2 is on for the whole design or the buffer carries air.chain_lock.
+bool usesChainLock(AIE::BufferOp buf, bool lockRaceConditionFixV2);
 
 // Classify a chain-lock buffer's access shape. Counts distinct memcpy
 // users (channel puts/gets) on the buffer's underlying memref result.
@@ -323,6 +319,12 @@ public:
                          AIE::LockOp, AIE::LockOp>>
       lock_allocation_list;
   DenseMap<Value, std::pair<int, int>> passiveSideBufferUseCounters;
+  // Memtile buffers moved by one transfer on one side and several on the
+  // other, filled by generateDmaBdProgram. With a lock pair per transfer on
+  // the other side, the one transfer holds all their lock pairs, and each lock
+  // counts one transfer at a time (heldLockBuffers). Otherwise the buffer keeps
+  // one counted lock pair (countedLockBuffers).
+  DenseSet<Operation *> heldLockBuffers, countedLockBuffers;
   // v2: one chain-lock set per shared L2 buffer (keyed on aie.buffer op).
   DenseMap<Operation *, ChainLockSet> chain_lock_sets;
 };

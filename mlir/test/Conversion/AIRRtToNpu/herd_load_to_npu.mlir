@@ -46,7 +46,7 @@ module {
 // CHECK: aie.runtime_sequence @func2
 // CHECK: arith.constant 5 : i32
 // CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %{{.*}}) : i32
-// CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
+// CHECK: aiex.set_lock(%__air_herd_lock_0_2, %c1_i32{{.*}})
 
 module {
   aie.device(npu1) @segment_0 {

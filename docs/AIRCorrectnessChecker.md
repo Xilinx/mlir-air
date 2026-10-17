@@ -1,11 +1,15 @@
 # AIR Program Correctness Checker — Implementation Plan
 
 This document specifies the design and implementation plan for a static
-correctness checker for AIR programs. The checker verifies four properties
+correctness checker for AIR programs. The checker verifies five properties
 that together guarantee a program is free of resource oversubscription,
-deadlock, and token constraint contradictions. It is intended to run as part
-of the compiler pipeline, after the `-air-dependency` pass has materialised
-async token edges and before lowering to a backend.
+deadlock, token constraint contradictions, and under-constrained channel
+ordering. The checker is intended to run as part of the compiler pipeline,
+after the `-air-dependency` pass has materialised async token edges and before
+lowering to a backend.
+
+P1-P4 are a design; nothing under `mlir/lib/Analysis/` exists yet. P5 is
+implemented, standalone, as `-air-verify-channel-fifo-order`.
 
 ---
 
@@ -17,11 +21,13 @@ async token edges and before lowering to a backend.
 | P2 | **Deadlock freedom** — no circular blocking in the async dependency or channel graph | P1 |
 | P3 | **Resource constraint satisfaction** — the program's concurrent resource footprint fits within hardware capacity | P2 |
 | P4 | **Token constraint consistency** — affinity and concurrency constraints are mutually satisfiable | P3 |
+| P5 | **Channel endpoint ordering** — ops addressing the same channel slot are totally ordered | None |
 
 P1 must be verified before P2 because an unbalanced channel is a special case
 of deadlock; confirming balance first simplifies the deadlock analysis. P3
 depends on a deadlock-free graph so that resource liveness intervals are
-well-defined. P4 uses the resource bounds computed by P3.
+well-defined. P4 uses the resource bounds computed by P3. P5 has no
+precondition; P5 is a channel well-formedness property, as P1 is.
 
 ---
 
@@ -43,12 +49,20 @@ Balance   Freedom    Bounds     Consistency
         ▼
    AIRVerifyProgram pass     (new umbrella pass — runs all checks,
                                reports diagnostics, fails on error)
+
+  P5                         (today: standalone pass, see 8.4)
+Endpoint
+Ordering
 ```
 
-All four checkers are implemented as MLIR analyses (not transformation passes)
-so they can be composed, cached, and invalidated independently. The umbrella
-pass `AIRVerifyProgram` drives them in dependency order and collects
+P1-P4 are implemented as MLIR analyses (not transformation passes) so they can
+be composed, cached, and invalidated independently. The umbrella pass
+`AIRVerifyProgram` drives the four analyses in precondition order and collects
 diagnostics.
+
+P5 needs none of the analysis machinery: a single walk over the channel ops
+decides the property. P5 therefore ships now as a plain pass, to be folded into
+`AIRVerifyProgram` later.
 
 **New files:**
 
@@ -418,26 +432,85 @@ note: concurrency token defined at <loc>
 
 ---
 
-## 8. Pass registration and options
+## 8. P5 — Channel endpoint ordering
+
+### 8.1 Goal
+
+A channel is an ordered FIFO, so ops addressing the same slot -- same channel,
+same direction, every index provably equal -- must be totally ordered by the
+dependency graph. See `AIRComputeModel.md` 2.5, "Endpoint ordering requirement".
+
+The ordering constrains the shared FIFO rather than the data, so the
+memref-based RAW/WAW/WAR tracing in `air-dependency` cannot derive the
+ordering: two endpoints writing distinct buffers have no memref relation.
+
+### 8.2 Scope policy
+
+The checker's scope policy must match the emitter's exactly, or the checker
+rejects IR the emitter is content to produce:
+
+| Construct | Treated as |
+|-----------|-----------|
+| `affine.if` / `scf.if` / `scf.index_switch` arm | Same scope; ordering names the conditional's token result |
+| Endpoints under unrelated conditions | No ordering required, and none is expressible |
+| Loop body | New scope; endpoints in distinct loops unordered |
+| Indices not provably equal | Distinct slots; no ordering required |
+
+Two endpoints reached through conditional arms pair only under the same guard.
+The token result of a conditional that did not run carries whatever the other
+arm yields, so an edge through it would order nothing. Opposite arms of one
+conditional fall out of the same rule.
+
+The requirement states reachability, not adjacency, so the checker accepts a
+transitive path, including one that runs through the arm of a conditional. The
+emitter nonetheless adds a direct edge, because a path routed through ops on
+other channels does not survive compilation.
+
+### 8.3 Why a checker and not just an emitter
+
+A missing ordering edge produces no diagnostic and no wrong answer. The NPU
+backend lowers same-slot endpoints onto one DMA channel as a static BD chain,
+so an under-constrained program still yields correct hardware; the defect
+surfaces only once some pass reorders the two endpoints.
+
+`AIREnforceChannelFifoOrder` establishes the ordering, but an invariant with no
+checker behind the emitter regresses without a signal. When the emitter last
+skipped a class of endpoints -- those sitting inside a broadcast guard -- the
+whole test suite still passed, and a downstream tool reported the gap.
+
+### 8.4 Status
+
+The checker ships standalone as `-air-verify-channel-fifo-order`. The pass
+shares its scope-chain traversal and slot-equality predicate with
+`air::enforceChannelFifoOrder`, so checker and emitter cannot disagree about
+which endpoints require ordering. Fold the pass into `AIRVerifyProgram` once
+the P1-P4 analyses exist.
+
+---
+
+## 9. Pass registration and options
 
 The umbrella pass `AIRVerifyProgram` is registered as `-air-verify-program`
 and accepts options to enable/disable individual checks:
 
 ```
-mlir-opt --air-verify-program="checks=p1,p2,p3,p4 target-tiles=32
+mlir-opt --air-verify-program="checks=p1,p2,p3,p4,p5 target-tiles=32
           target-l2-bytes=524288 target-dma-channels=16" input.mlir
 ```
 
 Default: all checks enabled. If any check fails the pass emits diagnostics and
 signals failure, causing the pipeline to abort.
 
-The pass itself does not modify the IR. It runs the four analyses in order,
-collects diagnostics via the MLIR `DiagnosticEngine`, and returns failure if
-any error was emitted.
+`AIRVerifyProgram` does not modify the IR. The pass runs the analyses in
+precondition order, collects diagnostics via the MLIR `DiagnosticEngine`, and
+returns failure if any error was emitted.
+
+Until then P5 is reachable on its own as `-air-verify-channel-fifo-order`,
+with no options.
 
 ---
 
-## 9. Implementation roadmap
+## 10. Implementation roadmap
 
 ### Phase 1 — ADG builder and P1 (channel balance)
 
@@ -493,7 +566,7 @@ the pass is added to the default NPU and GPU compilation pipelines after
 
 ---
 
-## 10. Test strategy
+## 11. Test strategy
 
 Each phase produces both **positive tests** (correct programs that must pass)
 and **negative tests** (deliberately invalid programs that must produce
@@ -504,6 +577,9 @@ presence and the text of every error message.
 Positive tests draw from the existing `test/airhost/` programs (tests 46–51)
 which use the full scf.for iter_arg pipelining pattern verified by the model.
 These must all pass P1–P4 without false positives.
+
+P5 already follows the positive/negative split described above, in
+`mlir/test/Transform/AIRVerifyChannelFifoOrder/{positive,negative}.mlir`.
 
 The device capacity model for tests uses a small synthetic target
 (`total_tiles=16, total_l2_bytes=65536, total_dma_channels=4`) to make

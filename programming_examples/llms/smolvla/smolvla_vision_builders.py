@@ -97,7 +97,7 @@ from air_examples.llms.shared.builders.gemm_builder import (
 from air_examples.llms.shared.builders.rms_qkv_bias_rope_multi import _build_bias_add_2d
 from air_examples.llms.shared.builders.o_ffn_multi import _build_add_2d_to_2d
 from air_examples.layer_norm.layer_norm import build_module as build_layer_norm
-from smolvla_fuse import B_STATIONARY, LN_EXT, LN_ROWS
+from smolvla_fuse import LN_EXT, LN_ROWS
 
 import types
 from pathlib import Path
@@ -219,7 +219,7 @@ def _force_tile_n_suffix(spec):
     via disambiguation — avoids colliding on the generic `mm_m32.o` whose baked
     DIM_N could belong to a different shape."""
     s = dict(spec)
-    tag = "m32" if s["method"] == "drain" else "m64"
+    tag = f"m{s['tile_m']}"
     suffix = f"_{tag}_n{s['tile_n']}"
     obj = f"mm_{tag}_n{s['tile_n']}.o"
     s["sym_suffix"] = suffix
@@ -228,6 +228,73 @@ def _force_tile_n_suffix(spec):
     s["build_kwargs"]["sym_suffix"] = suffix
     s["build_kwargs"]["link_with_name"] = obj
     return s
+
+
+def _herd(spec, herd_m, herd_n):
+    """(herd_m, herd_n) to build `spec` with: a swapped spec puts 4 rows on M and 8 columns on N."""
+    return (herd_n, herd_m) if spec.get("herd_swap") else (herd_m, herd_n)
+
+
+def vit_gemm_spec(m, k, n):
+    """Registry spec of one vision GEMM at the batched M, keyed by (tile_m, tile_n)
+    so GEMMs that resolve to the same tile share one compiled object."""
+    spec = _force_tile_n_suffix(gemm_registry_config(m, k, n, "bf16", "high"))
+    assert spec["method"] == "drain", spec["method"]
+    return spec
+
+
+def vit_gemm_specs(m, emb_dim, hidden_dim):
+    """{qkv, o, fc1, fc2} registry specs; asserts that specs sharing an object agree."""
+    specs = {
+        "qkv": vit_gemm_spec(m, emb_dim, 3 * emb_dim),
+        "o": vit_gemm_spec(m, emb_dim, emb_dim),
+        "fc1": vit_gemm_spec(m, emb_dim, hidden_dim),
+        "fc2": vit_gemm_spec(m, hidden_dim, emb_dim),
+    }
+    by_obj = {}
+    for s in specs.values():
+        key = (s["tile_m"], s["tile_n"], s["tile_k_l1"])
+        assert by_obj.setdefault(s["obj"], key) == key, (
+            s["obj"],
+            by_obj[s["obj"]],
+            key,
+        )
+    return specs
+
+
+def _b_build(spec, k):
+    """(tile_k_l2, B-side build kwargs) for `spec`'s b_stationary / b_panel."""
+    kw = {}
+    if spec["b_stationary"]:
+        assert spec["tile_k_l2"] == k, (spec["tile_k_l2"], k)
+        kw["b_stationary"] = True
+    if spec["b_panel"]:
+        kw["b_panel_layout"] = True
+    return spec["tile_k_l2"], kw
+
+
+def b_arg_type(spec, k, n, herd_n):
+    """memref type of the bias-packed B func arg; `herd_n` as passed to the builder."""
+    tk1 = spec["tile_k_l1"]
+    if spec["b_panel"]:
+        shape = _panel_arg_shape(k, n, tk1, spec["tile_k_l2"], spec["tile_n"], herd_n)
+        return f"memref<{shape}xbf16>"
+    return f"memref<{packed_k(k, tk1)}x{n}xbf16>"
+
+
+def pack_b(packed, spec, k, herd_m=8, herd_n=4):
+    """Host side of b_arg_type: the bias-packed (packed_k, N) weight, panel-reshuffled
+    when the spec says b_panel (same herd the module builders resolve)."""
+    if not spec["b_panel"]:
+        return packed
+    from air_examples.llms.shared.builders.gemm_builder import (
+        repack_gemm_b_panel_layout,
+    )
+
+    tk1, tk2 = spec["tile_k_l1"], spec["tile_k_l2"]
+    tk2_pad = (tk2 // tk1) * (tk1 + BIAS_PAD_ROWS)
+    hn = _herd(spec, herd_m, herd_n)[1]
+    return repack_gemm_b_panel_layout(packed, tk2_pad, spec["tile_n"], herd_n=hn)
 
 
 def _gemm_externs(spec, bias_fused=False, gelu=False):
@@ -260,14 +327,12 @@ def _gemm_tiles(spec):
     )
 
 
-def _bstat_kwargs(k, tk2, tk1):
-    """(tile_k_l2, extra build kwargs) for a K-slab GEMM that keeps B stationary in L2
-    (SMOLVLA_B_STATIONARY): one K slab (tile_k_l2 = K) and `b_stationary=True`. The packed
-    weight layout depends only on tile_k_l1, so the same weights serve both builds."""
-    if not B_STATIONARY:
-        return tk2, {}
-    assert k % tk1 == 0, (k, tk1)
-    return k, {"b_stationary": True}
+def _panel_arg_shape(k, n, tk1, tk2, tn, herd_n, pad_rows=BIAS_PAD_ROWS):
+    """memref shape string for a bias-packed B weight laid out panel-contiguous:
+    mirrors build_module's b_size for b_panel_layout=True (bf16_in_bf16_out/run.py)."""
+    tk2_pad = (tk2 // tk1) * (tk1 + pad_rows)
+    n_kchunks, n_nblocks = k // tk2, n // (tn * herd_n)
+    return f"{n_kchunks * n_nblocks}x{herd_n}x{tk2_pad}x{tn}"
 
 
 def _gemm_grid_extents(m, n, spec, herd_m, herd_n):
@@ -300,9 +365,12 @@ def vit_o_ffn_runtime_tiling(
     since one tiling vector is shared by the whole stitched ELF and each
     launch's own loop clips to its own trip count (see _gemm_grid_extents)."""
     reg_len = registry_seq_len or seq_len
-    o_spec = gemm_registry_config(reg_len, emb_dim, emb_dim, "bf16", "high")
-    g_spec = gemm_registry_config(reg_len, emb_dim, hidden_dim, "bf16", "high")
-    d_spec = gemm_registry_config(reg_len, hidden_dim, emb_dim, "bf16", "high")
+    # Sized from the per-image registry tiles: the batched tiles' larger request hangs the
+    # device, and each launch's loop clips to its own trip count either way.
+    o_spec, g_spec, d_spec = (
+        gemm_registry_config(reg_len, kk, nn, "bf16", "high")
+        for kk, nn in ((emb_dim, emb_dim), (emb_dim, hidden_dim), (hidden_dim, emb_dim))
+    )
     grids = [
         _gemm_grid_extents(seq_len, emb_dim, o_spec, herd_m, herd_n),
         _gemm_grid_extents(seq_len, hidden_dim, g_spec, herd_m, herd_n),
@@ -340,29 +408,18 @@ def build_vit_ln_qkv_module(
     FlashAttention reads Q/K/V straight out of the concatenated buffer
     (`fused_qkv=True`), so nothing is copied apart to feed it.
     """
-    # The registry is keyed by MEASURED shapes, and GEMM tiles do not depend on
-    # M, so a batched (multi-image) build looks the tiles up at the per-image
-    # sequence length it was actually swept at.
-    reg_len = registry_seq_len or seq_len
-    spec = dict(gemm_registry_config(reg_len, emb_dim, emb_dim, "bf16", "high"))
-    assert spec["method"] == "drain", spec["method"]  # vision qkvo is drain
-    # Force a tile_n-keyed suffix (`_m32_n96`) so this ELF links the SAME
-    # correctly-compiled object as vit_o_ffn's O GEMM (both tile_n=96 drain),
-    # NOT the generic `mm_m32.o` (whose baked DIM_N may be stale from another
-    # model's build). Mirrors disambiguate_by_tile_n's naming.
-    spec = _force_tile_n_suffix(spec)
+    qkv_dim = 3 * emb_dim
+    spec = vit_gemm_spec(seq_len, emb_dim, qkv_dim)
 
     print("  [ln_qkv 1/2] LN1 (affine)...")
     ln_ir = _layer_norm_ir(seq_len, emb_dim)
 
-    kw, tm, tk2, tk1, tn = _gemm_tiles(spec)
-    qkv_dim = 3 * emb_dim
-    assert qkv_dim % (tn * herd_n) == 0, (qkv_dim, tn, herd_n)
+    kw, tm, _, tk1, tn = _gemm_tiles(spec)
+    hm, hn = _herd(spec, herd_m, herd_n)
+    tk2, bkw = _b_build(spec, emb_dim)
     print(
-        f"  [ln_qkv 2/2] fused QKV GEMM ({spec['method']} tile_n={tn}, "
-        f"N={qkv_dim}, bias fused)..."
+        f"  [ln_qkv 2/2] fused QKV GEMM (drain {tm}x{tn}x{tk1}, N={qkv_dim}, bias fused)..."
     )
-    tk2, bst = _bstat_kwargs(emb_dim, tk2, tk1)
     qkv_ir = str(
         _build_gemm_module(
             seq_len,
@@ -372,19 +429,20 @@ def build_vit_ln_qkv_module(
             tk2,
             tk1,
             tn,
-            herd_m,
-            herd_n,
+            hm,
+            hn,
             b_pad_rows=BIAS_PAD_ROWS,
-            **bst,
+            **bkw,
             **kw,
         )
     )
 
+    arg3_type = b_arg_type(spec, emb_dim, qkv_dim, hn)
     base_args = [
         FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),
         FuncArg("%arg1", f"memref<{2*emb_dim}xbf16>"),
         FuncArg("%arg2", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg3", f"memref<{packed_k(emb_dim, tk1)}x{qkv_dim}xbf16>"),
+        FuncArg("%arg3", arg3_type),
         FuncArg("%arg4", f"memref<{seq_len}x{qkv_dim}xbf16>"),
     ]
 
@@ -434,100 +492,69 @@ def build_vit_o_ffn_module(
     its bias on the weight stream, and fc1 additionally applies GELU, all inside
     the drain herd's epilogue cast.
     """
-    reg_len = registry_seq_len or seq_len  # see build_vit_ln_qkv_module
-    o_spec = dict(gemm_registry_config(reg_len, emb_dim, emb_dim, "bf16", "high"))
-    g_spec = dict(gemm_registry_config(reg_len, emb_dim, hidden_dim, "bf16", "high"))
-    d_spec = dict(gemm_registry_config(reg_len, hidden_dim, emb_dim, "bf16", "high"))
-    # O (tn96) + fc1 (tn128) + fc2 (tn96), all drain → disambiguate by tile_n.
-    o_spec, g_spec, d_spec = disambiguate_by_tile_n([o_spec, g_spec, d_spec])
-    for s in (o_spec, g_spec, d_spec):
-        assert s["method"] == "drain", s["method"]
+    specs = vit_gemm_specs(seq_len, emb_dim, hidden_dim)
+    o_spec, g_spec, d_spec = specs["o"], specs["fc1"], specs["fc2"]
 
-    ok, otm, ok2, ok1, otn = _gemm_tiles(o_spec)
-    gk, gtm, gk2, gk1, gtn = _gemm_tiles(g_spec)
-    dk, dtm, dk2, dk1, dtn = _gemm_tiles(d_spec)
-
-    print(f"  [o_ffn 1/6] O GEMM (drain tn={otn}, bias fused)...")
-    ok2, o_bst = _bstat_kwargs(emb_dim, ok2, ok1)
-    o_ir = str(
-        _build_gemm_module(
+    def gemm(spec, k, n, **extra):
+        kw, tm, _, tk1, tn = _gemm_tiles(spec)
+        hm, hn = _herd(spec, herd_m, herd_n)
+        tk2, bkw = _b_build(spec, k)
+        ir = _build_gemm_module(
             seq_len,
-            emb_dim,
-            emb_dim,
-            otm,
-            ok2,
-            ok1,
-            otn,
-            herd_m,
-            herd_n,
+            k,
+            n,
+            tm,
+            tk2,
+            tk1,
+            tn,
+            hm,
+            hn,
             b_pad_rows=BIAS_PAD_ROWS,
-            **o_bst,
-            **ok,
+            **bkw,
+            **extra,
+            **kw,
         )
-    )
+        return str(ir), b_arg_type(spec, k, n, hn)
+
+    def tag(spec):
+        return f"{spec['tile_m']}x{spec['tile_n']}x{spec['tile_k_l1']}"
+
+    print(f"  [o_ffn 1/6] O GEMM (drain {tag(o_spec)}, bias fused)...")
+    o_ir, o_b = gemm(o_spec, emb_dim, emb_dim)
     print("  [o_ffn 2/6] residual add (o_b + x_res)...")
     res1_ir = str(_build_add_2d_to_2d(seq_len, emb_dim, bfloat16))
     print("  [o_ffn 3/6] LN2 (affine)...")
     ln2_ir = _layer_norm_ir(seq_len, emb_dim)
-    print(f"  [o_ffn 4/6] fc1 GEMM (drain tn={gtn}, bias+GELU fused)...")
-    gk2, g_bst = _bstat_kwargs(emb_dim, gk2, gk1)
-    fc1_ir = str(
-        _build_gemm_module(
-            seq_len,
-            emb_dim,
-            hidden_dim,
-            gtm,
-            gk2,
-            gk1,
-            gtn,
-            herd_m,
-            herd_n,
-            b_pad_rows=BIAS_PAD_ROWS,
-            epilogue_gelu=True,
-            **g_bst,
-            **gk,
-        )
-    )
-    print(f"  [o_ffn 5/6] fc2 GEMM (drain tn={dtn}, bias fused)...")
-    fc2_ir = str(
-        _build_gemm_module(
-            seq_len,
-            hidden_dim,
-            emb_dim,
-            dtm,
-            dk2,
-            dk1,
-            dtn,
-            herd_m,
-            herd_n,
-            b_pad_rows=BIAS_PAD_ROWS,
-            **dk,
-        )
-    )
+    print(f"  [o_ffn 4/6] fc1 GEMM (drain {tag(g_spec)}, bias+GELU fused)...")
+    fc1_ir, g_b = gemm(g_spec, emb_dim, hidden_dim, epilogue_gelu=True)
+    print(f"  [o_ffn 5/6] fc2 GEMM (drain {tag(d_spec)}, bias fused)...")
+    fc2_ir, d_b = gemm(d_spec, hidden_dim, emb_dim)
     print("  [o_ffn 6/6] residual add (fc2_b + res1)...")
     res2_ir = str(_build_add_2d_to_2d(seq_len, emb_dim, bfloat16))
 
     base_args = [
         FuncArg("%arg0", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg1", f"memref<{packed_k(emb_dim, ok1)}x{emb_dim}xbf16>"),
+        FuncArg("%arg1", o_b),
         FuncArg("%arg2", f"memref<{seq_len}x{emb_dim}xbf16>"),
         FuncArg("%arg3", f"memref<{seq_len}x{emb_dim}xbf16>"),
         FuncArg("%arg4", f"memref<{seq_len}x{emb_dim}xbf16>"),
         FuncArg("%arg5", f"memref<{2*emb_dim}xbf16>"),
         FuncArg("%arg6", f"memref<{seq_len}x{emb_dim}xbf16>"),
-        FuncArg("%arg7", f"memref<{packed_k(emb_dim, gk1)}x{hidden_dim}xbf16>"),
+        FuncArg("%arg7", g_b),
         FuncArg("%arg8", f"memref<{seq_len}x{hidden_dim}xbf16>"),
-        FuncArg("%arg9", f"memref<{packed_k(hidden_dim, dk1)}x{emb_dim}xbf16>"),
+        FuncArg("%arg9", d_b),
         FuncArg("%arg10", f"memref<{seq_len}x{emb_dim}xbf16>"),
         FuncArg("%arg11", f"memref<{seq_len}x{emb_dim}xbf16>"),
     ]
 
-    # GEMM privates: emit each distinct sym_suffix's decls exactly once.
+    # GEMM privates: emit each distinct sym_suffix's decls exactly once; fc1's GELU cast
+    # is its own decl, so it is keyed apart even when fc1 shares O's or fc2's object.
     _seen = set()
 
-    def _pf(spec):
-        first = spec["sym_suffix"] not in _seen
-        _seen.add(spec["sym_suffix"])
+    def _pf(spec, kind="plain"):
+        key = (spec["sym_suffix"], kind)
+        first = key not in _seen
+        _seen.add(key)
         return first
 
     slices = [
@@ -553,7 +580,7 @@ def build_vit_o_ffn_module(
             "g",
             {0: 6, 1: 7, 2: 8},
             extern_syms=_gemm_externs(g_spec, True, gelu=True),
-            private_from=_pf(g_spec),
+            private_from=_pf(g_spec, "gelu"),
         ),
         KernelSlice(
             fc2_ir,

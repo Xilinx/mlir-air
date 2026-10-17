@@ -68,6 +68,9 @@ def air_Dialect : Dialect {
   }];
   let useDefaultTypePrinterParser = 1;
   let useDefaultAttributePrinterParser = 1;
+  // The op assembly formats print inherent attributes in `attr-dict`, which
+  // the strict-properties default rejects.
+  let useStrictPropertiesInAssemblyFormat = 0;
 }
 
 // Base class for AIR dialect attributes.

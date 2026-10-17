@@ -92,14 +92,13 @@ visible in the gate:
   their `decoding_layer.cpp` allocates it at 5 bits/element).
 
 Measured: prompts routed through the prefill pass `make verify-full` **8/8**;
-prompts short enough to be replayed token-by-token through the decode
-(< `Q4NX_PREFILL_MIN`, default 96) score **5/8**, because the 4-bit head reorders
-Phi-4's flat first-token distributions. Llama-3.2-3B has the same two-headed
-design and does not show it -- its margins are wider.
+prompts replayed token-by-token through the decode score **5/8**, because the
+4-bit head reorders Phi-4's flat first-token distributions. Llama-3.2-3B has the
+same two-headed design and does not show it -- its margins are wider.
 
-`run_npu2_verify.lit` therefore sets `Q4NX_VERIFY_FORCE_PREFILL=1`: it exercises
-the production prefill -> KV-handoff -> decode path (strictly more coverage than
-replay), and it is the path any real prompt of >=96 tokens takes.
+`make verify` prefills every prompt. `make verify-replay` runs the same gate
+with the prompt replayed through the decode, so it scores the 4-bit head; expect
+it to miss on Phi-4. Both print the path they ran (`[verify] path: ...`).
 
 ## Build notes
 

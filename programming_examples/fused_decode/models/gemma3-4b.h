@@ -20,6 +20,7 @@ constexpr float ATTN_SCALE =
 // 4 kv heads -> KV_HEADS_PER_CU=1 (NUM_MHA_CU=4); Q_HEADS_PER_GROUP=2 pads
 // to 4.
 #define ATTN_IMPL ATTN_IMPL_1x4x1
+#define ATTN_LAZY_RESCALE 1
 #define A_FUNC A_GELU
 // qk-norm: RMSNorm(DH) on Q,K per head before RoPE (rope_w carries q/k norm w).
 #define HAS_QK_NORM

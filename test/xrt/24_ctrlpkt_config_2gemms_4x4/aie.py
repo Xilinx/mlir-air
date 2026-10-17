@@ -239,7 +239,7 @@ with air.ir.Context() as ctx, Location.unknown():
             [
                 "canonicalize",
                 "cse",
-                "air-to-aie{row-offset=2 col-offset=0 device=npu1 emit-while-loop=true use-lock-race-condition-fix=true}",
+                "air-to-aie{row-offset=2 col-offset=0 device=npu1 emit-while-loop=true use-lock-race-condition-fix-auto=true}",
                 "canonicalize",
             ]
         )

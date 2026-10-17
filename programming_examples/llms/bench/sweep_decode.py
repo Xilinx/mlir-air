@@ -130,7 +130,7 @@ def _make_vars(args):
 
 # Files a template build may leave beside decode_L<ctx> for bench_decode. A
 # template that takes the context at runtime hangs if benched without them.
-SIDECARS = ("rb.insts.bin", "rt_rounds", "sw.insts.bin", "rt_window")
+SIDECARS = ("rb.insts.bin", "rt_rounds", "sw.insts.bin", "rt_window", "rt_pair")
 
 
 def build_templates(makefile, ctx, workdir, template_dir, log, args):

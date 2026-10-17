@@ -208,6 +208,14 @@ static cl::opt<bool> deriveLibraryCall(
              "kernel object to export the derived name."),
     cl::init(false), cl::cat(airCompilerOptions));
 
+static cl::opt<bool> fuseSequentialLoops(
+    "fuse-sequential-loops",
+    cl::desc("After air-split-l2-memref, let loops that run one after the "
+             "other and stream equal transfers between the same places share "
+             "their channels (air-fuse-channels sequential-loops). For "
+             "designs with several variants of one loop, of which one runs"),
+    cl::init(false), cl::cat(airCompilerOptions));
+
 static cl::opt<bool>
     airLoopFusion("air-loop-fusion",
                   cl::desc("Add air-loop-fusion pass to the pipeline"),
@@ -242,6 +250,25 @@ static cl::opt<bool> useLockRaceConditionFixV2(
              "multi-reader) sub-region patterns. Mutually exclusive with "
              "use-lock-race-condition-fix."),
     cl::init(false), cl::cat(airCompilerOptions));
+
+static cl::opt<bool> useLockRaceConditionFixAuto(
+    "use-lock-race-condition-fix-auto",
+    cl::desc("Pick a lock race fix per shared L2 buffer: "
+             "use-lock-race-condition-fix where each transfer has a channel of "
+             "its own, the plain counted lock where a channel moves several, "
+             "and use-lock-race-condition-fix-v2 only where the first does "
+             "not fit the BD pool. On unless either of the other two is "
+             "given."),
+    cl::init(false), cl::cat(airCompilerOptions));
+
+// When several DMA channels share one counted lock on a memtile buffer, which
+// of them gets a slot depends on timing, so every buffer gets a lock race fix
+// unless the user picks one for the whole design.
+static bool lockRaceFixAutoEnabled() {
+  if (useLockRaceConditionFixAuto.getNumOccurrences())
+    return useLockRaceConditionFixAuto;
+  return !useLockRaceConditionFix && !useLockRaceConditionFixV2;
+}
 
 static cl::opt<bool> coalesceShimDma(
     "coalesce-shim-dma",
@@ -953,6 +980,8 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
        << "max-launch-channels-s2mm=" << cap << "})"
        << ",canonicalize,cse";
     os << ",air-isolate-async-dma-loop-nests{scope=launch},canonicalize,cse";
+    if (fuseSequentialLoops)
+      os << ",air-fuse-channels{sequential-loops=true},canonicalize,cse";
   }
 
   // Loop fusion or alloc/dealloc optimization
@@ -966,15 +995,9 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
   // Ping-pong transform
   if (omitPingpong.getValue().empty() || omitPingpong.getValue() == "L1" ||
       omitPingpong.getValue() == "L2") {
-    // The device lets the labeller decline a candidate whose duplicated L1
-    // buffers would not fit the tile; the chain-lock flag lets it decline one
-    // whose run-ahead would feed a serialized fan-in. Both are facts the
-    // labeller cannot derive on its own, and the second must agree with what
-    // air-to-aie is told below or the two disagree about whether a chain
-    // exists.
+    // Pass the device so the labeller can decline a candidate whose duplicated
+    // L1 buffers would not fit the tile.
     std::string labelOpts = "device=" + deviceName.getValue();
-    labelOpts += " chain-lock-v2=";
-    labelOpts += useLockRaceConditionFixV2 ? "true" : "false";
     std::string ppOpts;
     if (omitPingpong.getValue() == "L1" || omitPingpong.getValue() == "L2") {
       labelOpts += " omit-memory-space=" + omitPingpong.getValue();
@@ -1136,10 +1159,6 @@ static LogicalResult runAieCompilation() {
     // Folding up front means every pass downstream sees exactly the IR it saw
     // when the count was written by hand.
     os << "air-annotate-refeed";
-    // Same reasoning: derive from the shape the front end wrote, before any
-    // pass rewrites the channel ops. A shim readback that reads an L3 buffer a
-    // shim append wrote is a RAW pair the runtime does not order on its own.
-    os << ",air-annotate-append-barrier";
     // Same slot, same reason. Derives a demux channel's packet id count from
     // its fan-out shape and checks the ids against the ones its kernel stamps.
     // Header emission is deferred to a second run of this pass, inside the
@@ -1247,6 +1266,8 @@ static LogicalResult runAieCompilation() {
        << (useLockRaceConditionFix ? "true" : "false");
     os << " use-lock-race-condition-fix-v2="
        << (useLockRaceConditionFixV2 ? "true" : "false");
+    os << " use-lock-race-condition-fix-auto="
+       << (lockRaceFixAutoEnabled() ? "true" : "false");
     // The full-ELF output is a static TXN, which cannot hold a runtime herd
     // scalar; only there does AIRToAIE route one through a scratchpad
     // parameter instead of the RTP control-plane write.
@@ -1511,11 +1532,23 @@ static LogicalResult runAieCompilation() {
       SmallString<256> headerFile(tmpDir);
       sys::path::append(headerFile, "npu." + airMlirFilename);
       sys::path::replace_extension(headerFile, "txn.h");
-      // One runtime sequence per header: a design with several would need the
-      // host to pick among them, and none of the decoders has more than one.
-      // Picking one silently would hand the host a builder for whichever
-      // sequence sorted first, so make it an error rather than a warning.
-      if (seqFiles.size() > 1) {
+      // aiecc writes one module per runtime sequence, and each holds every
+      // sequence of its device: several funcs sharing a device give several
+      // identical files and one header with a builder per sequence.
+      SmallVector<std::string> contents;
+      for (StringRef f : seqFiles) {
+        auto buf = MemoryBuffer::getFile(f);
+        if (!buf) {
+          llvm::errs() << "Error: cannot read " << f << "\n";
+          return failure();
+        }
+        contents.push_back((*buf)->getBuffer().str());
+      }
+      if (llvm::any_of(contents, [&](const std::string &c) {
+            return c != contents[0];
+          })) {
+        // Picking one silently would hand the host a builder for whichever
+        // sequence sorted first, so make it an error rather than a warning.
         llvm::errs() << "Error: --emit-txn-cpp found " << seqFiles.size()
                      << " runtime sequences and cannot choose between them:\n";
         for (StringRef f : seqFiles)

@@ -976,9 +976,7 @@ def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong",
     Option<"clOmitMemorySpace", "omit-memory-space", "std::string", /*default=*/"\"\"",
             "Omit ping-pong labeling for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means label all loops (default).">,
     Option<"clDevice", "device", "std::string", /*default=*/"\"\"",
-            "Target AIE device. When given, a candidate whose duplicated L1 buffers would exceed the tile's local memory is declined. Empty string skips the check.">,
-    Option<"clChainLockV2", "chain-lock-v2", "bool", /*default=*/"false",
-            "Mirror air-to-aie's use-lock-race-condition-fix-v2. When set, a candidate inside a herd whose output feeds a serialized fan-in chain is declined: the chain orders its writers, so the run-ahead ping-pong buys can park a packet on a shared switchbox arbiter and deadlock an earlier writer.">
+            "Target AIE device. When given, a candidate whose duplicated L1 buffers would exceed the tile's local memory is declined. Empty string skips the check.">
   ];
 }
 
@@ -1040,36 +1038,13 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
   let options = [
     ListOption<"clAggressiveMode", "aggressive-mode", "std::string",
             "List of memory spaces to enable aggressive channel fusion with. Available options include ['L1', 'L2', 'L3'].",
-            "llvm::cl::ZeroOrMore">
+            "llvm::cl::ZeroOrMore">,
+    Option<"clSequentialLoops", "sequential-loops", "bool", /*default=*/"false",
+           "Only merge channels that two loops, run one after the other, "
+           "drive with equal transfers between the same places. The merge "
+           "renames channels and moves no ops. Meant to run after "
+           "air-split-l2-memref, which splits each loop's buffers on its own.">
   ];
-}
-
-def AIRAnnotateAppendBarrierPass: Pass<"air-annotate-append-barrier", "ModuleOp"> {
-  let summary = "Order a shim readback after the shim append it depends on";
-  let constructor = "xilinx::air::createAIRAnnotateAppendBarrierPass()";
-  let description = [{
-    A shim DMA that writes an L3 buffer and a later shim DMA that reads the
-    same buffer are a read-after-write pair, but nothing in the runtime
-    sequence orders them: the readback can be issued before the write has
-    landed, and the reader sees stale bytes. The classic instance is a KV
-    cache -- append this token's K/V into the DDR cache, then read the whole
-    cache back for the attention block loop.
-
-    ```mlir
-    air.channel.get @appendK[%c0] (%kv[%off] [...] [...]) : (memref<262144xbf16>)
-    air.channel.put @inKV_K[%c0] (%kv[%off] [...] [...]) : (memref<262144xbf16>)
-    ```
-
-    This marks the writer with air.append_barrier and the first subsequent
-    reader with air.await_appends. AIRRtToNpu then moves each writer's
-    completion await ahead of the first tagged reader that follows it, so the
-    readback blocks until the append has landed.
-
-    Only L3 buffers are considered: L1 and L2 traffic is ordered by the lock
-    protocol already. A reader clears the pending writes it consumed, so a
-    sequence of append/readback rounds gets one barrier per round rather than
-    one collapsed barrier at the end.
-  }];
 }
 
 def AIRAnnotatePacketIDsPass: Pass<"air-annotate-packet-ids", "ModuleOp"> {
@@ -1120,9 +1095,9 @@ def AIRAnnotatePacketIDsPass: Pass<"air-annotate-packet-ids", "ModuleOp"> {
     the same ids also spelled on the channel -- two spellings, nothing linking
     them, and a silent routing hang when they disagreed.
 
-    Runs in the same early slot as air-annotate-refeed and
-    air-annotate-append-barrier, and for the same reason: read the shape the
-    front end wrote, before another pass rewrites the channel ops. Header
+    Runs in the same early slot as air-annotate-refeed, and for the same
+    reason: read the shape the front end wrote, before another pass rewrites
+    the channel ops. Header
     emission is the exception and runs in a second slot -- see `emit-headers`.
   }];
   let options = [
@@ -1189,19 +1164,50 @@ def AIREnforceChannelFifoOrder: Pass<"air-enforce-channel-fifo-order", "ModuleOp
   let summary = "Serialize same-channel async ops to preserve FIFO order";
   let constructor = "xilinx::air::createAIREnforceChannelFifoOrder()";
   let description = [{
-    A single air.channel is an ordered FIFO, but air-dependency only orders
-    channel ops that share a buffer. Ops on the same channel + same indices +
-    same direction (put/put or get/get) that touch different buffers (e.g. two
-    phases of a kernel temporally reusing one input/output channel) are left
-    unordered and lower to racing BD chains. This pass adds a direct async
-    dependency from each such op to the nearest preceding matching one in the
-    same block. It runs late (after channel fusion has collapsed loop nests into
-    single ops), so the deps are direct op-to-op edges that survive later
-    canonicalization, unlike loop-carried ordering deps.
+    A channel is an ordered FIFO, so ops addressing the same slot (same channel
+    + same indices + same direction) must be totally ordered even when they
+    touch different buffers. See "Endpoint ordering requirement" in
+    docs/AIRComputeModel.md.
 
-    NOTE: it only orders same-block ops (post-fusion collapsed channel ops); it
-    does not order ops still nested in distinct loops (those would need
-    loop-carried deps, which canonicalize strips).
+    Earlier passes order the endpoints they can see. Rewrites that replace
+    channel ops leave the replacements ordered only transitively, and a
+    transitive path through other channels is made of false dependencies that
+    canonicalization is free to delete. This pass restores direct edges.
+
+    Shares air::enforceChannelFifoOrder with the earlier emitters, so the
+    definition of "same slot" cannot drift. Idempotent.
+
+    A conditional arm is not a scope boundary: an affine.if / scf.if /
+    scf.index_switch arm is guarded straight-line code in the enclosing scope,
+    so endpoints in sibling conditionals are ordered through the conditional's
+    token result. A loop body is a scope boundary, so endpoints in distinct
+    loops are left unordered.
+
+    Endpoints reached through conditional arms pair only under the same guard.
+    On the arm that does not run, a conditional's token result carries whatever
+    the other arm yields, so an edge through it would order nothing -- and would
+    keep that other arm's token live for no reason.
+  }];
+}
+
+def AIRVerifyChannelFifoOrder: Pass<"air-verify-channel-fifo-order", "ModuleOp"> {
+  let summary = "Verify that same-slot channel ops are totally ordered";
+  let constructor = "xilinx::air::createAIRVerifyChannelFifoOrder()";
+  let description = [{
+    For every group of ops addressing one channel slot within a sequential
+    scope, each op must transitively depend on its nearest preceding sibling.
+    See "Endpoint ordering requirement" in docs/AIRComputeModel.md.
+
+    Does not modify the IR.
+
+    A missing ordering edge produces neither a diagnostic nor a wrong answer:
+    the NPU backend lowers same-slot endpoints onto one DMA channel as a static
+    BD chain, so an under-constrained program still yields correct hardware.
+    The defect only surfaces once some pass reorders the two endpoints, which
+    is why the ordering needs a checker and not just an emitter.
+
+    To be folded into AIRVerifyProgram as property P5; see
+    docs/AIRCorrectnessChecker.md.
   }];
 }
 

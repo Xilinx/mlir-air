@@ -118,7 +118,6 @@ def run_test(size, idtype, odtype):
     backend = xrt_backend.XRTBackend(
         omit_pingpong=True,
         verbose=verbose,
-        use_lock_race_condition_fix=True,
         runtime_loop_tiling_sizes=[4, 4],
     )
 

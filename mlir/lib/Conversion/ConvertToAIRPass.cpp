@@ -412,8 +412,21 @@ class LinalgPackToAIRDma : public OpRewritePattern<linalg::PackOp> {
     SmallVector<int64_t> transpPerm;
     Value tile = nullptr;
 
-    if (llvm::any_of(innerDimsPos,
-                     [destShape](int64_t i) { return destShape[i] != 1; })) {
+    // The pack is a plain transpose when every tiled dim has one outer tile
+    // and the outer dims keep their order. destShape is indexed by outer
+    // position, which outer_dims_perm moves away from the source dim.
+    auto outerPerm = op.getOuterDimsPerm();
+    auto outerSize = [&](int64_t srcDim) {
+      if (outerPerm.empty())
+        return destShape[srcDim];
+      return destShape[llvm::find(outerPerm, srcDim) - outerPerm.begin()];
+    };
+    bool identityOuter =
+        outerPerm.empty() ||
+        llvm::equal(outerPerm, llvm::seq<int64_t>(0, outerPerm.size()));
+    if (!identityOuter || llvm::any_of(innerDimsPos, [&](int64_t i) {
+          return outerSize(i) != 1;
+        })) {
       auto packMeta = computePackingMetadata(dstType.getRank(), innerDimsPos);
       auto perm = getPackUnpackStripMinedPerm(destShape, innerDimsPos,
                                               op.getOuterDimsPerm());
@@ -462,8 +475,20 @@ class LinalgUnPackToAIRDma : public OpRewritePattern<linalg::UnPackOp> {
     SmallVector<int64_t> transpPerm;
     Value tile = nullptr;
 
-    if (llvm::any_of(innerDimsPos,
-                     [srcShape](int64_t i) { return srcShape[i] != 1; })) {
+    // As for pack: a plain transpose only with one outer tile per tiled dim
+    // and the outer dims in order.
+    auto outerPerm = op.getOuterDimsPerm();
+    auto outerSize = [&](int64_t dstDim) {
+      if (outerPerm.empty())
+        return srcShape[dstDim];
+      return srcShape[llvm::find(outerPerm, dstDim) - outerPerm.begin()];
+    };
+    bool identityOuter =
+        outerPerm.empty() ||
+        llvm::equal(outerPerm, llvm::seq<int64_t>(0, outerPerm.size()));
+    if (!identityOuter || llvm::any_of(innerDimsPos, [&](int64_t i) {
+          return outerSize(i) != 1;
+        })) {
       // Non-degenerate case: transpose from packed layout to strip-mined.
       auto perm = getPackUnpackStripMinedPerm(srcShape, innerDimsPos,
                                               op.getOuterDimsPerm());
@@ -1599,20 +1624,14 @@ static void getHerdNames(ModuleOp module) {
 
 static void getSegmentNames(ModuleOp module) {
   std::vector<std::string> seg_syms;
+  // record existing symbol names, in every func before any is generated;
+  // segments sharing a name are one device
+  module.walk([&](air::SegmentOp op) {
+    if (auto attr =
+            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      seg_syms.push_back(attr.getValue().str());
+  });
   for (auto f : module.getOps<func::FuncOp>()) {
-    // record existing symbol names
-    f.walk([&](air::SegmentOp op) {
-      if (auto attr =
-              op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-        std::string name = attr.getValue().str();
-        if (std::find(seg_syms.begin(), seg_syms.end(), name) !=
-            seg_syms.end()) {
-          op->emitOpError("unexpected duplicate symbol.");
-          return;
-        }
-        seg_syms.push_back(name);
-      }
-    });
     // generate missing symbol names
     f.walk([&](air::SegmentOp op) {
       if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
@@ -2152,12 +2171,11 @@ struct CanonicalizeArithMulIOpToIndexTypePattern
 };
 
 // Wraps the body of a given func.func operation inside an scf.parallel loop.
-// The pass assumes that:
-// (1) The function arguments consist of: M memref arguments, N loop upper
-// bounds, N loop induction variable indices. (2) The scf.parallel loop is
-// constructed using the N upper bounds and induction variable indices. (3) The
-// scf.parallel loop is inserted at the beginning of the function, wrapping all
-// existing operations.
+// The function's last 2N arguments are the N grid sizes followed by the N
+// grid indices, as triton-shared appends them; any arguments before those
+// (memrefs, then kernel scalars) are left alone. The loop's upper bounds come
+// from the `loop-bounds` option and its induction variables replace the N
+// index arguments. The loop wraps all existing operations.
 
 struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
   using OpRewritePattern<func::FuncOp>::OpRewritePattern;
@@ -2206,11 +2224,29 @@ struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
       return failure();
     }
 
-    // Extract indices
-    ValueRange inductionVars = args.slice(M + N, N);
+    // The grid indices are the last N arguments. Kernel scalars, if any, sit
+    // between the memrefs and the grid arguments.
+    ValueRange inductionVars = args.slice(numArgs - N, N);
 
-    if (llvm::all_of(inductionVars, [](Value iv) { return iv.use_empty(); }))
-      return failure();
+    // A body that reads no grid index is wrapped only on a one-point grid,
+    // where a single iteration changes nothing about what runs. Once
+    // wrapped, the body is that loop and the pattern stops.
+    if (llvm::all_of(inductionVars, [](Value iv) { return iv.use_empty(); })) {
+      bool onePoint =
+          llvm::all_of(loopBounds, [](int64_t bound) { return bound == 1; });
+      // Wrapped: apart from the loop's own bound constants, the body is the
+      // loop and the return.
+      bool wrapped = false;
+      for (Operation &op : funcOp.getBody().front().without_terminator()) {
+        if (isa<arith::ConstantOp>(op))
+          continue;
+        wrapped = isa<scf::ParallelOp>(op) && !wrapped;
+        if (!wrapped)
+          break;
+      }
+      if (!onePoint || wrapped)
+        return failure();
+    }
 
     // Store original function body operations
     SmallVector<Operation *> originalFuncBodyOps;

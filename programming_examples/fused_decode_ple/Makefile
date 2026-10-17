@@ -164,7 +164,7 @@ compile-decode: kernels
 	  fi
 
 clean:
-	rm -f $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin 2>/dev/null || true
+	rm -f $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin $(srcdir)/decode.rt_pair 2>/dev/null || true
 	rm -rf $(srcdir)/air_project $(srcdir)/__pycache__ 2>/dev/null || true
 	rm -f $(srcdir)/air.mlir 2>/dev/null || true
 	@echo "PLE decode kernels, template and build dir removed."

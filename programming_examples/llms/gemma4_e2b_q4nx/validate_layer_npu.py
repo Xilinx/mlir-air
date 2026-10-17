@@ -255,10 +255,8 @@ def main():
     h = x[None, :]
 
     # A prefix dump swaps the reference's hidden state for the DEVICE's at the
-    # prefix boundary. The K/V caches are still the reference's: they are only
-    # read by a shared layer, they matched the device's to cos 0.999 when
-    # measured, and the part that did not match is the weightless v-norm's
-    # scale, which the post-attention rmsnorm cancels either way.
+    # prefix boundary. The K/V caches are still the reference's; only a shared
+    # layer reads them.
     cut = 0
     if a.prefix_dump:
         pz = np.load(a.prefix_dump)

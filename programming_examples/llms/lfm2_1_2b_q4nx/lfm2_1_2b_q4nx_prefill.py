@@ -164,17 +164,31 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
 
     print(f"\n{'='*60}\nCompiling LFM2 prefill kernels (seq_len={seq_len})\n{'='*60}")
 
-    from air_examples.llms.shared.infra.external_kernels import (
-        compile_gemm_mm,
-        compile_rope,
+    from air_examples.llms.shared.infra.external_kernels import compile_rope
+    from air_examples.llms.shared.builders.gemm_builder import (
+        compile_gemm_objects,
+        gemm_method_spec,
+        gemm_registry_config,
     )
+    from air_examples.llms.shared.builders.rms_qkv_qknorm_rope_multi import (
+        rms_qkv_qknorm_rope_gemm_specs,
+    )
+    from air_examples.llms.shared.builders.o_ffn_multi import o_ffn_gemm_specs
 
-    # External microkernels FIRST — aircc picks them up from cwd.
-    compile_gemm_mm(
-        tile_m=32, tile_n=128, tile_k_l1=32, sym_suffix="_m32", out_name="mm_m32.o"
-    )
-    compile_gemm_mm(
-        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
+    # External microkernels FIRST — aircc picks them up from cwd. One mm.o per
+    # GEMM spec; in_proj runs drain at its registry tile_n/tile_k_l1.
+    in_proj = gemm_registry_config(seq_len, emb_dim, 3 * conv_dim, "bf16", "high")
+    compile_gemm_objects(
+        rms_qkv_qknorm_rope_gemm_specs(seq_len, emb_dim, q_dim, kv_dim)
+        + o_ffn_gemm_specs(seq_len, emb_dim, hidden_dim)
+        + [
+            dict(
+                gemm_method_spec("drain"),
+                method="drain",
+                tile_n=in_proj["tile_n"],
+                tile_k_l1=in_proj["tile_k_l1"],
+            )
+        ]
     )
     compile_rope()
     _compile_conv1d_o()

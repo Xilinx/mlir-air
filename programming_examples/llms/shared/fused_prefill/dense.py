@@ -352,10 +352,14 @@ class DensePrefill(Engine):
 
 def load(name, build_dir, model=None):
     """The fused prefill of model `name` (models.py) from its build, with
-    weights loaded from `model` (default: its repo)."""
+    weights loaded from `model` (default: its repo). The longest prompt is the
+    max_len the build was made for."""
     from .models import MODELS
 
     desc = MODELS[name]
+    man = json.loads((Path(build_dir) / "manifest.json").read_text())
+    if man.get("max_len"):
+        desc = desc._replace(max_len=man["max_len"])
     if desc.family == "lfm2":
         from .lfm2 import Lfm2Prefill as cls
     else:

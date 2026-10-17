@@ -663,8 +663,7 @@ def build_module(
                                 # to bf16, store gate partials and up partials
                                 # into SEPARATE bf16 scratches indexed by pair
                                 # position. Vectorized silu+mul runs after the
-                                # j_m loop (scalar tanh isn't legalizable on
-                                # AIE2P).
+                                # j_m loop.
                                 ChannelGet(
                                     "chan_cascade",
                                     _l1_recv,
@@ -997,7 +996,6 @@ if __name__ == "__main__":
             output_format=args.output_format,
             instance_name="matvec_swiglu_rms",
             debug_ir=args.debug_ir,
-            use_lock_race_condition_fix=True,
         )
         exit(
             runner.run_test(
@@ -1014,7 +1012,6 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
-            use_lock_race_condition_fix=True,
         )
         backend.compile(mlir_module)
         backend.unload()

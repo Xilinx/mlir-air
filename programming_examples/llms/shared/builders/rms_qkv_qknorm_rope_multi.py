@@ -259,6 +259,20 @@ def _build_qknorm_1d(
     return launch.build(target=target)
 
 
+def rms_qkv_qknorm_rope_gemm_specs(seq_len, emb_dim, q_dim, kv_dim, gemm_spec_fn=None):
+    """Q, K, V GEMM specs, as build_rms_qkv_qknorm_rope_module builds them:
+    caller-injected spec fn (off-registry shapes) or the registry lookup."""
+    if gemm_spec_fn is None:
+        from air_examples.llms.shared.builders.gemm_builder import (
+            gemm_registry_config,
+        )
+
+        def gemm_spec_fn(m, k, n):
+            return gemm_registry_config(m, k, n, "bf16", "high")
+
+    return [gemm_spec_fn(seq_len, emb_dim, n) for n in (q_dim, kv_dim, kv_dim)]
+
+
 def build_rms_qkv_qknorm_rope_module(
     seq_len,
     emb_dim,
@@ -307,10 +321,7 @@ def build_rms_qkv_qknorm_rope_module(
 
     Returns (module, scratch_for).
     """
-    from air_examples.llms.shared.builders.gemm_builder import (
-        _build_gemm_module,
-        gemm_registry_config,
-    )
+    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
     from air_examples.llms.shared.builders.rms_gemms_rope_multi import _build_rope_2d
     from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
@@ -328,16 +339,9 @@ def build_rms_qkv_qknorm_rope_module(
     assert q_dim == n_heads * head_dim, (q_dim, n_heads, head_dim)
     assert kv_dim == n_kv_heads * head_dim, (kv_dim, n_kv_heads, head_dim)
 
-    # Per-GEMM config: caller-injected spec fn (off-registry shapes) or the
-    # registry lookup (default).
-    if gemm_spec_fn is not None:
-        q_spec = gemm_spec_fn(seq_len, emb_dim, q_dim)
-        k_spec = gemm_spec_fn(seq_len, emb_dim, kv_dim)
-        v_spec = gemm_spec_fn(seq_len, emb_dim, kv_dim)
-    else:
-        q_spec = gemm_registry_config(seq_len, emb_dim, q_dim, "bf16", "high")
-        k_spec = gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high")
-        v_spec = gemm_registry_config(seq_len, emb_dim, kv_dim, "bf16", "high")
+    q_spec, k_spec, v_spec = rms_qkv_qknorm_rope_gemm_specs(
+        seq_len, emb_dim, q_dim, kv_dim, gemm_spec_fn
+    )
 
     def _kw_tiles(spec):
         return (

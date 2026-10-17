@@ -19,11 +19,61 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace mlir;
 
 namespace xilinx {
+namespace AIE {
+class AIETargetModel;
+} // namespace AIE
+
 namespace air {
+
+// ===----------------------------------------------------------------------===//
+// DMA buffer descriptor limits
+// ===----------------------------------------------------------------------===//
+
+// Limits of one DMA buffer descriptor (BD). Strides and lengths count
+// address-generation granules of `granuleBits` bits. A negative limit means
+// there is none.
+struct DmaBdLimits {
+  // Addressing dimensions, not counting the iteration dimension.
+  int dims = -1;
+  // Largest wrap of an addressing dimension.
+  int64_t maxWrap = -1;
+  // Largest wrap of the iteration dimension; 0 when the BD has none.
+  int64_t maxIterWrap = 0;
+  int64_t maxStride = -1;
+  int64_t maxLen = -1;
+  // BDs on the tile.
+  int numBDs = -1;
+  unsigned granuleBits = 8;
+
+  // Entries of a wrap-and-stride list that one BD holds: the addressing
+  // dimensions, plus the iteration dimension outermost.
+  int listDims() const {
+    return dims < 0 ? -1 : dims + (maxIterWrap > 0 ? 1 : 0);
+  }
+  // Largest wrap at position `i` of such a list.
+  int64_t maxWrapAt(unsigned i) const {
+    return i == 0 && maxIterWrap > 0 ? maxIterWrap : maxWrap;
+  }
+  bool strideFits(int64_t stride) const {
+    return maxStride < 0 || stride <= maxStride;
+  }
+  // `bytes` in granules, rounded up.
+  int64_t bytesToGranules(int64_t bytes) const {
+    return llvm::divideCeilSigned(bytes * 8, (int64_t)granuleBits);
+  }
+};
+
+// Limits of a BD on the tile that serves `space`, read from `tm`.
+DmaBdLimits getDmaBdLimits(const AIE::AIETargetModel &tm, MemorySpace space);
+
+// Same, for the device that is or contains `op`, else the first device in the
+// module that is or contains `op`, else the npu1 device.
+DmaBdLimits getDmaBdLimits(Operation *op, MemorySpace space);
 
 // ===----------------------------------------------------------------------===//
 // Memory space helpers
@@ -238,41 +288,6 @@ void classifyChainBuffer(Value memref, int &numWriters, int &numReaders);
 // one, so an unkeyed endpoint never shares a stage with anything but itself.
 bool chainEndpointsShareStage(Operation *a, Operation *b);
 
-// Will the v2 chain lock serialize this buffer's endpoints? Mirrors
-// isChainLockCandidate on pre-conversion IR: fan-in is N>1 writers and one
-// reader, fan-out is one writer and N>1 readers, and fan-out honors the
-// air.no_chain_lock opt-out. `isFanIn`, if non-null, receives which shape
-// matched.
-bool isSerializedChainBuffer(Value memref, bool *isFanIn = nullptr);
-
-// Herds whose output data transitively reaches a buffer `isTarget` accepts,
-// each mapped to the targets it reaches. Callers that only need the herds can
-// use the keys; the targets are what lets a diagnostic name the right buffer
-// instead of every one in the module.
-//
-// A channel put reaches every get on the same symbol; any other memcpy names
-// its destination directly. Staging hops are followed at every memory space,
-// since AIR permits cross-space channel hops and an L1 or L3 buffer on the way
-// is still a path.
-//
-// Shared by the labeller (which declines these herds) and AIRToAIE (which
-// verifies none was ping-ponged anyway), so the two cannot disagree. Puts match
-// gets by symbol, not endpoint -- inside a herd the bundle index is an
-// expression in the induction variables -- so it over-approximates.
-llvm::MapVector<Operation *, SmallVector<Value>>
-getHerdsFeedingBuffers(Operation *scope,
-                       llvm::function_ref<bool(Value)> isTarget);
-
-// Loops whose ping-pong unroll is what keeps a BD ring in step with its core,
-// so declining them would move the wrong buffer. A sibling group only realigns
-// if every member is unrolled, hence isCandidate.
-llvm::DenseSet<Operation *>
-getLoadBearingPingPongLoops(Operation *herd,
-                            llvm::function_ref<bool(scf::ForOp)> isCandidate);
-
-// Does this herd hold any such group? Asked post-unroll, where the labeller's
-// notion of a candidate no longer applies.
-bool pingPongIsLoadBearing(Operation *herd);
 // Get integer index to metadataArray, from channel bundle indices.
 std::optional<int>
 getIndexToMetadataArrayFromChannelIndices(air::ChannelInterface op);
@@ -340,7 +355,8 @@ void getDefiningOpsToOperands(Operation *op, SmallVector<Operation *> &def_ops);
 LogicalResult foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
-    SmallVector<Value> &strides, Value memref, bool skipZeroStride = false);
+    SmallVector<Value> &strides, Value memref, const DmaBdLimits &limits,
+    bool skipZeroStride = false);
 
 // Find the largest factor of 'num' which is not larger than 'max'.
 int findLargestFactor(int num, int max);
@@ -361,17 +377,16 @@ int findLargestAlignedFactor(int num, int max, int alignment);
 int getDmaInnerElementAlignment(mlir::BaseMemRefType memrefTy,
                                 mlir::Operation *op);
 
-// Canonicalize wrap and stride lists, by removing redundant dimensions.
+// Canonicalize wrap and stride lists, by removing redundant dimensions, and
+// split wraps above `limits.maxWrap`.
 // 'innerAlignment' constrains the contiguous innermost dim (stride==1) when
 // it must be split: the new inner wrap is forced to be a multiple of
 // 'innerAlignment' elements (e.g. 2 for bf16 on a 4-byte shim BD). Pass 1
 // (the default) when no extra constraint applies.
-LogicalResult canonicalizeWrapAndStrideList(OpBuilder &builder,
-                                            SmallVector<Value> &offsets,
-                                            SmallVector<Value> &sizes,
-                                            SmallVector<Value> &strides,
-                                            int memref_volume, int maxSize = -1,
-                                            int innerAlignment = 1);
+LogicalResult canonicalizeWrapAndStrideList(
+    OpBuilder &builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
+    SmallVector<Value> &strides, int memref_volume, const DmaBdLimits &limits,
+    int innerAlignment = 1);
 
 // If wrap-and-stride lists are empty, populate them with default data access
 // layout (contiguous, row-major).
@@ -408,6 +423,19 @@ getLinearAccessRange(ArrayRef<OpFoldResult> offsets,
 // false only when both linear ranges are known and disjoint.
 bool mayOverlap(std::optional<std::pair<int64_t, int64_t>> a,
                 std::optional<std::pair<int64_t, int64_t>> b);
+
+// Whether two access patterns into the same buffer may touch a common element:
+// false when they cannot, true when they may, std::nullopt when a footprint is
+// not known. Footprints are bounded over the loops around the accesses.
+// Constant patterns of up to a few thousand contiguous runs are compared
+// element by element, so true means they do touch. Otherwise patterns with the
+// same strides are compared dimension by dimension, and others by linear range.
+std::optional<bool> accessesIntersect(ArrayRef<OpFoldResult> offsets0,
+                                      ArrayRef<OpFoldResult> sizes0,
+                                      ArrayRef<OpFoldResult> strides0,
+                                      ArrayRef<OpFoldResult> offsets1,
+                                      ArrayRef<OpFoldResult> sizes1,
+                                      ArrayRef<OpFoldResult> strides1);
 
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.

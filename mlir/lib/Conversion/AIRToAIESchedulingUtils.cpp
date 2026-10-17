@@ -427,8 +427,16 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   // the earlier loop's chain and ran them before every task in between -- so a
   // three-phase egress [A x4, B x32, C x4] emitted A and C interleaved up front
   // and B afterwards. Counts stayed right, order did not.
+  // A circular BD chain repeats the whole chain once per trip, and takes no
+  // count. So every transfer in a run-time loop must run once per trip of
+  // loops with the same bounds as the first one's; the chain takes the
+  // transfers of such loops in turn, as when one loop's transfers were split
+  // over several loops that run side by side.
+  std::optional<SmallVector<Value>> chainBounds;
   for (auto o : memcpyIOpVec) {
     int tripCount = 1;
+    SmallVector<Value> bounds;
+    scf::ForOp outer;
     Region *currRegion = o->getParentRegion();
     while (commonRegion->isAncestor(currRegion)) {
       Operation *parent = currRegion->getParentOp();
@@ -439,10 +447,24 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
         tripCount *= *air::getStaticAffineForTripCountAsInt(affineFor);
       } else if (scfFor && air::getStaticScfForTripCountAsInt(scfFor)) {
         tripCount *= *air::getStaticScfForTripCountAsInt(scfFor);
+      } else if (scfFor) {
+        bounds.append(
+            {scfFor.getLowerBound(), scfFor.getUpperBound(), scfFor.getStep()});
+        outer = scfFor;
       }
     }
     // In English, repeat count is trip count minus one.
     int rep = tripCount - 1;
+    if (outer) {
+      if (!chainBounds)
+        chainBounds = bounds;
+      bool sameBounds = llvm::equal(bounds, *chainBounds, [](Value a, Value b) {
+        auto ca = getConstantIntValue(a);
+        return a == b || (ca && ca == getConstantIntValue(b));
+      });
+      rep = tripCount == 1 && sameBounds ? air::kRunTimeRepeatCount
+                                         : air::kUnsupportedRunTimeRepeatCount;
+    }
     if (repeatCounts.empty() || repeatCounts.back().first != rep)
       repeatCounts.emplace_back(rep, llvm::SetVector<Operation *>());
     repeatCounts.back().second.insert(o);
@@ -559,6 +581,12 @@ bool air::isChainLockCandidate(AIE::BufferOp buf) {
   return false;
 }
 
+bool air::usesChainLock(AIE::BufferOp buf, bool lockRaceConditionFixV2) {
+  if (!buf || !isChainLockCandidate(buf))
+    return false;
+  return lockRaceConditionFixV2 || buf->hasAttr(air::attrs::ChainLock);
+}
+
 // True iff `buf` is an L2 memtile buffer that is FILLED by DMA (>=1 writer
 // endpoint) but NEVER READ (0 reader endpoints) within the segment -- a "pure
 // drain" (e.g. a readback whose data is discarded). Such a buffer's receiving
@@ -577,68 +605,6 @@ static bool isConsumerlessMemtileDrain(AIE::BufferOp buf) {
 void air::classifyChainBuffer(AIE::BufferOp buf, int &numWriters,
                               int &numReaders) {
   classifyChainBuffer(buf.getResult(), numWriters, numReaders);
-}
-
-LogicalResult air::verifyChainLockProducers(Operation *scope) {
-  // Collect chain buffers from the memcpys themselves rather than from allocs:
-  // the Value a memcpy names is the air.execute result while that wrapper is
-  // still around, and the alloc inside it has no memcpy users of its own.
-  llvm::SetVector<Value> chainBufs;
-  scope->walk([&](air::MemcpyInterface memcpyOp) {
-    for (Value v : {memcpyOp.getDstMemref(), memcpyOp.getSrcMemref()})
-      if (v && air::isSerializedChainBuffer(v))
-        chainBufs.insert(v);
-  });
-  if (chainBufs.empty())
-    return success();
-
-  // Same walk the labeller used to decide what to decline, so a disagreement
-  // here is about the chain, not about reachability.
-  auto producers = air::getHerdsFeedingBuffers(
-      scope, [&](Value buf) { return chainBufs.contains(buf); });
-
-  LogicalResult result = success();
-  for (auto &[producerOp, reached] : producers) {
-    auto herd = cast<air::HerdOp>(producerOp);
-    if (!herd->hasAttr(air::attrs::PingPong))
-      continue;
-    auto name = herd.getSymName();
-    // The labeller kept this run-ahead deliberately: declining delivers the
-    // wrong buffer, so refusing would only make a working design unbuildable.
-    // Re-asked rather than trusted, because specializeL2MemrefsIntoMemtiles can
-    // drop an endpoint after the mark and leave it claiming a ring that is
-    // gone.
-    if (herd->hasAttr(air::attrs::PingPongRequired) &&
-        air::pingPongIsLoadBearing(herd.getOperation())) {
-      herd->emitWarning()
-          << "herd" << (name ? (" @" + name->str()) : "")
-          << " feeds a serialized chain lock and runs ping-pong, which risks a "
-             "switchbox-arbiter deadlock, but its BD rings only stay in step "
-             "because of the unroll. Emitted as-is; give each channel endpoint "
-             "its own channel, or hoist them into one loop body, to let "
-             "air-label-scf-for-to-ping-pong decline it safely";
-      continue;
-    }
-    auto diag =
-        herd->emitOpError()
-        << "herd" << (name ? (" @" + name->str()) : "")
-        << " feeds a serialized chain lock but runs ping-pong, so it can "
-           "present a round the chain cannot accept yet; the parked packet "
-           "holds a switchbox arbiter and can deadlock an earlier stage of "
-           "the same chain. Attach air.disable_ping_pong to the loop, or "
-           "check why air-label-scf-for-to-ping-pong did not decline it";
-    // Only the chains this herd actually reaches: with several independent
-    // chains in one module, naming all of them points the remedy at buffers
-    // that have nothing to do with this herd.
-    for (Value buf : reached) {
-      bool isFanIn = false;
-      air::isSerializedChainBuffer(buf, &isFanIn);
-      diag.attachNote(buf.getLoc())
-          << "serialized " << (isFanIn ? "fan-in" : "fan-out") << " chain here";
-    }
-    result = failure();
-  }
-  return result;
 }
 
 int air::computeStageIndexForMemcpyOp(Operation *memcpyOp, AIE::BufferOp buf) {
@@ -1018,6 +984,87 @@ air::DMAAllocator::lookupDMAAllocation(AIE::TileLike tile,
 
 // Allocate a reader/writer lock pair. These may be the same or different
 // locks depending on the target device.
+// For a memtile buffer filled by several writes into disjoint static slots
+// and drained slot by slot, k reads per slot, every slot can be filled before
+// the first read. The write lock then starts at the number of reads: each
+// write acquires k, and each read releases one. A slot is refilled only once
+// all k of its reads have released, which holds when every read lies in one
+// slot and the reads take the slots in the order they were written, on one
+// channel (reads on several channels run independently). Returns 0 for any
+// other buffer.
+static int64_t slotBufferWriteLockInit(Value buffer) {
+  using Span = std::pair<int64_t, int64_t>;
+  auto spanOf = [](air::ChannelInterface chan) -> std::optional<Span> {
+    if (chan.getMixedOffsets().empty())
+      return std::nullopt;
+    int64_t lo = 0, hi = 0;
+    for (auto [o, sz, st] :
+         llvm::zip(chan.getMixedOffsets(), chan.getMixedSizes(),
+                   chan.getMixedStrides())) {
+      auto oc = getConstantIntValue(o), sc = getConstantIntValue(sz),
+           tc = getConstantIntValue(st);
+      if (!oc || !sc || !tc)
+        return std::nullopt;
+      lo += *oc * *tc;
+      hi += (*oc + *sc - 1) * *tc;
+    }
+    return Span{lo, hi};
+  };
+  SmallVector<std::pair<Operation *, Span>> writes, reads;
+  for (Operation *user : buffer.getUsers()) {
+    // Only the air transfers count; the DMA BDs built so far use the
+    // buffer too.
+    auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
+    if (!memcpyOp)
+      continue;
+    auto chan = dyn_cast<air::ChannelInterface>(user);
+    std::optional<Span> span = chan ? spanOf(chan) : std::nullopt;
+    if (!span)
+      return 0;
+    (buffer == memcpyOp.getSrcMemref() ? reads : writes)
+        .push_back({user, *span});
+  }
+  int64_t nw = writes.size(), nr = reads.size();
+  if (nw < 2 || nr < nw || nr % nw)
+    return 0;
+  // All writes on one channel instance, and all reads on one.
+  auto oneChannel = [](auto &ops) {
+    auto first = cast<air::ChannelInterface>(ops.front().first);
+    return llvm::all_of(ops, [&](auto &p) {
+      auto c = cast<air::ChannelInterface>(p.first);
+      return c.getChanName() == first.getChanName() &&
+             llvm::equal(c.getIndices(), first.getIndices());
+    });
+  };
+  if (!oneChannel(writes) || !oneChannel(reads))
+    return 0;
+  // Program order of the transfers, all in one block.
+  Block *block = writes.front().first->getBlock();
+  auto inBlock = [&](auto &p) { return p.first->getBlock() == block; };
+  if (!llvm::all_of(writes, inBlock) || !llvm::all_of(reads, inBlock))
+    return 0;
+  auto before = [](auto &a, auto &b) {
+    return a.first->isBeforeInBlock(b.first);
+  };
+  llvm::sort(writes, before);
+  llvm::sort(reads, before);
+  SmallVector<Span> slots;
+  for (auto &w : writes)
+    slots.push_back(w.second);
+  SmallVector<Span> sorted = slots;
+  llvm::sort(sorted);
+  for (size_t i = 1; i < sorted.size(); i++)
+    if (sorted[i].first <= sorted[i - 1].second)
+      return 0;
+  int64_t k = nr / nw;
+  for (auto [i, r] : llvm::enumerate(reads)) {
+    const Span &slot = slots[i / k];
+    if (r.second.first < slot.first || r.second.second > slot.second)
+      return 0;
+  }
+  return nr;
+}
+
 FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
     air::MemcpyInterface &memcpyOp, AIE::TileLike tile, Operation *bufferOp,
     bool lockRaceConditionFix, bool lockRaceConditionFixV2) {
@@ -1069,11 +1116,12 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
   }
 
   // v2: chain-lock branch. Memtile-only; requires the buffer to be a
-  // shared L2 with fan-in or fan-out shape (predicate is shape-based).
+  // shared L2 with fan-in or fan-out shape (predicate is shape-based), and
+  // either v2 on for the design or air.chain_lock on the buffer.
   // Takes precedence over the legacy / v1 paths when it applies.
-  if (lockRaceConditionFixV2 && tileIsMemTile && UsesSemaphoreLocks) {
+  if (tileIsMemTile && UsesSemaphoreLocks) {
     auto buf = dyn_cast_or_null<AIE::BufferOp>(bufferOp);
-    if (buf && isChainLockCandidate(buf)) {
+    if (usesChainLock(buf, lockRaceConditionFixV2)) {
       auto clsOrFail = getOrCreateChainLockSet(buf, tile);
       if (failed(clsOrFail))
         return memcpyOp->emitOpError(
@@ -1104,7 +1152,9 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
       // AIE2's semaphore locks may share by air.channels
       for (size_t i = 0; i < lock_allocation_list.size(); i++) {
         if (tileIsMemTile) {
-          if (!lockRaceConditionFix) {
+          if (!lockRaceConditionFix ||
+              (bufferOp && (bufferOp->hasAttr(air::attrs::CountedLock) ||
+                            countedLockBuffers.contains(bufferOp)))) {
             // If memtile, and multiple bds reference the same buffer op, but
             // different DMA channels, then we assume the scenario of having two
             // bds, one S2MM and the other MM2S. This scenario is almost always
@@ -1120,8 +1170,12 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
                 channel.direction == AIE::DMAChannelDir::MM2S
                     ? AIE::DMAChannelDir::S2MM
                     : AIE::DMAChannelDir::MM2S;
-            // Case 1: Exact match on (channel symbol, physical channel number).
+            // Case 1: Exact match on (buffer, channel symbol, physical channel
+            // number). A channel that moves two buffers needs a lock pair per
+            // buffer: each buffer has its own writers, and a shared pair would
+            // let one buffer's writer signal a read of the other.
             if (air_chan &&
+                (std::get<0>(lock_allocation_list[i]) == bufferOp) &&
                 (std::get<1>(lock_allocation_list[i]) == air_chan) &&
                 (std::get<2>(lock_allocation_list[i]) == channel)) {
               // Reuse the existing lock entry by appending a new BD with the
@@ -1215,11 +1269,15 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
   }
   std::pair<int64_t, int64_t> init_pair;
   if (tileIsMemTile)
-    init_pair = getLockValuePair(target_model, bufferOp->getResult(0));
+    init_pair = lockRaceConditionFix && heldLockBuffers.contains(bufferOp)
+                    ? std::make_pair<int64_t, int64_t>(1, 1)
+                    : getLockValuePair(target_model, bufferOp->getResult(0));
   else
     init_pair =
         getLockValuePair(target_model, bufferOp->getResult(0), air_chan);
   auto init = std::max(init_pair.first, init_pair.second);
+  if (tileIsMemTile && UsesSemaphoreLocks)
+    init = std::max(init, slotBufferWriteLockInit(bufferOp->getResult(0)));
 
   // Consumerless memtile drain: emit ONE self-recycling lock (returned as both
   // pair elements) so the receiving BD acquires AND releases the same lock and

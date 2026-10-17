@@ -189,3 +189,37 @@ def two_objects_on_one_core():
         return air.ops.exp(buf[:])
 
     print(build(65536, 1024, body, herd_shape=(4,), link_with="extern_func.o").mlir())
+
+
+# CHECK-LABEL: TEST: erf_vectorized
+# CHECK: vector.transfer_read {{.*}} vector<16xbf16>
+# CHECK: math.erf {{.*}} : vector<16xbf16>
+# CHECK: vector.transfer_write {{.*}} vector<16xbf16>
+@run
+def erf_vectorized():
+    print(build(65536, 1024, lambda b: air.ops.erf(b[:]), herd_shape=(4,)).mlir())
+
+
+# CHECK-LABEL: TEST: erf_f32_vectorized
+# CHECK: math.erf {{.*}} : vector<16xf32>
+@run
+def erf_f32_vectorized():
+    print(
+        build(
+            65536, 1024, lambda b: air.ops.erf(b[:]), dtype=f32, herd_shape=(4,)
+        ).mlir()
+    )
+
+
+# CHECK-LABEL: TEST: erf_scalar
+# CHECK-NOT: vector.transfer_read
+# CHECK: memref.load
+# CHECK: math.erf {{.*}} : f32
+# CHECK: memref.store
+@run
+def erf_scalar():
+    print(
+        build(
+            512, 64, lambda b: air.ops.erf(b[:]), dtype=f32, herd_shape=(2,), vector=0
+        ).mlir()
+    )

@@ -39,8 +39,6 @@ namespace air {
 // no-ops). See the AIRRtToNpu / AIRToAIE passes for their semantics.
 namespace attrs {
 constexpr StringLiteral RuntimeHoist = "air.runtime_hoist";
-constexpr StringLiteral AwaitAppends = "air.await_appends";
-constexpr StringLiteral AppendBarrier = "air.append_barrier";
 constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 // Marker on a shim MM2S configure task produced by the coalesce-shim-dma merge:
 // its BD covers a whole contiguous run merged from several smaller feeds, so
@@ -94,14 +92,26 @@ constexpr StringLiteral LaunchWave = "air.launch_wave";
 // lowered away by the time AIRToAIE reads it); propagated onto the lowered
 // AIE::BufferOp so air::isChainLockCandidate can exclude it.
 constexpr StringLiteral NoChainLock = "air.no_chain_lock";
-// Set by air-ping-pong-transform (unit attr) on an air.herd whose body now runs
-// a loop over two buffer instances. A record of what the transform did, not a
-// request: the "unroll" attribute that drove it is stripped before AIRToAIE,
-// which reads this to verify no chain-lock producer can run a round ahead.
-constexpr StringLiteral PingPong = "air.pingpong";
-// Set by air-label-scf-for-to-ping-pong (unit attr) on an air.herd whose BD
-// rings only stay in step because of the unroll, so it was not declined.
-constexpr StringLiteral PingPongRequired = "air.pingpong_required";
+// Unit attr on a shared-L2 memref.alloc: give this buffer the chain-lock
+// template even when use-lock-race-condition-fix-v2 is off. Set by air-to-aie
+// in use-lock-race-condition-fix-auto mode on the buffers whose per-channel
+// locks would need more BDs than a pool holds. Propagated onto the lowered
+// AIE::BufferOp like NoChainLock; ignored for buffers that are not chain-lock
+// candidates.
+constexpr StringLiteral ChainLock = "air.chain_lock";
+// Unit attr on a shared-L2 memref.alloc: keep the plain counted lock pair, with
+// neither use-lock-race-condition-fix's per-transfer locks nor chain locks.
+// Set by use-lock-race-condition-fix-auto on buffers whose many-side transfers
+// do not each have a channel of their own: one channel moving several of them
+// runs them in order and has no race to fix, and per-transfer locks would let
+// the single side overwrite data not yet moved. Propagated onto the lowered
+// AIE::BufferOp.
+constexpr StringLiteral CountedLock = "air.counted_lock";
+// Integer attr air-to-aie stamps on every L2 memref.alloc in
+// use-lock-race-condition-fix-auto mode, so a lowered AIE::BufferOp can be
+// traced back to its alloc across lowering attempts. Removed before the pass
+// returns.
+constexpr StringLiteral L2BufferId = "air.l2_buffer_id";
 // Opt-out (unit attr) on a shared-L2 memref.alloc (or its enclosing
 // air.execute): leave this L2 buffer intact instead of partitioning it. Used by
 // hand-written aggregator patterns where splitting would multiply the
@@ -120,12 +130,11 @@ constexpr StringLiteral MemtileCol = "air.memtile_col";
 constexpr int kMaxPacketID = 31;
 
 // Copy the DMA-steering / runtime-ordering markers
-// (attrs::RuntimeHoist, AwaitAppends, AppendBarrier,
-// RefeedCount, PacketIDs, KeepPktHeader) that must survive channel-op
-// re-instantiation from src to dst. Single source of truth for the marker set,
-// so copy sites (Util::copyPaddingAttributes, ComposeMemrefOpOnChannelOp,
-// SpecializeChannelBundlePattern) cannot diverge. Both ops must be live (call
-// before erasing src).
+// (attrs::RuntimeHoist, RefeedCount, PacketIDs, KeepPktHeader) that must
+// survive channel-op re-instantiation from src to dst. Single source of truth
+// for the marker set, so copy sites (Util::copyPaddingAttributes,
+// ComposeMemrefOpOnChannelOp, SpecializeChannelBundlePattern) cannot diverge.
+// Both ops must be live (call before erasing src).
 void copyChannelSteeringAttrs(Operation *src, Operation *dst);
 
 void registerAIRRtTranslations();
