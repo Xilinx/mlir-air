@@ -4,9 +4,15 @@ Run Qwen3-4B with greedy, thinking-disabled speculative decoding on AMD NPU2.
 The selected mapping uses cached normalized activations, parallel attention
 shards, native K layout, and reuse of the attention P/V operands.
 
-**Historical reference:** the selected implementation completed the fixed 80-prompt study at 40.045 decode tokens/s
-versus 19.310 tokens/s for its historical AIR B1 control (2.074×). Those numbers
-belong to the earlier toolchain; they are not measurements of this port.
+**Current local Full80 result:** 40.787 decode tokens/s versus 15.809 tokens/s
+for the freshly measured upstream B1 control (**2.580×**), on HX370/NPU2 with
+the October 16 upstream dependencies and this branch's compiler fixes. All 80
+DFlash output arrays and acceptance traces match the preserved selected B8 run.
+See [validation](docs/validation.md) for settings and scope.
+
+The historical pair was 40.045 / 19.310 tokens/s (2.074×). Keep these baselines
+separate: the larger current ratio primarily reflects the slower new B1
+control, rather than a new DFlash kernel optimization in this integration.
 
 ## Environment
 

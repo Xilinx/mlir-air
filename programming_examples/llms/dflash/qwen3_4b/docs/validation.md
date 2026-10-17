@@ -101,11 +101,38 @@ LLVM/MLIR `24.0.0.2026100106+bdf04ebb` dependencies. Local HX370/NPU2 checks:
 | Attention | 24 causal and 24 bidirectional full-output cases; repeats/isolation/visibility pass |
 | Context preparation | 40 input/row cases plus mixed positions and multi-chunk checks pass |
 | Profile LIT | PASS, 107.39 s including initialization; 18-token GPU prompt, cap256, NPU prefill, warm TTFT 4816.903 ms and decode 22.467 tokens/s |
+| Full80 LIT | PASS, 3216.51 s; 80 actual B1 requests and 80 DFlash requests, with all paired input identities checked |
+| Historical selected B8 comparison | All 80 output arrays and non-timing acceptance traces match, covering 7935 speculative rounds |
+| CI result collection | Actual XUnit/profile/Full80 outputs pass the workflow's collection and job-summary code; partial request logs are retained |
 
 The actual profile and verification tests ran with eight CPU threads. The
-Full80 paired study is recorded separately when complete; the short profile
-does not establish Full80 throughput. These are implementation-author checks,
-not an independent or GitHub Actions evaluation.
+Full80 study used the same setting and the frozen protocol described above.
+These are implementation-author checks, not an independent or GitHub Actions
+evaluation.
+
+| Dataset (16 requests each) | B1 tok/s | DFlash tok/s | Pooled speedup | Emitted/round |
+|---|---:|---:|---:|---:|
+| GSM8K | 15.866 | 46.191 | 2.911× | 4.815 |
+| MATH-500 | 15.757 | 51.058 | 3.240× | 5.588 |
+| HumanEval | 15.824 | 44.581 | 2.817× | 4.791 |
+| MBPP | 15.857 | 43.655 | 2.753× | 4.509 |
+| MT-Bench, first turn | 15.815 | 24.718 | 1.563× | 2.612 |
+| **Overall, 80 requests** | **15.809** | **40.787** | **2.580×** | **4.347** |
+
+DFlash emitted 34,493 timed tokens over 845.684 seconds; B1 emitted 35,376
+over 2237.772 seconds. Proposed-token acceptance is 48.062%. DFlash's alternate
+paper-era timer gives 41.026 tokens/s, and its equal-request average gives
+43.303 tokens/s; the table uses complete-loop pooled throughput for both engines.
+All recorded round positions, anchors, accepted prefixes and emitted-token
+counts pass an accounting audit. The historical-output comparison establishes
+preservation of the selected implementation on these 80 inputs; it is separate
+from the HF BF16 proxy. B1 GEMV and B8 matrix arithmetic do not require identical
+free-running output arrays (2 of 80 arrays match in this pair).
+
+The historical selected DFlash run was 40.045 tokens/s with the same acceptance
+traces; its B1 control was 19.310 tokens/s. The fresh B1 is slower, so the new
+2.580× ratio must not be interpreted as an additional kernel optimization gain.
+This compatibility study did not isolate the cause of the B1 performance gap.
 
 ### Preserved October 15 checkpoint
 

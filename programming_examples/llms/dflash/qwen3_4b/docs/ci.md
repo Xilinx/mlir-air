@@ -88,6 +88,10 @@ Full80's B1 uses the current upstream fused single-token GEMV decoder, with the
 same requantized target weights and saved inputs as DFlash. It is separate from
 the B8 row-zero sequential correctness oracle. The baseline is measured on the
 current runner; the historical 19.310 tokens/s is not inserted into new results.
+All compared decoders use KV capacity 4096, accommodating the frozen prompts
+plus up to 2048 output tokens. The B1 builder retains the existing Qwen3-4B
+per-kernel optimization settings: non-attention objects at `-O2`, inline
+attention at `-O1`.
 The primary decode timer includes initial and later NPU prepass. Prefill, setup,
 warmup and the prefilled first token are excluded. The paper-era timing variant
 is reported separately, not used as the default speedup denominator.
@@ -109,8 +113,17 @@ performance history.
 
 ## Runtime budget
 
-Historical HX370 process times were 31.3 minutes for B1 and 16.3 minutes for
-DFlash: about 47.6 minutes combined, excluding download, packing and compilation.
-Budget 50–60 minutes for a warm paired study and 90 minutes for its LIT timeout.
-The full nightly job limit increases from 480 to 540 minutes. These are planning
-estimates; the new toolchain and Krackan runner need their own measurements.
+The October 16 HX370 run measured 37.6 minutes for the B1 process and 14.7
+minutes for DFlash: **52.4 minutes combined**. Its actual Full80 LIT completed
+in **53.6 minutes**, including B1 compilation and cached resource/build checks.
+Target/drafter/prepass/prefill compilation was already cached for that run.
+Fresh compilation of those components took 6.5 minutes; fresh packing took
+52 seconds. Verify/profile LITs took 4.5/1.8 minutes, including initialization.
+
+Budget 50–60 minutes for the warm paired study, at least an additional seven
+minutes for a fully cold device build, and 90 minutes for the Full80 LIT timeout.
+Downloads are seeded separately. The full nightly job limit increases from
+480 to 540 minutes. These measurements are local; the nightly/Krackan runner
+needs its own execution. Local jobs used a 20 GiB memory cap: the largest
+observed verification/profile job peak was about 18.2 GiB, and Full80 about
+7.9 GiB. These are observed job peaks, not a total-system memory requirement.
