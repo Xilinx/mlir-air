@@ -13,13 +13,17 @@
 // loop is lowered to a circular BD chain, which needs no count.
 // The same holds for an index argument (@seg1); one that only gives an
 // offset is read as 0.
-// An index argument that only picks a loop's bound through a comparison
-// (@seg2) is read as 0 too: the bound is one of a few fixed counts.
+// An index argument that a loop's bound is selected by is read as poison too
+// (@seg3). One that only reaches a herd, whose loops are the cores' own, is
+// read as 0 (@seg2).
+// CHECK-LABEL: aie.device(xcve2802) @seg3
+// CHECK: %[[PS:.*]] = ub.poison : index
+// CHECK: %[[LT:.*]] = arith.cmpi slt, %[[PS]]
+// CHECK: %[[K:.*]] = arith.select %[[LT]]
+// CHECK: scf.for %{{.*}} = %{{.*}} to %[[K]] step
 // CHECK-LABEL: aie.device(xcve2802) @seg2
 // CHECK-NOT: ub.poison
-// CHECK: %[[C4:.*]] = arith.constant 4 : index
-// CHECK-NOT: ub.poison
-// CHECK: scf.for %{{.*}} = %{{.*}} to %[[C4]] step %{{.*}} {
+// CHECK: air.channel.get{{.*}}@w2[]
 // CHECK-LABEL: aie.device(xcve2802) @seg1
 // CHECK-DAG: %[[PI:.*]] = ub.poison : index
 // CHECK-DAG: %[[Z:.*]] = arith.constant 0 : index
@@ -108,37 +112,80 @@ func.func @runtime_repeat_index_loop(%n: index, %o: index) {
 
 air.channel @w2 [1, 1]
 air.channel @r2 [1, 1]
-func.func @selected_repeat_index_loop(%n: index) {
+func.func @herd_only_index_arg(%n: index) {
   %c1 = arith.constant 1 : index
   air.launch (%a, %b) in (%c=%c1, %d=%c1) args(%ln=%n) : index {
     air.segment @seg2 args(%sn=%ln) : index {
       %c1_0 = arith.constant 1 : index
       %c0 = arith.constant 0 : index
       %c4 = arith.constant 4 : index
+      %c8 = arith.constant 8 : index
       %c35 = arith.constant 35 : index
       %lt = arith.cmpi slt, %sn, %c35 : index
+      %arm = arith.index_cast %lt : i1 to index
+      %off = arith.muli %arm, %c8 : index
+      %t, %l2 = air.execute -> (memref<16xbf16, 1>) {
+        %alloc = memref.alloc() : memref<16xbf16, 1>
+        air.execute_terminator %alloc : memref<16xbf16, 1>
+      }
+      scf.for %i = %c0 to %c4 step %c1_0 {
+        air.channel.get @w2[] (%l2[%off] [%c8] [%c1_0]) : (memref<16xbf16, 1>)
+        air.channel.put @r2[] (%l2[%off] [%c8] [%c1_0]) : (memref<16xbf16, 1>)
+      }
+      %d_ = air.execute {memref.dealloc %l2 : memref<16xbf16, 1>}
+      air.herd @h2 tile (%tx0, %ty0) in (%sx0=%c1_0, %sy0=%c1_0) args(%ha=%arm) : index attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
+        %c0_h = arith.constant 0 : index
+        %c1_h = arith.constant 1 : index
+        %c3_h = arith.constant 3 : index
+        %tok0, %l1a = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        %hn = arith.addi %ha, %c3_h : index
+        scf.for %j = %c0_h to %hn step %c1_h {
+          air.channel.put @w2[] (%l1a[] [] []) : (memref<8xbf16, 2>)
+          air.channel.get @r2[] (%l1a[] [] []) : (memref<8xbf16, 2>)
+        }
+        %d0 = air.execute {memref.dealloc %l1a : memref<8xbf16, 2>}
+      }
+    }
+  }
+  return
+}
+
+air.channel @w3 [1, 1]
+air.channel @r3 [1, 1]
+func.func @selected_repeat_index_loop(%n: index) {
+  %c1 = arith.constant 1 : index
+  air.launch (%a, %b) in (%c=%c1, %d=%c1) args(%ln=%n) : index {
+    air.segment @seg3 args(%sn=%ln) : index {
+      %c1_0 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
       %c2 = arith.constant 2 : index
+      %c4 = arith.constant 4 : index
+      %c35 = arith.constant 35 : index
+      %lt = arith.cmpi slt, %sn, %c35 : index
       %k = arith.select %lt, %c4, %c2 : index
       %t, %l2 = air.execute -> (memref<8xbf16, 1>) {
         %alloc = memref.alloc() : memref<8xbf16, 1>
         air.execute_terminator %alloc : memref<8xbf16, 1>
       }
       scf.for %i = %c0 to %k step %c1_0 {
-        air.channel.get @w2[] (%l2[] [] []) : (memref<8xbf16, 1>)
-        air.channel.put @r2[] (%l2[] [] []) : (memref<8xbf16, 1>)
+        air.channel.get @w3[] (%l2[] [] []) : (memref<8xbf16, 1>)
+        air.channel.put @r3[] (%l2[] [] []) : (memref<8xbf16, 1>)
       }
       %d_ = air.execute {memref.dealloc %l2 : memref<8xbf16, 1>}
-      air.herd @h2 tile (%tx0, %ty0) in (%sx0=%c1_0, %sy0=%c1_0) attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
+      air.herd @h3 tile (%tx0, %ty0) in (%sx0=%c1_0, %sy0=%c1_0) attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
         %c0_h = arith.constant 0 : index
         %c1_h = arith.constant 1 : index
-        %hn = arith.constant 4 : index
+        %c4_h = arith.constant 4 : index
         %tok0, %l1a = air.execute -> (memref<8xbf16, 2>) {
           %aa = memref.alloc() : memref<8xbf16, 2>
           air.execute_terminator %aa : memref<8xbf16, 2>
         }
-        scf.for %j = %c0_h to %hn step %c1_h {
-          air.channel.put @w2[] (%l1a[] [] []) : (memref<8xbf16, 2>)
-          air.channel.get @r2[] (%l1a[] [] []) : (memref<8xbf16, 2>)
+        scf.for %j = %c0_h to %c4_h step %c1_h {
+          air.channel.put @w3[] (%l1a[] [] []) : (memref<8xbf16, 2>)
+          air.channel.get @r3[] (%l1a[] [] []) : (memref<8xbf16, 2>)
         }
         %d0 = air.execute {memref.dealloc %l1a : memref<8xbf16, 2>}
       }
