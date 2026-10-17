@@ -1059,10 +1059,11 @@ RT_WINDOW = int(_os.environ.get("DECODE_RT_WINDOW", "0"))
 RB_SWA_SKIP = int(_os.environ.get("DECODE_RB_SWA_SKIP", "0"))
 if RT_WINDOW and not RT_ROUNDS:
     raise SystemExit("DECODE_RT_WINDOW needs DECODE_RT_ROUNDS")
-if ELF and (RT_ROUNDS or RB_SWA_SKIP):
+if ELF and (RT_ROUNDS or RB_SWA_SKIP or RB_ROUNDS != ATTN_ROUNDS):
     raise SystemExit(
-        "DECODE_RT_ROUNDS / DECODE_RB_SWA_SKIP need the host to patch the KV "
-        "readback per token, which an ELF's embedded stream does not allow"
+        "DECODE_RT_ROUNDS / DECODE_RB_SWA_SKIP / DECODE_RB_ROUNDS need the host "
+        "to patch the KV readback per token, which an ELF's embedded stream does "
+        "not allow"
     )
 # Attention takes KV blocks two at a time into two L1 buffers, so the DMA fills
 # one while the kernel reads the other. Each wave's block range is widened to an
