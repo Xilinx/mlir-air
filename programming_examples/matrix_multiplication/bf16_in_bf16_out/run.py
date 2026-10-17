@@ -103,7 +103,13 @@ def build_module(
     epilogue_swiglu=False,
     b_panel_layout=False,
     herd_swap=False,
+    a_stationary=False,
 ):
+    # a_stationary: keep the activation tile stationary in L2 (external drain path).
+    # M stays a launch dimension; each launch fills A once (tile_m x K per herd row,
+    # whole K) and loops over the N blocks inside the segment, streaming only B (still
+    # in tile_k_l2 chunks). A is then read from DRAM once per M block instead of once
+    # per (M, N) tile. Needs the A block (tile_m x K per herd row) to fit a memtile.
     # herd_swap: M on the herd's rows, N on its columns (herd extents [herd_n, herd_m]);
     # each herd body swaps the ids back.
     # epilogue_swiglu: each tile_n block of B holds tile_n/2 gate columns then the
@@ -124,6 +130,9 @@ def build_module(
         k,
         tile_k_l2,
     )
+    assert not (a_stationary and b_stationary), "a_stationary xor b_stationary"
+    # K extent of the L2 A buffer: the whole K when A is resident, else one chunk.
+    a_k_l2 = k if a_stationary else tile_k_l2
     # b_panel_layout: B arrives pre-packed (pack_b_panel_layout), one contiguous run per
     # (K-chunk, N-launch-block) panel, so each L3->L2 fill is a single burst.
     assert not b_panel_layout or n % (tile_n * herd_n) == 0, (n, tile_n, herd_n)
@@ -421,7 +430,7 @@ def build_module(
 
         launch_size = [
             1 if b_stationary else m // tile_m // herd_m,
-            n // tile_n // herd_n,
+            1 if a_stationary else n // tile_n // herd_n,
         ]
 
         @launch(operands=[arg0, arg1, arg2], sizes=launch_size)
@@ -446,7 +455,7 @@ def build_module(
                 l3_c_data_s,
             ):
                 # L2 MemRefTypes
-                a_size_l2 = [herd_m, 1, tile_m, tile_k_l2]
+                a_size_l2 = [herd_m, 1, tile_m, a_k_l2]
                 b_size_l2 = [1, herd_n, tile_k_l2_pad, tile_n]
                 c_size_l2 = [herd_m, herd_n, tile_m, tile_n_c]
                 l2_mem_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L2)
@@ -546,6 +555,20 @@ def build_module(
                     _m_loop = range_(0, m // tile_m // herd_m)
                     launch_ivx_s = next(_m_loop)
                     launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
+                elif a_stationary:
+                    launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
+                    # A tile: filled once per launch (whole K), stays resident in L2
+                    # for the whole N loop.
+                    dma_memcpy_nd(
+                        l2_a_data,
+                        l3_a_data_s,
+                        src_offsets=[0, 0, launch_offset_x, 0],
+                        src_sizes=[herd_m, 1, tile_m, k],
+                        src_strides=[k * tile_m, k, k, 1],
+                    )
+                    _n_loop = range_(0, n // tile_n // herd_n)
+                    launch_ivy_s = next(_n_loop)
+                    launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
                 else:
                     launch_offset_x = affine_apply(launch_ix_map, [launch_ivx_s])
                     launch_offset_y = affine_apply(launch_iy_map, [launch_ivy_s])
@@ -650,13 +673,14 @@ def build_module(
                         )
                     else:
                         reduction_offset_b = reduction_offset
-                    dma_memcpy_nd(
-                        l2_a_data,
-                        l3_a_data_s,
-                        src_offsets=[0, 0, launch_offset_x, reduction_offset],
-                        src_sizes=[herd_m, 1, tile_m, tile_k_l2],
-                        src_strides=[k * tile_m, tile_k_l2, k, 1],
-                    )
+                    if not a_stationary:
+                        dma_memcpy_nd(
+                            l2_a_data,
+                            l3_a_data_s,
+                            src_offsets=[0, 0, launch_offset_x, reduction_offset],
+                            src_sizes=[herd_m, 1, tile_m, tile_k_l2],
+                            src_strides=[k * tile_m, tile_k_l2, k, 1],
+                        )
                     if not b_stationary:
                         if b_panel_layout:
                             # panel = K-chunk * n_nblocks_panel + N-launch-block, as packed.
@@ -701,14 +725,16 @@ def build_module(
                         name="herd_0",
                         sizes=[herd_n, herd_m] if herd_swap else [herd_m, herd_n],
                         operands=(
-                            [l1_c_data, l2_a_data, l2_b_data, l1_bias_data]
-                            if b_pad_rows
-                            else [l1_c_data, l2_a_data, l2_b_data]
+                            [l1_c_data, l2_a_data, l2_b_data]
+                            + ([l1_bias_data] if b_pad_rows else [])
+                            + ([reduction_offset] if a_stationary else [])
                         ),
                         link_with=link_with_name if emit_external_call else None,
                     )
                     def herd_body(*herd_args):
                         _tx, _ty, _sx, _sy, _l1_c, _l2_a, _l2_b = herd_args[:7]
+                        # Resident A holds the whole K: the K-chunk offset selects it.
+                        _a_k_off = herd_args[-1] if a_stationary else None
                         if herd_swap:
                             _tx, _ty = _ty, _tx
                         # L1 A/B allocated inside compute herd: unambiguous per-PE buffers
@@ -729,7 +755,24 @@ def build_module(
                             reduction_l1_offset = affine_apply(reduction_l1_iv_map, [j])
                             # A is unpadded, so it advances by the true extent
                             # while B advances by the padded one.
-                            if b_pad_rows:
+                            if _a_k_off is not None:
+                                reduction_l1_offset_a = affine_apply(
+                                    AffineMap.get(
+                                        0,
+                                        2,
+                                        [
+                                            AffineExpr.get_add(
+                                                AffineSymbolExpr.get(0),
+                                                AffineExpr.get_mul(
+                                                    AffineSymbolExpr.get(1),
+                                                    AffineConstantExpr.get(tile_k_l1),
+                                                ),
+                                            )
+                                        ],
+                                    ),
+                                    [_a_k_off, j],
+                                )
+                            elif b_pad_rows:
                                 reduction_l1_offset_a = affine_apply(
                                     AffineMap.get(
                                         0,
@@ -758,11 +801,11 @@ def build_module(
                                     mmul_mkn[1],
                                 ],
                                 src_strides=[
-                                    tile_m * tile_k_l2,
-                                    tile_m * tile_k_l2,
+                                    tile_m * a_k_l2,
+                                    tile_m * a_k_l2,
                                     mmul_mkn[1],
-                                    tile_k_l2 * mmul_mkn[0],
-                                    tile_k_l2,
+                                    a_k_l2 * mmul_mkn[0],
+                                    a_k_l2,
                                     1,
                                 ],
                             )
@@ -968,6 +1011,9 @@ def build_module(
                 if b_stationary:
                     yield_([])
                     next(_m_loop, None)
+                if a_stationary:
+                    yield_([])
+                    next(_n_loop, None)
 
                 DeallocOp(l2_a_data)
                 DeallocOp(l2_b_data)
@@ -1556,6 +1602,13 @@ if __name__ == "__main__":
         "(--tile-k-l2 == --k), N stays a launch dim, M loops inside the segment.",
     )
     parser.add_argument(
+        "--a-stationary",
+        action="store_true",
+        dest="a_stationary",
+        help="(method=drain) keep the activation tile stationary in L2: A filled once "
+        "per M launch (whole K), N loops inside the segment, B streams in K chunks.",
+    )
+    parser.add_argument(
         "--b-panel-layout",
         action="store_true",
         dest="b_panel_layout",
@@ -1608,6 +1661,11 @@ if __name__ == "__main__":
 
     if args.b_stationary and (args.high_precision != "true" or method != "drain"):
         parser.error("--b-stationary needs --high-precision true --method drain")
+
+    if args.a_stationary and (args.high_precision != "true" or method != "drain"):
+        parser.error("--a-stationary needs --high-precision true --method drain")
+    if args.a_stationary and args.b_stationary:
+        parser.error("--a-stationary and --b-stationary are exclusive")
 
     if args.b_panel_layout and (args.high_precision != "true" or method != "drain"):
         parser.error("--b-panel-layout needs --high-precision true --method drain")
@@ -1674,6 +1732,7 @@ if __name__ == "__main__":
             b_stationary=args.b_stationary,
             b_panel_layout=args.b_panel_layout,
             herd_swap=args.herd_swap,
+            a_stationary=args.a_stationary,
         )
         instance, n_inputs = "matmul_bf16", 2
 

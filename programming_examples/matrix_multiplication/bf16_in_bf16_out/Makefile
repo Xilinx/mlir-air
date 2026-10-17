@@ -27,6 +27,7 @@ METHOD ?= auto
 B_PAD_ROWS ?= 0
 EPILOGUE_GELU ?= false
 B_STATIONARY ?= false
+A_STATIONARY ?= false
 B_PANEL_LAYOUT ?= false
 HERD_SWAP ?= false
 AIE_TARGET ?= aie2p
@@ -71,6 +72,7 @@ run: compile-kernel
 		--herd-m $(HERD_M) --herd-n $(HERD_N) --compile-mode $(COMPILE_MODE) --perf-iters $(PERF_ITERS) \
 		--b-pad-rows $(B_PAD_ROWS) $(if $(filter true,$(EPILOGUE_GELU)),--epilogue-gelu) \
 		$(if $(filter true,$(B_STATIONARY)),--b-stationary) \
+		$(if $(filter true,$(A_STATIONARY)),--a-stationary) \
 		$(if $(filter true,$(B_PANEL_LAYOUT)),--b-panel-layout) \
 		$(if $(filter true,$(HERD_SWAP)),--herd-swap)
 

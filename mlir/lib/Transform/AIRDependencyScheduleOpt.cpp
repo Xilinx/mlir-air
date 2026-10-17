@@ -2739,6 +2739,8 @@ struct CanonicalizeArithIndexCastOpOnLoopInductionVar
 private:
 };
 
+static bool isFilledOncePerLaunchIteration(scf::ForOp for_op);
+
 struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
@@ -2851,6 +2853,36 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     auto isNonConst = [](Value v) { return !getConstantIntValue(v); };
     if (llvm::any_of(wraps, isNonConst) || llvm::any_of(strides, isNonConst))
       return failure();
+
+    // With skipZeroStride a loop whose induction variable reaches no offset is
+    // folded as a dropped stride-0 dimension: one send per fill. A buffer
+    // filled once per launch iteration and re-sent every trip (an A- or
+    // B-stationary GEMM tile) needs every send, so leave the loop to
+    // AIRUnrollScfForIntoBDChain, which counts them in the memtile lock.
+    if (skipZeroStride && isa<air::ChannelPutOp>(channel_op)) {
+      Value iv = for_op.getInductionVar();
+      auto reachesIV = [&](Value v) {
+        SmallVector<Value> worklist{v};
+        llvm::SmallPtrSet<Value, 8> seen;
+        while (!worklist.empty()) {
+          Value cur = worklist.pop_back_val();
+          if (!seen.insert(cur).second)
+            continue;
+          if (cur == iv)
+            return true;
+          Operation *def = cur.getDefiningOp();
+          if (auto exec = dyn_cast_if_present<air::ExecuteOp>(def))
+            for (Operation &child : exec.getChildOps())
+              llvm::append_range(worklist, child.getOperands());
+          else if (def)
+            llvm::append_range(worklist, def->getOperands());
+        }
+        return false;
+      };
+      if (llvm::none_of(offsets, reachesIV) &&
+          isFilledOncePerLaunchIteration(for_op))
+        return failure();
+    }
 
     OpBuilder b(channel_op);
     auto memrefTy =
