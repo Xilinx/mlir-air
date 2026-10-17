@@ -186,15 +186,11 @@ preflight-llvm-link: preflight-peano
 ## instruction stream to patch -- and so no template pair, no L-slope
 ## calibration, and no staircase windows.
 ##
-## RB and MEM stay OFF deliberately. They make the KV readback's BD *length* and
-## the memtile dequeue count runtime values, and `aie.dma_bd` has
-## `offset_parameter` but no `len_parameter` -- a runtime length has no
-## scratchpad form. That costs nothing: the shipping xclbin already streams the
-## full ATTN_MAXL on readback regardless of L. TRIP stays off for the same
-## reason a static TXN cannot hold a runtime loop bound; the cores keep the
-## compile-time block count and skip masked blocks, exactly as today.
+## With DECODE_RT_ROUNDS the KV readback's block count is a scratchpad length
+## parameter too, so the shim reads only the blocks the context uses. The
+## memtile ring and the cores' loop keep their compile-time bounds.
 DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
-DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD) ELF_RT_READBACK=1
 
 ## Idempotent like the xclbin target: skip when all three artifacts are present
 ## AND were built with the current flags. The stamp is keyed on LBUILD too,
@@ -218,9 +214,9 @@ _compile_decode_elf_build: preflight-llvm-link
 	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
-	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
+	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L and KV block count via scratchpad)"
 	@cd $(srcdir) && rm -f decode.elf params.txt; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
-	  DECODE_DYNSEQ=1 \
+	  DECODE_DYNSEQ=1 DECODE_RT_ROUNDS=1 \
 	  $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_elf_L$(LBUILD).log 2>&1; rc=$$?; \
 	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
 	    mv -f decode.elf decode_scratchpad.elf; cp -f params.txt decode_scratchpad.params.txt; \
