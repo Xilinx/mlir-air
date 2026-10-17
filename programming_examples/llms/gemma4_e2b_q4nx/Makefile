@@ -137,7 +137,7 @@ MODEL_CHOICE   ?= instruct
 MAX_PROMPTS    ?= 2
 
 .DEFAULT_GOAL := help
-.PHONY: help compile compile-decode compile-decode-full \
+.PHONY: help compile compile-decode compile-decode-full compile-decode-elf \
         _compile_decode_build compile-prefill prefill run ask profile \
         profile-prefill verify verify-paris verify-topk verify-full \
         diagnosis layer-gate layer-gate-shared check gen paris sublayer-ref clean
@@ -151,6 +151,7 @@ help:
 	@echo "  make compile            Build everything the device path needs (prefill + decode)"
 	@echo "  make compile-decode     Build the LAYER GATE's decode template (1 layer, weight-free)"
 	@echo "  make compile-decode-full Build the TOKEN DRIVER's template (35 layers, weight-free)"
+	@echo "  make compile-decode-elf  The token driver's decode as one full ELF (DECODE_ELF=1)"
 	@echo "  make compile-prefill    Build the prefill ELFs (weight-free)"
 	@echo "  make run                Generate on NPU; gate the Paris continuation + stop"
 	@echo "  make ask PROMPT=...     One Q&A turn ($(N_TOKENS) tokens)"
@@ -208,6 +209,15 @@ compile-prefill:
 compile-decode-full:
 	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile _compile_decode_build \
 	  LBUILD=$(RUN_LBUILD) PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
+
+## The token driver's decode as one full ELF serving every L up to RUN_LBUILD,
+## selected at run time with DECODE_ELF=1.
+compile-decode-elf:
+	@test -n "$(SWEEP_KV_SRC)" || { echo "cannot derive the KV sharing map from gemma4_e2b_q4nx_weights.kv_source_layer -- refusing to build an identity-mapped decode" >&2; exit 1; }
+	@$(MAKE) --no-print-directory -C $(DEC) compile-decode-elf LBUILD=$(RUN_LBUILD) \
+	  UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
+	@mv -f $(DEC)/decode_scratchpad.elf $(DEC)/decode_scratchpad.params.txt \
+	  $(DEC)/decode_scratchpad.maxl $(srcdir)/
 
 ## Prefill ELFs + decode templates, the same meaning `compile` has in the other
 ## q4nx examples. Both decode templates: the layer gate's and the token driver's.
@@ -461,6 +471,6 @@ sublayer-ref:
 clean:
 	@$(MAKE) --no-print-directory -C $(DEC) clean
 	rm -rf $(srcdir)/__pycache__ $(srcdir)/build_peano $(srcdir)/build_chess 2>/dev/null || true
-	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin $(srcdir)/decode_L*.rt_rounds $(srcdir)/decode_L*.rt_window $(srcdir)/decode_L*.rt_pair 2>/dev/null || true
+	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin $(srcdir)/decode_L*.rt_rounds $(srcdir)/decode_L*.rt_window $(srcdir)/decode_L*.rt_pair $(srcdir)/decode_scratchpad.* 2>/dev/null || true
 	rm -rf $(srcdir)/_q4nx_cache_seq* $(CURDIR)/_q4nx_cache_seq* $(srcdir)/build_peano $(FUSED_DIR) 2>/dev/null || true
 	@echo "Gemma4 caches and the PLE decode build removed."

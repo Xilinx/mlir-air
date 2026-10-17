@@ -91,6 +91,15 @@ _WCACHE_DIR = Path(
 VOCAB_CHUNK_I2 = "27"
 
 
+def _elf_on():
+    """DECODE_ELF=1 selects the full-ELF decode (`make compile-decode-elf`).
+
+    Opt-in: the ELF reads back the whole KV cache every token, where the xclbin
+    templates read back only the context and the sliding window.
+    """
+    return os.environ.get("DECODE_ELF") == "1"
+
+
 def _fused_build():
     """$FUSED_PREFILL_DIR (the Makefile sets it) if it holds a fused prefill
     build, else None: the per-op prefill."""
@@ -179,13 +188,24 @@ class FusedDecoder:
         self.np, self.bf16, self.xrt, self.gw = np, bfloat16, xrt, gw
 
         sys.path.insert(0, str(_FD))
-        from decode_insts_gen import DecodeInstsGen
-        import decode_staircase as stair
+        self.elf_mode = _elf_on()
+        if self.elf_mode:
+            # ATTN_MAXL comes from the build, not the driver.
+            stamp = _DECODE_DIR / "decode_scratchpad.maxl"
+            if not stamp.exists():
+                raise RuntimeError(
+                    f"DECODE_ELF=1 needs decode_scratchpad.maxl in {_DECODE_DIR}; "
+                    "run `make compile-decode-elf`"
+                )
+            self.ATTN_MAXL = int(stamp.read_text().split()[0])
+        else:
+            from decode_insts_gen import DecodeInstsGen
+            import decode_staircase as stair
 
-        self._stair = stair
-        self.gen = DecodeInstsGen(str(_DECODE_DIR), max_L)
-        self.windows = stair.resolve_windows(self.gen)
-        self.ATTN_MAXL = max(self.windows)
+            self._stair = stair
+            self.gen = DecodeInstsGen(str(_DECODE_DIR), max_L)
+            self.windows = stair.resolve_windows(self.gen)
+            self.ATTN_MAXL = max(self.windows)
         self.maxL = min(int(max_L), self.ATTN_MAXL) if max_L else self.ATTN_MAXL
 
         # Every model layer is a device slab, in order. A KV-shared layer (>=15)
@@ -251,28 +271,56 @@ class FusedDecoder:
         )
         self.ple = z["PLE"].view(bfloat16).copy().reshape(self.UNI, self.PLE_LAYER)
 
+        kind = "ELF" if self.elf_mode else "xclbin"
         print(
-            f"[decode] gemma4-e2b ONE xclbin: ATTN_MAXL={self.ATTN_MAXL}, serves "
+            f"[decode] gemma4-e2b ONE {kind}: ATTN_MAXL={self.ATTN_MAXL}, serves "
             f"L in [1,{self.maxL}]; {self.UNI} layers + PLE + lm-head/dispatch",
             flush=True,
         )
 
         self.dev = xrt.device(0)
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
-        self._kern = stair.open_windows(self.dev, xrt, self.gen, self.windows)
-        self.kern = self._kern[self.ATTN_MAXL][1]
-        g = self.kern.group_id
-        HO = xrt.bo.host_only
-        self.x_bo = xrt.bo(self.dev, self.K * 2, HO, g(3))
-        self.w_bo = xrt.bo(self.dev, self.n_w * 2, HO, g(4))
-        self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
-        self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
-        self.kvc = xrt.bo(self.dev, self.UNI * self.KV_LAYER * 2, HO, g(7))
-        self.pw_bo = xrt.bo(self.dev, self.UNI * self.PLE_LAYER * 2, HO, g(8))
-        self.px_bo = xrt.bo(self.dev, self.K * 2, HO, g(9))
-        self._ist = stair.make_insts_states(self.gen, xrt, self.dev, g(1), self.windows)
-        self._st = self._ist[self.ATTN_MAXL]
-        self.ib = self._st["ib"]
+        sizes = (
+            self.K,
+            self.n_w,
+            self._RMS_SIZE,
+            self.ny,
+            self.UNI * self.KV_LAYER,
+            self.UNI * self.PLE_LAYER,
+            self.K,
+        )
+        if self.elf_mode:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "decode_elf", str(_FD / "decode_elf.py")
+            )
+            de = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(de)
+            self._elfdec = de.ElfDecode(_DECODE_DIR, self.dev, xrt, self.REGION_W)
+            # An ELF kernel has no instruction argument to group BOs against.
+            bos = [xrt.ext.bo(self.dev, n * 2) for n in sizes]
+            self._elfdec.bind(bos)
+        else:
+            self._kern = stair.open_windows(self.dev, xrt, self.gen, self.windows)
+            self.kern = self._kern[self.ATTN_MAXL][1]
+            g = self.kern.group_id
+            HO = xrt.bo.host_only
+            bos = [xrt.bo(self.dev, n * 2, HO, g(3 + i)) for i, n in enumerate(sizes)]
+            self._ist = stair.make_insts_states(
+                self.gen, xrt, self.dev, g(1), self.windows
+            )
+            self._st = self._ist[self.ATTN_MAXL]
+            self.ib = self._st["ib"]
+        (
+            self.x_bo,
+            self.w_bo,
+            self.r_bo,
+            self.y_bo,
+            self.kvc,
+            self.pw_bo,
+            self.px_bo,
+        ) = bos
 
         self.w_bo.write(W if W.dtype == np.int16 else W.view(np.int16), 0)
         self.w_bo.sync(TO)
@@ -415,7 +463,8 @@ class FusedDecoder:
         L = p + 1
         if not (1 <= L <= self.maxL):
             raise ValueError(f"position {p} is outside [0,{self.maxL - 1}]")
-        insts_size = self._stair.patch_insts(self._st, L, xrt, TO)
+        if not self.elf_mode:
+            insts_size = self._stair.patch_insts(self._st, L, xrt, TO)
 
         # NO embed re-scale: the q4nx bundle's embed_tokens is already multiplied
         # by sqrt(hidden_size), so EMBED_SCALE is 1.
@@ -435,18 +484,22 @@ class FusedDecoder:
             self._patch(self.pw_bo, emb[i], i * self.PLE_LAYER + self.PLE_EMB_OFF)
         self._patch(self.r_bo, self._rope_slab(p), self._rope_base)
 
-        # The run's arguments are bound once; they change only with the window.
-        key = (id(self.kern), id(self.ib), insts_size)
-        if getattr(self, "_run_key", None) != key:
-            self._run = xrt.run(self.kern)
-            for i, a in enumerate(
-                (3, self.ib, insts_size, self.x_bo, self.w_bo, self.r_bo)
-                + (self.y_bo, self.kvc, self.pw_bo, self.px_bo)
-            ):
-                self._run.set_arg(i, a)
-            self._run_key = key
-        self._run.start()
-        st = self._run.wait(60000)
+        if self.elf_mode:
+            # L goes to the scratchpad; the buffers were bound once.
+            st = self._elfdec.dispatch(L, np)
+        else:
+            # The run's arguments are bound once; they change only with the window.
+            key = (id(self.kern), id(self.ib), insts_size)
+            if getattr(self, "_run_key", None) != key:
+                self._run = xrt.run(self.kern)
+                for i, a in enumerate(
+                    (3, self.ib, insts_size, self.x_bo, self.w_bo, self.r_bo)
+                    + (self.y_bo, self.kvc, self.pw_bo, self.px_bo)
+                ):
+                    self._run.set_arg(i, a)
+                self._run_key = key
+            self._run.start()
+            st = self._run.wait(60000)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")
         _voc_n = self.UNI_LM * self.VP
@@ -474,6 +527,7 @@ class FusedDecoder:
     # the device.
     _XRT_RELEASE_ORDER = (
         "_run",
+        "_elfdec",
         "ib",
         "_st",
         "_ist",

@@ -1036,6 +1036,16 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # position the cores are about to read. Named separately only because each one
 # reads better at its use.
 DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
+# DECODE_OUTPUT_FORMAT=elf: one full ELF for every L. Its instruction stream is
+# static, so L reaches the device only as scratchpad values (mask threshold and
+# KV append); the readback, memtile and core block counts stay at ATTN_MAXL.
+ELF = _os.environ.get("DECODE_OUTPUT_FORMAT", "xclbin") == "elf"
+if ELF:
+    if not DYNSEQ:
+        raise SystemExit("DECODE_OUTPUT_FORMAT=elf needs DECODE_DYNSEQ=1")
+    DYNSEQ_RB = DYNSEQ_MEM = False
+# The cores' block count follows L only on the xclbin path.
+DYNSEQ_TRIP = DYNSEQ_RTP and not ELF
 # DECODE_RT_ROUNDS=1: the attention cores run ceil(L/16) KV blocks, L from their
 # RTP word, instead of all of ATTN_MAXL. The memtile KV ring is count-free and
 # keeps its compile-time bound. Only valid with the host patching the shim
@@ -1050,10 +1060,19 @@ RT_WINDOW = int(_os.environ.get("DECODE_RT_WINDOW", "0"))
 RB_SWA_SKIP = int(_os.environ.get("DECODE_RB_SWA_SKIP", "0"))
 if RT_WINDOW and not RT_ROUNDS:
     raise SystemExit("DECODE_RT_WINDOW needs DECODE_RT_ROUNDS")
+if ELF and (RT_ROUNDS or RB_SWA_SKIP or RB_ROUNDS != ATTN_ROUNDS):
+    raise SystemExit(
+        "DECODE_RT_ROUNDS / DECODE_RB_SWA_SKIP / DECODE_RB_ROUNDS need the host "
+        "to patch the KV readback per token, which an ELF's embedded stream does "
+        "not allow"
+    )
 # Attention takes KV blocks two at a time into two L1 buffers, so the DMA fills
 # one while the kernel reads the other. Each wave's block range is widened to an
 # even count; the extra block lies outside [lo, L) and the kernels skip it.
-KV_PAIRS = bool(MODEL.get("KV_BLOCK_PAIRS")) and ATTN_ROUNDS % 2 == 0 and not DYNSEQ
+# Not with a runtime block count.
+KV_PAIRS = (
+    bool(MODEL.get("KV_BLOCK_PAIRS")) and ATTN_ROUNDS % 2 == 0 and (ELF or not DYNSEQ)
+)
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
@@ -2849,7 +2868,20 @@ def build_module():
 
                 # An operand whenever it varies: per dispatch under DYNSEQ, per
                 # wave under a sliding window.
-                L_attn = _attn_L() if (DYNSEQ or _WINDOWED) else None
+                # On the ELF path L is one scratchpad value per dispatch, so the
+                # per-wave window is a separate herd operand, ORed into L on the core.
+                W_attn = None
+                if ELF and _WINDOWED:
+                    L_attn = L_rt
+                    _c32 = lambda v: arith.ConstantOp(
+                        IntegerAttr.get(i32, v), None
+                    ).result
+                    W_attn = _swa_sel(
+                        lambda: _c32((MODEL["SLIDING_WINDOW"] // 16) << 20),
+                        lambda: _c32(0),
+                    )
+                else:
+                    L_attn = _attn_L() if (DYNSEQ or _WINDOWED) else None
 
                 # Per-layer offset helpers. a_iv is None (single-layer): plain Python
                 # ints, byte-identical to the original single-layer feeds. a_iv is a
@@ -4049,6 +4081,7 @@ def build_module():
                 _seg_opers = (
                     ([a_iv] if a_iv is not None else [])
                     + ([_seg_arm_rt] if _seg_arm_rt is not None else [])
+                    + ([W_attn] if W_attn is not None else [])
                     + ([L_attn] if L_attn is not None else [])
                 )
 
@@ -4061,6 +4094,7 @@ def build_module():
                     # The attention herd's L word (window packed above L), and
                     # the runtime L itself where there is one.
                     _seg_Lw = _sa[-1] if L_attn is not None else None
+                    _seg_win = _sa[-2] if W_attn is not None else None
                     _seg_L = _seg_Lw if DYNSEQ else None
 
                     def _seg_rounds():
@@ -5271,9 +5305,10 @@ def build_module():
                                     folding and survives to core codegen as a real runtime
                                     trip count -- the same count the shim's readback BD
                                     pushes, which is what keeps the core off a channel get
-                                    that never arrives.
+                                    that never arrives. Without DYNSEQ_TRIP it is
+                                    ATTN_ROUNDS and the far blocks are masked.
                                     """
-                                    if not (DYNSEQ_RTP or RT_ROUNDS):
+                                    if not (DYNSEQ_TRIP or RT_ROUNDS):
                                         return idx(ATTN_ROUNDS)
                                     _s = arith.addi(
                                         _rtp_l(Lh),
@@ -5708,16 +5743,28 @@ def build_module():
                                 _attn_col(ty_arg, shs, Lh, 1, _arm)  # second attn col
                                 yield_([])
 
+                        # The window operand (ELF path only), always last.
+                        _win_ops = [_seg_win] if _seg_win is not None else []
+
+                        def _with_window(Lh, _a):
+                            """L with this wave's window word ORed above it."""
+                            if _seg_win is None:
+                                return Lh
+                            return arith.ori(Lh, _a[-1])
+
                         if _seg_arm_i is not None:
 
                             @herd(
                                 name="attn_blk",
                                 sizes=ATTN_HERD_SIZES,
-                                operands=[t.result for t in _sh] + [_Lc, _core_arm],
+                                operands=[t.result for t in _sh]
+                                + [_Lc, _core_arm]
+                                + _win_ops,
                             )
                             def attn_blk(_tx, _ty, _sx, _sy, *_a):
                                 shs = list(_a[:N_ATTN_CU])
                                 Lh, _arm = _a[N_ATTN_CU], _a[N_ATTN_CU + 1]
+                                Lh = _with_window(Lh, _a)
 
                                 def _voc():
                                     yield_([])
@@ -5755,10 +5802,15 @@ def build_module():
                             @herd(
                                 name="attn_blk",
                                 sizes=ATTN_HERD_SIZES,
-                                operands=[t.result for t in _sh] + [_Lc],
+                                operands=[t.result for t in _sh] + [_Lc] + _win_ops,
                             )
                             def attn_blk(_tx, _ty, _sx, _sy, *_a):
-                                _attn_dec(_tx, _ty, list(_a[:N_ATTN_CU]), _a[N_ATTN_CU])
+                                _attn_dec(
+                                    _tx,
+                                    _ty,
+                                    list(_a[:N_ATTN_CU]),
+                                    _with_window(_a[N_ATTN_CU], _a),
+                                )
 
                         attn_blk.attributes["x_loc"] = IntegerAttr.get(
                             T.i64(), ATTN_CU_LOC[0][0]
@@ -7787,26 +7839,44 @@ def run():
         print(str(module))
         return 0
 
+    # XRT finds an ELF kernel as main:<instance_name>, which must be the outer
+    # runtime sequence: the inner one has no device configuration and hangs.
+    instance_name = ""
+    if ELF:
+        import re as _re
+
+        _fns = _re.findall(r"func\.func @(\w+)\(", str(module))
+        if len(_fns) != 1:
+            raise SystemExit(
+                f"expected exactly one func.func for the ELF entry point, found {_fns}"
+            )
+        instance_name = _fns[0]
+
     # use_lock_race_condition_fix_v2: emit the reference-style daisy-chained locks for the
     # shared-L2 fan-in (group/main asymmetric gather) -- matches the reproducer's
     # serialized 4-writer chain (mem_0_1 lock_0_1->_159->...->_162). Without it AIR
     # emits a counting lock whose writer/reader counts mismatch -> deadlock.
     backend = XRTBackend(
         omit_while_true_loop=False,
-        output_format="xclbin",
+        output_format="elf" if ELF else "xclbin",
         kernel_name="MLIR_AIE",
+        instance_name=instance_name,
         stack_size=STACK_SIZE,
         use_lock_race_condition_fix_v2=True,
         coalesce_shim_dma=bool(COALESCE),
         # DYNSEQ: the runtime sequence now holds a scalar, so the stream is built
         # per dispatch from the emitted header instead of read from insts.bin.
-        emit_txn_cpp=bool(DYNSEQ),
+        # An ELF carries its own stream.
+        emit_txn_cpp=bool(DYNSEQ) and not ELF,
     )
     print(
         f"[q4nx_decode] proj: M={M} K={K} {NCX}x{NCY}=16 cores, "
         f"8 cascade pairs, NPH={NPH} dests={DEMUX}"
     )
     art = backend.compile(module, output_binary_name="decode", insts="decode.insts.bin")
+    if ELF:
+        print(f"[q4nx_decode] emitted {art.output_binary} (kernel {art.kernel!r})")
+        return 0
     # Tells the host to pad each wave's readback to an even block count.
     if KV_PAIRS:
         with open("decode.rt_pair", "w") as f:
