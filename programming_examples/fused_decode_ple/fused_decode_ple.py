@@ -308,6 +308,7 @@ _MODELS = {
         KV_PER_CU=1,  # the one real kv head, replicated to each of the 2 CUs
         KV_REPLICATED=True,  # so read the copy back once and fan it to both
         KV_BLOCK_PAIRS=True,  # attention takes KV blocks two at a time
+        KV_PARTS=2,  # and splits the context across two sets of CUs
         N_ATTN_CU=2,
         NPH=4,
         I2P=[12, 3, 48, 3],
@@ -1318,6 +1319,37 @@ KV_REPLICATED = MODEL.get("KV_REPLICATED", False)
 KV_COPIES = len(ATTN_COL_GROUPS[0][1]) if KV_REPLICATED else 1
 REGION_W = len(ATTN_COL_GROUPS[0][1]) * KVPC_DH // KV_COPIES
 REGION_STRIDE = ATTN_MAXL * REGION_W  # per-group region span (one K or V region)
+# Split the context across KV_PARTS sets of CUs: part p takes the p-th equal
+# slice of the block range, on its own readback streams and its own CUs, and
+# each head group's parts are merged on a core of its own afterwards. Long
+# contexts are bound by the KV readback streams, and each part adds its own.
+# Block ranges round to KV_PARTS pairs so every slice is whole pairs.
+KV_PARTS = int(_os.environ.get("DECODE_KV_PARTS", MODEL.get("KV_PARTS", 1)))
+if ATTN_ROUNDS % (2 * KV_PARTS) or DYNSEQ:
+    # Too short a template to split (the layer gate's), or a readback whose
+    # block count is a runtime value the split does not divide.
+    KV_PARTS = 1
+if KV_PARTS > 1:
+    assert KV_PARTS == 2 and KV_REPLICATED and N_ATTN_CU == 2 and NGRP == 1
+    assert KV_PAIRS and ATTN_ROUNDS % (2 * KV_PARTS) == 0, ATTN_ROUNDS
+# Block granularity of every wave's range: one block, a pair, or a pair per part.
+KV_BLK_ALIGN = 2 * KV_PARTS if KV_PARTS > 1 else (2 if KV_PAIRS else 1)
+N_CU_ALL = N_ATTN_CU * KV_PARTS
+# Blocks the readback-calibration builds (.rb / .sw) move by: a split readback
+# only takes whole pairs per part.
+RB_STEP = KV_BLK_ALIGN if KV_PARTS > 1 else 1
+# (qk col, qk row, kv row) of the CUs of parts >= 1, head group by head group,
+# and the (col, row) of each head group's merge core.
+ATTN_CU_LOC_P1 = [(2, 4, 5), (3, 4, 5)]
+ATTN_MERGE_LOC = [(5, 4), (5, 5)]
+# Memtile columns of part 1's K and V re-block: the shim columns with an MM2S
+# left once rmsW joins the rms packet group.
+KV_PART_MCOL = (2, 5)
+
+
+def _kv_chan(name, part):
+    """A KV readback channel of `part`."""
+    return f"{name}_p{part}" if part else name
 
 
 # The append's S2MM walk; extra copies stride past the K and V regions.
@@ -2248,6 +2280,31 @@ def build_module():
             "attn_kv_fin", ([y_l1, lden_l1, ao_l1], []), visibility="private"
         )
         _set_attn_link(attn_kv_fin, "attn_kv")
+        if KV_PARTS > 1:
+            # a CU's partial result: y / l, then l and the running max as floats
+            aop_l1 = MemRefType.get(
+                [DQ_PADDED_PER_CU + 4 * Q_HEADS_PADDED_PER_CU], bf16, memory_space=l1
+            )
+            attn_qk_reset = FuncOp("attn_qk_reset", ([m_l1], []), visibility="private")
+            _set_attn_link(attn_qk_reset, "attn_qk")
+            attn_kv_reset = FuncOp(
+                "attn_kv_reset", ([y_l1, lden_l1, m_l1], []), visibility="private"
+            )
+            attn_kv_blk_m = FuncOp(
+                "attn_kv_blk_m",
+                ([as_l1, av_l1, y_l1, lden_l1, m_l1, i32, i32], []),
+                visibility="private",
+            )
+            attn_kv_fin_part = FuncOp(
+                "attn_kv_fin_part",
+                ([y_l1, lden_l1, m_l1, aop_l1], []),
+                visibility="private",
+            )
+            attn_merge = FuncOp(
+                "attn_merge", ([aop_l1, aop_l1, ao_l1], []), visibility="private"
+            )
+            for _f in (attn_kv_reset, attn_kv_blk_m, attn_kv_fin_part, attn_merge):
+                _set_attn_link(_f, "attn_kv")
         if MIX_TO_CU:
             # Hybrid only: overwrite this CU's o with its slice of the ShortConv
             # mixer output when the wave's arm says ShortConv. The pick has to
@@ -2273,7 +2330,11 @@ def build_module():
             channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
         else:
             channel_decl("rmsX", size=[1])
-        channel_decl("rmsW", size=[1])
+        if KV_PARTS > 1:
+            # Shares the rms core's packet shim MM2S, freeing one for the KV parts.
+            channel_decl("rmsW", size=[1], channel_type="npu_dma_packet")
+        else:
+            channel_decl("rmsW", size=[1])
         if POST_RMS:
             # Separate channel for the post_attention_layernorm weight. A single
             # rmsW FIFO re-fed twice does NOT pair in AIR (both gets read the same
@@ -2325,7 +2386,13 @@ def build_module():
         # switched, never both, so AIRToAIE separates the two by itself
         # (TileDMAAllocator::spreadCollapsedPacketChannels) and reproduces this
         # exact placement.
-        channel_decl("toAttnQ", size=[N_ATTN_CU])
+        if KV_PARTS > 1:
+            # A head group's parts take the same Q.
+            Channel(
+                "toAttnQ", size=[N_ATTN_CU, 1], broadcast_shape=[N_ATTN_CU, KV_PARTS]
+            )
+        else:
+            channel_decl("toAttnQ", size=[N_ATTN_CU])
         # rope k/v -> kv memtiles. PACKET so one rope MM2S can fan to memtiles on
         # MULTIPLE cols (mem_3_1 + mem_4_1) -- the reference routes rope k/v as
         # packets (id14/15) for exactly this multi-destination fan-out. A circuit
@@ -2336,16 +2403,17 @@ def build_module():
             channel_type="npu_dma_packet",
         )
         if KV_REPLICATED:
-            # Every CU reads the same head, so each block goes out as one broadcast.
+            # Every CU reads the same head, so each block goes out as one broadcast
+            # (per part: a part's blocks go to that part's CUs).
             assert NGRP == 1, "KV_REPLICATED broadcasts across a single group"
-            Channel("toK", size=[1, 1], broadcast_shape=[1, N_ATTN_CU])
-            Channel("toV", size=[1, 1], broadcast_shape=[1, N_ATTN_CU])
+            Channel("toK", size=[KV_PARTS, 1], broadcast_shape=[KV_PARTS, N_ATTN_CU])
+            Channel("toV", size=[KV_PARTS, 1], broadcast_shape=[KV_PARTS, N_ATTN_CU])
         else:
             channel_decl("toK", size=[N_ATTN_CU])
             channel_decl("toV", size=[N_ATTN_CU])
         if KV_PAIRS:
             # Two blocks per iteration need a score hand-over per block.
-            channel_decl("toS", size=[N_ATTN_CU])
+            channel_decl("toS", size=[N_CU_ALL])
         if MULTIBLK:
             # the reference full-faithful KV cache (DDR): rope appends this token's roped
             # K/V into the cache (appendK/appendV -> KVC at APPEND_OFF); the whole
@@ -2370,11 +2438,18 @@ def build_module():
             if KV_SPLIT:
                 # the reference mem_3_1: K and V on SEPARATE shim->memtile flows (one each per
                 # col group of 2 CUs), so their memtile S2MM fills are independent.
-                channel_decl("inKV_K", size=[len(ATTN_COL_GROUPS)])
-                channel_decl("inKV_V", size=[len(ATTN_COL_GROUPS)])
+                # One channel per part, not one bundle: AIR wires a bundle's
+                # sub-channels to the wrong memtiles when those sit in
+                # different columns.
+                for _p in range(KV_PARTS):
+                    channel_decl(_kv_chan("inKV_K", _p), size=[len(ATTN_COL_GROUPS)])
+                    channel_decl(_kv_chan("inKV_V", _p), size=[len(ATTN_COL_GROUPS)])
             else:
                 channel_decl("inKV", size=[N_ATTN_CU])
         channel_decl("attnO", size=[N_ATTN_CU])
+        if KV_PARTS > 1:
+            # each CU's partial result -> its head group's merge core
+            channel_decl("attnP", size=[N_CU_ALL])
         if MIX_TO_CU:
             # ShortConv mixer -> all four CU kv cores, one BROADCAST put of the
             # whole CONV_DIM (each CU keeps its own slice in C). A broadcast is
@@ -3635,6 +3710,64 @@ def build_module():
                                                 _loi(_kbase, e),
                                                 _skb(RB_SWA_SKIP * 16 * REGION_W),
                                             )
+                                        if KV_PARTS > 1:
+                                            # Part p's slice of the range, one BD per
+                                            # part and K/V.
+                                            _blkw = 16 * REGION_W
+                                            assert _cb % (2 * KV_PARTS) == 0
+                                            assert RB_SWA_SKIP % (2 * KV_PARTS) == 0
+
+                                            def _cbh():
+                                                n = idx(_cb // KV_PARTS)
+                                                if RB_SWA_SKIP:
+                                                    n = arith.subi(
+                                                        n, _skb(RB_SWA_SKIP // KV_PARTS)
+                                                    )
+                                                return n
+
+                                            for gi in range(NGRP):
+                                                for _p in range(KV_PARTS):
+                                                    for _ch, _roff, _dep in (
+                                                        (
+                                                            _kv_chan("inKV_K", _p),
+                                                            _kreg_off(gi),
+                                                            appended[0],
+                                                        ),
+                                                        (
+                                                            _kv_chan("inKV_V", _p),
+                                                            _vreg_off(gi),
+                                                            appended[1],
+                                                        ),
+                                                    ):
+                                                        _off = _rbo(_roff + _coff)
+                                                        if _p:
+                                                            _off = arith.addi(
+                                                                _off,
+                                                                arith.muli(
+                                                                    _cbh(),
+                                                                    idx(_p * _blkw),
+                                                                ),
+                                                            )
+                                                        ChannelPut(
+                                                            _ch,
+                                                            KVC,
+                                                            indices=[idx(gi)],
+                                                            async_token=AsyncTokenType.get(),
+                                                            async_dependencies=[_dep],
+                                                            offsets=[_off],
+                                                            sizes=[
+                                                                _cbh(),
+                                                                idx(_rows),
+                                                                idx(_run),
+                                                            ],
+                                                            strides=[
+                                                                idx(_blkw),
+                                                                idx(_run),
+                                                                idx(1),
+                                                            ],
+                                                        )
+                                            _ci += _cb
+                                            continue
                                         # Contiguous either way; _KV1D just states it as 1-D.
                                         # Spelled inline (not hoisted) so the default path's
                                         # constant emission order -- and thus the emitted IR --
@@ -4719,7 +4852,9 @@ def build_module():
                                     # CU c reads its Q_HEADS_PER_CU heads starting at head
                                     # c*Q_HEADS_PER_CU (stride DH) -> linear base
                                     # c*Q_HEADS_PER_CU*DH = c*DQ_PER_CU. dc stride 8, de 1.
-                                    indices=[idx(c)],
+                                    indices=(
+                                        [idx(c), idx(0)] if KV_PARTS > 1 else [idx(c)]
+                                    ),
                                     # rope emits PADDED Q (each CU's block is
                                     # Q_HEADS_PADDED_PER_CU heads incl ATTN_GROUPS_PADDING
                                     # zeros); CU c's block starts at c*Q_HEADS_PADDED_PER_CU.
@@ -4833,8 +4968,104 @@ def build_module():
                                 DeallocOp(akbs[c])
                                 DeallocOp(avbs[c])
 
+                        def _emit_part_herds(cus, leaf, Lc, core_arm, seg_arm_i):
+                            """Part 1's CUs, as their own herd, and the merge cores
+                            that fold each head group's two partial results into
+                            its @attnO."""
+                            shs = [t[0] for t in cus[N_ATTN_CU:]]
+                            (_q0, _r0, _), (_q1, _, _) = ATTN_CU_LOC_P1
+                            assert _q1 == _q0 + 1
+
+                            def _gate(arm, body):
+                                if seg_arm_i is None:
+                                    body()
+                                    return
+                                _arm_only(arith.index_cast(idx_t, arm), {2}, body)
+
+                            def _p1(tx, ty, sl, Lh, arm=None):
+                                _isc0 = arith.cmpi(arith.CmpIPredicate.eq, tx, idx(0))
+                                _ifc = IfOp(_isc0, [], has_else=True)
+                                for _br, _g in (
+                                    (_ifc.thenRegion, 0),
+                                    (_ifc.elseRegion, 1),
+                                ):
+                                    with InsertionPoint(_br.blocks[0]):
+                                        leaf(ty, N_ATTN_CU + _g, sl[_g], Lh, 0, arm)
+                                        yield_([])
+
+                            _ops = [t.result for t in shs] + [Lc]
+                            if seg_arm_i is not None:
+                                _ops.append(core_arm)
+
+                            @herd(name="attn_blk_p1", sizes=[2, 2], operands=_ops)
+                            def attn_p1(_tx, _ty, _sx, _sy, *_a):
+                                sl = list(_a[:N_ATTN_CU])
+                                Lh = _a[N_ATTN_CU]
+                                arm = (
+                                    _a[N_ATTN_CU + 1] if seg_arm_i is not None else None
+                                )
+                                _gate(arm, lambda: _p1(_tx, _ty, sl, Lh, arm))
+
+                            attn_p1.attributes["x_loc"] = IntegerAttr.get(T.i64(), _q0)
+                            attn_p1.attributes["y_loc"] = IntegerAttr.get(T.i64(), _r0)
+
+                            def _merge(g):
+                                p0 = AllocOp(aop_l1, [], [])
+                                ChannelGet("attnP", p0, indices=[idx(g)])
+                                p1 = AllocOp(aop_l1, [], [])
+                                ChannelGet("attnP", p1, indices=[idx(g + N_ATTN_CU)])
+                                o = AllocOp(ao_l1, [], [])
+                                CallOp(attn_merge, [p0, p1, o])
+                                ChannelPut(
+                                    "attnO",
+                                    o,
+                                    indices=[idx(g)],
+                                    # o un-interleave, as the CU's own put does
+                                    offsets=[idx(0), idx(0), idx(0)],
+                                    sizes=[
+                                        idx(Q_HEADS_PER_CU),
+                                        idx(DH // 8),
+                                        idx(8),
+                                    ],
+                                    strides=[
+                                        idx(8),
+                                        idx(Q_HEADS_PER_CU * 8),
+                                        idx(1),
+                                    ],
+                                )
+                                DeallocOp(p0)
+                                DeallocOp(p1)
+                                DeallocOp(o)
+
+                            def _mg(ty):
+                                _is0 = arith.cmpi(arith.CmpIPredicate.eq, ty, idx(0))
+                                _ifm = IfOp(_is0, [], has_else=True)
+                                for _br, _g in (
+                                    (_ifm.thenRegion, 0),
+                                    (_ifm.elseRegion, 1),
+                                ):
+                                    with InsertionPoint(_br.blocks[0]):
+                                        _merge(_g)
+                                        yield_([])
+
+                            _mops = [core_arm] if seg_arm_i is not None else []
+                            (_mc, _mr0), (_mc1, _mr1) = ATTN_MERGE_LOC
+                            assert _mc1 == _mc and _mr1 == _mr0 + 1
+
+                            @herd(name="attn_merge", sizes=[1, 2], operands=_mops)
+                            def attn_mg(_tx, _ty, _sx, _sy, *_a):
+                                arm = _a[0] if _a else None
+                                _gate(arm, lambda: _mg(_ty))
+
+                            attn_mg.attributes["x_loc"] = IntegerAttr.get(T.i64(), _mc)
+                            attn_mg.attributes["y_loc"] = IntegerAttr.get(T.i64(), _mr0)
+
                         def _make_cu(c):
-                            col, qk_row, kv_row = ATTN_CU_LOC[c]
+                            col, qk_row, kv_row = (
+                                ATTN_CU_LOC[c]
+                                if c < N_ATTN_CU
+                                else ATTN_CU_LOC_P1[c - N_ATTN_CU]
+                            )
                             a_sh = AllocOp(as_l1, [], [])
 
                             if MULTIBLK:
@@ -4870,32 +5101,50 @@ def build_module():
                                         # the lead produces toK/toV for every CU in the group. This
                                         # removes the shared-buffer backward edge (qk-K no longer
                                         # lock-chained to kv-V drain).
-                                        _gi = ATTN_CU_GROUP[c]
+                                        _kvp = c // N_ATTN_CU
+                                        _gi = ATTN_CU_GROUP[c % N_ATTN_CU]
                                         _gcol, _cus = ATTN_COL_GROUPS[_gi]
-                                        if c != _cus[0]:
+                                        if c % N_ATTN_CU != _cus[0]:
                                             return
                                         _gw = (
                                             KVPC_DH
                                             if KV_REPLICATED
                                             else len(_cus) * KVPC_DH
                                         )
-                                        for _blk in for_(idx(0), _seg_rounds(), idx(1)):
+                                        for _blk in for_(
+                                            idx(0),
+                                            (
+                                                idx(ATTN_ROUNDS // KV_PARTS)
+                                                if _kvp > 0 or KV_PARTS > 1
+                                                else _seg_rounds()
+                                            ),
+                                            idx(1),
+                                        ):
+                                            _mcol = (
+                                                (col, col)
+                                                if _kvp == 0
+                                                else KV_PART_MCOL
+                                            )
                                             _kbuf = AllocOp(kvblk_l2, [], [])
                                             _kbuf.operation.attributes[
                                                 "air.memtile_col"
-                                            ] = IntegerAttr.get(T.i32(), col)
+                                            ] = IntegerAttr.get(T.i32(), _mcol[0])
                                             _vbuf = AllocOp(kvblk_l2, [], [])
                                             _vbuf.operation.attributes[
                                                 "air.memtile_col"
-                                            ] = IntegerAttr.get(T.i32(), col)
+                                            ] = IntegerAttr.get(T.i32(), _mcol[1])
                                             ChannelGet(
-                                                "inKV_K", _kbuf, indices=[idx(_gi)]
+                                                _kv_chan("inKV_K", _kvp),
+                                                _kbuf,
+                                                indices=[idx(_gi)],
                                             )
                                             ChannelGet(
-                                                "inKV_V", _vbuf, indices=[idx(_gi)]
+                                                _kv_chan("inKV_V", _kvp),
+                                                _vbuf,
+                                                indices=[idx(_gi)],
                                             )
                                             _dsts = (
-                                                [(0, lambda: [idx(0), idx(0)])]
+                                                [(0, lambda: [idx(_kvp), idx(0)])]
                                                 if KV_REPLICATED
                                                 else [
                                                     (
@@ -5045,7 +5294,10 @@ def build_module():
                                         _c1 = lambda v: arith.ConstantOp(
                                             IntegerAttr.get(i32, v), None
                                         ).result
-                                        _q = arith.andi(arith.addi(_q, _c1(1)), _c1(-2))
+                                        _q = arith.andi(
+                                            arith.addi(_q, _c1(KV_BLK_ALIGN - 1)),
+                                            _c1(-KV_BLK_ALIGN),
+                                        )
                                     return arith.index_cast(idx_t, _q)
 
                                 def _core_first(Lh):
@@ -5068,14 +5320,32 @@ def build_module():
                                     )
                                     _lo = arith.shrui(arith.subi(L, w), _c(4))
                                     if KV_PAIRS:
-                                        _lo = arith.andi(_lo, _c(-2))
+                                        _lo = arith.andi(_lo, _c(-KV_BLK_ALIGN))
                                     return arith.index_cast(
                                         idx_t, arith.select(_open, _lo, _c(0))
                                     )
 
+                                def _part_range(Lh, _c, _n):
+                                    """CU _c's blocks up to _n: its part's half."""
+                                    _f = _core_first(Lh)
+                                    if KV_PARTS == 1:
+                                        return _f, _n
+                                    _mid = arith.addi(
+                                        _f, arith.divui(arith.subi(_n, _f), idx(2))
+                                    )
+                                    return (_f, _mid) if _c < N_ATTN_CU else (_mid, _n)
+
                                 def _qk_body(sh, Lh, _c, _arm=None):
                                     a_q = AllocOp(aq_l1, [], [])
-                                    ChannelGet("toAttnQ", a_q, indices=[idx(_c)])
+                                    ChannelGet(
+                                        "toAttnQ",
+                                        a_q,
+                                        indices=(
+                                            [idx(_c % N_ATTN_CU), idx(_c // N_ATTN_CU)]
+                                            if KV_PARTS > 1
+                                            else [idx(_c)]
+                                        ),
+                                    )
                                     a_m = AllocOp(m_l1, [], [])
                                     a_cc = AllocOp(c_l1, [], [])
                                     # RUNTIME-L block count = ceil(Lh/16) from the RTP-L herd
@@ -5086,8 +5356,11 @@ def build_module():
                                     # survives to core codegen as a real runtime loop.
                                     _nblk_qk = _core_rounds(Lh)
                                     _step = 2 if KV_PAIRS else 1
+                                    if KV_PARTS > 1:
+                                        CallOp(attn_qk_reset, [a_m])
                                     for _blk in for_(
-                                        _core_first(Lh), _nblk_qk, idx(_step)
+                                        *_part_range(Lh, _c, _nblk_qk),
+                                        idx(_step),
                                     ):
                                         # Not left to the ping-pong pass: its remainder trip on a
                                         # runtime count reads the wrong buffer. KV_PAIRS unrolls by
@@ -5098,7 +5371,10 @@ def build_module():
                                                 "toK",
                                                 a_k,
                                                 indices=(
-                                                    [idx(0), idx(_c)]
+                                                    [
+                                                        idx(_c // N_ATTN_CU),
+                                                        idx(_c % N_ATTN_CU),
+                                                    ]
                                                     if KV_REPLICATED
                                                     else [idx(_c)]
                                                 ),
@@ -5221,13 +5497,19 @@ def build_module():
                                 def _kv_body(sh, Lh, _c, _arm=None):
                                     a_y = AllocOp(y_l1, [], [])
                                     a_l = AllocOp(lden_l1, [], [])
-                                    a_o = AllocOp(ao_l1, [], [])
+                                    a_o = AllocOp(
+                                        aop_l1 if KV_PARTS > 1 else ao_l1, [], []
+                                    )
+                                    if KV_PARTS > 1:
+                                        a_mm = AllocOp(m_l1, [], [])
+                                        CallOp(attn_kv_reset, [a_y, a_l, a_mm])
                                     # RUNTIME-L block count = ceil(Lh/16) (see _qk_body). Core
                                     # loops per RTP-L; matched by the shim readback push count.
                                     _nblk_kv = _core_rounds(Lh)
                                     _step = 2 if KV_PAIRS else 1
                                     for _blk in for_(
-                                        _core_first(Lh), _nblk_kv, idx(_step)
+                                        *_part_range(Lh, _c, _nblk_kv),
+                                        idx(_step),
                                     ):
                                         # Unrolled by hand as in _qk_body.
                                         for _o in range(_step):
@@ -5236,7 +5518,10 @@ def build_module():
                                                 "toV",
                                                 a_v,
                                                 indices=(
-                                                    [idx(0), idx(_c)]
+                                                    [
+                                                        idx(_c // N_ATTN_CU),
+                                                        idx(_c % N_ATTN_CU),
+                                                    ]
                                                     if KV_REPLICATED
                                                     else [idx(_c)]
                                                 ),
@@ -5252,10 +5537,24 @@ def build_module():
                                                 ChannelGet(
                                                     "toS", a_s, indices=[idx(_c)]
                                                 )
-                                                CallOp(
-                                                    attn_kv_blk,
-                                                    [a_s, a_v, a_y, a_l, blk_c, Lh],
-                                                )
+                                                if KV_PARTS > 1:
+                                                    CallOp(
+                                                        attn_kv_blk_m,
+                                                        [
+                                                            a_s,
+                                                            a_v,
+                                                            a_y,
+                                                            a_l,
+                                                            a_mm,
+                                                            blk_c,
+                                                            Lh,
+                                                        ],
+                                                    )
+                                                else:
+                                                    CallOp(
+                                                        attn_kv_blk,
+                                                        [a_s, a_v, a_y, a_l, blk_c, Lh],
+                                                    )
                                                 DeallocOp(a_s)
                                             else:
                                                 CallOp(
@@ -5264,7 +5563,10 @@ def build_module():
                                                 )
                                             DeallocOp(a_v)
                                         yield_([])
-                                    CallOp(attn_kv_fin, [a_y, a_l, a_o])
+                                    if KV_PARTS > 1:
+                                        CallOp(attn_kv_fin_part, [a_y, a_l, a_mm, a_o])
+                                    else:
+                                        CallOp(attn_kv_fin, [a_y, a_l, a_o])
                                     if MIX_TO_CU:
                                         # Take the mixer's broadcast and, on a
                                         # ShortConv wave, overwrite o with this
@@ -5330,7 +5632,13 @@ def build_module():
                                     # The wasted attention compute on a ShortConv
                                     # wave is largely free -- the CU is paced by
                                     # the KV readback DMA, which we pay anyway.
-                                    _put_o()
+                                    if KV_PARTS > 1:
+                                        # the whole partial, to this head group's
+                                        # merge core
+                                        ChannelPut("attnP", a_o, indices=[idx(_c)])
+                                        DeallocOp(a_mm)
+                                    else:
+                                        _put_o()
                                     DeallocOp(a_o)
                                     DeallocOp(a_y)
                                     DeallocOp(a_l)
@@ -5341,7 +5649,7 @@ def build_module():
                                 # ONE [2,4] block herd after the loop (see below).
                                 return (a_sh, col, qk_row, L_c, _qk_body, _kv_body)
 
-                        _cus = [_make_cu(c) for c in range(N_ATTN_CU)]
+                        _cus = [_make_cu(c) for c in range(N_CU_ALL)]
                         # Fuse ALL 8 attn cores into ONE [2,4] block over the contiguous
                         # cols 3,4. tx=0 -> col3 (cu0 rows2,3; cu1 rows4,5), tx=1 -> col4
                         # (cu2 rows2,3; cu3 rows4,5). Column by tx==0, pair by ty<2, role
@@ -5354,7 +5662,7 @@ def build_module():
                         # attn_kv.ll on kv rows) -- no herd link_with. gate-off index_switch on
                         # the per-wave arm keeps vocab idle. This is the attn floor: cols 3,4
                         # are one contiguous block, so 8 -> 1.
-                        _sh = [t[0] for t in _cus]
+                        _sh = [t[0] for t in _cus[:N_ATTN_CU]]
                         _Lc = _cus[0][3]
                         _qkb = _cus[0][4]
                         _kvb = _cus[0][5]
@@ -5459,6 +5767,11 @@ def build_module():
                             T.i64(), ATTN_CU_LOC[0][0]
                         )
                         attn_blk.attributes["y_loc"] = IntegerAttr.get(T.i64(), 2)
+
+                        if KV_PARTS > 1:
+                            _emit_part_herds(
+                                _cus, _attn_leaf, _Lc, _core_arm, _seg_arm_i
+                            )
 
                     # o gather memtile (reference mem_5_1 o_buffer): gather the 4
                     # CUs' o (512 each, already natural [qh,dh] from the egress
@@ -7507,7 +7820,7 @@ def run():
     # Tells the host to pad each wave's readback to an even block count.
     if KV_PAIRS:
         with open("decode.rt_pair", "w") as f:
-            f.write("2\n")
+            f.write(f"{KV_BLK_ALIGN}\n")
     elif _os.path.exists("decode.rt_pair"):
         _os.remove("decode.rt_pair")
     print(f"[q4nx_decode] emitted {art.output_binary} + {art.insts}")

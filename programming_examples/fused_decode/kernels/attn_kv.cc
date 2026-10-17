@@ -780,11 +780,13 @@ void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
                  int L) {
   aie_round_nearest_even();
   const int lo = attn_window_lo(L);
+#if ATTN_KV_PARTS == 1
   if (blk == lo / 16) {
     zero_vectorized<y_acc_dtype, Q_HEADS_PADDED_PER_CU * DH>(y_state);
     const aie::vector<float, 16> zero = aie::broadcast<float, 16>(0);
     aie::store_v(l_state, zero);
   }
+#endif
   L &= ATTN_RTP_L_MASK;
   // Block fully beyond L, or wholly before a sliding window: skip (pairs with
   // attn_qk_blk's skips -- s_block/c are not produced for this block, so they
@@ -813,6 +815,96 @@ void attn_kv_fin(float *__restrict y_state, float *__restrict l_state,
                                                                  y_bf16);
   scale_div_aie<Q_HEADS_PADDED_PER_CU * DH>(y_bf16, o, l_state);
 }
+
+#if ATTN_KV_PARTS > 1
+static_assert(Q_HEADS_PER_CU == Q_HEADS_PADDED_PER_CU,
+              "the part merge assumes unpadded heads");
+constexpr int ATTN_PART_N = Q_HEADS_PER_CU * DH;
+
+ATTN_ENTRY
+void attn_kv_reset(float *__restrict y_state, float *__restrict l_state,
+                   bf16 *__restrict m_last) {
+  zero_vectorized<y_acc_dtype, Q_HEADS_PADDED_PER_CU * DH>(y_state);
+  aie::store_v(l_state, aie::broadcast<float, 16>(0));
+  aie::store_v(m_last, aie::broadcast<bf16, 16>(-0x1.FEp127f));
+}
+
+// attn_kv_blk, keeping the running max of the last block that counted.
+ATTN_ENTRY
+void attn_kv_blk_m(bf16 *__restrict s_block, bf16 *__restrict v_block,
+                   float *__restrict y_state, float *__restrict l_state,
+                   bf16 *__restrict m_last, int blk, int L) {
+  attn_kv_blk(s_block, v_block, y_state, l_state, blk, L);
+  const int lo = attn_window_lo(L);
+  L &= ATTN_RTP_L_MASK;
+  if (L - blk * 16 <= 0 || (blk + 1) * 16 <= lo)
+    return;
+  aie::store_v(m_last, aie::load_v<16>(s_block + ATTN_S_M_OFF));
+}
+
+// This part's result for the merge: y / l per head (zero where the part saw
+// no key), then l and the running max as floats.
+void attn_kv_fin_part(float *__restrict y_state, float *__restrict l_state,
+                      bf16 *__restrict m_last, bf16 *__restrict o) {
+  aie_round_nearest_even();
+  constexpr int QH = Q_HEADS_PER_CU;
+  aie::vector<bf16, QH * 8> inv;
+  float *tail = (float *)(o + ATTN_PART_N);
+  for (int h = 0; h < QH; h++) {
+    float l = l_state[h];
+    // An empty part has y == 0; the bias only keeps the inverse finite.
+    bf16 iv = (bf16)getInvBf16(l + 0x1p-100f);
+    for (int k = 0; k < 8; k++)
+      inv[h * 8 + k] = iv;
+    tail[h] = l;
+    tail[QH + h] = (float)m_last[h];
+  }
+  alignas(aie::vector_decl_align) bf16 y_bf16[ATTN_PART_N];
+  passThrough_aie<y_acc_dtype, bf16, ATTN_PART_N>(y_state, y_bf16);
+  for (int d = 0; d < ATTN_PART_N; d += QH * 8)
+    aie::store_v(o + d, aie::mul(aie::load_v<QH * 8>(y_bf16 + d), inv)
+                            .template to_vector<bf16>());
+}
+
+// The two parts' results into one: each head's rows weighted by its share of
+// the combined softmax denominator. o has the attn_kv_fin layout.
+void attn_merge(bf16 *__restrict p0, bf16 *__restrict p1, bf16 *__restrict o) {
+  aie_round_nearest_even();
+  constexpr int QH = Q_HEADS_PER_CU;
+  const float *t0 = (const float *)(p0 + ATTN_PART_N);
+  const float *t1 = (const float *)(p1 + ATTN_PART_N);
+  aie::vector<bf16, 16> m0 = aie::zeros<bf16, 16>(), m1 = m0;
+  for (int h = 0; h < QH; h++) {
+    m0[h] = (bf16)t0[QH + h];
+    m1[h] = (bf16)t1[QH + h];
+  }
+  aie::vector<bf16, 16> mx = aie::max(m0, m1);
+  aie::vector<bf16, 16> lo_c = aie::broadcast<bf16, 16>(-87.0f);
+  aie::vector<bf16, 16> hi_c = aie::broadcast<bf16, 16>(88.0f);
+  aie::accum<accfloat, 16> x0 =
+      getExpBf16(aie::clamp(aie::sub(m0, mx), lo_c, hi_c));
+  aie::accum<accfloat, 16> x1 =
+      getExpBf16(aie::clamp(aie::sub(m1, mx), lo_c, hi_c));
+  aie::vector<float, 16> e0 = x0.template to_vector<float>();
+  aie::vector<float, 16> e1 = x1.template to_vector<float>();
+  aie::vector<bf16, QH * 8> w0, w1;
+  for (int h = 0; h < QH; h++) {
+    float a0 = e0[h] * t0[h], a1 = e1[h] * t1[h];
+    float inv = getInvBf16(a0 + a1);
+    bf16 b0 = (bf16)(a0 * inv), b1 = (bf16)(a1 * inv);
+    for (int k = 0; k < 8; k++) {
+      w0[h * 8 + k] = b0;
+      w1[h * 8 + k] = b1;
+    }
+  }
+  for (int d = 0; d < ATTN_PART_N; d += QH * 8) {
+    aie::accum<accfloat, QH * 8> acc =
+        aie::mul(aie::load_v<QH * 8>(p0 + d), w0);
+    acc = aie::mac(acc, aie::load_v<QH * 8>(p1 + d), w1);
+    aie::store_v(o + d, acc.template to_vector<bf16>());
+  }
+}
+#endif
 
 // Hybrid (LFM2) only: on a ShortConv wave this CU's slice of the mixer output
 // takes the place of the attention result, so the o-gather memtile keeps ONE

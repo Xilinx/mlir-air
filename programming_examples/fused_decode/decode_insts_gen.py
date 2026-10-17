@@ -32,13 +32,25 @@ A build whose sliding-window cores also start at the block their window opens in
 decode_L<N>.sw.insts.bin, rebuilt with each sliding wave's readback one block
 later; that difference moves the readback's start with the window.
 
-A build whose attention cores take KV blocks in pairs leaves decode_L<N>.rt_pair:
-every wave's block count is even, so the readback rounds its end up and a
-sliding wave's start down to an even block.
+A build whose attention cores take KV blocks in pairs leaves decode_L<N>.rt_pair,
+holding the block multiple every wave's count is a whole number of (2, or 4 when
+the KV is split by position too), so the readback rounds its end up and a sliding
+wave's start down to that multiple. decode_L<N>.rt_rounds, when not empty, holds
+how many blocks the .rb build drops and the .sw build skips; empty means one.
 """
 
 import os
 import numpy as np
+
+
+def _read_int(artifact_dir, name, missing, empty):
+    """The integer in a sidecar file, or `missing` / `empty` if it is absent / empty."""
+    path = os.path.join(artifact_dir, name)
+    if not os.path.exists(path):
+        return missing
+    with open(path) as f:
+        text = f.read().strip()
+    return int(text) if text else empty
 
 
 def attn_maxl_of(L):
@@ -116,15 +128,20 @@ class DecodeInstsGen:
                 os.path.exists(os.path.join(artifact_dir, f"decode_L{L}.rt_rounds"))
                 for L in t["Ls"]
             )
+            t["step"] = max(
+                [
+                    _read_int(artifact_dir, f"decode_L{L}.rt_rounds", 1, 1)
+                    for L in t["Ls"]
+                ]
+            )
             if rt and t["rb"] is None and maxl > 16:
                 raise RuntimeError(
                     f"ATTN_MAXL={maxl} template in {artifact_dir} was built with "
                     "DECODE_RT_ROUNDS but has no decode_L<N>.rb.insts.bin, so its "
                     "readback cannot be cut to the cores' block count; rebuild it"
                 )
-            t["pair"] = any(
-                os.path.exists(os.path.join(artifact_dir, f"decode_L{L}.rt_pair"))
-                for L in t["Ls"]
+            t["pair"] = max(
+                [_read_int(artifact_dir, f"decode_L{L}.rt_pair", 1, 2) for L in t["Ls"]]
             )
             t["sw"] = None
             for L in t["Ls"]:
@@ -251,13 +268,13 @@ class DecodeInstsGen:
         out = t["base"][idx].astype(np.int64)
         out += (L - t["base_L"]) * t["slope"][idx]
         if t["rb"] is not None:
-            rounds = (L + 15) // 16
-            rounds += rounds & 1 if t["pair"] else 0
-            out += (rounds - t["rb_rounds"]) * t["rb"][idx]
+            g = t["pair"]
+            rounds = -(-((L + 15) // 16) // g) * g
+            out += (rounds - t["rb_rounds"]) // t["step"] * t["rb"][idx]
         if t["sw"] is not None and L > t["window"]:
             skip = (L - t["window"]) // 16
-            skip -= skip & 1 if t["pair"] else 0
-            out += skip * t["sw"][idx]
+            skip -= skip % t["pair"]
+            out += skip // t["step"] * t["sw"][idx]
         return out.astype(np.uint32)
 
     def calibrated_windows(self):

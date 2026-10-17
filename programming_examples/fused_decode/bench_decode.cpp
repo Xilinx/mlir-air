@@ -173,12 +173,19 @@ int main(int argc, char **argv) {
   // decode_insts_gen).
   const std::string rbPath =
       dir + "/decode_L" + std::to_string(baseL) + ".rb.insts.bin";
-  // decode_L<base>.rt_pair: the cores take KV blocks in pairs, so each wave's
-  // block count is rounded to even.
-  const bool pairs =
-      std::ifstream(dir + "/decode_L" + std::to_string(baseL) + ".rt_pair")
-          .good();
-  const long rounds = (L + 15) / 16 + (pairs ? ((L + 15) / 16) & 1 : 0);
+  // decode_L<base>.rt_pair: the cores take KV blocks in pairs (or in pairs per
+  // KV part), so each wave's block count is a multiple of the number it holds.
+  // decode_L<base>.rt_rounds holds the blocks the .rb / .sw builds move by.
+  auto sidecar = [&](const char *ext, long missing, long empty) {
+    std::ifstream f(dir + "/decode_L" + std::to_string(baseL) + ext);
+    if (!f.good())
+      return missing;
+    long v;
+    return (f >> v) ? v : empty;
+  };
+  const long blkAlign = sidecar(".rt_pair", 1, 2);
+  const long rbStep = sidecar(".rt_rounds", 1, 1);
+  const long rounds = ((L + 15) / 16 + blkAlign - 1) / blkAlign * blkAlign;
   if (std::ifstream(rbPath).good()) {
     auto irb = readWords(rbPath);
     if (irb.size() != ibase.size())
@@ -186,7 +193,7 @@ int main(int argc, char **argv) {
     if (irb == ibase)
       throw std::runtime_error(rbPath + " equals the base build: its build "
                                         "ignored DECODE_RB_ROUNDS");
-    const long dr = rounds - (baseL + 15) / 16;
+    const long dr = (rounds - (baseL + 15) / 16) / rbStep;
     for (size_t i = 0; i < insts.size(); i++) {
       const int64_t d =
           static_cast<int64_t>(ibase[i]) - static_cast<int64_t>(irb[i]);
@@ -223,7 +230,7 @@ int main(int argc, char **argv) {
     if (isw == ibase)
       throw std::runtime_error(stem + ".sw.insts.bin equals the base build: "
                                       "its build ignored DECODE_RB_SWA_SKIP");
-    const long skip = (L - window) / 16 - (pairs ? ((L - window) / 16) & 1 : 0);
+    const long skip = (L - window) / 16 / blkAlign * blkAlign / rbStep;
     for (size_t i = 0; i < insts.size(); i++) {
       const int64_t d =
           static_cast<int64_t>(isw[i]) - static_cast<int64_t>(ibase[i]);
