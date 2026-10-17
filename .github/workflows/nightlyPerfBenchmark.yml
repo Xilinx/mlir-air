@@ -36,11 +36,11 @@ on:
       suites:
         description: >-
           Comma-separated lit suites to run: verify, profile, sweep,
-          prefill-sweep, full80. Defaults to all five, which is what the schedule runs.
+          prefill-sweep, full20, full80. The schedule runs the first five; Full80 is opt-in.
           Narrow it to iterate on one suite without paying for the others -- a full
-          run was ~7h before Full80; budget about one additional hour for the
-          paired study. Sweep alone is well under an hour, prefill-sweep ~2.7h. A
-          narrowed run does NOT publish (see below), because its perf.json is
+          run was ~7h before paired studies; budget about 15 extra minutes for
+          Full20. Optional Full80 adds about one hour. Sweep alone is well under
+          an hour, prefill-sweep ~2.7h. A narrowed run does NOT publish (see below), because its perf.json is
           partial by construction.
 
           Neither does a run on any ref other than main, whatever the suite list:
@@ -50,7 +50,7 @@ on:
           row from a PR branch reached the published page and then STUCK there --
           the model did not exist on main, so no later nightly could ever produce
           a row to supersede it.
-        default: verify,profile,sweep,prefill-sweep,full80
+        default: verify,profile,sweep,prefill-sweep,full20
         type: string
 
 defaults:
@@ -370,7 +370,7 @@ jobs:
           # `github.event_name == 'schedule'` (true) while the results file it
           # consumes is guarded by an `if [ -f ... ]` (a no-op when absent).
           # Neither check can see a suite that never ran.
-          SUITES="${{ github.event.inputs.suites || 'verify,profile,sweep,prefill-sweep,full80' }}"
+          SUITES="${{ github.event.inputs.suites || 'verify,profile,sweep,prefill-sweep,full20' }}"
           echo "running suites: $SUITES"
           want() { case ",$SUITES," in *",$1,"*) return 0;; *) return 1;; esac; }
 
@@ -426,8 +426,13 @@ jobs:
             LIT_OPTS="--timeout 3600" \
               ninja check-programming-examples-llms-prefill-sweep || rc=1
           fi
+          if want full20; then
+            # Four fixed prompts per dataset, both B1 and DFlash.
+            LIT_OPTS="--timeout 1800" \
+              ninja check-programming-examples-llms-full20 || rc=1
+          fi
           if want full80; then
-            # The paired B1 + DFlash study is ~48 minutes with cached builds on
+            # Optional paired study: measured 54 minutes with cached builds on
             # HX370. Budget 90 minutes including its current-revision builds.
             LIT_OPTS="--timeout 5400" \
               ninja check-programming-examples-llms-full80 || rc=1
@@ -518,27 +523,28 @@ jobs:
           json.dump(recs, open("perf.json", "w"), indent=2)
           print(json.dumps(recs, indent=2))
 
-          # Keep partial request logs too: a timeout must not erase the
-          # completed part of a study merely because no final JSON was written.
-          for request_dir in sorted(glob.glob("build_assert/test/llms/**/*.full80-requests", recursive=True)):
-              shutil.copytree(request_dir, f"perf_out/{os.path.basename(request_dir)}",
-                              dirs_exist_ok=True)
-          full80 = []
-          for f in sorted(glob.glob("build_assert/test/llms/**/*.full80.json", recursive=True)):
-              try:
-                  d = json.load(open(f))
-              except (json.JSONDecodeError, OSError) as e:
-                  print(f"WARNING: unreadable Full80 result {f}: {e}", file=sys.stderr)
-                  continue
-              if d.get("status") != "completed" or d.get("requests_per_engine") != 80:
-                  print(f"WARNING: incomplete Full80 result {f}", file=sys.stderr)
-                  continue
-              d["runner"] = "amdryzenai5pro340"
-              d["toolchain"] = dict(mlir_air_sha=air_sha, mlir_aie_hash=aie_hash,
-                                    llvm_aie_version=peano_ver)
-              d["verify_status"] = vstatus.get(d["model"], "")
-              full80.append(d)
-          json.dump(full80, open("full80.json", "w"), indent=2)
+          # Keep the two cohorts distinct, including their partial request logs.
+          for size in (20, 80):
+              kind = f"full{size}"
+              for request_dir in sorted(glob.glob(f"build_assert/test/llms/**/*.{kind}-requests", recursive=True)):
+                  shutil.copytree(request_dir, f"perf_out/{os.path.basename(request_dir)}",
+                                  dirs_exist_ok=True)
+              studies = []
+              for f in sorted(glob.glob(f"build_assert/test/llms/**/*.{kind}.json", recursive=True)):
+                  try:
+                      d = json.load(open(f))
+                  except (json.JSONDecodeError, OSError) as e:
+                      print(f"WARNING: unreadable {kind} result {f}: {e}", file=sys.stderr)
+                      continue
+                  if d.get("status") != "completed" or d.get("requests_per_engine") != size:
+                      print(f"WARNING: incomplete {kind} result {f}", file=sys.stderr)
+                      continue
+                  d["runner"] = "amdryzenai5pro340"
+                  d["toolchain"] = dict(mlir_air_sha=air_sha, mlir_aie_hash=aie_hash,
+                                        llvm_aie_version=peano_ver)
+                  d["verify_status"] = vstatus.get(d["model"], "")
+                  studies.append(d)
+              json.dump(studies, open(f"{kind}.json", "w"), indent=2)
 
           # Decode tok/s-vs-context sweeps, kept in their own file rather than
           # folded into perf.json: a sweep is a curve, not a scalar, and
@@ -601,7 +607,7 @@ jobs:
         # run cancelled mid-profile appended rows with null metrics but
         # verify_status "pass". A *failed* run must still publish -- its other
         # models' rows are good.
-        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full80')) }}
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full20')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -663,9 +669,12 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, os
           recs = json.load(open("perf.json")) if os.path.exists("perf.json") else []
-          studies = json.load(open("full80.json")) if os.path.exists("full80.json") else []
-          if studies:
-              print("### Full80: matched B1 and DFlash, 16 prompts per dataset\n")
+          for size in (20, 80):
+              file = f"full{size}.json"
+              studies = json.load(open(file)) if os.path.exists(file) else []
+              if not studies:
+                  continue
+              print(f"### Full{size}: matched B1 and DFlash, {size // 5} prompts per dataset\n")
               print("| model | verify | B1 tok/s | DFlash tok/s | speedup | emitted/round |")
               print("| --- | --- | ---: | ---: | ---: | ---: |")
               for d in studies:
@@ -698,12 +707,13 @@ jobs:
       # for `if:`. A cancelled full run is partial at an arbitrary point, so it
       # must land under the non-publishable name like a narrowed run does.
       - name: Upload perf artifact
-        if: ${{ !cancelled() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full80')) }}
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full20')) }}
         uses: actions/upload-artifact@v4
         with:
           name: perf-${{ github.run_id }}
           path: |
             perf.json
+            full20.json
             full80.json
             sweep.json
             prefill_sweep.json
@@ -715,12 +725,13 @@ jobs:
 
       # Same payload, name the publisher ignores: still there to download.
       - name: Upload perf artifact (partial run)
-        if: ${{ cancelled() || !(github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full80')) }}
+        if: ${{ cancelled() || !(github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full20')) }}
         uses: actions/upload-artifact@v4
         with:
           name: perf-partial-${{ github.run_id }}
           path: |
             perf.json
+            full20.json
             full80.json
             sweep.json
             prefill_sweep.json
@@ -742,7 +753,7 @@ jobs:
         # Full, non-cancelled runs only -- same reasoning as the history append.
         # Note this gate alone never protected the page: the artifact naming
         # above is what actually decides, because generateDocs runs on push too.
-        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full80')) }}
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full20')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

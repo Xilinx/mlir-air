@@ -77,6 +77,10 @@ config.suffixes = [".lit"]
 # directories.
 config.excludes = []
 
+# The long paired study is opt-in, including for unfiltered programming tests.
+if lit_config.params.get("dflash_full80") == "1":
+    config.available_features.add("dflash_full80")
+
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
 

@@ -53,12 +53,21 @@ make verify-host       # Acceptance, EOS and streaming checks without the NPU
 make verify            # DFlash state checks and HF BF16 top-5 comparison
 make benchmark         # Fixed 80-prompt DFlash decode benchmark
 make compile-baseline  # Current upstream B1, for the paired study
-make full80            # Paired B1 + DFlash, identical 80 inputs
+make full20            # Nightly paired B1 + DFlash, 4 inputs per dataset
+make full80            # Optional paired B1 + DFlash, 16 inputs per dataset
 make profile           # Short fixed-prompt NPU prefill + decode profile
 ```
 
 NPU execution is serialized with `/tmp/mlir-air-npu.lock`. `chat` treats each prompt as an
 independent request. Output appears as each verified token block is committed.
+
+Nightly runs Full20: the first four cases from each dataset in the frozen
+Full80 manifest, one pass per engine. Full80 remains an explicit optional study.
+Both use the same saved-prefill inputs, cap2048/EOS setting and complete-loop
+decode timer. Their results are separate; the Full80 result above is not a
+Full20 measurement. Both reuse the same model and dataset downloads.
+The local Full20 LIT completes in **13.8 minutes** with cached builds; see
+[CI setup and budgets](docs/ci.md).
 
 ## Models and arithmetic
 

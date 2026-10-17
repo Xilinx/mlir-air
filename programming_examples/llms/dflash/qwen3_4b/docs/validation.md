@@ -64,11 +64,13 @@ uses `atol=0.05`. Repeats and padding/chunk isolation must match exactly.
 
 ```sh
 make benchmark
+make full20       # Nightly paired B1 + DFlash, four fixed prompts per dataset
+make full80       # Optional larger pair, sixteen fixed prompts per dataset
 # Short coverage check, using one frozen prompt from each dataset:
 make benchmark PER_DATASET=1 STUDY_TOKENS=256 BENCHMARK_OUTPUT=build/pilot.jsonl
 ```
 
-The default is 80 requests: 16 per dataset, greedy, thinking disabled, maximum
+The default `make benchmark` is 80 requests: 16 per dataset, greedy, thinking disabled, maximum
 2048 output tokens, one pass. MT-Bench uses first turns. Frozen prefill states
 make this a decode comparison, not a prefill/TTFT benchmark. Interactive `run`
 and `chat` use NPU prefill. See [benchmark inputs](../benchmark/README.md).
@@ -133,6 +135,25 @@ The historical selected DFlash run was 40.045 tokens/s with the same acceptance
 traces; its B1 control was 19.310 tokens/s. The fresh B1 is slower, so the new
 2.580× ratio must not be interpreted as an additional kernel optimization gain.
 This compatibility study did not isolate the cause of the B1 performance gap.
+
+### Full20 nightly integration, October 17
+
+The default nightly paired study is now Full20; Full80 is optional. Full20
+uses the first four fixed cases per dataset, with the same model revisions,
+artifacts and timing as the October 16 run. The actual Full20 LIT passes in
+830.53 seconds (13.8 minutes), including cached-build/resource checks and both
+engine processes. B1 reaches **15.738 tokens/s**, DFlash **42.234 tokens/s**,
+or **2.684×**, with **4.490 emitted tokens/round** and **50.130% acceptance**.
+These values belong to the 20-request cohort, separate from Full80 above.
+
+All 20 B1 outputs and all 20 DFlash outputs match their corresponding October
+16 records. DFlash also matches all 1,870 non-timing round traces. Artifact
+hashes, runtime sources, input identities, round accounting and aggregates pass
+the audit. No kernel or model computation changed; the previous numerical
+validation remains applicable. Workflow collection handles both cohort sizes
+and partial request logs. Full80 opt-out and opt-in discovery are checked;
+the optional full study was not rerun. This is local self-validation, with no
+GitHub Actions execution yet.
 
 ### Preserved October 15 checkpoint
 

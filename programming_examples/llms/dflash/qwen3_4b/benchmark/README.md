@@ -25,6 +25,15 @@ protocol. The paper-era launcher used 128/128/164/128/80 examples for these five
 datasets and evaluated local MT-Bench conversation turns. We use 16 per dataset
 and first turns so the same workload can be compared across machines.
 
+The default nightly **Full20** takes the first four cases per dataset from this
+fixed manifest, without reshuffling or selecting by measured performance.
+**Full80** uses all sixteen per dataset and is optional. Both run B1 and DFlash
+once on identical selected inputs with the same 2048-token cap and timing
+boundary. `paired_benchmark.py` records the selected case IDs and checks each
+engine's input identities and per-dataset counts. The same cached archive serves
+both studies; Full20 needs no additional download. Use `make full20` or
+`make full80` and compare results within the same cohort size.
+
 The release archive referenced by `download.json` contains:
 
 - `inputs/cases.json` and 80 frozen CPU-prefilled `.npz` files, copied unchanged

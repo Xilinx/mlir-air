@@ -17,6 +17,7 @@ ifndef VERIFY_DIR
 VERIFY_DIR := $(BUILD_DIR)/verification/$(shell date +%Y%m%d-%H%M%S)
 endif
 PROFILE_OUTPUT ?= $(BUILD_DIR)/qwen3_4b_dflash_b8.perf.json
+FULL20_OUTPUT ?= $(BUILD_DIR)/qwen3_4b_dflash_b8.full20.json
 FULL80_OUTPUT ?= $(BUILD_DIR)/qwen3_4b_dflash_b8.full80.json
 OFFLINE ?= 0
 OFFLINE_ARG = $(if $(filter 1,$(OFFLINE)),--offline,)
@@ -30,7 +31,7 @@ PREFILL = --prefill npu --prefill-context $(PREFILL_CTX) --prefill-artifacts $(B
 MODEL_PAIR = --target $(BUILD_DIR)/target --draft $(BUILD_DIR)/draft --prepass $(BUILD_DIR)/prepass
 
 .NOTPARALLEL:
-.PHONY: help download weights compile compile-target compile-draft compile-prepass compile-prefill compile-baseline run chat verify verify-host verify-state verify-model profile full80 benchmark-data benchmark clean
+.PHONY: help download weights compile compile-target compile-draft compile-prepass compile-prefill compile-baseline run chat verify verify-host verify-state verify-model profile full20 full80 benchmark-data benchmark clean
 help:
 	@echo 'Qwen3-4B DFlash B8 on NPU2 (use the normal AIR environment)'
 	@echo 'make weights          Download pinned checkpoints and pack weights'
@@ -42,7 +43,8 @@ help:
 	@echo 'make verify           Host, device state and HF BF16 top-5 model checks'
 	@echo 'make benchmark        Fixed 80-prompt saved-prefill decode study'
 	@echo 'make profile          Fixed-prompt NPU prefill + DFlash performance JSON'
-	@echo 'make full80           Matched B1 + DFlash Full80 performance and speedup'
+	@echo 'make full20           Nightly B1 + DFlash study, 4 prompts per dataset'
+	@echo 'make full80           Optional B1 + DFlash study, 16 prompts per dataset'
 	@echo 'make clean            Remove this example build directory'
 
 download: benchmark-data
@@ -99,8 +101,11 @@ benchmark: benchmark-data
 profile:
 	$(NPU_RUN) $(srcdir)/profile_dflash.py --build $(BUILD_DIR) --output $(PROFILE_OUTPUT) --model qwen3_4b_dflash_b8
 
+full20: benchmark-data
+	$(NPU_RUN) $(srcdir)/paired_benchmark.py --build $(BUILD_DIR) --inputs $(BENCHMARK_BUNDLE)/inputs --per-dataset 4 --output $(FULL20_OUTPUT)
+
 full80: benchmark-data
-	$(NPU_RUN) $(srcdir)/full80.py --build $(BUILD_DIR) --inputs $(BENCHMARK_BUNDLE)/inputs --output $(FULL80_OUTPUT)
+	$(NPU_RUN) $(srcdir)/paired_benchmark.py --build $(BUILD_DIR) --inputs $(BENCHMARK_BUNDLE)/inputs --per-dataset 16 --output $(FULL80_OUTPUT)
 
 clean:
 	@case "$(abspath $(BUILD_DIR))" in "$(srcdir)"/build*) ;; *) echo 'Refusing to remove a directory outside this example build*'; exit 1;; esac
