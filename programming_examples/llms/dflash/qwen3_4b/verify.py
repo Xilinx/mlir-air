@@ -18,7 +18,7 @@ from model_paths import (
     default_target_cache,
 )
 from runtime import load_pair, prepare_prompt, tokenize_prompt
-from speculative import EOS_IDS, accept_greedy, autoregressive
+from speculative import accept_greedy, autoregressive
 
 
 def host_acceptance_gate() -> int:

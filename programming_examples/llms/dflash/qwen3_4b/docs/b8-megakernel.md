@@ -69,7 +69,7 @@ opportunity the NPU mapping realizes.
 ## Projection: retain the weight stream, change its consumers
 
 `batch_graph.py` retains the sixteen projection tiles in columns 0, 1, 6 and 7.
-Search for `_core_blk_np`, its `_mm()` loop, and the `proj_blk` herds. Each tile
+Search for `_core_blk`, its `_mm()` loop, and the `proj_blk` herds. Each tile
 receives the same kind of group-32 affine Q4 weight block as B1. It unpacks one
 block to a BF16 scratch buffer and uses it for all eight token rows before
 advancing the weight stream.
@@ -258,9 +258,9 @@ on top of the multi-token decoder.
 | Constraint | Selected design | Where to inspect |
 |---|---|---|
 | 64 KiB L1 per compute tile | Separate residual and normalized-slab ownership; bounded chunks for replay and output. | `rms`, `norm_cache`, `rmsb_l1`, `rstg_l1` in `batch_graph.py`. |
-| Weight/activation buffers and scratch need overlapping lifetimes | Preserve scratch/activation allocations outside reduction loops and pipeline weight transfer. | `_wscr_alloc()`, `_core_blk_np()`, `air.disable_alloc_sink`. |
+| Weight/activation buffers and scratch need overlapping lifetimes | Preserve scratch/activation allocations outside reduction loops and pipeline weight transfer. | `_wscr_alloc()`, `_core_blk()`, `air.disable_alloc_sink`. |
 | MemTile capacity, six DMA channels per direction and packet/circuit routing compatibility | Explicit B8 placement: activation staging in column 4, main projection gather in column 2; distribute attention rings separately. | `target_config.load_layout()`, `air.memtile_col`, and `air.memtile_dma_channel_min` annotations. |
-| DMA-owned storage must remain valid until consumption ends | Shared channel locks protect producer reuse; early K release exposes its actual last use; MemTile forwarding preserves its L2 owner. | Channel declarations, `EARLY_KEY_RELEASE`, and the [compiler fixes](compatibility.md). |
+| DMA-owned storage must remain valid until consumption ends | Shared channel locks protect producer reuse; early K release exposes its actual last use; MemTile forwarding preserves its L2 owner. | Channel declarations, `ParallelAttentionGraph.emit()`, and the [compiler fixes](compatibility.md). |
 | Shard outputs must join without borrowing live input storage | Reuse the dead score slab for the cascade output join. | `dflash_join_send()` / `dflash_join_receive()` in `attn_fused_batch.cc`. |
 
 The AIR compiler allocates buffers and locks and routes the declared channels.

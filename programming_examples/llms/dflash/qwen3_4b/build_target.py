@@ -1,8 +1,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Compile isolated current-toolchain target artifacts and save their exact ABI.
+"""Compile the selected B8 target or drafter and save its exact ABI.
 
-Use the standard AIR environment. Each template keeps its own
+Use the standard AIR environment. Each build keeps its own
 compiler intermediates; sources and artifacts are hashed in manifest.json.
 """
 
@@ -140,15 +140,9 @@ def main():
     ]
     flags += [
         "-DDFLASH_VECTOR_ATTN_NORM",
-        "-DDFLASH_FUSED_PV_RESCALE",
-        "-DDFLASH_ATTENTION_NATIVE_KEY=1",
-        "-DDFLASH_PV_REUSE=1",
         "-DPROJ_MM_BATCH=8",
-        "-DATTN_BATCH=8",
         "-DDECODE_ROUND_NEAREST",
         "-DATTN_QUERY_TILE=4",
-        "-DATTN_PAIR_QK=1",
-        "-DATTN_PAIR_PV=1",
     ]
     objdir = dest / "objects"
     objdir.mkdir()
@@ -171,8 +165,6 @@ def main():
         "proj_qmm": "proj",
         "rms_residual": "rms",
         "glu": "glu",
-        "attn_qk": "attn_qk",
-        "attn_kv": "attn_kv",
     }
     try:
         # The ABI of Peano's lifetime intrinsics requires llvm-link <23.
@@ -210,55 +202,45 @@ def main():
                 subprocess.run(cmd, check=True)
         from air.backend.xrt import XRTBackend
 
-        for length in cfg.build_lengths[:1]:
-            work = dest / f"compile_L{length}"
-            work.mkdir()
-            for p in objdir.iterdir():
-                shutil.copy2(p, work / p.name)
-            module, interface = build_module(cfg, length)
-            assert module.operation.verify()
-            (work / "input.mlir").write_text(str(module))
-            old = Path.cwd()
-            try:
-                os.chdir(work)
-                backend = XRTBackend(
-                    omit_while_true_loop=False,
-                    output_format="xclbin",
-                    kernel_name="MLIR_AIE",
-                    stack_size=cfg.stack_bytes,
-                    omit_pingpong="" if cfg.l2_pingpong else "L2",
-                    use_lock_race_condition_fix_v2=True,
-                    coalesce_shim_dma=bool(fd.COALESCE),
-                    emit_txn_cpp=cfg.dynamic_context,
-                    target_device="npu2",
-                )
-                print(
-                    "compiling template", length, "capacity", cfg.capacity, flush=True
-                )
-                artifact = backend.compile(
-                    module, output_binary_name="decode", insts="decode.insts.bin"
-                )
-            finally:
-                os.chdir(old)
-            files = (
-                {"xclbin": work / "decode.xclbin", "txn.h": work / artifact.txn_header}
-                if cfg.dynamic_context
-                else {
-                    suffix: work / f"decode.{suffix}"
-                    for suffix in ("xclbin", "insts.bin")
-                }
+        length = cfg.build_length
+        work = dest / f"compile_L{length}"
+        work.mkdir()
+        for p in objdir.iterdir():
+            shutil.copy2(p, work / p.name)
+        module, interface = build_module(cfg, length)
+        assert module.operation.verify()
+        (work / "input.mlir").write_text(str(module))
+        old = Path.cwd()
+        try:
+            os.chdir(work)
+            backend = XRTBackend(
+                omit_while_true_loop=False,
+                output_format="xclbin",
+                kernel_name="MLIR_AIE",
+                stack_size=cfg.stack_bytes,
+                omit_pingpong="" if cfg.l2_pingpong else "L2",
+                use_lock_race_condition_fix_v2=True,
+                coalesce_shim_dma=bool(fd.COALESCE),
+                emit_txn_cpp=cfg.dynamic_context,
+                target_device="npu2",
             )
-            prefix = (
-                f"decode_dyn_L{cfg.capacity}"
-                if cfg.dynamic_context
-                else f"decode_L{length}"
+            print("compiling template", length, "capacity", cfg.capacity, flush=True)
+            artifact = backend.compile(
+                module, output_binary_name="decode", insts="decode.insts.bin"
             )
-            for suffix, source in files.items():
-                out = dest / f"{prefix}.{suffix}"
-                shutil.copy2(source, out)
-                manifest["artifacts"][out.name] = sha(out)
-            manifest["abi"] = interface
-            write_json(dest / "manifest.json", manifest)
+        finally:
+            os.chdir(old)
+        files = {
+            "xclbin": work / "decode.xclbin",
+            "txn.h": work / artifact.txn_header,
+        }
+        prefix = f"decode_dyn_L{cfg.capacity}"
+        for suffix, source in files.items():
+            out = dest / f"{prefix}.{suffix}"
+            shutil.copy2(source, out)
+            manifest["artifacts"][out.name] = sha(out)
+        manifest["abi"] = interface
+        write_json(dest / "manifest.json", manifest)
         manifest["status"] = "compiled"
         write_json(dest / "manifest.json", manifest)
         print("compiled", dest, flush=True)

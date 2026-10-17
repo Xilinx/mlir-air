@@ -130,13 +130,11 @@ class ParallelAttentionGraph:
             f.IndexType.get(),
             f.arith.divui(f.arith.addi(length, self.ci(f.BATCH + 14)), self.ci(16)),
         )
-        return self.ix(f.ATTN_ROUNDS)
 
-    def emit(self, length, arm, trace_qk=None):
+    def emit(self, length, arm):
         f = self.f
         ix = self.ix
         ci = self.ci
-        early_key_release = getattr(f, "EARLY_KEY_RELEASE", False)
         for group in range(2):
 
             def memory(group=group):
@@ -304,8 +302,6 @@ class ParallelAttentionGraph:
                                 block = f.arith.index_cast(
                                     self.i32, f.arith.subi(local_frame, ix(2))
                                 )
-                                if trace_qk is not None:
-                                    trace_qk(cu, ty, q, k, s)
                                 f.CallOp(
                                     self.qk,
                                     [
@@ -320,48 +316,33 @@ class ParallelAttentionGraph:
                                         ci(int(f.CAUSAL)),
                                     ],
                                 )
-                                if not early_key_release:
-                                    f.ChannelGet(f"pv{cu}", v, indices=[ix(0), ty])
-                                    f.CallOp(
-                                        self.pv,
-                                        [
-                                            s,
-                                            v,
-                                            y,
-                                            l,
-                                            block,
-                                            mask_length,
-                                            ci(int(f.CAUSAL)),
-                                        ],
-                                    )
                                 f.yield_([])
-                            if early_key_release:
-                                # Finish K's last-use region before acquiring V.
-                                consume = f.IfOp(
-                                    f.arith.cmpi(
-                                        f.arith.CmpIPredicate.uge, local_frame, ix(2)
-                                    ),
-                                    [],
-                                    has_else=False,
+                            # Finish K's last-use region before acquiring V.
+                            consume = f.IfOp(
+                                f.arith.cmpi(
+                                    f.arith.CmpIPredicate.uge, local_frame, ix(2)
+                                ),
+                                [],
+                                has_else=False,
+                            )
+                            with f.InsertionPoint(consume.thenRegion.blocks[0]):
+                                block = f.arith.index_cast(
+                                    self.i32, f.arith.subi(local_frame, ix(2))
                                 )
-                                with f.InsertionPoint(consume.thenRegion.blocks[0]):
-                                    block = f.arith.index_cast(
-                                        self.i32, f.arith.subi(local_frame, ix(2))
-                                    )
-                                    f.ChannelGet(f"pv{cu}", v, indices=[ix(0), ty])
-                                    f.CallOp(
-                                        self.pv,
-                                        [
-                                            s,
-                                            v,
-                                            y,
-                                            l,
-                                            block,
-                                            mask_length,
-                                            ci(int(f.CAUSAL)),
-                                        ],
-                                    )
-                                    f.yield_([])
+                                f.ChannelGet(f"pv{cu}", v, indices=[ix(0), ty])
+                                f.CallOp(
+                                    self.pv,
+                                    [
+                                        s,
+                                        v,
+                                        y,
+                                        l,
+                                        block,
+                                        mask_length,
+                                        ci(int(f.CAUSAL)),
+                                    ],
+                                )
+                                f.yield_([])
                             f.yield_([])
                         f.CallOp(self.fin, [y, l, o, first])
                         join = f.IfOp(

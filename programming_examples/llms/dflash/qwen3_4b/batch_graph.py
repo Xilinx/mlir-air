@@ -25,41 +25,23 @@ def build_module(layout):
             + layout.UNI_LM * layout.VOCAB_W_BLOCKS
         )
         w_l3 = layout.MemRefType.get([_w_blocks * layout.BLOCK_BF16], bf16)
-        _wgrp_len = [
-            min(layout.W_GROUP, layout.UNI_DEC - g * layout.W_GROUP) * layout.W_LAYER
-            for g in range(layout.N_WGRP)
-        ]
-        _wvoc_len = layout.UNI_LM * layout.VOCAB_W_BLOCKS * layout.BLOCK_BF16
-        _w_extra = []
         rms_l3 = layout.MemRefType.get(
             [
                 layout.UNI_DEC * layout.RMS_LAYER
                 + layout.UNI_DEC * layout.ROPE_W_LEN * layout.BATCH
                 + layout.K
-                + 0
-                + 0
-                + 0
             ],
             bf16,
         )
         _y_elems = (
             (layout.HOST_ROUNDS + layout.LAYER_RNDS) * layout.PAYLOAD * layout.BATCH
             + layout.UNI_LM * layout.VOCAB_SIZE_PADDED * layout.BATCH
-            + 0
         )
-        _y_scratch_off = _y_elems
-        _y_elems += 0
         y_l3 = layout.MemRefType.get([_y_elems], bf16)
         kvc_l3 = layout.MemRefType.get(
             [layout.UNI_DEC * layout.ATTN_MAXL * layout.KVSZ_TOK], bf16
         )
-        xblk_l1 = layout.MemRefType.get([layout.COL_BLOCK], bf16, memory_space=l1)
         wblk_l1 = layout.MemRefType.get([layout.BLOCK_BF16], bf16, memory_space=l1)
-        yacc_l1 = layout.MemRefType.get([layout.ROW_BLOCK], f32, memory_space=l1)
-        rcache_l1 = layout.MemRefType.get([layout.RCACHE_LEN], bf16, memory_space=l1)
-        ypair_l1 = layout.MemRefType.get(
-            [16 + layout.PAIR_ROWS * layout.ROW_BLOCK], bf16, memory_space=l1
-        )
         xblk_mm_l1 = layout.MemRefType.get(
             [layout.BATCH * layout.COL_BLOCK], bf16, memory_space=l1
         )
@@ -91,7 +73,6 @@ def build_module(layout):
         ropeq_l1 = layout.MemRefType.get([layout.DQ_PADDED], bf16, memory_space=l1)
         ropekv_l1 = layout.MemRefType.get([layout.DK], bf16, memory_space=l1)
         ropelut_l1 = layout.MemRefType.get([layout.ROPE_W_LEN], bf16, memory_space=l1)
-        qkvmt_l2 = layout.MemRefType.get([layout.M], bf16, memory_space=l2)
         qmt_l2 = layout.MemRefType.get(
             [layout.BATCH * layout.DQ_PADDED], bf16, memory_space=l2
         )
@@ -114,29 +95,6 @@ def build_module(layout):
             [layout.BATCH * layout.GLU_OUT], bf16, memory_space=l2
         )
         RELAY_COLS = [3, 5, 4][: layout.NDEST]
-        RELAY_COLS[0] = int(RELAY_COLS[0])
-        zero = layout.FuncOp(
-            "proj_qmm_zero", ([yacc_l1, i32], []), visibility="private"
-        )
-        zero.attributes["link_with"] = layout.StringAttr.get("proj_qmm.o")
-        acc256 = layout.FuncOp(
-            "proj_qmm_acc256", ([xblk_l1, wblk_l1, yacc_l1], []), visibility="private"
-        )
-        acc256.attributes["link_with"] = layout.StringAttr.get("proj_qmm.o")
-        acc256_c = layout.FuncOp(
-            "proj_qmm_acc256_c",
-            ([xblk_l1, wblk_l1, yacc_l1, rcache_l1, i32, i32], []),
-            visibility="private",
-        )
-        acc256_c.attributes["link_with"] = layout.StringAttr.get("proj_qmm.o")
-        rc_arm = layout.FuncOp(
-            "proj_qmm_rc_arm", ([rcache_l1, i32], []), visibility="private"
-        )
-        rc_arm.attributes["link_with"] = layout.StringAttr.get("proj_qmm.o")
-        flush_row = layout.FuncOp(
-            "proj_qmm_flush_row", ([yacc_l1, ypair_l1, i32], []), visibility="private"
-        )
-        flush_row.attributes["link_with"] = layout.StringAttr.get("proj_qmm.o")
         mm_zero = layout.FuncOp(
             "proj_qmm_mm_zero", ([yacc_mm_l1, i32], []), visibility="private"
         )
@@ -153,10 +111,6 @@ def build_module(layout):
             visibility="private",
         )
         mm_flush.attributes["link_with"] = layout.StringAttr.get("proj_qmm.o")
-        rms_norm_aie = layout.FuncOp(
-            "rms_norm_aie", ([rms_l1, rms_l1, rms_l1, i32], []), visibility="private"
-        )
-        rms_norm_aie.attributes["link_with"] = layout.StringAttr.get("rms_residual.o")
         rms_scale_row_aie = layout.FuncOp(
             "rms_scale_row_aie",
             ([rscl_l1, rmsb_l1, i32, i32], []),
@@ -179,16 +133,6 @@ def build_module(layout):
         residual_acc_row_aie.attributes["link_with"] = layout.StringAttr.get(
             "rms_residual.o"
         )
-        residual_add_aie = layout.FuncOp(
-            "residual_add_aie", ([rms_l1, rms_l1, rms_l1], []), visibility="private"
-        )
-        residual_add_aie.attributes["link_with"] = layout.StringAttr.get(
-            "rms_residual.o"
-        )
-        glu_aie = layout.FuncOp(
-            "glu_aie", ([glu_hid_l1, glu_x_l1, i32], []), visibility="private"
-        )
-        glu_aie.attributes["link_with"] = layout.StringAttr.get("glu.o")
         glu_row_aie = layout.FuncOp(
             "glu_row_aie", ([glu_hid_l1, glu_x_l1, i32, i32], []), visibility="private"
         )
@@ -213,26 +157,20 @@ def build_module(layout):
             visibility="private",
         )
         cache_copy.attributes["link_with"] = layout.StringAttr.get("norm_cache.o")
-        _rx_packet = True
-        if _rx_packet:
-            _rx = layout.channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
-        else:
-            _rx = layout.channel_decl("rmsX", size=[1])
+        layout.channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
         layout.channel_decl("rmsW", size=[1])
-        _rw2 = layout.channel_decl("rmsW2", size=[1])
-        # With replay, xnorm is a single producer/consumer stream into a full
-        # normalized slab. A circuit stream lets five 8-KiB core chunks fill
-        # one 40-KiB slab without packet-boundary aggregation or shared arbiters.
-        _xn = layout.channel_decl(
-            "xnorm", size=[1], **({"channel_type": "npu_dma_packet"})
-        )
+        layout.channel_decl("rmsW2", size=[1])
+        # xnorm_fill carries five 8-KiB chunks into the cache core's 40-KiB
+        # slab over a circuit stream. xnorm replays cached chunks as packets
+        # through the activation MemTile to the projection cores.
+        layout.channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
         _fill = layout.channel_decl("xnorm_fill", size=[1])
         _fill.operation.attributes["air.tile_dma_channel"] = layout.IntegerAttr.get(
             i32, 0
         )
         _XCHUNK = layout.XCHUNK
 
-        def _xnorm_put(buf, width, ssa=False, **kw):
+        def _xnorm_put(buf, width, **kw):
             assert (
                 width % _XCHUNK == 0
             ), f"@xnorm producer width {width} is not a multiple of {_XCHUNK}; the X memtile stages whole chunks"
@@ -251,31 +189,20 @@ def build_module(layout):
         _inX.operation.attributes["air.shared_resident_ring"] = layout.UnitAttr.get()
         layout.channel_decl("ropeLUT", size=[1])
         layout.channel_decl("toRope", size=[1])
-        _ropeQ = layout.channel_decl("ropeQ", size=[1])
-        layout.channel_decl("toAttnQ", size=[layout.N_ATTN_CU])
-        layout.channel_decl(
-            "toAttnKV",
-            size=[len(layout.ATTN_COL_GROUPS)],
-            channel_type="npu_dma_packet",
-        )
-        layout.channel_decl("toK", size=[layout.N_ATTN_CU])
-        layout.channel_decl("toV", size=[layout.N_ATTN_CU])
-        _apK = layout.channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
-        _apV = layout.channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
+        layout.channel_decl("ropeQ", size=[1])
+        layout.channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
+        layout.channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
         for kind in ("K", "V"):
             layout.channel_decl(f"inKV_{kind}", size=[len(layout.ATTN_COL_GROUPS)])
-        layout.channel_decl("attnO", size=[layout.N_ATTN_CU])
         for _wc in range(layout.NCX):
             for _nm in (layout._wname(0, _wc), layout._wname(1, _wc)):
                 layout.channel_decl(_nm, size=[1])
         _wL2 = layout.channel_decl("wL2ToL1", size=[layout.NCX, layout.NCY])
         _wL2.operation.attributes["air.shared_resident_ring"] = layout.UnitAttr.get()
         _gather_type = {"channel_type": "npu_dma_packet"}
-        _outA = layout.channel_decl(
-            "outA", size=[layout.NCX, layout.PAIRS_PC], **_gather_type
-        )
+        layout.channel_decl("outA", size=[layout.NCX, layout.PAIRS_PC], **_gather_type)
         _main_type = {"channel_type": "npu_dma_packet"}
-        _toMain = layout.channel_decl("toMain", size=[layout.N_GRP], **_main_type)
+        layout.channel_decl("toMain", size=[layout.N_GRP], **_main_type)
         _outY = layout.Channel("outY", size=[1, 1], broadcast_shape=[1, layout.NDEST])
         _outY.operation.attributes["channel_type"] = layout.StringAttr.get(
             "npu_dma_packet"
@@ -283,7 +210,6 @@ def build_module(layout):
         _outY.operation.attributes["air.tile_dma_channel"] = layout.IntegerAttr.get(
             layout.T.i32(), 1
         )
-        layout.channel_decl("toShim", size=[layout.NDEST])
         _layerOut = layout.channel_decl("layerOut", size=[1])
         _layerOut.operation.attributes["air.tile_dma_channel"] = layout.IntegerAttr.get(
             i32, 1
@@ -302,16 +228,13 @@ def build_module(layout):
                     out.append((g * _cpg + lc, pp))
             return out
 
-        _fn_args = [x_l3, w_l3, rms_l3, y_l3] + [kvc_l3] + _w_extra + ([i32])
+        _fn_args = [x_l3, w_l3, rms_l3, y_l3, kvc_l3, i32]
 
         @layout.FuncOp.from_py_func(*_fn_args)
         def q4nx_decode(*_fa):
 
             def launch_body(*_la):
                 X, W, RMS, Y = (_la[4], _la[5], _la[6], _la[7])
-                _WBUFS = [W]
-                _WEXTRA = None
-                _wsel = [None]
                 KVC = _la[8]
                 L_rt = _la[4 + len(_fa) - 1]
 
@@ -421,14 +344,10 @@ def build_module(layout):
                             _feed_wcol(_cxi, _cbase, nsteps, Wb)
                         return
 
-                    if _wsel[0] == "extra":
-                        _fan(_WEXTRA)
-                    else:
-                        _fan(W)
+                    _fan(W)
 
                 for _layer in range(layout.NLAYERS if a_iv is None else 1):
                     _wbase = _lb(layout.W_LAYER)
-                    _wgi = None
                     _rbase = _lb(layout.RMS_LAYER)
                     _kbase = _lb(layout.KV_LAYER)
                     _ybase = _lb(layout.Y_LAYER)
@@ -452,7 +371,6 @@ def build_module(layout):
                     )
 
                     def _uni_voc():
-                        _wsel[0] = None
                         _vwb = layout.arith.addi(
                             idx(layout.UNI_DEC * layout.W_LAYER),
                             layout.arith.muli(
@@ -506,7 +424,6 @@ def build_module(layout):
                         layout.yield_([])
 
                     def _uni_dec():
-                        _wsel[0] = _wgi
                         layout.ChannelPut(
                             "rmsX",
                             X,
@@ -764,7 +681,6 @@ def build_module(layout):
                     _xc_dec = layout.N_XBLK // layout.XCHUNK_MUL
                     _xc_voc = layout.VOCAB_RNDS * (layout.K // layout.XCHUNK)
                     if _seg_arm_i is not None:
-                        _NCH = layout.K // layout.XCHUNK
 
                         def _xs_voc():
                             _feed_inX("xnorm", _xc_voc)
@@ -1062,34 +978,8 @@ def build_module(layout):
                             sizes=[idx(layout.BATCH * layout.DQ_PADDED)],
                             strides=[idx(1)],
                         )
-                        _qmtb_fan(qmtb)
-                        layout.DeallocOp(qmtb)
-
-                    def _qmtb_fan(qmtb):
                         parallel_attention.query(qmtb)
-                        return
-                        _bt = [idx(layout.BATCH)]
-                        _bs = [idx(layout.DQ_PADDED)]
-                        _bo = [idx(0)]
-                        for c in range(layout.N_ATTN_CU):
-                            layout.ChannelPut(
-                                "toAttnQ",
-                                qmtb,
-                                indices=[idx(c)],
-                                offsets=_bo
-                                + [
-                                    idx(0),
-                                    idx(c * layout.Q_HEADS_PADDED_PER_CU),
-                                    idx(0),
-                                ],
-                                sizes=_bt
-                                + [
-                                    idx(layout.DH // 8),
-                                    idx(layout.Q_HEADS_PADDED_PER_CU),
-                                    idx(8),
-                                ],
-                                strides=_bs + [idx(8), idx(layout.DH), idx(1)],
-                            )
+                        layout.DeallocOp(qmtb)
 
                     if _seg_arm_i is not None:
 
@@ -1119,61 +1009,12 @@ def build_module(layout):
                             layout.IntegerAttr.get(layout.T.i32(), 5)
                         )
 
-                        def _o_gather(_toff):
-                            for c in range(layout.N_ATTN_CU):
-                                layout.ChannelGet(
-                                    "attnO",
-                                    omtb,
-                                    indices=[idx(c)],
-                                    offsets=[
-                                        (
-                                            idx(c * layout.DQ_PER_CU)
-                                            if _toff is None
-                                            else layout.arith.addi(
-                                                _toff, idx(c * layout.DQ_PER_CU)
-                                            )
-                                        )
-                                    ],
-                                    sizes=[idx(layout.DQ_PER_CU)],
-                                    strides=[idx(1)],
-                                )
-
-                        def _o_gather_block():
-                            parallel_attention.gather(omtb)
-                            return
-                            assert layout.DH % 8 == 0
-                            for c in range(layout.N_ATTN_CU):
-                                layout.ChannelGet(
-                                    "attnO",
-                                    omtb,
-                                    indices=[idx(c)],
-                                    offsets=[
-                                        idx(0),
-                                        idx(0),
-                                        idx(0),
-                                        idx(c * layout.DQ_PER_CU),
-                                    ],
-                                    sizes=[
-                                        idx(layout.BATCH),
-                                        idx(layout.DH // 8),
-                                        idx(layout.Q_HEADS_PER_CU),
-                                        idx(8),
-                                    ],
-                                    strides=[
-                                        idx(layout.DQ),
-                                        idx(8),
-                                        idx(layout.DH),
-                                        idx(1),
-                                    ],
-                                )
-
-                        _o_gather_block()
+                        parallel_attention.gather(omtb)
                         layout.refeed(
                             layout.OPROJ_REFEED,
                             lambda: _xnorm_put(
                                 omtb,
                                 layout.N_ATTN_CU * layout.DQ_PER_CU,
-                                ssa=True,
                                 indices=[idx(0)],
                             ),
                         )
@@ -1403,7 +1244,7 @@ def build_module(layout):
                         )
                         return scratch
 
-                    def _core_blk_np(base_cx):
+                    def _core_blk(base_cx):
 
                         def body(tx, ty, _sx, _sy, _arm):
                             gcx = layout.arith.addi(idx(base_cx), tx)
@@ -1412,45 +1253,30 @@ def build_module(layout):
                             j2c = [idx(v) for v in layout.J2P]
                             pktc = [idx(d) for d in layout.DEST]
                             c2 = idx(2)
-                            c0i = layout.arith.ConstantOp(
-                                layout.IntegerAttr.get(i32, 0), None
-                            ).result
                             _ws = _wscr_alloc()
-
-                            def _wscr():
-                                return _ws
 
                             def _mm(J2v):
                                 J2x2 = layout.arith.muli(J2v, c2)
                                 a_acc = layout.AllocOp(yacc_mm_l1, [], [])
-                                a_ws = _wscr()
+                                a_ws = _ws
                                 layout.CallOp(mm_zero, [a_acc, _arm])
-                                a_x_resident = None
                                 a_x_resident = layout.AllocOp(xblk_mm_l1, [], [])
                                 a_x_resident.operation.attributes[
                                     "air.disable_alloc_sink"
                                 ] = layout.UnitAttr.get()
                                 for _j in layout.for_(idx(0), J2x2, idx(1)):
-                                    a_x = (
-                                        a_x_resident
-                                        if a_x_resident is not None
-                                        else layout.AllocOp(xblk_mm_l1, [], [])
-                                    )
+                                    a_x = a_x_resident
                                     layout.ChannelGet("inX", a_x, indices=[gcx, gcy])
                                     a_w = layout.AllocOp(wblk_l1, [], [])
                                     layout.ChannelGet(
                                         "wL2ToL1", a_w, indices=[gcx, gcy]
                                     )
                                     layout.CallOp(mm_acc, [a_x, a_w, a_acc, a_ws])
-                                    if a_x_resident is None:
-                                        layout.DeallocOp(a_x)
                                     layout.DeallocOp(a_w)
                                     layout.yield_([])
-                                if a_x_resident is not None:
-                                    layout.DeallocOp(a_x_resident)
+                                layout.DeallocOp(a_x_resident)
                                 return a_acc
 
-                            _proj = _mm
                             _tokstr = layout.arith.ConstantOp(
                                 layout.IntegerAttr.get(i32, layout.PAIR_ROWS), None
                             ).result
@@ -1482,21 +1308,6 @@ def build_module(layout):
                                     layout.yield_([])
                                 layout.DeallocOp(a_acc)
                                 return
-                                yb = layout.AllocOp(ypair_mm_l1, [], [])
-                                layout.CallOp(mm_flush, [a_acc, yb, c0i, _tokstr])
-                                layout.ChannelPut(
-                                    "outA",
-                                    yb,
-                                    indices=[gcx, ty],
-                                    offsets=[idx(14)],
-                                    sizes=[
-                                        idx(layout.HDR + layout.PAIR_PAY * layout.BATCH)
-                                    ],
-                                    strides=[idx(1)],
-                                    dest=destv,
-                                )
-                                layout.DeallocOp(yb)
-                                layout.DeallocOp(a_acc)
 
                             _arm_i = layout.arith.index_cast(idx_t, _arm)
                             _id4 = idx(layout.VOCAB_DEST)
@@ -1535,14 +1346,11 @@ def build_module(layout):
                                 )
                                 for _v1 in layout.for_(idx(0), I2v, idx(1)):
                                     for _e in range(layout.PAIR_ROWS):
-                                        _emit(_proj(J2v), pktv)
+                                        _emit(_mm(J2v), pktv)
                                     layout.yield_([])
                                 layout.yield_([])
 
                         return body
-
-                    def _core_blk(base_cx):
-                        return _core_blk_np(base_cx)
 
                     _arm_proj = _seg_arm
                     for blk in range(layout.NCX // 2):
@@ -1565,7 +1373,6 @@ def build_module(layout):
                     _arm_rms = _seg_arm
 
                     def _rms_body(tx, ty, _sx, _sy, _arm):
-                        _SINGLE_RMS = True
                         _rms_batched(_arm)
                         return
 
@@ -1648,8 +1455,6 @@ def build_module(layout):
                                 layout.yield_([])
 
                         xb = layout.AllocOp(rmsb_l1, [], [])
-                        xr = None
-                        sg2 = None
                         layout.ChannelGet("rmsX", xb, indices=[idx(0)])
                         stg = layout.AllocOp(rstg_l1, [], [])
                         scl = layout.AllocOp(rscl_l1, [], [])
@@ -1701,12 +1506,7 @@ def build_module(layout):
                             lambda: _accumulate(DOWN_RNDS, 2), decode_only=bool(0)
                         )
                         _if_decode(_layer_out)
-                        for _b in (
-                            [w2]
-                            + ([xr] if xr is not None else [])
-                            + ([sg2] if sg2 is not None else [])
-                            + [w, scl, stg, xb]
-                        ):
+                        for _b in (w2, w, scl, stg, xb):
                             layout.DeallocOp(_b)
 
                     rms_h = layout.herd(name="rms", sizes=[1, 1], operands=[_arm_rms])(

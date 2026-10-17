@@ -8,8 +8,8 @@ The host's draft/verify/commit loop is in [speculative.py](../speculative.py).
 
 All paths below are relative to the Qwen3-4B example unless stated otherwise.
 The supported configuration is selected by `selected_config()` and the flags
-in `build_target.py`; conditional helper definitions in a source file can serve
-other configurations without being executed by this example.
+in `build_target.py`. This example contains the selected B8 path; historical
+mapping experiments are outside its source tree.
 
 ## Follow a build or request
 
@@ -60,7 +60,7 @@ verification. [ARCHITECTURE.md](../ARCHITECTURE.md) describes that state flow.
 |---|---|
 | [selected_config.py](../selected_config.py) | Fixes B8, capacity 4096, 36 target / 5 drafter layers and role-specific visibility; rejects runtime artifacts from a different mapping. |
 | [target_config.py](../target_config.py) | `TargetConfig`, `load_geometry()`, `load_layout()` and `abi()`. Imports shared B1 geometry, declares B8 buffer/layout choices, and calls the B8 graph builder. |
-| [batch_graph.py](../batch_graph.py) | `build_module()` constructs the complete AIR graph: weight streams, activation and output layouts, KV append/readback, projection herds, RoPE, MLP, residual/RMS and normalized-activation cache. Search for `_core_blk_np`, `_rms_batched_norm`, `norm_cache` and `parallel_attention`. |
+| [batch_graph.py](../batch_graph.py) | `build_module()` constructs the complete AIR graph: weight streams, activation and output layouts, KV append/readback, projection herds, RoPE, MLP, residual/RMS and normalized-activation cache. Search for `_core_blk`, `_rms_batched_norm`, `norm_cache` and `parallel_attention`. |
 | [fused_attention_graph.py](../fused_attention_graph.py) | `ParallelAttentionGraph.query()`, `emit()` and `gather()` connect Q/K relays, K/V distribution, eight four-query/head shards and their output join. |
 | [build_target.py](../build_target.py) | Compiles tile functions with Peano, builds the AIR module, calls `XRTBackend.compile()`, and saves the xclbin, transaction header, source snapshot and manifest. Supports checked reuse of target objects for drafter compilation. |
 | [build_identity.py](../build_identity.py) | Fingerprints build inputs and rejects an existing artifact directory when compiler, dependency or relevant source identities differ. |
@@ -73,7 +73,7 @@ and placement are controlled by the Python builders above.
 | File | Responsibility in the selected B8 path |
 |---|---|
 | [kernels/proj_batch.cc](../kernels/proj_batch.cc) | Projection accumulator initialization, weight unpack + thin GEMM, and per-token packet output. Calls `q4k_mmul_small<..., 8>()`. |
-| [kernels/q4k_batch.h](../kernels/q4k_batch.h) | Q4 unpacking into matrix layout and the B8 `aie::mmul<8,8,8>` microkernel with four output accumulators. Also contains B16 helpers; this example's builder selects B8. |
+| [kernels/q4k_batch.h](../kernels/q4k_batch.h) | Q4 unpacking into matrix layout and the B8 `aie::mmul<8,8,8>` microkernel with four output accumulators. |
 | [kernels/rms_batch.cc](../kernels/rms_batch.cc) | `rms_scale_row_aie()`, `rms_chunk_aie()` and `residual_acc_row_aie()` implement independent row factors, normalized chunks and residual updates. |
 | [kernels/norm_cache.cc](../kernels/norm_cache.cc) | `normalized_cache_chunk()` copies cached B8 normalized chunks bit-for-bit for projection refeed. The AIR `norm_cache` herd owns the full cached slab. |
 | [kernels/glu_batch.cc](../kernels/glu_batch.cc) | Row-wise gate/up activation and elementwise combination for the MLP. |
@@ -81,9 +81,8 @@ and placement are controlled by the Python builders above.
 | [kernels/attn_qk_batch.cc](../kernels/attn_qk_batch.cc) | Batched QK entry points; dispatches the selected tile operation to the paired-query implementation. |
 | [kernels/attn_pair_qk.h](../kernels/attn_pair_qk.h) | Pairs two queries for matrix arithmetic, consumes native-layout K, and updates each query/head's masked online-softmax state. |
 | [kernels/attn_kv_batch.cc](../kernels/attn_kv_batch.cc) | PV entry points and final normalization; handles partially visible key blocks with per-query V masking before BFP conversion. |
-| [kernels/attn_pair_pv.h](../kernels/attn_pair_pv.h) | Selects the PV implementation for a fully visible key block. With `DFLASH_PV_REUSE`, calls `dflash_pv_reuse_v()`. |
+| [kernels/attn_pair_pv.h](../kernels/attn_pair_pv.h) | Checks the query/head geometry and calls `dflash_pv_reuse_v()` for a fully visible key block. |
 | [kernels/attn_reuse_pv.h](../kernels/attn_reuse_pv.h) | Prepares probabilities for two query pairs and lets both pairs consume each V operand, preserving separate FP32 rescaling and addition. |
-| [kernels/attn_optimized_qk.h](../kernels/attn_optimized_qk.h), [kernels/attn_optimized_pv.h](../kernels/attn_optimized_pv.h) | Conditional helpers retained by the attention wrappers. The selected build leaves packed QK correction disabled and takes the PV-reuse branch ahead of the alternative fused-rescale routine. |
 
 RoPE reuses [fused_decode/kernels/rope.cc](../../../../fused_decode/kernels/rope.cc).
 Several wrappers also include shared projection, RMS, GLU and attention code

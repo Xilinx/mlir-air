@@ -1,13 +1,5 @@
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
-#if PROJ_MM_BATCH == 16
-#include <aie_api/aie.hpp>
-// The B16 full graph puts an RTP word before these LUTs. Peano does not
-// preserve the inherited chess alignment annotation; aie::lut needs 64-byte
-// vector_decl_align on NPU2, independently of otherwise valid buffer bounds.
-extern float activation_lut_ab[] __attribute__((aligned(aie::vector_decl_align)));
-extern float activation_lut_cd[] __attribute__((aligned(aie::vector_decl_align)));
-#endif
 #include "fused_decode/kernels/glu.cc"
 
 extern "C" {

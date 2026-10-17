@@ -76,9 +76,9 @@ class TargetConfig:
             raise ValueError("KV capacity must be a positive multiple of 16")
 
     @property
-    def build_lengths(self):
-        last = self.capacity - self.batch + 1
-        return (last, last - 1)
+    def build_length(self):
+        """One dynamic template covers every valid position in this capacity."""
+        return self.capacity - self.batch + 1
 
 
 @contextmanager
@@ -108,9 +108,9 @@ def builder_environment(config, length):
 
 
 def load_geometry(config, length=None):
-    length = config.build_lengths[0] if length is None else length
-    if length not in config.build_lengths:
-        raise ValueError("build length must be one of the explicit calibration pair")
+    length = config.build_length if length is None else length
+    if length != config.build_length:
+        raise ValueError("build length must cover the configured KV capacity")
     if str(FUSED) not in sys.path:
         sys.path.insert(0, str(FUSED))
     with builder_environment(config, length):
@@ -292,11 +292,6 @@ def load_layout(config, length=None):
         X_SLOTS=config.layers + 1 if config.taps else 1,
     )
 
-    def set_attention_link(op, base):
-        op.attributes["link_with"] = StringAttr.get(base + ".ll")
-        op.attributes["link_with_mode"] = StringAttr.get("merge")
-
-    ns["_set_attn_link"] = set_attention_link
     return SimpleNamespace(**ns)
 
 

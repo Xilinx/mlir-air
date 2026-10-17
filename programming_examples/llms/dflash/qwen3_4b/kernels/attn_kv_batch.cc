@@ -31,27 +31,18 @@ void attn_kv_blk(bf16 *__restrict scores, bf16 *__restrict values,
   attn_kv_blk_unmasked(scores, values, output, denominator, block, length);
 }
 
-extern "C" __attribute__((always_inline))
-void attn_kv_fin_row(float *__restrict y, float *__restrict denominator,
-                     bf16 *__restrict output, int row) {
-  attn_kv_fin(y, denominator, output + row * Q_HEADS_PADDED_PER_CU * DH);
-}
-
 #include "attn_pair_pv.h"
 
-#if defined(ATTN_QUERY_TILE) && ATTN_QUERY_TILE > 1
 extern "C" __attribute__((always_inline))
 void attn_kv_blk_tile(bf16 *__restrict scores, bf16 *__restrict values,
                       float *__restrict output, float *__restrict denominator,
                       int block, int length, int causal) {
-#if defined(ATTN_PAIR_PV) && ATTN_PAIR_PV
   // A shared V operand is safe only when all queries use the full key tile.
   // Causal boundary tiles retain separate in-place masks in descending order.
   if (length - block * 16 >= 16) {
     dflash_pv_full_tile(scores, values, output, denominator, block);
     return;
   }
-#endif
   // attn_kv_blk clears a query's masked values IN PLACE before BFP16 packing.
   // Visit the least restrictive query first. Descending masks then only clear
   // additional values, so every query sees exactly its original operand words.
@@ -71,4 +62,3 @@ void attn_kv_fin_tile(float *__restrict y, float *__restrict denominator,
                 denominator + local * 16,
                 output + (first_row + local) * Q_HEADS_PADDED_PER_CU * DH);
 }
-#endif

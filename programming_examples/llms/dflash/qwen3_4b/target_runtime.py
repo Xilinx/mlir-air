@@ -54,15 +54,9 @@ class TargetDecoder:
         for name, want in manifest["artifacts"].items():
             if hashlib.sha256((self.artifacts / name).read_bytes()).hexdigest() != want:
                 raise ValueError("Artifact hash mismatch: " + name)
-        expected = (
-            {f"decode_dyn_L{self.config.capacity}.{ext}" for ext in ("xclbin", "txn.h")}
-            if self.config.dynamic_context
-            else {
-                f"decode_L{l}.{ext}"
-                for l in self.config.build_lengths
-                for ext in ("xclbin", "insts.bin")
-            }
-        )
+        expected = {
+            f"decode_dyn_L{self.config.capacity}.{ext}" for ext in ("xclbin", "txn.h")
+        }
         if set(manifest["artifacts"]) != expected:
             raise ValueError("Unexpected template set")
         self.batch = self.config.batch
@@ -82,14 +76,12 @@ class TargetDecoder:
         for path in (FUSED, HERE.parents[1] / "qwen3_4b_q4nx"):
             if str(path) not in sys.path:
                 sys.path.insert(0, str(path))
-        from decode_insts_gen import DecodeInstsGen
         from decode_dynseq import DynseqInstsGen, make_insts_states, patch_insts
         from decode_staircase import open_windows
         import qwen3_4b_q4nx_weights as weights
 
         self.weights = weights
-        generator = DynseqInstsGen if self.config.dynamic_context else DecodeInstsGen
-        self.gen = generator(str(self.artifacts), max_L=self.capacity)
+        self.gen = DynseqInstsGen(str(self.artifacts), max_L=self.capacity)
         if self.gen.calibrated_windows() != [self.capacity]:
             raise ValueError("Template capacity disagrees with manifest")
         self.dev = xrt.device(0)
