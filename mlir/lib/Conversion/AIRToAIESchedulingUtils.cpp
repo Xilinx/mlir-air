@@ -990,9 +990,16 @@ air::DMAAllocator::lookupDMAAllocation(AIE::TileLike tile,
 // write acquires k, and each read releases one. A slot is refilled only once
 // all k of its reads have released, which holds when every read lies in one
 // slot and the reads take the slots in the order they were written, on one
-// channel (reads on several channels run independently). Returns 0 for any
-// other buffer.
-static int64_t slotBufferWriteLockInit(Value buffer) {
+// channel (reads on several channels run independently). The transfers may
+// sit in different loops when all their loops have the same bounds and each
+// side's transfers form one BD task of their DMA channel: the BD chains then
+// take them in program order on every trip. `channelOps` gives the transfers
+// on the DMA channel that carries a transfer, in the order its BDs are built.
+// Returns 0 for any other buffer.
+static int64_t slotBufferWriteLockInit(
+    Value buffer,
+    function_ref<std::optional<std::vector<Operation *>>(Operation *)>
+        channelOps) {
   using Span = std::pair<int64_t, int64_t>;
   auto spanOf = [](air::ChannelInterface chan) -> std::optional<Span> {
     if (chan.getMixedOffsets().empty())
@@ -1038,13 +1045,57 @@ static int64_t slotBufferWriteLockInit(Value buffer) {
   };
   if (!oneChannel(writes) || !oneChannel(reads))
     return 0;
-  // Program order of the transfers, all in one block.
-  Block *block = writes.front().first->getBlock();
-  auto inBlock = [&](auto &p) { return p.first->getBlock() == block; };
-  if (!llvm::all_of(writes, inBlock) || !llvm::all_of(reads, inBlock))
+  // The loops from a transfer out to the buffer's region, innermost first;
+  // nothing else may lie between.
+  Region *top = buffer.getParentRegion();
+  auto loopsAround =
+      [&](Operation *op) -> std::optional<SmallVector<scf::ForOp>> {
+    SmallVector<scf::ForOp> loops;
+    for (Region *r = op->getParentRegion(); r != top;) {
+      auto loop = dyn_cast_if_present<scf::ForOp>(r->getParentOp());
+      if (!loop)
+        return std::nullopt;
+      loops.push_back(loop);
+      r = loop->getParentRegion();
+    }
+    return loops;
+  };
+  auto sameBounds = [](scf::ForOp a, scf::ForOp b) {
+    return isEqualConstantIntOrValue(a.getLowerBound(), b.getLowerBound()) &&
+           isEqualConstantIntOrValue(a.getUpperBound(), b.getUpperBound()) &&
+           isEqualConstantIntOrValue(a.getStep(), b.getStep());
+  };
+  auto first = loopsAround(writes.front().first);
+  if (!first)
     return 0;
-  auto before = [](auto &a, auto &b) {
-    return a.first->isBeforeInBlock(b.first);
+  for (auto &p : llvm::concat<std::pair<Operation *, Span>>(writes, reads)) {
+    auto loops = loopsAround(p.first);
+    if (!loops || loops->size() != first->size() ||
+        !llvm::all_of(llvm::zip(*loops, *first), [&](auto ab) {
+          return sameBounds(std::get<0>(ab), std::get<1>(ab));
+        }))
+      return 0;
+  }
+  // On each side, one BD task: a task boundary between two slots would run
+  // one slot's transfers for all of its repeats before the next slot's.
+  auto oneTask = [&](auto &ops) {
+    auto onChannel = channelOps(ops.front().first);
+    if (!onChannel)
+      return false;
+    for (auto &task : air::getRepeatCounts(*onChannel))
+      if (task.second.contains(ops.front().first))
+        return llvm::all_of(
+            ops, [&](auto &p) { return task.second.contains(p.first); });
+    return false;
+  };
+  if (!oneTask(writes) || !oneTask(reads))
+    return 0;
+  // Program order of the transfers.
+  DenseMap<Operation *, int64_t> order;
+  int64_t next = 0;
+  top->walk<WalkOrder::PreOrder>([&](Operation *op) { order[op] = next++; });
+  auto before = [&](auto &a, auto &b) {
+    return order.lookup(a.first) < order.lookup(b.first);
   };
   llvm::sort(writes, before);
   llvm::sort(reads, before);
@@ -1063,6 +1114,23 @@ static int64_t slotBufferWriteLockInit(Value buffer) {
       return 0;
   }
   return nr;
+}
+
+// The transfers on the DMA channel of `tile` that carries `op`, in the order
+// their BDs are chained.
+std::optional<std::vector<Operation *>>
+air::DMAAllocator::channelOpsOn(AIE::TileLike tile, Operation *op) {
+  for (auto *allocs : {&s2mm_allocs, &mm2s_allocs})
+    for (auto &a : *allocs) {
+      if (!a.foundAlloc(tile) || !llvm::is_contained(a.memcpyOps, op))
+        continue;
+      std::vector<Operation *> ops;
+      for (auto &b : *allocs)
+        if (b.foundAlloc(tile, a.dma_channel))
+          llvm::append_range(ops, b.memcpyOps);
+      return ops;
+    }
+  return std::nullopt;
 }
 
 FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
@@ -1277,7 +1345,13 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
         getLockValuePair(target_model, bufferOp->getResult(0), air_chan);
   auto init = std::max(init_pair.first, init_pair.second);
   if (tileIsMemTile && UsesSemaphoreLocks)
-    init = std::max(init, slotBufferWriteLockInit(bufferOp->getResult(0)));
+    init = std::max(
+        init,
+        slotBufferWriteLockInit(
+            bufferOp->getResult(0),
+            [&](Operation *op) -> std::optional<std::vector<Operation *>> {
+              return channelOpsOn(tile, op);
+            }));
 
   // Consumerless memtile drain: emit ONE self-recycling lock (returned as both
   // pair elements) so the receiving BD acquires AND releases the same lock and
