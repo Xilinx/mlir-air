@@ -9027,7 +9027,11 @@ private:
       return reject("channel index reads a launch IV");
     for (auto chan : l3Chans) {
       auto offsets = chan.getMixedOffsets();
+      auto sizes = chan.getMixedSizes();
       auto strides = chan.getMixedStrides();
+      for (auto ofr : llvm::concat<OpFoldResult>(sizes, strides))
+        if (auto v = dyn_cast<Value>(ofr); v && reachesIV(v))
+          return reject("size or stride depends on a launch IV");
       bool usesIV = false;
       for (auto [k, ofr] : llvm::enumerate(offsets)) {
         auto v = dyn_cast<Value>(ofr);
@@ -9048,11 +9052,14 @@ private:
           if (!air::getInductionVarCoefficient(v, iv))
             return reject("offset not linear in a loop nested in the tile");
       }
-      if (usesIV && !llvm::any_of(strides, [](OpFoldResult s) {
-            auto c = getConstantIntValue(s);
-            return c && *c == 1;
+      // The base is added to a unit-stride dimension. One of size 1 can be
+      // dropped by the folding, so it must be longer than that.
+      if (usesIV && !llvm::any_of(llvm::zip(sizes, strides), [](auto p) {
+            auto sz = getConstantIntValue(std::get<0>(p));
+            auto st = getConstantIntValue(std::get<1>(p));
+            return sz && st && *st == 1 && *sz > 1;
           }))
-        return reject("no unit-stride dimension");
+        return reject("no unit-stride dimension longer than 1");
     }
 
     // Make the intra-tile loops run from 0 to the tile size with step 1, so
@@ -9142,8 +9149,9 @@ private:
       rewriter.setInsertionPoint(chan);
       SmallVector<Value> local;
       for (Value v : offsets)
-        local.push_back(
-            cloneAtIVs(rewriter, v, interIvs, interLbs, innerInter, map));
+        local.push_back(reachesIV(v) ? cloneAtIVs(rewriter, v, interIvs,
+                                                  interLbs, innerInter, map)
+                                     : v);
       Operation *newOp = rebuildWithOffsets(rewriter, chan, local);
       int64_t id = rolledBases.size();
       rolledBases[id] = base;

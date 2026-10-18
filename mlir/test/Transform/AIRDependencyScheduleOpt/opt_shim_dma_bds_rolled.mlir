@@ -111,6 +111,32 @@
 // CHECK-NOT: scf.for
 // CHECK: return
 
+// An offset that does not depend on the launch is used as it is. Computing it
+// again next to the transfer would read the value stored after it.
+
+// CHECK-LABEL: func.func @load_offset
+// CHECK: %[[COL:.*]] = memref.load
+// CHECK: memref.store
+// CHECK-NOT: memref.load
+// CHECK: %[[OFF:.*]] = arith.addi %[[COL]], %{{.*}} : index
+// CHECK: air.channel.put {{.*}} @chA[] (%{{.*}}[%{{.*}}, %[[OFF]]]
+// CHECK-NOT: memref.load
+// CHECK: return
+
+// The tiles are unrolled when the only unit-stride dimension has size 1, which
+// the folding may drop.
+
+// CHECK-LABEL: func.func @unit_dim_size_one
+// CHECK-NOT: scf.for
+// CHECK: return
+
+// The tiles are unrolled when a size or stride depends on the launch, since
+// those have to be constants.
+
+// CHECK-LABEL: func.func @dependent_size
+// CHECK-NOT: scf.for
+// CHECK: return
+
 module {
   air.channel @chA [1, 1]
   air.channel @chB [1, 1]
@@ -283,6 +309,46 @@ module {
       %ox = affine.apply affine_map<()[s0] -> (s0 * 64)>()[%x]
       %1 = air.channel.put async [%tok] @chA[] (%arg0[%ox, %c0] [%c64, %c512] [%c512, %c1]) {id = 9 : i32} : (memref<256x512xbf16>)
       scf.yield %1 : !air.async.token
+    }
+    return
+  }
+
+  func.func @load_offset(%arg0: memref<256x512xbf16>, %arg1: memref<4xindex>) {
+    %c4 = arith.constant 4 : index
+    %0 = air.launch async (%x, %y) in (%sx=%c4, %sy=%c4) args(%a=%arg0, %tbl=%arg1) : memref<256x512xbf16>, memref<4xindex> attributes {id = 5 : i32} {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %c512 = arith.constant 512 : index
+      %ox = affine.apply affine_map<()[s0] -> (s0 * 64)>()[%x]
+      %col = memref.load %tbl[%c0] : memref<4xindex>
+      memref.store %c1, %tbl[%c0] : memref<4xindex>
+      %1 = air.channel.put async @chA[] (%a[%ox, %col] [%c64, %c64] [%c512, %c1]) {id = 6 : i32} : (memref<256x512xbf16>)
+    }
+    return
+  }
+
+  func.func @unit_dim_size_one(%arg0: memref<256x64xbf16>) {
+    %c4 = arith.constant 4 : index
+    %0 = air.launch async (%x, %y) in (%sx=%c4, %sy=%c4) args(%a=%arg0) : memref<256x64xbf16> attributes {id = 3 : i32} {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c16 = arith.constant 16 : index
+      %c64 = arith.constant 64 : index
+      %ox = affine.apply affine_map<()[s0] -> (s0 * 16)>()[%x]
+      %1 = air.channel.put async @chA[] (%a[%ox, %c0] [%c16, %c1] [%c64, %c1]) {id = 4 : i32} : (memref<256x64xbf16>)
+    }
+    return
+  }
+
+  func.func @dependent_size(%arg0: memref<256x512xbf16>) {
+    %c4 = arith.constant 4 : index
+    %0 = air.launch async (%x, %y) in (%sx=%c4, %sy=%c4) args(%a=%arg0) : memref<256x512xbf16> attributes {id = 11 : i32} {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %st = affine.apply affine_map<()[s0] -> (s0 + 1)>()[%x]
+      %1 = air.channel.put async @chA[] (%a[%c0, %c0] [%st, %c64] [%c64, %c1]) {id = 12 : i32} : (memref<256x512xbf16>)
     }
     return
   }
