@@ -3231,7 +3231,12 @@ static bool isFilledOncePerLaunchIteration(scf::ForOp for_op) {
 }
 
 struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
-  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+  // Loops at or above `scope` are not counted in the compound trip count. For a
+  // rolled tile body these are the inter-tile loops, which are not part of the
+  // BD chain.
+  AIRUnrollScfForIntoBDChain(MLIRContext *ctx, Operation *scope = nullptr)
+      : OpRewritePattern(ctx), scope(scope) {}
+  Operation *scope;
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
@@ -3286,7 +3291,7 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
     int64_t compoundTrip =
         air::getStaticScfForTripCountAsInt(for_op).value_or(-1);
     for (Operation *p = for_op->getParentOp(); p; p = p->getParentOp()) {
-      if (isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(p))
+      if (p == scope || isa<air::HerdOp, air::SegmentOp, air::LaunchOp>(p))
         break;
       if (auto pf = dyn_cast<scf::ForOp>(p)) {
         enclosingIVs.push_back(pf.getInductionVar());
@@ -4645,6 +4650,23 @@ public:
 private:
 };
 
+// Like applyPatternsGreedily(region), but also works on a region that is not
+// isolated from above, such as an scf.for body. Ops outside the region are not
+// rewritten.
+static void applyPatternsGreedilyInRegion(Region &region,
+                                          RewritePatternSet &&patterns) {
+  if (region.getParentOp()->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+    (void)applyPatternsGreedily(region, std::move(patterns));
+    return;
+  }
+  SmallVector<Operation *> ops;
+  region.walk<WalkOrder::PreOrder>([&](Operation *op) { ops.push_back(op); });
+  GreedyRewriteConfig config;
+  config.setScope(&region);
+  config.setStrictness(GreedyRewriteStrictness::AnyOp);
+  (void)applyOpPatternsGreedily(ops, std::move(patterns), config);
+}
+
 LogicalResult
 AIRSpecializeChannelWrapAndStrideImpl(Region *region, const DmaBdLimits &limits,
                                       bool enableForLoopUnrolling = true,
@@ -4662,13 +4684,13 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, const DmaBdLimits &limits,
                                                            ctx);
   air::WaitAllOp::getCanonicalizationPatterns(preproc_patterns, ctx);
   air::ExecuteOp::getCanonicalizationPatterns(preproc_patterns, ctx);
-  (void)applyPatternsGreedily(*region, std::move(preproc_patterns));
+  applyPatternsGreedilyInRegion(*region, std::move(preproc_patterns));
 
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet preproc_wns_patterns(ctx);
   populateAIRCanonicalizeChannelWrapAndStridePatterns(
       preproc_wns_patterns, limits, enableRepeatAtHighestDim);
-  (void)applyPatternsGreedily(*region, std::move(preproc_wns_patterns));
+  applyPatternsGreedilyInRegion(*region, std::move(preproc_wns_patterns));
 
   RewritePatternSet patterns(ctx);
   patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar,
@@ -4680,14 +4702,15 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, const DmaBdLimits &limits,
       ctx, limits, enableRepeatAtHighestDim, skipZeroStride);
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
-  (void)applyPatternsGreedily(*region, std::move(patterns));
+  applyPatternsGreedilyInRegion(*region, std::move(patterns));
 
   // Unroll any remaining loops which contain only data movements.
   if (enableForLoopUnrolling) {
     RewritePatternSet unroll_patterns(ctx);
-    unroll_patterns
-        .insert<AIRUnrollScfForIntoBDChain, AIRUnrollAffineForIntoBDChain>(ctx);
-    (void)applyPatternsGreedily(*region, std::move(unroll_patterns));
+    unroll_patterns.insert<AIRUnrollScfForIntoBDChain>(ctx,
+                                                       region->getParentOp());
+    unroll_patterns.insert<AIRUnrollAffineForIntoBDChain>(ctx);
+    applyPatternsGreedilyInRegion(*region, std::move(unroll_patterns));
   }
 
   // Canonicalize wrap and stride list to remove redundant dimensions
@@ -4695,7 +4718,7 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, const DmaBdLimits &limits,
   populateAIRCanonicalizeChannelWrapAndStridePatterns(cano_patterns, limits,
                                                       enableRepeatAtHighestDim);
   ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
-  (void)applyPatternsGreedily(*region, std::move(cano_patterns));
+  applyPatternsGreedilyInRegion(*region, std::move(cano_patterns));
 
   // Remove duplicate async token dependencies created by loop unrolling.
   // Without this, the downstream canonicalize pass spends O(n^2) time
@@ -7011,7 +7034,7 @@ LogicalResult AIRIsolateAsyncDmaLoopNestsImpl(Region *region) {
   air::HerdOp::getCanonicalizationPatterns(patterns_1, ctx);
   air::WaitAllOp::getCanonicalizationPatterns(patterns_1, ctx);
   scf::ForOp::getCanonicalizationPatterns(patterns_1, ctx);
-  (void)applyPatternsGreedily(*region, std::move(patterns_1));
+  applyPatternsGreedilyInRegion(*region, std::move(patterns_1));
   return success();
 }
 
@@ -8657,6 +8680,7 @@ public:
                                          SmallVector<unsigned>(depth, value));
     };
     llvm::SetVector<scf::ForOp> forLoopsToUnroll;
+    SmallVector<Region *> tileBodies;
     llvm::SetVector<air::LaunchOp> tiledLaunches;
     if (tilingDisabled)
       shimFors.clear();
@@ -8770,6 +8794,15 @@ public:
         forLoopNest.insert(forLoopNest.begin(), parent);
         newForLoopBand = parent;
       }
+      // Keep the inter-tile loops. The L3 DMA folding below then works on the
+      // tile body instead of the whole launch.
+      if (clKeepTileLoopsRolled &&
+          prepareRolledTile(rewriter, forLoopNest, actualTileSizes.size(),
+                            tiledLoops, actualTileSizes)) {
+        tileBodies.push_back(
+            &forLoopNest[actualTileSizes.size() - 1].getRegion());
+        continue;
+      }
       // Perform unrolling on the remainder loop nests after tiling, inner loop
       // first.
       for (int i = actualTileSizes.size() - 1; i >= 0; i--) {
@@ -8805,14 +8838,14 @@ public:
     applyCanonicalizationPatterns(ctx, func.getBody());
 
     // Apply DMA folding.
-    applyAIRL3DmaFoldingPatterns(func, *device);
+    applyAIRL3DmaFoldingPatterns(func, *device, tileBodies);
 
     // Fallback end-of-block wait_all: func body when nothing tiled anywhere,
     // plus every async launch whose shim fors did NOT get tiled. Uses
     // generateWaitAllToTerminateBlock to gather all dangling async tokens
     // (tokens inside surviving scf.fors would be missed otherwise).
     SmallVector<Block *> blocksToFixup;
-    if (forLoopsToUnroll.empty())
+    if (forLoopsToUnroll.empty() && tileBodies.empty())
       blocksToFixup.push_back(&func.getBody().front());
     func.walk([&](air::LaunchOp launch) {
       if (air::isAsyncOp(launch) && !tiledLaunches.contains(launch))
@@ -8824,10 +8857,384 @@ public:
           *blk, rewriter, /*isBlocking=*/true);
       launchEndWaitAll->setAttr("air.launch_end", rewriter.getUnitAttr());
     }
+    if (failed(restoreRolledTileBases(func, rewriter)))
+      signalPassFailure();
   }
 
 private:
-  void applyAIRL3DmaFoldingPatterns(func::FuncOp func, AIE::AIEDevice device) {
+  // While the tile body is folded, each L3 transfer in it holds the offsets of
+  // the first tile. The difference to the current tile (its base) is added back
+  // by restoreRolledTileBases. The transfer is tagged with the index of its
+  // base in this attribute, which the folding copies to the ops it creates.
+  // The attribute does not outlive the pass.
+  static constexpr llvm::StringLiteral kRolledBaseAttr = "air.rolled_tile_base";
+  // The ops computing each base are kept in a detached block until they are
+  // cloned next to the transfer. In the tile body they would be unused during
+  // the folding and erased.
+  DenseMap<int64_t, Value> rolledBases;
+  SmallVector<std::unique_ptr<Block>> rolledBaseRecipes;
+
+  // Returns true if the ops computing `v` inside `scope` are pure, looking
+  // through air.execute, so that they can be cloned. Induction variables of
+  // loops inside `scope` that `v` uses, except those in `handled`, are added to
+  // `innerIvs`. Returns false for any other block argument inside `scope`.
+  static bool collectOffsetChain(Value v, Operation *scope,
+                                 ArrayRef<Value> handled,
+                                 llvm::SetVector<Value> &innerIvs,
+                                 llvm::SmallPtrSetImpl<Value> &seen) {
+    if (!seen.insert(v).second || llvm::is_contained(handled, v))
+      return true;
+    Operation *def = v.getDefiningOp();
+    if (!def) {
+      Operation *owner = cast<BlockArgument>(v).getOwner()->getParentOp();
+      if (!scope->isAncestor(owner))
+        return true;
+      auto loop = scf::getForInductionVarOwner(v);
+      if (!loop || !getConstantIntValue(loop.getLowerBound()))
+        return false;
+      innerIvs.insert(v);
+      return true;
+    }
+    if (!scope->isProperAncestor(def))
+      return true;
+    if (auto exec = dyn_cast<air::ExecuteOp>(def)) {
+      unsigned idx = cast<OpResult>(v).getResultNumber();
+      if (idx == 0)
+        return false;
+      return collectOffsetChain(
+          exec.getBody().getTerminator()->getOperand(idx - 1), scope, handled,
+          innerIvs, seen);
+    }
+    if (def->getNumRegions() || !mlir::isPure(def))
+      return false;
+    return llvm::all_of(def->getOperands(), [&](Value o) {
+      return collectOffsetChain(o, scope, handled, innerIvs, seen);
+    });
+  }
+
+  // Clones the ops computing `v` inside `scope`, with each value in `ivs`
+  // replaced by the constant at the same position in `at`.
+  static Value cloneAtIVs(RewriterBase &rewriter, Value v, ArrayRef<Value> ivs,
+                          ArrayRef<int64_t> at, Operation *scope,
+                          IRMapping &map) {
+    if (Value m = map.lookupOrNull(v))
+      return m;
+    for (auto [iv, c] : llvm::zip(ivs, at))
+      if (v == iv) {
+        Value cst = arith::ConstantIndexOp::create(rewriter, v.getLoc(), c);
+        map.map(v, cst);
+        return cst;
+      }
+    Operation *def = v.getDefiningOp();
+    if (!def || !scope->isProperAncestor(def))
+      return v;
+    if (auto exec = dyn_cast<air::ExecuteOp>(def)) {
+      Value inner = exec.getBody().getTerminator()->getOperand(
+          cast<OpResult>(v).getResultNumber() - 1);
+      Value r = cloneAtIVs(rewriter, inner, ivs, at, scope, map);
+      map.map(v, r);
+      return r;
+    }
+    for (Value o : def->getOperands())
+      (void)cloneAtIVs(rewriter, o, ivs, at, scope, map);
+    rewriter.clone(*def, map);
+    return map.lookup(v);
+  }
+
+  // Replaces `chan` with the same channel op using `offsets`.
+  static Operation *rebuildWithOffsets(RewriterBase &rewriter,
+                                       air::ChannelInterface chan,
+                                       ArrayRef<Value> offsets) {
+    Operation *op = chan.getOperation();
+    rewriter.setInsertionPoint(op);
+    SmallVector<Value> sizes = air::getSizesAsValues(chan);
+    SmallVector<Value> strides = air::getStridesAsValues(chan);
+    SmallVector<Value> deps =
+        cast<air::AsyncOpInterface>(op).getAsyncDependencies();
+    Operation *newOp = nullptr;
+    if (isa<air::ChannelPutOp>(op))
+      newOp = air::ChannelPutOp::create(
+          rewriter, op->getLoc(), op->getResultTypes(), deps,
+          chan.getChanName(), chan.getIndices(), chan.getMemref(), offsets,
+          sizes, strides, /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+    else
+      newOp = air::ChannelGetOp::create(
+          rewriter, op->getLoc(), op->getResultTypes(), deps,
+          chan.getChanName(), chan.getIndices(), chan.getMemref(), offsets,
+          sizes, strides, /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+    newOp->setAttrs(op->getDiscardableAttrDictionary());
+    air::copyPaddingAttributes(op, newOp);
+    rewriter.replaceOp(op, newOp->getResults());
+    return newOp;
+  }
+
+  // Evaluates an index built from constants with arith.muli and arith.addi.
+  static std::optional<int64_t> evalConstIndex(Value v) {
+    if (auto c = getConstantIntValue(v))
+      return c;
+    Operation *def = v.getDefiningOp();
+    if (!isa_and_present<arith::MulIOp, arith::AddIOp>(def))
+      return std::nullopt;
+    auto a = evalConstIndex(def->getOperand(0));
+    auto b = evalConstIndex(def->getOperand(1));
+    if (!a || !b)
+      return std::nullopt;
+    return isa<arith::MulIOp>(def) ? *a * *b : *a + *b;
+  }
+
+  // Prepares the tile body of a tiled launch nest so that its inter-tile loops
+  // can stay loops. Returns false without changing the IR if the nest is not
+  // supported, for example when a channel index depends on a launch induction
+  // variable, or when an L3 offset is not linear in the intra-tile induction
+  // variables.
+  bool prepareRolledTile(IRRewriter &rewriter, MutableArrayRef<scf::ForOp> nest,
+                         unsigned nInter,
+                         MutableArrayRef<scf::ForOp> intraLoops,
+                         ArrayRef<Value> tileSizes) {
+    auto reject = [&](const char *why) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "keep-tile-loops-rolled: fallback: " << why << "\n");
+      return false;
+    };
+    // Outside a launch the folding works on the whole function, including the
+    // inter-tile loops.
+    if (!nest[0]->getParentOfType<air::LaunchOp>())
+      return reject("not inside an air.launch");
+    scf::ForOp innerInter = nest[nInter - 1];
+    SmallVector<Value> allIvs, interIvs;
+    SmallVector<int64_t> interLbs;
+    for (scf::ForOp l : nest)
+      allIvs.push_back(l.getInductionVar());
+    for (unsigned k = 0; k < nInter; k++) {
+      auto lb = getConstantIntValue(nest[k].getLowerBound());
+      if (!lb)
+        return reject("non-constant inter-tile lower bound");
+      interIvs.push_back(nest[k].getInductionVar());
+      interLbs.push_back(*lb);
+    }
+    // A single tile is unrolled.
+    if (llvm::all_of(nest.take_front(nInter), [](scf::ForOp l) {
+          auto lb = getConstantIntValue(l.getLowerBound());
+          auto ub = evalConstIndex(l.getUpperBound());
+          auto st = evalConstIndex(l.getStep());
+          return lb && ub && st && *st > 0 && *ub - *lb <= *st;
+        }))
+      return reject("a single tile");
+    for (auto [intra, size] : llvm::zip(intraLoops, tileSizes))
+      if (!getConstantIntValue(intra.getStep()) || !getConstantIntValue(size))
+        return reject("non-constant intra-tile step or tile size");
+    auto reachesIV = [&](Value v) {
+      SmallVector<Value> work{v};
+      llvm::SmallPtrSet<Value, 16> seen;
+      while (!work.empty()) {
+        Value cur = work.pop_back_val();
+        if (!seen.insert(cur).second)
+          continue;
+        if (llvm::is_contained(allIvs, cur))
+          return true;
+        Operation *def = cur.getDefiningOp();
+        if (auto exec = dyn_cast_if_present<air::ExecuteOp>(def)) {
+          if (auto r = dyn_cast<OpResult>(cur); r && r.getResultNumber() > 0)
+            work.push_back(exec.getBody().getTerminator()->getOperand(
+                r.getResultNumber() - 1));
+        } else if (def) {
+          llvm::append_range(work, def->getOperands());
+        }
+      }
+      return false;
+    };
+    SmallVector<air::ChannelInterface> l3Chans;
+    bool ok = true;
+    innerInter.getBody()->walk([&](air::ChannelInterface chan) {
+      if (llvm::any_of(chan.getIndices(), reachesIV)) {
+        ok = false;
+        return WalkResult::interrupt();
+      }
+      auto ty = dyn_cast<BaseMemRefType>(chan.getMemref().getType());
+      if (!chan->getParentOfType<air::SegmentOp>() && ty && air::isL3(ty))
+        l3Chans.push_back(chan);
+      return WalkResult::advance();
+    });
+    if (!ok)
+      return reject("channel index reads a launch IV");
+    for (auto chan : l3Chans) {
+      auto offsets = chan.getMixedOffsets();
+      auto sizes = chan.getMixedSizes();
+      auto strides = chan.getMixedStrides();
+      for (auto ofr : llvm::concat<OpFoldResult>(sizes, strides))
+        if (auto v = dyn_cast<Value>(ofr); v && reachesIV(v))
+          return reject("size or stride depends on a launch IV");
+      bool usesIV = false;
+      for (auto [k, ofr] : llvm::enumerate(offsets)) {
+        auto v = dyn_cast<Value>(ofr);
+        if (!v || !reachesIV(v))
+          continue;
+        usesIV = true;
+        if (k >= strides.size() || !getConstantIntValue(strides[k]))
+          return reject("non-constant stride");
+        for (auto [intra, size] : llvm::zip(intraLoops, tileSizes))
+          if (*getConstantIntValue(size) > 1 &&
+              !air::getInductionVarCoefficient(v, intra.getInductionVar()))
+            return reject("offset not linear in a folded intra-tile IV");
+        llvm::SmallPtrSet<Value, 16> seen;
+        llvm::SetVector<Value> innerIvs;
+        if (!collectOffsetChain(v, innerInter, allIvs, innerIvs, seen))
+          return reject("offset computation not cloneable");
+        for (Value iv : innerIvs)
+          if (!air::getInductionVarCoefficient(v, iv))
+            return reject("offset not linear in a loop nested in the tile");
+      }
+      // The base is added to a unit-stride dimension. One of size 1 can be
+      // dropped by the folding, so it must be longer than that.
+      if (usesIV && !llvm::any_of(llvm::zip(sizes, strides), [](auto p) {
+            auto sz = getConstantIntValue(std::get<0>(p));
+            auto st = getConstantIntValue(std::get<1>(p));
+            return sz && st && *st == 1 && *sz > 1;
+          }))
+        return reject("no unit-stride dimension longer than 1");
+    }
+
+    // Make the intra-tile loops run from 0 to the tile size with step 1, so
+    // that their bounds are constant. Uses of the old induction variable get
+    // old_lb + iv * step.
+    for (auto [intra, size] : llvm::zip(intraLoops, tileSizes)) {
+      int64_t step = *getConstantIntValue(intra.getStep());
+      Location loc = intra.getLoc();
+      Value origLb = intra.getLowerBound();
+      rewriter.setInsertionPoint(intra);
+      intra.setLowerBound(arith::ConstantIndexOp::create(rewriter, loc, 0));
+      intra.setUpperBound(arith::ConstantIndexOp::create(
+          rewriter, loc, *getConstantIntValue(size)));
+      intra.setStep(arith::ConstantIndexOp::create(rewriter, loc, 1));
+      Value iv = intra.getInductionVar();
+      rewriter.setInsertionPointToStart(intra.getBody());
+      Value scaled = iv;
+      if (step != 1)
+        scaled = arith::MulIOp::create(
+            rewriter, loc, iv,
+            arith::ConstantIndexOp::create(rewriter, loc, step));
+      Value orig = arith::AddIOp::create(rewriter, loc, origLb, scaled);
+      SmallPtrSet<Operation *, 3> keep{orig.getDefiningOp()};
+      if (scaled != iv) {
+        keep.insert(scaled.getDefiningOp());
+        keep.insert(scaled.getDefiningOp()->getOperand(1).getDefiningOp());
+      }
+      iv.replaceAllUsesExcept(orig, keep);
+    }
+
+    // Replace each L3 offset by its value in the first tile (inter-tile
+    // induction variables at their lower bounds). The base is the linear
+    // offset of the current tile's first element minus that of the first
+    // tile.
+    SmallVector<Value> intraIvs;
+    SmallVector<int64_t> zeros;
+    for (scf::ForOp intra : intraLoops) {
+      intraIvs.push_back(intra.getInductionVar());
+      zeros.push_back(0);
+    }
+    SmallVector<Value> bothIvs(intraIvs);
+    llvm::append_range(bothIvs, interIvs);
+    SmallVector<int64_t> bothAt(zeros);
+    llvm::append_range(bothAt, interLbs);
+    for (auto chan : l3Chans) {
+      SmallVector<Value> offsets = air::getOffsetsAsValues(chan);
+      SmallVector<Value> strides = air::getStridesAsValues(chan);
+      if (!llvm::any_of(offsets, reachesIV))
+        continue;
+      Location loc = chan.getLoc();
+      IRMapping atTile, atFirst;
+      Value base = nullptr;
+      rolledBaseRecipes.push_back(std::make_unique<Block>());
+      rewriter.setInsertionPointToEnd(rolledBaseRecipes.back().get());
+      for (auto [k, v] : llvm::enumerate(offsets)) {
+        if (!reachesIV(v))
+          continue;
+        // Loops inside the tile are set to their lower bounds in both terms.
+        // The offset is linear in them, so they cancel.
+        llvm::SmallPtrSet<Value, 16> seen;
+        llvm::SetVector<Value> innerIvs;
+        (void)collectOffsetChain(v, innerInter, allIvs, innerIvs, seen);
+        SmallVector<Value> hereIvs(intraIvs), firstIvs(bothIvs);
+        SmallVector<int64_t> hereAt(zeros), firstAt(bothAt);
+        for (Value iv : innerIvs) {
+          int64_t lb = *getConstantIntValue(
+              scf::getForInductionVarOwner(iv).getLowerBound());
+          hereIvs.push_back(iv);
+          hereAt.push_back(lb);
+          firstIvs.push_back(iv);
+          firstAt.push_back(lb);
+        }
+        Value here =
+            cloneAtIVs(rewriter, v, hereIvs, hereAt, innerInter, atTile);
+        Value first =
+            cloneAtIVs(rewriter, v, firstIvs, firstAt, innerInter, atFirst);
+        Value d = arith::SubIOp::create(rewriter, loc, here, first);
+        int64_t st = *getConstantIntValue(strides[k]);
+        if (st != 1)
+          d = arith::MulIOp::create(
+              rewriter, loc, d,
+              arith::ConstantIndexOp::create(rewriter, loc, st));
+        base = base ? arith::AddIOp::create(rewriter, loc, base, d).getResult()
+                    : d;
+      }
+      IRMapping map;
+      rewriter.setInsertionPoint(chan);
+      SmallVector<Value> local;
+      for (Value v : offsets)
+        local.push_back(reachesIV(v) ? cloneAtIVs(rewriter, v, interIvs,
+                                                  interLbs, innerInter, map)
+                                     : v);
+      Operation *newOp = rebuildWithOffsets(rewriter, chan, local);
+      int64_t id = rolledBases.size();
+      rolledBases[id] = base;
+      newOp->setAttr(kRolledBaseAttr, rewriter.getI64IntegerAttr(id));
+    }
+    return true;
+  }
+
+  // Adds each tagged transfer's base to its offset in the unit-stride
+  // dimension and removes the tag.
+  LogicalResult restoreRolledTileBases(func::FuncOp func,
+                                       IRRewriter &rewriter) {
+    SmallVector<air::ChannelInterface> tagged;
+    func.walk([&](air::ChannelInterface chan) {
+      if (chan->hasAttr(kRolledBaseAttr))
+        tagged.push_back(chan);
+    });
+    for (auto chan : tagged) {
+      int64_t id = chan->getAttrOfType<IntegerAttr>(kRolledBaseAttr).getInt();
+      Value base = rolledBases.lookup(id);
+      assert(base && "tagged transfer without a base");
+      chan->removeAttr(kRolledBaseAttr);
+      // Clone the ops computing the base right before the transfer.
+      rewriter.setInsertionPoint(chan);
+      IRMapping recipe;
+      for (Operation &o : *base.getParentBlock())
+        rewriter.clone(o, recipe);
+      base = recipe.lookup(base);
+      SmallVector<Value> offsets = air::getOffsetsAsValues(chan);
+      SmallVector<Value> strides = air::getStridesAsValues(chan);
+      int unit = -1;
+      for (int k = (int)strides.size() - 1; k >= 0; k--)
+        if (auto c = getConstantIntValue(strides[k]); c && *c == 1) {
+          unit = k;
+          break;
+        }
+      if (unit < 0)
+        return chan->emitOpError(
+            "has no unit-stride dimension to add the tile offset to");
+      rewriter.setInsertionPoint(chan);
+      offsets[unit] =
+          arith::AddIOp::create(rewriter, chan.getLoc(), offsets[unit], base);
+      rebuildWithOffsets(rewriter, chan, offsets);
+    }
+    rolledBases.clear();
+    rolledBaseRecipes.clear();
+    return success();
+  }
+
+  void applyAIRL3DmaFoldingPatterns(func::FuncOp func, AIE::AIEDevice device,
+                                    ArrayRef<Region *> tileBodies = {}) {
     // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
     // specialization patterns.
     //
@@ -8888,7 +9295,15 @@ private:
         });
         return;
       }
-      regionsToProcess.push_back(&launch.getRegion());
+      // A launch with rolled tiles is folded one tile body at a time.
+      bool rolled = false;
+      for (Region *body : tileBodies)
+        if (launch->isProperAncestor(body->getParentOp())) {
+          regionsToProcess.push_back(body);
+          rolled = true;
+        }
+      if (!rolled)
+        regionsToProcess.push_back(&launch.getRegion());
     });
     if (!foundLaunch)
       regionsToProcess.push_back(&func.getRegion());

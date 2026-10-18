@@ -116,7 +116,6 @@ module {
     %c4_i32 = arith.constant 4 : i32
     %p = airrt.segment_load "forward_0" : i64
     // The runtime offset rides in each BD's offset operand.
-    // expected-warning @+1 {{non-constant DMA offset (dim 3) defaulting to 0}}
     %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%off, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c4_i64, %c16_i64, %c512_i64], [%c32768_i64, %c0_i64, %c512_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<65536xbf16>) : !airrt.event
     return
   }

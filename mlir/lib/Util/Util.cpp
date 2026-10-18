@@ -2230,6 +2230,10 @@ static std::optional<int64_t> ivCoefficient(Value v, Value iv,
   return std::nullopt;
 }
 
+std::optional<int64_t> air::getInductionVarCoefficient(Value v, Value iv) {
+  return ivCoefficient(v, iv);
+}
+
 LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,

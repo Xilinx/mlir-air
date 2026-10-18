@@ -1317,6 +1317,12 @@ def AIROptimizeShimDMABDs: Pass<"air-opt-shim-dma-bds", "func::FuncOp"> {
                "set: skip tiling (wrap-stride fold collapses loops into "
                "multi-D BD descriptors).",
                "llvm::cl::ZeroOrMore">,
+    Option<"clKeepTileLoopsRolled", "keep-tile-loops-rolled", "bool",
+           /*default=*/"true",
+           "Keep the inter-tile loops created by shim DMA tiling as loops "
+           "and fold the L3 DMAs of one tile body. Each tile folds into the "
+           "same BDs as when the loops are unrolled. Nests that cannot be "
+           "kept rolled are unrolled.">,
   ];
 }
 
