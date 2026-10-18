@@ -105,11 +105,9 @@ def build_module(
     herd_swap=False,
     a_stationary=False,
 ):
-    # a_stationary: keep the activation tile stationary in L2 (external drain path).
-    # M stays a launch dimension; each launch fills A once (tile_m x K per herd row,
-    # whole K) and loops over the N blocks inside the segment, streaming only B (still
-    # in tile_k_l2 chunks). A is then read from DRAM once per M block instead of once
-    # per (M, N) tile. Needs the A block (tile_m x K per herd row) to fit a memtile.
+    # a_stationary: each launch fills A (tile_m x K per herd row) into L2 once and
+    # loops over N inside the segment, so A leaves DRAM once per M block rather than
+    # once per N block. The A block has to fit a memtile.
     # herd_swap: M on the herd's rows, N on its columns (herd extents [herd_n, herd_m]);
     # each herd body swaps the ids back.
     # epilogue_swiglu: each tile_n block of B holds tile_n/2 gate columns then the
