@@ -146,9 +146,8 @@ module {
 
 // -----
 
-// Two slots filled in one loop and drained a half at a time in another, as
-// air-isolate-async-dma-loop-nests leaves them: the BD chains take each
-// loop's transfers in order, so the write lock starts at the four drains.
+// Two slots filled in one loop and drained a half at a time in another loop
+// with the same bounds: the write lock starts at the four drains.
 
 // CHECK-LABEL: aie.device(npu2)
 // CHECK: %[[MEM:.*]] = aie.logical_tile<MemTile>
@@ -302,9 +301,9 @@ module {
 
 // -----
 
-// Two slots filled four times and drained in a loop of eight trips: the
-// transfers' counts are not their trips' counts, so the write lock keeps its
-// usual start.
+// Two slots filled in a loop of four trips and drained in a loop of eight:
+// the lock counts transfers, not trips, so the write lock keeps its usual
+// start.
 
 // CHECK-LABEL: aie.device(npu2)
 // CHECK: %[[MEM:.*]] = aie.logical_tile<MemTile>
