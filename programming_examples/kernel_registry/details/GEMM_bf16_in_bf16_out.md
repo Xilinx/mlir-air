@@ -90,6 +90,7 @@ Same GEMM knobs as the [f32-out page](GEMM_bf16_in_fp32_out.md#tunable-parameter
 | `herd_swap` (drain) | per shape (JSON) | as herd_m/herd_n, swapped | M on the herd's 4 core rows, N on its 8 columns (`HERD_SWAP=true HERD_M=4 HERD_N=8`) |
 | `b_stationary` (drain) | per shape (JSON) | `tile_k_l2 == K`, B slab fits L2 | B resident in L2 for the whole M loop |
 | `b_panel` (drain) | per shape (JSON) | `N % (tile_n × herd_n) == 0` | B pre-packed panel-contiguous on the host: one DMA burst per (K-chunk, N-block) panel |
+| `a_stationary` (drain) | per shape (JSON) | A block (tile_m × K per herd row) fits a memtile; exclusive with `b_stationary` | A resident in L2 for the whole N loop (read from DRAM once per launch), B streamed in `tile_k_l2` chunks; wins when stock re-reads A many times (small M, wide N) |
 
 ⚠️ **Silent-corruption trap**: `N % (tile_n × herd_n) != 0` is **not asserted** — verify before running.
 
@@ -311,6 +312,9 @@ The `@L=4096 prefill` rows are those same projections at the padded length the n
 | 3072×768×768 | 64/768/64/48, swapped herd, B-stationary | 9001 | 6.6e-3 | ✅ SmolVLA vision out_proj, 3 images (bias-fused) |
 | 3072×768×3072 | 64/768/64/64, swapped herd, B-stationary, panel | 9137 | 7.0e-3 | ✅ SmolVLA vision fc1, 3 images (bias + GELU fused) |
 | 3072×3072×768 | 64/384/64/96, panel | 9272 | 6.7e-3 | ✅ SmolVLA vision fc2, 3 images (bias-fused) |
+| 256×1152×1152 | 32/128/64/96, A-stationary | 3518 | 9.4e-3 | ✅ PI0 SigLIP vision Q/K/V/O proj (256 tokens/image) |
+| 256×1152×4352 | 32/128/32/64, A-stationary | 3831 | 9.4e-3 | ✅ PI0 SigLIP vision fc1. tile_n ≤ 64 here (17 N trips), so stock re-reads A 17×; A-stationary is -32% vs the best stock tile (weights resident) |
+| 256×4352×1152 | 32/128/32/144, A-stationary | 6451 | 9.4e-3 | ✅ PI0 SigLIP vision fc2 (A = 278 KB per memtile) |
 | 64×720×960 | 16/144/48/80 (herd **4×4**) | 559 | 9.4e-3 | ✅ SmolVLA action expert q_proj (hidden 720 → q_dim 960; seq 50 padded to 64). **K=720 admits no tile_k_l1=32** — see expert note |
 | 64×720×320 | 16/144/48/80 (herd **4×4**) | 310 | 9.4e-3 | ✅ SmolVLA action expert k/v proj, EVEN (self-attn) layers |
 | 64×960×768 | 16/320/32/96 (herd **4×4**) | **685** | 9.5e-3 | ✅ SmolVLA action expert o_proj, **N padded 720→768** — faster than native despite +6.7% FLOPs (135.6 vs 165.9 µs) |
@@ -515,7 +519,7 @@ make run HIGH_PRECISION=false M=2048 K=8192 N=2048 \
   TILE_M=64 TILE_K_L2=256 TILE_K_L1=32 TILE_N=128 AIE_TARGET=aie2p PERF_ITERS=20
 ```
 
-For another shape/tile from the tables, change `M/K/N` and the `TILE_*` vars to that row; layout knobs map to `HERD_SWAP=true HERD_M=4 HERD_N=8`, `B_STATIONARY=true`, `B_PANEL_LAYOUT=true` (and `B_PAD_ROWS=8` for the bias-fused rows).
+For another shape/tile from the tables, change `M/K/N` and the `TILE_*` vars to that row; layout knobs map to `HERD_SWAP=true HERD_M=4 HERD_N=8`, `B_STATIONARY=true`, `A_STATIONARY=true`, `B_PANEL_LAYOUT=true` (and `B_PAD_ROWS=8` for the bias-fused rows).
 
 Notes:
 - The lit tests cover every option: `run_npu2_high_precision_peano.lit` (auto), `..._fused_peano.lit`, `..._drain_peano.lit`, `run_npu2_low_precision_peano.lit` — each pins the Down shape and asserts `PASS!`.

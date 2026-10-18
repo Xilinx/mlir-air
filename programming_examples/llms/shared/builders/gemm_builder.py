@@ -100,7 +100,7 @@ def gemm_registry_config(m, k, n, output_dtype="bf16", precision="high"):
 def _spec_with_tiles(method, tile, layout=None):
     """Merge a method's build spec with the registry tile (a named dict
     {tile_m, tile_k_l2, tile_k_l1, tile_n}) and layout knobs (herd_swap,
-    b_stationary, b_panel; absent = False). fused-cast's tile_m is fixed by its
+    b_stationary, b_panel, a_stationary; absent = False). fused-cast's tile_m is fixed by its
     cast launch; drain takes the registry's tile_m.
     """
     spec = dict(gemm_method_spec(method))
@@ -121,10 +121,11 @@ def _spec_with_tiles(method, tile, layout=None):
     spec["tile_k_l1"] = tile["tile_k_l1"]
     spec["tile_n"] = tile["tile_n"]
     layout = layout or {}
-    for k in ("herd_swap", "b_stationary", "b_panel"):
+    for k in ("herd_swap", "b_stationary", "b_panel", "a_stationary"):
         spec[k] = bool(layout.get(k, False))
-    if spec["herd_swap"]:
-        spec["build_kwargs"] = dict(spec["build_kwargs"], herd_swap=True)
+    for k in ("herd_swap", "a_stationary"):
+        if spec[k]:
+            spec["build_kwargs"] = dict(spec["build_kwargs"], **{k: True})
     return spec
 
 
@@ -271,6 +272,7 @@ def _build_gemm_module(
     epilogue_swiglu=False,
     b_panel_layout=False,
     herd_swap=False,
+    a_stationary=False,
 ):
     """Build a high-precision BF16-in/BF16-out GEMM via the external mm.o microkernel.
 
@@ -294,8 +296,8 @@ def _build_gemm_module(
             "fused-cast's cast launch runs on 8 columns, not the GEMM's 32"
         )
         assert not (
-            b_panel_layout or herd_swap
-        ), "b_panel_layout / herd_swap are drain-only (external_bf16_out)"
+            b_panel_layout or herd_swap or a_stationary
+        ), "b_panel_layout / herd_swap / a_stationary are drain-only (external_bf16_out)"
         from air_examples.matrix_multiplication.bf16_in_bf16_out.run import (
             build_module_gemm_cast,
         )
@@ -346,6 +348,7 @@ def _build_gemm_module(
             epilogue_swiglu=epilogue_swiglu,
             b_panel_layout=b_panel_layout,
             herd_swap=herd_swap,
+            a_stationary=a_stationary,
         )
 
     raise ValueError(
