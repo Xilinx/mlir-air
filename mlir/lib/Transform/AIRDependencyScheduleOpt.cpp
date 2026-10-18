@@ -1654,6 +1654,18 @@ struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
         target_ops.push_back(child_par.getOperation());
       }
     }
+    // An op whose token the rest of the loop waits on stays: the new loop
+    // would leave that wait without its producer.
+    for (size_t n = 0; n != target_ops.size();) {
+      n = target_ops.size();
+      llvm::SmallPtrSet<Operation *, 8> targets(target_ops.begin(),
+                                                target_ops.end());
+      llvm::erase_if(target_ops, [&](Operation *op) {
+        return llvm::any_of(op->getUsers(), [&](Operation *user) {
+          return !targets.contains(user);
+        });
+      });
+    }
     if (target_ops.empty()) {
       // Loop is already in isolation
       for_op->setAttr("isolated", rewriter.getBoolAttr(true));
