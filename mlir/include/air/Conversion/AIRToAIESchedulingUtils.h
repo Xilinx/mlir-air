@@ -282,6 +282,8 @@ public:
 
   FailureOr<allocation_info_t>
   lookupDMAAllocation(AIE::TileLike tile, air::MemcpyInterface &memcpyOp);
+  std::optional<std::vector<Operation *>> channelOpsOn(AIE::TileLike tile,
+                                                       Operation *op);
   FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
   getLockForDMA(air::MemcpyInterface &memcpyOp, AIE::TileLike tile,
                 Operation *bufferOp, bool lockRaceConditionFix = false,
