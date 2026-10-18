@@ -990,9 +990,10 @@ air::DMAAllocator::lookupDMAAllocation(AIE::TileLike tile,
 // write acquires k, and each read releases one. A slot is refilled only once
 // all k of its reads have released, which holds when every read lies in one
 // slot and the reads take the slots in the order they were written, on one
-// channel (reads on several channels run independently); the transfers may
-// be spread over loops, which the BD chain takes in program order. Returns 0
-// for any other buffer.
+// channel (reads on several channels run independently). The transfers may
+// sit in different loops when all their loops have the same bounds: the BD
+// chains then take them in program order on every trip. Returns 0 for any
+// other buffer.
 static int64_t slotBufferWriteLockInit(Value buffer) {
   using Span = std::pair<int64_t, int64_t>;
   auto spanOf = [](air::ChannelInterface chan) -> std::optional<Span> {
@@ -1039,14 +1040,41 @@ static int64_t slotBufferWriteLockInit(Value buffer) {
   };
   if (!oneChannel(writes) || !oneChannel(reads))
     return 0;
-  // Program order of the transfers, which may sit in different loops.
+  // The loops from a transfer out to the buffer's region, innermost first;
+  // nothing else may lie between.
+  Region *top = buffer.getParentRegion();
+  auto loopsAround =
+      [&](Operation *op) -> std::optional<SmallVector<scf::ForOp>> {
+    SmallVector<scf::ForOp> loops;
+    for (Region *r = op->getParentRegion(); r != top;) {
+      auto loop = dyn_cast_if_present<scf::ForOp>(r->getParentOp());
+      if (!loop)
+        return std::nullopt;
+      loops.push_back(loop);
+      r = loop->getParentRegion();
+    }
+    return loops;
+  };
+  auto sameBounds = [](scf::ForOp a, scf::ForOp b) {
+    return isEqualConstantIntOrValue(a.getLowerBound(), b.getLowerBound()) &&
+           isEqualConstantIntOrValue(a.getUpperBound(), b.getUpperBound()) &&
+           isEqualConstantIntOrValue(a.getStep(), b.getStep());
+  };
+  auto first = loopsAround(writes.front().first);
+  if (!first)
+    return 0;
+  for (auto &p : llvm::concat<std::pair<Operation *, Span>>(writes, reads)) {
+    auto loops = loopsAround(p.first);
+    if (!loops || loops->size() != first->size() ||
+        !llvm::all_of(llvm::zip(*loops, *first), [&](auto ab) {
+          return sameBounds(std::get<0>(ab), std::get<1>(ab));
+        }))
+      return 0;
+  }
+  // Program order of the transfers.
   DenseMap<Operation *, int64_t> order;
   int64_t next = 0;
-  buffer.getParentRegion()->walk<WalkOrder::PreOrder>(
-      [&](Operation *op) { order[op] = next++; });
-  auto known = [&](auto &p) { return order.contains(p.first); };
-  if (!llvm::all_of(writes, known) || !llvm::all_of(reads, known))
-    return 0;
+  top->walk<WalkOrder::PreOrder>([&](Operation *op) { order[op] = next++; });
   auto before = [&](auto &a, auto &b) {
     return order.lookup(a.first) < order.lookup(b.first);
   };
