@@ -87,7 +87,7 @@ PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPEC
 BUILD_ENV =
 
 # Split attention across KV positions: the kernels need the builder's part count,
-# which depends on the build (an ELF is never split), so it is read per target.
+# which depends on the build's settings, so it is read per target.
 ATTN_KV_PARTS = $(shell $(DECODE_ENV) $(BUILD_ENV) FUSED_DECODE_PRINT_CONST=KV_PARTS $(PYTHON) $(DECODE_DRIVER) 2>/dev/null | tail -1)
 PEANO_KFLAGS = $(PEANO_KBASE) $(if $(ATTN_KV_PARTS),-DATTN_KV_PARTS=$(ATTN_KV_PARTS))
 

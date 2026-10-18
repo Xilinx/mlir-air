@@ -622,12 +622,10 @@ static void parameterizeRuntimeBD(ModuleOp module, xilinx::AIE::DMABDOp bd) {
   }
 }
 
-// A full ELF has no word for a runtime BD length; the scratchpad does, but only
-// for a length affine in one sequence argument. A length that picks between
-// two such terms by the iteration -- each wave of a rolled sequence reading
-// its own context range -- gets one configure task per choice under an scf.if
-// on that choice, which folds once aie-unroll-runtime-sequence-loops unrolls
-// the loop; each task's BDs then take their own parameters.
+// A full ELF holds a runtime BD length or offset only as a scratchpad parameter
+// affine in one sequence argument. When one picks between such terms on a loop
+// condition, the configure task is cloned into the arms of an scf.if on that
+// condition, which folds once the sequence's loops are unrolled.
 static void versionLoopSelectedBDs(ModuleOp module) {
   SmallVector<xilinx::AIEX::DMAConfigureTaskForOp> work;
   module.walk(

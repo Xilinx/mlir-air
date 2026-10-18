@@ -1048,13 +1048,13 @@ if ELF:
 DYNSEQ_TRIP = DYNSEQ_RTP and not ELF
 # DECODE_RT_ROUNDS=1: the attention cores run ceil(L/16) KV blocks, L from their
 # RTP word, instead of all of ATTN_MAXL. The memtile KV ring is count-free and
-# keeps its compile-time bound. Only valid with the host patching the shim
-# readback down to the same block count (DecodeInstsGen's .rb.insts.bin), so the
-# KV traffic follows the context rather than the template.
+# keeps its compile-time bound. The shim readback is cut to the same block count:
+# by the host patching the stream (DecodeInstsGen's .rb.insts.bin) on the xclbin
+# path, and through scratchpad scalars on the ELF path (ELF_RB).
 RT_ROUNDS = int(_os.environ.get("DECODE_RT_ROUNDS", "0"))
 # DECODE_RT_WINDOW=1 (with DECODE_RT_ROUNDS): a sliding-window wave's cores start
-# at the block the window opens in, and the host starts that wave's readback there
-# (DecodeInstsGen's .sw.insts.bin). DECODE_RB_SWA_SKIP=n moves every sliding
+# at the block the window opens in, and that wave's readback starts there
+# (DecodeInstsGen's .sw.insts.bin, or ELF_SW). DECODE_RB_SWA_SKIP=n moves every sliding
 # wave's readback n blocks later; the host diffs that build to find the words.
 RT_WINDOW = int(_os.environ.get("DECODE_RT_WINDOW", "0"))
 RB_SWA_SKIP = int(_os.environ.get("DECODE_RB_SWA_SKIP", "0"))
