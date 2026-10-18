@@ -990,8 +990,9 @@ air::DMAAllocator::lookupDMAAllocation(AIE::TileLike tile,
 // write acquires k, and each read releases one. A slot is refilled only once
 // all k of its reads have released, which holds when every read lies in one
 // slot and the reads take the slots in the order they were written, on one
-// channel (reads on several channels run independently). Returns 0 for any
-// other buffer.
+// channel (reads on several channels run independently); the transfers may
+// be spread over loops, which the BD chain takes in program order. Returns 0
+// for any other buffer.
 static int64_t slotBufferWriteLockInit(Value buffer) {
   using Span = std::pair<int64_t, int64_t>;
   auto spanOf = [](air::ChannelInterface chan) -> std::optional<Span> {
@@ -1038,13 +1039,16 @@ static int64_t slotBufferWriteLockInit(Value buffer) {
   };
   if (!oneChannel(writes) || !oneChannel(reads))
     return 0;
-  // Program order of the transfers, all in one block.
-  Block *block = writes.front().first->getBlock();
-  auto inBlock = [&](auto &p) { return p.first->getBlock() == block; };
-  if (!llvm::all_of(writes, inBlock) || !llvm::all_of(reads, inBlock))
+  // Program order of the transfers, which may sit in different loops.
+  DenseMap<Operation *, int64_t> order;
+  int64_t next = 0;
+  buffer.getParentRegion()->walk<WalkOrder::PreOrder>(
+      [&](Operation *op) { order[op] = next++; });
+  auto known = [&](auto &p) { return order.contains(p.first); };
+  if (!llvm::all_of(writes, known) || !llvm::all_of(reads, known))
     return 0;
-  auto before = [](auto &a, auto &b) {
-    return a.first->isBeforeInBlock(b.first);
+  auto before = [&](auto &a, auto &b) {
+    return order.lookup(a.first) < order.lookup(b.first);
   };
   llvm::sort(writes, before);
   llvm::sort(reads, before);
