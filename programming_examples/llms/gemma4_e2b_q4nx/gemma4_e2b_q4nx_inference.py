@@ -94,8 +94,7 @@ VOCAB_CHUNK_I2 = "27"
 def _elf_on():
     """DECODE_ELF=1 selects the full-ELF decode (`make compile-decode-elf`).
 
-    Opt-in: the ELF reads back the whole KV cache every token, where the xclbin
-    templates read back only the context and the sliding window.
+    Opt-in; the xclbin templates stay the default.
     """
     return os.environ.get("DECODE_ELF") == "1"
 

@@ -175,17 +175,18 @@ compile-decode: kernels
 
 ## Full-ELF decode: one artifact for every L up to ATTN_MAXL, with L written to
 ## the scratchpad per dispatch. Not idempotent, like compile-decode.
-compile-decode-elf: BUILD_ENV = DECODE_DYNSEQ=1 DECODE_OUTPUT_FORMAT=elf
+compile-decode-elf: BUILD_ENV = DECODE_DYNSEQ=1 DECODE_OUTPUT_FORMAT=elf DECODE_RT_ROUNDS=1 DECODE_RT_WINDOW=1
 compile-decode-elf: kernels
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), UNI_DEC=$(UNI_DEC)$(if $(KV_SRC), KV_SRC=$(KV_SRC),)$(if $(LAYERS), LAYERS=$(LAYERS),), L via the scratchpad)"
-	@rm -f $(srcdir)/decode.elf $(srcdir)/params.txt $(srcdir)/decode_scratchpad.*
+	@rm -f $(srcdir)/decode.elf $(srcdir)/params.txt $(srcdir)/decode.args $(srcdir)/decode_scratchpad.*
 	@cd $(srcdir) && $(DECODE_ENV) $(BUILD_ENV) \
 	  $(PYTHON) $(DECODE_DRIVER) >/tmp/ple_decode_elf_L$(LBUILD).log 2>&1; \
-	  if [ -f $(srcdir)/decode.elf ] && [ -s $(srcdir)/params.txt ]; then \
+	  if [ -f $(srcdir)/decode.elf ] && [ -s $(srcdir)/params.txt ] && [ -s $(srcdir)/decode.args ]; then \
 	    mv -f $(srcdir)/decode.elf $(srcdir)/decode_scratchpad.elf; \
+	    mv -f $(srcdir)/decode.args $(srcdir)/decode_scratchpad.args; \
 	    cp -f $(srcdir)/params.txt $(srcdir)/decode_scratchpad.params.txt; \
 	    echo $$(( (($(LBUILD)+15)/16)*16 )) > $(srcdir)/decode_scratchpad.maxl; \
-	    echo "PLE full-ELF decode build complete: decode_scratchpad.{elf,params.txt,maxl}"; \
+	    echo "PLE full-ELF decode build complete: decode_scratchpad.{elf,params.txt,args,maxl}"; \
 	  else \
 	    echo "decode ELF build FAILED (see /tmp/ple_decode_elf_L$(LBUILD).log)"; \
 	    tail -30 /tmp/ple_decode_elf_L$(LBUILD).log; exit 1; \
@@ -193,7 +194,7 @@ compile-decode-elf: kernels
 
 clean:
 	rm -f $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin $(srcdir)/decode.rt_pair 2>/dev/null || true
-	rm -f $(srcdir)/decode.elf $(srcdir)/params.txt $(srcdir)/decode_scratchpad.* 2>/dev/null || true
+	rm -f $(srcdir)/decode.elf $(srcdir)/params.txt $(srcdir)/decode.args $(srcdir)/decode_scratchpad.* 2>/dev/null || true
 	rm -rf $(srcdir)/air_project $(srcdir)/__pycache__ 2>/dev/null || true
 	rm -f $(srcdir)/air.mlir 2>/dev/null || true
 	@echo "PLE decode kernels, template and build dir removed."

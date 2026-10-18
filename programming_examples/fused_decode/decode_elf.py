@@ -40,8 +40,10 @@ _LEN_PARAM = re.compile(r"_arglen_\d+$")
 
 
 def _entries(path):
+    """The parameter lines of params.txt: a count, then one line per parameter
+    (joint bounds follow them)."""
     lines = [ln.split() for ln in Path(path).read_text().split("\n") if ln.strip()]
-    return [ln for ln in lines[1:] if len(ln) >= 4]
+    return lines[1 : 1 + int(lines[0][0])]
 
 
 def parse_length_param(path):
@@ -84,6 +86,51 @@ def parse_params(path):
     return addr[0], scale, addend, core[0]
 
 
+# A build that names its scalars (decode_scratchpad.args) has every parameter
+# written from them: an offset is `scale * arg + addend`, a length the argument
+# itself, and a core parameter L.
+_ARG_PARAM = re.compile(r"_arg(off|len)_(\d+)(?:_x(-?\d+)_([mp])(\d+))?$")
+
+
+def parse_args(path):
+    """Read decode_scratchpad.args into ({name: arg_index}, align, parts, window)."""
+    args, align, parts, window = {}, 1, 1, 0
+    for ln in Path(path).read_text().split("\n"):
+        f = ln.split()
+        if not f:
+            continue
+        if f[0] == "arg":
+            args[f[2]] = int(f[1])
+        elif f[0] == "align":
+            align = int(f[1])
+        elif f[0] == "parts":
+            parts = int(f[1])
+        elif f[0] == "window":
+            window = int(f[1])
+    return args, align, parts, window
+
+
+def param_writers(params_path, args):
+    """[(param name, fn(values by arg index) -> int)] for every parameter."""
+    writers = []
+    for ln in _entries(params_path):
+        name, kind = ln[0], ln[3]
+        if kind == "core":
+            writers.append((name, lambda v, n=args["L"]: v[n]))
+            continue
+        m = _ARG_PARAM.search(name)
+        if not m:
+            raise RuntimeError(f"{params_path}: no rule for parameter {name}")
+        n = int(m.group(2))
+        if m.group(1) == "len":
+            writers.append((name, lambda v, n=n: v[n]))
+            continue
+        scale = int(m.group(3) or 1)
+        addend = int(m.group(5) or 0) * (-1 if m.group(4) == "m" else 1)
+        writers.append((name, lambda v, n=n, s=scale, a=addend: s * v[n] + a))
+    return writers
+
+
 def elf_on():
     """The full ELF is the default decode path; DECODE_ELF=0 selects the xclbin.
 
@@ -116,6 +163,32 @@ class ElfDecode:
         # against an ELF built at another L mis-sizes the KV cache and the mask
         # threshold together, and both failures look like bad numerics.
         self.attn_maxl = int(stamp.read_text().split()[0])
+        args_path = art_dir / "decode_scratchpad.args"
+        self.args = None
+        if args_path.exists():
+            self.args, self.align, self.parts, self.window = parse_args(args_path)
+            self.writers = param_writers(self.params_path, self.args)
+            self._check_append_scale(region_w)
+        else:
+            self._legacy_params(region_w)
+        self.ctx = xrt.hw_context(dev, xrt.elf(str(self.elf_path)))
+        self.kern = xrt.ext.kernel(self.ctx, KERNEL_NAME)
+        self.run = None
+        self.params = None
+
+    def _check_append_scale(self, region_w):
+        """The KV append's scale is the model's REGION_W; a mismatch means the
+        ELF and the driver were built from different geometries."""
+        for ln in _entries(self.params_path):
+            m = _ARG_PARAM.search(ln[0])
+            if m and m.group(1) == "off" and int(m.group(2)) == self.args["L"]:
+                if int(m.group(3) or 1) != region_w:
+                    raise RuntimeError(
+                        f"{self.params_path.name}: {ln[0]} scales L by "
+                        f"{m.group(3)}, the driver's REGION_W is {region_w}"
+                    )
+
+    def _legacy_params(self, region_w):
         (
             self.append_param,
             self.append_scale,
@@ -131,10 +204,6 @@ class ElfDecode:
                 f"{self.params_path.name} encodes scale {self.append_scale} but the "
                 f"driver's REGION_W is {region_w}; the ELF and the driver disagree."
             )
-        self.ctx = xrt.hw_context(dev, xrt.elf(str(self.elf_path)))
-        self.kern = xrt.ext.kernel(self.ctx, KERNEL_NAME)
-        self.run = None
-        self.params = None
 
     def bind(self, bos):
         """Bind the buffer arguments once. The run is persistent because the
@@ -151,15 +220,38 @@ class ElfDecode:
 
     def dispatch(self, L, np):
         """One token at context length L. Returns the XRT run state."""
-        self.params.write(
-            self.append_param, np.int32(L * self.append_scale + self.append_addend)
-        )
-        self.params.write(self.mask_param, np.int32(L))
-        if self.length_param:
-            self.params.write(self.length_param, np.int32((L + 15) // 16))
+        if self.args is not None:
+            # The cores' range: ceil(L/16) blocks rounded up to the alignment,
+            # and on a sliding wave from the block its window opens in.
+            blocks = -(-((L + 15) // 16) // self.align) * self.align
+            skip = 0
+            if self.window and L > self.window:
+                skip = (L - self.window) // 16
+                skip -= skip % self.align
+            part, swpart = blocks // self.parts, (blocks - skip) // self.parts
+            scalars = {
+                "L": L,
+                "kvb": part,
+                "swb": swpart,
+                "sws": skip,
+                "swm": skip + swpart,
+            }
+            v = {n: scalars[name] for name, n in self.args.items()}
+            for name, fn in self.writers:
+                self.params.write(name, np.int32(fn(v)))
+        else:
+            self._write_legacy(L, np)
         self.params.sync()
         # L is not a kernel argument: the ELF takes only the sequence's buffers,
         # and the scratchpad writes above are all the hardware reads.
         self.run.start()
         self.run.wait(DISPATCH_TIMEOUT_MS)
         return self.run.state()
+
+    def _write_legacy(self, L, np):
+        self.params.write(
+            self.append_param, np.int32(L * self.append_scale + self.append_addend)
+        )
+        self.params.write(self.mask_param, np.int32(L))
+        if self.length_param:
+            self.params.write(self.length_param, np.int32((L + 15) // 16))
