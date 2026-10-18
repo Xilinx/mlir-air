@@ -190,7 +190,7 @@ preflight-llvm-link: preflight-peano
 ## parameter too, so the shim reads only the blocks the context uses. The
 ## memtile ring and the cores' loop keep their compile-time bounds.
 DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
-DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD) ELF_RT_READBACK=1
+DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD) ELF_RT_READBACK=1 ELF_ARGS=1
 
 ## Idempotent like the xclbin target: skip when all three artifacts are present
 ## AND were built with the current flags. The stamp is keyed on LBUILD too,
@@ -199,6 +199,7 @@ DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD) ELF_RT_READBACK=1
 compile-decode-elf:
 	@if [ -f $(srcdir)/decode_scratchpad.elf ] && [ -f $(srcdir)/decode_scratchpad.params.txt ] \
 	    && [ -f $(srcdir)/decode_scratchpad.maxl ] \
+	    && [ -f $(srcdir)/decode_scratchpad.args ] \
 	    && [ "`cat $(DECODE_ELF_STAMP) 2>/dev/null`" = "$(DECODE_ELF_FLAGS)" ]; then \
 	  echo "Full-ELF decode already built ($(DECODE_ELF_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
 	else \
@@ -215,15 +216,15 @@ _compile_decode_elf_build: preflight-llvm-link
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L and KV block count via scratchpad)"
-	@cd $(srcdir) && rm -f decode.elf params.txt; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
+	@cd $(srcdir) && rm -f decode.elf params.txt decode.args; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
 	  DECODE_DYNSEQ=1 DECODE_RT_ROUNDS=1 \
 	  $(PYTHON) $(DECODE_DRIVER) >/tmp/decode_elf_L$(LBUILD).log 2>&1; rc=$$?; \
-	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
-	    mv -f decode.elf decode_scratchpad.elf; cp -f params.txt decode_scratchpad.params.txt; \
+	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ] && [ -s decode.args ]; then \
+	    mv -f decode.elf decode_scratchpad.elf; cp -f params.txt decode_scratchpad.params.txt; mv -f decode.args decode_scratchpad.args; \
 	    echo $$(( (($(LBUILD)+15)/16)*16 )) > decode_scratchpad.maxl; \
 	  else echo "decode ELF FAILED (see /tmp/decode_elf_L$(LBUILD).log)"; exit 1; fi
 	@echo "Full-ELF build complete: decode_scratchpad.elf + decode_scratchpad.params.txt"
-	@cat $(srcdir)/decode_scratchpad.params.txt
+	@cat $(srcdir)/decode_scratchpad.params.txt $(srcdir)/decode_scratchpad.args
 
 
 
@@ -315,7 +316,7 @@ clean:
 	rm -f $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin \
 	      $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin $(srcdir)/decode_L*.rt_rounds \
 	      $(BENCH_EXE) $(DECODE_FLAGS_STAMP) \
-	      $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt \
+	      $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt $(srcdir)/decode_scratchpad.args \
 	      $(srcdir)/decode_scratchpad.maxl $(srcdir)/params.txt $(DECODE_ELF_STAMP) 2>/dev/null || true
 	@echo "Kernels and decode templates removed. Rebuild with 'make compile-decode'."
 
