@@ -1070,7 +1070,7 @@ if ELF and (RB_SWA_SKIP or RB_ROUNDS != ATTN_ROUNDS):
 # as scalars after L, and the host writes them to the scratchpad. With
 # DECODE_RT_WINDOW a sliding wave's readback has its own length and start.
 ELF_RB = bool(ELF and RT_ROUNDS)
-ELF_SW = bool(ELF_RB and RT_WINDOW)
+ELF_SW = bool(ELF_RB and RT_WINDOW and MODEL.get("SLIDING_WINDOW"))
 # Sequence argument index of each runtime scalar, filled in by build_module().
 SEQ_SCALAR_ARGS = {}
 # Attention takes KV blocks two at a time into two L1 buffers, so the DMA fills

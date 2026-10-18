@@ -508,6 +508,21 @@ static StringAttr declareBlockArgLengthParameter(ModuleOp module, Value length,
   return name;
 }
 
+// `v` as the i32 a BD offset operand takes, created right after `v` is defined
+// so it stays outside the descriptor block.
+static Value castToI32(OpBuilder &b, Location loc, Value v) {
+  if (!v || v.getType().isInteger(32))
+    return v;
+  OpBuilder::InsertionGuard g(b);
+  if (Operation *def = v.getDefiningOp())
+    b.setInsertionPointAfter(def);
+  else
+    b.setInsertionPointToStart(cast<BlockArgument>(v).getOwner());
+  if (v.getType().isIndex())
+    return arith::IndexCastOp::create(b, loc, b.getI32Type(), v);
+  return arith::TruncIOp::create(b, loc, b.getI32Type(), v);
+}
+
 // The BD operand without the i32 narrowing the DMA lowering adds to it. The
 // BD field is 32-bit either way, so the parameter sees the same value.
 static Value stripI32Narrowing(Value v) {
@@ -588,7 +603,7 @@ static void parameterizeRuntimeBD(ModuleOp module, xilinx::AIE::DMABDOp bd) {
   if (len && !(affineInSequenceArg(len, unit, base, /*widenOnly=*/true) &&
                unit > 0 && base >= 0))
     return;
-  OpBuilder b(bd);
+  OpBuilder b(bd->getParentOfType<xilinx::AIEX::DMAConfigureTaskForOp>());
   StringAttr offParam;
   Value offResidual;
   if (bd.getOffset() && !bd.getOffsetParameterAttr() &&
@@ -612,10 +627,7 @@ static void parameterizeRuntimeBD(ModuleOp module, xilinx::AIE::DMABDOp bd) {
     return;
   bd.setOffsetParameterAttr(FlatSymbolRefAttr::get(offParam));
   if (offResidual) {
-    if (!offResidual.getType().isInteger(32))
-      offResidual = arith::IndexCastOp::create(b, bd.getLoc(), b.getI32Type(),
-                                               offResidual);
-    bd.getOffsetMutable().assign(offResidual);
+    bd.getOffsetMutable().assign(castToI32(b, bd.getLoc(), offResidual));
   } else {
     bd.getOffsetMutable().clear();
     bd.setStaticOffsetAttr(b.getI32IntegerAttr(0));
@@ -1300,9 +1312,12 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         affineInSequenceArg(dynLen, lenUnit, lenBase, /*widenOnly=*/true) &&
         lenUnit > 0 && lenBase >= 0) {
       bool seqOffset = dynOffset && reachesSequenceArg(dynOffset);
-      if (seqOffset)
+      if (seqOffset) {
+        OpBuilder::InsertionGuard g(rewriter);
+        rewriter.setInsertionPoint(configTaskOp);
         offParam = declareBlockArgOffsetParameter(
             op->getParentOfType<ModuleOp>(), dynOffset, rewriter, offResidual);
+      }
       if (!seqOffset || offParam)
         lenParam =
             declareBlockArgLengthParameter(op->getParentOfType<ModuleOp>(),
@@ -1310,12 +1325,8 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     }
     if (lenParam) {
       Value offset = dynOffsetI32;
-      if (offParam) {
-        offset = addStaticOffset(offResidual);
-        if (offset && !offset.getType().isInteger(32))
-          offset = arith::IndexCastOp::create(rewriter, op.getLoc(),
-                                              rewriter.getI32Type(), offset);
-      }
+      if (offParam)
+        offset = castToI32(rewriter, op.getLoc(), addStaticOffset(offResidual));
       AIE::DMABDOp::create(
           rewriter, op.getLoc(), memref, offset, /*len=*/Value(),
           /*static_offset=*/
@@ -1396,11 +1407,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         offsetResidual = addStaticOffset(offsetResidual);
         if (offsetResidual) {
           // The BD's offset operand is i32; the residual is whatever type the
-          // address arithmetic left it in (index, here).
-          if (!offsetResidual.getType().isInteger(32))
-            offsetResidual = arith::IndexCastOp::create(
-                rewriter, op.getLoc(), rewriter.getI32Type(), offsetResidual);
-          bd.getOffsetMutable().assign(offsetResidual);
+          // address arithmetic left it in.
+          bd.getOffsetMutable().assign(
+              castToI32(rewriter, op.getLoc(), offsetResidual));
           bd.removeStaticOffsetAttr();
         }
       } else {
