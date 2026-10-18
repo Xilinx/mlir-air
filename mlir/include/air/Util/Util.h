@@ -446,6 +446,9 @@ bool isDefaultDataAccessPattern(ArrayRef<OpFoldResult> memcpy_sizes,
 // op. Use these when the consumer needs a Value (e.g. to trace the producing
 // affine.apply or scf.for); prefer the op's getMixed*() accessors when only
 // the constant value matters.
+// The coefficient c such that `v` = c * `iv` + (terms independent of `iv`),
+// or nullopt if `v` depends on `iv` in any other way.
+std::optional<int64_t> getInductionVarCoefficient(Value v, Value iv);
 SmallVector<Value> getOffsetsAsValues(air::ChannelInterface op);
 SmallVector<Value> getSizesAsValues(air::ChannelInterface op);
 SmallVector<Value> getStridesAsValues(air::ChannelInterface op);

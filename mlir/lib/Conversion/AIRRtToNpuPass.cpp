@@ -934,18 +934,14 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
                  << " requires a contiguous transfer or a zero outer stride";
         }
       }
-      // A runtime offset rides in the BD's `offset` operand. Only one dimension
-      // may carry it, and the dimensions it is scaled against must be constant,
-      // so fold the scaling here.
+      // Runtime offsets go into the BD's linear `offset` operand. Strides are
+      // constant, so each runtime dimension adds offset * stride to it.
       for (auto [dim, ofr] : llvm::enumerate(mixedOffsets)) {
         if (getConstantIntValue(ofr))
           continue;
-        if (dynOffset)
-          return op->emitOpError(
-              "more than one runtime-valued DMA offset is not supported");
         int64_t stride = *getConstantIntValue(mixedStrides[dim]);
         Value v = cast<Value>(ofr);
-        dynOffset =
+        Value term =
             stride == 1
                 ? v
                 : arith::MulIOp::create(rewriter, op.getLoc(), v,
@@ -953,16 +949,18 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
                                             rewriter, op.getLoc(),
                                             rewriter.getI64IntegerAttr(stride)))
                       .getResult();
+        dynOffset = dynOffset ? arith::AddIOp::create(rewriter, op.getLoc(),
+                                                      dynOffset, term)
+                                    .getResult()
+                              : term;
       }
     }
 
-    // Entry i of each list is dimension 3-i, outermost first.
+    // Entry i of each list is dimension 3-i, outermost first. Runtime offsets
+    // are counted as 0 here; they are in dynOffset.
     SmallVector<int64_t> staticOffsets = constify(
         getMixedValues(adaptor.getStaticOffsets(), adaptor.getOffsets(), ctx),
-        /*defaultValue=*/0, [&](int dim) {
-          op->emitWarning("non-constant DMA offset (dim ")
-              << (3 - dim) << ") defaulting to 0";
-        });
+        /*defaultValue=*/0, nullptr);
     SmallVector<int64_t> staticSizes = constify(
         getMixedValues(adaptor.getStaticLengths(), adaptor.getLengths(), ctx),
         /*defaultValue=*/1, nullptr);
@@ -2231,6 +2229,33 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   // unroll below than the shim's descriptor limits actually require.
   minimizeUnrolledBdCount(offsets, wraps, strides, builder, limits);
 
+  // Runtime offsets only move the start address. Take them out as one linear
+  // element offset so that the unrolling below sees constant offsets, then add
+  // it to the innermost offset of each new transfer.
+  Value dynBase = nullptr;
+  if (wraps.size() > (size_t)limits.listDims()) {
+    for (unsigned j = 0; j < offsets.size(); j++) {
+      if (getConstantIntValue(offsets[j]))
+        continue;
+      int64_t stride = *getConstantIntValue(strides[j]);
+      Value v = cast<Value>(offsets[j]);
+      if (stride != 1)
+        v = arith::MulIOp::create(
+                builder, loc, v,
+                arith::ConstantOp::create(builder, loc,
+                                          builder.getI64IntegerAttr(stride)))
+                .getResult();
+      dynBase =
+          dynBase ? arith::AddIOp::create(builder, loc, dynBase, v).getResult()
+                  : v;
+      offsets[j] = builder.getI64IntegerAttr(0);
+    }
+    if (dynBase && *getConstantIntValue(strides.back()) != 1)
+      return memcpy_op.emitOpError(
+          "with a runtime offset needs an innermost stride of 1 to be split "
+          "into several BDs");
+  }
+
   // Unroll highest dimensions of wrap and stride, if the new dimension count
   // goes beyond what one BD holds.
   SmallVector<affine::AffineForOp> for_loop_nest;
@@ -2289,6 +2314,17 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
         arith::IndexCastOp::create(builder, loc, IntegerType::get(ctx, 64),
                                    inner_affine_for_iv)
             .getResult();
+  }
+  if (dynBase) {
+    Value lowest = isa<Value>(offsets.back())
+                       ? cast<Value>(offsets.back())
+                       : arith::ConstantOp::create(
+                             builder, loc,
+                             builder.getI64IntegerAttr(
+                                 *getConstantIntValue(offsets.back())))
+                             .getResult();
+    offsets.back() =
+        arith::AddIOp::create(builder, loc, lowest, dynBase).getResult();
   }
   auto newOp = airrt::DmaMemcpyNdOp::create(
       builder, loc, SmallVector<Type>(memcpy_op->getResultTypes()),
