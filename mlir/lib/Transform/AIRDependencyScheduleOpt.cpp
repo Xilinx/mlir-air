@@ -1654,6 +1654,39 @@ struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
         target_ops.push_back(child_par.getOperation());
       }
     }
+    // An op stays when something staying in the loop waits on it, since the
+    // new loop would take its producer away, or when it depends on an op that
+    // stays, since the new loop gets a copy of what a moved op depends on and
+    // that op would run twice.
+    llvm::SmallPtrSet<Operation *, 8> staying;
+    auto dependsOnStaying = [&](Operation *op) {
+      llvm::SetVector<Value> used;
+      for (Region &region : op->getRegions())
+        getUsedValuesDefinedAbove(region, used);
+      used.insert(op->operand_begin(), op->operand_end());
+      SmallVector<Value> vals = used.takeVector();
+      llvm::SetVector<Operation *> slice;
+      air::getBackwardSliceInRegion(rewriter, &for_op.getRegion(), vals, slice);
+      return llvm::any_of(slice,
+                          [&](Operation *o) { return staying.contains(o); });
+    };
+    for (size_t n = 0; n != target_ops.size();) {
+      n = target_ops.size();
+      llvm::SmallPtrSet<Operation *, 8> targets(target_ops.begin(),
+                                                target_ops.end());
+      auto moves = [&](Operation *user) {
+        for (Operation *p = user; p && p != for_op; p = p->getParentOp())
+          if (targets.contains(p))
+            return true;
+        return false;
+      };
+      llvm::erase_if(target_ops, [&](Operation *op) {
+        if (llvm::all_of(op->getUsers(), moves) && !dependsOnStaying(op))
+          return false;
+        staying.insert(op);
+        return true;
+      });
+    }
     if (target_ops.empty()) {
       // Loop is already in isolation
       for_op->setAttr("isolated", rewriter.getBoolAttr(true));
