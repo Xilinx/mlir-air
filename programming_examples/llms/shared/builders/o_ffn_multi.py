@@ -218,13 +218,11 @@ def build_o_ffn_module(
     print_kernels=False,
     herd_m=8,
 ):
-    """Build the fused O-proj + Residual + FFN ELF (12 launches, 19 args).
+    """Build the fused O-proj + Residual + FFN ELF.
 
     The 4 GEMMs (O/Gate/Up/Down) use external mm.o kernels whose method + tiles come
-    from the kernel_registry JSON per shape (gemm_registry_config). All 4 are large
-    (M*K*N>=4e9) so the registry resolves them to fused-cast (tile_m=64, f32 C scratch
-    + on-chip cast launch); 4 extra f32-scratch func args (15..18) carry the scratch.
-    Same 9.3e-3 GPU-standard precision as drain, but faster.
+    from the kernel_registry JSON per shape (gemm_registry_config). Each fused-cast
+    GEMM adds an f32 C-scratch func arg after the 15 base args; drain GEMMs add none.
 
     herd_m: M-dimension herd size for the O/Gate/Up/Down GEMMs (default 8). Must
     satisfy seq_len % (tile_m * herd_m) == 0; small contexts (seq_len < 512) need
@@ -257,13 +255,12 @@ def _build_o_ffn(
     swiglu_herd_y=1,
     print_kernels=False,
 ):
-    """O-proj + Residual + FFN, all-bf16 outward buffers, 12 launches / 19 args.
+    """O-proj + Residual + FFN, all-bf16 outward buffers.
 
     The 4 GEMMs (O/Gate/Up/Down) get their method + tiles from the kernel_registry
-    JSON per shape (gemm_registry_config, "bf16"/"high"). All 4 are large so they
-    resolve to fused-cast (external mm.o GEMM with an f32 C scratch + a separate
-    on-chip cast launch each = @gemm_cast_bf16, 2 launches/GEMM). The 4 f32 scratch
-    buffers are func args 15..18. GPU-standard 9.3e-3 precision. Needs mm_m64.o +
+    JSON per shape (gemm_registry_config, "bf16"/"high"). A fused-cast GEMM is an
+    external mm.o GEMM with an f32 C scratch plus an on-chip cast launch, and its
+    scratch is a func arg after the 15 base args; a drain GEMM needs neither. Needs
     runtime_loop_tiling_sizes=[2,2]: smaller than the GEMMs' own grid extents, so a
     real runtime loop survives and its BD IDs must be recycled across iterations.
     (A tiling request >= a GEMM's own extent instead fully unrolls it at compile
@@ -550,16 +547,12 @@ if __name__ == "__main__":
 
     SEQ_LEN, EMB_DIM, HIDDEN_DIM = 2048, 2048, 8192
 
-    from air_examples.llms.shared.infra.external_kernels import (
-        compile_silu_and_mul,
-        compile_gemm_mm,
-    )
+    from air_examples.llms.shared.builders.gemm_builder import compile_gemm_objects
+    from air_examples.llms.shared.infra.external_kernels import compile_silu_and_mul
 
-    # The 4 GEMMs are fused-cast (tile_m=64) per the registry → mm_m64.o.
-    print("Compiling external kernels (mm_m64.o, silu_and_mul.o)...")
-    compile_gemm_mm(
-        tile_m=64, tile_n=128, tile_k_l1=32, sym_suffix="_m64", out_name="mm_m64.o"
-    )
+    o_spec, g_spec, d_spec = o_ffn_gemm_specs(SEQ_LEN, EMB_DIM, HIDDEN_DIM)
+    print("Compiling external kernels (GEMM objects, silu_and_mul.o)...")
+    compile_gemm_objects([o_spec, g_spec, d_spec])
     compile_silu_and_mul()
 
     print(f"O+FFN Multi-Launch: seq={SEQ_LEN}, emb={EMB_DIM}, hidden={HIDDEN_DIM}")
@@ -632,7 +625,7 @@ if __name__ == "__main__":
     )
 
     # All GEMMs emit bf16 (fused-cast does the cast on-chip); proj/gate/up/down
-    # buffers are bf16. The 4 f32 C-scratch buffers are args 15..18; output arg14.
+    # buffers are bf16. Output is arg14; any f32 C-scratch follows it.
     proj_buf = np.zeros((SEQ_LEN, EMB_DIM), dtype=bfloat16)
     res1_buf = np.zeros((SEQ_LEN, EMB_DIM), dtype=bfloat16)
     normed2_buf = np.zeros((SEQ_LEN, EMB_DIM), dtype=bfloat16)
@@ -642,12 +635,12 @@ if __name__ == "__main__":
     down_buf = np.zeros((SEQ_LEN, EMB_DIM), dtype=bfloat16)
     output_buf = np.zeros(N_TOTAL, dtype=bfloat16)
 
-    # The stitched @o_ffn has its output at arg14 (NOT last) with 4 f32 C-scratch
-    # buffers at args 15..18. XRTRunner.run_test() appends output placeholders
-    # AFTER inputs, so it can only handle output-is-last functions — it would
-    # misalign every arg from 14 onward here. Drive the module directly with the
-    # full 19-arg list in position (matching the production cache.load_and_run
-    # path), then read back arg14.
+    # The stitched @o_ffn has its output at arg14 (NOT last), followed by one f32
+    # C-scratch buffer per fused-cast GEMM. XRTRunner.run_test() appends output
+    # placeholders AFTER inputs, so it can only handle output-is-last functions --
+    # it would misalign every arg from 14 onward here. Drive the module directly
+    # with the full arg list in position (matching the production
+    # cache.load_and_run path), then read back arg14.
     args_in_order = [
         attn_out,
         wo,
@@ -664,11 +657,16 @@ if __name__ == "__main__":
         w_down,
         down_buf,
         output_buf,  # arg14: output
-        # arg15..18: per-GEMM f32 C-scratch (proj, gate, up, down)
-        np.zeros((SEQ_LEN, EMB_DIM), dtype=np.float32),
-        np.zeros((SEQ_LEN, HIDDEN_DIM), dtype=np.float32),
-        np.zeros((SEQ_LEN, HIDDEN_DIM), dtype=np.float32),
-        np.zeros((SEQ_LEN, EMB_DIM), dtype=np.float32),
+    ] + [
+        # f32 C-scratch of each fused-cast GEMM, in O, Gate, Up, Down order
+        np.zeros((SEQ_LEN, n), dtype=np.float32)
+        for spec, n in (
+            (o_spec, EMB_DIM),
+            (g_spec, HIDDEN_DIM),
+            (g_spec, HIDDEN_DIM),
+            (d_spec, EMB_DIM),
+        )
+        if spec["needs_f32_scratch"]
     ]
 
     backend = XRTBackend(

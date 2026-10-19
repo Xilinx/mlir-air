@@ -65,9 +65,9 @@ import types
 
 # Prefill GEMM is always the external high-precision path, registry-driven: every
 # GEMM's method (fused-cast vs drain) + tile sizes come from the kernel_registry JSON
-# per shape (gemm_registry_config). o_ffn = 4 fused-cast GEMMs (mm_m64.o); rms =
-# Q fused-cast (mm_m64.o) + K/V drain (mm_m32.o), mixed in one ELF. All GPU-standard
-# 9.3e-3 precision. The external GEMM herds need BD-ID-recycling tiling [2,2].
+# per shape (gemm_registry_config), and fused-cast (mm_m64.o) and drain (mm_m32.o)
+# GEMMs mix in one ELF. All GPU-standard 9.3e-3 precision. The external GEMM herds
+# need BD-ID-recycling tiling [2,2].
 
 
 def _o_ffn_run_backend():
