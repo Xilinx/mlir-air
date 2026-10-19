@@ -25,7 +25,7 @@ import gemma4_e2b_q4nx_weights as W  # noqa: E402
 
 # The NPU weight bundle: an HF repo id by default, like every other q4nx
 # example. Override with --bundle or Q4NX_MODEL_SOURCE.
-BUNDLE = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
+BUNDLE = W.MODEL_DEFAULT
 
 # FastFlowLM's golden activations. Unlike the bundle this is NOT published: it is
 # an artifact of an FLM source tree (decoding/references/gemma4_e2b_ref.safetensors,
@@ -186,12 +186,13 @@ def layer(m, g, ple, kv, L, x, T):
         )
         store[L] = (ke, v)
     ke, v = store[W.kv_source_layer(L)]
-    kh, vh = ke[:, 0], v[:, 0]
-    s = np.einsum("thd,sd->hts", qe, kh) * W.ATTN_SCALE
+    grp = W.N_Q_HEADS // W.N_KV_HEADS
+    kh, vh = np.repeat(ke, grp, axis=1), np.repeat(v, grp, axis=1)
+    s = np.einsum("thd,shd->hts", qe, kh) * W.ATTN_SCALE
     s = s + W._sliding_mask(T, kh.shape[0], W.SLIDING_WINDOW if sliding else 0)[None]
     s = np.exp(s - s.max(-1, keepdims=True))
     s /= s.sum(-1, keepdims=True)
-    o = np.einsum("hts,sd->thd", s, vh).reshape(T, W.N_Q_HEADS * dh)
+    o = np.einsum("hts,shd->thd", s, vh).reshape(T, W.N_Q_HEADS * dh)
     o1 = r + W._rmsnorm(o @ w["o"].T, nm["post_attn"])
 
     h = W._rmsnorm(o1, nm["pre_ffn"])

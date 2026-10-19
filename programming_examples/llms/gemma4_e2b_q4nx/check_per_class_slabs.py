@@ -20,7 +20,7 @@ import gemma4_e2b_q4nx_requant as rq  # noqa: E402
 import gemma4_e2b_q4nx_weights as gw  # noqa: E402
 import validate_layer_npu as vln  # noqa: E402
 
-UNI = 35
+UNI = gw.NUM_LAYERS
 fd = vln._load_fd(UNI, 64, kv_src=[gw.kv_source_layer(i) for i in range(UNI)])
 assert fd.PER_CLASS
 K, G, BLK, NCX, NPH = fd.K, fd.GROUP, fd.BLOCK_BF16, fd.NCX, fd.NPH
@@ -31,7 +31,7 @@ rng = np.random.default_rng(0)
 
 def weights(L):
     dh, inter = gw.head_dim(L), fd.MODEL["INTER_NARROW"]
-    if L >= fd.MODEL["FIRST_KV_SHARED"]:
+    if gw.DOUBLE_WIDE_MLP and not gw.owns_kv(L):
         inter *= 2
 
     def r(m, k):  # (q, scale, min)
@@ -49,7 +49,7 @@ def weights(L):
         down=r(K, inter),
     )
     if gw.owns_kv(L):
-        w["k"], w["v"] = r(dh, K), r(dh, K)
+        w["k"], w["v"] = r(gw.N_KV_HEADS * dh, K), r(gw.N_KV_HEADS * dh, K)
     return w
 
 
@@ -75,7 +75,8 @@ def device_slab(L, w):
     )
     qkv = [head(w["q"], NQ)]
     if "k" in w:
-        qkv += [head(rq._each(w[x], lambda a: np.tile(a, (NKV, 1))), NKV) for x in "kv"]
+        rep = NKV // gw.N_KV_HEADS
+        qkv += [head(rq._each(w[x], lambda a: np.tile(a, (rep, 1))), NKV) for x in "kv"]
     qkv = rq._each(rq._cat(*qkv), lambda a: rq._pad_rows(a, fd.M))
 
     def slots(a, g):  # [head | 0] per slot; identity on a full layer
@@ -93,7 +94,7 @@ def device_slab(L, w):
             lambda a: a[:, rq._halfmajor_cols(fd, fd.COL_BLOCK)],
             lambda a: a[:, rq._halfmajor_cols(fd, fd.COL_BLOCK // G)],
         )
-    full = 2 * fd.MODEL["INTER_NARROW"]
+    full = 2 * fd.J2P[DP] * fd.COL_BLOCK  # the build's FFN width
     up = rq._each(w["up"], lambda a: rq._pad_rows(a, full))
     gate = rq._each(w["gate"], lambda a: rq._pad_rows(a, full))
     q = [None] * NPH
@@ -123,7 +124,11 @@ ZERO_BLOCK = fd.pack_q4k_cascade(*_z, NCX, fd.NCY, iter_major=True)[:BLK]
 
 print(f"W_DEC {fd.W_DEC} = sum of slabs: {fd.W_DEC == sum(fd.W_SLABS)}")
 print(f"offsets cumulative: {fd.W_OFFS == list(np.cumsum([0] + fd.W_SLABS[:-1]))}")
-for L in (0, 4, 15, 19):
+# the first layer of each class: sliding / full, own / shared KV
+CLASSES = sorted(
+    {(gw.is_sliding(L), gw.owns_kv(L)): L for L in reversed(range(UNI))}.values()
+)
+for L in CLASSES:
     w = weights(L)
     native = rq.pack_layer_weights(fd, L, w)
     arm = fd.arm_of_layer(L)

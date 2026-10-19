@@ -4,9 +4,10 @@ FastFlowLM's 4-bit `model.q4nx` bundle for Gemma4-E4B, on the NPU end to end:
 the fused prefill, then one dispatch per token for all 42 decoder layers, the
 per-layer-embedding (PLE) branch and the LM head.
 
-This directory holds no model code: its Makefile includes
-[`gemma4_e2b_q4nx`](../gemma4_e2b_q4nx)'s with `GEMMA4_VARIANT=e4b`, and the
-artifacts land here. The design notes there apply; below is what differs.
+The layout, Makefile targets and lit tests match
+[`gemma4_e2b_q4nx`](../gemma4_e2b_q4nx). The Python entry points here run that
+directory's code with `GEMMA4_VARIANT=e4b` (`gemma4_e4b_variant.py`), so its
+design notes apply; below is what differs.
 
 ```bash
 export PEANO_INSTALL_DIR=/path/to/llvm-aie   # >= 22.0.0
@@ -96,6 +97,7 @@ measured context:
 | 8192 | 13.05 | |
 | 16384 | 11.74 | |
 | 32768 | 9.77 | |
+| 65536 | 5.93 | |
 
 The fused prefill handles prompts
 up to 2048 tokens (two kv heads put each head's records `max_blocks` apart);

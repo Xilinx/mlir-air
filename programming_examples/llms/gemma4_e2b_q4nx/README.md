@@ -6,8 +6,8 @@ through the [`fused_decode_ple`](../../fused_decode_ple) engine.
 Both halves run on the NPU: the prefill end to end, and the decode token by
 token through a single 35-layer dispatch.
 
-The same code runs Gemma4-E4B under `GEMMA4_VARIANT=e4b`; see
-[`gemma4_e4b_q4nx`](../gemma4_e4b_q4nx), whose Makefile includes this one.
+The same code runs Gemma4-E4B at `GEMMA4_VARIANT=e4b`; see
+[`gemma4_e4b_q4nx`](../gemma4_e4b_q4nx).
 
 ```bash
 export PEANO_INSTALL_DIR=/path/to/llvm-aie   # must be >= 22.0.0, see Reproducibility

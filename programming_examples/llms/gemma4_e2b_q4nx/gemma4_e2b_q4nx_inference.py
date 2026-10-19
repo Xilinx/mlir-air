@@ -576,6 +576,11 @@ def _prefill_npu(prompt, model, seq_len=None):
     from gemma4_e2b_q4nx_prefill import Gemma4Q4nxPrefill
 
     seq_len = seq_len or int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
+    if len(prompt) > seq_len:
+        raise SystemExit(
+            f"prompt of {len(prompt)} tokens exceeds the per-op prefill's "
+            f"{seq_len} rows; rebuild it with a larger CTX"
+        )
     t_load = time.perf_counter()
     pf = Gemma4Q4nxPrefill(
         seq_len=seq_len, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
