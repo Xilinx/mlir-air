@@ -17,7 +17,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gemma4_e2b_q4nx_weights as W  # noqa: E402
 
-BUNDLE = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
+BUNDLE = W.MODEL_DEFAULT
 
 
 def _tok(bundle):

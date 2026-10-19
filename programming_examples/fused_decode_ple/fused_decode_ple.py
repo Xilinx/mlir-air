@@ -348,6 +348,43 @@ _MODELS = {
         # The driver MUST set VOCAB_CHUNK_I2=27 to match this UNI_LM.
         UNI_LM=19,  # vocab chunks per LM head (VOCAB_CHUNK_I2=27)
     ),
+    # Gemma4-E4B: the gemma4-e2b geometry at K=2560. Its two kv heads map one
+    # per CU, so nothing is replicated and KV_PARTS (which needs a replicated
+    # head) stays off. One FFN width, so the narrow and wide classes differ only
+    # in whether the layer streams k/v.
+    #   I2P = [M, K, 2*INTER, K]/512 = [6144, 2560, 20480, 2560]/512 = [12, 5, 40, 5]
+    #   J2P = [K, DQ, K, INTER]/512  = [2560, 4096, 2560, 10240]/512 = [5, 8, 5, 20]
+    # LM head chunking as gemma3-4b (also K=2560): 8240 rowblocks = 16*515,
+    # K/PAYLOAD = 5 must divide VOCAB_I2 and 2*VOCAB_I2 <= 63, so VOCAB_I2=5.
+    "gemma4-e4b": dict(
+        K=2560,
+        M=6144,  # DQ+DK+DV at the FULL layer = 4096 + 2*512 + 2*512
+        DH_A=512,
+        DH_SWA=256,
+        SLIDING_WINDOW=512,
+        KV_PER_CU=1,
+        KV_BLOCK_PAIRS=True,
+        N_ATTN_CU=2,
+        NPH=4,
+        I2P=[12, 5, 40, 5],
+        J2P=[5, 8, 5, 20],
+        DEST=["rope", "rms", "glu", "rms"],
+        XMT_PCOL=3,
+        GQA_SEG=4,
+        PAIR_ROWS=1,
+        N_NORMS=5,
+        HAS_QK_NORM=True,
+        PLE_DIM=256,
+        FULL_LAYERS=(5, 11, 17, 23, 29, 35, 41),
+        FIRST_KV_SHARED=24,
+        INTER_NARROW=10240,
+        VOCAB_SIZE=262144,
+        UNI_DEC=42,
+        UNI_LM=103,  # vocab chunks per LM head (VOCAB_CHUNK_I2=5)
+        # The PLE gate core's K-wide buffers do not fit L1 beside the default
+        # stack at K=2560.
+        DECODE_STACK=8192,
+    ),
     # Llama-3.2-3B: same topology as the 1B entry, only dimensions differ
     # (FLM's 1B and 3B layer.mlir are byte-structurally identical). head_dim
     # doubles to 128 and GQA goes 4 q/kv-group -> 3, which the GQA_SEG=4
@@ -1077,7 +1114,7 @@ KV_PAIRS = (
 COALESCE = int(_os.environ.get("DECODE_COALESCE", "1"))
 # Core stack. At K=4096 (qwen3-8b) the seven K-wide L1 activation buffers leave
 # under 8 KiB, so that geometry lowers it; every other model keeps 10240.
-STACK_SIZE = int(_os.environ.get("DECODE_STACK", "10240"))
+STACK_SIZE = int(_os.environ.get("DECODE_STACK", MODEL.get("DECODE_STACK", 10240)))
 # DECODE_KV_SPLIT=1: decouple the attention K and V memtile rings (mirror the reference mem_3_1:
 # separate k_mem_buffer / v_mem_buffer, filled by SEPARATE S2MM = inKV_K / inKV_V, so
 # the qk core's K supply is NOT lock-chained to the kv core's V drain). Default off

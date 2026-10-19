@@ -24,7 +24,7 @@ def load(name, model=None):
     sys.modules.setdefault(
         "air_examples", types.ModuleType("air_examples")
     ).__path__ = [str(_PE)]
-    if name == "gemma4_e2b_q4nx":
+    if name in ("gemma4_e2b_q4nx", "gemma4_e4b_q4nx"):  # one runtime, GEMMA4_VARIANT
         from air_examples.llms.gemma4_e2b_q4nx.fused_prefill.runtime import (
             FusedPrefill,
         )

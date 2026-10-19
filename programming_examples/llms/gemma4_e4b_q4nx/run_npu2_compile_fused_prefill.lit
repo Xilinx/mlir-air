@@ -1,0 +1,15 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Gemma4-E4B fused prefill compile-only test: kernels and every op's insts,
+// the LM head included as GEMM ops (E4B's K=2560 does not fit the E2B LM-head
+// GEMV device). No weight data.
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22
+//
+// RUN: mkdir -p test_npu2_compile_fused_prefill
+// RUN: cd test_npu2_compile_fused_prefill
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile-fused-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+//
+// CHECK: built {{[0-9]+}} ops into {{.*}}_fused_prefill

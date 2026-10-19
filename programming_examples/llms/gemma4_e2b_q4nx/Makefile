@@ -28,12 +28,23 @@
 #   make layer-gate       Score each layer class on device against numpy
 #   make check            CPU-only gate vs FLM's goldens (needs an FLM tree)
 
+# srcdir is the directory of the Makefile make was invoked on (artifacts), g4dir
+# this one (code). ../gemma4_e4b_q4nx/Makefile sets the variant and includes it.
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+g4dir  := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
-DEC    := $(srcdir)/../../fused_decode_ple
-PREFILL_DRIVER := $(srcdir)/gemma4_e2b_q4nx_prefill.py
-FUSED          := $(srcdir)/fused_prefill
-INFER_DRIVER   := $(srcdir)/gemma4_e2b_q4nx_inference.py
+DEC    := $(g4dir)/../../fused_decode_ple
+PREFILL_DRIVER := $(g4dir)/gemma4_e2b_q4nx_prefill.py
+FUSED          := $(g4dir)/fused_prefill
+INFER_DRIVER   := $(g4dir)/gemma4_e2b_q4nx_inference.py
+
+# The model variant and its decode engine build; exported for the drivers and
+# the engine Makefile.
+GEMMA4_VARIANT ?= e2b
+DECODE_MODEL   ?= gemma4-e2b
+MODEL_TYPE     ?= GEMMA4_E2B
+VOCAB_CHUNK_I2 ?= 27
+export GEMMA4_VARIANT DECODE_MODEL MODEL_TYPE VOCAB_CHUNK_I2
 BUILD_DIR := build_peano
 
 # Padded prefill length. Every prefill ELF is built FOR this length, so changing
@@ -93,8 +104,8 @@ SWEEP_UNI_DEC ?= 35
 # attend a zero key at their own position. seed_kv fans the prompt's rows out,
 # so only generation degrades. Derived, not written out: a wrong map builds
 # fine and decodes to garbage. Recursive (=) to keep the import off `make help`.
-SLIDING_WINDOW = $(shell cd $(srcdir) && $(PYTHON) -c "import gemma4_e2b_q4nx_weights as gw; print(gw.SLIDING_WINDOW)")
-SWEEP_KV_SRC = $(shell cd $(srcdir) && $(PYTHON) -c "import gemma4_e2b_q4nx_weights as gw; print(','.join(str(gw.kv_source_layer(i)) for i in range($(SWEEP_UNI_DEC))))")
+SLIDING_WINDOW = $(shell cd $(g4dir) && $(PYTHON) -c "import gemma4_e2b_q4nx_weights as gw; print(gw.SLIDING_WINDOW)")
+SWEEP_KV_SRC = $(shell cd $(g4dir) && $(PYTHON) -c "import gemma4_e2b_q4nx_weights as gw; print(','.join(str(gw.kv_source_layer(i)) for i in range($(SWEEP_UNI_DEC))))")
 
 # ATTN_MAXL the TOKEN driver's template is built for, i.e. the session context
 # cap of `make run` / `ask` / `profile`. Separate from LBUILD, which is the layer
@@ -132,7 +143,7 @@ GATE_PAIRS  ?= 13:15 14:19 14:34
 
 # The shared top-k verify subsystem (verify-topk / verify-full / diagnosis).
 VERIFY_RUNNER  := $(srcdir)/../verify/verify_runner.py
-RUNNER_ADAPTER := gemma4_e2b_q4nx.verify_adapter
+RUNNER_ADAPTER := $(notdir $(srcdir)).verify_adapter
 MODEL_CHOICE   ?= instruct
 MAX_PROMPTS    ?= 2
 
@@ -144,13 +155,13 @@ MAX_PROMPTS    ?= 2
 
 help:
 	@echo "============================================================"
-	@echo " GEMMA4-E2B Q4NX on NPU2 (MLIR-AIR) -- prefill + fused decode"
+	@echo " GEMMA4-$(GEMMA4_VARIANT) Q4NX on NPU2 (MLIR-AIR) -- prefill + fused decode"
 	@echo "============================================================"
 	@echo ""
 	@echo "On device:"
 	@echo "  make compile            Build everything the device path needs (prefill + decode)"
 	@echo "  make compile-decode     Build the LAYER GATE's decode template (1 layer, weight-free)"
-	@echo "  make compile-decode-full Build the TOKEN DRIVER's template (35 layers, weight-free)"
+	@echo "  make compile-decode-full Build the TOKEN DRIVER's template ($(LAYERS) layers, weight-free)"
 	@echo "  make compile-decode-elf  The token driver's decode as one full ELF (DECODE_ELF=1)"
 	@echo "  make compile-prefill    Build the prefill ELFs (weight-free)"
 	@echo "  make run                Generate on NPU; gate the Paris continuation + stop"
@@ -241,7 +252,7 @@ fused-prefill:
 
 fused-prefill-long:
 	$(PYTHON) $(FUSED)/verify.py $(FUSED_DIR) --tol $(PREFILL_TOL) \
-	  --text-file $(srcdir)/README.md --text-tokens 280 --repeat 1
+	  --text-file $(g4dir)/README.md --text-tokens 280 --repeat 1
 
 ## NPU prefill + fused NPU decode. With no PROMPT this is the canonical Paris
 ## gate: the first token must be 9079 (" Paris") and the continuation must match
@@ -292,7 +303,7 @@ profile-prefill:
 ##
 ## An empty KV_SRC is silently the identity map, so a failed derivation would
 ## rebuild the bug rather than fail. Refuse it; the engine asserts the length.
-RB_STEP = cd $(DEC) && DECODE_MODEL=gemma4-e2b VOCAB_CHUNK_I2=27 DECODE_GOLDEN=1 DECODE_GOLDEN_L=$(LBUILD) FUSED_DECODE_PRINT_CONST=RB_STEP $(PYTHON) fused_decode_ple.py | tail -1
+RB_STEP = cd $(DEC) && DECODE_GOLDEN=1 DECODE_GOLDEN_L=$(LBUILD) FUSED_DECODE_PRINT_CONST=RB_STEP $(PYTHON) fused_decode_ple.py | tail -1
 
 _compile_decode_build:
 	@test -n "$(SWEEP_KV_SRC)" || { echo "cannot derive the KV sharing map from gemma4_e2b_q4nx_weights.kv_source_layer -- refusing to build an identity-mapped template" >&2; exit 1; }
@@ -371,8 +382,8 @@ layer-gate:
 	@set -e; for L in $(GATE_LAYERS); do \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
 	    UNI_DEC=1 LAYERS=$$L PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
-	  cd $(srcdir); \
-	  SCORE_ARGS="--layer $$L --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$$L.npz"; \
+	  cd $(g4dir); \
+	  SCORE_ARGS="--layer $$L --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4$(GEMMA4_VARIANT)_L$$L.npz"; \
 	  $(score_layer); \
 	done
 
@@ -386,13 +397,13 @@ layer-gate-shared:
 	  SRC=$${P%:*}; L=$${P#*:}; \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
 	    UNI_DEC=1 LAYERS=$$SRC PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
-	  cd $(srcdir); \
-	  SCORE_ARGS="--layer $$SRC --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$$SRC.npz --dump /tmp/g4_d$$SRC.npz"; \
+	  cd $(g4dir); \
+	  SCORE_ARGS="--layer $$SRC --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4$(GEMMA4_VARIANT)_L$$SRC.npz --dump /tmp/g4$(GEMMA4_VARIANT)_d$$SRC.npz"; \
 	  $(score_layer); \
 	  $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$(LBUILD) \
 	    UNI_DEC=2 KV_SRC=0,0 LAYERS=$$SRC,$$L PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) >/dev/null; \
-	  cd $(srcdir); \
-	  SCORE_ARGS="--layers $$SRC,$$L --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4_L$${SRC}_$$L.npz --prefix-dump /tmp/g4_d$$SRC.npz"; \
+	  cd $(g4dir); \
+	  SCORE_ARGS="--layers $$SRC,$$L --attn-maxl $(LBUILD) --rebuild-cache --cache /tmp/g4$(GEMMA4_VARIANT)_L$${SRC}_$$L.npz --prefix-dump /tmp/g4$(GEMMA4_VARIANT)_d$$SRC.npz"; \
 	  $(score_layer); \
 	done
 
@@ -410,18 +421,7 @@ verify: layer-gate layer-gate-shared
 ## runs, the layer gate needs no second checkpoint, and this one downloads a bf16
 ## Gemma4-E2B. Two gates over different things, neither subsuming the other.
 ##
-## KNOWN FAIL on this model, and NOT a decode defect. verify_runner tokenizes
-## with `tok.encode(prompt)`, and the Gemma4 tokenizer adds no <bos> -- which is
-## why every other entry point here prepends 2 by hand. Without it this model is
-## out of distribution and its logits go near-flat: the NPU's top-5 at the first
-## divergence was [4092, 4094, 4095, 4096, 4098], a run of consecutive ids.
-##
-## The evidence that it is the MODEL and not the device: on the same prompt the
-## CPU oracle for this bundle -- gemma4_e2b_q4nx_weights.forward_prompt, no NPU
-## involved -- emits [786, 786, 786, 786]. A degenerate q4nx model cannot match
-## bf16 top-5 no matter what runs it. Triage any failure here by re-running the
-## same ids through forward_prompt BEFORE suspecting the decode; `make run`
-## matches that oracle token for token on an in-distribution prompt.
+## The adapter's PROMPT_BOS supplies the <bos> this tokenizer does not add.
 verify-topk:
 	cd $(srcdir)/.. && $(PYTHON) $(VERIFY_RUNNER) --runner=$(RUNNER_ADAPTER) \
 		--prompts topk_token --model $(MODEL_CHOICE) --max-prompts $(MAX_PROMPTS)
@@ -443,26 +443,26 @@ diagnosis:
 ## CPU-only per-layer gate against FLM's own golden activations. ~4 min, no NPU.
 ## Needs an FLM source tree (FLM_REFERENCE); `layer-gate` is the gate that does not.
 check:
-	cd $(srcdir) && $(PYTHON) check_vs_flm_reference.py \
+	cd $(g4dir) && $(PYTHON) check_vs_flm_reference.py \
 		--bundle $(MODEL_SOURCE) --layers $(LAYERS) --tol $(TOL)
 
 ## Greedy generation through the chat template. Smoke test, NOT a gate.
 ## Slow by construction: no KV reuse across tokens, so each token re-runs the
 ## whole prompt (~35 s/token at 16 tokens of context).
 gen:
-	cd $(srcdir) && $(PYTHON) run_reference.py --bundle $(MODEL_SOURCE) gen \
+	cd $(g4dir) && $(PYTHON) run_reference.py --bundle $(MODEL_SOURCE) gen \
 		--prompt "$(if $(PROMPT),$(PROMPT),$(REF_PROMPT))" --n-tokens $(N_GEN)
 
 ## Fast smoke test: one forward, expect ' Paris' as top-1.
 paris:
-	cd $(srcdir) && $(PYTHON) run_reference.py --bundle $(MODEL_SOURCE) paris
+	cd $(g4dir) && $(PYTHON) run_reference.py --bundle $(MODEL_SOURCE) paris
 
 ## Regenerate sub-layer ground truth from the full-precision checkpoint.
 ## Only needed when bisecting INSIDE a layer -- FLM's shipped reference has one
 ## tensor per layer, which cannot tell attention from FFN from the PLE tail.
 ## Loads a 10.2 GB checkpoint in float32; needs ~25 GB RAM and a few minutes.
 sublayer-ref:
-	cd $(srcdir) && $(PYTHON) dump_sublayer_reference.py \
+	cd $(g4dir) && $(PYTHON) dump_sublayer_reference.py \
 		--layers 7,8,9 --out sublayer_ref.npz
 
 ## Remove build artifacts and caches, here and in the decode engine this example

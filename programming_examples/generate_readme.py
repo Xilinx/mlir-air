@@ -573,6 +573,7 @@ _MODEL_DIRS = {"smolvla_all": "smolvla"}
 LLM_HF_MODELS = {
     "gemma3_4b_q4nx": "FastFlowLM/Gemma3-4B-NPU2",
     "gemma4_e2b_q4nx": "FastFlowLM/Gemma4-E2B-IT-NPU2",
+    "gemma4_e4b_q4nx": "FastFlowLM/Gemma4-E4B-IT-NPU2",
     "llama31_8b_q4nx": "FastFlowLM/Llama-3.1-8B-NPU2",
     # Q4_0-quantized on load from an upstream bf16 checkpoint (LiquidAI
     # publishes no pre-quantized bundle), so this points at the source repo

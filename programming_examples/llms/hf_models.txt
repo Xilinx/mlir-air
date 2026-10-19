@@ -101,3 +101,7 @@ LiquidAI/LFM2-1.2B
 # chat_template.jinja, so the CPU-reference targets need no second repo either.
 # Ungated, so CI needs no license grant.
 FastFlowLM/Gemma4-E2B-IT-NPU2
+
+# Gemma4-E4B (text), same packaging. Used by llms/gemma4_e4b_q4nx; listed alone
+# for the same reason as E2B.
+FastFlowLM/Gemma4-E4B-IT-NPU2

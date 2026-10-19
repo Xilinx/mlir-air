@@ -110,8 +110,8 @@ def main():
     )
     worst = min(
         min(
-            cos(ks[L], kv[gw.kv_source_layer(L)][0][:, 0]),
-            cos(vs[L], kv[gw.kv_source_layer(L)][1][:, 0]),
+            cos(ks[L], kv[gw.kv_source_layer(L)][0]),
+            cos(vs[L], kv[gw.kv_source_layer(L)][1]),
         )
         for L in range(gw.NUM_LAYERS)
     )

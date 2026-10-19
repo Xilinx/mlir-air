@@ -88,9 +88,12 @@ def _get_tokenizer(model_name: str):
     return AutoTokenizer.from_pretrained(model_name)
 
 
-def _tokenize(prompt: str, model_name: str):
+def _tokenize(prompt: str, model_name: str, bos: Optional[int] = None):
+    """`bos`: the adapter's PROMPT_BOS, prepended if the tokenizer omits it."""
     tok = _get_tokenizer(model_name)
     ids = tok.encode(prompt)
+    if bos is not None and ids[:1] != [bos]:
+        ids = [bos] + ids
     return np.array(ids, dtype=np.int64), tok
 
 
@@ -353,7 +356,9 @@ def main():
         # It is informational, not the gate, so it keeps the single-process path.
         npu = build_npu()
         hf = build_hf()
-        prompt_tokens, _ = _tokenize(args.prompt, model_name)
+        prompt_tokens, _ = _tokenize(
+            args.prompt, model_name, getattr(adapter, "PROMPT_BOS", None)
+        )
         if len(prompt_tokens) > max_seq:
             prompt_tokens = prompt_tokens[:max_seq]
         _run_diagnosis(npu, hf, prompt_tokens, report, config.n_layers)
@@ -385,7 +390,7 @@ def main():
     report.config["max_prompts"] = args.max_prompts
 
     def _prompt_tokens(prompt):
-        ptoks, _ = _tokenize(prompt, model_name)
+        ptoks, _ = _tokenize(prompt, model_name, getattr(adapter, "PROMPT_BOS", None))
         return ptoks[:max_seq] if len(ptoks) > max_seq else ptoks
 
     # auto: run the NPU capture and HF compare halves as separate subprocesses

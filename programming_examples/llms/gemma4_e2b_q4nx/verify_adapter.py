@@ -1,7 +1,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Verify adapter for the Q4NX Gemma4-E2B example.
+"""Verify adapter for the Q4NX Gemma4-E2B example, and (through
+../gemma4_e4b_q4nx/verify_adapter.py, which selects GEMMA4_VARIANT=e4b) E4B.
 
 The NPU runs FastFlowLM's 4-bit `model.q4nx` bundle; the reference is the bf16
 HF checkpoint that bundle was built from. The shared verify gate compares
@@ -46,7 +47,9 @@ for _p in (str(_VERIFY), str(_THIS_DIR)):
 from runners import fused_prefill  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
-_N_LAYERS = 35
+import gemma4_e2b_q4nx_weights as gw  # noqa: E402
+
+_N_LAYERS = gw.NUM_LAYERS
 
 
 @dataclass
@@ -60,23 +63,28 @@ class Gemma4Config:
     """
 
     n_layers: int = _N_LAYERS
-    emb_dim: int = 1536
-    n_heads: int = 8
-    head_dim: int = 256
-    n_kv_heads: int = 1
-    hidden_dim: int = 6144
-    vocab_size: int = 262144
+    emb_dim: int = gw.D
+    n_heads: int = gw.N_Q_HEADS
+    head_dim: int = gw.DH_SLIDING
+    n_kv_heads: int = gw.N_KV_HEADS
+    hidden_dim: int = gw.INTER
+    vocab_size: int = gw.VOCAB
 
 
-# Gemma4-E2B ships instruction-tuned only in the shape this example targets.
+# Gemma4 ships instruction-tuned only in the shape this example targets.
 MODEL_CHOICES = {
-    "instruct": "unsloth/gemma-4-E2B-it",
+    "instruct": {"e2b": "unsloth/gemma-4-E2B-it", "e4b": "unsloth/gemma-4-E4B-it"}[
+        gw.VARIANT
+    ],
 }
 DEFAULT_MODEL = "instruct"
 
+# The Gemma4 tokenizer does not add <bos>; the verify runner prepends it.
+PROMPT_BOS = 2
+
 # NPU weight source: the FastFlowLM Q4NX bundle (NOT the bf16 reference above).
 # Same default as the inference driver / Makefile.
-Q4NX_MODEL_SOURCE = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
+Q4NX_MODEL_SOURCE = gw.MODEL_DEFAULT
 
 # Padded prefill length. Every prefill ELF is built for it, so it is a rebuild
 # rather than a runtime knob (same constraint as the other Q4NX examples).
@@ -128,7 +136,7 @@ class NpuRunner:
         from gemma4_e2b_q4nx_prefill import Gemma4Q4nxPrefill
         from gemma4_e2b_q4nx_inference import FusedDecoder
 
-        self.prefiller = fused_prefill.load("gemma4_e2b_q4nx", Q4NX_MODEL_SOURCE)
+        self.prefiller = fused_prefill.load(gw.MODEL_DIR.name, Q4NX_MODEL_SOURCE)
         if self.prefiller is None:
             self.prefiller = Gemma4Q4nxPrefill(
                 seq_len=_SEQ_LEN, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None

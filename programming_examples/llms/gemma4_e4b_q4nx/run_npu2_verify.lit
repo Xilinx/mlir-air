@@ -1,0 +1,29 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Gemma4-E4B Q4NX verify gate: per-layer cosine on device against the numpy
+// reference, one layer per class (see gemma4_e2b_q4nx/run_npu2_verify.lit):
+//   layer  0  sliding, own kv
+//   layer  5  full,    own kv
+//   layer 23  full,    own kv   (the source of every shared full layer)
+//   layer 24  sliding, kv <- 22
+//   layer 29  full,    kv <- 23
+//   layer 41  full,    kv <- 23  (the last layer)
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22, hfweights_fastflowlm_gemma4_e4b_it_npu2
+//
+// RUN: mkdir -p test_npu2_verify
+// RUN: cd test_npu2_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile layer-gate PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=OWN
+// RUN: make -f %S/Makefile layer-gate-shared PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=SHARED
+//
+// OWN: PASS: layer 0
+// OWN: PASS: layer 5
+// OWN: PASS: layer 23
+//
+// SHARED: PASS: layer 22
+// SHARED: PASS: layer 24
+// SHARED: PASS: layer 23
+// SHARED: PASS: layer 29
+// SHARED: PASS: layer 41

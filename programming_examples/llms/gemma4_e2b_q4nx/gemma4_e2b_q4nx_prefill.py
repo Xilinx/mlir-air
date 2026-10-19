@@ -51,10 +51,12 @@ from gemma4_e2b_q4nx_weights import (  # noqa: E402
     D,
     DH_GLOBAL,
     DH_SLIDING,
+    DOUBLE_WIDE_MLP,
     EMBED_SCALE,
     FINAL_LOGIT_SOFTCAP,
     FIRST_KV_SHARED_LAYER,
     INTER,
+    MODEL_DIR,
     NUM_LAYERS,
     N_Q_HEADS,
     N_KV_HEADS,
@@ -65,6 +67,8 @@ from gemma4_e2b_q4nx_weights import (  # noqa: E402
     ROPE_GLOBAL_THETA,
     ROPE_SLIDING_THETA,
     SLIDING_WINDOW,
+    VARIANT,
+    VARIANTS,
     VOCAB,
     _gelu_tanh,
     _rmsnorm,
@@ -83,7 +87,7 @@ sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path_
     str(Path(__file__).resolve().parents[2])
 ]
 
-MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
+MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", VARIANTS[VARIANT]["REPO"])
 
 # <bos> + "The capital of France is". Kept in sync with run_reference.py's
 # `paris` smoke test; the expected token id is resolved from the tokenizer
@@ -101,12 +105,12 @@ _LM_N_PARTITIONS = VOCAB // _LM_N_PART
 # and selected per layer by is_sliding(). "swa" = sliding window, "full" = the
 # every-fifth layer that sees the whole context.
 _CLS = ("swa", "full")
-# The two FFN widths. Narrow is layers < FIRST_KV_SHARED_LAYER, wide is the rest
-# -- the SAME predicate as KV sharing, asserted against the bundle in
-# _check_class_map() rather than trusted.
-_WID = ("n", "w")
+# The FFN widths. With DOUBLE_WIDE_MLP, narrow is layers < FIRST_KV_SHARED_LAYER
+# and wide the rest -- the same predicate as KV sharing, asserted against the
+# bundle in _check_class_map().
+_WID = ("n", "w") if DOUBLE_WIDE_MLP else ("n",)
 
-INTER_NARROW = INTER  # 6144
+INTER_NARROW = INTER
 INTER_WIDE = 2 * INTER  # 12288
 
 
@@ -115,7 +119,7 @@ def _cls(k):
 
 
 def _wid(k):
-    return "n" if owns_kv(k) else "w"
+    return "n" if owns_kv(k) or not DOUBLE_WIDE_MLP else "w"
 
 
 def dims(k):
@@ -1400,7 +1404,7 @@ class Gemma4Q4nxPrefill:
         # seq_len-specific cache: the ELFs are compiled for this padded context
         # length but KernelCache keys on kernel NAME only, so a shorter build
         # would otherwise be silently reused (-> all-zero logits past its length).
-        cache_dir = cache_dir or str(_HERE / f"_q4nx_cache_seq{seq_len}")
+        cache_dir = cache_dir or str(MODEL_DIR / f"_q4nx_cache_seq{seq_len}")
         self.cache = KernelCache(cache_dir=cache_dir, verbose=verbose)
         # KernelCache keys on kernel NAME, and the manifest validates only the
         # toolchain -- so a cache built at another seq_len would be reused here

@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Gemma4-E2B prefill on the fused prefill device (shared/fused_prefill).
+"""Gemma4 prefill on the fused prefill device (shared/fused_prefill).
 
 Same interface as Gemma4Q4nxPrefill: prefill(ids) returns the last token's
 logits and kv_stack() the cache for the decoder. The prompt runs a layer at a
@@ -20,7 +20,7 @@ from ...shared.fused_prefill import lm_gemv
 from ...shared.fused_prefill import packing as P
 from ...shared.fused_prefill.engine import TO, FROM, Ctx, Engine, view
 
-from .spec import CFG
+from .spec import CFG, LM_GEMM
 
 
 def _layer_q4(qm, b, L):
@@ -50,7 +50,7 @@ class FusedPrefill(Engine):
         self.rope_cache = {}
 
     def contexts(self):
-        return [self.fp, self.lm["ctx"]]
+        return [self.fp] if LM_GEMM else [self.fp, self.lm["ctx"]]
 
     # ---- model ----
 
@@ -99,6 +99,14 @@ class FusedPrefill(Engine):
         self._lm_setup()
 
     def _lm_setup(self):
+        if LM_GEMM:
+            raw = self.bundle.q4nx("lm_head.weight", gw.VOCAB, gw.D)
+            self.lm = D.n_split(gw.VOCAB)
+            for i, (n0, n1) in enumerate(self.lm):
+                self.gemm_site(
+                    f"lm.{i}", gw.D, n1 - n0, P.pack_q4(*(a[n0:n1] for a in raw)), 1
+                )
+            return
         ctx = Ctx(self.dev, self.dir / "lm.xclbin")
         G = lm_gemv
         w = G.pack(*self.bundle.q4nx("lm_head.weight", G.V, G.K))
@@ -119,6 +127,11 @@ class FusedPrefill(Engine):
         )
 
     def _lm_head(self, last):
+        if LM_GEMM:
+            last = np.asarray(last, np.float32).reshape(1, -1)
+            return np.concatenate(
+                [self.mm(f"lm.{i}", last)[0] for i in range(len(self.lm))]
+            ).astype(np.float32)
         lm = self.lm
         np.copyto(lm["xm"], last.reshape(-1), casting="unsafe")
         lm["bx"].sync(TO)
@@ -140,11 +153,11 @@ class FusedPrefill(Engine):
         return cs, sn, rows[0][2]
 
     def _kv_append(self, L, r0, k, v):
-        """Tokens [r0, r0+T) of layer L (k, v [T, 1, dh]): kept for kv_stack,
-        and written as the attention's KV records."""
+        """Tokens [r0, r0+T) of layer L (k, v [T, kv_heads, dh]): kept for
+        kv_stack, and written as the attention's KV records."""
         ks, vs = self.kv.setdefault(L, ([], []))
-        ks.append(k[:, 0])
-        vs.append(v[:, 0])
+        ks.append(k.reshape(k.shape[0], -1))
+        vs.append(v.reshape(v.shape[0], -1))
         self.kv_append(self.kvb[L], r0, k, v)
 
     def prefill(self, ids):
@@ -275,7 +288,7 @@ class FusedPrefill(Engine):
 
     def kv_stack(self):
         """Per layer (shared ones resolved) the prompt's K and V, float32
-        [n, head_dim], as Gemma4Q4nxPrefill.kv_stack returns them."""
+        [n, kv_heads*head_dim], as Gemma4Q4nxPrefill.kv_stack returns them."""
         ks, vs = [], []
         for L in range(gw.NUM_LAYERS):
             k, v = self.kv[gw.kv_source_layer(L)]
