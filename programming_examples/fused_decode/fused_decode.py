@@ -1015,6 +1015,8 @@ RT_ROUNDS = int(_os.environ.get("DECODE_RT_ROUNDS", "0"))
 # the readback's block count arrives as a second runtime scalar instead, which
 # mlir-aie turns into a scratchpad length parameter on the readback BD.
 RB_ARG = bool(RT_ROUNDS and DYNSEQ)
+# Sequence argument index of each runtime scalar, filled in by build_module().
+SEQ_SCALAR_ARGS = {}
 
 # DECODE_COALESCE=0: turn off the cross-wave shim-feed coalescing, for A/B.
 # Cross-wave shim-feed coalescing: always on (the un-coalesced feed was an A/B).
@@ -1507,6 +1509,10 @@ def build_module():
         + ([air_api.tensor([], api_types.i32, name="seqlen")] if DYNSEQ else [])
         + ([air_api.tensor([], api_types.i32, name="kvblocks")] if RB_ARG else [])
     )
+    if DYNSEQ:
+        SEQ_SCALAR_ARGS["L"] = len(_tensors) - 1 - RB_ARG
+    if RB_ARG:
+        SEQ_SCALAR_ARGS["kvb"] = len(_tensors) - 1
 
     # air.preserve_shim_dma_order: opt out of air-opt-shim-dma-bds' per-channel
     # BD regrouping. The weight channels (inW) are coupled by the X broadcast
@@ -4890,6 +4896,13 @@ def run():
     # An ELF embeds its instruction stream, so no insts.bin is written and
     # naming one here would send a reader looking for a file that is not there.
     _insts = f" + {art.insts}" if out_fmt != "elf" else ""
+    if out_fmt == "elf":
+        # What the host writes per token: each scalar's sequence argument. The
+        # readback takes whole blocks, one part, and no window skip.
+        with open("decode.args", "w") as f:
+            for name, n in SEQ_SCALAR_ARGS.items():
+                f.write(f"arg {n} {name}\n")
+            f.write("align 1\nparts 1\n")
     print(f"[q4nx_decode] emitted {art.output_binary}{_insts} (kernel {art.kernel!r})")
     return 0
 

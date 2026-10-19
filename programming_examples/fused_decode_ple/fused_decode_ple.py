@@ -1037,39 +1037,46 @@ DYNSEQ = int(_os.environ.get("DECODE_DYNSEQ", "0"))
 # reads better at its use.
 DYNSEQ_RB = DYNSEQ_APPEND = DYNSEQ_RTP = DYNSEQ_MEM = bool(DYNSEQ)
 # DECODE_OUTPUT_FORMAT=elf: one full ELF for every L. Its instruction stream is
-# static, so L reaches the device only as scratchpad values (mask threshold and
-# KV append); the readback, memtile and core block counts stay at ATTN_MAXL.
+# static, so L reaches the device only as scratchpad values: the mask threshold,
+# the KV append and, with DECODE_RT_ROUNDS, the readback (see ELF_RB).
 ELF = _os.environ.get("DECODE_OUTPUT_FORMAT", "xclbin") == "elf"
 if ELF:
     if not DYNSEQ:
         raise SystemExit("DECODE_OUTPUT_FORMAT=elf needs DECODE_DYNSEQ=1")
     DYNSEQ_RB = DYNSEQ_MEM = False
-# The cores' block count follows L only on the xclbin path.
+# DYNSEQ's runtime core loop bound; on the ELF path DECODE_RT_ROUNDS sets it.
 DYNSEQ_TRIP = DYNSEQ_RTP and not ELF
 # DECODE_RT_ROUNDS=1: the attention cores run ceil(L/16) KV blocks, L from their
 # RTP word, instead of all of ATTN_MAXL. The memtile KV ring is count-free and
-# keeps its compile-time bound. Only valid with the host patching the shim
-# readback down to the same block count (DecodeInstsGen's .rb.insts.bin), so the
-# KV traffic follows the context rather than the template.
+# keeps its compile-time bound. The shim readback is cut to the same block count:
+# by the host patching the stream (DecodeInstsGen's .rb.insts.bin) on the xclbin
+# path, and through scratchpad scalars on the ELF path (ELF_RB).
 RT_ROUNDS = int(_os.environ.get("DECODE_RT_ROUNDS", "0"))
 # DECODE_RT_WINDOW=1 (with DECODE_RT_ROUNDS): a sliding-window wave's cores start
-# at the block the window opens in, and the host starts that wave's readback there
-# (DecodeInstsGen's .sw.insts.bin). DECODE_RB_SWA_SKIP=n moves every sliding
+# at the block the window opens in, and that wave's readback starts there
+# (DecodeInstsGen's .sw.insts.bin, or ELF_SW). DECODE_RB_SWA_SKIP=n moves every sliding
 # wave's readback n blocks later; the host diffs that build to find the words.
 RT_WINDOW = int(_os.environ.get("DECODE_RT_WINDOW", "0"))
 RB_SWA_SKIP = int(_os.environ.get("DECODE_RB_SWA_SKIP", "0"))
 if RT_WINDOW and not RT_ROUNDS:
     raise SystemExit("DECODE_RT_WINDOW needs DECODE_RT_ROUNDS")
-if ELF and (RT_ROUNDS or RB_SWA_SKIP or RB_ROUNDS != ATTN_ROUNDS):
+if ELF and (RB_SWA_SKIP or RB_ROUNDS != ATTN_ROUNDS):
     raise SystemExit(
-        "DECODE_RT_ROUNDS / DECODE_RB_SWA_SKIP / DECODE_RB_ROUNDS need the host "
+        "DECODE_RB_SWA_SKIP / DECODE_RB_ROUNDS need the host "
         "to patch the KV readback per token, which an ELF's embedded stream does "
         "not allow"
     )
+# On the ELF path with DECODE_RT_ROUNDS, the readback's blocks per part arrive
+# as scalars after L, and the host writes them to the scratchpad. With
+# DECODE_RT_WINDOW a sliding wave's readback has its own length and start.
+ELF_RB = bool(ELF and RT_ROUNDS)
+ELF_SW = bool(ELF_RB and RT_WINDOW and MODEL.get("SLIDING_WINDOW"))
+# Sequence argument index of each runtime scalar, filled in by build_module().
+SEQ_SCALAR_ARGS = {}
 # Attention takes KV blocks two at a time into two L1 buffers, so the DMA fills
 # one while the kernel reads the other. Each wave's block range is widened to an
 # even count; the extra block lies outside [lo, L) and the kernels skip it.
-# Not with a runtime block count.
+# Not under the xclbin DYNSEQ path, whose readback is ceil(L/16) blocks.
 KV_PAIRS = (
     bool(MODEL.get("KV_BLOCK_PAIRS")) and ATTN_ROUNDS % 2 == 0 and (ELF or not DYNSEQ)
 )
@@ -1344,7 +1351,7 @@ REGION_STRIDE = ATTN_MAXL * REGION_W  # per-group region span (one K or V region
 # contexts are bound by the KV readback streams, and each part adds its own.
 # Block ranges round to KV_PARTS pairs so every slice is whole pairs.
 KV_PARTS = MODEL.get("KV_PARTS", 1)
-if ATTN_ROUNDS % (2 * KV_PARTS) or ATTN_ROUNDS <= 2 * KV_PARTS or DYNSEQ:
+if ATTN_ROUNDS % (2 * KV_PARTS) or ATTN_ROUNDS <= 2 * KV_PARTS or (DYNSEQ and not ELF):
     # Too short a template to split and still have blocks left in its .rb
     # calibration build, or a readback whose block count is a runtime value
     # the split does not divide.
@@ -2754,6 +2761,14 @@ def build_module():
             + _ple_args
             + ([i32] if DYNSEQ else [])
         )
+        # Scalars after L: blocks per part; for a sliding wave, its blocks per
+        # part, first block, and (split) part 1's first block.
+        _rb_names = (["kvb"] if ELF_RB else []) + (
+            ["swb", "sws"] + (["swm"] if KV_PARTS > 1 else []) if ELF_SW else []
+        )
+        _fn_args += [i32] * len(_rb_names)
+        for _k, _nm in enumerate(["L"] * bool(DYNSEQ) + _rb_names):
+            SEQ_SCALAR_ARGS[_nm] = len(_fn_args) - len(_rb_names) - bool(DYNSEQ) + _k
         # arg index of each weight group's buffer: group 0 is the original arg1;
         # groups 1.. and the lm-head follow the base args. Index into _la is +4.
         _w_base_n = 4 + (1 if MULTIBLK else 0)
@@ -2784,7 +2799,14 @@ def build_module():
                 PLEX0 = _la[4 + PLEX0_ARG] if PLE else None
                 # The dispatch-time context length (DYNSEQ). Last operand before
                 # the multi-layer induction variable.
-                L_rt = _la[4 + len(_fa) - 1] if DYNSEQ else None
+                L_rt = _la[4 + SEQ_SCALAR_ARGS["L"]] if DYNSEQ else None
+
+                def _rb_arg(name, scale=1):
+                    """An ELF_RB scalar, as an index, times `scale`."""
+                    v = arith.index_cast(idx_t, _la[4 + SEQ_SCALAR_ARGS[name]])
+                    return arith.muli(v, idx(scale)) if scale != 1 else v
+
+                _rb_kvb = (lambda: _rb_arg("kvb")) if ELF_RB else None
 
                 def _rt_blocks():
                     """ceil(L/16) as an index Value, for the readback's block count.
@@ -2862,6 +2884,16 @@ def build_module():
                             v,
                         )
                     return v
+
+                def _swa_pick(on, off):
+                    """on() on a sliding-window wave, off() on any other, chosen
+                    by one condition so a readback has one variant per class."""
+                    _b = lambda v: arith.ConstantOp(IntegerAttr.get(T.bool(), v), None)
+                    return arith.select(
+                        _swa_sel(lambda: _b(1).result, lambda: _b(0).result),
+                        on(),
+                        off(),
+                    )
 
                 if RB_SWA_SKIP and not _WINDOWED:
                     raise SystemExit("DECODE_RB_SWA_SKIP needs sliding-window waves")
@@ -3725,7 +3757,7 @@ def build_module():
                                         _cbv = (
                                             _rt_blocks
                                             if DYNSEQ_RB
-                                            else (lambda: idx(_cb))
+                                            else (_rb_kvb or (lambda: idx(_cb)))
                                         )
                                         _rbo = lambda e: _loi(_kbase, e)
                                         if RB_SWA_SKIP:
@@ -3739,6 +3771,22 @@ def build_module():
                                                 _loi(_kbase, e),
                                                 _skb(RB_SWA_SKIP * 16 * REGION_W),
                                             )
+                                        if ELF_SW:
+                                            # A sliding wave starts at its window's
+                                            # first block and reads its own count.
+                                            _cbv = lambda: _swa_pick(
+                                                lambda: _rb_arg("swb"),
+                                                lambda: _rb_arg("kvb"),
+                                            )
+                                            _rbo = lambda e: arith.addi(
+                                                _loi(_kbase, e),
+                                                _swa_pick(
+                                                    lambda: _rb_arg(
+                                                        "sws", 16 * REGION_W
+                                                    ),
+                                                    lambda: idx(0),
+                                                ),
+                                            )
                                         if KV_PARTS > 1:
                                             # Part p's slice of the range, one BD per
                                             # part and K/V.
@@ -3747,6 +3795,8 @@ def build_module():
                                             assert RB_SWA_SKIP % (2 * KV_PARTS) == 0
 
                                             def _cbh():
+                                                if ELF_RB:
+                                                    return _cbv()
                                                 n = idx(_cb // KV_PARTS)
                                                 if RB_SWA_SKIP:
                                                     n = arith.subi(
@@ -3769,7 +3819,22 @@ def build_module():
                                                         ),
                                                     ):
                                                         _off = _rbo(_roff + _coff)
-                                                        if _p:
+                                                        if _p and ELF_SW:
+                                                            _off = arith.addi(
+                                                                _loi(
+                                                                    _kbase,
+                                                                    _roff + _coff,
+                                                                ),
+                                                                _swa_pick(
+                                                                    lambda: _rb_arg(
+                                                                        "swm", _blkw
+                                                                    ),
+                                                                    lambda: _rb_arg(
+                                                                        "kvb", _blkw
+                                                                    ),
+                                                                ),
+                                                            )
+                                                        elif _p:
                                                             _off = arith.addi(
                                                                 _off,
                                                                 arith.muli(
@@ -4999,7 +5064,9 @@ def build_module():
                                 DeallocOp(akbs[c])
                                 DeallocOp(avbs[c])
 
-                        def _emit_part_herds(cus, leaf, Lc, core_arm, seg_arm_i):
+                        def _emit_part_herds(
+                            cus, leaf, Lc, core_arm, seg_arm_i, win=None
+                        ):
                             """Part 1's CUs, as their own herd, and the merge cores
                             that fold each head group's two partial results into
                             its @attnO."""
@@ -5027,11 +5094,15 @@ def build_module():
                             _ops = [t.result for t in shs] + [Lc]
                             if seg_arm_i is not None:
                                 _ops.append(core_arm)
+                            if win is not None:
+                                _ops.append(win)
 
                             @herd(name="attn_blk_p1", sizes=[2, 2], operands=_ops)
                             def attn_p1(_tx, _ty, _sx, _sy, *_a):
                                 sl = list(_a[:N_ATTN_CU])
                                 Lh = _a[N_ATTN_CU]
+                                if win is not None:
+                                    Lh = arith.ori(Lh, _a[-1])
                                 arm = (
                                     _a[N_ATTN_CU + 1] if seg_arm_i is not None else None
                                 )
@@ -5305,7 +5376,7 @@ def build_module():
                                     folding and survives to core codegen as a real runtime
                                     trip count -- the same count the shim's readback BD
                                     pushes, which is what keeps the core off a channel get
-                                    that never arrives. Without DYNSEQ_TRIP it is
+                                    that never arrives. Without either knob it is
                                     ATTN_ROUNDS and the far blocks are masked.
                                     """
                                     if not (DYNSEQ_TRIP or RT_ROUNDS):
@@ -5819,7 +5890,7 @@ def build_module():
 
                         if KV_PARTS > 1:
                             _emit_part_herds(
-                                _cus, _attn_leaf, _Lc, _core_arm, _seg_arm_i
+                                _cus, _attn_leaf, _Lc, _core_arm, _seg_arm_i, _seg_win
                             )
 
                     # o gather memtile (reference mem_5_1 o_buffer): gather the 4
@@ -7875,6 +7946,14 @@ def run():
     )
     art = backend.compile(module, output_binary_name="decode", insts="decode.insts.bin")
     if ELF:
+        # What the host writes per token: each scalar's sequence argument, and
+        # the block alignment, part count and window its readback follows.
+        with open("decode.args", "w") as f:
+            for name, n in SEQ_SCALAR_ARGS.items():
+                f.write(f"arg {n} {name}\n")
+            f.write(f"align {KV_BLK_ALIGN}\nparts {KV_PARTS}\n")
+            if ELF_SW:
+                f.write(f"window {MODEL['SLIDING_WINDOW']}\n")
         print(f"[q4nx_decode] emitted {art.output_binary} (kernel {art.kernel!r})")
         return 0
     # Tells the host to pad each wave's readback to an even block count.

@@ -217,7 +217,7 @@ compile-decode-elf:
 	@$(MAKE) --no-print-directory -C $(DEC) compile-decode-elf LBUILD=$(RUN_LBUILD) \
 	  UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
 	@mv -f $(DEC)/decode_scratchpad.elf $(DEC)/decode_scratchpad.params.txt \
-	  $(DEC)/decode_scratchpad.maxl $(srcdir)/
+	  $(DEC)/decode_scratchpad.args $(DEC)/decode_scratchpad.maxl $(srcdir)/
 
 ## Prefill ELFs + decode templates, the same meaning `compile` has in the other
 ## q4nx examples. Both decode templates: the layer gate's and the token driver's.

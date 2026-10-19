@@ -304,7 +304,7 @@ clean:
 	       $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/air.mlir \
 	       $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
 	       $(srcdir)/decode_L*.air.mlir $(DECODE_FLAGS_STAMP) \
-	       $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt \
+	       $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt $(srcdir)/decode_scratchpad.args \
 	       $(srcdir)/decode_scratchpad.maxl $(srcdir)/params.txt $(DECODE_ELF_STAMP) 2>/dev/null || true
 	rm -rf $(srcdir)/../verify/reports 2>/dev/null || true
 	@echo "Build dirs, caches, verify/reports/ and decode templates removed. Rebuild with 'make compile'."
@@ -316,7 +316,7 @@ clean:
 ## Like _compile_decode_build, this builds the kernels into $(srcdir) and adds
 ## shortconv, whose SC_DIM/SC_WAVES must match the builder's CONV_WAVES.
 DECODE_ELF_STAMP := $(srcdir)/.decode_elf_flags
-DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
+DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD) ELF_RT_READBACK=1 ELF_ARGS=1
 
 ## Skipped when the artifacts exist and were built with the same flags. LBUILD
 ## is part of the stamp because the ELF bakes in ATTN_MAXL.
@@ -324,6 +324,7 @@ DECODE_ELF_FLAGS = $(DECODE_FLAGS) ELF_LBUILD=$(LBUILD)
 compile-decode-elf:
 	@if [ -f $(srcdir)/decode_scratchpad.elf ] && [ -f $(srcdir)/decode_scratchpad.params.txt ] \
 	    && [ -f $(srcdir)/decode_scratchpad.maxl ] \
+	    && [ -f $(srcdir)/decode_scratchpad.args ] \
 	    && [ "`cat $(DECODE_ELF_STAMP) 2>/dev/null`" = "$(DECODE_ELF_FLAGS)" ]; then \
 	  echo "Full-ELF decode already built ($(DECODE_ELF_FLAGS)); skipping. Run 'make clean' to force a rebuild."; \
 	else \
@@ -352,17 +353,17 @@ _compile_decode_elf_build:
 	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
 	    $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
-	@cd $(srcdir) && rm -f decode.elf params.txt; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
-	  DECODE_DYNSEQ=1 \
+	@cd $(srcdir) && rm -f decode.elf params.txt decode.args; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
+	  DECODE_DYNSEQ=1 DECODE_RT_ROUNDS=1 \
 	  $(PYTHON) $(DECODE_DRIVER) >/tmp/lfm2_decode_elf_L$(LBUILD).log 2>&1; rc=$$?; \
-	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ]; then \
+	  if [ $$rc -eq 0 ] && [ -f decode.elf ] && [ -s params.txt ] && [ -s decode.args ]; then \
 	    mv -f decode.elf decode_scratchpad.elf; \
-	    cp -f params.txt decode_scratchpad.params.txt; \
+	    cp -f params.txt decode_scratchpad.params.txt; mv -f decode.args decode_scratchpad.args; \
 	    echo $$(( (($(LBUILD)+15)/16)*16 )) > decode_scratchpad.maxl; \
 	  else echo "decode ELF FAILED (see /tmp/lfm2_decode_elf_L$(LBUILD).log)"; \
 	    tail -30 /tmp/lfm2_decode_elf_L$(LBUILD).log; exit 1; fi
 	@echo "Full-ELF build complete: $(srcdir)/decode_scratchpad.elf"
-	@cat $(srcdir)/decode_scratchpad.params.txt
+	@cat $(srcdir)/decode_scratchpad.params.txt $(srcdir)/decode_scratchpad.args
 
 # The ELF is a decode artifact like the templates, so compile-decode builds it.
 compile-decode: compile-decode-elf

@@ -508,6 +508,179 @@ static StringAttr declareBlockArgLengthParameter(ModuleOp module, Value length,
   return name;
 }
 
+// `v` as the i32 a BD offset operand takes, created right after `v` is defined
+// so it stays outside the descriptor block.
+static Value castToI32(OpBuilder &b, Location loc, Value v) {
+  if (!v || v.getType().isInteger(32))
+    return v;
+  OpBuilder::InsertionGuard g(b);
+  if (Operation *def = v.getDefiningOp())
+    b.setInsertionPointAfter(def);
+  else
+    b.setInsertionPointToStart(cast<BlockArgument>(v).getOwner());
+  if (v.getType().isIndex())
+    return arith::IndexCastOp::create(b, loc, b.getI32Type(), v);
+  return arith::TruncIOp::create(b, loc, b.getI32Type(), v);
+}
+
+// The BD operand without the i32 narrowing the DMA lowering adds to it. The
+// BD field is 32-bit either way, so the parameter sees the same value.
+static Value stripI32Narrowing(Value v) {
+  if (auto t = v.getDefiningOp<arith::TruncIOp>())
+    return t.getIn();
+  if (auto c = v.getDefiningOp<arith::IndexCastOp>())
+    if (c.getType().isInteger(32))
+      return c.getIn();
+  return v;
+}
+
+static bool dependsOnSequenceArg(Value v, int depth = 0) {
+  if (auto arg = dyn_cast<BlockArgument>(v))
+    return isa<xilinx::AIE::RuntimeSequenceOp>(arg.getOwner()->getParentOp());
+  Operation *def = v.getDefiningOp();
+  if (!def || depth > 32)
+    return false;
+  return llvm::any_of(def->getOperands(), [&](Value o) {
+    return dependsOnSequenceArg(o, depth + 1);
+  });
+}
+
+// A select in `v`'s operand tree that picks between per-dispatch values on a
+// condition that depends only on a loop, so it folds once the sequence unrolls.
+static Value findLoopSelectCondition(Value v, int depth = 0) {
+  Operation *def = v.getDefiningOp();
+  if (!def || depth > 32)
+    return Value();
+  if (auto sel = dyn_cast<arith::SelectOp>(def)) {
+    Value c = sel.getCondition();
+    if (!matchPattern(c, m_Constant()) && !dependsOnSequenceArg(c) &&
+        (dependsOnSequenceArg(sel.getTrueValue()) ||
+         dependsOnSequenceArg(sel.getFalseValue())))
+      return c;
+  }
+  for (Value o : def->getOperands())
+    if (Value c = findLoopSelectCondition(o, depth + 1))
+      return c;
+  return Value();
+}
+
+// `v` with every select on `cond` replaced by its `arm` operand, cloning only
+// the ops between them at the builder's insertion point.
+static Value resolveSelect(Value v, Value cond, bool arm, OpBuilder &b,
+                           IRMapping &map) {
+  if (Value m = map.lookupOrNull(v))
+    return m;
+  Operation *def = v.getDefiningOp();
+  if (!def || !findLoopSelectCondition(v) ||
+      (!isa<arith::SelectOp>(def) && def->getNumRegions()))
+    return v;
+  if (auto sel = dyn_cast<arith::SelectOp>(def))
+    if (sel.getCondition() == cond) {
+      Value r = resolveSelect(arm ? sel.getTrueValue() : sel.getFalseValue(),
+                              cond, arm, b, map);
+      map.map(v, r);
+      return r;
+    }
+  bool changed = false;
+  SmallVector<Value> operands;
+  for (Value o : def->getOperands()) {
+    operands.push_back(resolveSelect(o, cond, arm, b, map));
+    changed |= operands.back() != o;
+  }
+  if (!changed)
+    return v;
+  Operation *clone = b.clone(*def);
+  clone->setOperands(operands);
+  map.map(v, clone->getResult(0));
+  return clone->getResult(0);
+}
+
+// Move a runtime BD length and an offset taken from a sequence argument into
+// scratchpad parameters, as the DMA lowering does when it can see them.
+static void parameterizeRuntimeBD(ModuleOp module, xilinx::AIE::DMABDOp bd) {
+  Value len = bd.getLen() ? stripI32Narrowing(bd.getLen()) : Value();
+  int64_t unit = 0, base = 0;
+  if (len && !(affineInSequenceArg(len, unit, base, /*widenOnly=*/true) &&
+               unit > 0 && base >= 0))
+    return;
+  OpBuilder b(bd->getParentOfType<xilinx::AIEX::DMAConfigureTaskForOp>());
+  StringAttr offParam;
+  Value offResidual;
+  if (bd.getOffset() && !bd.getOffsetParameterAttr() &&
+      reachesSequenceArg(bd.getOffset())) {
+    offParam = declareBlockArgOffsetParameter(
+        module, stripI32Narrowing(bd.getOffset()), b, offResidual);
+    if (!offParam)
+      return;
+  }
+  if (len) {
+    StringAttr lenParam =
+        declareBlockArgLengthParameter(module, len, b, unit, base);
+    if (!lenParam)
+      return;
+    bd.getLenMutable().clear();
+    bd.setStaticLenAttr(b.getI32IntegerAttr(base));
+    bd.setLengthParameterAttr(FlatSymbolRefAttr::get(lenParam));
+    bd.setLengthUnitAttr(b.getI32IntegerAttr(unit));
+  }
+  if (!offParam)
+    return;
+  bd.setOffsetParameterAttr(FlatSymbolRefAttr::get(offParam));
+  if (offResidual) {
+    bd.getOffsetMutable().assign(castToI32(b, bd.getLoc(), offResidual));
+  } else {
+    bd.getOffsetMutable().clear();
+    bd.setStaticOffsetAttr(b.getI32IntegerAttr(0));
+  }
+}
+
+// A full ELF holds a runtime BD length or offset only as a scratchpad parameter
+// affine in one sequence argument. When one picks between such terms on a loop
+// condition, the configure task is cloned into the arms of an scf.if on that
+// condition, which folds once the sequence's loops are unrolled.
+static void versionLoopSelectedBDs(ModuleOp module) {
+  SmallVector<xilinx::AIEX::DMAConfigureTaskForOp> work;
+  module.walk(
+      [&](xilinx::AIEX::DMAConfigureTaskForOp t) { work.push_back(t); });
+  while (!work.empty()) {
+    xilinx::AIEX::DMAConfigureTaskForOp task = work.pop_back_val();
+    Value cond;
+    task.walk([&](xilinx::AIE::DMABDOp bd) {
+      for (Value v : {bd.getLen(), bd.getOffset()})
+        if (v && !cond)
+          cond = findLoopSelectCondition(v);
+    });
+    if (!cond) {
+      task.walk(
+          [&](xilinx::AIE::DMABDOp bd) { parameterizeRuntimeBD(module, bd); });
+      continue;
+    }
+    OpBuilder b(task);
+    auto ifOp = scf::IfOp::create(b, task.getLoc(),
+                                  TypeRange{task.getResult().getType()}, cond,
+                                  /*withElseRegion=*/true);
+    for (bool arm : {true, false}) {
+      Block *blk =
+          arm ? &ifOp.getThenRegion().front() : &ifOp.getElseRegion().front();
+      if (blk->mightHaveTerminator())
+        blk->getTerminator()->erase();
+      OpBuilder ab = OpBuilder::atBlockEnd(blk);
+      IRMapping map;
+      task.walk([&](xilinx::AIE::DMABDOp bd) {
+        for (Value v : {bd.getLen(), bd.getOffset()})
+          if (v)
+            resolveSelect(v, cond, arm, ab, map);
+      });
+      auto clone =
+          cast<xilinx::AIEX::DMAConfigureTaskForOp>(ab.clone(*task, map));
+      scf::YieldOp::create(ab, task.getLoc(), clone.getResult());
+      work.push_back(clone);
+    }
+    task.getResult().replaceAllUsesWith(ifOp.getResult(0));
+    task.erase();
+  }
+}
+
 // Helper function to check if a value is a memref on host memory (space 0)
 static bool isHostMemory(Value val) {
   if (auto memrefType = dyn_cast_if_present<BaseMemRefType>(val.getType()))
@@ -1128,20 +1301,34 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // it is affine in the sequence's argument, the scratchpad carries it
     // instead (see declareBlockArgLengthParameter).
     // An offset that only varies with a loop folds once the loop unrolls and
-    // stays an operand; one taken from the sequence's argument is a second
-    // runtime word, so such a transfer keeps the runtime length too.
+    // stays an operand. One taken from the sequence's argument needs its own
+    // offset parameter; if it cannot have one, the length stays runtime too.
     int64_t lenUnit = 0, lenBase = 0;
-    StringAttr lenParam =
-        (outputElf && dynLenI32 &&
-         !(dynOffset && reachesSequenceArg(dynOffset)))
-            ? declareBlockArgLengthParameter(op->getParentOfType<ModuleOp>(),
-                                             dynLen, rewriter, lenUnit, lenBase)
-            : nullptr;
+    StringAttr lenParam, offParam;
+    Value offResidual;
+    if (outputElf && dynLenI32 &&
+        affineInSequenceArg(dynLen, lenUnit, lenBase, /*widenOnly=*/true) &&
+        lenUnit > 0 && lenBase >= 0) {
+      bool seqOffset = dynOffset && reachesSequenceArg(dynOffset);
+      if (seqOffset) {
+        OpBuilder::InsertionGuard g(rewriter);
+        rewriter.setInsertionPoint(configTaskOp);
+        offParam = declareBlockArgOffsetParameter(
+            op->getParentOfType<ModuleOp>(), dynOffset, rewriter, offResidual);
+      }
+      if (!seqOffset || offParam)
+        lenParam =
+            declareBlockArgLengthParameter(op->getParentOfType<ModuleOp>(),
+                                           dynLen, rewriter, lenUnit, lenBase);
+    }
     if (lenParam) {
+      Value offset = dynOffsetI32;
+      if (offParam)
+        offset = castToI32(rewriter, op.getLoc(), addStaticOffset(offResidual));
       AIE::DMABDOp::create(
-          rewriter, op.getLoc(), memref, dynOffsetI32, /*len=*/Value(),
+          rewriter, op.getLoc(), memref, offset, /*len=*/Value(),
           /*static_offset=*/
-          dynOffsetI32 ? nullptr : rewriter.getI32IntegerAttr(totalOffset),
+          offset ? nullptr : rewriter.getI32IntegerAttr(totalOffset),
           /*static_len=*/rewriter.getI32IntegerAttr(lenBase),
           /*sizes=*/ValueRange{}, /*strides=*/ValueRange{},
           /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
@@ -1150,7 +1337,7 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*out_of_order_id=*/nullptr,
           /*burst_length=*/nullptr, /*axcache=*/nullptr,
           /*iteration=*/nullptr,
-          /*offset_parameter=*/nullptr,
+          offParam ? FlatSymbolRefAttr::get(offParam) : nullptr,
           /*offset_state_table_idx=*/nullptr, FlatSymbolRefAttr::get(lenParam),
           rewriter.getI32IntegerAttr(lenUnit),
           /*length_state_table_idx=*/nullptr,
@@ -1218,11 +1405,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         offsetResidual = addStaticOffset(offsetResidual);
         if (offsetResidual) {
           // The BD's offset operand is i32; the residual is whatever type the
-          // address arithmetic left it in (index, here).
-          if (!offsetResidual.getType().isInteger(32))
-            offsetResidual = arith::IndexCastOp::create(
-                rewriter, op.getLoc(), rewriter.getI32Type(), offsetResidual);
-          bd.getOffsetMutable().assign(offsetResidual);
+          // address arithmetic left it in.
+          bd.getOffsetMutable().assign(
+              castToI32(rewriter, op.getLoc(), offsetResidual));
           bd.removeStaticOffsetAttr();
         }
       } else {
@@ -3510,6 +3695,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         }
       }
     });
+
+    if (clOutputElf)
+      versionLoopSelectedBDs(module);
 
     // Strip the internal per-op wave index now that all per-wave ordering
     // (paced segmentation, RTP/set_lock hoist, output-S2MM hoist) has consumed

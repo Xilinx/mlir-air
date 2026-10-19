@@ -72,11 +72,12 @@ module {
 
 // -----
 
-// A runtime offset as well: the length stays a runtime BD word.
+// A runtime offset as well, from another argument: the BD takes an offset
+// parameter beside the length parameter.
 
+// ELF:       aiex.scratchpad_parameter @__air_param_argoff_2 : i32
 // ELF-LABEL: aie.runtime_sequence @seg_both_sequence
-// ELF-NOT:     length_parameter
-// ELF:         aie.dma_bd(%{{.*}} offset = %{{.*}} len = %{{.*}})
+// ELF:         aie.dma_bd(%{{.*}} offset = 0 len = 0) {length_parameter = @__air_param_arglen_1, length_unit = 1024 : i32, offset_parameter = @__air_param_argoff_2}
 module {
   aie.device(npu2) {
     %shim_noc_tile_0_0 = aie.tile(0, 0)
@@ -175,6 +176,158 @@ module {
     %9 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %10 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     airrt.wait_all %0, %1, %3, %4, %5, %6, %7, %8, %9, %10
+    return
+  }
+}
+
+// -----
+
+// In a rolled loop, a length that picks between two arguments by the
+// iteration: one configure task per choice, under an scf.if on it, each with
+// its own length parameter.
+
+// ELF-LABEL: aie.runtime_sequence @seg_sel_sequence
+// ELF:         scf.for
+// ELF:           %[[T:.*]] = scf.if
+// ELF:             aiex.dma_configure_task_for @airMemcpyId2
+// ELF:               aie.dma_bd({{.*}} offset = 0 len = 0) {length_parameter = @__air_param_arglen_1, length_unit = 1024 : i32}
+// ELF:           } else {
+// ELF:             aiex.dma_configure_task_for @airMemcpyId2
+// ELF:               aie.dma_bd({{.*}} offset = 0 len = 0) {length_parameter = @__air_param_arglen_2, length_unit = 1024 : i32}
+// ELF:           aiex.dma_start_task(%[[T]])
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "seg_sel"}
+  func.func @sel(%arg0: memref<1048576xbf16>, %a: i64, %b: i64) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c2 = arith.constant 2 : index
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c16_i64 = arith.constant 16 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c1024_i64 = arith.constant 1024 : i64
+    %p = airrt.segment_load "seg_sel" : i64
+    scf.for %i = %c0 to %c4 step %c1 {
+      %is2 = arith.cmpi eq, %i, %c2 : index
+      %n = arith.select %is2, %a, %b : i64
+      %e = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %n, %c16_i64, %c64_i64], [%c0_i64, %c1024_i64, %c64_i64, %c1_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<1048576xbf16>) : !airrt.event
+      airrt.wait_all %e
+    }
+    return
+  }
+}
+
+// -----
+
+// The same choice for an offset alone: each task's BD takes its own offset
+// parameter.
+
+// ELF-LABEL: aie.runtime_sequence @seg_selo_sequence
+// ELF:         scf.if
+// ELF:           aie.dma_bd({{.*}} offset = 0 len = 64 {{.*}}) {offset_parameter = @__air_param_argoff_1}
+// ELF:         } else {
+// ELF:           aie.dma_bd({{.*}} offset = 0 len = 64 {{.*}}) {offset_parameter = @__air_param_argoff_2}
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "seg_selo"}
+  func.func @selo(%arg0: memref<1048576xbf16>, %a: i64, %b: i64) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c2 = arith.constant 2 : index
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c64_i64 = arith.constant 64 : i64
+    %p = airrt.segment_load "seg_selo" : i64
+    scf.for %i = %c0 to %c4 step %c1 {
+      %is2 = arith.cmpi eq, %i, %c2 : index
+      %o = arith.select %is2, %a, %b : i64
+      %e = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %o], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<1048576xbf16>) : !airrt.event
+      airrt.wait_all %e
+    }
+    return
+  }
+}
+
+// -----
+
+// The choice plus a loop-dependent i64 term: the remainder is narrowed to the
+// BD's i32 with trunci, outside the descriptor.
+
+// ELF-LABEL: aie.runtime_sequence @seg_res_sequence
+// ELF:         %[[R:.*]] = arith.trunci %{{.*}} : i64 to i32
+// ELF:         scf.if
+// ELF:           aiex.dma_configure_task_for @airMemcpyId2 {
+// ELF-NEXT:        aie.dma_bd({{.*}} offset = %[[R]] len = 64 {{.*}}) {offset_parameter = @__air_param_argoff_1}
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "seg_res"}
+  func.func @res(%arg0: memref<1048576xbf16>, %a: i64, %b: i64) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c2 = arith.constant 2 : index
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c64_i64 = arith.constant 64 : i64
+    %p = airrt.segment_load "seg_res" : i64
+    scf.for %i = %c0 to %c4 step %c1 {
+      %ii = arith.index_cast %i : index to i64
+      %base = arith.muli %ii, %c64_i64 : i64
+      %is2 = arith.cmpi eq, %i, %c2 : index
+      %s = arith.select %is2, %a, %b : i64
+      %o = arith.addi %s, %base : i64
+      %e = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %o], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<1048576xbf16>) : !airrt.event
+      airrt.wait_all %e
+    }
+    return
+  }
+}
+
+// -----
+
+// A runtime offset with a loop-dependent i64 term beside a runtime length: the
+// same narrowing on the combined path.
+
+// ELF-LABEL: aie.runtime_sequence @seg_res2_sequence
+// ELF:         %[[R:.*]] = arith.trunci %{{.*}} : i64 to i32
+// ELF:         aiex.dma_configure_task_for @airMemcpyId2 {
+// ELF-NEXT:      aie.dma_bd({{.*}} offset = %[[R]] len = 0) {length_parameter = @__air_param_arglen_2, length_unit = 64 : i32, offset_parameter = @__air_param_argoff_1}
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "seg_res2"}
+  func.func @res2(%arg0: memref<1048576xbf16>, %a: i64, %b: i64) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c2 = arith.constant 2 : index
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c64_i64 = arith.constant 64 : i64
+    %p = airrt.segment_load "seg_res2" : i64
+    scf.for %i = %c0 to %c4 step %c1 {
+      %ii = arith.index_cast %i : index to i64
+      %base = arith.muli %ii, %c64_i64 : i64
+      %is2 = arith.cmpi eq, %i, %c2 : index
+      %s = arith.addi %a, %c0_i64 : i64
+      %o = arith.addi %s, %base : i64
+      %e = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %o], [%c1_i64, %c1_i64, %b, %c64_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<1048576xbf16>) : !airrt.event
+      airrt.wait_all %e
+    }
     return
   }
 }
