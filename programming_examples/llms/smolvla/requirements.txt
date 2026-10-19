@@ -38,7 +38,10 @@ torch
 # num2words is a hard requirement of the SmolVLM processor in transformers
 # (raises ImportError in processing_smolvlm.py without it) but is not pulled in
 # by transformers itself.
-transformers>=5.3.0
+# lerobot's SmolVLA calls past_key_values.crop() with the length to keep, which
+# transformers 5.20 rejects (it only accepts a negative count to remove). Raise
+# the bound once lerobot passes a negative count.
+transformers>=5.3.0,<5.20
 num2words
 
 # Host-side reference math and bf16 handling
