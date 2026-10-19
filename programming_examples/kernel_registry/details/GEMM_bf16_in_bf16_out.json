@@ -22,13 +22,14 @@
             "tile_k_l1": 32,
             "tile_n": 80
           },
-          "gflops": 25,
+          "gflops": 49,
           "mean_rel_L1": 0.00926,
           "tier": "high",
           "herd": [
             4,
             3
-          ]
+          ],
+          "a_stationary": true
         }
       },
       "best": {
@@ -101,13 +102,14 @@
             "tile_k_l1": 48,
             "tile_n": 80
           },
-          "gflops": 447,
+          "gflops": 588,
           "mean_rel_L1": 0.00945,
           "tier": "high",
           "herd": [
             4,
             3
-          ]
+          ],
+          "a_stationary": true
         }
       },
       "best": {
@@ -127,13 +129,14 @@
             "tile_k_l1": 48,
             "tile_n": 80
           },
-          "gflops": 559,
+          "gflops": 791,
           "mean_rel_L1": 0.00939,
           "tier": "high",
           "herd": [
             4,
             4
-          ]
+          ],
+          "a_stationary": true
         }
       },
       "best": {
@@ -154,13 +157,14 @@
             "tile_k_l1": 48,
             "tile_n": 80
           },
-          "gflops": 713,
+          "gflops": 959,
           "mean_rel_L1": 0.00944,
           "tier": "high",
           "herd": [
             4,
             4
-          ]
+          ],
+          "a_stationary": true
         }
       },
       "best": {
@@ -181,13 +185,14 @@
             "tile_k_l1": 48,
             "tile_n": 128
           },
-          "gflops": 1020,
+          "gflops": 1031,
           "mean_rel_L1": 0.00943,
           "tier": "high",
           "herd": [
             4,
             4
-          ]
+          ],
+          "a_stationary": true
         }
       },
       "best": {
@@ -208,13 +213,14 @@
             "tile_k_l1": 48,
             "tile_n": 128
           },
-          "gflops": 1163,
+          "gflops": 1076,
           "mean_rel_L1": 0.00944,
           "tier": "high",
           "herd": [
             4,
             4
-          ]
+          ],
+          "a_stationary": true
         }
       },
       "best": {
@@ -235,13 +241,14 @@
             "tile_k_l1": 32,
             "tile_n": 80
           },
-          "gflops": 533,
+          "gflops": 720,
           "mean_rel_L1": 0.00947,
           "tier": "high",
           "herd": [
             4,
             3
-          ]
+          ],
+          "a_stationary": true
         }
       },
       "best": {
@@ -289,13 +296,14 @@
             "tile_k_l1": 48,
             "tile_n": 80
           },
-          "gflops": 749,
+          "gflops": 1024,
           "mean_rel_L1": 0.00929,
           "tier": "high",
           "herd": [
             4,
             3
-          ]
+          ],
+          "a_stationary": true
         }
       },
       "best": {
@@ -342,13 +350,14 @@
             "tile_k_l1": 32,
             "tile_n": 80
           },
-          "gflops": 889,
+          "gflops": 1384,
           "mean_rel_L1": 0.00936,
           "tier": "high",
           "herd": [
             4,
             3
-          ]
+          ],
+          "a_stationary": true
         }
       },
       "best": {
@@ -584,7 +593,7 @@
       "M": 256,
       "K": 960,
       "N": 320,
-      "used_by": "SmolVLA K/V proj (kv_dim=320=4\u00b780; K=960 tile_k_l2=320)",
+      "used_by": "SmolVLA K/V proj (kv_dim=320=4·80; K=960 tile_k_l2=320)",
       "methods": {
         "drain": {
           "tile": {
@@ -615,7 +624,8 @@
             "tile_k_l1": 32,
             "tile_n": 80
           },
-          "gflops": 1896,
+          "a_stationary": true,
+          "gflops": 3189,
           "mean_rel_L1": 0.0095,
           "tier": "high"
         }
@@ -628,7 +638,7 @@
       "M": 256,
       "K": 960,
       "N": 2560,
-      "used_by": "SmolVLA Gate/Up proj (N=2560=4\u00b7128\u00b75; K=960 tile_k_l2=320)",
+      "used_by": "SmolVLA Gate/Up proj (N=2560=4·128·5; K=960 tile_k_l2=320)",
       "methods": {
         "drain": {
           "tile": {
@@ -637,7 +647,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 2838,
+          "a_stationary": true,
+          "gflops": 3928,
           "mean_rel_L1": 0.0094,
           "tier": "high"
         }
@@ -650,7 +661,7 @@
       "M": 256,
       "K": 2560,
       "N": 960,
-      "used_by": "SmolVLA Down proj (K=2560 tile_k_l2=320; N=960\u2192TILE_N=80)",
+      "used_by": "SmolVLA Down proj (K=2560 tile_k_l2=320; N=960→TILE_N=80)",
       "methods": {
         "drain": {
           "tile": {
@@ -659,7 +670,8 @@
             "tile_k_l1": 32,
             "tile_n": 80
           },
-          "gflops": 3425,
+          "a_stationary": true,
+          "gflops": 5434,
           "mean_rel_L1": 0.0094,
           "tier": "high"
         }
@@ -727,7 +739,8 @@
             "tile_k_l1": 64,
             "tile_n": 96
           },
-          "gflops": 3798,
+          "a_stationary": true,
+          "gflops": 5525,
           "mean_rel_L1": 0.0095,
           "tier": "high"
         }
@@ -750,7 +763,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 4195,
+          "a_stationary": true,
+          "gflops": 4610,
           "mean_rel_L1": 0.0094,
           "tier": "high"
         },
@@ -795,7 +809,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 4637,
+          "a_stationary": true,
+          "gflops": 6667,
           "mean_rel_L1": 0.0095,
           "tier": "high"
         },
@@ -830,7 +845,8 @@
             "tile_k_l1": 64,
             "tile_n": 96
           },
-          "gflops": 5790,
+          "a_stationary": true,
+          "gflops": 7090,
           "mean_rel_L1": 0.0094,
           "tier": "high"
         }
@@ -867,7 +883,7 @@
       "K": 896,
       "N": 896,
       "used_by": "Qwen2.5-0.5B Q/O proj",
-      "_note": "Non-512-aligned N=896=128*7. HERD_N=1 (TILE_N=128) fails at runtime (qds_device::wait unexpected command state) \u2014 fused-cast/drain paths assume the 8x4 array. Working config keeps HERD_N=4 with TILE_N=32 (4*32=128 | 896); drain (tile_m=32) places, fused-cast tile_m=64 over-allocates L1.",
+      "_note": "Non-512-aligned N=896=128*7. HERD_N=1 (TILE_N=128) fails at runtime (qds_device::wait unexpected command state) — fused-cast/drain paths assume the 8x4 array. Working config keeps HERD_N=4 with TILE_N=32 (4*32=128 | 896); drain (tile_m=32) places, fused-cast tile_m=64 over-allocates L1.",
       "methods": {
         "drain": {
           "tile": {
@@ -876,7 +892,8 @@
             "tile_k_l1": 32,
             "tile_n": 32
           },
-          "gflops": 2516,
+          "a_stationary": true,
+          "gflops": 4834,
           "mean_rel_L1": 0.0094,
           "tier": "high"
         }
@@ -922,7 +939,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 4980,
+          "a_stationary": true,
+          "gflops": 7170,
           "mean_rel_L1": 0.0094,
           "tier": "high"
         }
@@ -1171,7 +1189,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 6025,
+          "a_stationary": true,
+          "gflops": 7381,
           "mean_rel_L1": 0.0093,
           "tier": "high"
         },
@@ -1190,7 +1209,8 @@
       "best": {
         "high": "fused-cast",
         "low": "direct"
-      }
+      },
+      "_note": "drain with a_stationary measures faster than fused-cast here, but best stays fused-cast: the Qwen3 o_ffn builders take O, gate, up and down from one fused-cast object."
     },
     {
       "M": 2048,
@@ -1228,7 +1248,7 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 6893,
+          "gflops": 7303,
           "mean_rel_L1": 0.0097,
           "tier": "high"
         },
@@ -1239,7 +1259,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5784,
+          "a_stationary": true,
+          "gflops": 9295,
           "mean_rel_L1": 0.0093,
           "tier": "high"
         },
@@ -1256,7 +1277,7 @@
         }
       },
       "best": {
-        "high": "fused-cast",
+        "high": "drain",
         "low": "direct"
       }
     },
@@ -1296,7 +1317,7 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 6049,
+          "gflops": 6109,
           "mean_rel_L1": 0.0098,
           "tier": "high"
         },
@@ -1307,13 +1328,14 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5389,
+          "a_stationary": true,
+          "gflops": 7954,
           "mean_rel_L1": 0.0094,
           "tier": "high"
         }
       },
       "best": {
-        "high": "fused-cast"
+        "high": "drain"
       }
     },
     {
@@ -1980,7 +2002,8 @@
             "tile_k_l1": 32,
             "tile_n": 64
           },
-          "gflops": 4635,
+          "a_stationary": true,
+          "gflops": 6224,
           "mean_rel_L1": 0.00944,
           "tier": "high"
         }
@@ -2084,7 +2107,8 @@
             "tile_k_l1": 32,
             "tile_n": 32
           },
-          "gflops": 2524,
+          "a_stationary": true,
+          "gflops": 6867,
           "mean_rel_L1": 0.0095,
           "tier": "high"
         }
@@ -2128,7 +2152,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 4860,
+          "a_stationary": true,
+          "gflops": 7414,
           "mean_rel_L1": 0.0094,
           "tier": "high"
         }
@@ -2372,7 +2397,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5999,
+          "a_stationary": true,
+          "gflops": 8294,
           "mean_rel_L1": 0.0093,
           "tier": "high"
         },
@@ -2391,7 +2417,8 @@
       "best": {
         "high": "fused-cast",
         "low": "direct"
-      }
+      },
+      "_note": "drain with a_stationary measures faster than fused-cast here, but best stays fused-cast: the Qwen3 o_ffn builders take O, gate, up and down from one fused-cast object."
     },
     {
       "M": 4096,
@@ -2450,7 +2477,7 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 6827,
+          "gflops": 7407,
           "mean_rel_L1": 0.0097,
           "tier": "high"
         },
@@ -2461,7 +2488,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5847,
+          "a_stationary": true,
+          "gflops": 9507,
           "mean_rel_L1": 0.0093,
           "tier": "high"
         },
@@ -2478,7 +2506,7 @@
         }
       },
       "best": {
-        "high": "fused-cast",
+        "high": "drain",
         "low": "direct"
       }
     },
@@ -2517,7 +2545,7 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 6720,
+          "gflops": 7201,
           "mean_rel_L1": 0.0098,
           "tier": "high"
         },
@@ -2528,13 +2556,14 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5750,
+          "a_stationary": true,
+          "gflops": 7652,
           "mean_rel_L1": 0.0094,
           "tier": "high"
         }
       },
       "best": {
-        "high": "fused-cast"
+        "high": "drain"
       }
     },
     {
@@ -2716,7 +2745,8 @@
             "tile_k_l1": 32,
             "tile_n": 64
           },
-          "gflops": 4447,
+          "a_stationary": true,
+          "gflops": 6204,
           "mean_rel_L1": 0.0095,
           "tier": "high"
         }
@@ -3227,7 +3257,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5155,
+          "a_stationary": true,
+          "gflops": 7092,
           "mean_rel_L1": 0.009282,
           "tier": "high"
         },
@@ -3316,7 +3347,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5537,
+          "a_stationary": true,
+          "gflops": 9307,
           "mean_rel_L1": 0.00928,
           "tier": "high"
         },
@@ -3350,7 +3382,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5173,
+          "a_stationary": true,
+          "gflops": 7156,
           "mean_rel_L1": 0.009375,
           "tier": "high"
         },
@@ -3493,7 +3526,8 @@
             "tile_k_l1": 32,
             "tile_n": 64
           },
-          "gflops": 3995,
+          "a_stationary": true,
+          "gflops": 5423,
           "mean_rel_L1": 0.009444,
           "tier": "high"
         }
@@ -3894,7 +3928,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 4632,
+          "a_stationary": true,
+          "gflops": 7376,
           "mean_rel_L1": 0.009288,
           "tier": "high"
         },
@@ -3983,7 +4018,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5385,
+          "a_stationary": true,
+          "gflops": 9094,
           "mean_rel_L1": 0.009281,
           "tier": "high"
         },
@@ -3994,13 +4030,13 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5923,
+          "gflops": 6964,
           "mean_rel_L1": 0.009715,
           "tier": "high"
         }
       },
       "best": {
-        "high": "fused-cast",
+        "high": "drain",
         "low": "direct"
       }
     },
@@ -4017,7 +4053,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 5735,
+          "a_stationary": true,
+          "gflops": 7410,
           "mean_rel_L1": 0.009371,
           "tier": "high"
         },
@@ -4160,7 +4197,8 @@
             "tile_k_l1": 32,
             "tile_n": 64
           },
-          "gflops": 4112,
+          "a_stationary": true,
+          "gflops": 6085,
           "mean_rel_L1": 0.009463,
           "tier": "high"
         }
@@ -4527,7 +4565,8 @@
             "tile_k_l1": 32,
             "tile_n": 32
           },
-          "gflops": 1870,
+          "a_stationary": true,
+          "gflops": 4070,
           "mean_rel_L1": 0.009454,
           "tier": "high"
         }
@@ -4571,7 +4610,8 @@
             "tile_k_l1": 32,
             "tile_n": 128
           },
-          "gflops": 3831,
+          "a_stationary": true,
+          "gflops": 5785,
           "mean_rel_L1": 0.009408,
           "tier": "high"
         }
@@ -4991,7 +5031,8 @@
             "tile_k_l1": 32,
             "tile_n": 32
           },
-          "gflops": 2159,
+          "a_stationary": true,
+          "gflops": 4572,
           "mean_rel_L1": 0.009464,
           "tier": "high"
         }
