@@ -16,6 +16,16 @@ import os
 import numpy as np
 from ml_dtypes import bfloat16
 
+import sys  # noqa: E402
+import types  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+# llms/shared is imported as the air_examples package, not through sys.path.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+from air_examples.llms.shared.infra import host_weights  # noqa: E402
+
 
 def _requant_q4k(Wm, group):
     """Per-32-column-group min/max 4-bit re-quant of a matrix [M,K] -> (q, sc, mn).
@@ -24,23 +34,12 @@ def _requant_q4k(Wm, group):
     `group` elements along the reduction axis. This is the ONLY quantizer in the
     example -- the prefill weights and the decode cascade cache both go through
     it, so the two see bit-identical values."""
-    M, Kc = Wm.shape
-    Wg = Wm.reshape(M, Kc // group, group)
-    mn = Wg.min(2)
-    mx = Wg.max(2)
-    sc = (mx - mn) / 15.0
-    sc = np.where(sc <= 0, 1.0, sc).astype(np.float32)
-    q = np.clip(np.round((Wg - mn[..., None]) / sc[..., None]), 0, 15).astype(np.uint8)
-    return q.reshape(M, Kc), sc, mn.astype(np.float32)
+    return host_weights.requant_q4k(Wm, group)
 
 
 def _dequant_q4k(q, sc, mn, group):
     """Inverse of _requant_q4k: (q[M,K] uint8, sc[M,K/g], mn[M,K/g]) -> f32 [M,K]."""
-    M, Kc = q.shape
-    return (
-        q.reshape(M, Kc // group, group).astype(np.float32) * sc[..., None]
-        + mn[..., None]
-    ).reshape(M, Kc)
+    return host_weights.dequant_q4(q, sc, mn, group)
 
 
 def quantize_dequantize_q4nx(W, group=None):
@@ -53,8 +52,7 @@ def quantize_dequantize_q4nx(W, group=None):
     from proj_qmm_pack import GROUP as _G
 
     g = group or _G
-    q, sc, mn = _requant_q4k(np.asarray(W, np.float32), g)
-    return _dequant_q4k(q, sc, mn, g)
+    return host_weights.requant_q4k_dequant(np.asarray(W, np.float32), g)
 
 
 def _interleave512(up_t, gate_t, glu_chunk):

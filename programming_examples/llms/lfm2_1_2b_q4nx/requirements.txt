@@ -13,3 +13,6 @@ safetensors
 # Tokenizer + chat template for the interactive chatbot (make chat / ask / gen),
 # and the bf16 reference model for `make verify`.
 transformers
+
+# Weight dequantization, requantization and layout on load.
+torch

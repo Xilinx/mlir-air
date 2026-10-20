@@ -14,3 +14,6 @@ huggingface_hub
 # The FastFlowLM Q4NX repo ships tokenizer.json/tokenizer_config.json, so the
 # bf16 reference checkpoint is only needed by `make verify`.
 transformers
+
+# Weight dequantization, requantization and layout on load.
+torch

@@ -24,12 +24,18 @@ from ml_dtypes import bfloat16
 _FUSED_DECODE = str(Path(__file__).resolve().parents[2] / "fused_decode")
 if _FUSED_DECODE not in sys.path:
     sys.path.insert(0, _FUSED_DECODE)
+
+import types  # noqa: E402
+
+# llms/shared is imported as the air_examples package, not through sys.path.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+from air_examples.llms.shared.infra import host_weights  # noqa: E402
 from proj_qmm_pack import (  # noqa: E402
     ROW_BLOCK,
     COL_BLOCK,
     GROUP,
-    N_GROUPS,
-    PARALLEL,
     BLOCK_BF16,
 )
 
@@ -72,15 +78,6 @@ def resolve_q4nx_model(model):
     return hf_hub_download(model, "model.q4nx")
 
 
-# Row-group reorder (identical Q4NX codec to llama; w = scale*q + min, 32x256
-# blocks, parallel=16 -> 2 row-groups/block interleaved even/odd).
-_G = ROW_BLOCK // PARALLEL  # 2
-_EVEN = np.array(
-    [g * PARALLEL + 2 * k for g in range(_G) for k in range(PARALLEL // 2)]
-)
-_ODD = _EVEN + 1
-
-
 class Q4nxModel:
     """mmap + parse a model.q4nx safetensors file; vectorized Q4NX dequant.
 
@@ -101,9 +98,7 @@ class Q4nxModel:
 
     def _raw_i16(self, name):
         o0, o1 = self._hdr[name]["data_offsets"]
-        return np.frombuffer(
-            self._mm[self._base + o0 : self._base + o1].tobytes(), dtype=np.int16
-        )
+        return np.asarray(self._mm[self._base + o0 : self._base + o1]).view(np.int16)
 
     def has(self, name):
         return name in self._hdr
@@ -111,10 +106,9 @@ class Q4nxModel:
     def bf16(self, name):
         """A BF16 tensor as float32, in its declared shape."""
         o0, o1 = self._hdr[name]["data_offsets"]
-        v = np.frombuffer(
-            self._mm[self._base + o0 : self._base + o1].tobytes(), dtype=bfloat16
+        return host_weights.bf16_bytes_to_f32(
+            self._mm[self._base + o0 : self._base + o1], self._hdr[name]["shape"]
         )
-        return v.astype(np.float32).reshape(self._hdr[name]["shape"])
 
     def dequant(self, name, M, K):
         """A Q4NX tensor dequantized to float32 [M, K] (w = scale*q + min).
@@ -127,40 +121,10 @@ class Q4nxModel:
         assert (
             self._hdr[name]["shape"][0] == nb
         ), f"{name}: header nb={self._hdr[name]['shape'][0]} != (M/32)*(K/256)={nb}"
-        i16 = self._raw_i16(name).reshape(nb, BLOCK_BF16)
-        sc = (
-            i16[:, 0:256]
-            .copy()
-            .view(bfloat16)
-            .astype(np.float32)
-            .reshape(nb, N_GROUPS, ROW_BLOCK)
+        q, sc, mn = host_weights.unpack_q4nx(
+            self._raw_i16(name).reshape(nb, BLOCK_BF16), nbi, nbj
         )
-        mn = (
-            i16[:, 256:512]
-            .copy()
-            .view(bfloat16)
-            .astype(np.float32)
-            .reshape(nb, N_GROUPS, ROW_BLOCK)
-        )
-        qb = (
-            i16[:, 512:BLOCK_BF16]
-            .copy()
-            .view(np.uint8)
-            .reshape(nb, _G, COL_BLOCK, PARALLEL // 2)
-        )
-        lo = (qb & 0xF).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-        hi = (qb >> 4).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-        q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.float32)
-        q[:, _EVEN, :] = lo
-        q[:, _ODD, :] = hi
-        w = np.repeat(sc.transpose(0, 2, 1), GROUP, axis=2) * q + np.repeat(
-            mn.transpose(0, 2, 1), GROUP, axis=2
-        )
-        return (
-            w.reshape(nbi, nbj, ROW_BLOCK, COL_BLOCK)
-            .transpose(0, 2, 1, 3)
-            .reshape(M, K)
-        )
+        return host_weights.dequant_q4(q, sc, mn, GROUP)
 
     # name -> (tensor suffix, out, in) logical dims (bundle is block-major).
     _PROJ = {
@@ -187,7 +151,7 @@ class Q4nxModel:
         out = {}
         for nm in self._PROJ:
             wt = self.proj_fp(k, nm)  # [out, K]
-            out[nm] = np.ascontiguousarray(wt.T, dtype=bfloat16)  # [K, out]
+            out[nm] = host_weights.transpose_bf16(wt)  # [K, out]
         return out
 
     def layer_rms(self, k):
@@ -268,8 +232,7 @@ class HFQ4nxModel:
     def layer_weights(self, k):
         """Q4NX-rounded bf16 GEMM input-B [K, out] per projection for layer k."""
         return {
-            nm: np.ascontiguousarray(self.proj_fp(k, nm).T, dtype=bfloat16)
-            for nm in self._PROJ
+            nm: host_weights.transpose_bf16(self.proj_fp(k, nm)) for nm in self._PROJ
         }
 
     def layer_rms(self, k):

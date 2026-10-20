@@ -16,19 +16,12 @@ from ml_dtypes import bfloat16
 from ....fused_decode.proj_qmm_pack import (
     BLOCK_BF16,
     COL_BLOCK,
-    N_GROUPS,
-    PARALLEL,
     ROW_BLOCK,
 )
 
+from ..infra import host_weights
 from . import device as D
 from . import hostops as H
-
-_G = ROW_BLOCK // PARALLEL
-_EVEN = np.array(
-    [g * PARALLEL + 2 * k for g in range(_G) for k in range(PARALLEL // 2)]
-)
-_ODD = _EVEN + 1
 
 
 class Bundle:
@@ -79,29 +72,7 @@ def q4nx_raw(i16, rows, K):
     """Block-major Codec B int16 blocks of a [rows, K] matrix as (q [rows, K]
     uint8, scale [rows, K/32], min [rows, K/32]): the block walk of a Q4NX
     dequant, without the multiply."""
-    nbi, nbj = rows // ROW_BLOCK, K // COL_BLOCK
-    nb = nbi * nbj
-    bf = lambda a: a.view(bfloat16).astype(np.float32)  # noqa: E731
-    sc = bf(i16[:, 0:256].copy()).reshape(nb, N_GROUPS, ROW_BLOCK)
-    mn = bf(i16[:, 256:512].copy()).reshape(nb, N_GROUPS, ROW_BLOCK)
-    qb = (
-        i16[:, 512:BLOCK_BF16]
-        .copy()
-        .view(np.uint8)
-        .reshape(nb, _G, COL_BLOCK, PARALLEL // 2)
-    )
-    lo = (qb & 0xF).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-    hi = (qb >> 4).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-    q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.uint8)
-    q[:, _EVEN, :] = lo
-    q[:, _ODD, :] = hi
-    q = q.reshape(nbi, nbj, ROW_BLOCK, COL_BLOCK).transpose(0, 2, 1, 3).reshape(rows, K)
-
-    def grp(a):
-        a = a.transpose(0, 2, 1).reshape(nbi, nbj, ROW_BLOCK, N_GROUPS)
-        return a.transpose(0, 2, 1, 3).reshape(rows, K // 32)
-
-    return q, grp(sc), grp(mn)
+    return host_weights.unpack_q4nx(i16, rows // ROW_BLOCK, K // COL_BLOCK)
 
 
 def n_pad(n):

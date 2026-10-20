@@ -9,3 +9,6 @@ huggingface_hub
 
 # Tokenizer for the interactive chatbot (make chat / ask / gen).
 transformers
+
+# Weight dequantization, requantization and layout on load.
+torch
