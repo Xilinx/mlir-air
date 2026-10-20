@@ -3,6 +3,7 @@
 
 """Kernel compilation cache, profiling, and air_project utilities."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -439,6 +440,14 @@ class KernelCache:
             ids["air_lib"] = ";".join(stamps)
         except Exception as e:
             ids["air_lib"] = f"?({type(e).__name__})"
+        # The kernel registry picks each kernel's method and tiles, and with them
+        # the objects an ELF links and the args it takes.
+        registry = Path(__file__).resolve().parents[3] / "kernel_registry" / "details"
+        digest = hashlib.sha256()
+        for f in sorted(registry.glob("*.json")):
+            digest.update(f.name.encode())
+            digest.update(f.read_bytes())
+        ids["kernel_registry"] = digest.hexdigest()[:16]
         return ids
 
     def _save_manifest(self):
@@ -474,7 +483,8 @@ class KernelCache:
         # rather than trusting it.
         if manifest.get("_toolchain") != self._toolchain_id():
             print(
-                "  [KernelCache] toolchain changed since this cache was built; "
+                "  [KernelCache] toolchain or kernel registry changed since this cache "
+                "was built; "
                 "recompiling (delete the cache dir to silence this)"
             )
             return False
