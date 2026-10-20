@@ -339,10 +339,42 @@ static inline void bfp_group(const uint16_t *src, long cs, uint8_t *dst) {
     dst[1 + i] = (uint8_t)(int8_t)m[i];
 }
 
-// an 8x8 block, row g = src[g * rs + c * cs]: 72 bytes
+// an 8x8 block, row g = src[g * rs + c * cs]: 72 bytes. bfp_group on each
+// row, with the rows in the vector lanes.
 static void bfp_block(const uint16_t *src, long rs, long cs, uint8_t *dst) {
-  for (int g = 0; g < 8; g++)
-    bfp_group(src + g * rs, cs, dst + 9 * g);
+  uint32_t b[8][8];
+  int32_t emax[8] = {0};
+  float x[8][8], m[8][8], sc[8], top[8] = {0};
+  for (int c = 0; c < 8; c++)
+    for (int g = 0; g < 8; g++) {
+      b[c][g] = src[g * rs + c * cs];
+      int32_t e = (b[c][g] >> 7) & 0xFF;
+      emax[g] = e > emax[g] ? e : emax[g];
+    }
+  for (int g = 0; g < 8; g++) {
+    uint32_t sb = (uint32_t)(260 - emax[g]) << 23;
+    memcpy(sc + g, &sb, 4);
+  }
+  for (int c = 0; c < 8; c++)
+    for (int g = 0; g < 8; g++) {
+      uint32_t u = b[c][g] << 16;
+      memcpy(&x[c][g], &u, 4);
+      m[c][g] = __builtin_rintf(x[c][g] * sc[g]);
+      float a = __builtin_fabsf(m[c][g]);
+      top[g] = a > top[g] ? a : top[g];
+    }
+  for (int g = 0; g < 8; g++) {
+    uint8_t *d = dst + 9 * g;
+    if (emax[g] < 8) {
+      memset(d, 0, 9);
+      continue;
+    }
+    int up = top[g] > 127.f;
+    d[0] = (uint8_t)(emax[g] + up);
+    for (int c = 0; c < 8; c++)
+      d[1 + c] = (uint8_t)(int8_t)(up ? __builtin_rintf(x[c][g] * sc[g] * 0.5f)
+                                      : m[c][g]);
+  }
 }
 
 // kv_rec in bfp16: per lkp-row block the K blocks [dh/8][lkp/8] (rows key)
@@ -386,5 +418,30 @@ void q_bfp(const uint16_t *q, int nh, int M, int dh, int tq, uint8_t *dst) {
       for (int x = 0; x < dh / 8; x++)
         bfp_block(src + mq * 8 * dh + x * 8, dh, 1,
                   d + 72 * (mq * (dh / 8) + x));
+  }
+}
+
+// n groups of 8 bf16 -> n bfp16 groups
+void bfp_rows(const uint16_t *src, long n, uint8_t *dst) {
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (long i = 0; i < n; i++)
+    bfp_group(src + 8 * i, 1, dst + 9 * i);
+}
+
+// rows [0, t) of the GEMM's A from bf16 tiles [M/TM][K/TK][TM][TK] into
+// bfp16, per tile the blocks [TM/16][TK/8][2]: row blocks in pairs, rows m,
+// groups along k
+void tiles_bfp(const uint16_t *src, int t, int K, int TM, int TK,
+               uint8_t *dst) {
+  int ks = K / TK, nb = TM / 8;
+  long tile = 72L * (TM / 8) * (TK / 8);
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int rs = 0; rs < (t + 7) / 8 * ks; rs++) {
+    int rb = rs / ks, s = rs % ks;
+    int ty = rb / nb, b = rb % nb;
+    const uint16_t *blk = src + (((long)ty * ks + s) * TM + b * 8) * TK;
+    uint8_t *d = dst + ((long)ty * ks + s) * tile + 72L * (b % 2);
+    for (int kb = 0; kb < TK / 8; kb++)
+      bfp_block(blk + kb * 8, TK, 1, d + 144L * ((b / 2) * (TK / 8) + kb));
   }
 }

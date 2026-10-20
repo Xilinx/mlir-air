@@ -32,6 +32,8 @@ TM, TN, TK = 32, 64, 128
 HR = M // TM
 NR = TN * GNC
 QB = TN * TK // 2 + 2 * 2 * (TK // 32) * TN  # bytes of one B packet
+# bytes of the bfp16 A and B tiles of a K step (gemm_bfp16.cc)
+A_BFP, B_BFP = TM * TK * 9 // 8, TN * TK * 9 // 8
 MAX_N = 32 * NR  # widest GEMM op: more rounds no longer fit one shim BD
 
 
@@ -41,7 +43,7 @@ def n_split(n):
 
 
 MM_OBJ, MM_SUF = "mm_m32n64.o", "_m32n64"
-DQ_OBJ = "dq4.o"
+GEMM_OBJ = "gemm_bfp16.o"
 
 NQT = 4  # cores per attention column
 
@@ -107,8 +109,8 @@ def q_tile(g):
 
 def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts, rtps):
     ksteps = k // TK
-    zero, mmul, cast, cast_act, dq, cp = kern
-    npk = 1 if wq else 4  # B packets per K step: int4, or bf16 in 32-K slices
+    zero, mmul, mmul_pkt, cast, cast_act, dq = kern
+    npk = 1 if wq else 2  # B packets per K step: int4, or bfp16 in K halves
     a_in = air.channel("gAIn", size=[HR])
     b_in = air.channel("gBIn", size=[GNC])
     a2l1 = air.channel("gA2L1", size=[1, HR], broadcast_shape=[GNC, HR])
@@ -120,9 +122,9 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts, rtps):
         L = ksteps * QB * npk
         for ty in range(HR):
             a_in.put(
-                A[ty : ty + 1, 0:ksteps, 0:TM, 0:TK]
-                .reshape(ksteps * TM * TK)
-                .broadcast_to(rounds, ksteps * TM * TK),
+                A[ty : ty + 1, 0:ksteps, 0:A_BFP]
+                .reshape(ksteps * A_BFP)
+                .broadcast_to(rounds, ksteps * A_BFP),
                 indices=[ty],
             )
         for tx in range(GNC):
@@ -145,13 +147,9 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts, rtps):
     rtps += [kq, kb, nr, actp, plain]
 
     def body(seg):
-
-        def blk(v, r, c):
-            return v.reshape(r // MM, MM, c // MM, MM).transpose(2, 0, 1, 3)
-
         a_l2 = [
             [
-                air.alloc([TM, TK], bf16, scope=seg.private(), column=GCOL0 + ty)
+                air.alloc([A_BFP], i8, scope=seg.private(), column=GCOL0 + ty)
                 for _ in range(2)
             ]
             for ty in range(HR)
@@ -160,7 +158,7 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts, rtps):
             for pp in range(2):
                 a_in.get(a_l2[ty][pp], indices=[ty])
             for pp in range(2):
-                a2l1.put(blk(a_l2[ty][pp], TM, TK), indices=[0, ty])
+                a2l1.put(a_l2[ty][pp], indices=[0, ty])
         b_l2 = [
             [
                 air.alloc([QB], i8, scope=seg.private(), column=GCOL0 + tx)
@@ -191,20 +189,18 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts, rtps):
 
             @hd.body
             def _(tx, ty):
-                a_l1 = [
-                    air.alloc([TK // MM, TM // MM, MM, MM], bf16, scope=hd.private())
-                    for _ in range(2)
-                ]
+                a_l1 = [air.alloc([A_BFP], i8, scope=hd.private()) for _ in range(2)]
                 b_l1 = [air.alloc([QB], i8, scope=hd.private()) for _ in range(2)]
-                bdq = air.alloc([TN // MM, TK // MM, MM, MM], bf16, scope=hd.private())
+                bdq = air.alloc([B_BFP], i8, scope=hd.private())
                 acc = air.alloc([TN // MM, TM // MM, MM, MM], f32, scope=hd.private())
                 out = air.alloc([TN // MM, TM // MM, MM, MM], bf16, scope=hd.private())
                 for _r in air.sequential(nr):
                     zero(acc)
-                    # int4 packets are dequantized; bf16 packets (four per K
-                    # step) are copied. Two loops, one of them zero-trip, so
-                    # the gets alternate the two buffers in program order,
-                    # which is the BD chain air-to-aie builds (#2040).
+                    # int4 packets are dequantized; bf16 weights come as bfp16
+                    # in two packets per K step. Two loops, one of them
+                    # zero-trip, so the gets alternate the two buffers in
+                    # program order, which is the BD chain air-to-aie builds
+                    # (#2040).
                     for _k in air.sequential(kq):
                         for pp in range(2):
                             a2l1.get(a_l1[pp], indices=[tx, ty])
@@ -214,10 +210,9 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts, rtps):
                     for _k in air.sequential(kb):
                         for pp in range(2):
                             a2l1.get(a_l1[pp], indices=[tx, ty])
-                            for j in range(4):
-                                b2l1.get(b_l1[j % 2], indices=[tx, ty])
-                                cp(b_l1[j % 2], bdq, j)
-                            mmul(a_l1[pp], bdq, acc)
+                            for h in range(2):
+                                b2l1.get(b_l1[h], indices=[tx, ty])
+                                mmul_pkt(a_l1[pp], b_l1[h], acc, h)
                     # the activation in the drain when act is set
                     for _a in air.sequential(actp):
                         cast_act(acc, out)
@@ -577,21 +572,21 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
             win = (cfg.windows or {}).get(op) or NO_WINDOW
             at[a].update(nkv=nkv, q0=q0, k0=k0, win=win, rounds=hg * attn_qr(ga))
 
-    kern = tuple(
+    mm = [
         air.extern(f"{f}{MM_SUF}", link_with=MM_OBJ)
-        for f in (
-            "zero_f32_mn",
-            "op_has_no_registered_library_name",
-            "f32_to_bf16_mn",
-            f"f32_to_bf16_{cfg.act}_mn",
-        )
-    ) + (
-        air.extern("dq4_bf16", link_with=DQ_OBJ),
-        air.extern("bf16_pkt", link_with=DQ_OBJ, scalars=[i32]),
+        for f in ("zero_f32_mn", "f32_to_bf16_mn", f"f32_to_bf16_{cfg.act}_mn")
+    ]
+    kern = (
+        mm[0],
+        air.extern("mm_bfp16", link_with=GEMM_OBJ),
+        air.extern("mm_bfp16_pkt", link_with=GEMM_OBJ, scalars=[i32]),
+        mm[1],
+        mm[2],
+        air.extern("dq4_bfp16", link_with=GEMM_OBJ),
     )
     gt = (
-        air.tensor([HR, g["k"] // TK, TM, TK], bf16),
-        air.tensor([g["n"] // TN, g["k"] // TK * (1 if g["wq"] else 4), QB], i8),
+        air.tensor([HR, g["k"] // TK, A_BFP], i8),
+        air.tensor([g["n"] // TN, g["k"] // TK * (1 if g["wq"] else 2), QB], i8),
         air.tensor([M, g["n"]], bf16),
     )
     att = {

@@ -8,9 +8,9 @@
 //   uint8 q[GV_N/8][GV_K/8][8 k][8 n / 2]   two nibbles per byte, low first
 //   bf16  scale[GV_K/32][GV_N]              per row, per 32-wide K group
 //   bf16  mins [GV_K/32][GV_N]
-// w = q * scale + min. Each 8x8 (k, n) tile is dequantized as in dq4.cc and
-// multiplied in a 64-lane mac against x repeated across n, so no bf16 weight
-// tile is stored; gv_flush sums the 8 k lanes of each n.
+// w = q * scale + min. Each 8x8 (k, n) tile is dequantized as in
+// gemm_bfp16.cc and multiplied in a 64-lane mac against x repeated across n,
+// so no bf16 weight tile is stored; gv_flush sums the 8 k lanes of each n.
 
 #include <aie_api/aie.hpp>
 #include <cstdint>

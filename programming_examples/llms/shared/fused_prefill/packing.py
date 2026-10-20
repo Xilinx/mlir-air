@@ -22,6 +22,7 @@ from ....fused_decode.proj_qmm_pack import (
 )
 
 from . import device as D
+from . import hostops as H
 
 _G = ROW_BLOCK // PARALLEL
 _EVEN = np.array(
@@ -108,15 +109,16 @@ def n_pad(n):
 
 
 def pack_q4(q, scale, mn):
-    """[out, in] raw Q4NX -> GEMM B packets [N/TN, K/TK, QB] uint8 (dq4.cc),
-    output columns padded to whole rounds with zero weights."""
+    """[out, in] raw Q4NX -> GEMM B packets [N/TN, K/TK, QB] uint8
+    (gemm_bfp16.cc dq4_bfp16), output columns padded to whole rounds with zero
+    weights."""
     n, k = q.shape
     npd = n_pad(n)
     pad = lambda a: np.pad(a.T, ((0, 0), (0, npd - n)))  # noqa: E731
     q, scale, mn = pad(q), pad(scale), pad(mn)
     TK, TN, MM = D.TK, D.TN, D.MM
     qt = q.reshape(k // TK, TK // MM, MM, npd // TN, TN // MM, MM)  # ks kb kk nt nb nn
-    qt = qt.transpose(3, 0, 4, 1, 2, 5).reshape(npd // TN, k // TK, -1)
+    qt = qt.transpose(3, 0, 4, 1, 5, 2).reshape(npd // TN, k // TK, -1)
     qb = (qt[..., 0::2] | (qt[..., 1::2] << 4)).astype(np.uint8)
 
     def grp(a):
@@ -131,21 +133,19 @@ def pack_q4(q, scale, mn):
 
 
 def pack_bf16(w):
-    """[out, in] float -> GEMM B packets [N/TN, K/TK * 4, QB] uint8: per K
-    step four packets of TN x 32 bf16 in B-tile order (bf16_pkt in dq4.cc)."""
+    """[out, in] float -> GEMM B packets [N/TN, K/TK * 2, QB] uint8: per K
+    step two packets, one per K half, of bfp16 blocks [TN/16][TK/16][2]
+    (gemm_bfp16.cc mm_bfp16_pkt)."""
     n, k = w.shape
     npd = n_pad(n)
     b = np.zeros((k, npd), bfloat16)
     b[:, :n] = np.asarray(w, np.float32).T
     TK, TN, MM = D.TK, D.TN, D.MM
-    t = b.reshape(k // TK, 4, 4, MM, npd // TN, TN // MM, MM)  # ks j kbl kk nt nb nn
-    t = (
-        t.transpose(4, 0, 1, 5, 2, 3, 6)
-        .reshape(npd // TN, k // TK * 4, -1)
-        .view(np.uint8)
-    )
-    out = np.zeros((npd // TN, k // TK * 4, D.QB), np.uint8)
-    out[..., : t.shape[-1]] = t
+    t = b.reshape(k // TK, 2, TK // 16, MM, npd // TN, TN // 16, 2, MM)
+    t = t.transpose(4, 0, 1, 5, 2, 6, 7, 3)  # nt ks h np kb i nn kk
+    g = H.bfp_rows(t).reshape(npd // TN, k // TK * 2, -1)
+    out = np.zeros((npd // TN, k // TK * 2, D.QB), np.uint8)
+    out[..., : g.shape[-1]] = g
     return out
 
 

@@ -20,6 +20,8 @@ def load(build_dir):
     os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
     _lib = ctypes.CDLL(os.path.join(build_dir, "libhostops.so"))
     _lib.tile_a.argtypes = [_p, _i, _i, _i, _i, _p]
+    _lib.tiles_bfp.argtypes = [_p, _i, _i, _i, _i, _p]
+    _lib.bfp_rows.argtypes = [_p, ctypes.c_long, _p]
     _lib.bf16_to_f32.argtypes = [_p, _i, _i, _i, _p]
     _lib.rms.argtypes = [_p, _i, _i, _p, _f, _p]
     _lib.add_rms.argtypes = [_p, _p, _i, _i, _p, _f, _p]
@@ -38,10 +40,38 @@ def load(build_dir):
     _lib.q_bfp.argtypes = [_p, _i, _i, _i, _i, _p]
 
 
+_tiles = {}
+
+
+def _bf16_tiles(dst, tm, tk):
+    """The bf16 tiles [M/tm, K/tk, tm, tk] the tilers fill for dst, the GEMM's
+    A as bfp16 bytes [M/tm, K/tk, tile]; reused per K."""
+    key = (dst.shape[0], dst.shape[1], tm, tk)
+    if key not in _tiles:
+        _tiles[key] = np.zeros(key, np.uint16)
+    return _tiles[key]
+
+
+def _to_bfp(tiles, t, dst):
+    """Rows [0, t) of tiles into dst."""
+    _, ks, tm, tk = tiles.shape
+    _lib.tiles_bfp(tiles.ctypes.data, t, ks * tk, tm, tk, dst.ctypes.data)
+
+
 def tile_a(x, dst, tm, tk):
-    """x [t, K] float32 (C order) -> dst, a bf16 [HR, K/tk, tm, tk] array."""
+    """x [t, K] float32 (C order) -> dst, the GEMM's A (bfp16 tiles)."""
     x = np.ascontiguousarray(x, np.float32)
-    _lib.tile_a(x.ctypes.data, x.shape[0], x.shape[1], tm, tk, dst.ctypes.data)
+    a = _bf16_tiles(dst, tm, tk)
+    _lib.tile_a(x.ctypes.data, x.shape[0], x.shape[1], tm, tk, a.ctypes.data)
+    _to_bfp(a, x.shape[0], dst)
+
+
+def bfp_rows(src):
+    """src [..., 8] bf16 -> bfp16 groups [..., 9] uint8."""
+    src = np.ascontiguousarray(src)
+    out = np.empty(src.shape[:-1] + (9,), np.uint8)
+    _lib.bfp_rows(src.ctypes.data, src.size // 8, out.ctypes.data)
+    return out
 
 
 def bf16_to_f32(src, rows, n):
@@ -94,7 +124,8 @@ def rope(x, cs, sn, rot):
 
 
 def glu_tile(g, u, t, n, dst, tm, tk):
-    """dst (tiled A of K = n) = bf16(g[:t, :n] * u[:t, :n]); g, u bf16 [R, ld]."""
+    """dst (A of K = n) = bf16(g[:t, :n] * u[:t, :n]); g, u bf16 [R, ld]."""
+    a = _bf16_tiles(dst, tm, tk)
     _lib.glu_tile(
         g.ctypes.data,
         g.shape[1],
@@ -104,13 +135,15 @@ def glu_tile(g, u, t, n, dst, tm, tk):
         n,
         tm,
         tk,
-        dst.ctypes.data,
+        a.ctypes.data,
     )
+    _to_bfp(a, t, dst)
 
 
 def mul_tile(g, p, dst, tm, tk):
-    """dst (tiled A of K = n) = bf16(g[:t, :n] * p); g bf16 [R, ld], p f32 [t, n]."""
+    """dst (A of K = n) = bf16(g[:t, :n] * p); g bf16 [R, ld], p f32 [t, n]."""
     p = _c(p)
+    a = _bf16_tiles(dst, tm, tk)
     _lib.mul_tile(
         g.ctypes.data,
         g.shape[1],
@@ -119,8 +152,9 @@ def mul_tile(g, p, dst, tm, tk):
         p.shape[1],
         tm,
         tk,
-        dst.ctypes.data,
+        a.ctypes.data,
     )
+    _to_bfp(a, p.shape[0], dst)
 
 
 def q_pack(q, scale, dst):
@@ -135,15 +169,18 @@ def _ptr(a):
 
 
 def rms_tile(x, w, eps, dst, tm, tk):
-    """dst (tiled A) = bf16(rms(x) * w); x [t, n] float32."""
+    """dst (A) = bf16(rms(x) * w); x [t, n] float32."""
     t, n = x.shape
-    _lib.rms_tile(_c(x).ctypes.data, t, n, _ptr(w), eps, tm, tk, dst.ctypes.data)
+    a = _bf16_tiles(dst, tm, tk)
+    _lib.rms_tile(_c(x).ctypes.data, t, n, _ptr(w), eps, tm, tk, a.ctypes.data)
+    _to_bfp(a, t, dst)
 
 
 def add_rms_tile(x, c, t, post, eps, w, dst, tm, tk):
     """x[:t] += post ? rms(c) * post : c (c bf16 [R, ld]), in place; then
-    dst (tiled A) = bf16(rms(x) * w) if w is given."""
+    dst (A) = bf16(rms(x) * w) if w is given."""
     n = x.shape[1]
+    a = None if dst is None else _bf16_tiles(dst, tm, tk)
     _lib.add_rms_tile(
         x.ctypes.data,
         c.ctypes.data,
@@ -155,8 +192,10 @@ def add_rms_tile(x, c, t, post, eps, w, dst, tm, tk):
         _ptr(w),
         tm,
         tk,
-        None if dst is None else dst.ctypes.data,
+        _ptr(a),
     )
+    if a is not None:
+        _to_bfp(a, t, dst)
 
 
 def head_post(src, t, col0, nh, dh, bias, norm, eps, rope, scale, dst, hs, rs):
@@ -192,9 +231,12 @@ def kv_rec(k, v, c0, t, dh, lkp, dvt, dst):
 
 
 def o_tile(o, t, h0, k, dst, tm, tk):
-    """Heads of o bf16 [nh, M, dh] into heads [h0, h0 + nh) of dst (tiled A, K = k)."""
+    """Heads of o bf16 [nh, M, dh] into heads [h0, h0 + nh) of dst (A, K = k);
+    the other heads keep what the last o_tile on this dst's shape wrote."""
     nh, m, dh = o.shape
-    _lib.o_tile(o.ctypes.data, t, nh, dh, m, h0, k, tm, tk, dst.ctypes.data)
+    a = _bf16_tiles(dst, tm, tk)
+    _lib.o_tile(o.ctypes.data, t, nh, dh, m, h0, k, tm, tk, a.ctypes.data)
+    _to_bfp(a, t, dst)
 
 
 def kv_rec_bfp(k, v, c0, t, dh, lkp, dst):
