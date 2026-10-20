@@ -88,6 +88,15 @@ DECODE_ENV      := DECODE_MODEL=qwen2.5-3b UNIFIED=1 LM_HEAD=0 \
 GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE python3 $(DECODE_DRIVER) 2>/dev/null)
 PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
 
+KERNEL_DIR      := $(DEC)
+KERNEL_SRC_DIRS := $(DEC)/kernels
+KERNEL_FLAGS     = $(PEANO_KBASE)
+O2_KERNELS      := $(NONATTN_KERNELS)
+LL_KERNELS      := $(ATTN_LL_KERNELS)
+O2_EXTRA         = $(NONATTN_EXTRA)
+LL_EXTRA         = $(ATTN_EXTRA)
+include $(DEC)/decode_kernels.mk
+
 # Build-flag stamp for the idempotent skip. Every variable below changes either the
 # xclbin's dataflow, its DDR weight layout or its core ELFs, so a warm build made
 # with different settings must NOT be silently reused.
@@ -175,15 +184,8 @@ _compile_decode_build:
 	@# lit tests (fused_decode/Makefile: preflight-llvm-link).
 	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
 	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
-	@echo ">>> qwen non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
-	@echo ">>> qwen attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@# Merge-linked INTO the core (mlir-aie #3399), not object-linked: the builder
-	@# tags the kernel decls link_with="<name>.ll" + link_with_mode="merge".
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
+	@echo ">>> decode kernels"
+	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile decode-kernels
 	@# Two templates one L apart, into THIS example's dir. They must not land in
 	@# $(DEC): DecodeInstsGen discovers templates by scanning for decode_L*, so a
 	@# Qwen pair sitting next to the Llama decode_L2048 pair would be picked up as
@@ -271,6 +273,7 @@ profile: bench gen
 ## artifacts it writes into the shared fused_decode/ dir -- leaving those there
 ## makes a later Llama or Gemma build silently link Qwen objects.
 clean:
+	rm -f $(DECODE_KERNEL_CLEAN) 2>/dev/null || true
 	rm -rf $(srcdir)/_q4_cache_seq* $(srcdir)/__pycache__ 2>/dev/null || true
 	rm -f $(DECODE_STAMP) $(KV_NPZ) 2>/dev/null || true
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
@@ -305,13 +308,8 @@ compile-decode-elf:
 _compile_decode_elf_build:
 	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
 	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
-	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
-	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
+	@echo ">>> decode kernels"
+	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile decode-kernels
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
 	@cd $(DEC) && rm -f decode.elf params.txt decode.args; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
 	  DECODE_DYNSEQ=1 DECODE_RT_ROUNDS=1 \

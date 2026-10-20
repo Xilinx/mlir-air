@@ -75,6 +75,13 @@ DECODE_ENV := DECODE_MODEL=llama-3.2-3b UNIFIED=1 LM_HEAD=0 \
 GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE python3 $(DECODE_DRIVER) 2>/dev/null)
 PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
 
+KERNEL_DIR      := $(DEC)
+KERNEL_SRC_DIRS := $(DEC)/kernels
+KERNEL_FLAGS     = $(PEANO_KBASE)
+O2_KERNELS      := $(NONATTN_KERNELS)
+LL_KERNELS      := $(ATTN_LL_KERNELS)
+include $(DEC)/decode_kernels.mk
+
 # ATTN_MAXL to build for. 2048 = production; a small value builds fast for a gate.
 LBUILD ?= 2048
 LREF   := $(shell echo $$(($(LBUILD) - 1)))
@@ -165,13 +172,8 @@ _compile_decode_build:
 	@# a >=23 llvm-link rewrites llvm.lifetime.* and Peano opt rejects the merge.
 	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
 	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
-	@echo ">>> 3B non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
-	@echo ">>> 3B attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
+	@echo ">>> decode kernels"
+	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile decode-kernels
 	@echo ">>> 3B template decode_L$(LBUILD) (+ L$(LREF) slope ref)"
 	@cd $(DEC) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/llama3b_decode_L$(LBUILD).log 2>&1; \
 	  if [ -f decode.xclbin ]; then mv -f decode.xclbin $(srcdir)/decode_L$(LBUILD).xclbin; mv -f decode.insts.bin $(srcdir)/decode_L$(LBUILD).insts.bin; \
@@ -204,13 +206,8 @@ compile-decode-elf:
 _compile_decode_elf_build:
 	@$(MAKE) --no-print-directory -C $(DEC) preflight-llvm-link \
 	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
-	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.o || exit 1; done
-	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(DEC)/kernels/$$k.cc -o $(DEC)/$$k.ll || exit 1; done
+	@echo ">>> decode kernels"
+	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile decode-kernels
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
 	@cd $(DEC) && rm -f decode.elf params.txt decode.args; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
 	  DECODE_DYNSEQ=1 DECODE_RT_ROUNDS=1 \
@@ -304,6 +301,7 @@ gen:
 ## ~2 GB q4k-cascade requant of the Q4NX weights and takes ~15 min to rebuild, while
 ## the lit tests run `clean` before every gate. Delete it by hand to force a re-pack.
 clean:
+	rm -f $(DECODE_KERNEL_CLEAN) 2>/dev/null || true
 	rm -f $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin 2>/dev/null || true
 	rm -f $(srcdir)/decode_scratchpad.elf $(srcdir)/decode_scratchpad.params.txt $(srcdir)/decode_scratchpad.args $(srcdir)/decode_scratchpad.maxl $(DECODE_ELF_STAMP) 2>/dev/null || true
 	rm -f $(DECODE_FLAGS_STAMP) 2>/dev/null || true

@@ -91,6 +91,14 @@ BUILD_ENV =
 ATTN_KV_PARTS = $(shell $(DECODE_ENV) $(BUILD_ENV) FUSED_DECODE_PRINT_CONST=KV_PARTS $(PYTHON) $(DECODE_DRIVER) 2>/dev/null | tail -1)
 PEANO_KFLAGS = $(PEANO_KBASE) $(if $(ATTN_KV_PARTS),-DATTN_KV_PARTS=$(ATTN_KV_PARTS))
 
+KERNEL_DIR      := $(srcdir)
+KERNEL_SRC_DIRS := $(srcdir)/kernels $(DEC)/kernels
+KERNEL_FLAGS     = $(PEANO_KFLAGS)
+O2_KERNELS      := $(NONATTN_KERNELS) $(PLE_KERNELS)
+LL_KERNELS      := $(ATTN_LL_KERNELS)
+LL_OPT           = $(ATTN_OPT)
+include $(DEC)/decode_kernels.mk
+
 .PHONY: help compile-decode compile-decode-elf kernels preflight-peano clean
 
 help:
@@ -133,17 +141,11 @@ preflight-peano:
 ## Peano kernels. The non-attn and attn sets come from ../fused_decode (shared
 ## with every other model); ple.cc is this fork's own.
 kernels: preflight-peano
-	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KFLAGS) -O2 -c $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
-	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KFLAGS) -$(ATTN_OPT) -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
-	@echo ">>> PLE kernels (Peano -O2): $(PLE_KERNELS)"
-	@for k in $(PLE_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KFLAGS) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
-	@echo "Kernels built (GLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))."
+	@echo ">>> decode kernels"
+	@# BUILD_ENV is target-specific (compile-decode-elf) and decides ATTN_KV_PARTS,
+	@# so the sub-make must see the same value.
+	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile decode-kernels \
+	  BUILD_ENV="$(BUILD_ENV)"
 
 ## Kernels + one decode template into this dir (decode.xclbin + decode.insts.bin).
 ## Weight-free: weights are runtime BOs, so no bundle is read at build time.
@@ -193,6 +195,7 @@ compile-decode-elf: kernels
 	  fi
 
 clean:
+	rm -f $(DECODE_KERNEL_CLEAN) 2>/dev/null || true
 	rm -f $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin $(srcdir)/decode.rt_pair 2>/dev/null || true
 	rm -f $(srcdir)/decode.elf $(srcdir)/params.txt $(srcdir)/decode.args $(srcdir)/decode_scratchpad.* 2>/dev/null || true
 	rm -rf $(srcdir)/air_project $(srcdir)/__pycache__ 2>/dev/null || true

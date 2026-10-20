@@ -35,3 +35,8 @@ decode_scratchpad.maxl
 params.txt
 .decode_elf_flags
 _fused_prefill/
+
+# Kernel header dependencies and compile flags (decode_kernels.mk).
+*.o.d
+*.ll.d
+.kernel_flags

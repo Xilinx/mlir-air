@@ -61,6 +61,13 @@ DECODE_ENV     := LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN=1 \
 GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE python3 $(DECODE_DRIVER) 2>/dev/null)
 PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
 
+KERNEL_DIR      := $(srcdir)
+KERNEL_SRC_DIRS := $(srcdir)/kernels
+KERNEL_FLAGS     = $(PEANO_KBASE)
+O2_KERNELS      := $(NONATTN_KERNELS)
+LL_KERNELS      := $(ATTN_LL_KERNELS)
+include $(srcdir)/decode_kernels.mk
+
 .PHONY: help compile-decode _compile_decode_build compile-decode-elf _compile_decode_elf_build preflight-peano preflight-llvm-link clean
 
 help:
@@ -208,13 +215,8 @@ compile-decode-elf:
 	fi
 
 _compile_decode_elf_build: preflight-llvm-link
-	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
-	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
+	@echo ">>> decode kernels"
+	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile decode-kernels
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L and KV block count via scratchpad)"
 	@cd $(srcdir) && rm -f decode.elf params.txt decode.args; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
 	  DECODE_DYNSEQ=1 DECODE_RT_ROUNDS=1 \
@@ -229,15 +231,8 @@ _compile_decode_elf_build: preflight-llvm-link
 
 
 _compile_decode_build: preflight-llvm-link
-	@echo ">>> non-attn decode kernels (Peano -O2): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O2 -c $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
-	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@# attn_qk/attn_kv are built ONLY as inline .ll (merge-linked into the core; mlir-aie #3399).
-	@# They MUST be -O1 (a -O2 attn do-while deadlock); non-attn MUST be -O2 (rope -O1 miscompiles).
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(srcdir)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
+	@echo ">>> decode kernels"
+	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile decode-kernels
 	@echo ">>> template decode_L2048 (+ L2047 slope ref) [region-major KV + fire-and-free readback + inline attn]"
 	@# The two same-ATTN_MAXL builds (L2048 + L2047) calibrate the L-slope so DecodeInstsGen can
 	@# patch any context length in [1, 2048] into one template at runtime (recompile-free decode).
@@ -313,6 +308,7 @@ bench-decode: $(BENCH_EXE)
 
 ## Remove compiled kernels + decode templates.
 clean:
+	rm -f $(DECODE_KERNEL_CLEAN) 2>/dev/null || true
 	rm -f $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/decode.xclbin $(srcdir)/decode.insts.bin \
 	      $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin $(srcdir)/decode_L*.rt_rounds \
 	      $(BENCH_EXE) $(DECODE_FLAGS_STAMP) \
