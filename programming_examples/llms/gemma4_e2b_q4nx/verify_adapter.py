@@ -1,8 +1,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Verify adapter for the Q4NX Gemma4-E2B example, and (through
-../gemma4_e4b_q4nx/verify_adapter.py, which selects GEMMA4_VARIANT=e4b) E4B.
+"""Verify adapter for the Q4NX Gemma4-E2B example. ../gemma4_e4b_q4nx's reuses
+hf_config and NpuRunner with its own Gemma4Config.
 
 The NPU runs FastFlowLM's 4-bit `model.q4nx` bundle; the reference is the bf16
 HF checkpoint that bundle was built from. The shared verify gate compares
@@ -49,42 +49,46 @@ from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
 import gemma4_e2b_q4nx_weights as gw  # noqa: E402
 
-_N_LAYERS = gw.NUM_LAYERS
+CFG = gw.E2B
 
 
 @dataclass
-class Gemma4Config:
-    """The four fields the shared HfRunner reads, from gemma4_e2b_q4nx_weights.
+class HfConfig:
+    """The fields the shared HfRunner reads.
 
-    head_dim and hidden_dim are PER LAYER CLASS on this model (256/512 and
-    6144/12288); the sliding-class values are carried here because HfRunner only
-    uses n_layers materially -- it slices hidden_states by it. A single number
-    would be wrong for any other purpose.
+    head_dim and hidden_dim are PER LAYER CLASS on Gemma4; the sliding-class
+    values are carried here because HfRunner only uses n_layers materially --
+    it slices hidden_states by it. A single number would be wrong for any other
+    purpose.
     """
 
-    n_layers: int = _N_LAYERS
-    emb_dim: int = gw.D
-    n_heads: int = gw.N_Q_HEADS
-    head_dim: int = gw.DH_SLIDING
-    n_kv_heads: int = gw.N_KV_HEADS
-    hidden_dim: int = gw.INTER
-    vocab_size: int = gw.VOCAB
+    n_layers: int
+    emb_dim: int
+    n_heads: int
+    head_dim: int
+    n_kv_heads: int
+    hidden_dim: int
+    vocab_size: int
+
+
+def hf_config(cfg):
+    return HfConfig(
+        n_layers=cfg.num_layers,
+        emb_dim=cfg.d,
+        n_heads=gw.N_Q_HEADS,
+        head_dim=gw.DH_SLIDING,
+        n_kv_heads=cfg.n_kv_heads,
+        hidden_dim=cfg.inter,
+        vocab_size=gw.VOCAB,
+    )
 
 
 # Gemma4 ships instruction-tuned only in the shape this example targets.
-MODEL_CHOICES = {
-    "instruct": {"e2b": "unsloth/gemma-4-E2B-it", "e4b": "unsloth/gemma-4-E4B-it"}[
-        gw.VARIANT
-    ],
-}
+MODEL_CHOICES = {"instruct": CFG.hf_repo}
 DEFAULT_MODEL = "instruct"
 
 # The Gemma4 tokenizer does not add <bos>; the verify runner prepends it.
 PROMPT_BOS = 2
-
-# NPU weight source: the FastFlowLM Q4NX bundle (NOT the bf16 reference above).
-# Same default as the inference driver / Makefile.
-Q4NX_MODEL_SOURCE = gw.MODEL_DEFAULT
 
 # Padded prefill length. Every prefill ELF is built for it, so it is a rebuild
 # rather than a runtime knob (same constraint as the other Q4NX examples).
@@ -92,7 +96,7 @@ _SEQ_LEN = int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
 
 
 def build_config():
-    return Gemma4Config()
+    return hf_config(CFG)
 
 
 def resolve_model(model_choice_or_id: str) -> str:
@@ -115,34 +119,38 @@ def build_runner(
     lite_mode: bool = False,
 ):
     """Compile/load the Q4NX prefill + the fused Gemma4 decode, return an NpuRunner."""
-    return NpuRunner(tokenizer=tokenizer, lite_mode=lite_mode)
+    return NpuRunner(CFG, tokenizer=tokenizer, lite_mode=lite_mode)
 
 
 class NpuRunner:
     """Adapter over the Q4NX batched prefill + one-xclbin fused Gemma4 decode.
 
-    prefill() runs `Gemma4Q4nxPrefill` (full logits + the per-layer roped-K /
-    normed-V seed) and seeds the decoder's KV cache; decode_step() dispatches one
-    fused token (35 layers + the PLE branch + the LM head) through `FusedDecoder`.
+    prefill() runs the prefill (full logits + the per-layer roped-K / normed-V
+    seed) and seeds the decoder's KV cache; decode_step() dispatches one fused
+    token (every layer + the PLE branch + the LM head) through `FusedDecoder`.
     Mirrors the loop in `gemma4_e2b_q4nx_inference.generate`.
     """
 
     name = "npu_q4nx"
 
-    def __init__(self, tokenizer, lite_mode: bool = False):
+    def __init__(self, cfg, tokenizer, lite_mode: bool = False):
         self.lite_mode = lite_mode
         self._tokenizer = tokenizer
+        self.n_layers = cfg.num_layers
 
         from gemma4_e2b_q4nx_prefill import Gemma4Q4nxPrefill
         from gemma4_e2b_q4nx_inference import FusedDecoder
 
-        self.prefiller = fused_prefill.load(gw.MODEL_DIR.name, Q4NX_MODEL_SOURCE)
+        source = cfg.model_source()
+        self.prefiller = fused_prefill.load(cfg.name, source)
         if self.prefiller is None:
             self.prefiller = Gemma4Q4nxPrefill(
-                seq_len=_SEQ_LEN, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
+                seq_len=_SEQ_LEN,
+                cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None,
+                cfg=cfg,
             )
-            self.prefiller.load_weights(model=Q4NX_MODEL_SOURCE)
-        self.dec = FusedDecoder(model=Q4NX_MODEL_SOURCE)
+            self.prefiller.load_weights(model=source)
+        self.dec = FusedDecoder(model=source, cfg=cfg)
         self.attn_maxl = self.dec.ATTN_MAXL
         self._P = 0
 
@@ -169,14 +177,14 @@ class NpuRunner:
         # token at position P.
 
         # The Q4NX prefill does not expose per-layer ffn_out, and the decode runs
-        # all 35 layers inside one dispatch, so the diagnosis lens has no per-layer
+        # every layer inside one dispatch, so the diagnosis lens has no per-layer
         # data. Return one empty dict per layer (len == n_layers) rather than an
         # empty list: the diagnosis path indexes layer_intermediates[li] per layer,
         # and `.get("ffn_out")` on an empty dict yields None, which the shared
         # runner skips gracefully (an empty list would IndexError).
         empty = np.empty((0,), dtype=np.float32)
         return PrefillRecord(
-            layer_intermediates=[{} for _ in range(_N_LAYERS)],
+            layer_intermediates=[{} for _ in range(self.n_layers)],
             final_hidden_normed=empty,
             logits_at_pred=logits,
             top1_token=first,

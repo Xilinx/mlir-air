@@ -48,34 +48,21 @@ if str(_HERE) not in sys.path:
 
 from gemma4_e2b_q4nx_weights import (  # noqa: E402
     ATTN_SCALE,
-    D,
     DH_GLOBAL,
     DH_SLIDING,
-    DOUBLE_WIDE_MLP,
+    E2B,
     EMBED_SCALE,
     FINAL_LOGIT_SOFTCAP,
-    FIRST_KV_SHARED_LAYER,
-    INTER,
-    MODEL_DIR,
-    NUM_LAYERS,
     N_Q_HEADS,
-    N_KV_HEADS,
     PLE_INPUT_SCALE,
-    PLE_MODEL_PROJ_SCALE,
     PLI_D,
     RMS_EPS,
     ROPE_GLOBAL_THETA,
     ROPE_SLIDING_THETA,
     SLIDING_WINDOW,
-    VARIANT,
-    VARIANTS,
     VOCAB,
     _gelu_tanh,
     _rmsnorm,
-    head_dim,
-    is_sliding,
-    kv_source_layer,
-    owns_kv,
 )
 
 import types
@@ -86,8 +73,6 @@ import types
 sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
     str(Path(__file__).resolve().parents[2])
 ]
-
-MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", VARIANTS[VARIANT]["REPO"])
 
 # <bos> + "The capital of France is". Kept in sync with run_reference.py's
 # `paris` smoke test; the expected token id is resolved from the tokenizer
@@ -105,36 +90,36 @@ _LM_N_PARTITIONS = VOCAB // _LM_N_PART
 # and selected per layer by is_sliding(). "swa" = sliding window, "full" = the
 # every-fifth layer that sees the whole context.
 _CLS = ("swa", "full")
-# The FFN widths. With DOUBLE_WIDE_MLP, narrow is layers < FIRST_KV_SHARED_LAYER
-# and wide the rest -- the same predicate as KV sharing, asserted against the
+
+
+# The FFN widths. With double_wide_mlp, narrow is layers < first_kv_shared and
+# wide the rest -- the same predicate as KV sharing, asserted against the
 # bundle in _check_class_map().
-_WID = ("n", "w") if DOUBLE_WIDE_MLP else ("n",)
-
-INTER_NARROW = INTER
-INTER_WIDE = 2 * INTER  # 12288
+def _wids(cfg):
+    return ("n", "w") if cfg.double_wide_mlp else ("n",)
 
 
-def _cls(k):
-    return "swa" if is_sliding(k) else "full"
+def _cls(cfg, k):
+    return "swa" if cfg.is_sliding(k) else "full"
 
 
-def _wid(k):
-    return "n" if owns_kv(k) or not DOUBLE_WIDE_MLP else "w"
+def _wid(cfg, k):
+    return "n" if cfg.owns_kv(k) or not cfg.double_wide_mlp else "w"
 
 
-def dims(k):
+def dims(cfg, k):
     """(head_dim, q_dim, kv_dim) for a layer."""
-    dh = head_dim(k)
-    return dh, N_Q_HEADS * dh, N_KV_HEADS * dh
+    dh = cfg.head_dim(k)
+    return dh, N_Q_HEADS * dh, cfg.n_kv_heads * dh
 
 
-def cls_dims(cls):
+def cls_dims(cfg, cls):
     dh = DH_SLIDING if cls == "swa" else DH_GLOBAL
-    return dh, N_Q_HEADS * dh, N_KV_HEADS * dh
+    return dh, N_Q_HEADS * dh, cfg.n_kv_heads * dh
 
 
-def wid_inter(w):
-    return INTER_NARROW if w == "n" else INTER_WIDE
+def wid_inter(cfg, w):
+    return cfg.inter if w == "n" else 2 * cfg.inter
 
 
 def _elf_backend(instance_name, tiling=(2, 2)):
@@ -192,16 +177,16 @@ def K_FA(c):
 # One GEMM per ELF, never two slices -- see the miscompile note above.
 
 
-def _ffn_halves(w):
+def _ffn_halves(cfg, w):
     """Column windows for one FFN GEMM: [(n, n_out, offset, tag)]."""
-    inter = wid_inter(w)
+    inter = wid_inter(cfg, w)
     if w != "w":
         return [(inter, None, 0, "")]
     half = inter // 2
     return [(half, inter, 0, "_lo"), (half, inter, half, "_hi")]
 
 
-def _ffn_weights(w, wid):
+def _ffn_weights(cfg, w, wid):
     """gate/up as the (K, N) operands their GEMMs want, split when wide.
 
     A split layer stores ONLY the halves: each must be its own contiguous array
@@ -209,11 +194,12 @@ def _ffn_weights(w, wid):
     split exists to get under), and keeping the full copies too would cost
     ~37 MB per matrix per layer.
     """
-    inter = wid_inter(wid)
+    D = cfg.d
+    inter = wid_inter(cfg, wid)
     out = {}
     for key in ("gate", "up"):
         full = _wT(w[key], D, inter)
-        halves = _ffn_halves(wid)
+        halves = _ffn_halves(cfg, wid)
         if len(halves) == 1:
             out[key] = full
             continue
@@ -248,12 +234,16 @@ _FA_CAUSAL_GROUPS = 4
 # orphans alongside the new ELF rather than being rejected.
 _KERNEL_REV = 3
 
+
 # The model_proj branch projects the SAME token embeddings through every
 # layer's matrix, so FastFlowLM's `pli_down_proj` is one GEMM of width
 # num_hidden_layers * PLI_D (gemma4e_prefill.cpp, pre_pass) rather than
-# NUM_LAYERS narrow ones. N must be a multiple of tile_n * herd_n = 512, so the
+# num_layers narrow ones. N must be a multiple of tile_n * herd_n = 512, so the
 # concatenation is padded by one layer's worth and the tail is discarded.
-PLE_MP_N = -(-NUM_LAYERS * PLI_D // 512) * 512
+def ple_mp_n(cfg):
+    return -(-cfg.num_layers * PLI_D // 512) * 512
+
+
 PLE_MP_TK_L2 = 64
 
 
@@ -487,7 +477,7 @@ def _rms_q_kv_slices(seq_len, cls):
     return _build_qknorm_2d, _build_rope_2d
 
 
-def build_rms_q(seq_len, cls, herd_m=8, herd_n=4):
+def build_rms_q(cfg, seq_len, cls, herd_m=8, herd_n=4):
     """RMSNorm + Q GEMM + per-head QK-norm + RoPE.
 
     %arg0 x_in    (seq, D)
@@ -501,6 +491,7 @@ def build_rms_q(seq_len, cls, herd_m=8, herd_n=4):
     %arg8 q_roped (seq, dq)  OUTPUT
     [+ f32 C-scratch tail for the fused-cast Q GEMM]
     """
+    D = cfg.d
     from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
@@ -513,7 +504,7 @@ def build_rms_q(seq_len, cls, herd_m=8, herd_n=4):
     )
 
     qknorm_2d, rope_2d = _rms_q_kv_slices(seq_len, cls)
-    dh, dq, _dkv = cls_dims(cls)
+    dh, dq, _dkv = cls_dims(cfg, cls)
     q_spec = gemm_spec(seq_len, D, dq)
 
     with _rms_eps():
@@ -556,7 +547,7 @@ def build_rms_q(seq_len, cls, herd_m=8, herd_n=4):
     return module, scratch_for
 
 
-def build_k(seq_len, cls, herd_m=8, herd_n=4):
+def build_k(cfg, seq_len, cls, herd_m=8, herd_n=4):
     """K GEMM + per-head QK-norm + RoPE. Only the own-KV layers dispatch it.
 
     %arg0 normed   (seq, D)    from the Q ELF
@@ -568,6 +559,7 @@ def build_k(seq_len, cls, herd_m=8, herd_n=4):
     %arg6 k_roped  (seq, dkv)  OUTPUT
     [+ f32 C-scratch tail]
     """
+    D = cfg.d
     from air_examples.llms.shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
@@ -576,7 +568,7 @@ def build_k(seq_len, cls, herd_m=8, herd_n=4):
     )
 
     qknorm_2d, rope_2d = _rms_q_kv_slices(seq_len, cls)
-    dh, _dq, dkv = cls_dims(cls)
+    dh, _dq, dkv = cls_dims(cfg, cls)
     spec = gemm_spec(seq_len, D, dkv)
     print(f"  [1/3] K GEMM ({spec['method']}) {seq_len}x{D}x{dkv}...")
     k_ir = _build_gemm_ir(seq_len, D, dkv, spec, herd_m)
@@ -610,7 +602,7 @@ def build_k(seq_len, cls, herd_m=8, herd_n=4):
     return module, scratch_for
 
 
-def build_v(seq_len, cls, herd_m=8, herd_n=4):
+def build_v(cfg, seq_len, cls, herd_m=8, herd_n=4):
     """V GEMM + weightless value_norm. V is not roped.
 
     %arg0 normed  (seq, D)   from the Q ELF
@@ -622,6 +614,7 @@ def build_v(seq_len, cls, herd_m=8, herd_n=4):
     %arg4 v_n     (seq, dkv) OUTPUT
     [+ f32 C-scratch tail]
     """
+    D = cfg.d
     from air_examples.llms.shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
@@ -630,7 +623,7 @@ def build_v(seq_len, cls, herd_m=8, herd_n=4):
     )
 
     qknorm_2d, _rope_2d = _rms_q_kv_slices(seq_len, cls)
-    dh, _dq, dkv = cls_dims(cls)
+    dh, _dq, dkv = cls_dims(cfg, cls)
     spec = gemm_spec(seq_len, D, dkv)
     print(f"  [1/2] V GEMM ({spec['method']}) {seq_len}x{D}x{dkv}...")
     v_ir = _build_gemm_ir(seq_len, D, dkv, spec, herd_m)
@@ -665,7 +658,7 @@ def _build_qknorm_2d_at(qknorm_2d, seq_len, cols, dh):
         return qknorm_2d(seq_len, cols, dh, bfloat16, RMS_EPS, 8)
 
 
-def build_o_norm_res_norm_module(seq_len, cls, herd_m=8, herd_n=4):
+def build_o_norm_res_norm_module(cfg, seq_len, cls, herd_m=8, herd_n=4):
     """O proj (DECOUPLED) + post-attention norm + residual + pre-FFN norm.
 
     The Gemma attention tail, identical in shape to Gemma3-4B's: the projection
@@ -682,6 +675,7 @@ def build_o_norm_res_norm_module(seq_len, cls, herd_m=8, herd_n=4):
       %arg8 normed2     (seq, D)    OUTPUT (feeds gate/up)
       [+ f32 C-scratch tail for the fused-cast O GEMM]
     """
+    D = cfg.d
     from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
@@ -694,7 +688,7 @@ def build_o_norm_res_norm_module(seq_len, cls, herd_m=8, herd_n=4):
         build_module as build_rms,
     )
 
-    _dh, dq, _dkv = cls_dims(cls)
+    _dh, dq, _dkv = cls_dims(cfg, cls)
     o_spec = gemm_spec(seq_len, dq, D)
     print(f"  [1/4] O GEMM ({o_spec['method']}) {seq_len}x{dq}x{D} (DECOUPLED)...")
     o_ir = _build_gemm_ir(seq_len, dq, D, o_spec, herd_m)
@@ -843,33 +837,35 @@ def build_mul_module(seq_len, hidden_dim, herd_x=8, herd_y=1):
     return module
 
 
-def ffn_specs(seq_len, wid):
+def ffn_specs(cfg, seq_len, wid):
     """(gate spec, up spec, down spec) for one FFN width.
 
     The gate is forced to drain because its GELU rides in that method's own
     cast; the up GEMM keeps whatever the size rule picks, which above the
     cross-over is fused-cast and therefore needs an f32 scratch arg.
     """
-    n_h = _ffn_halves(wid)[0][0]
+    D = cfg.d
+    n_h = _ffn_halves(cfg, wid)[0][0]
     return (
         gemm_spec(seq_len, D, n_h, force_method="drain"),
         gemm_spec(seq_len, D, n_h),
-        gemm_spec(seq_len, wid_inter(wid), D),
+        gemm_spec(seq_len, wid_inter(cfg, wid), D),
     )
 
 
-def ffn_args(seq_len, wid):
+def ffn_args(cfg, seq_len, wid):
     """The K_FFN signature: (base args, scratch args, index map, scratch map).
 
     Shared by the builder and the dispatch so the two cannot drift. Arg order
     follows the dataflow -- normed2 -> gate/up -> act -> proj -> proj_n -> out
     -- with the fused-cast f32 scratch on the tail, as everywhere else.
     """
+    D = cfg.d
     from air_examples.llms.shared.infra.stitching import FuncArg, alloc_gemm_scratch
 
-    inter = wid_inter(wid)
-    halves = _ffn_halves(wid)
-    g_spec, u_spec, d_spec = ffn_specs(seq_len, wid)
+    inter = wid_inter(cfg, wid)
+    halves = _ffn_halves(cfg, wid)
+    g_spec, u_spec, d_spec = ffn_specs(cfg, seq_len, wid)
     args = [FuncArg("%arg0", f"memref<{seq_len}x{D}xbf16>")]
     idx = {"normed2": 0, "gate_w": [], "up_w": []}
     for key in ("gate_w", "up_w"):
@@ -900,7 +896,7 @@ def ffn_args(seq_len, wid):
     return args, scratch_args, idx, scratch_for
 
 
-def build_ffn_module(seq_len, wid, herd_m=8):
+def build_ffn_module(cfg, seq_len, wid, herd_m=8):
     """Gemma4's whole FFN branch as ONE ELF: the six dispatches it replaces are
     six air.launches whose PDI loads the compiler chains.
 
@@ -908,6 +904,7 @@ def build_ffn_module(seq_len, wid, herd_m=8):
     The wide layers run gate and up as two column halves writing one buffer, so
     a wide ELF carries eight launches and a narrow one six.
     """
+    D = cfg.d
     from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
@@ -918,10 +915,10 @@ def build_ffn_module(seq_len, wid, herd_m=8):
         build_module as build_rms,
     )
 
-    inter = wid_inter(wid)
-    halves = _ffn_halves(wid)
-    args, scratch_args, ix, scratch_for = ffn_args(seq_len, wid)
-    g_spec, u_spec, d_spec = ffn_specs(seq_len, wid)
+    inter = wid_inter(cfg, wid)
+    halves = _ffn_halves(cfg, wid)
+    args, scratch_args, ix, scratch_for = ffn_args(cfg, seq_len, wid)
+    g_spec, u_spec, d_spec = ffn_specs(cfg, seq_len, wid)
     name = K_FFN(wid)
 
     print(
@@ -1029,24 +1026,26 @@ def build_ffn_module(seq_len, wid, herd_m=8):
     return module, scratch_for
 
 
-def _ple_specs(seq_len):
+def _ple_specs(cfg, seq_len):
     """(gate, projection) GEMM specs for the PLE branch, shared by the two
     callers so the projection's retag cannot drift between them."""
+    D = cfg.d
     return (
         gemm_spec(seq_len, D, PLI_D, force_method="drain"),
         _retag(gemm_spec(seq_len, PLI_D, D), _PLE_PROJ_TAG),
     )
 
 
-def ple_args(seq_len):
+def ple_args(cfg, seq_len):
     """The K_PLE signature: (base args, scratch args, index map, scratch map).
 
     `x` is both the branch input and its residual, so it appears once and two
     slices read it.
     """
+    D = cfg.d
     from air_examples.llms.shared.infra.stitching import FuncArg, alloc_gemm_scratch
 
-    g_spec, p_spec = _ple_specs(seq_len)
+    g_spec, p_spec = _ple_specs(cfg, seq_len)
     args, idx = [], {}
     for nm, ty in (
         ("x", f"memref<{seq_len}x{D}xbf16>"),
@@ -1068,7 +1067,7 @@ def ple_args(seq_len):
     return args, scratch_args, idx, scratch_for
 
 
-def build_ple_module(seq_len, herd_m=8):
+def build_ple_module(cfg, seq_len, herd_m=8):
     """Gemma4's per-layer-embedding branch as ONE ELF.
 
     inp_gate GEMM (GELU epilogue) -> multiply by the layer's PLE input ->
@@ -1077,6 +1076,7 @@ def build_ple_module(seq_len, herd_m=8):
     the PLE widths give a different herd_n again, and herd_n is part of the
     cast extern's type.
     """
+    D = cfg.d
     from air_examples.llms.shared.infra.stitching import (
         _wrap_ir_in_launch,
         stitch_elf,
@@ -1087,8 +1087,8 @@ def build_ple_module(seq_len, herd_m=8):
         build_module as build_rms,
     )
 
-    args, scratch_args, ix, scratch_for = ple_args(seq_len)
-    g_spec, p_spec = _ple_specs(seq_len)
+    args, scratch_args, ix, scratch_for = ple_args(cfg, seq_len)
+    g_spec, p_spec = _ple_specs(cfg, seq_len)
 
     print(f"  [1/4] inp_gate GEMM ({g_spec['method']}) {seq_len}x{D}x{PLI_D} + GELU...")
     slices = [
@@ -1194,22 +1194,25 @@ def rope_luts(seq_len, rope_freqs):
 # Compilation
 # ---------------------------------------------------------------------------
 
-_NEEDED = (
-    [K_RMS_Q(c) for c in _CLS]
-    + [K_K(c) for c in _CLS]
-    + [K_V(c) for c in _CLS]
-    + [K_ONORM(c) for c in _CLS]
-    + [K_FA(c) for c in _CLS]
-    + [K_FFN(w) for w in _WID]
-    + [K_PLE, K_PLE_MP, K_LM]
-)
+
+def _needed(cfg):
+    return (
+        [K_RMS_Q(c) for c in _CLS]
+        + [K_K(c) for c in _CLS]
+        + [K_V(c) for c in _CLS]
+        + [K_ONORM(c) for c in _CLS]
+        + [K_FA(c) for c in _CLS]
+        + [K_FFN(w) for w in _wids(cfg)]
+        + [K_PLE, K_PLE_MP, K_LM]
+    )
 
 
-def compile_all_kernels(cache, seq_len, verbose=False):
+def compile_all_kernels(cfg, cache, seq_len, verbose=False):
     """Compile the prefill ELFs. Returns the scratch-index map."""
+    D = cfg.d
     print(
         f"\n{'='*60}\nCompiling Gemma4-E2B prefill kernels (seq_len={seq_len}, "
-        f"{len(_NEEDED)} ELFs)...\n{'='*60}\n"
+        f"{len(_needed(cfg))} ELFs)...\n{'='*60}\n"
     )
 
     from air_examples.llms.shared.infra.external_kernels import (
@@ -1249,40 +1252,42 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     scratch = {}
 
     for c in _CLS:
-        dh, dq, dkv = cls_dims(c)
+        dh, dq, dkv = cls_dims(cfg, c)
         print(f"\n--- {K_RMS_Q(c)} (RMSNorm + Q GEMM + QK-norm + RoPE, dh={dh}) ---")
-        mod, scratch[K_RMS_Q(c)] = build_rms_q(seq_len, c)
+        mod, scratch[K_RMS_Q(c)] = build_rms_q(cfg, seq_len, c)
         cache.compile_and_cache(K_RMS_Q(c), mod, _elf_backend(K_RMS_Q(c)))
 
         print(f"\n--- {K_K(c)} (K GEMM + QK-norm + RoPE, dh={dh}) ---")
-        mod, scratch[K_K(c)] = build_k(seq_len, c)
+        mod, scratch[K_K(c)] = build_k(cfg, seq_len, c)
         cache.compile_and_cache(K_K(c), mod, _elf_backend(K_K(c)))
 
         print(f"\n--- {K_V(c)} (V GEMM + weightless value_norm, dh={dh}) ---")
-        mod, scratch[K_V(c)] = build_v(seq_len, c)
+        mod, scratch[K_V(c)] = build_v(cfg, seq_len, c)
         cache.compile_and_cache(K_V(c), mod, _elf_backend(K_V(c)))
 
         print(f"\n--- {K_ONORM(c)} (O + post-attn norm + residual + pre-FFN norm) ---")
-        mod, scratch[K_ONORM(c)] = build_o_norm_res_norm_module(seq_len, c)
+        mod, scratch[K_ONORM(c)] = build_o_norm_res_norm_module(cfg, seq_len, c)
         cache.compile_and_cache(K_ONORM(c), mod, _elf_backend(K_ONORM(c)))
 
-    for w in _WID:
+    for w in _wids(cfg):
         print(
             f"\n--- {K_FFN(w)} (gate + up + multiply + down + norm + residual, "
-            f"INTER={wid_inter(w)}) ---"
+            f"INTER={wid_inter(cfg, w)}) ---"
         )
-        mod, scratch[K_FFN(w)] = build_ffn_module(seq_len, w)
+        mod, scratch[K_FFN(w)] = build_ffn_module(cfg, seq_len, w)
         cache.compile_and_cache(K_FFN(w), mod, _elf_backend(K_FFN(w)))
 
     # --- PLE. One set of ELFs for all 35 layers: the branch is PLI_D-wide
     # regardless of attention class or FFN width.
     print(f"\n--- {K_PLE} (inp_gate + multiply + projection + norm + residual) ---")
-    mod, scratch[K_PLE] = build_ple_module(seq_len)
+    mod, scratch[K_PLE] = build_ple_module(cfg, seq_len)
     cache.compile_and_cache(K_PLE, mod, _elf_backend(K_PLE))
 
-    print(f"\n--- {K_PLE_MP} (D -> {PLE_MP_N}; all layers' model_proj at once) ---")
+    print(
+        f"\n--- {K_PLE_MP} (D -> {ple_mp_n(cfg)}; all layers' model_proj at once) ---"
+    )
     mod, scratch[K_PLE_MP] = _build_single_gemm_elf(
-        K_PLE_MP, "pm", seq_len, D, PLE_MP_N, tile_k_l2=PLE_MP_TK_L2
+        K_PLE_MP, "pm", seq_len, D, ple_mp_n(cfg), tile_k_l2=PLE_MP_TK_L2
     )
     cache.compile_and_cache(K_PLE_MP, mod, _elf_backend(K_PLE_MP))
 
@@ -1296,12 +1301,12 @@ def compile_all_kernels(cache, seq_len, verbose=False):
     )
 
     for c in _CLS:
-        dh = cls_dims(c)[0]
+        dh = cls_dims(cfg, c)[0]
         win = SLIDING_WINDOW if c == "swa" else None
         # Head-spatial where it fits: under MQA one K/V broadcast serves four
         # resident heads, so K and V cross L3 twice per layer instead of eight
         # times.
-        hs = supports(dh, N_KV_HEADS)
+        hs = supports(dh, cfg.n_kv_heads)
         kind = "head-spatial" if hs else "head-first"
         print(f"\n--- {K_FA(c)} ({kind} FA, head_dim={dh}, window={win}) ---")
         # The staircase splits the round axis, so the group count has to
@@ -1320,7 +1325,7 @@ def compile_all_kernels(cache, seq_len, verbose=False):
             cache,
             seq_len,
             N_Q_HEADS,
-            N_KV_HEADS,
+            cfg.n_kv_heads,
             dh,
             verbose,
             window=win,
@@ -1355,8 +1360,9 @@ _A_RES1 = "ffn_res1"  # o_norm -> ffn
 # INSIDE the ffn ELF, so they never cross a dispatch boundary at all.
 
 
-def resolve_scratch(seq_len):
+def resolve_scratch(cfg, seq_len):
     """Recompute the scratch-arg index map without building any IR (run-only)."""
+    D = cfg.d
 
     def _alloc(specs, base):
         out, nxt = [], base
@@ -1370,17 +1376,19 @@ def resolve_scratch(seq_len):
 
     sc = {}
     for c in _CLS:
-        _dh, dq, dkv = cls_dims(c)
+        _dh, dq, dkv = cls_dims(cfg, c)
         sc[K_RMS_Q(c)] = _alloc([gemm_spec(seq_len, D, dq)], 9)
         sc[K_K(c)] = _alloc([gemm_spec(seq_len, D, dkv)], 7)
         sc[K_V(c)] = _alloc([gemm_spec(seq_len, D, dkv)], 5)
         sc[K_ONORM(c)] = _alloc([gemm_spec(seq_len, dq, D)], 9)
-    for w in _WID:
+    for w in _wids(cfg):
         # ffn_args owns this numbering for both the builder and the dispatch,
         # so the run-only path re-derives it rather than re-stating it.
-        sc[K_FFN(w)] = ffn_args(seq_len, w)[3]
-    sc[K_PLE] = ple_args(seq_len)[3]
-    sc[K_PLE_MP] = _alloc([gemm_spec(seq_len, D, PLE_MP_N, tile_k_l2=PLE_MP_TK_L2)], 3)
+        sc[K_FFN(w)] = ffn_args(cfg, seq_len, w)[3]
+    sc[K_PLE] = ple_args(cfg, seq_len)[3]
+    sc[K_PLE_MP] = _alloc(
+        [gemm_spec(seq_len, D, ple_mp_n(cfg), tile_k_l2=PLE_MP_TK_L2)], 3
+    )
     return sc
 
 
@@ -1390,13 +1398,15 @@ def resolve_scratch(seq_len):
 
 
 class Gemma4Q4nxPrefill:
-    """AIR realization of the Gemma4-E2B Q4NX causal-LM prefill interface."""
+    """AIR realization of the Gemma4 Q4NX causal-LM prefill interface."""
 
     def __init__(
-        self, seq_len=2048, n_layers=NUM_LAYERS, cache_dir=None, verbose=False
+        self, seq_len=2048, n_layers=None, cache_dir=None, verbose=False, cfg=E2B
     ):
         from air_examples.llms.shared.infra.cache import KernelCache
 
+        self.cfg = cfg
+        n_layers = n_layers or cfg.num_layers
         self.seq = seq_len
         self.n_layers = n_layers
         self.MAX_L = seq_len
@@ -1404,7 +1414,7 @@ class Gemma4Q4nxPrefill:
         # seq_len-specific cache: the ELFs are compiled for this padded context
         # length but KernelCache keys on kernel NAME only, so a shorter build
         # would otherwise be silently reused (-> all-zero logits past its length).
-        cache_dir = cache_dir or str(MODEL_DIR / f"_q4nx_cache_seq{seq_len}")
+        cache_dir = cache_dir or str(self.cfg.model_dir / f"_q4nx_cache_seq{seq_len}")
         self.cache = KernelCache(cache_dir=cache_dir, verbose=verbose)
         # KernelCache keys on kernel NAME, and the manifest validates only the
         # toolchain -- so a cache built at another seq_len would be reused here
@@ -1426,11 +1436,11 @@ class Gemma4Q4nxPrefill:
         if not force:
             self.cache.load_manifest()
         cached = set() if force else set(self.cache.artifacts)
-        if not set(_NEEDED).issubset(cached):
-            self.scratch = compile_all_kernels(self.cache, seq_len, verbose)
+        if not set(_needed(self.cfg)).issubset(cached):
+            self.scratch = compile_all_kernels(self.cfg, self.cache, seq_len, verbose)
         else:
             print("[g4_prefill] using cached prefill ELFs (skip compile)", flush=True)
-            self.scratch = resolve_scratch(seq_len)
+            self.scratch = resolve_scratch(self.cfg, seq_len)
         self._seq_stamp.parent.mkdir(parents=True, exist_ok=True)
         self._seq_stamp.write_text(stamp)
 
@@ -1442,8 +1452,8 @@ class Gemma4Q4nxPrefill:
         # cache allocate one; the other 20 read their source layer's.
         self.kv_k, self.kv_v = {}, {}
         for k in range(n_layers):
-            if owns_kv(k):
-                dkv = dims(k)[2]
+            if self.cfg.owns_kv(k):
+                dkv = dims(self.cfg, k)[2]
                 self.kv_k[k] = np.zeros((self.MAX_L, dkv), bfloat16)
                 self.kv_v[k] = np.zeros((self.MAX_L, dkv), bfloat16)
         self._w = None
@@ -1473,9 +1483,9 @@ class Gemma4Q4nxPrefill:
         resident per-layer BOs."""
         from gemma4_e2b_q4nx_weights import Q4nxModel
 
-        model = model or os.environ.get("Q4NX_MODEL_SOURCE", MODEL_DEFAULT)
+        model = model or self.cfg.model_source()
         print(f"[g4_prefill] loading weights from model.q4nx ({model})", flush=True)
-        self._qm = qm = Q4nxModel(model)
+        self._qm = qm = Q4nxModel(model, self.cfg)
         self._check_class_map(qm)
         self._w = [
             self._transpose_all(qm.layer_weights(k), k) for k in range(self.n_layers)
@@ -1495,21 +1505,23 @@ class Gemma4Q4nxPrefill:
         write is skipped. Doing it here also HALVES the host footprint: the
         float32 arrays Q4nxModel.dequant returns are dropped on return.
         """
-        _dh, dq, dkv = dims(k)
-        inter = wid_inter(_wid(k))
+        D = self.cfg.d
+        _dh, dq, dkv = dims(self.cfg, k)
+        inter = wid_inter(self.cfg, _wid(self.cfg, k))
         out = {
             "q": _wT(w["q"], D, dq),
             "o": _wT(w["o"], dq, D),
-            **_ffn_weights(w, _wid(k)),
+            **_ffn_weights(self.cfg, w, _wid(self.cfg, k)),
             "down": _wT(w["down"], inter, D),
         }
-        if owns_kv(k):
+        if self.cfg.owns_kv(k):
             out["k"] = _wT(w["k"], D, dkv)
             out["v"] = _wT(w["v"], D, dkv)
         return out
 
     def _transpose_ple(self, pw):
         """The PLE matrices as the (K, N) operands their GEMMs want."""
+        D = self.cfg.d
         return {
             "inp_gate": _wT(pw["inp_gate"], D, PLI_D),
             "model_proj": _wT(pw["model_proj"], D, PLI_D),
@@ -1525,22 +1537,22 @@ class Gemma4Q4nxPrefill:
         shape error deep inside a dispatch rather than here.
         """
         for k in range(self.n_layers):
-            want = wid_inter(_wid(k))
+            want = wid_inter(self.cfg, _wid(self.cfg, k))
             got = qm.mlp_inter(k)
             if got != want:
                 raise RuntimeError(
                     f"layer {k}: bundle mlp_inter={got} but the class map says "
-                    f"{want} (owns_kv={owns_kv(k)}). The FFN-width and KV-sharing "
+                    f"{want} (owns_kv={self.cfg.owns_kv(k)}). The FFN-width and KV-sharing "
                     f"boundaries are assumed identical here and are not."
                 )
 
     # ---- per-ELF calls (single owner of each arg layout) ----
     def _lut_for(self, k):
         """Per-head-repeated (lut_q, lut_k) for a layer's RoPE class."""
-        lut = self._luts[_cls(k)][: self.seq]
+        lut = self._luts[_cls(self.cfg, k)][: self.seq]
         return (
             np.repeat(lut, N_Q_HEADS, axis=0).flatten(),
-            np.repeat(lut, N_KV_HEADS, axis=0).flatten(),
+            np.repeat(lut, self.cfg.n_kv_heads, axis=0).flatten(),
         )
 
     def _q_norm_scaled(self, k):
@@ -1552,18 +1564,19 @@ class Gemma4Q4nxPrefill:
         a rotation, so the scale commutes through both. Scaling Q afterwards
         instead would round the product to bf16 a second time.
         """
-        dh = dims(k)[0]
+        dh = dims(self.cfg, k)[0]
         return np.asarray(self._nm[k]["q_norm"], np.float32) * (
             np.sqrt(dh) * ATTN_SCALE
         )
 
     def _call_rms_q(self, k, x_in):
         """RMSNorm + Q GEMM + QK-norm + RoPE. Returns arg2 normed, arg8 q_roped."""
+        D = self.cfg.d
         seq = self.seq
-        dh, dq, _dkv = dims(k)
+        dh, dq, _dkv = dims(self.cfg, k)
         nm = self._nm[k]
         lut_q, _lut_k = self._lut_for(k)
-        name = K_RMS_Q(_cls(k))
+        name = K_RMS_Q(_cls(self.cfg, k))
         args = [
             np.asarray(x_in, bfloat16).reshape(seq, D),  # 0 x_in (dynamic)
             np.asarray(nm["input"], bfloat16).reshape(D),  # 1 input_layernorm
@@ -1593,11 +1606,12 @@ class Gemma4Q4nxPrefill:
 
     def _call_k(self, k, normed):
         """K GEMM + QK-norm + RoPE. Returns arg6 k_roped."""
+        D = self.cfg.d
         seq = self.seq
-        dh, _dq, dkv = dims(k)
+        dh, _dq, dkv = dims(self.cfg, k)
         nm = self._nm[k]
         _lut_q, lut_k = self._lut_for(k)
-        name = K_K(_cls(k))
+        name = K_K(_cls(self.cfg, k))
         args = [
             np.asarray(normed, bfloat16).reshape(seq, D),  # 0 normed (a real input)
             self._w[k]["k"],  # 1
@@ -1625,9 +1639,10 @@ class Gemma4Q4nxPrefill:
 
     def _call_v(self, k, normed):
         """V GEMM + weightless value_norm. Returns arg4 v_n."""
+        D = self.cfg.d
         seq = self.seq
-        dh, _dq, dkv = dims(k)
-        name = K_V(_cls(k))
+        dh, _dq, dkv = dims(self.cfg, k)
+        name = K_V(_cls(self.cfg, k))
         args = [
             np.asarray(normed, bfloat16).reshape(seq, D),  # 0 normed
             self._w[k]["v"],  # 1
@@ -1652,8 +1667,9 @@ class Gemma4Q4nxPrefill:
         )
 
     def _call_o_norm(self, k, attn_out, x_resid):
+        D = self.cfg.d
         seq = self.seq
-        _dh, dq, _dkv = dims(k)
+        _dh, dq, _dkv = dims(self.cfg, k)
         nm = self._nm[k]
         args = [
             np.asarray(attn_out, bfloat16).reshape(seq, dq),  # 0
@@ -1667,13 +1683,13 @@ class Gemma4Q4nxPrefill:
             np.zeros((seq, D), bfloat16),  # 8 normed2 (out)
         ]
         inter = {2, 4, 6, 8}
-        for sc in self.scratch[K_ONORM(_cls(k))]:
+        for sc in self.scratch[K_ONORM(_cls(self.cfg, k))]:
             if sc is not None:
                 args.append(np.zeros((seq, D), np.float32))
                 inter.add(sc)
         return self.cache.load_and_run(
-            K_ONORM(_cls(k)),
-            _elf_backend(K_ONORM(_cls(k))),
+            K_ONORM(_cls(self.cfg, k)),
+            _elf_backend(K_ONORM(_cls(self.cfg, k))),
             *args,
             output_indices=[6, 8],
             shared_alias={6: _A_RES1, 8: _A_NORMED2},
@@ -1691,11 +1707,12 @@ class Gemma4Q4nxPrefill:
         the six ELFs this replaced used `shared_alias` to get the same effect
         across dispatch boundaries.
         """
-        seq, w = self.seq, _wid(k)
-        inter = wid_inter(w)
-        halves = _ffn_halves(w)
+        D = self.cfg.d
+        seq, w = self.seq, _wid(self.cfg, k)
+        inter = wid_inter(self.cfg, w)
+        halves = _ffn_halves(self.cfg, w)
         name = K_FFN(w)
-        _args, _sa, ix, scratch_for = ffn_args(seq, w)
+        _args, _sa, ix, scratch_for = ffn_args(self.cfg, seq, w)
         vals = {
             ix["normed2"]: np.asarray(normed2, bfloat16).reshape(seq, D),
             ix["gate"]: np.zeros((seq, inter), bfloat16),
@@ -1746,25 +1763,27 @@ class Gemma4Q4nxPrefill:
         )
 
     def _ple_mp_weight(self):
-        """Every layer's model_proj side by side: (D, PLE_MP_N), built once."""
+        """Every layer's model_proj side by side: (D, ple_mp_n), built once."""
+        D = self.cfg.d
         if getattr(self, "_mp_w", None) is None:
-            w = np.zeros((D, PLE_MP_N), bfloat16)
+            w = np.zeros((D, ple_mp_n(self.cfg)), bfloat16)
             for L in range(self.n_layers):
                 w[:, L * PLI_D : (L + 1) * PLI_D] = self._ple[L]["model_proj"]
             self._mp_w = w
         return self._mp_w
 
     def _call_ple_mp_all(self, x):
+        D = self.cfg.d
         seq = self.seq
         args = [
             np.asarray(x, bfloat16).reshape(seq, D),
             self._ple_mp_weight(),
-            np.zeros((seq, PLE_MP_N), bfloat16),
+            np.zeros((seq, ple_mp_n(self.cfg)), bfloat16),
         ]
         idx = {2}
         for sc in self.scratch[K_PLE_MP]:
             if sc is not None:
-                args.append(np.zeros((seq, PLE_MP_N), np.float32))
+                args.append(np.zeros((seq, ple_mp_n(self.cfg)), np.float32))
                 idx.add(sc)
         return self.cache.load_and_run(
             K_PLE_MP,
@@ -1783,9 +1802,10 @@ class Gemma4Q4nxPrefill:
         `x` is both the branch input and its residual -- the ELF reads one arg
         twice rather than being handed the same buffer as two.
         """
+        D = self.cfg.d
         seq = self.seq
         pw = self._ple[k]
-        _a, _sa, ix, scratch_for = ple_args(seq)
+        _a, _sa, ix, scratch_for = ple_args(self.cfg, seq)
         vals = {
             ix["x"]: np.asarray(x, bfloat16).reshape(seq, D),
             ix["gate_w"]: np.asarray(pw["inp_gate"], bfloat16).reshape(D, PLI_D),
@@ -1818,6 +1838,7 @@ class Gemma4Q4nxPrefill:
         """Write every layer's weights into per-layer resident BOs once, using
         the SAME arg layouts the prefill uses (static_input_indices then skips
         the weight writes on every subsequent call)."""
+        D = self.cfg.d
         print("[g4_prefill] pre-loading layer weights (per-layer BOs)...", flush=True)
         prof = self.cache.profiler.enabled
         self.cache.profiler.enabled = False
@@ -1826,11 +1847,11 @@ class Gemma4Q4nxPrefill:
         z_p = np.zeros((seq, PLI_D), bfloat16)
         for k in range(self.n_layers):
             w, nm, pw = self._w[k], self._nm[k], self._ple[k]
-            inter = wid_inter(_wid(k))
+            inter = wid_inter(self.cfg, _wid(self.cfg, k))
             z_i = np.zeros((seq, inter), bfloat16)
-            z_q = np.zeros((seq, dims(k)[1]), bfloat16)
+            z_q = np.zeros((seq, dims(self.cfg, k)[1]), bfloat16)
             self._call_rms_q(k, z_d)
-            if owns_kv(k):
+            if self.cfg.owns_kv(k):
                 self._call_k(k, z_d)
                 self._call_v(k, z_d)
             self._call_o_norm(k, z_q, z_d)
@@ -1848,6 +1869,7 @@ class Gemma4Q4nxPrefill:
         1.6 GB dequantized in f32 -- so it is walked in partition-sized chunks
         straight into bf16 rather than materialized whole.
         """
+        D = self.cfg.d
         self._lm_parts = [
             np.asarray(
                 self._qm.lm_head_rows(p * _LM_N_PART, (p + 1) * _LM_N_PART), bfloat16
@@ -1873,7 +1895,7 @@ class Gemma4Q4nxPrefill:
         return np.concatenate(res, axis=0)[:VOCAB]
 
     def _per_layer_inputs(self, ids, embeds):
-        """The PLE input for every layer, [seq, NUM_LAYERS, PLI_D].
+        """The PLE input for every layer, [seq, num_layers, PLI_D].
 
         Computed ONCE from the token EMBEDDINGS -- not per layer from that
         layer's hidden state -- exactly as gemma4_e2b_q4nx_weights.per_layer_inputs
@@ -1881,24 +1903,28 @@ class Gemma4Q4nxPrefill:
         ple_gemm ELF the inp_gate branch uses); the norm, table add and scale are
         elementwise and stay on the host.
         """
+        D = self.cfg.d
         seq = self.seq
         tbl = self._qm.embed_rows("model.per_layer_token_embd.weight", ids)
-        tbl = tbl.reshape(len(ids), NUM_LAYERS, PLI_D)
+        tbl = tbl.reshape(len(ids), self.cfg.num_layers, PLI_D)
         norm_w = self._g["ple_proj_norm"]
         emb = np.zeros((seq, D), bfloat16)
         emb[: len(ids)] = np.asarray(embeds, bfloat16)
-        out = np.zeros((seq, NUM_LAYERS, PLI_D), np.float32)
+        out = np.zeros((seq, self.cfg.num_layers, PLI_D), np.float32)
         allp = self._dev(self._call_ple_mp_all, emb, tag="ple_mp")[2].reshape(
-            seq, PLE_MP_N
+            seq, ple_mp_n(self.cfg)
         )
         for L in range(self.n_layers):
             proj = allp[:, L * PLI_D : (L + 1) * PLI_D]
-            proj = _rmsnorm(np.asarray(proj, np.float32) * PLE_MODEL_PROJ_SCALE, norm_w)
+            proj = _rmsnorm(
+                np.asarray(proj, np.float32) * self.cfg.ple_model_proj_scale, norm_w
+            )
             out[: len(ids), L, :] = (proj[: len(ids)] + tbl[:, L, :]) * PLE_INPUT_SCALE
         return out
 
     def _run_layer(self, x, k, pli):
         """One Gemma4 decoder layer on device: attention, FFN, then the PLE tail."""
+        D = self.cfg.d
         from air_examples.llms.shared.infra.fa_headfirst import npu_fa_headfirst
         from air_examples.llms.shared.infra.fa_headspatial import (
             npu_fa_headspatial,
@@ -1906,28 +1932,32 @@ class Gemma4Q4nxPrefill:
         )
 
         seq = self.seq
-        dh, dq, dkv = dims(k)
-        c, w = _cls(k), _wid(k)
-        inter = wid_inter(w)
+        dh, dq, dkv = dims(self.cfg, k)
+        c, w = _cls(self.cfg, k), _wid(self.cfg, k)
+        inter = wid_inter(self.cfg, w)
 
         res = self._dev(self._call_rms_q, k, x, tag="rms_q")
         q_roped = res[8].reshape(seq, dq)
-        if owns_kv(k):
+        if self.cfg.owns_kv(k):
             normed = res[2].reshape(seq, D)
             kk = self._dev(self._call_k, k, normed, tag="k")
             vv = self._dev(self._call_v, k, normed, tag="v")
             self.kv_k[k][:] = np.asarray(kk[6].reshape(seq, dkv), bfloat16)
             self.kv_v[k][:] = np.asarray(vv[4].reshape(seq, dkv), bfloat16)
-        src = kv_source_layer(k)
+        src = self.cfg.kv_source_layer(k)
 
         attn_out = self._dev(
-            npu_fa_headspatial if supports(dh, N_KV_HEADS) else npu_fa_headfirst,
+            (
+                npu_fa_headspatial
+                if supports(dh, self.cfg.n_kv_heads)
+                else npu_fa_headfirst
+            ),
             self.cache,
             np.ascontiguousarray(q_roped),
             np.ascontiguousarray(self.kv_k[src]),
             np.ascontiguousarray(self.kv_v[src]),
             N_Q_HEADS,
-            N_KV_HEADS,
+            self.cfg.n_kv_heads,
             dh,
             seq,
             self._verbose,
@@ -1940,12 +1970,12 @@ class Gemma4Q4nxPrefill:
         normed2 = ores[8].reshape(seq, D)
 
         o2 = self._dev(self._call_ffn, k, normed2, res1, tag="ffn")[
-            ffn_args(seq, w)[2]["out"]
+            ffn_args(self.cfg, seq, w)[2]["out"]
         ].reshape(seq, D)
 
         # ---- per-layer embedding branch ----
         o3 = self._dev(self._call_ple, k, o2, pli, tag="ple")[
-            ple_args(seq)[2]["out"]
+            ple_args(self.cfg, seq)[2]["out"]
         ].reshape(seq, D)
 
         # layer_output_scale. A scalar on the RESIDUAL stream, so it cannot be
@@ -1956,6 +1986,7 @@ class Gemma4Q4nxPrefill:
         )
 
     def prefill(self, ids):
+        D = self.cfg.d
         assert self._w is not None, "call load_weights() first"
         N = len(ids)
         assert N <= self.seq, (N, self.seq)
@@ -1981,15 +2012,15 @@ class Gemma4Q4nxPrefill:
 
     # ---- KV cache (causal_lm) ----
     def get_k_cache(self, layer_idx, idx):
-        return self.kv_k[kv_source_layer(layer_idx)][idx]
+        return self.kv_k[self.cfg.kv_source_layer(layer_idx)][idx]
 
     def get_v_cache(self, layer_idx, idx):
-        return self.kv_v[kv_source_layer(layer_idx)][idx]
+        return self.kv_v[self.cfg.kv_source_layer(layer_idx)][idx]
 
     def kv_view(self, layer_idx):
         """(roped_K, V-normed V) for the filled context -> decode handoff."""
         c = self.current_context_length
-        src = kv_source_layer(layer_idx)
+        src = self.cfg.kv_source_layer(layer_idx)
         return self.kv_k[src][:c], self.kv_v[src][:c]
 
     def kv_stack(self):
@@ -2002,7 +2033,7 @@ class Gemma4Q4nxPrefill:
         c = self.current_context_length
         ks, vs = [], []
         for k in range(self.n_layers):
-            src = kv_source_layer(k)
+            src = self.cfg.kv_source_layer(k)
             ks.append(self.kv_k[src][:c].astype(np.float32))
             vs.append(self.kv_v[src][:c].astype(np.float32))
         return ks, vs
@@ -2020,15 +2051,17 @@ class Gemma4Q4nxPrefill:
         self.current_context_length = L
 
 
-def _main():
-    ap = argparse.ArgumentParser(description="Gemma4-E2B Q4NX prefill on NPU2")
+def _main(cfg=E2B):
+    ap = argparse.ArgumentParser(description=f"{cfg.name} prefill on NPU2")
     ap.add_argument(
         "--compile-only",
         action="store_true",
         help="build/cache the prefill ELFs and exit (no weights, no NPU dispatch)",
     )
     ap.add_argument(
-        "--n-layers", type=int, default=int(os.environ.get("NLAYERS", str(NUM_LAYERS)))
+        "--n-layers",
+        type=int,
+        default=int(os.environ.get("NLAYERS", str(cfg.num_layers))),
     )
     ap.add_argument(
         "--seq-len",
@@ -2056,9 +2089,9 @@ def _main():
     )
     ap.add_argument(
         "--model",
-        default=MODEL_DEFAULT,
+        default=cfg.model_source(),
         help=f"weight source: HF repo id (model.q4nx) or a local dir/file "
-        f"(default: {MODEL_DEFAULT})",
+        f"(default: {cfg.model_source()})",
     )
     args = ap.parse_args()
 
@@ -2067,7 +2100,7 @@ def _main():
         flush=True,
     )
     model = Gemma4Q4nxPrefill(
-        seq_len=args.seq_len, n_layers=args.n_layers, cache_dir=args.cache_dir
+        seq_len=args.seq_len, n_layers=args.n_layers, cache_dir=args.cache_dir, cfg=cfg
     )
     if args.compile_only:
         print("Compilation passed.", flush=True)
@@ -2095,10 +2128,10 @@ def _main():
     # not become a non-zero exit and fail a sweep point.
     ok = paris if args.gate else True
 
-    if args.gate and args.n_layers != NUM_LAYERS:
+    if args.gate and args.n_layers != cfg.num_layers:
         raise SystemExit(
             f"--gate compares against forward_prompt, which always runs all "
-            f"{NUM_LAYERS} layers; --n-layers={args.n_layers} would score two "
+            f"{cfg.num_layers} layers; --n-layers={args.n_layers} would score two "
             f"different networks. Drop --n-layers or drop --gate."
         )
     if args.gate:

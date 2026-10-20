@@ -1,12 +1,14 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 """Gemma4-E4B decode slab layout check:
-../gemma4_e2b_q4nx/check_per_class_slabs.py at GEMMA4_VARIANT=e4b."""
+../gemma4_e2b_q4nx/check_per_class_slabs.py with the E4B config."""
 
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gemma4_e4b_variant import delegate  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gemma4_e2b_q4nx"))
+from gemma4_e2b_q4nx_weights import E4B  # noqa: E402
+from check_per_class_slabs import main  # noqa: E402
 
-delegate(__name__, "check_per_class_slabs")
+if __name__ == "__main__":
+    sys.exit(main(E4B))

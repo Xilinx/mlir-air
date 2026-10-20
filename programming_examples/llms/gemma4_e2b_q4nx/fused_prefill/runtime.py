@@ -5,8 +5,8 @@
 Same interface as Gemma4Q4nxPrefill: prefill(ids) returns the last token's
 logits and kv_stack() the cache for the decoder. The prompt runs a layer at a
 time in 128-token chunks on one hw_context; the LM head is the int4 GEMV on a
-second one. Norms, rope, residuals and the GLU and PLE
-products run on the host (hostops).
+second one, or Q4 GEMMs on the first where the GEMV does not fit (spec.lm_gemm).
+Norms, rope, residuals and the GLU and PLE products run on the host (hostops).
 """
 
 import numpy as np
@@ -20,16 +20,17 @@ from ...shared.fused_prefill import lm_gemv
 from ...shared.fused_prefill import packing as P
 from ...shared.fused_prefill.engine import TO, FROM, Ctx, Engine, view
 
-from .spec import CFG, LM_GEMM
+from .spec import spec
 
 
 def _layer_q4(qm, b, L):
     """A layer's Q4NX projections as raw (q, scale, min), [out, in]."""
-    dh = gw.head_dim(L)
-    dq, dkv = gw.N_Q_HEADS * dh, gw.N_KV_HEADS * dh
+    c = qm.cfg
+    dh = c.head_dim(L)
+    dq, dkv = gw.N_Q_HEADS * dh, c.n_kv_heads * dh
     inter = qm.mlp_inter(L)
     p = f"model.layers.{L}."
-    d = gw.D
+    d = c.d
     w = dict(
         q=b.q4nx(p + "self_attn.q_proj.weight", dq, d),
         o=b.q4nx(p + "self_attn.o_proj.weight", d, dq),
@@ -37,30 +38,34 @@ def _layer_q4(qm, b, L):
         gate=b.q4nx(p + "mlp.gate_proj.weight", inter, d),
         down=b.q4nx(p + "mlp.down_proj.weight", d, inter),
     )
-    if gw.owns_kv(L):
+    if c.owns_kv(L):
         w["k"] = b.q4nx(p + "self_attn.k_proj.weight", dkv, d)
         w["v"] = b.q4nx(p + "self_attn.v_proj.weight", dkv, d)
     return w
 
 
 class FusedPrefill(Engine):
-    def __init__(self, build_dir, max_len=2048):
-        super().__init__(build_dir, CFG, max_len)
+    def __init__(self, build_dir, cfg=gw.E2B, max_len=2048):
+        s = spec(cfg)
+        super().__init__(build_dir, s.CFG, max_len)
+        self.g4, self.lm_gemm = cfg, s.lm_gemm
         self.current_context_length = 0
         self.rope_cache = {}
 
     def contexts(self):
-        return [self.fp] if LM_GEMM else [self.fp, self.lm["ctx"]]
+        return [self.fp] if self.lm_gemm else [self.fp, self.lm["ctx"]]
 
     # ---- model ----
 
     def load_weights(self, model=None):
         self.model = (
-            gw.Q4nxModel(model) if not isinstance(model, gw.Q4nxModel) else model
+            gw.Q4nxModel(model, self.g4)
+            if not isinstance(model, gw.Q4nxModel)
+            else model
         )
         qm = self.model
         self.bundle = P.Bundle(qm.path)
-        for L in range(gw.NUM_LAYERS):
+        for L in range(self.g4.num_layers):
             for name, raw in _layer_q4(qm, self.bundle, L).items():
                 self.gemm_site(
                     f"{L}.{name}", raw[0].shape[1], raw[0].shape[0], P.pack_q4(*raw), 1
@@ -72,7 +77,7 @@ class FusedPrefill(Engine):
             ):
                 self.gemm_site(f"{L}.{name}", w.shape[1], w.shape[0], P.pack_bf16(w), 0)
         mp = np.concatenate(
-            [qm.layer_ple(L)["model_proj"] for L in range(gw.NUM_LAYERS)]
+            [qm.layer_ple(L)["model_proj"] for L in range(self.g4.num_layers)]
         )
         self.gemm_site("mp", mp.shape[1], mp.shape[0], P.pack_bf16(mp), 0)
         self.norms = [
@@ -80,31 +85,35 @@ class FusedPrefill(Engine):
                 k: (np.asarray(v, np.float32) if isinstance(v, np.ndarray) else v)
                 for k, v in qm.layer_norms(L).items()
             }
-            for L in range(gw.NUM_LAYERS)
+            for L in range(self.g4.num_layers)
         ]
         self.glob = qm.globals()
         self.freqs = qm.rope_freqs()
         # one layer of each attention class: rope depends only on the class
         self.rope_layers = [
-            next(L for L in range(gw.NUM_LAYERS) if gw.is_sliding(L) == c)
+            next(L for L in range(self.g4.num_layers) if self.g4.is_sliding(L) == c)
             for c in (True, False)
         ]
         self.attn_setup()
         self.kvb = {
-            L: self.kv_bo("s" if gw.is_sliding(L) else "f")
-            for L in range(gw.NUM_LAYERS)
-            if gw.owns_kv(L)
+            L: self.kv_bo("s" if self.g4.is_sliding(L) else "f")
+            for L in range(self.g4.num_layers)
+            if self.g4.owns_kv(L)
         }
         self.kv = {}
         self._lm_setup()
 
     def _lm_setup(self):
-        if LM_GEMM:
-            raw = self.bundle.q4nx("lm_head.weight", gw.VOCAB, gw.D)
+        if self.lm_gemm:
+            raw = self.bundle.q4nx("lm_head.weight", gw.VOCAB, self.g4.d)
             self.lm = D.n_split(gw.VOCAB)
             for i, (n0, n1) in enumerate(self.lm):
                 self.gemm_site(
-                    f"lm.{i}", gw.D, n1 - n0, P.pack_q4(*(a[n0:n1] for a in raw)), 1
+                    f"lm.{i}",
+                    self.g4.d,
+                    n1 - n0,
+                    P.pack_q4(*(a[n0:n1] for a in raw)),
+                    1,
                 )
             return
         ctx = Ctx(self.dev, self.dir / "lm.xclbin")
@@ -127,7 +136,7 @@ class FusedPrefill(Engine):
         )
 
     def _lm_head(self, last):
-        if LM_GEMM:
+        if self.lm_gemm:
             last = np.asarray(last, np.float32).reshape(1, -1)
             return np.concatenate(
                 [self.mm(f"lm.{i}", last)[0] for i in range(len(self.lm))]
@@ -140,13 +149,15 @@ class FusedPrefill(Engine):
         return lm_gemv.unpack_y(lm["ym"].astype(np.float32))
 
     def _rope(self, L, r0, t):
-        key = (gw.head_dim(L), r0, t)
+        key = (self.g4.head_dim(L), r0, t)
         if key not in self.rope_cache:
             self.rope_cache[key] = self._rope_tab(L, r0, t)
         return self.rope_cache[key]
 
     def _rope_tab(self, L, r0, t):
-        rows = [gw.rope_lut(p, L, rope_freqs=self.freqs) for p in range(r0, r0 + t)]
+        rows = [
+            gw.rope_lut(self.g4, p, L, rope_freqs=self.freqs) for p in range(r0, r0 + t)
+        ]
         h = rows[0][2] // 2
         cs = np.ascontiguousarray(np.stack([r[0] for r in rows])[:, :h], np.float32)
         sn = np.ascontiguousarray(np.stack([r[1] for r in rows])[:, :h], np.float32)
@@ -169,26 +180,26 @@ class FusedPrefill(Engine):
         qm = self.model
         emb = qm.embed_rows("model.embed_tokens.weight", ids) * gw.EMBED_SCALE
         tbl = qm.embed_rows("model.per_layer_token_embd.weight", ids)
-        tbl = tbl.reshape(n, gw.NUM_LAYERS, gw.PLI_D) * gw.PLE_EMBED_SCALE
+        tbl = tbl.reshape(n, self.g4.num_layers, gw.PLI_D) * gw.PLE_EMBED_SCALE
         self.kv = {}
         x = np.array(emb, np.float32, order="C")
         chunks = [(r0, min(D.M, n - r0)) for r0 in range(0, n, D.M)]
         pend = []
         for c, (r0, t) in enumerate(chunks):
-            self._tile(x[r0 : r0 + t], gw.D, c)
+            self._tile(x[r0 : r0 + t], self.g4.d, c)
             pend.append(self.gemm_start("mp", c))
-        pli = np.empty((n, gw.NUM_LAYERS, gw.PLI_D), np.float32)
+        pli = np.empty((n, self.g4.num_layers, gw.PLI_D), np.float32)
         for c, (r0, t) in enumerate(chunks):
-            proj = self._f32(pend[c], t).reshape(t, gw.NUM_LAYERS, gw.PLI_D)
-            proj = proj * gw.PLE_MODEL_PROJ_SCALE
+            proj = self._f32(pend[c], t).reshape(t, self.g4.num_layers, gw.PLI_D)
+            proj = proj * self.g4.ple_model_proj_scale
             pli[r0 : r0 + t] = (
                 gw._rmsnorm(proj, self.glob["ple_proj_norm"]) + tbl[r0 : r0 + t]
             ) * gw.PLE_INPUT_SCALE
         ropes = [
-            {gw.head_dim(L): self._rope(L, r0, t) for L in self.rope_layers}
+            {self.g4.head_dim(L): self._rope(L, r0, t) for L in self.rope_layers}
             for r0, t in chunks
         ]
-        for L in range(gw.NUM_LAYERS):
+        for L in range(self.g4.num_layers):
             self._layer_all(L, x, pli, chunks, ropes)
         self.current_context_length = n
         last = gw._rmsnorm(x[-1:], self.glob["final_norm"])
@@ -212,18 +223,18 @@ class FusedPrefill(Engine):
         dispatch per chunk, so the host's work on a chunk overlaps the
         device's on the chunks after it."""
         eps, nm = gw.RMS_EPS, self.norms[L]
-        dh = gw.head_dim(L)
+        dh = self.g4.head_dim(L)
         dq = gw.N_Q_HEADS * dh
-        own = gw.owns_kv(L)
+        own = self.g4.owns_kv(L)
         rows = [x[r0 : r0 + t] for r0, t in chunks]
         pend = []
         for c, (r0, t) in enumerate(chunks):
-            self._tile(H.rms(rows[c], nm["input"], eps), gw.D, c)
+            self._tile(H.rms(rows[c], nm["input"], eps), self.g4.d, c)
             ps = [self.gemm_start(f"{L}.q", c)]
             if own:
                 ps += [self.gemm_start(f"{L}.k", c), self.gemm_start(f"{L}.v", c)]
             pend.append(ps)
-        kv = self.kvb[gw.kv_source_layer(L)]
+        kv = self.kvb[self.g4.kv_source_layer(L)]
         # the kernel divides by sqrt(head_dim); gemma4 scales by ATTN_SCALE
         scale = float(np.sqrt(dh) * gw.ATTN_SCALE)
         att = []
@@ -233,8 +244,8 @@ class FusedPrefill(Engine):
             q = H.rms(q, nm["q_norm"], eps)
             H.rope(q, cs, sn, rot)
             if own:
-                k = self._f32(pend[c][1], t).reshape(t, gw.N_KV_HEADS, dh)
-                v = self._f32(pend[c][2], t).reshape(t, gw.N_KV_HEADS, dh)
+                k = self._f32(pend[c][1], t).reshape(t, self.g4.n_kv_heads, dh)
+                v = self._f32(pend[c][2], t).reshape(t, self.g4.n_kv_heads, dh)
                 k = H.rms(k, nm["k_norm"], eps)
                 v = H.rms(v, None, eps)
                 H.rope(k, cs, sn, rot)
@@ -256,7 +267,7 @@ class FusedPrefill(Engine):
         gu = []
         for c, (r0, t) in enumerate(chunks):
             rows[c][:] = H.add_rms(rows[c], self._f32(pend[c], t), nm["post_attn"], eps)
-            self._tile(H.rms(rows[c], nm["pre_ffn"], eps), gw.D, c)
+            self._tile(H.rms(rows[c], nm["pre_ffn"], eps), self.g4.d, c)
             gu.append(
                 (self.gemm_start(f"{L}.gate", c, 1), self.gemm_start(f"{L}.up", c))
             )
@@ -272,7 +283,7 @@ class FusedPrefill(Engine):
         pg = []
         for c, (r0, t) in enumerate(chunks):
             rows[c][:] = H.add_rms(rows[c], self._f32(pend[c], t), nm["post_ffn"], eps)
-            self._tile(rows[c], gw.D, c)
+            self._tile(rows[c], self.g4.d, c)
             pg.append(self.gemm_start(f"{L}.ple_gate", c, 1))
         pend = []
         for c, (r0, t) in enumerate(chunks):
@@ -290,8 +301,8 @@ class FusedPrefill(Engine):
         """Per layer (shared ones resolved) the prompt's K and V, float32
         [n, kv_heads*head_dim], as Gemma4Q4nxPrefill.kv_stack returns them."""
         ks, vs = [], []
-        for L in range(gw.NUM_LAYERS):
-            k, v = self.kv[gw.kv_source_layer(L)]
+        for L in range(self.g4.num_layers):
+            k, v = self.kv[self.g4.kv_source_layer(L)]
             ks.append(np.concatenate(k).astype(np.float32))
             vs.append(np.concatenate(v).astype(np.float32))
         return ks, vs

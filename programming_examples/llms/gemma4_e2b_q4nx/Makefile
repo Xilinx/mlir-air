@@ -94,7 +94,7 @@ SWEEP_UNI_DEC ?= 35
 # so only generation degrades. Derived, not written out: a wrong map builds
 # fine and decodes to garbage. Recursive (=) to keep the import off `make help`.
 SLIDING_WINDOW = $(shell cd $(srcdir) && $(PYTHON) -c "import gemma4_e2b_q4nx_weights as gw; print(gw.SLIDING_WINDOW)")
-SWEEP_KV_SRC = $(shell cd $(srcdir) && $(PYTHON) -c "import gemma4_e2b_q4nx_weights as gw; print(','.join(str(gw.kv_source_layer(i)) for i in range($(SWEEP_UNI_DEC))))")
+SWEEP_KV_SRC = $(shell cd $(srcdir) && $(PYTHON) -c "import gemma4_e2b_q4nx_weights as gw; print(','.join(str(gw.E2B.kv_source_layer(i)) for i in range($(SWEEP_UNI_DEC))))")
 
 # ATTN_MAXL the TOKEN driver's template is built for, i.e. the session context
 # cap of `make run` / `ask` / `profile`. Separate from LBUILD, which is the layer
@@ -213,7 +213,7 @@ compile-decode-full:
 ## The token driver's decode as one full ELF serving every L up to RUN_LBUILD,
 ## selected at run time with DECODE_ELF=1.
 compile-decode-elf:
-	@test -n "$(SWEEP_KV_SRC)" || { echo "cannot derive the KV sharing map from gemma4_e2b_q4nx_weights.kv_source_layer -- refusing to build an identity-mapped decode" >&2; exit 1; }
+	@test -n "$(SWEEP_KV_SRC)" || { echo "cannot derive the KV sharing map from Gemma4Config.kv_source_layer -- refusing to build an identity-mapped decode" >&2; exit 1; }
 	@$(MAKE) --no-print-directory -C $(DEC) compile-decode-elf LBUILD=$(RUN_LBUILD) \
 	  UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
 	@mv -f $(DEC)/decode_scratchpad.elf $(DEC)/decode_scratchpad.params.txt \
@@ -295,7 +295,7 @@ profile-prefill:
 RB_STEP = cd $(DEC) && DECODE_MODEL=gemma4-e2b VOCAB_CHUNK_I2=27 DECODE_GOLDEN=1 DECODE_GOLDEN_L=$(LBUILD) FUSED_DECODE_PRINT_CONST=RB_STEP $(PYTHON) fused_decode_ple.py | tail -1
 
 _compile_decode_build:
-	@test -n "$(SWEEP_KV_SRC)" || { echo "cannot derive the KV sharing map from gemma4_e2b_q4nx_weights.kv_source_layer -- refusing to build an identity-mapped template" >&2; exit 1; }
+	@test -n "$(SWEEP_KV_SRC)" || { echo "cannot derive the KV sharing map from Gemma4Config.kv_source_layer -- refusing to build an identity-mapped template" >&2; exit 1; }
 	@set -e; for L in $(LBUILD) $(LREF); do \
 	  DECODE_RT_ROUNDS=1 DECODE_RT_WINDOW=1 $(MAKE) --no-print-directory -C $(DEC) compile-decode LBUILD=$$L \
 	    UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) \

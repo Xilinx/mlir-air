@@ -8,7 +8,6 @@
 # produced fluent, sometimes-correct text while the model was numerically broken.
 # The gate is check_vs_flm_reference.py (`make check`).
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -16,8 +15,6 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gemma4_e2b_q4nx_weights as W  # noqa: E402
-
-BUNDLE = W.MODEL_DEFAULT
 
 
 def _tok(bundle):
@@ -27,7 +24,7 @@ def _tok(bundle):
 
 
 def cmd_paris(a):
-    tok, m = _tok(a.bundle), W.Q4nxModel(a.bundle)
+    tok, m = _tok(a.bundle), W.Q4nxModel(a.bundle, a.cfg)
     ids = [2] + tok("The capital of France is")["input_ids"]
     logits, _ = W.forward_prompt(m, ids)
     top = int(np.argmax(logits))
@@ -39,7 +36,7 @@ def cmd_paris(a):
 
 
 def cmd_gen(a):
-    tok, m = _tok(a.bundle), W.Q4nxModel(a.bundle)
+    tok, m = _tok(a.bundle), W.Q4nxModel(a.bundle, a.cfg)
     enc = tok.apply_chat_template(
         [
             {"role": "system", "content": "You are a helpful AI assistant."},
@@ -63,9 +60,9 @@ def cmd_gen(a):
     print(repr(tok.decode(out)))
 
 
-def main():
+def main(cfg=W.E2B):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--bundle", default=BUNDLE)
+    ap.add_argument("--bundle", default=cfg.model_source())
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("paris", help="one forward; PASS iff top-1 is 'Paris'")
     p.set_defaults(fn=cmd_paris)
@@ -74,6 +71,7 @@ def main():
     p.add_argument("--n-tokens", type=int, default=12)
     p.set_defaults(fn=cmd_gen)
     a = ap.parse_args()
+    a.cfg = cfg
     a.fn(a)
 
 

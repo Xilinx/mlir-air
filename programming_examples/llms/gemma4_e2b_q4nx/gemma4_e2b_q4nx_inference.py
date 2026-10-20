@@ -55,10 +55,6 @@ _FD = _PE / "fused_decode"  # decode_insts_gen / decode_staircase live here
 sys.path.insert(0, str(_HERE))
 import gemma4_e2b_q4nx_weights as _gw  # noqa: E402
 
-# HF repo id of the self-contained model.q4nx bundle, or a local dir/file
-# (gemma4_e2b_q4nx_weights.resolve_q4nx_model resolves all three).
-MODEL_DEFAULT = _gw.MODEL_DEFAULT
-_VARIANT = _gw.VARIANTS[_gw.VARIANT]
 # <bos> + "The capital of France is". The Gemma4 tokenizer does not add <bos>, so
 # it is prepended by hand -- exactly as gemma4_e2b_q4nx_prefill._main and
 # run_reference.py do, or the two paths score different prompts.
@@ -79,18 +75,13 @@ PARIS_GREEDY = [9079, 236761]
 PARIS_STOP = 106  # <end_of_turn>; the run must also STOP where the oracle stops
 EOS_IDS = (1, 106)  # <eos>, <end_of_turn>
 
-# Where decode_L<N>.{xclbin,insts.bin} live. `make compile-decode-full` writes the
-# pair here; the sweep writes its own pairs here too, which is fine -- the
-# generator picks the smallest calibrated window covering the session's reach.
-_DECODE_DIR = Path(os.environ.get("Q4NX_GEMMA4_DECODE_DIR", str(_gw.MODEL_DIR)))
-# The packed decode weights. Repo-local and keyed on the geometry that shaped
-# them, because a cache packed for a different layer count or vocab chunking is
-# not detectably wrong at dispatch time -- it just feeds the kernels the wrong
-# blocks.
-_WCACHE_DIR = Path(
-    os.environ.get("Q4NX_GEMMA4_WCACHE_DIR", str(_gw.MODEL_DIR / ".decode_wcache"))
-)
-VOCAB_CHUNK_I2 = str(_VARIANT["VOCAB_CHUNK_I2"])
+
+def _decode_dir(cfg):
+    """Where decode_L<N>.{xclbin,insts.bin} live. `make compile-decode-full`
+    writes the pair here; the sweep writes its own pairs here too, which is fine
+    -- the generator picks the smallest calibrated window covering the session's
+    reach."""
+    return Path(os.environ.get("Q4NX_GEMMA4_DECODE_DIR", str(cfg.model_dir)))
 
 
 def _elf_on():
@@ -108,7 +99,7 @@ def _fused_build():
     return d if d and os.path.isfile(os.path.join(d, "manifest.json")) else None
 
 
-def _load_builder(uni_dec, attn_maxl, kv_src):
+def _load_builder(cfg, uni_dec, attn_maxl, kv_src):
     """Import fused_decode_ple with this build's geometry in the environment.
 
     Delegated to validate_layer_npu rather than restated: the layer gate and the
@@ -117,11 +108,12 @@ def _load_builder(uni_dec, attn_maxl, kv_src):
     """
     import validate_layer_npu as vln
 
-    return vln._load_fd(uni_dec, attn_maxl, kv_src=kv_src)
+    return vln._load_fd(cfg, uni_dec, attn_maxl, kv_src=kv_src)
 
 
-def _wcache_path(uni_dec, fingerprint):
-    """Cache path, keyed on the geometry AND the bundle it was packed from.
+def _wcache_path(cfg, uni_dec, fingerprint):
+    """The packed decode weights: repo-local, keyed on the geometry AND the
+    bundle they were packed from. Q4NX_GEMMA4_WCACHE_DIR overrides the dir.
 
     The fingerprint is load-bearing, not decoration: without it, pointing
     Q4NX_MODEL_SOURCE at a different bundle -- or FLM re-exporting one at the
@@ -129,13 +121,16 @@ def _wcache_path(uni_dec, fingerprint):
     catches that; the layer-count and LM-head checks below still pass and the
     dispatch completes, running a different model than the caller asked for.
     """
+    d = Path(
+        os.environ.get("Q4NX_GEMMA4_WCACHE_DIR", str(cfg.model_dir / ".decode_wcache"))
+    )
     return (
-        _WCACHE_DIR
-        / f"decode_uni{uni_dec}_v{VOCAB_CHUNK_I2}_perclass_swa_hm_packed_{fingerprint}.npz"
+        d / f"decode_uni{uni_dec}_v{cfg.vocab_chunk_i2}_perclass_swa_hm_packed_"
+        f"{fingerprint}.npz"
     )
 
 
-def _ensure_wcache(model, fd, uni_dec, qm, verbose=True):
+def _ensure_wcache(fd, uni_dec, qm, verbose=True):
     """Return the packed decode weight cache, building it once if absent.
 
     pack_vocab=True is what separates this from the layer gate's cache: the gate
@@ -145,7 +140,7 @@ def _ensure_wcache(model, fd, uni_dec, qm, verbose=True):
     import gemma4_e2b_q4nx_requant as rq
     import numpy as np
 
-    path = _wcache_path(uni_dec, qm.fingerprint())
+    path = _wcache_path(qm.cfg, uni_dec, qm.fingerprint())
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         if verbose:
@@ -155,7 +150,7 @@ def _ensure_wcache(model, fd, uni_dec, qm, verbose=True):
                 flush=True,
             )
         rq.build_requant_cache(
-            model, fd, str(path), layers=list(range(uni_dec)), pack_vocab=True
+            qm, fd, str(path), layers=list(range(uni_dec)), pack_vocab=True
         )
     z = np.load(str(path))
     if not int(z["has_vocab"]):
@@ -172,7 +167,7 @@ def _ensure_wcache(model, fd, uni_dec, qm, verbose=True):
 
 
 class FusedDecoder:
-    """One-xclbin Gemma4-E2B fused decode, all 35 layers plus the LM head per dispatch.
+    """One-xclbin Gemma4 fused decode: every layer plus the LM head per dispatch.
 
     A single template built at ATTN_MAXL serves every L in [1, ATTN_MAXL]: the
     L-dependent instruction words (attention bound + KV-append offset) are patched
@@ -180,22 +175,24 @@ class FusedDecoder:
     once; the kernel appends each new token's K/V in place.
     """
 
-    def __init__(self, model=MODEL_DEFAULT, max_L=None, verbose=True):
+    def __init__(self, model=None, max_L=None, verbose=True, cfg=_gw.E2B):
         import numpy as np
         from ml_dtypes import bfloat16
         import pyxrt as xrt
         import gemma4_e2b_q4nx_weights as gw
 
         self.np, self.bf16, self.xrt, self.gw = np, bfloat16, xrt, gw
+        self.cfg = cfg
+        ddir = _decode_dir(cfg)
 
         sys.path.insert(0, str(_FD))
         self.elf_mode = _elf_on()
         if self.elf_mode:
             # ATTN_MAXL comes from the build, not the driver.
-            stamp = _DECODE_DIR / "decode_scratchpad.maxl"
+            stamp = ddir / "decode_scratchpad.maxl"
             if not stamp.exists():
                 raise RuntimeError(
-                    f"DECODE_ELF=1 needs decode_scratchpad.maxl in {_DECODE_DIR}; "
+                    f"DECODE_ELF=1 needs decode_scratchpad.maxl in {ddir}; "
                     "run `make compile-decode-elf`"
                 )
             self.ATTN_MAXL = int(stamp.read_text().split()[0])
@@ -204,26 +201,26 @@ class FusedDecoder:
             import decode_staircase as stair
 
             self._stair = stair
-            self.gen = DecodeInstsGen(str(_DECODE_DIR), max_L)
+            self.gen = DecodeInstsGen(str(ddir), max_L)
             self.windows = stair.resolve_windows(self.gen)
             self.ATTN_MAXL = max(self.windows)
         self.maxL = min(int(max_L), self.ATTN_MAXL) if max_L else self.ATTN_MAXL
 
-        # Every model layer is a device slab, in order. A KV-shared layer (>=15)
+        # Every model layer is a device slab, in order. A KV-shared layer
         # projects no K/V of its own and reads the slab holding the layer
         # kv_source_layer() names; with one slab per layer those indices coincide,
         # but they are resolved rather than assumed so the map stays honest if the
         # slab set ever stops being the whole model.
-        self.UNI = gw.NUM_LAYERS
+        self.UNI = cfg.num_layers
         Ls = list(range(self.UNI))
-        kv_src = [Ls.index(gw.kv_source_layer(L)) for L in Ls]
-        fd = _load_builder(self.UNI, self.ATTN_MAXL, kv_src)
+        kv_src = [Ls.index(cfg.kv_source_layer(L)) for L in Ls]
+        fd = _load_builder(cfg, self.UNI, self.ATTN_MAXL, kv_src)
         # The builder is configured from the environment; the xclbin on disk was
         # built from some OTHER invocation of it. If the two disagree the BO
         # layout is wrong and nothing says so -- the dispatch completes.
         if fd.UNI_DEC != self.UNI or fd.ATTN_MAXL != self.ATTN_MAXL:
             raise RuntimeError(
-                f"decode template in {_DECODE_DIR} is ATTN_MAXL={self.ATTN_MAXL} "
+                f"decode template in {ddir} is ATTN_MAXL={self.ATTN_MAXL} "
                 f"but the builder reports UNI_DEC={fd.UNI_DEC} "
                 f"ATTN_MAXL={fd.ATTN_MAXL} (want UNI_DEC={self.UNI}). The layer "
                 f"gate builds a ONE-layer template; run `make compile-decode-full`."
@@ -247,11 +244,11 @@ class FusedDecoder:
         self._rope_base = self.UNI * fd.RMS_LAYER
         self._RMS_SIZE = self._rope_base + self.UNI * fd.ROPE_W_LEN + self.K
 
-        self.qm = gw.Q4nxModel(model)
+        self.qm = gw.Q4nxModel(model, cfg)
         self.rope_freqs = self.qm.rope_freqs()
         self.final_norm = np.asarray(self.qm.globals()["final_norm"], bfloat16)
 
-        z = _ensure_wcache(model, fd, self.UNI, self.qm, verbose)
+        z = _ensure_wcache(fd, self.UNI, self.qm, verbose)
         W = z["W"]
         if W.size != self.n_w:
             raise RuntimeError(
@@ -274,7 +271,7 @@ class FusedDecoder:
 
         kind = "ELF" if self.elf_mode else "xclbin"
         print(
-            f"[decode] gemma4-{_gw.VARIANT} ONE {kind}: ATTN_MAXL={self.ATTN_MAXL}, serves "
+            f"[decode] {cfg.decode_model} ONE {kind}: ATTN_MAXL={self.ATTN_MAXL}, serves "
             f"L in [1,{self.maxL}]; {self.UNI} layers + PLE + lm-head/dispatch",
             flush=True,
         )
@@ -298,7 +295,7 @@ class FusedDecoder:
             )
             de = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(de)
-            self._elfdec = de.ElfDecode(_DECODE_DIR, self.dev, xrt, self.REGION_W)
+            self._elfdec = de.ElfDecode(ddir, self.dev, xrt, self.REGION_W)
             # An ELF kernel has no instruction argument to group BOs against.
             bos = [xrt.ext.bo(self.dev, n * 2) for n in sizes]
             self._elfdec.bind(bos)
@@ -392,7 +389,7 @@ class FusedDecoder:
         for L in range(self.UNI):
             # _head_perm is the identity at dh == DH_A, so the full layers take
             # the same path rather than a special case.
-            dh = self.gw.head_dim(L)
+            dh = self.cfg.head_dim(L)
             perm = _head_perm(dh, self.DH_A)
             vperm = np.arange(dh) if L in self.SWA else perm
             for reg, src, p in ((0, ks[L], perm), (1, vs[L], vperm)):
@@ -428,17 +425,19 @@ class FusedDecoder:
             out, cls, off = [], {}, 0
             for L in range(self.UNI):
                 seg = [np.zeros(self.DH_A, self.bf16), self.QNORM[L], self.KNORM[L]]
-                cls.setdefault(self.gw.is_sliding(L), [L, []])[1].append(off)
+                cls.setdefault(self.cfg.is_sliding(L), [L, []])[1].append(off)
                 out += seg
                 off += sum(a.size for a in seg)
             self._rope_tpl = np.concatenate(out)
             self._rope_cls = []
             for rep, offs in cls.values():
-                h = self.gw.head_dim(rep) // 2
+                h = self.cfg.head_dim(rep) // 2
                 at = np.asarray(offs)[:, None] + np.arange(h)
                 self._rope_cls.append((rep, at, at + self.DH_A // 2))
         for rep, at_cos, at_sin in self._rope_cls:
-            cos, sin, _dh = self.gw.rope_lut(p, rep, rope_freqs=self.rope_freqs)
+            cos, sin, _dh = self.gw.rope_lut(
+                self.cfg, p, rep, rope_freqs=self.rope_freqs
+            )
             self._rope_tpl[at_cos] = cos.astype(self.bf16)
             self._rope_tpl[at_sin] = sin.astype(self.bf16)
         return self._rope_tpl
@@ -453,7 +452,7 @@ class FusedDecoder:
         np = self.np
         gw = self.gw
         tbl = self.qm.embed_rows("model.per_layer_token_embd.weight", [tok])
-        tbl = tbl.reshape(gw.NUM_LAYERS, gw.PLI_D) * gw.PLE_EMBED_SCALE
+        tbl = tbl.reshape(self.cfg.num_layers, gw.PLI_D) * gw.PLE_EMBED_SCALE
         return np.asarray(tbl[: self.UNI], self.bf16)
 
     def dispatch(self, tok, p):
@@ -561,7 +560,7 @@ class FusedDecoder:
             pass
 
 
-def _prefill_npu(prompt, model, seq_len=None):
+def _prefill_npu(cfg, prompt, model, seq_len=None):
     """Batched AIR prefill on the NPU -> (ks, vs, first_token, ttft_s).
 
     ks/vs are the per-layer lists FusedDecoder.seed_kv consumes. The prefill runs
@@ -582,7 +581,7 @@ def _prefill_npu(prompt, model, seq_len=None):
         )
     t_load = time.perf_counter()
     pf = Gemma4Q4nxPrefill(
-        seq_len=seq_len, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
+        seq_len=seq_len, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None, cfg=cfg
     )
     pf.load_weights(model=model)
     print(
@@ -607,7 +606,7 @@ def _fused_max_len(build_dir):
     return m.get("max_len") or float("inf")
 
 
-def _prefill_fused(prompt, model, build_dir):
+def _prefill_fused(cfg, prompt, model, build_dir):
     """The one-device chunked prefill (fused_prefill/) -> the same tuple."""
     import types
 
@@ -617,7 +616,7 @@ def _prefill_fused(prompt, model, build_dir):
     from air_examples.llms.gemma4_e2b_q4nx.fused_prefill.runtime import FusedPrefill
 
     t_load = time.perf_counter()
-    pf = FusedPrefill(build_dir, max_len=max(2048, len(prompt)))
+    pf = FusedPrefill(build_dir, cfg, max_len=max(2048, len(prompt)))
     pf.load_weights(model=model)
     print(
         f"[inference] model load (repack + resident BOs): "
@@ -632,19 +631,19 @@ def _prefill_fused(prompt, model, build_dir):
     return ks, vs, int(logits.argmax()), ttft
 
 
-def _prefill_numpy(prompt, model):
+def _prefill_numpy(cfg, prompt, model):
     """The CPU oracle prefill -> the same tuple, for debugging the device path."""
     import numpy as np
     import gemma4_e2b_q4nx_weights as gw
 
     t0 = time.perf_counter()
-    qm = gw.Q4nxModel(model)
+    qm = gw.Q4nxModel(model, cfg)
     logits, kv = gw.forward_prompt(qm, prompt)
     # forward_prompt keys its cache by SOURCE layer and keeps the kv-head axis;
     # seed_kv wants one (P, n_kv*head_dim) entry per layer.
     ks, vs = [], []
-    for L in range(gw.NUM_LAYERS):
-        ke, v = kv[gw.kv_source_layer(L)]
+    for L in range(cfg.num_layers):
+        ke, v = kv[cfg.kv_source_layer(L)]
         ks.append(np.asarray(ke, np.float32).reshape(len(prompt), -1))
         vs.append(np.asarray(v, np.float32).reshape(len(prompt), -1))
     return ks, vs, int(np.asarray(logits).argmax()), time.perf_counter() - t0
@@ -653,11 +652,13 @@ def _prefill_numpy(prompt, model):
 def generate(
     prompt,
     n_tokens,
-    model=MODEL_DEFAULT,
+    model=None,
     numpy_prefill=False,
     ignore_eos=False,
     fused_prefill=None,
+    cfg=_gw.E2B,
 ):
+    model = model or cfg.model_source()
     src = (
         "numpy reference" if numpy_prefill else "fused" if fused_prefill else "AIR NPU"
     )
@@ -667,11 +668,11 @@ def generate(
         flush=True,
     )
     if numpy_prefill:
-        ks, vs, first, ttft = _prefill_numpy(prompt, model)
+        ks, vs, first, ttft = _prefill_numpy(cfg, prompt, model)
     elif fused_prefill and len(prompt) <= _fused_max_len(fused_prefill):
-        ks, vs, first, ttft = _prefill_fused(prompt, model, fused_prefill)
+        ks, vs, first, ttft = _prefill_fused(cfg, prompt, model, fused_prefill)
     else:
-        ks, vs, first, ttft = _prefill_npu(prompt, model)
+        ks, vs, first, ttft = _prefill_npu(cfg, prompt, model)
     P = ks[0].shape[0]
     print(
         f"[inference] prefill first token = {first} (Paris={PARIS_FIRST})", flush=True
@@ -679,7 +680,7 @@ def generate(
     # Machine-readable line for bench/extract_perf.py (nightly LLM dashboard).
     print(f"Time to first token (TTFT): {ttft:.3f}s", flush=True)
 
-    dec = FusedDecoder(model=model, max_L=P + n_tokens)
+    dec = FusedDecoder(model=model, max_L=P + n_tokens, cfg=cfg)
     n_eff = min(n_tokens, dec.maxL - P)
     if n_eff <= 0:
         print(f"[inference] P={P} >= ATTN_MAXL={dec.ATTN_MAXL}; abort", flush=True)
@@ -760,7 +761,7 @@ def _paris_verdict(gen_ids, stop):
     return ["*** PARIS ***"], True
 
 
-def _detok(ids, model=MODEL_DEFAULT):
+def _detok(ids, model):
     try:
         from transformers import AutoTokenizer
 
@@ -796,8 +797,8 @@ def format_prompt(tokenizer, prompt: str, model_variant: str) -> list:
     return _flat_ids(tokenizer(prompt)["input_ids"])
 
 
-def main():
-    ap = argparse.ArgumentParser(description="gemma4_e2b_q4nx full inference")
+def main(cfg=_gw.E2B):
+    ap = argparse.ArgumentParser(description=f"{cfg.name} full inference")
     ap.add_argument("--prompt", type=str, default=None, help="prompt text")
     ap.add_argument("--prompt-ids", type=str, default=None, help="comma-separated ids")
     ap.add_argument("--n-tokens", type=int, default=9, help="tokens to generate")
@@ -808,7 +809,7 @@ def main():
         "--model-source",
         dest="model_source",
         type=str,
-        default=MODEL_DEFAULT,
+        default=cfg.model_source(),
         help="model.q4nx dir/path",
     )
     ap.add_argument(
@@ -862,6 +863,7 @@ def main():
         numpy_prefill=args.numpy_prefill,
         ignore_eos=args.ignore_eos,
         fused_prefill=args.fused_prefill,
+        cfg=cfg,
     )
     print("=" * 60)
     print(f"[inference] gen ids: {gen_ids}")

@@ -106,7 +106,7 @@ def _cat(*mats):
     return tuple(np.concatenate(p, 0) for p in zip(*mats))
 
 
-def layer_rope_w(pos, L, fd, rope_freqs):
+def layer_rope_w(cfg, pos, L, fd, rope_freqs):
     """One layer's rope_w slab: [cos/sin(DH) | q_norm(DH) | k_norm(DH)].
 
     The sliding/full split lives ENTIRELY here, in the data: different theta,
@@ -115,7 +115,7 @@ def layer_rope_w(pos, L, fd, rope_freqs):
     since this model has qk-norm).
     """
     DH = fd.DH_A
-    cos, sin, dh = gw.rope_lut(pos, L, rope_freqs=rope_freqs)
+    cos, sin, dh = gw.rope_lut(cfg, pos, L, rope_freqs=rope_freqs)
     half = DH // 2
     c = np.ones(half, np.float32)
     s = np.zeros(half, np.float32)
@@ -136,7 +136,7 @@ def _halfmajor_cols(fd, blk):
     return (c * qh + h) * dh + b * blk + e
 
 
-def pack_layer_weights(fd, L, w):
+def pack_layer_weights(cfg, fd, L, w):
     """One layer's projections as the decode slab layer L streams.
 
     `w` holds the layer's weights as stored (q, scale, min), [out, in]: q, o,
@@ -148,7 +148,7 @@ def pack_layer_weights(fd, L, w):
     OP, GP, DP = fd.OPROJ_PHASE, fd.GLU_PHASE, fd.DOWN_PHASE
     DH, K = fd.DH_A, fd.K
     NQ, NKV = fd.NUM_Q_HEADS, fd.NUM_KV_HEADS
-    dh = gw.head_dim(L)
+    dh = cfg.head_dim(L)
 
     # --- attention: a sliding layer's heads go compact (the device spreads
     # them, see fused_decode_ple CLASS_GEOM), a full layer's are DH wide ---
@@ -227,22 +227,23 @@ def pack_layer_weights(fd, L, w):
 
 
 def build_requant_cache(
-    model, fd, cache_path, layers=None, verbose=True, pack_vocab=False
+    qm, fd, cache_path, layers=None, verbose=True, pack_vocab=False
 ):
     """Cascade-pack model.q4nx into the decode .npz.
 
-    `fd` is the loaded fused_decode_ple module (DECODE_MODEL=gemma4-e2b), which
-    supplies the cascade geometry and the PLE slab layout, so the two cannot
-    drift. `layers` selects which model layers become device slabs, in order --
-    it exists so a 1-layer build can be pointed at a FULL-attention layer
-    (4, 9, ...) instead of layer 0, which is sliding. Default is 0..UNI_DEC-1.
+    `qm` is the gemma4_e2b_q4nx_weights.Q4nxModel to pack, `fd` the
+    fused_decode_ple module loaded for its config (DECODE_MODEL=qm.cfg.decode_model),
+    which supplies the cascade geometry and the PLE slab layout, so the two
+    cannot drift. `layers` selects which model layers become device slabs, in
+    order -- it exists so a 1-layer build can be pointed at a FULL-attention
+    layer instead of layer 0, which is sliding. Default is 0..UNI_DEC-1.
 
     `pack_vocab` appends the LM-head chunks after the layer slabs, which is what
     the decode dispatch expects in the weight BO. Off by default because the
     per-layer gate never reads logits; the token-level driver needs it and
     passes True.
     """
-    qm = gw.Q4nxModel(model)
+    cfg = qm.cfg
     G, NCX, NCY = fd.GROUP, fd.NCX, fd.NCY
     DH, K = fd.DH_A, fd.K
     DUAL = bool(getattr(fd, "W_DUAL_CHAN", 0))
@@ -255,9 +256,9 @@ def build_requant_cache(
     for slab, L in enumerate(layers):
         w = qm.layer_q4nx(L)
         nm = qm.layer_norms(L)
-        dh = gw.head_dim(L)
+        dh = cfg.head_dim(L)
 
-        packed = pack_layer_weights(fd, L, w)
+        packed = pack_layer_weights(cfg, fd, L, w)
         W_all.append(packed)
 
         for key, src in (
@@ -291,7 +292,7 @@ def build_requant_cache(
         PLE_all.append(sl)
 
         if verbose:
-            kind = "s" if gw.is_sliding(L) else "F"
+            kind = "s" if cfg.is_sliding(L) else "F"
             print(
                 f"[gemma4 requant] slab {slab} <- layer {L} ({kind} dh={dh})",
                 flush=True,

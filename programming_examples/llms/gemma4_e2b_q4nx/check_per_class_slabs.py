@@ -20,18 +20,11 @@ import gemma4_e2b_q4nx_requant as rq  # noqa: E402
 import gemma4_e2b_q4nx_weights as gw  # noqa: E402
 import validate_layer_npu as vln  # noqa: E402
 
-UNI = gw.NUM_LAYERS
-fd = vln._load_fd(UNI, 64, kv_src=[gw.kv_source_layer(i) for i in range(UNI)])
-assert fd.PER_CLASS
-K, G, BLK, NCX, NPH = fd.K, fd.GROUP, fd.BLOCK_BF16, fd.NCX, fd.NPH
-GP, DP = fd.GLU_PHASE, fd.DOWN_PHASE
-DUAL = bool(getattr(fd, "W_DUAL_CHAN", 0))
-rng = np.random.default_rng(0)
 
-
-def weights(L):
-    dh, inter = gw.head_dim(L), fd.MODEL["INTER_NARROW"]
-    if gw.DOUBLE_WIDE_MLP and not gw.owns_kv(L):
+def weights(cfg, fd, rng, L):
+    G, K = fd.GROUP, fd.K
+    dh, inter = cfg.head_dim(L), fd.MODEL["INTER_NARROW"]
+    if cfg.double_wide_mlp and not cfg.owns_kv(L):
         inter *= 2
 
     def r(m, k):  # (q, scale, min)
@@ -48,25 +41,26 @@ def weights(L):
         gate=r(inter, K),
         down=r(K, inter),
     )
-    if gw.owns_kv(L):
-        w["k"], w["v"] = r(gw.N_KV_HEADS * dh, K), r(gw.N_KV_HEADS * dh, K)
+    if cfg.owns_kv(L):
+        w["k"], w["v"] = r(cfg.n_kv_heads * dh, K), r(cfg.n_kv_heads * dh, K)
     return w
 
 
-def phases(slab, per_col):
+def phases(fd, slab, per_col):
     """slab -> per phase, per column: the two channel halves."""
     out, o = [], 0
-    for p in range(NPH):
-        n = per_col[p] * BLK
-        cols = [slab[o + c * n : o + (c + 1) * n] for c in range(NCX)]
+    for p in range(fd.NPH):
+        n = per_col[p] * fd.BLOCK_BF16
+        cols = [slab[o + c * n : o + (c + 1) * n] for c in range(fd.NCX)]
         out.append([np.split(c, 2) for c in cols])
-        o += NCX * n
+        o += fd.NCX * n
     return out
 
 
-def device_slab(L, w):
+def device_slab(cfg, fd, L, w):
     """Layer L's weights in the device's layout, packed at the full geometry."""
-    dh, DH, NQ, NKV = gw.head_dim(L), fd.DH_A, fd.NUM_Q_HEADS, fd.NUM_KV_HEADS
+    G, K, DP = fd.GROUP, fd.K, fd.DOWN_PHASE
+    dh, DH, NQ, NKV = cfg.head_dim(L), fd.DH_A, fd.NUM_Q_HEADS, fd.NUM_KV_HEADS
     swa = dh != DH
     head = (
         (lambda t, n: t)
@@ -75,7 +69,7 @@ def device_slab(L, w):
     )
     qkv = [head(w["q"], NQ)]
     if "k" in w:
-        rep = NKV // gw.N_KV_HEADS
+        rep = NKV // cfg.n_kv_heads
         qkv += [head(rq._each(w[x], lambda a: np.tile(a, (rep, 1))), NKV) for x in "kv"]
     qkv = rq._each(rq._cat(*qkv), lambda a: rq._pad_rows(a, fd.M))
 
@@ -97,58 +91,71 @@ def device_slab(L, w):
     full = 2 * fd.J2P[DP] * fd.COL_BLOCK  # the build's FFN width
     up = rq._each(w["up"], lambda a: rq._pad_rows(a, full))
     gate = rq._each(w["gate"], lambda a: rq._pad_rows(a, full))
-    q = [None] * NPH
+    q = [None] * fd.NPH
     q[0], q[fd.OPROJ_PHASE] = qkv, o
-    q[GP] = rq._interleave512(up, gate, fd.GLU_CHUNK)
+    q[fd.GLU_PHASE] = rq._interleave512(up, gate, fd.GLU_CHUNK)
     q[DP] = rq._each(
         w["down"],
         lambda a: rq._pad_cols(a, full),
         lambda a: rq._pad_cols(a, full // G),
     )
+    dual = bool(getattr(fd, "W_DUAL_CHAN", 0))
     return np.concatenate(
         [
-            fd.pack_q4k_cascade(*q[p], NCX, fd.NCY, iter_major=True, dual_chan=DUAL)
-            for p in range(NPH)
+            fd.pack_q4k_cascade(*q[p], fd.NCX, fd.NCY, iter_major=True, dual_chan=dual)
+            for p in range(fd.NPH)
         ]
     )
 
 
-# one packed block of zero weights; every block of one is identical
-_rows = NCX * fd.NCY * fd.ROW_BLOCK
-_z = (
-    np.zeros((_rows, fd.COL_BLOCK), np.uint8),
-    np.zeros((_rows, fd.COL_BLOCK // G), np.float32),
-    np.zeros((_rows, fd.COL_BLOCK // G), np.float32),
-)
-ZERO_BLOCK = fd.pack_q4k_cascade(*_z, NCX, fd.NCY, iter_major=True)[:BLK]
+def main(cfg=gw.E2B):
+    uni = cfg.num_layers
+    fd = vln._load_fd(cfg, uni, 64, kv_src=[cfg.kv_source_layer(i) for i in range(uni)])
+    assert fd.PER_CLASS
+    rng = np.random.default_rng(0)
+    G, BLK, NCX = fd.GROUP, fd.BLOCK_BF16, fd.NCX
 
-print(f"W_DEC {fd.W_DEC} = sum of slabs: {fd.W_DEC == sum(fd.W_SLABS)}")
-print(f"offsets cumulative: {fd.W_OFFS == list(np.cumsum([0] + fd.W_SLABS[:-1]))}")
-# the first layer of each class: sliding / full, own / shared KV
-CLASSES = sorted(
-    {(gw.is_sliding(L), gw.owns_kv(L)): L for L in reversed(range(UNI))}.values()
-)
-for L in CLASSES:
-    w = weights(L)
-    native = rq.pack_layer_weights(fd, L, w)
-    arm = fd.arm_of_layer(L)
-    i2, j2, xs = fd.CLASS_GEOM[arm]
-    got = phases(native, fd.class_per_col(arm))
-    ref = phases(device_slab(L, w), fd.PER_COL_PH)
-    ok = True
-    for p in range(NPH):
-        for c in range(NCX):
-            for h in range(2):
-                # [round][X block][this X block's weight blocks]
-                a = got[p][c][h].reshape(i2[p], 2 * j2[p], -1)
-                b = ref[p][c][h].reshape(fd.I2P[p], 2 * fd.J2P[p], -1)
-                read = np.zeros(b.shape[:2], bool)
-                j = np.arange(2 * j2[p] * xs[p])
-                if xs[p] > 1:
-                    j = j[(j & fd.Q_HEADS_PER_CU) == 0]
-                read[np.ix_(np.arange(i2[p]), j)] = True
-                ok &= np.array_equal(a.reshape(-1, b.shape[2]), b[read])
-                ok &= bool(np.all(b[~read].reshape(-1, BLK) == ZERO_BLOCK))
-    print(
-        f"layer {L} (arm {arm}): slab {native.size} == w_layer_of, blocks match: {ok}"
+    # one packed block of zero weights; every block of one is identical
+    rows = NCX * fd.NCY * fd.ROW_BLOCK
+    z = (
+        np.zeros((rows, fd.COL_BLOCK), np.uint8),
+        np.zeros((rows, fd.COL_BLOCK // G), np.float32),
+        np.zeros((rows, fd.COL_BLOCK // G), np.float32),
     )
+    zero_block = fd.pack_q4k_cascade(*z, NCX, fd.NCY, iter_major=True)[:BLK]
+
+    print(f"W_DEC {fd.W_DEC} = sum of slabs: {fd.W_DEC == sum(fd.W_SLABS)}")
+    print(f"offsets cumulative: {fd.W_OFFS == list(np.cumsum([0] + fd.W_SLABS[:-1]))}")
+    # the first layer of each class: sliding / full, own / shared KV
+    classes = sorted(
+        {(cfg.is_sliding(L), cfg.owns_kv(L)): L for L in reversed(range(uni))}.values()
+    )
+    for L in classes:
+        w = weights(cfg, fd, rng, L)
+        native = rq.pack_layer_weights(cfg, fd, L, w)
+        arm = fd.arm_of_layer(L)
+        i2, j2, xs = fd.CLASS_GEOM[arm]
+        got = phases(fd, native, fd.class_per_col(arm))
+        ref = phases(fd, device_slab(cfg, fd, L, w), fd.PER_COL_PH)
+        ok = True
+        for p in range(fd.NPH):
+            for c in range(NCX):
+                for h in range(2):
+                    # [round][X block][this X block's weight blocks]
+                    a = got[p][c][h].reshape(i2[p], 2 * j2[p], -1)
+                    b = ref[p][c][h].reshape(fd.I2P[p], 2 * fd.J2P[p], -1)
+                    read = np.zeros(b.shape[:2], bool)
+                    j = np.arange(2 * j2[p] * xs[p])
+                    if xs[p] > 1:
+                        j = j[(j & fd.Q_HEADS_PER_CU) == 0]
+                    read[np.ix_(np.arange(i2[p]), j)] = True
+                    ok &= np.array_equal(a.reshape(-1, b.shape[2]), b[read])
+                    ok &= bool(np.all(b[~read].reshape(-1, BLK) == zero_block))
+        print(
+            f"layer {L} (arm {arm}): slab {native.size} == w_layer_of, "
+            f"blocks match: {ok}"
+        )
+
+
+if __name__ == "__main__":
+    main()

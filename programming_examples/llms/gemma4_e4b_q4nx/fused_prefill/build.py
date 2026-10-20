@@ -11,9 +11,10 @@ import types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-# The model's directory goes on sys.path, this one does not: its module names
+# The model directories go on sys.path, this one does not: its module names
 # are too generic to publish. The package is reached as air_examples.*.
-sys.path[:] = [str(HERE.parent)] + [
+# gemma4_e2b_q4nx holds the Gemma4 code this model's spec runs.
+sys.path[:] = [str(HERE.parent), str(HERE.parents[1] / "gemma4_e2b_q4nx")] + [
     p for p in sys.path if Path(p or ".").resolve() != HERE
 ]
 sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [

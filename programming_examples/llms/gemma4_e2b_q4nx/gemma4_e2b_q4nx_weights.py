@@ -1,7 +1,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# Q4NX weight loader + CPU reference for the Gemma4-E2B (text) Q4NX example.
+# Q4NX weight loader + CPU reference for the Gemma4 (text) Q4NX examples: E2B
+# here, E4B in ../gemma4_e4b_q4nx (see Gemma4Config).
 #
 # Audited against FastFlowLM's own tree, not inferred from the HF config alone:
 #   FLM_Xclbin/Gemma4/decoding/{models/gemma4-e2b.h,kernels/model_spec.h}
@@ -29,6 +30,7 @@ import os
 import struct
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 from ml_dtypes import bfloat16
@@ -54,68 +56,107 @@ from proj_qmm_pack import (  # noqa: E402
 )
 
 # ---------------------------------------------------------------- dims
-# GEMMA4_VARIANT selects the model. The Gemma4 modules read their dims from
-# here at import time, so it must be set before the first import.
-VARIANTS = {
-    "e2b": dict(
-        D=1536,
-        N_KV_HEADS=1,
-        INTER=6144,
-        NUM_LAYERS=35,
-        NUM_KV_SHARED_LAYERS=20,
-        FULL_PERIOD=5,
-        DOUBLE_WIDE_MLP=True,
-        REPO="FastFlowLM/Gemma4-E2B-IT-NPU2",
-        # fused_decode_ple: _MODELS key, kernel MODEL_TYPE, and the LM-head
-        # chunk the entry's UNI_LM assumes
-        DECODE_MODEL="gemma4-e2b",
-        MODEL_TYPE="GEMMA4_E2B",
-        VOCAB_CHUNK_I2=27,
-    ),
-    "e4b": dict(
-        D=2560,
-        N_KV_HEADS=2,
-        INTER=10240,
-        NUM_LAYERS=42,
-        NUM_KV_SHARED_LAYERS=18,
-        FULL_PERIOD=6,
-        DOUBLE_WIDE_MLP=False,
-        REPO="FastFlowLM/Gemma4-E4B-IT-NPU2",
-        DECODE_MODEL="gemma4-e4b",
-        MODEL_TYPE="GEMMA4_E4B",
-        VOCAB_CHUNK_I2=5,
-    ),
-}
-VARIANT = os.environ.get("GEMMA4_VARIANT", "e2b")
-if VARIANT not in VARIANTS:
-    raise SystemExit(f"GEMMA4_VARIANT={VARIANT!r}: want one of {sorted(VARIANTS)}")
-_V = VARIANTS[VARIANT]
-# Where the variant's build artifacts and caches live.
-MODEL_DIR = Path(__file__).resolve().parents[1] / f"gemma4_{VARIANT}_q4nx"
 
-D = _V["D"]  # hidden_size
+
+class Gemma4Config(NamedTuple):
+    """One Gemma4 text model: its dims, its bundle, and its decode engine build.
+
+    The examples take one explicitly (E2B by default in this directory, E4B in
+    ../gemma4_e4b_q4nx); Q4nxModel checks it against the bundle it reads.
+    """
+
+    name: str  # example directory under llms/
+    repo: str  # model.q4nx bundle
+    hf_repo: str  # bf16 reference for the top-k verify gate
+    d: int  # hidden_size
+    n_kv_heads: int
+    inter: int  # mlp intermediate; 2x on the KV-shared layers if double_wide_mlp
+    num_layers: int
+    num_kv_shared_layers: int
+    full_period: int  # every full_period-th layer is full attention
+    double_wide_mlp: bool
+    # fused_decode_ple: _MODELS key, kernel MODEL_TYPE, and the LM-head chunk
+    # the entry's UNI_LM assumes
+    decode_model: str
+    model_type: str
+    vocab_chunk_i2: int
+
+    @property
+    def first_kv_shared(self):
+        return self.num_layers - self.num_kv_shared_layers
+
+    def is_sliding(self, layer):
+        return layer % self.full_period != self.full_period - 1
+
+    def head_dim(self, layer):
+        return DH_SLIDING if self.is_sliding(layer) else DH_GLOBAL
+
+    def owns_kv(self, layer):
+        return layer < self.first_kv_shared
+
+    def kv_source_layer(self, layer):
+        """Which layer's k/v a layer uses: its own below first_kv_shared, else
+        the last layer of the same type below it."""
+        if self.owns_kv(layer):
+            return layer
+        want = self.is_sliding(layer)
+        return max(L for L in range(self.first_kv_shared) if self.is_sliding(L) == want)
+
+    @property
+    def ple_model_proj_scale(self):
+        return float(self.d**-0.5)
+
+    @property
+    def model_dir(self):
+        """Where this model's build artifacts and caches live."""
+        return Path(__file__).resolve().parents[1] / self.name
+
+    def model_source(self):
+        """The bundle: Q4NX_MODEL_SOURCE (a repo id, dir or file) or `repo`."""
+        return os.environ.get("Q4NX_MODEL_SOURCE", self.repo)
+
+
+E2B = Gemma4Config(
+    name="gemma4_e2b_q4nx",
+    repo="FastFlowLM/Gemma4-E2B-IT-NPU2",
+    hf_repo="unsloth/gemma-4-E2B-it",
+    d=1536,
+    n_kv_heads=1,
+    inter=6144,
+    num_layers=35,
+    num_kv_shared_layers=20,
+    full_period=5,
+    double_wide_mlp=True,
+    decode_model="gemma4-e2b",
+    model_type="GEMMA4_E2B",
+    vocab_chunk_i2=27,
+)
+E4B = Gemma4Config(
+    name="gemma4_e4b_q4nx",
+    repo="FastFlowLM/Gemma4-E4B-IT-NPU2",
+    hf_repo="unsloth/gemma-4-E4B-it",
+    d=2560,
+    n_kv_heads=2,
+    inter=10240,
+    num_layers=42,
+    num_kv_shared_layers=18,
+    full_period=6,
+    double_wide_mlp=False,
+    decode_model="gemma4-e4b",
+    model_type="GEMMA4_E4B",
+    vocab_chunk_i2=5,
+)
+GEMMA4_MODELS = {c.name: c for c in (E2B, E4B)}
+
 N_Q_HEADS = 8
-N_KV_HEADS = _V["N_KV_HEADS"]
 DH_SLIDING = 256  # head_dim
 DH_GLOBAL = 512  # global_head_dim
-INTER = _V["INTER"]  # mlp intermediate; 2x on E2B's KV-shared layers
-DOUBLE_WIDE_MLP = _V["DOUBLE_WIDE_MLP"]
-NUM_LAYERS = _V["NUM_LAYERS"]
 VOCAB = 262144
 PLI_D = 256  # hidden_size_per_layer_input
 RMS_EPS = 1e-6
 SLIDING_WINDOW = 512
 FINAL_LOGIT_SOFTCAP = 30.0
 ATTN_SCALE = 1.0  # config scaling is 1.0; NOT 1/sqrt(head_dim)
-NUM_KV_SHARED_LAYERS = _V["NUM_KV_SHARED_LAYERS"]
-FIRST_KV_SHARED_LAYER = NUM_LAYERS - NUM_KV_SHARED_LAYERS
-
-# layer_types from config.json: every FULL_PERIOD-th layer is full attention.
-_P = _V["FULL_PERIOD"]
-LAYER_TYPES = [
-    "full_attention" if (i % _P) == _P - 1 else "sliding_attention"
-    for i in range(NUM_LAYERS)
-]
 
 # RoPE per layer type (config rope_parameters).
 ROPE_SLIDING_THETA = 10000.0
@@ -133,9 +174,9 @@ ROPE_GLOBAL_PARTIAL = 0.25  # only the first 25% of head_dim is rotated
 # the embedding and yields fluent, contentless predictions.
 EMBED_SCALE = 1.0
 PLE_EMBED_SCALE = 1.0
-# PLE combine constants. FLM's gemma4-e2b.h SWAPS these two NAMES relative to the
-# reference implementation; the values are unambiguous, so key off the values.
-PLE_MODEL_PROJ_SCALE = float(D**-0.5)  # 0.025515518  (FLM calls it *_INPUT_SCALE)
+# PLE combine constants: Gemma4Config.ple_model_proj_scale (d**-0.5) and this.
+# FLM's gemma4-e2b.h SWAPS the two NAMES relative to the reference
+# implementation; the values are unambiguous, so key off the values.
 PLE_INPUT_SCALE = float(
     2.0**-0.5
 )  # 0.707106781  (FLM calls it *_MODEL_PROJECTION_SCALE)
@@ -150,32 +191,6 @@ def _unpack_q4nx(i16, nbi, nbj):
 def _expand(q, sc, mn):
     """(q, scale, min) -> float32 weights, w = scale*q + min."""
     return host_weights.dequant_q4(q, sc, mn, GROUP)
-
-
-def is_sliding(layer_idx):
-    return LAYER_TYPES[layer_idx] == "sliding_attention"
-
-
-def head_dim(layer_idx):
-    return DH_SLIDING if is_sliding(layer_idx) else DH_GLOBAL
-
-
-def kv_source_layer(layer_idx):
-    """Which layer's k/v this layer actually uses.
-
-    Layers below FIRST_KV_SHARED_LAYER own their cache. At or above it, the layer
-    reuses the LAST layer of the same type below the boundary -- so the 7
-    full-attention layers and the 28 sliding ones share two different sources.
-    """
-    if layer_idx < FIRST_KV_SHARED_LAYER:
-        return layer_idx
-    prev = LAYER_TYPES[:FIRST_KV_SHARED_LAYER]
-    want = LAYER_TYPES[layer_idx]
-    return len(prev) - 1 - prev[::-1].index(want)
-
-
-def owns_kv(layer_idx):
-    return layer_idx < FIRST_KV_SHARED_LAYER
 
 
 def _bf(a):
@@ -209,15 +224,9 @@ def _gelu_tanh(x):
     )
 
 
-# The model.q4nx bundle. An HF repo id by default, like every other q4nx
-# example, so nothing here depends on a path that exists on one machine.
-MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", _V["REPO"])
-
-
-def resolve_q4nx_model(model=None):
+def resolve_q4nx_model(model):
     """Resolve `model` to a local model.q4nx path. `model` may be an HF repo id
     (contains '/'), a directory containing model.q4nx, or a direct file path."""
-    model = model or MODEL_DEFAULT
     if os.path.isfile(model):
         return model
     if os.path.isdir(model):
@@ -230,15 +239,15 @@ def resolve_q4nx_model(model=None):
 
 
 class Q4nxModel:
-    """Reader for FLM's Gemma4-E2B model.q4nx (both codecs).
+    """Reader for FLM's Gemma4 model.q4nx (both codecs).
 
-    `path` is anything resolve_q4nx_model accepts, and defaults to the HF repo
-    id -- so a caller that passes nothing downloads the bundle rather than
-    reading someone's home directory.
+    `path` is anything resolve_q4nx_model accepts and defaults to
+    cfg.model_source(), an HF repo id unless overridden.
     """
 
-    def __init__(self, path=None):
-        self.path = Path(resolve_q4nx_model(path))
+    def __init__(self, path=None, cfg=E2B):
+        self.cfg = cfg
+        self.path = Path(resolve_q4nx_model(path or cfg.model_source()))
         with open(self.path, "rb") as f:
             n = struct.unpack("<Q", f.read(8))[0]
             self._hdr = json.loads(f.read(n))
@@ -249,6 +258,13 @@ class Q4nxModel:
                 f"{self.path}: this reader targets Codec B (I8, packed shape, no "
                 "__metadata__). The bundle carries Codec A; re-export or use the "
                 "Codec A path in llama32_1b_q4nx."
+            )
+        d = self._hdr["model.embed_tokens.weight"]["shape"][1]
+        n = sum(1 for k in self._hdr if k.endswith(".input_layernorm.weight"))
+        if (d, n) != (cfg.d, cfg.num_layers):
+            raise SystemExit(
+                f"{self.path} is a {n}-layer, {d}-wide Gemma4, not {cfg.name} "
+                f"({cfg.num_layers} layers, {cfg.d} wide)"
             )
 
     def fingerprint(self):
@@ -334,9 +350,9 @@ class Q4nxModel:
         return self._hdr[name]["shape"][0] // (in_dim // COL_BLOCK) * ROW_BLOCK
 
     def mlp_inter(self, k):
-        """This layer's intermediate size; E2B marks some layers DOUBLE_WIDE_MLP,
-        so it is read from the bundle rather than assumed to be INTER."""
-        return self._proj_out(f"model.layers.{k}.mlp.gate_proj.weight", D)
+        """This layer's intermediate size, read from the bundle: E2B's KV-shared
+        layers are double-wide."""
+        return self._proj_out(f"model.layers.{k}.mlp.gate_proj.weight", self.cfg.d)
 
     def layer_weights(self, k):
         return self._layer(k, self.dequant)
@@ -346,8 +362,9 @@ class Q4nxModel:
         return self._layer(k, self.q4nx)
 
     def _layer(self, k, read):
-        dh = head_dim(k)
-        dq, dkv = N_Q_HEADS * dh, N_KV_HEADS * dh
+        c = self.cfg
+        D, dh = c.d, c.head_dim(k)
+        dq, dkv = N_Q_HEADS * dh, c.n_kv_heads * dh
         inter = self.mlp_inter(k)
         p = f"model.layers.{k}."
         w = dict(
@@ -361,7 +378,7 @@ class Q4nxModel:
         # evaluates them -- it takes k/v from the source layer's cache. Load them
         # only where they are actually used, so a wrong sharing map shows up as a
         # KeyError instead of silently-unused weights.
-        if owns_kv(k):
+        if c.owns_kv(k):
             w["k"] = read(p + "self_attn.k_proj.weight", dkv, D)
             w["v"] = read(p + "self_attn.v_proj.weight", dkv, D)
         return w
@@ -385,10 +402,10 @@ class Q4nxModel:
         Both ship pre-tiled bf16: inp_gate (8,D,32) is [256,D] as 8 row tiles
         of 32, and per_layer_projection (D/32,256,32) is [D,256] the same way.
         per_layer_model_proj is stored per layer as (8,D,32) = the 256 rows of
-        the global (NUM_LAYERS*256, D) projection that belong to this layer.
+        the global (num_layers*256, D) projection that belong to this layer.
         """
         p = f"model.layers.{k}."
-        nt = PLI_D // 32
+        D, nt = self.cfg.d, PLI_D // 32
         gate = self.bf16(p + "inp_gate.weight").reshape(nt, D, 32)
         proj = self.bf16(p + "per_layer_projection.weight").reshape(D // 32, PLI_D, 32)
         mp = self.bf16(f"model.per_layer_model_proj.weight_layer{k}").reshape(nt, D, 32)
@@ -398,18 +415,18 @@ class Q4nxModel:
             model_proj=mp.transpose(0, 2, 1).reshape(PLI_D, D),
         )
 
-    def lm_head_q4nx(self, r0, r1, name="lm_head.weight", K=D):
+    def lm_head_q4nx(self, r0, r1, name="lm_head.weight", K=None):
         """Output rows [r0, r1) of a Codec B matrix as stored (q, scale, min).
 
-        lm_head here is its OWN 4-bit matrix (262144 x 1536, not tied to
-        embed_tokens), which is 1.6 GB dequantized in float32. The chunk layout is
+        lm_head here is its OWN 4-bit matrix (VOCAB x d, not tied to
+        embed_tokens), gigabytes dequantized in float32. The chunk layout is
         block-major -- index = i*nbj + j over (out/32, in/256) -- so a row range
         that is a multiple of ROW_BLOCK maps to a contiguous chunk range and can
         be read without touching the rest.
         """
         if r0 % ROW_BLOCK or (r1 - r0) % ROW_BLOCK:
             raise SystemExit(f"row range [{r0},{r1}) must be a multiple of {ROW_BLOCK}")
-        nbj = K // COL_BLOCK
+        nbj = (K or self.cfg.d) // COL_BLOCK
         i0, i1 = r0 // ROW_BLOCK, r1 // ROW_BLOCK
         nb = (i1 - i0) * nbj
         e = self._hdr[name]
@@ -422,7 +439,7 @@ class Q4nxModel:
         ).reshape(nb, BLOCK_BF16)
         return _unpack_q4nx(i16, i1 - i0, nbj)
 
-    def lm_head_rows(self, r0, r1, name="lm_head.weight", K=D):
+    def lm_head_rows(self, r0, r1, name="lm_head.weight", K=None):
         """Dequantize only output rows [r0, r1) of a Codec B matrix."""
         return _expand(*self.lm_head_q4nx(r0, r1, name, K))
 
@@ -443,7 +460,7 @@ class Q4nxModel:
         )
 
 
-def rope_lut(pos, layer_idx, rope_freqs=None):
+def rope_lut(cfg, pos, layer_idx, rope_freqs=None):
     """cos/sin for one position, in FLM's convention.
 
     FLM's kernels/rope.cc rotates over DH_2 = DH/2 pairs and ALWAYS pairs dim i
@@ -462,11 +479,11 @@ def rope_lut(pos, layer_idx, rope_freqs=None):
     positions 0..15 are tiny, so a wrong convention costs only ~0.003 cosine
     there. It matters at real context lengths.
     """
-    dh = head_dim(layer_idx)
+    dh, sliding = cfg.head_dim(layer_idx), cfg.is_sliding(layer_idx)
     half = dh // 2
-    theta = ROPE_SLIDING_THETA if is_sliding(layer_idx) else ROPE_GLOBAL_THETA
+    theta = ROPE_SLIDING_THETA if sliding else ROPE_GLOBAL_THETA
     inv = 1.0 / (theta ** (np.arange(0, half, dtype=np.float32) * 2.0 / dh))
-    if not is_sliding(layer_idx) and rope_freqs is not None:
+    if not sliding and rope_freqs is not None:
         inv = inv / rope_freqs[:half]  # "proportional" rope: a DIVISOR table
     ang = float(pos) * inv
     return np.cos(ang).astype(np.float32), np.sin(ang).astype(np.float32), dh
@@ -484,12 +501,12 @@ def apply_rope(x, cos, sin, rot):
 
 
 def per_layer_inputs(model, ids, embeds):
-    """The PLE input for EVERY layer, [T, NUM_LAYERS, PLI_D].
+    """The PLE input for EVERY layer, [T, num_layers, PLI_D].
 
     Computed ONCE from the model's input embeddings -- NOT per layer from that
     layer's hidden state. `project_per_layer_inputs` in FLM's reference takes
-    `inputs_embeds` and runs before the decoder loop, so all 35 slices come from
-    the same tensor.
+    `inputs_embeds` and runs before the decoder loop, so every layer's slice
+    comes from the same tensor.
 
     Getting this wrong is nearly invisible: the projection still has the right
     shape and scale, the gate path is untouched, and early layers barely move
@@ -502,14 +519,14 @@ def per_layer_inputs(model, ids, embeds):
     The bundle's per-layer table is already scaled by sqrt(PLI_D) (measured: the
     bundle/HF ratio is 16.0014), hence PLE_EMBED_SCALE = 1.
     """
-    T = len(ids)
+    T, n = len(ids), model.cfg.num_layers
     tbl = model.embed_rows("model.per_layer_token_embd.weight", ids)
-    tbl = tbl.reshape(T, NUM_LAYERS, PLI_D) * PLE_EMBED_SCALE
+    tbl = tbl.reshape(T, n, PLI_D) * PLE_EMBED_SCALE
     norm_w = model.globals()["ple_proj_norm"]
-    out = np.empty((T, NUM_LAYERS, PLI_D), np.float32)
-    for L in range(NUM_LAYERS):
+    out = np.empty((T, n, PLI_D), np.float32)
+    for L in range(n):
         mp = model.layer_ple(L)["model_proj"]
-        proj = _rmsnorm((embeds @ mp.T) * PLE_MODEL_PROJ_SCALE, norm_w)
+        proj = _rmsnorm((embeds @ mp.T) * model.cfg.ple_model_proj_scale, norm_w)
         out[:, L, :] = (proj + tbl[:, L, :]) * PLE_INPUT_SCALE
     return out
 
@@ -527,14 +544,15 @@ def _sliding_mask(t_q, t_k, window):
 def forward_prompt(model, ids, want_logits=True, lm_chunk=16384):
     """Full CPU reference forward for a prompt. Returns (logits, kv) .
 
-    Streams the layers: the dequantized weights of all 35 layers would be ~5 GB
-    in float32, so each layer is dequantized, used, and dropped. That makes this
-    slow but exact, which is what a correctness gate needs.
+    Streams the layers: the dequantized weights of all of them would be
+    gigabytes in float32, so each layer is dequantized, used, and dropped. That
+    makes this slow but exact, which is what a correctness gate needs.
 
     kv maps a SOURCE layer index -> (k_embed, v). Shared layers never write it;
     they read the entry their kv_source_layer() points at, which is how the
-    20 kv-shared layers of this model avoid carrying a cache at all.
+    kv-shared layers avoid carrying a cache at all.
     """
+    c = model.cfg
     ids = [int(t) for t in np.asarray(ids).reshape(-1)]
     T = len(ids)
     g = model.globals()
@@ -545,9 +563,9 @@ def forward_prompt(model, ids, want_logits=True, lm_chunk=16384):
     pli_all = per_layer_inputs(model, ids, x)
 
     kv = {}
-    for L in range(NUM_LAYERS):
+    for L in range(c.num_layers):
         w, nm, pw = model.layer_weights(L), model.layer_norms(L), model.layer_ple(L)
-        dh, sliding = head_dim(L), is_sliding(L)
+        dh, sliding = c.head_dim(L), c.is_sliding(L)
 
         pli = pli_all[:, L, :]
 
@@ -559,24 +577,24 @@ def forward_prompt(model, ids, want_logits=True, lm_chunk=16384):
         cos, sin, rot = None, None, None
         qe = np.empty_like(q)
         for t in range(T):
-            cos, sin, rot = rope_lut(t, L, rope_freqs=model.rope_freqs())
+            cos, sin, rot = rope_lut(c, t, L, rope_freqs=model.rope_freqs())
             qe[t] = apply_rope(q[t], cos, sin, rot)
 
-        src = kv_source_layer(L)
-        if owns_kv(L):
-            k = (x1 @ w["k"].T).reshape(T, N_KV_HEADS, dh)
-            v = (x1 @ w["v"].T).reshape(T, N_KV_HEADS, dh)
+        src = c.kv_source_layer(L)
+        if c.owns_kv(L):
+            k = (x1 @ w["k"].T).reshape(T, c.n_kv_heads, dh)
+            v = (x1 @ w["v"].T).reshape(T, c.n_kv_heads, dh)
             k = _rmsnorm(k, nm["k_norm"])
             v = _rmsnorm(v, None)  # value_norm is weightless
             ke = np.empty_like(k)
             for t in range(T):
-                cos, sin, rot = rope_lut(t, L, rope_freqs=model.rope_freqs())
+                cos, sin, rot = rope_lut(c, t, L, rope_freqs=model.rope_freqs())
                 ke[t] = apply_rope(k[t], cos, sin, rot)
             kv[L] = (ke, v)
         ke, v = kv[src]
 
         # GQA: kv head g serves q heads [g*grp, (g+1)*grp).
-        grp = N_Q_HEADS // N_KV_HEADS
+        grp = N_Q_HEADS // c.n_kv_heads
         kh = np.repeat(ke, grp, axis=1)  # (S, N_Q_HEADS, dh)
         vh = np.repeat(v, grp, axis=1)
         mask = _sliding_mask(T, kh.shape[0], SLIDING_WINDOW if sliding else 0)
@@ -601,8 +619,8 @@ def forward_prompt(model, ids, want_logits=True, lm_chunk=16384):
     if not want_logits:
         return None, kv
 
-    # lm_head is its own 4-bit matrix (NOT tied to embed_tokens) and dequantizing
-    # all 262144x1536 at once is 1.6 GB, so walk it in row chunks.
+    # lm_head is its own 4-bit matrix (NOT tied to embed_tokens) and gigabytes
+    # dequantized at once, so walk it in row chunks.
     last = x[-1]
     logits = np.empty(VOCAB, np.float32)
     for r0 in range(0, VOCAB, lm_chunk):

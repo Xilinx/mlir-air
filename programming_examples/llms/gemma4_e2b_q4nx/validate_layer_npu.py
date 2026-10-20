@@ -37,21 +37,15 @@ from ml_dtypes import bfloat16
 
 _HERE = Path(__file__).resolve().parent
 _DEC = _HERE / ".." / ".." / "fused_decode_ple"
-# The model.q4nx bundle: an HF repo id, a directory holding it, or the file
-# itself (gemma4_e2b_q4nx_weights.resolve_q4nx_model). Override with
-# --bundle or Q4NX_MODEL_SOURCE.
 sys.path.insert(0, str(_HERE))
-import gemma4_e2b_q4nx_weights as _gw  # noqa: E402
-
-BUNDLE = _gw.MODEL_DEFAULT
-_VARIANT = _gw.VARIANTS[_gw.VARIANT]
+import gemma4_e2b_q4nx_weights as gw  # noqa: E402
 
 
-def _load_fd(uni_dec, attn_maxl, kv_src=None, layers=None):
-    """Import the builder with the env its module-level constants read."""
+def _load_fd(cfg, uni_dec, attn_maxl, kv_src=None, layers=None):
+    """Import the builder for `cfg` with the env its module-level constants read."""
     os.environ.update(
-        DECODE_MODEL=_VARIANT["DECODE_MODEL"],
-        VOCAB_CHUNK_I2=str(_VARIANT["VOCAB_CHUNK_I2"]),
+        DECODE_MODEL=cfg.decode_model,
+        VOCAB_CHUNK_I2=str(cfg.vocab_chunk_i2),
         UNIFIED="1",
         LM_HEAD="0",
         NLAYERS=str(uni_dec),
@@ -74,18 +68,18 @@ def _load_fd(uni_dec, attn_maxl, kv_src=None, layers=None):
     return fd
 
 
-def ple_embed(gw, qm, L, tok):
+def ple_embed(qm, L, tok):
     """This layer's slice of the per-layer token-embedding table, for one token.
 
     The bundle's table is already scaled by sqrt(PLI_D) (PLE_EMBED_SCALE == 1).
     """
     tbl = qm.embed_rows("model.per_layer_token_embd.weight", [tok])
-    return (tbl.reshape(1, gw.NUM_LAYERS, gw.PLI_D)[0, L] * gw.PLE_EMBED_SCALE).astype(
-        np.float32
-    )
+    return (
+        tbl.reshape(1, qm.cfg.num_layers, gw.PLI_D)[0, L] * gw.PLE_EMBED_SCALE
+    ).astype(np.float32)
 
 
-def cpu_layer(gw, qm, L, x, x0, emb_L, ple=True, attn_l=1, kv=None):
+def cpu_layer(qm, L, x, x0, emb_L, ple=True, attn_l=1, kv=None):
     """The reference layer, at T=1 and position 0. Returns (out, (ke, v)).
 
     `kv` is the (ke, v) a KV-SHARED layer attends instead of projecting its own.
@@ -106,13 +100,14 @@ def cpu_layer(gw, qm, L, x, x0, emb_L, ple=True, attn_l=1, kv=None):
     fixed. attn_l=1 is the clean case, where the two expressions coincide.
     """
     w, nm, pw = qm.layer_weights(L), qm.layer_norms(L), qm.layer_ple(L)
-    dh = gw.head_dim(L)
+    c = qm.cfg
+    dh = c.head_dim(L)
     T = 1
 
     # The per-layer input, from the token EMBEDDING (never the hidden state).
     pli = (
         gw._rmsnorm(
-            (x0 @ pw["model_proj"].T) * gw.PLE_MODEL_PROJ_SCALE,
+            (x0 @ pw["model_proj"].T) * c.ple_model_proj_scale,
             qm.globals()["ple_proj_norm"],
         )
         + emb_L
@@ -121,18 +116,18 @@ def cpu_layer(gw, qm, L, x, x0, emb_L, ple=True, attn_l=1, kv=None):
     r = x
     x1 = gw._rmsnorm(x, nm["input"])
     q = gw._rmsnorm((x1 @ w["q"].T).reshape(T, gw.N_Q_HEADS, dh), nm["q_norm"])
-    cos, sin, _ = gw.rope_lut(0, L, rope_freqs=qm.rope_freqs())
+    cos, sin, _ = gw.rope_lut(c, 0, L, rope_freqs=qm.rope_freqs())
     qe = np.stack([gw.apply_rope(q[t], cos, sin, dh) for t in range(T)])
     if kv is None:
-        k = gw._rmsnorm((x1 @ w["k"].T).reshape(T, gw.N_KV_HEADS, dh), nm["k_norm"])
-        v = gw._rmsnorm((x1 @ w["v"].T).reshape(T, gw.N_KV_HEADS, dh), None)
+        k = gw._rmsnorm((x1 @ w["k"].T).reshape(T, c.n_kv_heads, dh), nm["k_norm"])
+        v = gw._rmsnorm((x1 @ w["v"].T).reshape(T, c.n_kv_heads, dh), None)
         ke = np.stack([gw.apply_rope(k[t], cos, sin, dh) for t in range(T)])
     else:
         ke, v = kv
 
     # The cache the device attends over: zeros, with this token at slot L-1,
     # one kv head per group of q heads.
-    grp = gw.N_Q_HEADS // gw.N_KV_HEADS
+    grp = gw.N_Q_HEADS // c.n_kv_heads
     kh = np.zeros((attn_l, gw.N_Q_HEADS, dh), np.float32)
     vh = np.zeros((attn_l, gw.N_Q_HEADS, dh), np.float32)
     kh[attn_l - 1] = np.repeat(ke[0], grp, axis=0)
@@ -160,9 +155,9 @@ def cos_sim(a, b):
     return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-30))
 
 
-def main():
+def main(cfg=gw.E2B):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--layer", type=int, default=4)
+    ap.add_argument("--layer", type=int, help="default: the first full-attention layer")
     ap.add_argument(
         "--layers",
         help="comma-separated model layers to build as consecutive slabs, e.g. "
@@ -170,8 +165,8 @@ def main():
         "run to put their K/V in the cache, which is the only way to exercise "
         "a KV-shared layer (>= 15). Overrides --layer.",
     )
-    ap.add_argument("--bundle", default=BUNDLE)
-    ap.add_argument("--cache", default="/tmp/g4_layer.npz")
+    ap.add_argument("--bundle", default=cfg.model_source())
+    ap.add_argument("--cache", default=f"/tmp/{cfg.name}_layer.npz")
     ap.add_argument("--xclbin", default=str(_DEC / "decode.xclbin"))
     ap.add_argument("--insts", default=str(_DEC / "decode.insts.bin"))
     ap.add_argument("--attn-maxl", type=int, default=16)
@@ -207,10 +202,10 @@ def main():
     )
     a = ap.parse_args()
 
-    sys.path.insert(0, str(_HERE))
-    import gemma4_e2b_q4nx_weights as gw
     import gemma4_e2b_q4nx_requant as rq
 
+    if a.layer is None:
+        a.layer = next(L for L in range(cfg.num_layers) if not cfg.is_sliding(L))
     if a.no_ple:
         os.environ["DECODE_NO_PLE"] = "1"
     Ls = [int(t) for t in a.layers.split(",")] if a.layers else [a.layer]
@@ -221,7 +216,7 @@ def main():
     # be present in this build, and earlier in it, or there is nothing to read.
     kv_src = []
     for i, Li in enumerate(Ls):
-        src = gw.kv_source_layer(Li)
+        src = cfg.kv_source_layer(Li)
         if src not in Ls[: i + 1]:
             raise SystemExit(
                 f"layer {Li} attends layer {src}'s KV cache, so {src} must be "
@@ -229,19 +224,19 @@ def main():
             )
         kv_src.append(Ls.index(src))
 
-    fd = _load_fd(len(Ls), a.attn_maxl, kv_src=kv_src, layers=Ls)
-    qm = gw.Q4nxModel(a.bundle)
+    fd = _load_fd(cfg, len(Ls), a.attn_maxl, kv_src=kv_src, layers=Ls)
+    qm = gw.Q4nxModel(a.bundle, cfg)
     for i, Li in enumerate(Ls):
         print(
             f"[validate] slab {i} = layer {Li} "
-            f"({'sliding' if gw.is_sliding(Li) else 'FULL'} dh={gw.head_dim(Li)}, "
-            f"{'own kv' if gw.owns_kv(Li) else f'kv from slab {kv_src[i]}'})"
+            f"({'sliding' if cfg.is_sliding(Li) else 'FULL'} dh={cfg.head_dim(Li)}, "
+            f"{'own kv' if cfg.owns_kv(Li) else f'kv from slab {kv_src[i]}'})"
             f"{'  <- SCORED' if i == len(Ls) - 1 else ''}",
             flush=True,
         )
 
     if a.rebuild_cache or not os.path.exists(a.cache):
-        rq.build_requant_cache(a.bundle, fd, a.cache, layers=Ls)
+        rq.build_requant_cache(qm, fd, a.cache, layers=Ls)
     z = np.load(a.cache)
     assert list(z["layers"]) == Ls, (
         f"cache {a.cache} was packed for layers {list(z['layers'])}, not {Ls}; "
@@ -257,7 +252,7 @@ def main():
     # The device chains the layers in place -- slab i's output is written back to
     # arg0 and read by slab i+1 -- so the reference chains too, and every slab
     # keeps its K/V for whichever later slab shares it.
-    embs = [ple_embed(gw, qm, Li, tok) for Li in Ls]
+    embs = [ple_embed(qm, Li, tok) for Li in Ls]
     caches = {}
     h = x[None, :]
 
@@ -280,7 +275,6 @@ def main():
         if i == cut and cut:
             h = pz["got"].astype(np.float32)[None, :]
         h, caches[i] = cpu_layer(
-            gw,
             qm,
             Li,
             h,
@@ -288,7 +282,7 @@ def main():
             embs[i],
             ple=not a.no_ple,
             attn_l=fd.ATTN_L,
-            kv=None if gw.owns_kv(Li) else caches[kv_src[i]],
+            kv=None if cfg.owns_kv(Li) else caches[kv_src[i]],
         )
         h = h[None, :]
     want = h.reshape(-1)
@@ -353,7 +347,7 @@ def main():
     )
     rope = []
     for i, Li in enumerate(Ls):
-        cos, sin, dh = gw.rope_lut(0, Li, rope_freqs=qm.rope_freqs())
+        cos, sin, dh = gw.rope_lut(cfg, 0, Li, rope_freqs=qm.rope_freqs())
         lut = np.zeros(DH, np.float32)
         lut[: dh // 2] = cos
         lut[DH // 2 : DH // 2 + dh // 2] = sin

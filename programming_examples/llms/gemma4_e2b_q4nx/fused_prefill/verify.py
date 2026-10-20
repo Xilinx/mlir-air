@@ -40,7 +40,7 @@ def cos(a, b):
     return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-30))
 
 
-def main():
+def main(cfg=gw.E2B):
     ap = argparse.ArgumentParser()
     ap.add_argument("build_dir")
     ap.add_argument("--prompt", default="What is the capital of France?")
@@ -62,12 +62,12 @@ def main():
     ap.add_argument("--model", default=None)
     a = ap.parse_args()
 
-    model = gw.Q4nxModel(a.model)
+    model = gw.Q4nxModel(a.model, cfg)
     from transformers import AutoTokenizer
 
     # model.q4nx is all resolve_q4nx_model fetches from a repo id, so a repo
     # id loads its tokenizer from the repo
-    src = a.model or gw.MODEL_DEFAULT
+    src = a.model or cfg.model_source()
     tok = AutoTokenizer.from_pretrained(
         os.path.dirname(src) if os.path.isfile(src) else src
     )
@@ -94,7 +94,7 @@ def main():
     n = len(ids)
     print(f"prompt {n} tokens ({-(-n // 128)} chunk(s))", flush=True)
 
-    pf = FusedPrefill(a.build_dir, max_len=max(2048, n))
+    pf = FusedPrefill(a.build_dir, cfg, max_len=max(2048, n))
     t0 = time.perf_counter()
     pf.load_weights(model)
     print(f"weights loaded in {time.perf_counter() - t0:.0f} s", flush=True)
@@ -124,10 +124,10 @@ def main():
     )
     worst = min(
         min(
-            cos(ks[L], kv[gw.kv_source_layer(L)][0]),
-            cos(vs[L], kv[gw.kv_source_layer(L)][1]),
+            cos(ks[L], kv[cfg.kv_source_layer(L)][0]),
+            cos(vs[L], kv[cfg.kv_source_layer(L)][1]),
         )
-        for L in range(gw.NUM_LAYERS)
+        for L in range(cfg.num_layers)
     )
     print(f"worst per-layer K/V cosine vs reference = {worst:.5f}")
     if not c >= a.tol:  # also catches NaN

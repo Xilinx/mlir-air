@@ -6,7 +6,7 @@ per-layer-embedding (PLE) branch and the LM head.
 
 The layout, Makefile targets and lit tests match
 [`gemma4_e2b_q4nx`](../gemma4_e2b_q4nx). The Python entry points here run that
-directory's code with `GEMMA4_VARIANT=e4b` (`gemma4_e4b_variant.py`), so its
+directory's code with its `E4B` config (`gemma4_e2b_q4nx_weights.Gemma4Config`), so its
 design notes apply; below is what differs.
 
 ```bash
