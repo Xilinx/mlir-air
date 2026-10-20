@@ -126,7 +126,8 @@ jobs:
 
     name: Python and C/C++ Check Format
 
-    runs-on: ubuntu-latest
+    # Pinned: setup-cpp needs a prebuilt clang-format for the runner's OS.
+    runs-on: ubuntu-24.04
 
     permissions:
       contents: write
