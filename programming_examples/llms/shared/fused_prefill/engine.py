@@ -141,8 +141,9 @@ class Engine:
         fp = self.fp
         npd = P.n_pad(n)
         if k not in self.abuf:
-            a = fp.bo(D.M * k * 2, 0)
-            am = view(a, bfloat16, (D.HR, k // D.TK, D.TM, D.TK))
+            am_shape = (D.HR, k // D.TK, D.A_BFP)
+            a = fp.bo(np.prod(am_shape), 0)
+            am = view(a, np.uint8, am_shape)
             am[:] = 0
             self.abuf[k] = dict(a=a, am=am, last=None)
         w = fp.bo(packed.nbytes, 1)
@@ -194,8 +195,9 @@ class Engine:
         """The A buffer of chunk c for GEMMs of depth k, and its tiled view."""
         key = ("a", k, c)
         if key not in self.chunk_bufs:
-            a = self.fp.bo(D.M * k * 2, 0)
-            am = view(a, bfloat16, (D.HR, k // D.TK, D.TM, D.TK))
+            am_shape = (D.HR, k // D.TK, D.A_BFP)
+            a = self.fp.bo(np.prod(am_shape), 0)
+            am = view(a, np.uint8, am_shape)
             am[:] = 0
             self.chunk_bufs[key] = (a, am)
         return self.chunk_bufs[key]
