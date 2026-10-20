@@ -15,5 +15,5 @@ huggingface_hub
 # bf16 reference checkpoint is only needed by `make verify`.
 transformers
 
-# Weight dequant/requant and layout on load (llms/shared/infra/host_weights.py).
+# Weight dequantization, requantization and layout on load.
 torch

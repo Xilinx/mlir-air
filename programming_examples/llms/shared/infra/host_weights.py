@@ -13,8 +13,28 @@ through that numpy expression unchanged.
 import warnings
 
 import numpy as np
-import torch
 from ml_dtypes import bfloat16
+
+from ....fused_decode.proj_qmm_pack import (
+    BLOCK_BF16,
+    COL_BLOCK,
+    N_GROUPS,
+    PARALLEL,
+    ROW_BLOCK,
+)
+
+
+class _Torch:
+    """torch, imported on first use, so that importing this module does not
+    need torch."""
+
+    def __getattr__(self, name):
+        import torch
+
+        return getattr(torch, name)
+
+
+torch = _Torch()
 
 # Rows per block. Small enough for one block's float32 intermediates to stay in
 # cache, large enough to amortize the per-op overhead.
@@ -234,42 +254,40 @@ def requant_q4_0(w, group):
     return q.numpy().view(np.uint8), sc.numpy()
 
 
-# Q4NX "Codec B" block layout, as fused_decode/proj_qmm_pack.py defines it: a
-# block covers 32 rows x 256 columns and holds 256 bf16 scales, 256 bf16 mins
-# and 32*256 nibbles, 2560 int16 in all. Within a block, byte k of column c in
-# row group g holds rows g*16 + 2k (low nibble) and g*16 + 2k + 1 (high
-# nibble) of that column.
-_ROW_BLOCK, _COL_BLOCK, _N_GROUPS, _PARALLEL = 32, 256, 8, 16
-_BLOCK_I16 = 2560
+# Q4NX "Codec B" layout: a block covers ROW_BLOCK rows x COL_BLOCK columns and
+# holds the bf16 scales and mins of its N_GROUPS column groups per row, then the
+# nibbles. Within a block, byte k of column c in row group g holds rows
+# g*PARALLEL + 2k (low nibble) and g*PARALLEL + 2k + 1 (high nibble).
 
 
 def unpack_q4nx(i16, nbi, nbj):
-    """Block-major Codec B tensor `i16` [nbi*nbj, 2560] int16 -> (q uint8
-    [nbi*32, nbj*256], scale float32 [nbi*32, nbj*8], min float32 [nbi*32,
-    nbj*8]) in logical row-major order, with block (i, j) covering rows
-    32*i .. 32*i+31 and columns 256*j .. 256*j+255."""
-    t = _t(np.asarray(i16).reshape(nbi, nbj, _BLOCK_I16))
-    m, kq, kg = nbi * _ROW_BLOCK, nbj * _COL_BLOCK, nbj * _N_GROUPS
+    """Block-major Codec B tensor `i16` [nbi*nbj, BLOCK_BF16] int16 -> (q uint8
+    [nbi*ROW_BLOCK, nbj*COL_BLOCK], scale and min float32 [nbi*ROW_BLOCK,
+    nbj*N_GROUPS]) in logical row-major order; block (i, j) covers row block i
+    and column block j."""
+    t = _t(np.asarray(i16).reshape(nbi, nbj, BLOCK_BF16))
+    m, kq, kg = nbi * ROW_BLOCK, nbj * COL_BLOCK, nbj * N_GROUPS
     q = torch.empty((m, kq), dtype=torch.uint8)
     sc = torch.empty((m, kg), dtype=torch.float32)
     mn = torch.empty((m, kg), dtype=torch.float32)
-    step = max(1, _ROWS // _ROW_BLOCK)
-    g = _ROW_BLOCK // _PARALLEL
+    per = N_GROUPS * ROW_BLOCK  # scales (and mins) per block
+    step = max(1, _ROWS // ROW_BLOCK)
+    g = ROW_BLOCK // PARALLEL
     for i in range(0, nbi, step):
         blk = t[i : i + step]
         r = blk.shape[0]
-        rows = slice(i * _ROW_BLOCK, (i + r) * _ROW_BLOCK)
+        rows = slice(i * ROW_BLOCK, (i + r) * ROW_BLOCK)
 
-        def groups(a):  # [r, nbj, 256] bf16 bits -> [r*32, nbj*8] float32
+        def groups(a):  # [r, nbj, per] bf16 bits -> [r*ROW_BLOCK, kg] float32
             a = a.contiguous().view(torch.bfloat16).float()
-            a = a.reshape(r, nbj, _N_GROUPS, _ROW_BLOCK).permute(0, 3, 1, 2)
-            return a.reshape(r * _ROW_BLOCK, kg)
+            a = a.reshape(r, nbj, N_GROUPS, ROW_BLOCK).permute(0, 3, 1, 2)
+            return a.reshape(r * ROW_BLOCK, kg)
 
-        sc[rows] = groups(blk[..., 0:256])
-        mn[rows] = groups(blk[..., 256:512])
-        qb = blk[..., 512:].contiguous().view(torch.uint8)
-        qb = qb.reshape(r, nbj, g, _COL_BLOCK, _PARALLEL // 2).transpose(3, 4)
-        rows_q = torch.stack((qb & 0xF, qb >> 4), dim=4)  # [r, nbj, g, 8, 2, 256]
-        rows_q = rows_q.reshape(r, nbj, _ROW_BLOCK, _COL_BLOCK).permute(0, 2, 1, 3)
-        q[rows] = rows_q.reshape(r * _ROW_BLOCK, kq)
+        sc[rows] = groups(blk[..., 0:per])
+        mn[rows] = groups(blk[..., per : 2 * per])
+        qb = blk[..., 2 * per :].contiguous().view(torch.uint8)
+        qb = qb.reshape(r, nbj, g, COL_BLOCK, PARALLEL // 2).transpose(3, 4)
+        rows_q = torch.stack((qb & 0xF, qb >> 4), dim=4)  # low, high nibble rows
+        rows_q = rows_q.reshape(r, nbj, ROW_BLOCK, COL_BLOCK).permute(0, 2, 1, 3)
+        q[rows] = rows_q.reshape(r * ROW_BLOCK, kq)
     return q.numpy(), sc.numpy(), mn.numpy()

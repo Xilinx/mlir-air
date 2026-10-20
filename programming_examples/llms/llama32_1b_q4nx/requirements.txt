@@ -10,5 +10,5 @@ huggingface_hub
 # Tokenizer for the interactive chatbot (make chat / ask / gen).
 transformers
 
-# Weight dequant/requant and layout on load (llms/shared/infra/host_weights.py).
+# Weight dequantization, requantization and layout on load.
 torch
