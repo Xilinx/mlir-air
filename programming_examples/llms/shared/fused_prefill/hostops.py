@@ -20,7 +20,7 @@ def load(build_dir):
     os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
     _lib = ctypes.CDLL(os.path.join(build_dir, "libhostops.so"))
     _lib.tile_a.argtypes = [_p, _i, _i, _i, _i, _p]
-    _lib.tiles_bfp.argtypes = [_p, _i, _i, _i, _i, _p]
+    _lib.tiles_bfp.argtypes = [_p, _i, _i, _i, _i, _i, _i, _p]
     _lib.bfp_rows.argtypes = [_p, ctypes.c_long, _p]
     _lib.bf16_to_f32.argtypes = [_p, _i, _i, _i, _p]
     _lib.rms.argtypes = [_p, _i, _i, _p, _f, _p]
@@ -52,10 +52,11 @@ def _bf16_tiles(dst, tm, tk):
     return _tiles[key]
 
 
-def _to_bfp(tiles, t, dst):
-    """Rows [0, t) of tiles into dst."""
+def _to_bfp(tiles, t, dst, k0=0, k1=None):
+    """Rows [0, t), columns [k0, k1) of tiles into dst."""
     _, ks, tm, tk = tiles.shape
-    _lib.tiles_bfp(tiles.ctypes.data, t, ks * tk, tm, tk, dst.ctypes.data)
+    k1 = ks * tk if k1 is None else k1
+    _lib.tiles_bfp(tiles.ctypes.data, t, ks * tk, tm, tk, k0, k1, dst.ctypes.data)
 
 
 def tile_a(x, dst, tm, tk):
@@ -231,12 +232,11 @@ def kv_rec(k, v, c0, t, dh, lkp, dvt, dst):
 
 
 def o_tile(o, t, h0, k, dst, tm, tk):
-    """Heads of o bf16 [nh, M, dh] into heads [h0, h0 + nh) of dst (A, K = k);
-    the other heads keep what the last o_tile on this dst's shape wrote."""
+    """Heads of o bf16 [nh, M, dh] into heads [h0, h0 + nh) of dst (A, K = k)."""
     nh, m, dh = o.shape
     a = _bf16_tiles(dst, tm, tk)
     _lib.o_tile(o.ctypes.data, t, nh, dh, m, h0, k, tm, tk, a.ctypes.data)
-    _to_bfp(a, t, dst)
+    _to_bfp(a, t, dst, h0 * dh, (h0 + nh) * dh)
 
 
 def kv_rec_bfp(k, v, c0, t, dh, lkp, dst):
