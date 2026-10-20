@@ -126,7 +126,8 @@ jobs:
     needs: [check-new-commits, get-air-project-commit]
     if: always() && (github.event_name != 'schedule' || needs.check-new-commits.outputs.has_new_commits == 'true')
 
-    runs-on: ubuntu-latest
+    # Pinned: free-disk-space fails on images missing a package it removes.
+    runs-on: ubuntu-24.04
 
     permissions:
       id-token: write
