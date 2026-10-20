@@ -22,3 +22,8 @@ decode_qwen.flags
 
 # Staircase window manifest (which ATTN_MAXL pairs this dir holds).
 .decode_windows
+
+# Kernel header dependencies and compile flags (decode_kernels.mk).
+*.o.d
+*.ll.d
+.kernel_flags

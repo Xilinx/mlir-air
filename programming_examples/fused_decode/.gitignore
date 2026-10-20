@@ -38,3 +38,8 @@ params.txt
 *.txn.h
 npu_seq_*.mlir
 ir_dump/
+
+# Kernel header dependencies and compile flags (decode_kernels.mk).
+*.o.d
+*.ll.d
+.kernel_flags

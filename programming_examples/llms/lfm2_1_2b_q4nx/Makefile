@@ -111,6 +111,16 @@ DECODE_ENV := DECODE_MODEL=lfm2-1.2b UNIFIED=1 LM_HEAD=0 NLAYERS=1 DECODE_GOLDEN
 GLU_SLICE_EXPECTED := $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=GLU_SLICE python3 $(DECODE_DRIVER) 2>/dev/null)
 PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPECTED))
 
+KERNEL_DIR      := $(srcdir)
+KERNEL_SRC_DIRS := $(DEC)/kernels
+KERNEL_FLAGS     = $(PEANO_KBASE)
+O2_KERNELS      := $(NONATTN_KERNELS) shortconv
+LL_KERNELS      := $(ATTN_LL_KERNELS)
+O2_EXTRA         = $(NONATTN_EXTRA)
+LL_EXTRA         = $(ATTN_EXTRA)
+shortconv_FLAGS  = -DSC_DIM=$(SC_DIM) -DSC_WAVES=$(SC_WAVES)
+include $(DEC)/decode_kernels.mk
+
 # Build only the first N model layers. The weight, rms and state slabs are all
 # per-layer prefixes, so a short build is a prefix of the full one and needs no
 # separate weight pack -- which makes this the bisect when the decode gate says
@@ -206,16 +216,8 @@ compile-decode:
 # Entry point bench/sweep_decode.py invokes BY NAME to rebuild at each swept
 # context. Renaming it silently breaks the nightly decode sweep.
 _compile_decode_build:
-	@echo ">>> non-attn decode kernels (Peano -O2, MODEL_TYPE=LFM2_1_2B): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
-	@echo "    shortconv.cc (-O2, SC_DIM=$(SC_DIM) SC_WAVES=$(SC_WAVES))"
-	@$(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -DSC_DIM=$(SC_DIM) -DSC_WAVES=$(SC_WAVES) \
-	  -O2 -c $(DEC)/kernels/shortconv.cc -o $(srcdir)/shortconv.o || exit 1
-	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
+	@echo ">>> decode kernels"
+	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile decode-kernels
 	@echo ">>> template decode_L$(LBUILD) (+ L$(LREF) slope ref)"
 	@cd $(srcdir) && $(DECODE_ENV) DECODE_GOLDEN_L=$(LBUILD) $(PYTHON) $(DECODE_DRIVER) >/tmp/lfm2_decode_L$(LBUILD).log 2>&1; \
 	  if [ -f decode.xclbin ]; then mv -f decode.xclbin decode_L$(LBUILD).xclbin; mv -f decode.insts.bin decode_L$(LBUILD).insts.bin; \
@@ -300,6 +302,7 @@ gen:
 ## decode templates live in THIS directory (not in fused_decode/), so unlike the
 ## llama example this clean does not have to reach into that one.
 clean:
+	rm -f $(DECODE_KERNEL_CLEAN) 2>/dev/null || true
 	rm -rf $(srcdir)/$(BUILD_DIR) $(srcdir)/air_project $(srcdir)/__pycache__ \
 	       $(srcdir)/*.o $(srcdir)/*.ll $(srcdir)/air.mlir \
 	       $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin \
@@ -342,16 +345,8 @@ _compile_decode_elf_build:
 	  echo "overwrite decode_scratchpad.elf with a $(LAYERS)-layer artifact that"; \
 	  echo "the ELF path cannot detect. Bisect with the xclbin templates instead."; \
 	  exit 1; fi
-	@echo ">>> non-attn decode kernels (Peano -O2, MODEL_TYPE=LFM2_1_2B): $(NONATTN_KERNELS)"
-	@for k in $(NONATTN_KERNELS); do echo "    $$k.cc (-O2)"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -O2 -c $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.o || exit 1; done
-	@echo "    shortconv.cc (-O2, SC_DIM=$(SC_DIM) SC_WAVES=$(SC_WAVES))"
-	@$(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(NONATTN_EXTRA) -DSC_DIM=$(SC_DIM) -DSC_WAVES=$(SC_WAVES) \
-	  -O2 -c $(DEC)/kernels/shortconv.cc -o $(srcdir)/shortconv.o || exit 1
-	@echo ">>> attn decode kernels (Peano -O1, inline .ll only): $(ATTN_LL_KERNELS)"
-	@for k in $(ATTN_LL_KERNELS); do echo "    $$k.ll"; \
-	  $(PEANO_INSTALL_DIR)/bin/clang++ $(PEANO_KBASE) $(ATTN_EXTRA) -O1 -DDECODE_INLINE_ATTN -S -emit-llvm \
-	    $(DEC)/kernels/$$k.cc -o $(srcdir)/$$k.ll || exit 1; done
+	@echo ">>> decode kernels"
+	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile decode-kernels
 	@echo ">>> full-ELF decode (ATTN_MAXL=$(LBUILD), runtime L via scratchpad)"
 	@cd $(srcdir) && rm -f decode.elf params.txt decode.args; $(DECODE_ENV) DECODE_OUTPUT_FORMAT=elf DECODE_GOLDEN_L=$(LBUILD) \
 	  DECODE_DYNSEQ=1 DECODE_RT_ROUNDS=1 \
