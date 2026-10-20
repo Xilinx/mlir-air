@@ -142,7 +142,10 @@ preflight-peano:
 ## with every other model); ple.cc is this fork's own.
 kernels: preflight-peano
 	@echo ">>> decode kernels"
-	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile decode-kernels
+	@# BUILD_ENV is target-specific (compile-decode-elf) and decides ATTN_KV_PARTS,
+	@# so the sub-make must see the same value.
+	@$(MAKE) --no-print-directory -f $(srcdir)/Makefile decode-kernels \
+	  BUILD_ENV="$(BUILD_ENV)"
 
 ## Kernels + one decode template into this dir (decode.xclbin + decode.insts.bin).
 ## Weight-free: weights are runtime BOs, so no bundle is read at build time.

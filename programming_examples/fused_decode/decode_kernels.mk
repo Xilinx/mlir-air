@@ -19,6 +19,9 @@
 # Then build them with the decode-kernels target, or depend on
 # $(DECODE_KERNEL_FILES). A clean rule removes $(DECODE_KERNEL_CLEAN).
 
+# These rules must not become the including Makefile's default goal.
+_decode_kernels_goal := $(.DEFAULT_GOAL)
+
 LL_OPT ?= O1
 
 DECODE_KERNEL_FILES := $(O2_KERNELS:%=$(KERNEL_DIR)/%.o) \
@@ -56,3 +59,5 @@ $(KERNEL_DIR)/%.ll: %.cc $(KERNEL_FLAGS_FILE) $(PEANO_CXX)
 	  -DDECODE_INLINE_ATTN -S -emit-llvm -MMD -MP -MF $@.d $< -o $@
 
 -include $(DECODE_KERNEL_FILES:=.d)
+
+.DEFAULT_GOAL := $(_decode_kernels_goal)
