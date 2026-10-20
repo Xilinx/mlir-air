@@ -11,6 +11,7 @@ GATE PASS needs logit cosine >= --tol and the same first token.
 """
 
 import argparse
+import os
 import sys
 import time
 import types
@@ -64,13 +65,20 @@ def main():
     model = gw.Q4nxModel(a.model)
     from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(model.path.parent)
+    # model.q4nx is all resolve_q4nx_model fetches from a repo id, so a repo
+    # id loads its tokenizer from the repo
+    src = a.model or gw.MODEL_DEFAULT
+    tok = AutoTokenizer.from_pretrained(
+        os.path.dirname(src) if os.path.isfile(src) else src
+    )
     if a.n_tokens:
         # Text, not random ids: a random-id prompt has near-flat logits, and
         # their cosine fails the gate at any length.
         text = Path(a.text_file or HERE.parent / "README.md").read_text()
         body = tok(text, add_special_tokens=False)["input_ids"]
-        body = body * -(-(a.n_tokens - 1) // len(body))
+        if a.n_tokens > 1 and not body:
+            ap.error("--n-tokens: the text has no tokens")
+        body = body * -(-(a.n_tokens - 1) // max(len(body), 1))
         ids = [tok.bos_token_id] + body[: a.n_tokens - 1]
     else:
         prompt = a.prompt
