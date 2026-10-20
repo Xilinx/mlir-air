@@ -39,4 +39,5 @@ _fused_prefill/
 # Kernel header dependencies and compile flags (decode_kernels.mk).
 *.o.d
 *.ll.d
-.kernel_flags
+*.o.flags
+*.ll.flags

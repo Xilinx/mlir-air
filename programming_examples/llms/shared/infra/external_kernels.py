@@ -4,8 +4,10 @@
 """External C++ kernel compilation utilities.
 
 Compiles all external .o files from source to avoid relying on stale
-pre-compiled artifacts. Each function checks if the .o exists and skips
-recompilation if so (delete the .o to force recompile).
+pre-compiled artifacts. By default a function skips the compile if the .o
+already exists (delete the .o to force recompile). With force=True the .o is
+built by programming_examples/kernel_rules.mk, which recompiles it only when
+something it depends on changed.
 
 Compiled .o files are placed in CWD (build_peano/) where aiecc finds them
 via its link_with search path.
@@ -85,7 +87,10 @@ def _compile_kernel(src_path, output_name, extra_flags=None, force=False):
         src_path: Path to the .cc source file
         output_name: Name of the output .o file (placed in CWD)
         extra_flags: Additional compiler flags (e.g., -D defines)
-        force: If True, recompile even if .o exists
+        force: If False, an existing .o is kept whatever flags built it. If
+            True, the .o is brought up to date with these flags: make
+            recompiles it only when the flags, the source, a header it
+            includes or the compiler changed.
     """
     if not force and Path(output_name).exists():
         return
@@ -94,16 +99,28 @@ def _compile_kernel(src_path, output_name, extra_flags=None, force=False):
     if not src.exists():
         raise FileNotFoundError(f"Kernel source not found: {src}")
 
-    clang = _get_peano_clang()
-    include_dir = _get_aie_include_dir()
-
-    cmd = [clang] + _PEANO_FLAGS + [f"-I{include_dir}"]
-    if extra_flags:
-        cmd.extend(extra_flags)
-    cmd.extend(["-c", str(src), "-o", output_name])
-
-    print(f"  Compiling {output_name} from {src.name}...")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    flags = _PEANO_FLAGS + [f"-I{_get_aie_include_dir()}"] + (extra_flags or [])
+    cmd = [
+        "make",
+        "--no-print-directory",
+        "-f",
+        str(_PROJ_ROOT / "kernel_rules.mk"),
+        f"KERNEL_CXX={_get_peano_clang()}",
+        f"KERNEL_OUTS={output_name}",
+        f"{output_name}_SRC={src}",
+        f"{output_name}_FLAGS={' '.join(flags + ['-c'])}",
+        output_name,
+    ]
+    # Called from inside the example Makefiles: keep the outer make's options,
+    # variables and jobserver out of this one.
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL")
+    }
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if result.stdout:
+        print(result.stdout, end="")
     if result.returncode != 0:
         # Filter warnings, only show errors
         errors = [l for l in result.stderr.split("\n") if "error" in l.lower()]

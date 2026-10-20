@@ -1,9 +1,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# Decode kernels as make targets. A kernel is recompiled only when its source, a
-# header it includes, its flags or the Peano compiler changed, so building
-# several templates in a row compiles the kernels once.
+# The decode kernels, described for ../kernel_rules.mk. Building several
+# templates in a row compiles the kernels once.
 #
 # Set before including this file:
 #   KERNEL_DIR       directory the .o / .ll files are written to
@@ -19,45 +18,35 @@
 # Then build them with the decode-kernels target, or depend on
 # $(DECODE_KERNEL_FILES). A clean rule removes $(DECODE_KERNEL_CLEAN).
 
-# These rules must not become the including Makefile's default goal.
+# The decode-kernels target must not become the including Makefile's default
+# goal.
 _decode_kernels_goal := $(.DEFAULT_GOAL)
 
 LL_OPT ?= O1
 
 DECODE_KERNEL_FILES := $(O2_KERNELS:%=$(KERNEL_DIR)/%.o) \
                        $(LL_KERNELS:%=$(KERNEL_DIR)/%.ll)
-KERNEL_FLAGS_FILE := $(KERNEL_DIR)/.kernel_flags
 DECODE_KERNEL_CLEAN := $(DECODE_KERNEL_FILES) $(DECODE_KERNEL_FILES:=.d) \
-                       $(KERNEL_FLAGS_FILE)
-PEANO_CXX = $(PEANO_INSTALL_DIR)/bin/clang++
+                       $(DECODE_KERNEL_FILES:=.flags)
 
-vpath %.cc $(KERNEL_SRC_DIRS)
+_decode_src = $(or $(firstword $(wildcard $(KERNEL_SRC_DIRS:%=%/$(1).cc))),$(1).cc)
 
-# Everything that decides what a kernel compiles to, other than its sources.
-# The file is rewritten only when this changes, so its date tells the kernels
-# when to rebuild.
-_kernel_flags = $(PEANO_CXX) $(KERNEL_FLAGS) O2: $(O2_EXTRA) \
-  LL: -$(LL_OPT) $(LL_EXTRA) \
-  $(foreach k,$(O2_KERNELS) $(LL_KERNELS),$(k): $($(k)_FLAGS))
+$(foreach k,$(O2_KERNELS), \
+  $(eval $(KERNEL_DIR)/$(k).o_SRC := $(call _decode_src,$(k))) \
+  $(eval $(KERNEL_DIR)/$(k).o_FLAGS = \
+    $$(KERNEL_FLAGS) $$(O2_EXTRA) $$($(k)_FLAGS) -O2 -c))
+$(foreach k,$(LL_KERNELS), \
+  $(eval $(KERNEL_DIR)/$(k).ll_SRC := $(call _decode_src,$(k))) \
+  $(eval $(KERNEL_DIR)/$(k).ll_FLAGS = \
+    $$(KERNEL_FLAGS) $$(LL_EXTRA) $$($(k)_FLAGS) -$$(LL_OPT) \
+    -DDECODE_INLINE_ATTN -S -emit-llvm))
 
-.PHONY: decode-kernels _kernel_flags_check
+KERNEL_CXX = $(PEANO_INSTALL_DIR)/bin/clang++
+KERNEL_OUTS := $(DECODE_KERNEL_FILES)
+include $(dir $(lastword $(MAKEFILE_LIST)))../kernel_rules.mk
+
+.PHONY: decode-kernels
 decode-kernels: $(DECODE_KERNEL_FILES)
 	@:
-
-$(KERNEL_FLAGS_FILE): _kernel_flags_check
-	@mkdir -p $(KERNEL_DIR)
-	@echo '$(_kernel_flags)' | cmp -s - $@ || echo '$(_kernel_flags)' > $@
-
-$(KERNEL_DIR)/%.o: %.cc $(KERNEL_FLAGS_FILE) $(PEANO_CXX)
-	@echo "    $(notdir $<) -> $(notdir $@) (-O2)"
-	@$(PEANO_CXX) $(KERNEL_FLAGS) $(O2_EXTRA) $($*_FLAGS) -O2 \
-	  -MMD -MP -MF $@.d -c $< -o $@
-
-$(KERNEL_DIR)/%.ll: %.cc $(KERNEL_FLAGS_FILE) $(PEANO_CXX)
-	@echo "    $(notdir $<) -> $(notdir $@) (-$(LL_OPT), inline .ll)"
-	@$(PEANO_CXX) $(KERNEL_FLAGS) $(LL_EXTRA) $($*_FLAGS) -$(LL_OPT) \
-	  -DDECODE_INLINE_ATTN -S -emit-llvm -MMD -MP -MF $@.d $< -o $@
-
--include $(DECODE_KERNEL_FILES:=.d)
 
 .DEFAULT_GOAL := $(_decode_kernels_goal)
