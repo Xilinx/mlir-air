@@ -32,7 +32,7 @@ EX = HERE.parents[2]  # programming_examples
 
 ATTN_FNS = (
     "zero_fill_g_bf16 zero_fill_gp_bf16 zero_fill_sp_bf16 neg_inf_fill_up_bf16 matmul_a_b_bf16 "
-    "matmul_g_b_bf16 fused_softmax mul_r_gp accum_sp_r_s vector_copy_32elems div_gp_sp "
+    "matmul_g_b_bf16 matmul_g_b_r_bf16 fused_softmax mul_r_gp accum_sp_r_s vector_copy_32elems div_gp_sp "
     "apply_causal_mask apply_window_mask"
 ).split()
 

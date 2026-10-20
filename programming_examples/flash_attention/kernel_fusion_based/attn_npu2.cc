@@ -49,10 +49,11 @@
 template <typename T_in, typename T_out, unsigned rowA, unsigned colA,
           unsigned colB, unsigned r, unsigned s, unsigned t,
           bool transpose_b = true, bool b_pretransposed = false,
-          bool zero_c = false>
-static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
-                                              const T_in *__restrict pB,
-                                              T_out *__restrict pC) {
+          bool zero_c = false, bool scale_c = false>
+static inline void
+matmul_vectorized_2x2_mmul(const T_in *__restrict pA, const T_in *__restrict pB,
+                           T_out *__restrict pC,
+                           const T_out *__restrict rows = nullptr) {
 
   using MMUL = aie::mmul<r, s, t, T_in, T_in, accauto>;
 
@@ -62,6 +63,19 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
     chess_prepare_for_pipelining chess_loop_range(2, ) {
       T_out *__restrict pC1 = pC + (z)*MMUL::size_C;
       T_out *__restrict pC2 = pC + ((z + 1)) * MMUL::size_C;
+      // row factors of the two row blocks, lane i * 8 + j = rows[i]
+      aie::vector<T_out, MMUL::size_C> r0, r1;
+      if constexpr (scale_c) {
+        static_assert(r == 8 && t == 8);
+        auto rep = [](const T_out *p) {
+          aie::vector<T_out, 8> v = aie::load_v<8>(p);
+          aie::vector<T_out, 16> v2 = aie::concat(v, v);
+          aie::vector<T_out, 32> v4 = aie::concat(v2, v2);
+          return aie::transpose(aie::concat(v4, v4), 8, 8);
+        };
+        r0 = rep(rows + z * r);
+        r1 = rep(rows + (z + 1) * r);
+      }
 
       for (unsigned j = 0; j < colB; j += 2)
 #ifdef OPT_PERF_ENABLED
@@ -82,6 +96,12 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
             acc_C01 = aie::load_v<MMUL::size_C>(pC1 + MMUL::size_C * rowA);
             acc_C10 = aie::load_v<MMUL::size_C>(pC2);
             acc_C11 = aie::load_v<MMUL::size_C>(pC2 + MMUL::size_C * rowA);
+          }
+          if constexpr (scale_c) { // C *= rows, a factor per row
+            acc_C00 = aie::mul(acc_C00, r0).template to_vector<T_out>();
+            acc_C01 = aie::mul(acc_C01, r0).template to_vector<T_out>();
+            acc_C10 = aie::mul(acc_C10, r1).template to_vector<T_out>();
+            acc_C11 = aie::mul(acc_C11, r1).template to_vector<T_out>();
           }
 
           MMUL C00(acc_C00);
@@ -151,11 +171,11 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
 // bf16 MatMul kernel with bf16 outputs.
 // transpose_b: controls whether B blocks are software-transposed before mac.
 template <unsigned m, unsigned k, unsigned n, bool transpose_b = true,
-          bool b_pretransposed = false, bool zero_c = false>
-static inline void
-matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
-                                  const bfloat16 *__restrict pB,
-                                  bfloat16 *__restrict pC) {
+          bool b_pretransposed = false, bool zero_c = false,
+          bool scale_c = false>
+static inline void matmul_vectorized_8x8x8_bf16_bf16(
+    const bfloat16 *__restrict pA, const bfloat16 *__restrict pB,
+    bfloat16 *__restrict pC, const bfloat16 *__restrict rows = nullptr) {
   constexpr int r = 8;
   constexpr int s = 8;
   constexpr int t = 8;
@@ -165,7 +185,8 @@ matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
 
   return matmul_vectorized_2x2_mmul<bfloat16, bfloat16, (m / r), (k / s),
                                     (n / t), r, s, t, transpose_b,
-                                    b_pretransposed, zero_c>(pA, pB, pC);
+                                    b_pretransposed, zero_c, scale_c>(pA, pB,
+                                                                      pC, rows);
 }
 
 // Combined scale: log2e / sqrt(dk_full). Applies 1/sqrt(dk) inside softmax
@@ -361,6 +382,16 @@ void matmul_g_b_bf16(bfloat16 *g_in, bfloat16 *b_in, bfloat16 *out) {
   // The hardware mul_8x8_8x8T already transposes B internally.
   matmul_vectorized_8x8x8_bf16_bf16<lqp, lkp, dv, /*transpose_b=*/false>(
       g_in, b_in, out);
+}
+
+// out = out * r + G @ V, r a factor per row of out: mul_r_gp then
+// matmul_g_b_bf16 in one pass over out.
+void matmul_g_b_r_bf16(bfloat16 *g_in, bfloat16 *b_in, bfloat16 *out,
+                       bfloat16 *r) {
+  SET_ROUNDING();
+  matmul_vectorized_8x8x8_bf16_bf16<lqp, lkp, dv, /*transpose_b=*/false, false,
+                                    false, /*scale_c=*/true>(g_in, b_in, out,
+                                                             r);
 }
 
 void zero_fill_gp_bf16(bfloat16 *c_out) {
@@ -1042,44 +1073,26 @@ void apply_window_mask(bfloat16 *g, int32_t q_block_idx, int32_t kv_block_idx,
     return;
   }
 
-  // 3. Ragged edge. Read-modify-write EVERY 8-element row slice (the same
-  // invariant apply_causal_mask relies on), selecting per element.
+  // 3. Ragged edge: the diagonal block masks col > row, the oldest block col
+  // <= row. Read-modify-write every 8x8 block (the same invariant
+  // apply_causal_mask relies on), selecting per lane on col - row.
   const bool diag = (kv_block_idx == q_block_idx);
-  constexpr int BlkDim = 8;
-  aie::vector<bfloat16, BlkDim> mask_vec =
-      aie::broadcast<bfloat16, BlkDim>(neg_inf_val);
-
-  for (int row = 0; row < lqp; row++) {
-    int bound = row + 1;
-    int row_blk = row / BlkDim;
-    int row_in = row % BlkDim;
-
-    for (int col_blk = 0; col_blk < lkp / BlkDim; col_blk++) {
-      int col_start = col_blk * BlkDim;
-      int off = col_blk * (lqp * BlkDim) + row_blk * (BlkDim * BlkDim) +
-                row_in * BlkDim;
-
-      aie::vector<bfloat16, BlkDim> orig = aie::load_v<BlkDim>(g + off);
-
-      uint32_t sel_bits = 0;
-      for (int c = 0; c < BlkDim; c++) {
-        int col = col_start + c;
-        bool masked = diag ? (col >= bound) : (col < bound);
-        if (masked) {
-          sel_bits |= (1u << c);
-        }
-      }
-
-      if (sel_bits == 0) {
-        aie::store_v(g + off, orig);
-      } else if (sel_bits == ((1u << BlkDim) - 1)) {
-        aie::store_v(g + off, mask_vec);
-      } else {
-        aie::mask<BlkDim> sel(sel_bits);
-        aie::store_v(g + off, aie::select(orig, mask_vec, sel));
-      }
+  alignas(aie::vector_decl_align) static const int16 col_minus_row[64] = {
+      0,  1,  2,  3,  4,  5,  6, 7, -1, 0,  1,  2,  3,  4,  5,  6,
+      -2, -1, 0,  1,  2,  3,  4, 5, -3, -2, -1, 0,  1,  2,  3,  4,
+      -4, -3, -2, -1, 0,  1,  2, 3, -5, -4, -3, -2, -1, 0,  1,  2,
+      -6, -5, -4, -3, -2, -1, 0, 1, -7, -6, -5, -4, -3, -2, -1, 0};
+  const aie::vector<int16, 64> cmr = aie::load_v<64>(col_minus_row);
+  const aie::vector<bfloat16, 64> ninf =
+      aie::broadcast<bfloat16, 64>(neg_inf_val);
+  for (int cb = 0; cb < lkp / 8; cb++)
+    for (int rb = 0; rb < lqp / 8; rb++) {
+      bfloat16 *p = g + cb * (lqp * 8) + rb * 64;
+      aie::vector<int16, 64> d =
+          aie::add(cmr, aie::broadcast<int16, 64>((int16)((cb - rb) * 8)));
+      aie::mask<64> m = diag ? aie::gt(d, (int16)0) : aie::le(d, (int16)0);
+      aie::store_v(p, aie::select(aie::load_v<64>(p), ninf, m));
     }
-  }
 }
 
 // ---------------------------------------------------------------------------

@@ -295,8 +295,8 @@ def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs,
         ext("zero_fill_sp_bf16"),
     )
     ninf_up = ext("neg_inf_fill_up_bf16")
-    mm_ab, mm_gb = ext("matmul_a_b_bf16"), ext("matmul_g_b_bf16")
-    softmax, mul_r_gp = ext("fused_softmax"), ext("mul_r_gp")
+    mm_ab, mm_gb_r = ext("matmul_a_b_bf16"), ext("matmul_g_b_r_bf16")
+    softmax = ext("fused_softmax")
     accum, vcopy = ext("accum_sp_r_s"), ext("vector_copy_32elems", scalars=[i32])
     div = ext("div_gp_sp")
     if g.window_rtp:
@@ -399,8 +399,7 @@ def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs,
                         softmax(s.reshape(tq * lkp), up, s_tmp, r_tmp)
                         for z in range(dvc):
                             kv2l1.get(v_l1, indices=[tx, ty])
-                            mul_r_gp(r_tmp, gp[z])
-                            mm_gb(s.reshape(tq * lkp), v_l1, gp[z])
+                            mm_gb_r(s.reshape(tq * lkp), v_l1, gp[z], r_tmp)
                         accum(sp, r_tmp, s_tmp)
                         vcopy(0, s_tmp, sp)
                     for z in range(dvc):
