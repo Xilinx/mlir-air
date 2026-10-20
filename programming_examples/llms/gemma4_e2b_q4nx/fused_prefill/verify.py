@@ -11,6 +11,7 @@ GATE PASS needs logit cosine >= --tol and the same first token.
 """
 
 import argparse
+import os
 import sys
 import time
 import types
@@ -44,7 +45,11 @@ def main():
     ap.add_argument("build_dir")
     ap.add_argument("--prompt", default="What is the capital of France?")
     ap.add_argument(
-        "--n-tokens", type=int, default=0, help="synthetic prompt of N tokens"
+        "--n-tokens",
+        type=int,
+        default=0,
+        help="prompt of N tokens of text (--text-file, else ../README.md), "
+        "repeated as needed, with no chat template",
     )
     ap.add_argument(
         "--text-file",
@@ -58,15 +63,24 @@ def main():
     a = ap.parse_args()
 
     model = gw.Q4nxModel(a.model)
-    if a.n_tokens:
-        ids = [2] + list(
-            np.random.default_rng(0).integers(1000, 200000, a.n_tokens - 1)
-        )
-        tok = None
-    else:
-        from transformers import AutoTokenizer
+    from transformers import AutoTokenizer
 
-        tok = AutoTokenizer.from_pretrained(model.path.parent)
+    # model.q4nx is all resolve_q4nx_model fetches from a repo id, so a repo
+    # id loads its tokenizer from the repo
+    src = a.model or gw.MODEL_DEFAULT
+    tok = AutoTokenizer.from_pretrained(
+        os.path.dirname(src) if os.path.isfile(src) else src
+    )
+    if a.n_tokens:
+        # Text, not random ids: a random-id prompt has near-flat logits, and
+        # their cosine fails the gate at any length.
+        text = Path(a.text_file or HERE.parent / "README.md").read_text()
+        body = tok(text, add_special_tokens=False)["input_ids"]
+        if a.n_tokens > 1 and not body:
+            ap.error("--n-tokens: the text has no tokens")
+        body = body * -(-(a.n_tokens - 1) // max(len(body), 1))
+        ids = [tok.bos_token_id] + body[: a.n_tokens - 1]
+    else:
         prompt = a.prompt
         if a.text_file:
             body = tok(Path(a.text_file).read_text())["input_ids"][: a.text_tokens]
@@ -104,7 +118,7 @@ def main():
     c = cos(logits, ref)
     print(f"logit cosine vs CPU reference = {c:.5f}")
     first, rfirst = int(logits.argmax()), int(ref.argmax())
-    name = (lambda t: repr(tok.decode([t]))) if tok else str
+    name = lambda t: repr(tok.decode([t]))  # noqa: E731
     print(
         f"first token: device {first} {name(first)}  reference {rfirst} {name(rfirst)}"
     )
