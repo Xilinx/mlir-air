@@ -156,7 +156,7 @@ compile-decode-elf:
 	@$(MAKE) --no-print-directory -C $(DEC) compile-decode-elf $(DEC_MODEL) LBUILD=$(RUN_LBUILD) \
 	  UNI_DEC=$(SWEEP_UNI_DEC) KV_SRC=$(SWEEP_KV_SRC) PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
 	@mv -f $(DEC)/decode_scratchpad.elf $(DEC)/decode_scratchpad.params.txt \
-	  $(DEC)/decode_scratchpad.maxl $(srcdir)/
+	  $(DEC)/decode_scratchpad.args $(DEC)/decode_scratchpad.maxl $(srcdir)/
 
 compile: compile-decode compile-decode-full compile-prefill compile-fused-prefill
 
