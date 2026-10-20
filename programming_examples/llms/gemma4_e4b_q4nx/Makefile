@@ -4,7 +4,7 @@
 # Gemma4-E4B (text) Q4NX on NPU2 (MLIR-AIR).
 #
 # The same targets as ../gemma4_e2b_q4nx/Makefile. The Python entry points here
-# run that directory's code at GEMMA4_VARIANT=e4b; artifacts land here.
+# run that directory's code with the E4B config; artifacts land here.
 #
 # Quick start:
 #   make compile          Build the prefill ELFs + both decode templates
