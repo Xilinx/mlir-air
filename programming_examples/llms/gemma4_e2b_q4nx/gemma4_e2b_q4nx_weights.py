@@ -37,12 +37,19 @@ from ml_dtypes import bfloat16
 _FUSED_DECODE = str(Path(__file__).resolve().parents[2] / "fused_decode")
 if _FUSED_DECODE not in sys.path:
     sys.path.insert(0, _FUSED_DECODE)
+
+import types  # noqa: E402
+
+# llms/shared is imported as the air_examples package, not through sys.path.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+from air_examples.llms.shared.infra import host_weights  # noqa: E402
 from proj_qmm_pack import (  # noqa: E402
     ROW_BLOCK,
     COL_BLOCK,
     GROUP,
     N_GROUPS,
-    PARALLEL,
     BLOCK_BF16,
 )
 
@@ -133,46 +140,16 @@ PLE_INPUT_SCALE = float(
     2.0**-0.5
 )  # 0.707106781  (FLM calls it *_MODEL_PROJECTION_SCALE)
 
-# Row de-interleave within a chunk: row_in_block = g*PARALLEL + 2*k + bit.
-_G = ROW_BLOCK // PARALLEL  # 2
-_EVEN = np.array(
-    [g * PARALLEL + 2 * k for g in range(_G) for k in range(PARALLEL // 2)]
-)
-_ODD = _EVEN + 1
-
 
 def _unpack_q4nx(i16, nbi, nbj):
     """Codec B blocks [nbi*nbj, BLOCK_BF16] -> (q, scale, min) in logical order:
     q uint8 [nbi*32, nbj*256], scale/min float32 [nbi*32, nbj*N_GROUPS]."""
-    nb = nbi * nbj
-    sc = _bf(i16[:, 0:256].copy()).reshape(nb, N_GROUPS, ROW_BLOCK)
-    mn = _bf(i16[:, 256:512].copy()).reshape(nb, N_GROUPS, ROW_BLOCK)
-    qb = (
-        i16[:, 512:BLOCK_BF16]
-        .copy()
-        .view(np.uint8)
-        .reshape(nb, _G, COL_BLOCK, PARALLEL // 2)
-    )
-    lo = (qb & 0xF).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-    hi = (qb >> 4).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-    q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.uint8)
-    q[:, _EVEN, :] = lo
-    q[:, _ODD, :] = hi
-
-    def logical(a):  # [nb, ROW_BLOCK, cols] block-major -> [rows, nbj*cols]
-        c = a.shape[2]
-        return (
-            a.reshape(nbi, nbj, ROW_BLOCK, c)
-            .transpose(0, 2, 1, 3)
-            .reshape(nbi * ROW_BLOCK, -1)
-        )
-
-    return logical(q), logical(sc.transpose(0, 2, 1)), logical(mn.transpose(0, 2, 1))
+    return host_weights.unpack_q4nx(i16, nbi, nbj)
 
 
 def _expand(q, sc, mn):
     """(q, scale, min) -> float32 weights, w = scale*q + min."""
-    return np.repeat(sc, GROUP, axis=1) * q + np.repeat(mn, GROUP, axis=1)
+    return host_weights.dequant_q4(q, sc, mn, GROUP)
 
 
 def is_sliding(layer_idx):

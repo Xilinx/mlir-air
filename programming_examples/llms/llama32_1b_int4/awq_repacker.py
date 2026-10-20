@@ -28,6 +28,7 @@ import os
 import sys
 
 import numpy as np
+import torch
 from ml_dtypes import bfloat16
 
 # AutoAWQ packs 8 uint4 nibbles into each int32, but the nibble at bit
@@ -47,11 +48,11 @@ def unpack_awq_int32(packed: np.ndarray) -> np.ndarray:
     Returns:
         uint8 array, last axis size N, values in [0, 16).
     """
-    packed64 = packed.astype(np.int64)
-    shifts = np.arange(8, dtype=np.int64) * 4
-    nibs = ((packed64[..., :, None] >> shifts) & 0xF).astype(np.uint8)
-    nibs_reordered = nibs[..., AWQ_UNPACK_PERM]
-    return nibs_reordered.reshape(*packed.shape[:-1], packed.shape[-1] * 8)
+    p = torch.from_numpy(np.ascontiguousarray(packed, np.int32))
+    # Output column k of each block of 8 is the nibble at bit 4*AWQ_UNPACK_PERM[k].
+    shifts = torch.from_numpy((AWQ_UNPACK_PERM * 4).astype(np.int32))
+    nibs = ((p[..., :, None] >> shifts) & 0xF).to(torch.uint8)
+    return nibs.reshape(*packed.shape[:-1], packed.shape[-1] * 8).numpy()
 
 
 def dequant_to_bf16(qweight, qzeros, scales, group_size):
@@ -75,11 +76,13 @@ def dequant_to_bf16(qweight, qzeros, scales, group_size):
     # sees (the packed BO carries bf16 scales). fp16->bf16 loses 3 mantissa
     # bits — intentional precision drift relative to the canonical AWQ fp16
     # dequant.
-    s_bf16_as_f32 = scales.astype(bfloat16).astype(np.float32)
-    z_per_k = np.repeat(qzeros_u.astype(np.int32), group_size, axis=0)  # [K, N]
-    s_per_k = np.repeat(s_bf16_as_f32, group_size, axis=0)  # [K, N]
-    w_f32 = (qweight_u.astype(np.int32) - z_per_k) * s_per_k
-    return w_f32.astype(bfloat16)
+    # Each product is a 4-bit integer times a bf16 scale, which float32 holds
+    # exactly, so float32 rounds to the same bf16 as a float64 product would.
+    s = torch.from_numpy(scales.astype(bfloat16).astype(np.float32))[:, None, :]
+    z = torch.from_numpy(qzeros_u.astype(np.int32))[:, None, :]
+    q = torch.from_numpy(qweight_u.astype(np.int32)).view(n_groups, group_size, N)
+    w = ((q - z).float() * s).reshape(K, N).to(torch.bfloat16)
+    return w.view(torch.int16).numpy().view(bfloat16)
 
 
 def repack_hf_awq_linear(qweight, qzeros, scales, group_size):

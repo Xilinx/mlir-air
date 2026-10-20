@@ -44,12 +44,18 @@ from ml_dtypes import bfloat16
 _FUSED_DECODE = str(Path(__file__).resolve().parents[2] / "fused_decode")
 if _FUSED_DECODE not in sys.path:
     sys.path.insert(0, _FUSED_DECODE)
+
+import types  # noqa: E402
+
+# llms/shared is imported as the air_examples package, not through sys.path.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+from air_examples.llms.shared.infra import host_weights  # noqa: E402
 from proj_qmm_pack import (  # noqa: E402
     ROW_BLOCK,
     COL_BLOCK,
     GROUP,
-    N_GROUPS,
-    PARALLEL,
     BLOCK_BF16,
 )
 
@@ -90,15 +96,6 @@ def resolve_q4nx_model(model):
     return hf_hub_download(model, "model.q4nx")
 
 
-# Row-group reorder (same block geometry as the llama bundles: 32x256 blocks,
-# parallel=16 -> 2 row-groups/block interleaved even/odd).
-_G = ROW_BLOCK // PARALLEL  # 2
-_EVEN = np.array(
-    [g * PARALLEL + 2 * k for g in range(_G) for k in range(PARALLEL // 2)]
-)
-_ODD = _EVEN + 1
-
-
 class Q4nxModel:
     """mmap + parse a model.q4nx safetensors file; vectorized Q4_0 dequant.
 
@@ -119,9 +116,7 @@ class Q4nxModel:
 
     def _raw_i16(self, name):
         o0, o1 = self._hdr[name]["data_offsets"]
-        return np.frombuffer(
-            self._mm[self._base + o0 : self._base + o1].tobytes(), dtype=np.int16
-        )
+        return np.asarray(self._mm[self._base + o0 : self._base + o1]).view(np.int16)
 
     def has(self, name):
         return name in self._hdr
@@ -129,10 +124,9 @@ class Q4nxModel:
     def bf16(self, name):
         """A BF16 tensor as float32, in its declared shape."""
         o0, o1 = self._hdr[name]["data_offsets"]
-        v = np.frombuffer(
-            self._mm[self._base + o0 : self._base + o1].tobytes(), dtype=bfloat16
+        return host_weights.bf16_bytes_to_f32(
+            self._mm[self._base + o0 : self._base + o1], self._hdr[name]["shape"]
         )
-        return v.astype(np.float32).reshape(self._hdr[name]["shape"])
 
     def raw_q4_0(self, name, M, K):
         """One quantized tensor in ROW-MAJOR Q4_0 form, unpacked from the bundle's
@@ -151,36 +145,16 @@ class Q4nxModel:
         ), f"{name}: header nb={self._hdr[name]['shape'][0]} != (M/32)*(K/256)={nb}"
         i16 = self._raw_i16(name).reshape(nb, BLOCK_BF16)
         assert not i16[:, 256:512].any(), f"{name}: Q4_0 expects zero mins"
-        sc = (
-            i16[:, 0:256]
-            .copy()
-            .view(bfloat16)
-            .astype(np.float32)
-            .reshape(nb, N_GROUPS, ROW_BLOCK)
-            .transpose(0, 2, 1)  # [block][row][group]
-        )
-        qb = (
-            i16[:, 512:BLOCK_BF16]
-            .copy()
-            .view(np.uint8)
-            .reshape(nb, _G, COL_BLOCK, PARALLEL // 2)
-        )
-        lo = (qb & 0xF).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-        hi = (qb >> 4).transpose(0, 1, 3, 2).reshape(nb, ROW_BLOCK // 2, COL_BLOCK)
-        q = np.zeros((nb, ROW_BLOCK, COL_BLOCK), np.uint8)
-        q[:, _EVEN, :] = lo
-        q[:, _ODD, :] = hi
+        q, sc, _ = host_weights.unpack_q4nx(i16, nbi, nbj)
         # sign-extend the nibble: 0..15 -> -8..7, kept as the raw uint8 byte.
         q = (((q ^ 8).astype(np.int8)) - np.int8(8)).view(np.uint8)
-        unblock = lambda a, w: (  # [nb, ROW_BLOCK, w] -> [M, nbj*w]
-            a.reshape(nbi, nbj, ROW_BLOCK, w).transpose(0, 2, 1, 3).reshape(M, nbj * w)
-        )
-        return unblock(q, COL_BLOCK), unblock(sc, N_GROUPS)
+
+        return q, sc
 
     def dequant(self, name, M, K):
         """A Q4_0 tensor dequantized to float32 [M, K]: w = int8(q) * scale."""
         q, sc = self.raw_q4_0(name, M, K)
-        return q.view(np.int8).astype(np.float32) * np.repeat(sc, GROUP, axis=1)
+        return host_weights.dequant_q4(q.view(np.int8), sc, None, GROUP)
 
     # name -> (tensor suffix, out, in) PADDED dims (the bundle is block-major, and
     # ships the GLU axis already zero-padded to INTER_PAD).
@@ -217,7 +191,7 @@ class Q4nxModel:
         """Dequantized bf16 GEMM input-B [K, out] per projection for layer k, at
         the LOGICAL (unpadded) GLU dim -- the host containers' shape."""
         return {
-            nm: np.ascontiguousarray(_unpad(nm, self.proj_fp(k, nm)).T, dtype=bfloat16)
+            nm: host_weights.transpose_bf16(_unpad(nm, self.proj_fp(k, nm)))
             for nm in self._PROJ
         }
 
@@ -307,7 +281,7 @@ class HFQ40Model:
     def proj_fp(self, k, nm):
         """Q4_0-rounded PADDED [out, K] for one projection of layer k."""
         q, sc = self.proj_raw(k, nm)
-        return q.view(np.int8).astype(np.float32) * np.repeat(sc, GROUP, axis=1)
+        return host_weights.dequant_q4(q.view(np.int8), sc, None, GROUP)
 
     def lm_head_raw(self):
         """Tied: the fp embedding matrix, Q4_0-rounded."""
@@ -317,11 +291,11 @@ class HFQ40Model:
 
     def lm_head_fp(self):
         q, sc = self.lm_head_raw()
-        return q.view(np.int8).astype(np.float32) * np.repeat(sc, GROUP, axis=1)
+        return host_weights.dequant_q4(q.view(np.int8), sc, None, GROUP)
 
     def layer_weights(self, k):
         return {
-            nm: np.ascontiguousarray(_unpad(nm, self.proj_fp(k, nm)).T, dtype=bfloat16)
+            nm: host_weights.transpose_bf16(_unpad(nm, self.proj_fp(k, nm)))
             for nm in self._PROJ
         }
 

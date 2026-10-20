@@ -69,6 +69,13 @@ for _p in (os.path.join(_PROG_DIR, "fused_decode"),):
         sys.path.insert(0, _p)
 
 from q4_0_codec import HFModel, requant_q4_0  # noqa: E402
+import types  # noqa: E402
+
+# llms/shared is imported as the air_examples package, not through sys.path.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    _PROG_DIR
+]
+from air_examples.llms.shared.infra import host_weights  # noqa: E402
 from proj_qmm_pack import GROUP  # noqa: E402
 
 DEFAULT_HF_REPO = "LiquidAI/LFM2-1.2B"
@@ -82,7 +89,7 @@ def dequant_q4_0(q_u8, scale, group=GROUP):
     byte per weight, NOT packed nibbles -- `requant_q4_0` returns unpacked
     codes in [-8, 7] and the two-per-byte packing happens later, in the packer.
     """
-    return q_u8.view(np.int8).astype(np.float32) * np.repeat(scale, group, axis=1)
+    return host_weights.dequant_q4(q_u8.view(np.int8), scale, None, group)
 
 
 _Q4_SUFFIXES = (
@@ -202,6 +209,8 @@ class Lfm2Q4Model:
         Grouping runs along the last axis, which for HF's (out, in) layout is
         the reduction dim -- exactly where the device kernel expects its groups.
         """
+        if self.dtype == bfloat16:
+            return host_weights.transpose_bf16(self.q4(name))
         return np.ascontiguousarray(self.q4(name).T, dtype=self.dtype)
 
     def q4(self, name):

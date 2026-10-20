@@ -14,8 +14,17 @@ import json
 import os
 from pathlib import Path
 
+import sys
+import types
+
 import numpy as np
 from ml_dtypes import bfloat16
+
+# llms/shared is imported as the air_examples package, not through sys.path.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[1])
+]
+from air_examples.llms.shared.infra import host_weights  # noqa: E402
 
 from proj_qmm_pack import (
     ROW_BLOCK,
@@ -28,7 +37,7 @@ from proj_qmm_pack import (
 
 
 # ---------------------------------------------------------------------------
-# HF safetensors reader (mmap, multi-shard, no torch/transformers dependency)
+# HF safetensors reader (mmap, multi-shard, no transformers dependency)
 # ---------------------------------------------------------------------------
 class HFModel:
     """mmap + parse a (possibly sharded) HF safetensors checkpoint."""
@@ -73,8 +82,10 @@ class HFModel:
         mm, hdr, base = self._shards[self._where[name]]
         e = hdr[name]
         o0, o1 = e["data_offsets"]
+        if e["dtype"] == "BF16":
+            return host_weights.bf16_bytes_to_f32(mm[base + o0 : base + o1], e["shape"])
         raw = mm[base + o0 : base + o1].tobytes()
-        dt = {"BF16": bfloat16, "F32": np.float32, "F16": np.float16}[e["dtype"]]
+        dt = {"F32": np.float32, "F16": np.float16}[e["dtype"]]
         return np.frombuffer(raw, dtype=dt).astype(np.float32).reshape(e["shape"])
 
 
@@ -91,12 +102,7 @@ def requant_q4_0(Wm, group=GROUP):
     All-zero groups get scale 1 (a 0 scale would make the block undequantizable).
     Returns nibbles as uint8 two's complement (the packer masks with 0xF).
     """
-    M, Kc = Wm.shape
-    Wg = Wm.reshape(M, Kc // group, group)
-    amax = np.abs(Wg).max(2)
-    sc = np.where(amax <= 0, 1.0, amax / 8.0).astype(np.float32)
-    q = np.clip(np.rint(Wg / sc[..., None]), -8, 7).astype(np.int8)
-    return q.reshape(M, Kc).view(np.uint8), sc
+    return host_weights.requant_q4_0(Wm, group)
 
 
 def pack_q4k_cascade_fast(q, scale, NCX, NCY, dual_chan=False, mins=None):

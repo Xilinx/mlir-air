@@ -26,6 +26,15 @@ from typing import List, Optional
 import numpy as np
 from ml_dtypes import bfloat16
 
+import sys as _sys  # noqa: E402
+import types as _types  # noqa: E402
+
+# llms/shared is imported as the air_examples package, not through sys.path.
+_sys.modules.setdefault("air_examples", _types.ModuleType("air_examples")).__path__ = [
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+]
+from air_examples.llms.shared.infra import host_weights  # noqa: E402
+
 
 @dataclass
 class LlamaConfig:
@@ -170,7 +179,7 @@ def load_weights(
             with safe_open(key_to_file[hf_key], framework="numpy") as f:
                 tensor = _load_tensor(f, hf_key, dtype)
             if needs_transpose:
-                tensor = np.ascontiguousarray(tensor.T)
+                tensor = host_weights.transpose(tensor)
             layer_tensors[field_name] = tensor
 
         layer = LayerWeights(**layer_tensors)

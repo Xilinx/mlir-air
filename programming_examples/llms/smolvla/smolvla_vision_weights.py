@@ -33,6 +33,15 @@ from typing import Any, List, Optional
 import numpy as np
 from ml_dtypes import bfloat16
 
+import sys as _sys  # noqa: E402
+import types as _types  # noqa: E402
+
+# llms/shared is imported as the air_examples package, not through sys.path.
+_sys.modules.setdefault("air_examples", _types.ModuleType("air_examples")).__path__ = [
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+]
+from air_examples.llms.shared.infra import host_weights  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -260,7 +269,7 @@ def load_vision_weights(
             key = f"{_VISION_PREFIX}encoder.layers.{i}.{suffix}"
             arr = _get(key)
             if needs_t:
-                arr = np.ascontiguousarray(arr.T)
+                arr = host_weights.transpose(arr)
             t[field_name] = arr
         layer = VisionLayerWeights(**t)
         lp = f"Vision layer {i}"

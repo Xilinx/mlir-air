@@ -49,6 +49,9 @@ except:
     pass
 
 
+if importlib.util.find_spec("torch"):
+    config.available_features.add("torch")
+
 spensor_name = "spensor"
 # If spensor is already imported or can be imported
 if spensor_name in sys.modules or importlib.util.find_spec(spensor_name):
