@@ -16,7 +16,7 @@ from runtime import load_pair
 from prepare_inputs import load_prefill
 from checks import sha, write
 from speculative import accept_greedy, autoregressive
-from verify import signature
+from verify_loop import signature
 
 
 def host_gate(batch=8):

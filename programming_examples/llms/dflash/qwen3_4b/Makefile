@@ -78,13 +78,13 @@ chat:
 
 verify: verify-host verify-state verify-model
 verify-host:
-	$(PYTHON) $(srcdir)/verify.py --host-only
+	$(PYTHON) $(srcdir)/verify_loop.py --host-only
 	$(PYTHON) $(srcdir)/test_streaming.py
 
 verify-state:
 	$(NPU_RUN) $(srcdir)/tests/check_decoder.py --artifact $(BUILD_DIR)/target --role target --prefixes 0 7 16 64 1024 4088 --output $(VERIFY_DIR)/target.json
 	$(NPU_RUN) $(srcdir)/tests/check_decoder.py --artifact $(BUILD_DIR)/draft --role drafter --prefixes 0 7 16 64 1024 4088 --output $(VERIFY_DIR)/draft.json
-	$(NPU_RUN) $(srcdir)/verify.py $(PAIR) $(PREFILL) --output $(VERIFY_DIR)/loop.json
+	$(NPU_RUN) $(srcdir)/verify_loop.py $(PAIR) $(PREFILL) --output $(VERIFY_DIR)/loop.json
 
 verify-model:
 	$(PYTHON) $(srcdir)/resources.py --reference $(OFFLINE_ARG)
