@@ -1419,13 +1419,13 @@ class Gemma4Q4nxPrefill:
         # KernelCache keys on kernel NAME, and the manifest validates only the
         # toolchain -- so a cache built at another seq_len would be reused here
         # and dispatched with differently sized buffers. The default path
-        # carries the length, but --cache-dir / Q4NX_CACHE_DIR is taken
-        # verbatim, so stamp the length and refuse a mismatch.
+        # carries the model and length, but --cache-dir / Q4NX_CACHE_DIR is
+        # taken verbatim, so stamp both and refuse a mismatch.
         self._seq_stamp = Path(cache_dir) / ".seq_len"
         self._verbose = verbose
 
         force = os.environ.get("Q4NX_FORCE_COMPILE") == "1"
-        stamp = f"{seq_len}/rev{_KERNEL_REV}"
+        stamp = f"{cfg.name}/{seq_len}/rev{_KERNEL_REV}"
         if self._seq_stamp.is_file():
             was = self._seq_stamp.read_text().strip()
             if was != stamp:
