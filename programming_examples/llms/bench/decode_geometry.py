@@ -41,7 +41,9 @@ FUSED_DECODE_PLE = Path(__file__).resolve().parents[2] / "fused_decode_ple"
 # and importing the wrong one here does not fail -- the fork is byte-faithful to
 # its parent for every other model, so it would return sizes that are merely
 # missing the PLE pair.
-PLE_BUILDERS = {"gemma4-e2b": (FUSED_DECODE_PLE, "fused_decode_ple.py")}
+PLE_BUILDERS = {
+    m: (FUSED_DECODE_PLE, "fused_decode_ple.py") for m in ("gemma4-e2b", "gemma4-e4b")
+}
 
 # bench_decode.cpp's built-in defaults, i.e. llama-3.2-1B at ATTN_MAXL=2048.
 # VOCAB_CHUNK_I2=18 and w_elems are that model's, from its lit/Makefile.
@@ -55,6 +57,7 @@ _CHECK_W_ELEMS = [
     ("llama-3.2-3b", "9", 28, 1004666880),
     ("gemma3-4b", "5", 34, 1213644800),
     ("gemma4-e2b", "27", 35, 704102400),
+    ("gemma4-e4b", "5", 42, 1426636800),
 ]
 # The split models. Their parts summing to w_elems checks the part that can
 # actually be wrong: that the per-group `min(G, UNI_DEC - g*G)` covers exactly

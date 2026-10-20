@@ -1,0 +1,15 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// GEMMA4-E4B Q4NX decode compile-only smoke test: builds the layer gate's decode
+// template (one layer, ATTN_MAXL=16) through AIR -> AIE -> aiecc -> Peano. No NPU
+// dispatch and no weight data. peano_ge22 for the reason gemma4_e2b_q4nx's
+// compile lit gives: the 21.x pin compiles this engine to all-NaN.
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22
+//
+// RUN: mkdir -p test_npu2_compile
+// RUN: cd test_npu2_compile
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile-decode PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PLE decode build complete

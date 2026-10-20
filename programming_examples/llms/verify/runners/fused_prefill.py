@@ -24,12 +24,11 @@ def load(name, model=None):
     sys.modules.setdefault(
         "air_examples", types.ModuleType("air_examples")
     ).__path__ = [str(_PE)]
-    if name == "gemma4_e2b_q4nx":
-        from air_examples.llms.gemma4_e2b_q4nx.fused_prefill.runtime import (
-            FusedPrefill,
-        )
+    if name.startswith("gemma4_"):
+        import importlib
 
-        pf = FusedPrefill(d)
+        rt = importlib.import_module(f"air_examples.llms.{name}.fused_prefill.runtime")
+        pf = rt.FusedPrefill(d)
         pf.load_weights(model=model)
         return pf
     from air_examples.llms.shared.fused_prefill import dense

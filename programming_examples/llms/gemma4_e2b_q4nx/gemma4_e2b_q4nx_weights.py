@@ -47,25 +47,67 @@ from proj_qmm_pack import (  # noqa: E402
 )
 
 # ---------------------------------------------------------------- dims
-D = 1536  # hidden_size
+# GEMMA4_VARIANT selects the model. The Gemma4 modules read their dims from
+# here at import time, so it must be set before the first import.
+VARIANTS = {
+    "e2b": dict(
+        D=1536,
+        N_KV_HEADS=1,
+        INTER=6144,
+        NUM_LAYERS=35,
+        NUM_KV_SHARED_LAYERS=20,
+        FULL_PERIOD=5,
+        DOUBLE_WIDE_MLP=True,
+        REPO="FastFlowLM/Gemma4-E2B-IT-NPU2",
+        # fused_decode_ple: _MODELS key, kernel MODEL_TYPE, and the LM-head
+        # chunk the entry's UNI_LM assumes
+        DECODE_MODEL="gemma4-e2b",
+        MODEL_TYPE="GEMMA4_E2B",
+        VOCAB_CHUNK_I2=27,
+    ),
+    "e4b": dict(
+        D=2560,
+        N_KV_HEADS=2,
+        INTER=10240,
+        NUM_LAYERS=42,
+        NUM_KV_SHARED_LAYERS=18,
+        FULL_PERIOD=6,
+        DOUBLE_WIDE_MLP=False,
+        REPO="FastFlowLM/Gemma4-E4B-IT-NPU2",
+        DECODE_MODEL="gemma4-e4b",
+        MODEL_TYPE="GEMMA4_E4B",
+        VOCAB_CHUNK_I2=5,
+    ),
+}
+VARIANT = os.environ.get("GEMMA4_VARIANT", "e2b")
+if VARIANT not in VARIANTS:
+    raise SystemExit(f"GEMMA4_VARIANT={VARIANT!r}: want one of {sorted(VARIANTS)}")
+_V = VARIANTS[VARIANT]
+# Where the variant's build artifacts and caches live.
+MODEL_DIR = Path(__file__).resolve().parents[1] / f"gemma4_{VARIANT}_q4nx"
+
+D = _V["D"]  # hidden_size
 N_Q_HEADS = 8
-N_KV_HEADS = 1  # MQA
+N_KV_HEADS = _V["N_KV_HEADS"]
 DH_SLIDING = 256  # head_dim
 DH_GLOBAL = 512  # global_head_dim
-INTER = 6144  # mlp intermediate (some layers are double-wide, see below)
-NUM_LAYERS = 35
+INTER = _V["INTER"]  # mlp intermediate; 2x on E2B's KV-shared layers
+DOUBLE_WIDE_MLP = _V["DOUBLE_WIDE_MLP"]
+NUM_LAYERS = _V["NUM_LAYERS"]
 VOCAB = 262144
 PLI_D = 256  # hidden_size_per_layer_input
 RMS_EPS = 1e-6
 SLIDING_WINDOW = 512
 FINAL_LOGIT_SOFTCAP = 30.0
 ATTN_SCALE = 1.0  # config scaling is 1.0; NOT 1/sqrt(head_dim)
-NUM_KV_SHARED_LAYERS = 20
-FIRST_KV_SHARED_LAYER = NUM_LAYERS - NUM_KV_SHARED_LAYERS  # 15
+NUM_KV_SHARED_LAYERS = _V["NUM_KV_SHARED_LAYERS"]
+FIRST_KV_SHARED_LAYER = NUM_LAYERS - NUM_KV_SHARED_LAYERS
 
-# layer_types from config.json: 7 repeats of ssssF.
+# layer_types from config.json: every FULL_PERIOD-th layer is full attention.
+_P = _V["FULL_PERIOD"]
 LAYER_TYPES = [
-    "full_attention" if (i % 5) == 4 else "sliding_attention" for i in range(NUM_LAYERS)
+    "full_attention" if (i % _P) == _P - 1 else "sliding_attention"
+    for i in range(NUM_LAYERS)
 ]
 
 # RoPE per layer type (config rope_parameters).
@@ -192,7 +234,7 @@ def _gelu_tanh(x):
 
 # The model.q4nx bundle. An HF repo id by default, like every other q4nx
 # example, so nothing here depends on a path that exists on one machine.
-MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
+MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", _V["REPO"])
 
 
 def resolve_q4nx_model(model=None):
@@ -363,15 +405,16 @@ class Q4nxModel:
     def layer_ple(self, k):
         """The two PLE matrices for one layer, un-tiled to plain [out, in].
 
-        Both ship pre-tiled bf16: inp_gate (8,1536,32) is [256,1536] as 8 row
-        tiles of 32, and per_layer_projection (48,256,32) is [1536,256] the same
-        way. per_layer_model_proj is stored per layer as (8,1536,32) = the 256
-        rows of the global (35*256, 1536) projection that belong to this layer.
+        Both ship pre-tiled bf16: inp_gate (8,D,32) is [256,D] as 8 row tiles
+        of 32, and per_layer_projection (D/32,256,32) is [D,256] the same way.
+        per_layer_model_proj is stored per layer as (8,D,32) = the 256 rows of
+        the global (NUM_LAYERS*256, D) projection that belong to this layer.
         """
         p = f"model.layers.{k}."
-        gate = self.bf16(p + "inp_gate.weight").reshape(8, D, 32)
-        proj = self.bf16(p + "per_layer_projection.weight").reshape(48, PLI_D, 32)
-        mp = self.bf16(f"model.per_layer_model_proj.weight_layer{k}").reshape(8, D, 32)
+        nt = PLI_D // 32
+        gate = self.bf16(p + "inp_gate.weight").reshape(nt, D, 32)
+        proj = self.bf16(p + "per_layer_projection.weight").reshape(D // 32, PLI_D, 32)
+        mp = self.bf16(f"model.per_layer_model_proj.weight_layer{k}").reshape(nt, D, 32)
         return dict(
             inp_gate=gate.transpose(0, 2, 1).reshape(PLI_D, D),
             per_layer_projection=proj.transpose(0, 2, 1).reshape(D, PLI_D),
@@ -555,17 +598,16 @@ def forward_prompt(model, ids, want_logits=True, lm_chunk=16384):
             kv[L] = (ke, v)
         ke, v = kv[src]
 
-        # MQA: a single kv head broadcast over all 8 q heads. Squeeze that axis
-        # OFF ke/v up front -- carrying it into the einsum and slicing it out
-        # afterwards is how the query axis got collapsed instead, which left the
-        # scores constant along keys and every softmax exactly uniform.
-        kh, vh = ke[:, 0], v[:, 0]  # (S, dh)
+        # GQA: kv head g serves q heads [g*grp, (g+1)*grp).
+        grp = N_Q_HEADS // N_KV_HEADS
+        kh = np.repeat(ke, grp, axis=1)  # (S, N_Q_HEADS, dh)
+        vh = np.repeat(v, grp, axis=1)
         mask = _sliding_mask(T, kh.shape[0], SLIDING_WINDOW if sliding else 0)
-        s = np.einsum("thd,sd->hts", qe, kh) * ATTN_SCALE
+        s = np.einsum("thd,shd->hts", qe, kh) * ATTN_SCALE
         s = s + mask[None]
         s = np.exp(s - s.max(-1, keepdims=True))
         s = s / s.sum(-1, keepdims=True)
-        o = np.einsum("hts,sd->thd", s, vh).reshape(T, N_Q_HEADS * dh)
+        o = np.einsum("hts,shd->thd", s, vh).reshape(T, N_Q_HEADS * dh)
         o1 = r + _rmsnorm(o @ w["o"].T, nm["post_attn"])
 
         # ---- FFN (GELU-tanh gated) ----

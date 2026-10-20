@@ -53,10 +53,12 @@ _PE = _HERE.parent.parent  # programming_examples
 _DEC = _PE / "fused_decode_ple"  # the PLE fork of the decode engine
 _FD = _PE / "fused_decode"  # decode_insts_gen / decode_staircase live here
 sys.path.insert(0, str(_HERE))
+import gemma4_e2b_q4nx_weights as _gw  # noqa: E402
 
 # HF repo id of the self-contained model.q4nx bundle, or a local dir/file
 # (gemma4_e2b_q4nx_weights.resolve_q4nx_model resolves all three).
-MODEL_DEFAULT = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
+MODEL_DEFAULT = _gw.MODEL_DEFAULT
+_VARIANT = _gw.VARIANTS[_gw.VARIANT]
 # <bos> + "The capital of France is". The Gemma4 tokenizer does not add <bos>, so
 # it is prepended by hand -- exactly as gemma4_e2b_q4nx_prefill._main and
 # run_reference.py do, or the two paths score different prompts.
@@ -80,15 +82,15 @@ EOS_IDS = (1, 106)  # <eos>, <end_of_turn>
 # Where decode_L<N>.{xclbin,insts.bin} live. `make compile-decode-full` writes the
 # pair here; the sweep writes its own pairs here too, which is fine -- the
 # generator picks the smallest calibrated window covering the session's reach.
-_DECODE_DIR = Path(os.environ.get("Q4NX_GEMMA4_DECODE_DIR", str(_HERE)))
+_DECODE_DIR = Path(os.environ.get("Q4NX_GEMMA4_DECODE_DIR", str(_gw.MODEL_DIR)))
 # The packed decode weights. Repo-local and keyed on the geometry that shaped
 # them, because a cache packed for a different layer count or vocab chunking is
 # not detectably wrong at dispatch time -- it just feeds the kernels the wrong
 # blocks.
 _WCACHE_DIR = Path(
-    os.environ.get("Q4NX_GEMMA4_WCACHE_DIR", str(_HERE / ".decode_wcache"))
+    os.environ.get("Q4NX_GEMMA4_WCACHE_DIR", str(_gw.MODEL_DIR / ".decode_wcache"))
 )
-VOCAB_CHUNK_I2 = "27"
+VOCAB_CHUNK_I2 = str(_VARIANT["VOCAB_CHUNK_I2"])
 
 
 def _elf_on():
@@ -272,7 +274,7 @@ class FusedDecoder:
 
         kind = "ELF" if self.elf_mode else "xclbin"
         print(
-            f"[decode] gemma4-e2b ONE {kind}: ATTN_MAXL={self.ATTN_MAXL}, serves "
+            f"[decode] gemma4-{_gw.VARIANT} ONE {kind}: ATTN_MAXL={self.ATTN_MAXL}, serves "
             f"L in [1,{self.maxL}]; {self.UNI} layers + PLE + lm-head/dispatch",
             flush=True,
         )
@@ -363,10 +365,11 @@ class FusedDecoder:
     def seed_kv(self, ks, vs, P):
         """Place the prefill's per-layer K/V into the device cache.
 
-        `ks`/`vs` are PER-LAYER LISTS of (P, head_dim), not a stacked array: head_dim
-        is 256 on the 28 sliding layers and 512 on the 7 full ones, so they do not
-        stack. Each device row is REGION_W wide and holds the single MQA head once;
-        both attention CUs are fed from it.
+        `ks`/`vs` are PER-LAYER LISTS of (P, n_kv*head_dim), not a stacked array:
+        head_dim is 256 on the sliding layers and 512 on the full ones, so they
+        do not stack. Each device row is REGION_W wide and holds the CUs' kv
+        heads side by side, DH_A each: E4B's two heads, or E2B's single MQA head
+        once (both attention CUs are fed from that one copy).
 
         A 256-wide K head does NOT sit contiguously in its 512-wide slot. Every
         layer is built at the widest layer's geometry and the narrow heads are
@@ -382,6 +385,7 @@ class FusedDecoder:
         from gemma4_e2b_q4nx_requant import _head_perm
 
         RW, RS = self.REGION_W, self.ATTN_MAXL * self.REGION_W
+        n_kv = RW // self.DH_A
         if P > self.ATTN_MAXL:
             raise ValueError(f"prompt of {P} exceeds ATTN_MAXL={self.ATTN_MAXL}")
         self.KV[:] = 0
@@ -393,14 +397,16 @@ class FusedDecoder:
             vperm = np.arange(dh) if L in self.SWA else perm
             for reg, src, p in ((0, ks[L], perm), (1, vs[L], vperm)):
                 src = np.asarray(src, np.float32).reshape(P, -1)
-                dh = src.shape[1]
-                if dh != self.gw.head_dim(L):
+                if src.shape[1] != n_kv * dh:
                     raise ValueError(
-                        f"layer {L} KV is {dh} wide, the model says "
-                        f"{self.gw.head_dim(L)}"
+                        f"layer {L} KV is {src.shape[1]} wide, the device holds "
+                        f"{n_kv} heads of {dh}"
                     )
                 rows = self.KV[L, reg * RS : reg * RS + P * RW].reshape(P, RW)
-                rows[:, p] = src.astype(self.bf16)
+                for h in range(n_kv):
+                    rows[:, h * self.DH_A + p] = src[:, h * dh : (h + 1) * dh].astype(
+                        self.bf16
+                    )
         TO = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.kvc.write(np.ascontiguousarray(self.KV).reshape(-1).view(np.int16), 0)
         self.kvc.sync(TO)
@@ -569,6 +575,11 @@ def _prefill_npu(prompt, model, seq_len=None):
     from gemma4_e2b_q4nx_prefill import Gemma4Q4nxPrefill
 
     seq_len = seq_len or int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
+    if len(prompt) > seq_len:
+        raise SystemExit(
+            f"prompt of {len(prompt)} tokens exceeds the per-op prefill's "
+            f"{seq_len} rows; rebuild it with a larger CTX"
+        )
     t_load = time.perf_counter()
     pf = Gemma4Q4nxPrefill(
         seq_len=seq_len, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
@@ -584,6 +595,16 @@ def _prefill_npu(prompt, model, seq_len=None):
     ttft = time.perf_counter() - t0
     ks, vs = pf.kv_stack()
     return ks, vs, int(logits.argmax()), ttft
+
+
+def _fused_max_len(build_dir):
+    """Longest prompt the fused build holds: its manifest's max_len when the
+    build fixes one (more than one kv head), else unbounded. Longer prompts take
+    the per-op prefill."""
+    import json
+
+    m = json.loads((Path(build_dir) / "manifest.json").read_text())
+    return m.get("max_len") or float("inf")
 
 
 def _prefill_fused(prompt, model, build_dir):
@@ -620,12 +641,12 @@ def _prefill_numpy(prompt, model):
     qm = gw.Q4nxModel(model)
     logits, kv = gw.forward_prompt(qm, prompt)
     # forward_prompt keys its cache by SOURCE layer and keeps the kv-head axis;
-    # seed_kv wants one (P, head_dim) entry per layer, MQA head squeezed off.
+    # seed_kv wants one (P, n_kv*head_dim) entry per layer.
     ks, vs = [], []
     for L in range(gw.NUM_LAYERS):
         ke, v = kv[gw.kv_source_layer(L)]
-        ks.append(np.asarray(ke[:, 0], np.float32))
-        vs.append(np.asarray(v[:, 0], np.float32))
+        ks.append(np.asarray(ke, np.float32).reshape(len(prompt), -1))
+        vs.append(np.asarray(v, np.float32).reshape(len(prompt), -1))
     return ks, vs, int(np.asarray(logits).argmax()), time.perf_counter() - t0
 
 
@@ -647,7 +668,7 @@ def generate(
     )
     if numpy_prefill:
         ks, vs, first, ttft = _prefill_numpy(prompt, model)
-    elif fused_prefill:
+    elif fused_prefill and len(prompt) <= _fused_max_len(fused_prefill):
         ks, vs, first, ttft = _prefill_fused(prompt, model, fused_prefill)
     else:
         ks, vs, first, ttft = _prefill_npu(prompt, model)

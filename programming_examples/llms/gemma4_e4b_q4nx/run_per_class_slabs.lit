@@ -1,0 +1,14 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Weight-free check that the decode builder and the weight packer agree on
+// each layer class's slab (see ../gemma4_e2b_q4nx/run_per_class_slabs.lit).
+//
+// RUN: %PYTHON %S/check_per_class_slabs.py | FileCheck %s
+//
+// CHECK: W_DEC {{[0-9]+}} = sum of slabs: True
+// CHECK: offsets cumulative: True
+// CHECK: layer 0 (arm 7): slab {{[0-9]+}} == w_layer_of, blocks match: True
+// CHECK: layer 5 (arm 3): slab {{[0-9]+}} == w_layer_of, blocks match: True
+// CHECK: layer 24 (arm 5): slab {{[0-9]+}} == w_layer_of, blocks match: True
+// CHECK: layer 29 (arm 1): slab {{[0-9]+}} == w_layer_of, blocks match: True

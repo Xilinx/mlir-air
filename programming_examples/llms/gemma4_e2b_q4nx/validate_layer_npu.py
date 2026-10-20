@@ -40,14 +40,18 @@ _DEC = _HERE / ".." / ".." / "fused_decode_ple"
 # The model.q4nx bundle: an HF repo id, a directory holding it, or the file
 # itself (gemma4_e2b_q4nx_weights.resolve_q4nx_model). Override with
 # --bundle or Q4NX_MODEL_SOURCE.
-BUNDLE = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
+sys.path.insert(0, str(_HERE))
+import gemma4_e2b_q4nx_weights as _gw  # noqa: E402
+
+BUNDLE = _gw.MODEL_DEFAULT
+_VARIANT = _gw.VARIANTS[_gw.VARIANT]
 
 
 def _load_fd(uni_dec, attn_maxl, kv_src=None, layers=None):
     """Import the builder with the env its module-level constants read."""
     os.environ.update(
-        DECODE_MODEL="gemma4-e2b",
-        VOCAB_CHUNK_I2="27",
+        DECODE_MODEL=_VARIANT["DECODE_MODEL"],
+        VOCAB_CHUNK_I2=str(_VARIANT["VOCAB_CHUNK_I2"]),
         UNIFIED="1",
         LM_HEAD="0",
         NLAYERS=str(uni_dec),
@@ -126,14 +130,17 @@ def cpu_layer(gw, qm, L, x, x0, emb_L, ple=True, attn_l=1, kv=None):
     else:
         ke, v = kv
 
-    # The cache the device attends over: zeros, with this token at slot L-1.
-    kh = np.zeros((attn_l, dh), np.float32)
-    vh = np.zeros((attn_l, dh), np.float32)
-    kh[attn_l - 1], vh[attn_l - 1] = ke[0, 0], v[0, 0]
-    s = np.einsum("thd,sd->hts", qe, kh) * gw.ATTN_SCALE
+    # The cache the device attends over: zeros, with this token at slot L-1,
+    # one kv head per group of q heads.
+    grp = gw.N_Q_HEADS // gw.N_KV_HEADS
+    kh = np.zeros((attn_l, gw.N_Q_HEADS, dh), np.float32)
+    vh = np.zeros((attn_l, gw.N_Q_HEADS, dh), np.float32)
+    kh[attn_l - 1] = np.repeat(ke[0], grp, axis=0)
+    vh[attn_l - 1] = np.repeat(v[0], grp, axis=0)
+    s = np.einsum("thd,shd->hts", qe, kh) * gw.ATTN_SCALE
     s = np.exp(s - s.max(-1, keepdims=True))
     s /= s.sum(-1, keepdims=True)
-    o = np.einsum("hts,sd->thd", s, vh).reshape(T, gw.N_Q_HEADS * dh)
+    o = np.einsum("hts,shd->thd", s, vh).reshape(T, gw.N_Q_HEADS * dh)
     o1 = r + gw._rmsnorm(o @ w["o"].T, nm["post_attn"])
 
     h = gw._rmsnorm(o1, nm["pre_ffn"])
