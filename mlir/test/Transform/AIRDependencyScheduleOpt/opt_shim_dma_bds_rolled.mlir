@@ -41,6 +41,37 @@
 // CHECK: air.channel.put {{.*}} @chA[] (%{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}, %{{[0-9]+}}] [%c2{{.*}}, %c4{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c32768{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}])
 // CHECK: scf.yield
 
+// The same loop over i32, its induction variable cast to index, as Triton
+// lowers a loop. Its value in the first tile is an i32 constant, at the loop's
+// lower bound. Over i64 likewise.
+
+// CHECK-LABEL: func.func @nested_loop_i32(
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK-NOT: scf.for
+// CHECK: %[[LB:.*]] = arith.constant 0 : i32
+// CHECK-NEXT: arith.index_cast %[[LB]] : i32 to index
+// CHECK: air.channel.put {{.*}} @chA[] (%{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}, %{{[0-9]+}}] [%c2{{.*}}, %c4{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c32768{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}])
+// CHECK: scf.yield
+
+// CHECK-LABEL: func.func @nested_loop_i32_lb
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK-NOT: scf.for
+// CHECK: %[[LB:.*]] = arith.constant 1 : i32
+// CHECK-NEXT: arith.index_cast %[[LB]] : i32 to index
+// CHECK: air.channel.put {{.*}} @chA[] (%{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}, %{{[0-9]+}}] [%c2{{.*}}, %c4{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c32768{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}])
+// CHECK: scf.yield
+
+// CHECK-LABEL: func.func @nested_loop_i64
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK-NOT: scf.for
+// CHECK: %[[LB:.*]] = arith.constant 0 : i64
+// CHECK-NEXT: arith.index_cast %[[LB]] : i64 to index
+// CHECK: air.channel.put {{.*}} @chA[] (%{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}, %{{[0-9]+}}] [%c2{{.*}}, %c4{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c32768{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}])
+// CHECK: scf.yield
+
 // An offset computed inside air.execute.
 
 // CHECK-LABEL: func.func @execute_offset
@@ -173,6 +204,73 @@ module {
       %r = scf.for %k = %c0 to %c2 step %c1 iter_args(%t = %t0) -> (!air.async.token) {
         %ok = affine.apply affine_map<()[s0, s1] -> (s0 * 128 + s1 * 64)>()[%y, %k]
         %1 = air.channel.put async [%t] @chA[] (%a[%ox, %ok] [%c64, %c64] [%c512, %c1]) {id = 2 : i32} : (memref<256x512xbf16>)
+        scf.yield %1 : !air.async.token
+      }
+    }
+    return
+  }
+
+  func.func @nested_loop_i32(%arg0: memref<256x512xbf16>) {
+    %c4 = arith.constant 4 : index
+    %0 = air.launch async (%x, %y) in (%sx=%c4, %sy=%c4) args(%a=%arg0) : memref<256x512xbf16> attributes {id = 20 : i32} {
+      %c1 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %c512 = arith.constant 512 : index
+      %c0_i32 = arith.constant 0 : i32
+      %c1_i32 = arith.constant 1 : i32
+      %c2_i32 = arith.constant 2 : i32
+      %ox = affine.apply affine_map<()[s0] -> (s0 * 64)>()[%x]
+      %oy = affine.apply affine_map<()[s0] -> (s0 * 128)>()[%y]
+      %t0 = air.wait_all async
+      %r = scf.for %k = %c0_i32 to %c2_i32 step %c1_i32 iter_args(%t = %t0) -> (!air.async.token) : i32 {
+        %ki = arith.index_cast %k : i32 to index
+        %k64 = arith.muli %ki, %c64 : index
+        %ok = arith.addi %oy, %k64 : index
+        %1 = air.channel.put async [%t] @chA[] (%a[%ox, %ok] [%c64, %c64] [%c512, %c1]) {id = 21 : i32} : (memref<256x512xbf16>)
+        scf.yield %1 : !air.async.token
+      }
+    }
+    return
+  }
+
+  func.func @nested_loop_i32_lb(%arg0: memref<256x512xbf16>) {
+    %c4 = arith.constant 4 : index
+    %0 = air.launch async (%x, %y) in (%sx=%c4, %sy=%c4) args(%a=%arg0) : memref<256x512xbf16> attributes {id = 22 : i32} {
+      %c1 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %c512 = arith.constant 512 : index
+      %c1_i32 = arith.constant 1 : i32
+      %c3_i32 = arith.constant 3 : i32
+      %ox = affine.apply affine_map<()[s0] -> (s0 * 64)>()[%x]
+      %oy = affine.apply affine_map<()[s0] -> (s0 * 128)>()[%y]
+      %t0 = air.wait_all async
+      %r = scf.for %k = %c1_i32 to %c3_i32 step %c1_i32 iter_args(%t = %t0) -> (!air.async.token) : i32 {
+        %ki = arith.index_cast %k : i32 to index
+        %k64 = arith.muli %ki, %c64 : index
+        %ok = arith.addi %oy, %k64 : index
+        %1 = air.channel.put async [%t] @chA[] (%a[%ox, %ok] [%c64, %c64] [%c512, %c1]) {id = 23 : i32} : (memref<256x512xbf16>)
+        scf.yield %1 : !air.async.token
+      }
+    }
+    return
+  }
+  func.func @nested_loop_i64(%arg0: memref<256x512xbf16>) {
+    %c4 = arith.constant 4 : index
+    %0 = air.launch async (%x, %y) in (%sx=%c4, %sy=%c4) args(%a=%arg0) : memref<256x512xbf16> attributes {id = 24 : i32} {
+      %c1 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %c512 = arith.constant 512 : index
+      %c0_i64 = arith.constant 0 : i64
+      %c1_i64 = arith.constant 1 : i64
+      %c2_i64 = arith.constant 2 : i64
+      %ox = affine.apply affine_map<()[s0] -> (s0 * 64)>()[%x]
+      %oy = affine.apply affine_map<()[s0] -> (s0 * 128)>()[%y]
+      %t0 = air.wait_all async
+      %r = scf.for %k = %c0_i64 to %c2_i64 step %c1_i64 iter_args(%t = %t0) -> (!air.async.token) : i64 {
+        %ki = arith.index_cast %k : i64 to index
+        %k64 = arith.muli %ki, %c64 : index
+        %ok = arith.addi %oy, %k64 : index
+        %1 = air.channel.put async [%t] @chA[] (%a[%ox, %ok] [%c64, %c64] [%c512, %c1]) {id = 25 : i32} : (memref<256x512xbf16>)
         scf.yield %1 : !air.async.token
       }
     }

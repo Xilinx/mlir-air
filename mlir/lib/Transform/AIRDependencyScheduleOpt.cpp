@@ -8946,7 +8946,8 @@ private:
   }
 
   // Clones the ops computing `v` inside `scope`, with each value in `ivs`
-  // replaced by the constant at the same position in `at`.
+  // replaced by the constant at the same position in `at`. The constant has the
+  // value's type: a loop may iterate over an integer type rather than index.
   static Value cloneAtIVs(RewriterBase &rewriter, Value v, ArrayRef<Value> ivs,
                           ArrayRef<int64_t> at, Operation *scope,
                           IRMapping &map) {
@@ -8954,7 +8955,9 @@ private:
       return m;
     for (auto [iv, c] : llvm::zip(ivs, at))
       if (v == iv) {
-        Value cst = arith::ConstantIndexOp::create(rewriter, v.getLoc(), c);
+        Value cst =
+            arith::ConstantOp::create(rewriter, v.getLoc(), v.getType(),
+                                      rewriter.getIntegerAttr(v.getType(), c));
         map.map(v, cst);
         return cst;
       }
