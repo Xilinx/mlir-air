@@ -38,7 +38,8 @@ jobs:
   build-repo:
     name: Build and Test
 
-    runs-on: ubuntu-latest
+    # Pinned: free-disk-space fails on images missing a package it removes.
+    runs-on: ubuntu-24.04
 
     steps:
 
