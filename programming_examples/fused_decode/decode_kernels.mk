@@ -29,16 +29,20 @@ DECODE_KERNEL_FILES := $(O2_KERNELS:%=$(KERNEL_DIR)/%.o) \
 DECODE_KERNEL_CLEAN := $(DECODE_KERNEL_FILES) $(DECODE_KERNEL_FILES:=.d) \
                        $(DECODE_KERNEL_FILES:=.flags)
 
+# KERNEL_FLAGS may run a builder query, so it is expanded once, on first use,
+# rather than once per kernel.
+_decode_flags = $(eval _decode_flags := $$(KERNEL_FLAGS))$(_decode_flags)
+
 _decode_src = $(or $(firstword $(wildcard $(KERNEL_SRC_DIRS:%=%/$(1).cc))),$(1).cc)
 
 $(foreach k,$(O2_KERNELS), \
   $(eval $(KERNEL_DIR)/$(k).o_SRC := $(call _decode_src,$(k))) \
   $(eval $(KERNEL_DIR)/$(k).o_FLAGS = \
-    $$(KERNEL_FLAGS) $$(O2_EXTRA) $$($(k)_FLAGS) -O2 -c))
+    $$(_decode_flags) $$(O2_EXTRA) $$($(k)_FLAGS) -O2 -c))
 $(foreach k,$(LL_KERNELS), \
   $(eval $(KERNEL_DIR)/$(k).ll_SRC := $(call _decode_src,$(k))) \
   $(eval $(KERNEL_DIR)/$(k).ll_FLAGS = \
-    $$(KERNEL_FLAGS) $$(LL_EXTRA) $$($(k)_FLAGS) -$$(LL_OPT) \
+    $$(_decode_flags) $$(LL_EXTRA) $$($(k)_FLAGS) -$$(LL_OPT) \
     -DDECODE_INLINE_ATTN -S -emit-llvm))
 
 KERNEL_CXX = $(PEANO_INSTALL_DIR)/bin/clang++

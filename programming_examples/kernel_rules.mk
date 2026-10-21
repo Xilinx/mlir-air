@@ -9,7 +9,8 @@
 #   KERNEL_CXX     the compiler
 #   KERNEL_OUTS    the output files
 #   <out>_SRC      source of each output
-#   <out>_FLAGS    all flags for each output, including -c or -S -emit-llvm
+#   <out>_FLAGS    all flags for each output, including -c or -S -emit-llvm,
+#                  quoted for the shell
 #
 # Each output keeps its flags in <out>.flags and its header dependencies in
 # <out>.d, next to it.
@@ -19,13 +20,15 @@ _kernel_rules_goal := $(.DEFAULT_GOAL)
 
 .PHONY: _kernel_flags_check
 
-# <out>.flags is rewritten only when the flags change, so its date tells the
-# output when to rebuild.
+# Everything other than headers that decides an output. <out>.flags is
+# rewritten only when it changes, so its date tells the output when to rebuild.
+# $(file) writes it as is, so quotes in the flags survive.
+_kernel_sig = $(KERNEL_CXX) $($(1)_SRC) $($(1)_FLAGS)
+
 define _kernel_rule
 $(1).flags: _kernel_flags_check
-	@mkdir -p $$(@D)
-	@echo '$$(KERNEL_CXX) $$($(1)_FLAGS)' | cmp -s - $$@ || \
-	  echo '$$(KERNEL_CXX) $$($(1)_FLAGS)' > $$@
+	@$$(shell mkdir -p $$(@D))$$(file >$$@.new,$$(call _kernel_sig,$(1)))
+	@cmp -s $$@.new $$@ && rm $$@.new || mv $$@.new $$@
 
 $(1): $$($(1)_SRC) $(1).flags $$(KERNEL_CXX)
 	@echo "    $$(notdir $$<) -> $$(notdir $$@)"

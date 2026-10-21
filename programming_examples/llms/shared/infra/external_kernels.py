@@ -14,6 +14,7 @@ via its link_with search path.
 """
 
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -80,6 +81,12 @@ _PEANO_FLAGS = [
 ]
 
 
+def _make_shell_words(args):
+    """Quote args for the shell that runs a make recipe, and escape them for
+    make, so each reaches the compiler as one unchanged argument."""
+    return " ".join(shlex.quote(a) for a in args).replace("$", "$$")
+
+
 def _compile_kernel(src_path, output_name, extra_flags=None, force=False):
     """Compile a C++ kernel to .o using Peano clang++.
 
@@ -108,7 +115,7 @@ def _compile_kernel(src_path, output_name, extra_flags=None, force=False):
         f"KERNEL_CXX={_get_peano_clang()}",
         f"KERNEL_OUTS={output_name}",
         f"{output_name}_SRC={src}",
-        f"{output_name}_FLAGS={' '.join(flags + ['-c'])}",
+        f"{output_name}_FLAGS={_make_shell_words(flags + ['-c'])}",
         output_name,
     ]
     # Called from inside the example Makefiles: keep the outer make's options,
