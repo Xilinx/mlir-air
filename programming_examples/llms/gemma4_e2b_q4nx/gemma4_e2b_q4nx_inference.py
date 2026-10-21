@@ -224,11 +224,10 @@ class FusedDecoder:
             self.ATTN_MAXL = max(self.windows)
         self.maxL = min(int(max_L), self.ATTN_MAXL) if max_L else self.ATTN_MAXL
 
-        # Every model layer is a device slab, in order. A KV-shared layer (>=15)
-        # projects no K/V of its own and reads the slab holding the layer
-        # kv_source_layer() names; with one slab per layer those indices coincide,
-        # but they are resolved rather than assumed so the map stays honest if the
-        # slab set ever stops being the whole model.
+        # Every model layer is a decode wave, in order. A KV-shared layer
+        # projects no K/V of its own and reads the wave kv_source_layer() names.
+        # The cache has slabs only for owning waves plus one scratch slab, so a
+        # layer's slab is fd.KV_SLOT_RD[L], not L.
         self.UNI = gw.NUM_LAYERS
         Ls = list(range(self.UNI))
         kv_src = [Ls.index(gw.kv_source_layer(L)) for L in Ls]
@@ -250,6 +249,8 @@ class FusedDecoder:
         self.UNI_LM = fd.UNI_LM
         self.REGION_W, self.NGRP = fd.REGION_W, fd.NGRP
         self.KV_LAYER = fd.KV_LAYER
+        self.KV_SLABS, self.KV_SLOT = fd.KV_SLABS, fd.KV_SLOT_RD
+        self.KV_OWNERS = [L for L in Ls if fd.KV_SLOT_WR[L] == fd.KV_SLOT_RD[L]]
         self.SWA = {L for L in range(self.UNI) if fd.arm_of_layer(L) & fd.SWA_ARM_BIT}
         self.PLE_LAYER = fd.PLE_LAYER
         self.PLE_EMB_OFF, self.PLE_NORMW_OFF = fd.PLE_EMB_OFF, fd.PLE_NORMW_OFF
@@ -296,12 +297,16 @@ class FusedDecoder:
 
         self.dev = xrt.device(0)
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
+        from kv_bos import KVBuffers
+
+        # Buffer args other than the KV cache; KVBuffers allocates that, and its
+        # first buffer goes in the kvc slot.
         sizes = (
             self.K,
             self.n_w,
             self._RMS_SIZE,
             self.ny,
-            self.UNI * self.KV_LAYER,
+            None,
             self.UNI * self.PLE_LAYER,
             self.K,
         )
@@ -310,19 +315,22 @@ class FusedDecoder:
                 _DECODE_DIR, self.dev, xrt, self.REGION_W
             )
             # An ELF kernel has no instruction argument to group BOs against.
-            bos = [xrt.ext.bo(self.dev, n * 2) for n in sizes]
-            self._elfdec.bind(bos)
+            mk = lambda n, a: xrt.ext.bo(self.dev, n)
         else:
             self._kern = stair.open_windows(self.dev, xrt, self.gen, self.windows)
             self.kern = self._kern[self.ATTN_MAXL][1]
             g = self.kern.group_id
             HO = xrt.bo.host_only
-            bos = [xrt.bo(self.dev, n * 2, HO, g(3 + i)) for i, n in enumerate(sizes)]
+            mk = lambda n, a: xrt.bo(self.dev, n, HO, g(3 + a))
             self._ist = stair.make_insts_states(
                 self.gen, xrt, self.dev, g(1), self.windows
             )
             self._st = self._ist[self.ATTN_MAXL]
             self.ib = self._st["ib"]
+        self.kvb = KVBuffers(fd, self.ATTN_MAXL, mk)
+        bos = [self.kvb.kvc if n is None else mk(n * 2, i) for i, n in enumerate(sizes)]
+        if self.elf_mode:
+            self._elfdec.bind(bos + list(self.kvb.extra))
         (
             self.x_bo,
             self.w_bo,
@@ -349,7 +357,7 @@ class FusedDecoder:
         self.r_bo.sync(TO)
         self.pw_bo.write(self.ple.reshape(-1).view(np.int16), 0)
         self.pw_bo.sync(TO)
-        self.KV = np.zeros((self.UNI, self.KV_LAYER), dtype=bfloat16)
+        self.KV = np.zeros((self.KV_SLABS, self.KV_LAYER), dtype=bfloat16)
         self._partial_sync = True
 
     # ---- host -> device helpers ----
@@ -399,7 +407,7 @@ class FusedDecoder:
         if P > self.ATTN_MAXL:
             raise ValueError(f"prompt of {P} exceeds ATTN_MAXL={self.ATTN_MAXL}")
         self.KV[:] = 0
-        for L in range(self.UNI):
+        for L in self.KV_OWNERS:
             # _head_perm is the identity at dh == DH_A, so the full layers take
             # the same path rather than a special case.
             dh = self.gw.head_dim(L)
@@ -412,14 +420,15 @@ class FusedDecoder:
                         f"layer {L} KV is {src.shape[1]} wide, the device holds "
                         f"{n_kv} heads of {dh}"
                     )
-                rows = self.KV[L, reg * RS : reg * RS + P * RW].reshape(P, RW)
+                rows = self.KV[self.KV_SLOT[L], reg * RS : reg * RS + P * RW].reshape(
+                    P, RW
+                )
                 for h in range(n_kv):
                     rows[:, h * self.DH_A + p] = src[:, h * dh : (h + 1) * dh].astype(
                         self.bf16
                     )
         TO = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
-        self.kvc.write(np.ascontiguousarray(self.KV).reshape(-1).view(np.int16), 0)
-        self.kvc.sync(TO)
+        self.kvb.write_layers(np.ascontiguousarray(self.KV).view(np.int16), TO)
 
     def _rope_slab(self, p):
         """The UNI per-layer rope_w slabs for position p: [cos/sin LUT | q_norm | k_norm].
@@ -510,6 +519,7 @@ class FusedDecoder:
                 for i, a in enumerate(
                     (3, self.ib, insts_size, self.x_bo, self.w_bo, self.r_bo)
                     + (self.y_bo, self.kvc, self.pw_bo, self.px_bo)
+                    + self.kvb.extra
                 ):
                     self._run.set_arg(i, a)
                 self._run_key = key
@@ -548,6 +558,7 @@ class FusedDecoder:
         "_ist",
         "px_bo",
         "pw_bo",
+        "kvb",
         "kvc",
         "y_bo",
         "r_bo",
