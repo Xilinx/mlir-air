@@ -472,11 +472,11 @@ void SYM(f32_to_bf16_gelu_mn)(float *src, bfloat16 *dst) {
 // sigmoid(a) = 0.5 (1 + tanh(a/2)) and sigmoid(-a) = exp(-a) sigmoid(a).
 // aie2p's exp2 returns 2^n (1 + f) for 2^(n + f); the result is scaled by a
 // quadratic fit of 2^f / (1 + f) in the mantissa 1 + f.
-void SYM(f32_to_bf16_silu_mn)(float *src, bfloat16 *dst) {
+void SYM(f32_to_bf16_silu_mn)(float *__restrict src, bfloat16 *__restrict dst) {
   ::aie::set_rounding(aie::rounding_mode::conv_even);
-  constexpr unsigned VW = 16;
+  constexpr unsigned VW = 32;
   constexpr unsigned NTOT = DIM_M * DIM_N;
-  static_assert(NTOT % VW == 0, "DIM_M*DIM_N must be a multiple of 16");
+  static_assert(NTOT % VW == 0, "DIM_M*DIM_N must be a multiple of 32");
   const aie::vector<bfloat16, VW> half_v =
       aie::broadcast<bfloat16, VW>((bfloat16)0.5f);
   const aie::vector<bfloat16, VW> one_v =
@@ -491,6 +491,8 @@ void SYM(f32_to_bf16_silu_mn)(float *src, bfloat16 *dst) {
   const aie::vector<bfloat16, VW> c0_v =
       aie::broadcast<bfloat16, VW>((bfloat16)1.434497f);
   const bfloat16 c2 = (bfloat16)0.225742f;
+  // unrolled, with restrict pointers, so that iterations overlap
+#pragma clang loop unroll_count(2)
   for (unsigned i = 0; i < NTOT; i += VW)
     chess_prepare_for_pipelining chess_loop_range(16, ) {
       aie::vector<float, VW> f = aie::load_v<VW>(src + i);
@@ -512,10 +514,14 @@ void SYM(f32_to_bf16_silu_mn)(float *src, bfloat16 *dst) {
           aie::bit_or(aie::bit_and(e.template cast_to<uint16>(), man_v),
                       one_bits)
               .template cast_to<bfloat16>();
-      aie::vector<bfloat16, VW> c = aie::mul(m, c2);
-      c = aie::add(c, c1_v);
-      c = aie::mul(c, m);
-      c = aie::add(c, c0_v);
+      // Horner on the accumulator, rounding to bf16 once per step
+      aie::accum<accfloat, VW> ca;
+      ca.from_vector(c1_v);
+      ca = aie::mac(ca, m, c2);
+      aie::vector<bfloat16, VW> c = ca.template to_vector<bfloat16>();
+      ca.from_vector(c0_v);
+      ca = aie::mac(ca, c, m);
+      c = ca.template to_vector<bfloat16>();
       e = aie::mul(e, c);
       aie::vector<bfloat16, VW> sn = aie::mul(e, sp);
       aie::vector<bfloat16, VW> sig = aie::select(sp, sn, aie::lt(g, zero_v));
