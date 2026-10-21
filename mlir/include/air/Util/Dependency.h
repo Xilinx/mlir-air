@@ -479,6 +479,11 @@ struct partialMemref {
 class dependencyTracer {
 
 public:
+  // When the source of a dependency sits in an scf loop that yields an async
+  // token, depend on that loop's token if the loop is before the sink. Off by
+  // default: the air-dependency pass connects loops its own way.
+  bool tokenLoopsAreSources = false;
+
   // Get partial memref tiles from op
   void
   getPartialMemrefFromOp(Operation *sink_op,

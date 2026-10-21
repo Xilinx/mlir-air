@@ -3366,6 +3366,12 @@ void dependencyTracer::addDependencyBetweenOps(Operation *source,
         addAsyncDependencyIfNew(async_sink, async_source.getAsyncToken());
         return;
       }
+      if (tokenLoopsAreSources && isa<scf::ForOp, scf::ParallelOp>(parent) &&
+          parent->getNumResults() == 1 &&
+          isa<air::AsyncTokenType>(parent->getResult(0).getType())) {
+        addAsyncDependencyIfNew(async_sink, parent->getResult(0));
+        return;
+      }
     }
   }
 }
