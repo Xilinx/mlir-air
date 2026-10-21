@@ -15,7 +15,8 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-from build_identity import build_identity, check_existing
+from paths import HERE, COMMON
+from common.build_identity import build_identity, check_existing
 
 from target_config import (
     HERE,
@@ -55,7 +56,7 @@ def main():
     cfg = selected_config(args.role)
     cfg = replace(cfg, capacity=args.capacity, layers=args.layers or cfg.layers)
     dest = args.output.resolve()
-    identity = build_identity("decoder")
+    identity = build_identity("decoder", HERE)
     if dest.exists() and args.check_existing:
         check_existing(dest, identity)
         if json.loads((dest / "manifest.json").read_text())["config"] != asdict(cfg):
@@ -63,7 +64,11 @@ def main():
         return
     dest.mkdir(parents=True, exist_ok=False)
     fd = load_geometry(cfg)
-    inputs = list(HERE.glob("*.py")) + list((HERE / "kernels").glob("*"))
+    inputs = (
+        list(HERE.glob("*.py"))
+        + list(COMMON.glob("*.py"))
+        + list((COMMON / "kernels").glob("*"))
+    )
     inputs += (
         list(FUSED.glob("*.py"))
         + list((FUSED / "kernels").glob("*"))
@@ -136,7 +141,7 @@ def main():
         "-I" + str(FUSED / "kernels"),
         "-I" + str(FUSED / "models"),
         "-I" + str(EXAMPLES),
-        "-I" + str(HERE / "kernels"),
+        "-I" + str(COMMON / "kernels"),
     ]
     flags += [
         "-DATTN_NORM_VECTOR",
@@ -178,12 +183,12 @@ def main():
             "norm_cache",
         ):
             src = (
-                HERE / "kernels" / (mapping.get(name, name) + "_batch.cc")
+                COMMON / "kernels" / (mapping.get(name, name) + "_batch.cc")
                 if name != "rope"
                 else FUSED / "kernels" / (name + ".cc")
             )
             if name == "norm_cache":
-                src = HERE / "kernels/norm_cache.cc"
+                src = COMMON / "kernels/norm_cache.cc"
             attn = name.startswith("attn_")
             out = objdir / (name + (".ll" if attn else ".o"))
             cmd = [str(clang), *flags, "-O1" if attn else "-O2"]

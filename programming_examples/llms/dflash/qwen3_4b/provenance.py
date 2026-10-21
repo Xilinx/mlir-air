@@ -12,18 +12,20 @@ def runtime_identity(engine="dflash"):
     names = (
         "runtime.py",
         "target_runtime.py",
-        "speculative.py",
         "decode_dynseq.py",
         "draft_weights.py",
         "bfp_context_prepass.py",
         "npu_context_prepass.py",
         "npu_prefill.py",
         "model_paths.py",
-        "weight_io.py",
+        "paths.py",
         "provenance.py",
     )
     llms = here.parents[1]
     shared_names = (
+        "dflash/common/speculative.py",
+        "dflash/common/streaming.py",
+        "dflash/common/weight_io.py",
         "qwen3_4b_q4nx/qwen3_4b_q4nx_weights.py",
         "qwen3_8b_q4nx/qwen3_8b_q4nx_weights.py",
         "qwen3_4b_q4nx/qwen3_4b_q4nx_prefill.py",

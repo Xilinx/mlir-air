@@ -104,9 +104,9 @@ checkpoint and context-preparation weights, not all decoder projections.
   shared upstream code and validation entry points.
 - [From B1 to B8](docs/b8-megakernel.md): operator changes, weight reuse,
   activation storage, parallel attention, hardware constraints and source anchors.
-- [speculative.py](speculative.py): complete greedy draft/verify/commit loop.
-- [batch_graph.py](batch_graph.py), [fused_attention_graph.py](fused_attention_graph.py),
-  [kernels/](kernels/): AIR mapping and compute-tile implementation.
+- [speculative.py](../common/speculative.py): complete greedy draft/verify/commit loop.
+- [batch_graph.py](batch_graph.py), [fused_attention_graph.py](../common/fused_attention_graph.py),
+  [kernels/](../common/kernels): AIR mapping and compute-tile implementation.
 - [Benchmark inputs](benchmark/README.md): readable prompts and measurement.
 - [Compatibility](docs/compatibility.md): current upstream integration evidence.
 - [Validation](docs/validation.md): checks, reports and timing boundaries.

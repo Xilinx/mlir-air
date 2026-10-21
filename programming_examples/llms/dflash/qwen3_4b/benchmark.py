@@ -13,7 +13,8 @@ from model_paths import load_tokenizer
 from prepare_inputs import load_prefill
 from provenance import runtime_identity
 from runtime import load_pair
-from speculative import autoregressive
+from paths import HERE, COMMON
+from common.speculative import autoregressive
 
 
 def sha(path):

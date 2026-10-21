@@ -21,7 +21,8 @@ import shutil
 import numpy as np
 from ml_dtypes import bfloat16
 from target_config import HERE, TargetConfig, load_layout
-from fused_attention_graph import ParallelAttentionGraph
+from paths import HERE, COMMON
+from common.fused_attention_graph import ParallelAttentionGraph
 
 
 def sha(p):
@@ -110,7 +111,7 @@ def build(a):
         source_manifest_sha256=sha(a.source / "manifest.json"),
         object_sha256=sha(obj),
         source_sha256=sha(__file__),
-        graph_sha256=sha(HERE / "fused_attention_graph.py"),
+        graph_sha256=sha(COMMON / "fused_attention_graph.py"),
         gate=dict(
             reference="FP32 SDPA cast BF16", rtol=0.016, atol=0.1, allowed_outliers=0
         ),

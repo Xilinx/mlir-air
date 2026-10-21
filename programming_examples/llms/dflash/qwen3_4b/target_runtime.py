@@ -8,6 +8,7 @@ overwrite rejected slots and causal attention must ignore every future slot.
 """
 
 from __future__ import annotations
+from paths import HERE, COMMON
 from dataclasses import dataclass
 import hashlib
 import json
@@ -143,7 +144,7 @@ class TargetDecoder:
             self.batch == 16 if stream_weights is None else stream_weights
         ) and (self.layers == 36 or self.config.role == "drafter")
         if streamed:
-            from weight_io import upload_weights
+            from common.weight_io import upload_weights
 
             upload_weights(self.bo["w"], packed_cache, self.n["w"])
             self.bo["w"].sync(self.TO)

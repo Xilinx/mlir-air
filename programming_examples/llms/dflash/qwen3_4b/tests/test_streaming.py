@@ -9,7 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from streaming import TextStream
+from paths import HERE, COMMON
+from common.streaming import TextStream
 
 
 class ByteTokenizer:

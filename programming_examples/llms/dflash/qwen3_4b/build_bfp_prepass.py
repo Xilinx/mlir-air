@@ -13,7 +13,8 @@ import os
 from pathlib import Path
 import subprocess
 import shutil
-from build_identity import build_identity, check_existing
+from paths import HERE, COMMON
+from common.build_identity import build_identity, check_existing
 
 from air.ir import MemRefType, F32Type, BF16Type, IntegerAttr, StringAttr
 from air.dialects.air import (
@@ -244,7 +245,7 @@ def main():
     args = ap.parse_args()
     assert 2560 % (args.projection_n * args.cores) == 0
     out = args.output.resolve()
-    identity = build_identity("prepass")
+    identity = build_identity("prepass", HERE)
     if out.exists() and args.check_existing:
         check_existing(out, identity)
         old = json.loads((out / "manifest.json").read_text())
@@ -256,7 +257,7 @@ def main():
             raise ValueError("Prepass configuration differs; choose a fresh BUILD_DIR")
         return
     out.mkdir(parents=True, exist_ok=False)
-    source = HERE / "kernels/context_prepass_bfp.cc"
+    source = COMMON / "kernels/context_prepass_bfp.cc"
     command = [
         os.environ["PEANO_INSTALL_DIR"] + "/bin/clang++",
         "-O2",
@@ -286,7 +287,7 @@ def main():
         ).hexdigest(),
         source_sha256={
             p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in (Path(__file__), source, HERE / "kernels/context_prepass.cc")
+            for p in (Path(__file__), source, COMMON / "kernels/context_prepass.cc")
         },
         precision="BF16 weights/input, BFP16 8x8x8 matrix products, FP32 accumulators; BF16 normalized features",
         interface="bfp-prepass-v1",

@@ -9,8 +9,8 @@ import os
 from pathlib import Path
 import shutil
 
-HERE = Path(__file__).resolve().parent
-EXAMPLES = HERE.parents[2]
+COMMON = Path(__file__).resolve().parent
+EXAMPLES = COMMON.parents[2]
 
 
 def package_version(name):
@@ -27,30 +27,25 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def build_identity(kind):
+def build_identity(kind, model_dir):
+    model_dir = Path(model_dir).resolve()
     if kind == "prepass":
         sources = [
-            HERE / name
-            for name in (
-                "build_bfp_prepass.py",
-                "build_identity.py",
-                "kernels/context_prepass_bfp.cc",
-                "kernels/context_prepass.cc",
-            )
+            model_dir / "build_bfp_prepass.py",
+            COMMON / "kernels/context_prepass_bfp.cc",
+            COMMON / "kernels/context_prepass.cc",
         ]
     else:
         sources = [
-            HERE / name
+            model_dir / name
             for name in (
                 "build_target.py",
-                "build_identity.py",
                 "target_config.py",
                 "batch_graph.py",
-                "fused_attention_graph.py",
                 "selected_config.py",
             )
         ]
-        sources += list((HERE / "kernels").glob("*"))
+        sources += list((COMMON / "kernels").glob("*"))
         fused = EXAMPLES / "fused_decode"
         sources += (
             list(fused.glob("*.py"))
@@ -58,9 +53,14 @@ def build_identity(kind):
             + list((fused / "models").glob("*"))
         )
         if kind == "baseline":
-            sources = [HERE / "build_baseline.py", HERE / "build_identity.py"] + [
-                p for p in sources if fused in p.parents
-            ]
+            sources = [
+                model_dir / "build_baseline.py",
+                COMMON / "build_identity.py",
+            ] + [p for p in sources if fused in p.parents]
+    sources += [COMMON / "build_identity.py", model_dir / "paths.py"]
+    if kind == "decoder":
+        sources += list(COMMON.glob("*.py"))
+        sources += list((COMMON / "graph").rglob("*.py"))
     tools = {
         "air-opt": Path(shutil.which("air-opt")),
         "clang++": Path(os.environ["PEANO_INSTALL_DIR"]) / "bin/clang++",

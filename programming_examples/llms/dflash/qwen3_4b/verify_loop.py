@@ -18,7 +18,8 @@ from model_paths import (
     default_target_cache,
 )
 from runtime import load_pair, prepare_prompt, tokenize_prompt
-from speculative import autoregressive
+from paths import HERE, COMMON
+from common.speculative import autoregressive
 
 
 def signature(generation) -> list[dict]:
