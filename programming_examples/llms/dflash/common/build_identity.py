@@ -32,6 +32,7 @@ def build_identity(kind, model_dir):
     if kind == "prepass":
         sources = [
             model_dir / "build_bfp_prepass.py",
+            COMMON / "build_prepass.py",
             COMMON / "kernels/context_prepass_bfp.cc",
             COMMON / "kernels/context_prepass.cc",
         ]
@@ -42,6 +43,7 @@ def build_identity(kind, model_dir):
                 "build_target.py",
                 "target_config.py",
                 "batch_graph.py",
+                "owner_graph.py",
                 "selected_config.py",
             )
         ]
@@ -59,8 +61,9 @@ def build_identity(kind, model_dir):
             ] + [p for p in sources if fused in p.parents]
     sources += [COMMON / "build_identity.py", model_dir / "paths.py"]
     if kind == "decoder":
-        sources += list(COMMON.glob("*.py"))
-        sources += list((COMMON / "graph").rglob("*.py"))
+        sources += [
+            COMMON / name for name in ("fused_attention_graph.py", "buffers.py")
+        ]
     tools = {
         "air-opt": Path(shutil.which("air-opt")),
         "clang++": Path(os.environ["PEANO_INSTALL_DIR"]) / "bin/clang++",

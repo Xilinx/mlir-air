@@ -48,11 +48,11 @@ verification. [ARCHITECTURE.md](../ARCHITECTURE.md) describes that state flow.
 | [run.py](../run.py) | CLI for a single prompt or resident interactive session; initializes the pipeline and streams committed output. |
 | [runtime.py](../runtime.py) | `load_pair()` constructs target, drafter and NPU prepass; `load_pipeline()` also prepares NPU prefill and shares weights. Includes CPU-prefill helpers for the explicit CPU path. |
 | [speculative.py](../../common/speculative.py) | `DFlash.reset()` / `generate()`, greedy acceptance, token budget/EOS, committed positions, target-feature selection, round traces and decode timing. `autoregressive()` is the benchmark's B1 loop. |
-| [target_runtime.py](../target_runtime.py) | `TargetDecoder` loads either role's artifacts/weights, owns XRT buffers, runs B8 `verify()`, returns all logits, reads hidden boundaries and seeds/appends/restores KV. The method name `verify()` is also used for the drafter forward. |
-| [decode_dynseq.py](../decode_dynseq.py) | `DynseqInstsGen` uses the compiler-generated transaction builder to construct instructions for the current KV length. |
+| [target_runtime.py](../target_runtime.py) | `TargetDecoder` loads either role's artifacts/weights, owns model-specific XRT buffers and weight binding. Shared `common/decoder.py` implements `verify()`, logits/hidden access and KV operations. The method name `verify()` is also used for the drafter forward. |
+| [decode_dynseq.py](../../common/decode_dynseq.py) | `DynseqInstsGen` uses the compiler-generated transaction builder to construct instructions for the current KV length. |
 | [streaming.py](../../common/streaming.py) | Converts newly committed token IDs into incremental text while retaining incomplete tokenizer fragments. |
 | [npu_prefill.py](../npu_prefill.py) | `NpuPrefill` reuses the existing Qwen3-4B Q4NX NPU prefill and captures the hidden boundaries needed by DFlash. It shares uploaded MLP weights before LM-head initialization to reduce peak host memory. |
-| [prefill_reference.py](../prefill_reference.py) | CPU prompt forward with hidden taps, used by the CPU-prefill path. |
+| [prefill_reference.py](../../common/prefill_reference.py) | CPU prompt forward with hidden taps, used by the CPU-prefill path. |
 
 ## B8 graph and build configuration
 
@@ -95,8 +95,8 @@ compiled object/LLVM IR used by each herd or function.
 |---|---|
 | [build_bfp_prepass.py](../build_bfp_prepass.py) | Builds the standalone NPU program for target-feature projection, hidden normalization, drafter K/V projection and key normalization/RoPE. |
 | [bfp_context_prepass.py](../bfp_context_prepass.py) | `BFPContextPrepass` loads the ELF, packs BF16 matrices and uploads resident weights. `BF16ContextReference` supplies the CPU reference and checkpoint tensors. |
-| [npu_context_prepass.py](../npu_context_prepass.py) | Shared host dispatch/buffer handling: `chunk()` processes up to eight committed positions, and `run()` chunks longer prompt features. |
-| [context_prepass.py](../context_prepass.py) | CPU RMSNorm/RoPE and context-K/V reference operations. |
+| [prepass_runtime.py](../../common/prepass_runtime.py) | Shared host dispatch/buffer handling: `chunk()` processes up to eight committed positions, and `run()` chunks longer prompt features. |
+| [context_reference.py](../../common/context_reference.py) | CPU RMSNorm/RoPE and context-K/V reference operations. |
 | [kernels/context_prepass_bfp.cc](../../common/kernels/context_prepass_bfp.cc) | BF16/BFP projection microkernel, FP32 partial sums, output layout conversion and hidden normalization. Includes the key helpers below. |
 | [kernels/context_prepass.cc](../../common/kernels/context_prepass.cc) | Key-head normalization and RoPE functions for the standalone prepass. |
 

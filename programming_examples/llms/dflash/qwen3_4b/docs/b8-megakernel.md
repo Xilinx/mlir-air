@@ -237,7 +237,7 @@ the transaction builder and graph. The selected attention/readback work visits
 `ceil((p+8)/16)` key blocks, with visibility still checked per query. Capacity
 4096 defines allocation and bounds; the current KV length defines executed
 attention work. The relevant sources are [target_runtime.py](../target_runtime.py),
-[decode_dynseq.py](../decode_dynseq.py) and `_live_rounds()` in the main graph.
+[decode_dynseq.py](../../common/decode_dynseq.py) and `_live_rounds()` in the main graph.
 
 The graph writes all eight new KV slots before verification completes. Host
 acceptance advances the committed prefix by the number of emitted tokens.

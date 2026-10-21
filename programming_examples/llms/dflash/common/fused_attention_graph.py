@@ -278,6 +278,22 @@ class ParallelAttentionGraph:
                                 else ci(f.BATCH - 1)
                             )
                             mask_length = f.arith.addi(L, delta)
+
+                            def consume_value(block):
+                                f.ChannelGet(f"pv{cu}", v, indices=[ix(0), ty])
+                                f.CallOp(
+                                    self.pv,
+                                    [
+                                        s,
+                                        v,
+                                        y,
+                                        l,
+                                        block,
+                                        mask_length,
+                                        ci(int(f.CAUSAL)),
+                                    ],
+                                )
+
                             f.ChannelGet(f"pk{cu}", k, indices=[ix(0), ty])
                             branch = f.IfOp(
                                 f.arith.cmpi(
@@ -316,33 +332,24 @@ class ParallelAttentionGraph:
                                         ci(int(f.CAUSAL)),
                                     ],
                                 )
+                                if not f.EARLY_KEY_RELEASE:
+                                    consume_value(block)
                                 f.yield_([])
-                            # Finish K's last-use region before acquiring V.
-                            consume = f.IfOp(
-                                f.arith.cmpi(
-                                    f.arith.CmpIPredicate.uge, local_frame, ix(2)
-                                ),
-                                [],
-                                has_else=False,
-                            )
-                            with f.InsertionPoint(consume.thenRegion.blocks[0]):
-                                block = f.arith.index_cast(
-                                    self.i32, f.arith.subi(local_frame, ix(2))
+                            if f.EARLY_KEY_RELEASE:
+                                # Finish K's last-use region before acquiring V.
+                                consume = f.IfOp(
+                                    f.arith.cmpi(
+                                        f.arith.CmpIPredicate.uge, local_frame, ix(2)
+                                    ),
+                                    [],
+                                    has_else=False,
                                 )
-                                f.ChannelGet(f"pv{cu}", v, indices=[ix(0), ty])
-                                f.CallOp(
-                                    self.pv,
-                                    [
-                                        s,
-                                        v,
-                                        y,
-                                        l,
-                                        block,
-                                        mask_length,
-                                        ci(int(f.CAUSAL)),
-                                    ],
-                                )
-                                f.yield_([])
+                                with f.InsertionPoint(consume.thenRegion.blocks[0]):
+                                    block = f.arith.index_cast(
+                                        self.i32, f.arith.subi(local_frame, ix(2))
+                                    )
+                                    consume_value(block)
+                                    f.yield_([])
                             f.yield_([])
                         f.CallOp(self.fin, [y, l, o, first])
                         join = f.IfOp(

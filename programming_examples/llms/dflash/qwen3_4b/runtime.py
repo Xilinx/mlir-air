@@ -19,7 +19,7 @@ from model_paths import (
     default_draft_snapshot,
     default_target_cache,
 )
-from prefill_reference import forward_prompt_with_taps
+from common.prefill_reference import forward_prompt_with_taps
 from selected_config import require_selected
 from paths import HERE, COMMON
 from common.speculative import DFlash

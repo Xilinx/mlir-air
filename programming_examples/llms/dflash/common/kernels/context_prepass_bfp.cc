@@ -4,6 +4,10 @@
 // same BF16/BFP 8x8x8 primitive and FP32 partial sums, one row tile at B8.
 #include "context_prepass.cc"
 
+#ifndef BFP_PREPASS_HIDDEN
+#define BFP_PREPASS_HIDDEN 2560
+#endif
+
 #ifndef BFP_PREPASS_K
 #define BFP_PREPASS_K 512
 #endif
@@ -57,8 +61,8 @@ extern "C" void bfp_prepass_flush(const float *c, float *row_major) {
 extern "C" void bfp_prepass_norm(const float *x, const float *weight,
                                  bfloat16 *out) {
   aie::set_rounding(aie::rounding_mode::conv_even);
-  const float scale = factor<2560>(x);
-  for (int j = 0; j < 2560; j += 16) {
+  const float scale = factor<BFP_PREPASS_HIDDEN>(x);
+  for (int j = 0; j < BFP_PREPASS_HIDDEN; j += 16) {
     aie::vector<float, 16> normalized = aie::mul(aie::load_v<16>(x + j), scale);
     aie::accum<accfloat, 16> result =
         aie::mul(normalized, aie::load_v<16>(weight + j));
