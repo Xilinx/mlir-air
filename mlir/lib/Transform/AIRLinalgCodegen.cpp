@@ -7025,7 +7025,7 @@ transform::MergeSiblingCopiesOp::apply(transform::TransformRewriter &rewriter,
     // them; a run is merged on its own. The merged copy runs where the first
     // one did, so a write between two copies could otherwise change what the
     // later one reads.
-    SmallVector<SmallVector<SiblingCopy>> runs;
+    SmallVector<SmallVector<SiblingCopy>, 4> runs;
     for (auto &[key, all] : groups) {
       llvm::sort(all, [](const SiblingCopy &a, const SiblingCopy &b) {
         return a.copy->isBeforeInBlock(b.copy);
