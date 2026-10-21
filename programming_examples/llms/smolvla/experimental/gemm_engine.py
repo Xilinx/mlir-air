@@ -950,17 +950,14 @@ def compile_mm_engine(tile_m, tile_n, tile_k_l1, sym_suffix, out_name, rms_k=960
         "-Wno-macro-redefined",
         "-O3",  # -O2 (the shared default) makes the own-key attention jobs ~2x slower
     ] + os.environ.get("ENGINE_KERNEL_FLAGS", "").split()
-    # Rebuilt only when stale: the kernel cache keys ELFs on the object's mtime, so an
-    # unconditional rebuild recompiles every cached engine (tens of minutes for many jobs).
-    # An out_name must keep one set of flags.
-    srcs = [_HERE / "kernels_bfp16" / n for n in ("mm_engine.cc", "mm_bfp16.cc")]
-    obj = Path(out_name)
-    stale = (
-        bool(os.environ.get("ENGINE_KERNEL_FLAGS"))
-        or not obj.exists()
-        or max(s.stat().st_mtime for s in srcs) > obj.stat().st_mtime
+    # mm_engine.cc includes mm_bfp16.cc, so make sees both. The kernel cache keys
+    # ELFs on the object's mtime, and make leaves an up-to-date object untouched.
+    _compile_kernel(
+        _HERE / "kernels_bfp16" / "mm_engine.cc",
+        out_name,
+        extra_flags=extra,
+        force=True,
     )
-    _compile_kernel(srcs[0], out_name, extra_flags=extra, force=stale)
 
 
 def build_gemm_engine_loads(

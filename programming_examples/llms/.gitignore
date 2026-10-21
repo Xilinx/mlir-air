@@ -4,6 +4,8 @@
 # Makefiles cd into build_peano/ first, so production runs don't leak — but
 # ad-hoc/standalone scripts can. These are never source; ignore subtree-wide.
 *.o
+*.o.d
+*.o.flags
 air_project/
 *_cache/
 build_peano/
