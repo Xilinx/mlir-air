@@ -307,3 +307,37 @@ module {
     return
   }
 }
+
+// -----
+
+// A rank-reducing view of a core's slice, its herd offsets rebased to 0: it
+// stays, since its user indexes it with its own rank.
+
+// CHECK-LABEL: func.func @rank_reducing_view_kept
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<1x1x4x4xf32, 2>
+// CHECK: %[[V:.*]] = memref.subview %{{.*}}[%c0{{.*}}, %c0{{.*}}, 0, 0] [1, 1, 4, 4] [1, 1, 1, 1] : memref<1x1x4x4xf32, 2> to memref<4x4xf32
+// CHECK: memref.store %{{.*}}, %[[V]][%{{.*}}, %{{.*}}] : memref<4x4xf32
+module {
+  func.func @rank_reducing_view_kept() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<2x2x4x4xf32, 2>) {
+          %a = memref.alloc() : memref<2x2x4x4xf32, 2>
+          air.execute_terminator %a : memref<2x2x4x4xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<2x2x4x4xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %f0 = arith.constant 0.000000e+00 : f32
+          %sv = memref.subview %buf[%tx, %ty, 0, 0] [1, 1, 4, 4] [1, 1, 1, 1] : memref<2x2x4x4xf32, 2> to memref<4x4xf32, strided<[4, 1], offset: ?>, 2>
+          memref.store %f0, %sv[%c0, %c0] : memref<4x4xf32, strided<[4, 1], offset: ?>, 2>
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<2x2x4x4xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}

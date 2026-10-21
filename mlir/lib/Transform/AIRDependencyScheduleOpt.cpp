@@ -7554,7 +7554,9 @@ private:
              (int)air::getTensorVolume(subViewOp.getResult().getType());
     };
 
-    if (allOffsetsAreZeros() && allStridesAreOnes() &&
+    // A rank-reducing view stays: its users index it with its own rank.
+    if (subViewOp.getSourceType().getRank() == subViewOp.getType().getRank() &&
+        allOffsetsAreZeros() && allStridesAreOnes() &&
         memrefVolumeUnchanged()) {
       subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
       rewriter.eraseOp(subViewOp);
