@@ -144,6 +144,12 @@ def AIRLowering : Pass<"air-to-std", "ModuleOp"> {
       }
     ```
   }];
+  let options = [
+    Option<"clKeepProgramOrder", "keep-program-order", "bool",
+           /*default=*/"false",
+           "Keep each shim transfer's program order (air.program_order) on its "
+           "airrt op, for the shim feed weave in airrt-to-npu">
+  ];
 }
 
 //===----------------------------------------------------------------------===//

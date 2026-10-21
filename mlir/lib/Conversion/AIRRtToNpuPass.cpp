@@ -1276,6 +1276,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // iteration.
     if (auto wave = op->getAttr(air::attrs::LaunchWave))
       configTaskOp->setAttr(air::attrs::LaunchWave, wave);
+    // Carry the program order for the shim feed weave (removed after it).
+    if (auto order = op->getAttr(air::attrs::ProgramOrder))
+      configTaskOp->setAttr(air::attrs::ProgramOrder, order);
 
     // Create the body region of the configure task op
     Block *bodyBlock = rewriter.createBlock(&configTaskOp.getBody());
@@ -3573,6 +3576,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Bound how far one shim feed channel may run ahead of its siblings.
     boundShimFeedBursts(module);
+    module.walk([](AIEX::DMAConfigureTaskForOp cfg) {
+      cfg->removeAttr(air::attrs::ProgramOrder);
+    });
     awaitInChannelOrder(module);
 
     // Repair dominance after the reordering above. Every hoist here moves a
@@ -3845,7 +3851,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // it -- so the weave only changes how the channels are interleaved with
         // each other. A single-channel burst has nothing to weave and just gets
         // the cap.
-        auto flush = [&](Operation *fence) {
+        // The layout of one burst. flush() below runs it once, or once per
+        // segment of the burst; then the caps of the whole burst are applied
+        // together (deferCaps), and every segment is laid out (forceLayout).
+        bool deferCaps = false, forceLayout = false;
+        llvm::MapVector<StringRef, SmallVector<Unit>> capFeeds, capDrains;
+        auto flushOne = [&](Operation *fence) {
           // Drain awaits after the run's last feed stay behind every feed.
           SmallVector<Operation *> trailing = std::move(pendingAwaits);
           pendingAwaits.clear();
@@ -3938,8 +3949,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           // left channel-major, those come after the wait.
           bool readsBack = llvm::any_of(
               run, [](const Unit &u) { return !u.prefix.empty(); });
-          if (rounds <= burstLimit && !weaveDrains && !readsBack &&
-              midDrains.empty())
+          if (!forceLayout && rounds <= burstLimit && !weaveDrains &&
+              !readsBack && midDrains.empty())
             return; // already within what a channel absorbs; leave as emitted.
 
           // Drain j of a channel holding D of them is armed at round
@@ -4070,12 +4081,143 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           }
           for (Operation *a : trailing)
             a->moveBefore(fence);
+          if (deferCaps) {
+            for (auto &kv : byChan)
+              llvm::append_range(capFeeds[kv.first], kv.second);
+            for (auto &kv : allDrainsByChan)
+              llvm::append_range(capDrains[kv.first], kv.second);
+            return;
+          }
           for (auto &kv : byChan)
             capChannel(kv.second,
                        [&](unsigned i) { return kv.second[i].start; });
           // A drain's wait goes ahead of its configure rather than its start,
           // so the BD it frees is free for the configure to take.
           for (auto &kv : allDrainsByChan)
+            capChannel(kv.second, [&](unsigned i) {
+              return kv.second[i].cfg.getOperation();
+            });
+        };
+
+        // The channels hand a feed its data in the order the launch body issued
+        // it, but the conversion regroups the transfers by channel: every task
+        // for A, then every task for B, the second job's among them. The
+        // rounds below only mean "the same point in each channel", so a feed
+        // that awaits a drain lands wherever its index in its own channel puts
+        // it, which can be before the feeds on another channel that fill that
+        // drain: the control program blocks on a drain whose producer still
+        // waits for feeds behind the await.
+        //
+        // With the transfers' program order (air.program_order) the jobs can be
+        // told apart again. A feed that awaits a drain armed in the segment
+        // being built starts the next segment: everything the drain's data
+        // needs was issued before it, in every channel. Each segment is laid
+        // out as a burst of its own, with the drains of its program-order
+        // range; the in-flight caps run over the channels of the whole burst.
+        // Without the order on every task, or when it disagrees with a
+        // channel's order, the burst is laid out as one.
+        auto flush = [&](Operation *fence) {
+          bool segmentable =
+              fence && !run.empty() && llvm::any_of(run, [](const Unit &u) {
+                return !u.prefix.empty();
+              });
+          auto orderOf = [](const Unit &u) -> std::optional<int64_t> {
+            if (auto a =
+                    u.cfg->getAttrOfType<IntegerAttr>(air::attrs::ProgramOrder))
+              return a.getInt();
+            return std::nullopt;
+          };
+          SmallVector<Unit> allDrains;
+          if (segmentable) {
+            llvm::append_range(allDrains, drains);
+            for (auto &[d, r] : midDrains)
+              allDrains.push_back(d);
+            llvm::append_range(allDrains, pendingDrains);
+            segmentable =
+                llvm::all_of(run, orderOf) && llvm::all_of(allDrains, orderOf);
+          }
+          SmallVector<Unit> feeds;
+          llvm::DenseMap<Operation *, unsigned> emitted;
+          if (segmentable) {
+            // Each channel's tasks must stay in the order they were emitted.
+            feeds = run;
+            llvm::stable_sort(feeds, [&](const Unit &a, const Unit &b) {
+              return *orderOf(a) < *orderOf(b);
+            });
+            for (auto [i, u] : llvm::enumerate(run))
+              emitted[u.start] = i;
+            llvm::StringMap<unsigned> last;
+            for (const Unit &u : feeds) {
+              unsigned e = emitted[u.start];
+              auto it = last.find(u.chan);
+              if (it != last.end() && it->second > e)
+                segmentable = false;
+              last[u.chan] = e;
+            }
+            llvm::stable_sort(allDrains, [&](const Unit &a, const Unit &b) {
+              return *orderOf(a) < *orderOf(b);
+            });
+          }
+          if (!segmentable) {
+            flushOne(fence);
+            return;
+          }
+
+          struct Segment {
+            SmallVector<Unit> feeds, drains;
+          };
+          SmallVector<Segment> segments(1);
+          llvm::DenseMap<Value, unsigned> segmentOf;
+          size_t nextDrain = 0;
+          auto takeDrains = [&](std::optional<int64_t> before) {
+            while (nextDrain < allDrains.size() &&
+                   (!before || *orderOf(allDrains[nextDrain]) < *before)) {
+              segmentOf[allDrains[nextDrain].cfg.getResult()] =
+                  segments.size() - 1;
+              segments.back().drains.push_back(allDrains[nextDrain++]);
+            }
+          };
+          for (const Unit &f : feeds) {
+            takeDrains(orderOf(f));
+            bool awaitsThisSegment = llvm::any_of(f.prefix, [&](Operation *a) {
+              auto it = segmentOf.find(cast<AIEX::DMAAwaitTaskOp>(a).getTask());
+              return it != segmentOf.end() && it->second == segments.size() - 1;
+            });
+            if (awaitsThisSegment && !segments.back().feeds.empty())
+              segments.emplace_back();
+            segments.back().feeds.push_back(f);
+          }
+          takeDrains(std::nullopt);
+          SmallVector<Operation *> trailing = std::move(pendingAwaits);
+          pendingAwaits.clear();
+          pendingDrains.clear();
+          // A segment only cuts the burst: inside it the feeds keep the order
+          // they were emitted in, which fixes the order the channels take
+          // turns.
+          for (Segment &seg : segments)
+            llvm::stable_sort(seg.feeds, [&](const Unit &a, const Unit &b) {
+              return emitted[a.start] < emitted[b.start];
+            });
+          deferCaps = forceLayout = true;
+          capFeeds.clear();
+          capDrains.clear();
+          for (auto [i, seg] : llvm::enumerate(segments)) {
+            run = seg.feeds;
+            drains = seg.drains;
+            midDrains.clear();
+            drainPos.clear();
+            for (Unit d : drains)
+              drainPos[d.cfg.getResult()] = 0;
+            if (i + 1 == segments.size())
+              pendingAwaits = trailing;
+            flushOne(fence);
+            pendingAwaits.clear();
+          }
+          deferCaps = forceLayout = false;
+          for (auto &kv : capFeeds)
+            capChannel(kv.second,
+                       [&](unsigned i) { return kv.second[i].start; });
+          for (auto &kv : capDrains)
             capChannel(kv.second, [&](unsigned i) {
               return kv.second[i].cfg.getOperation();
             });

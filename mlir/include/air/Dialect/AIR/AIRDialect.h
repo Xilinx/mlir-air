@@ -82,6 +82,13 @@ constexpr StringLiteral SrcWritesPktHeader = "air.src_writes_pkt_header";
 // ordering (RTP arm / set_lock / output-S2MM hoist) groups by this index
 // instead of inferring wave boundaries from op positions.
 constexpr StringLiteral LaunchWave = "air.launch_wave";
+// Program order of a shim transfer (i32): the id air-renumber-dma gave its
+// air.channel / air.dma op, which follows the order the launch body issues them
+// in. air-to-std keeps it on the airrt op and airrt-to-npu on the task it
+// lowers to, so the shim feed weave can tell which transfers belong to which
+// job after air-opt-shim-dma-bds and the conversion have regrouped them by
+// channel. Removed again once the weave is done.
+constexpr StringLiteral ProgramOrder = "air.program_order";
 // Opt-out (unit attr) on a shared-L2 memref.alloc: keep the buffer on the
 // legacy counted-lock template even under use-lock-race-condition-fix-v2,
 // instead of the daisy-chained chain-lock. Honored only for fan-out broadcast

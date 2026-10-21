@@ -788,9 +788,15 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
                                          opers[2], opers[3], offsetsOFR,
                                          wrapsOFR, stridesOFR);
   // Copy over discardable attrs assigned in -air-to-aie pass.
+  Attribute programOrder = thisOp->getAttr("id");
   thisOp->removeAttr("id"); // Op's id is no longer useful. Airrt.dma op's id
                             // has been assigned.
   airrtOp->setAttrs(thisOp->getDiscardableAttrDictionary());
+  // ... but its position in the launch body is: it tells airrt-to-npu which
+  // job a transfer belongs to once the transfers are regrouped by channel.
+  if (programOrder &&
+      thisOp->getParentOfType<ModuleOp>()->hasAttr("air.keep_program_order"))
+    airrtOp->setDiscardableAttr(air::attrs::ProgramOrder, programOrder);
   // Preserve channel name for downstream ordering decisions.
   if (auto chanName = thisOp->getAttrOfType<FlatSymbolRefAttr>("chan_name"))
     airrtOp->setDiscardableAttr("chan_name", chanName);
@@ -1662,6 +1668,8 @@ public:
 
     auto module = getOperation();
     auto context = module.getContext();
+    if (clKeepProgramOrder)
+      module->setAttr("air.keep_program_order", UnitAttr::get(context));
 
     TypeConverter converter;
     converter.addConversion([&](Type type) -> std::optional<Type> {
@@ -1847,6 +1855,7 @@ public:
       IRRewriter rewriter(module.getContext());
       rewriter.replaceOp(fop, fop.getInitArgs());
     }
+    module->removeAttr("air.keep_program_order");
   }
 };
 

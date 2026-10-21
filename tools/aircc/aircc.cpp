@@ -1299,7 +1299,7 @@ static LogicalResult runAieCompilation() {
     // cores aiecc actually places. Place once, in aiecc only.
     os << shimBdPass;
     os << ",canonicalize,cse";
-    os << ",air-to-std";
+    os << ",air-to-std{keep-program-order=true}";
     os << ",symbol-dce";
     os << ",affine-expand-index-ops";
     os << ",canonicalize,cse";
