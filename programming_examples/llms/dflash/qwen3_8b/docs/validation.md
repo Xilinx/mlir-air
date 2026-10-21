@@ -5,6 +5,37 @@ This example follows the existing LLM LIT suite discovery. `run_npu2_compile`,
 upstream suites. Full80 additionally requires `-D dflash_full80=1`, supplied by
 `check-programming-examples-llms-full80`; it is not scheduled by default.
 
+| Entry | Purpose | Scheduling |
+|---|---|---|
+| `run_npu2_compile.lit` | Weight-free target, drafter, prepass and prefill compilation | LLM compile suite; execution tests also invoke compilation |
+| `run_npu2_verify.lit` | Decoder state, DFlash loop and HF BF16 top-5 checks | Nightly verify suite |
+| `run_npu2_profile.lit` | Fixed-prompt TTFT and decode throughput | Nightly profile suite |
+| `run_npu2_full20.lit` | Paired B1/DFlash, four prompts per dataset | Default nightly Full20 suite |
+| `run_npu2_full80.lit` | Paired B1/DFlash, sixteen prompts per dataset | Optional Full80 suite |
+
+The shared acceptance and streaming tests keep the existing
+`qwen3_4b/run_host_checks.lit` entry in the PR host suite. Both models use the
+tested common implementation; 8B does not duplicate that host test entry.
+The profile declares `PERF_MODEL: qwen3_8b_dflash_b8`, which lets the existing
+nested-example collector associate verification, profile and paired results.
+Nightly artifact patterns already include both DFlash model directories.
+
+## Import names and offline references
+
+Follow the naming correction merged with Qwen3-4B in #2123: the loop checker
+is `verify_loop.py`, not `verify.py`, which would collide with `llms/verify`.
+Shared upstream imports use the explicitly registered `air_examples` namespace;
+the example does not put `programming_examples/` or `llms/` on `sys.path`.
+`python/test/api/examples_sys_path.py` checks these rules in Python CI.
+
+The HF reference follows upstream #2142: it resolves the snapshot through
+`resources.prepare(reference=True, offline=True)`. This uses the same pinned
+file list as cache seeding, without requiring repository README/LICENSE files
+that nightly does not download. The reference weights, tokenizer, arithmetic
+and comparison criteria remain unchanged.
+
+## Resources and execution
+
 The existing Download LLM Weights workflow seeds all three pinned 8B snapshots,
 including the BF16 reference. Run it from this branch once before offline
 nightly execution. Weight caches persist under `~/.cache/mlir-air/dflash/qwen3_8b`.

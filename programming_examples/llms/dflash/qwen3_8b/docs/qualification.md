@@ -94,3 +94,22 @@ These replay checks complement the separate arithmetic and KV-state checks.
 See [validation](validation.md) for commands and numerical scope, including
 prefill BFP exponent groups. All five new LIT entries are discovered; the
 device tests were executed through their underlying commands on this host.
+
+## CI alignment after measurement
+
+The branch also includes upstream #2142's offline HF-reference correction for
+4B and applies the same file-selection rule to 8B. A fresh 8B HF run with only
+nightly-seeded files reproduced both 32-token captures exactly, including every
+top-5 list. Comparison with the retained NPU captures still passes at the same
+first divergences.
+
+8B prefill now explicitly registers `air_examples` before its shared imports.
+All prefill class/function definitions match the measured source, and a fresh
+import check resolves the same native prefill and `KernelCache` classes.
+The upstream `examples_sys_path.py` LIT and shared DFlash host LIT pass.
+The existing `verify_loop.py` naming follows the correction in #2123.
+
+These changes affect import setup and reference-file lookup. The benchmark
+tables remain measurements of `04bc5930`; no NPU or performance rerun was needed
+for this CI follow-up. GitHub nightly execution is separate from these local
+checks and will run after the branch is submitted or explicitly dispatched.

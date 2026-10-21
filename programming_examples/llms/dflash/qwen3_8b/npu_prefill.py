@@ -11,12 +11,19 @@ from pathlib import Path
 import sys
 import time
 import shutil
+import types
 
 import numpy as np
 from ml_dtypes import bfloat16
 
-from paths import HERE
+from paths import EXAMPLES, HERE
 from model_paths import default_prefill_cache
+
+# Register the namespace explicitly before importing shared example modules.
+# Do not rely on registration as a side effect of the native prefill import.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(EXAMPLES)
+]
 
 sys.path.insert(0, str(HERE.parents[1] / "qwen3_8b_q4nx"))
 from qwen3_8b_q4nx_prefill import Qwen3Q4nxPrefill

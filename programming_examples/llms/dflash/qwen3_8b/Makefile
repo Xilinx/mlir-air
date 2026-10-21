@@ -40,7 +40,7 @@ help:
 	@echo 'make run              Stream one response; PROMPT="..." N_TOKENS=128'
 	@echo 'make chat             Load once, then read and stream independent prompts'
 	@echo 'make verify-host      Host acceptance and streaming checks'
-	@echo 'make verify           Host, device state and HF BF16 top-5 model checks'
+	@echo 'make verify           Device state, loop and HF BF16 top-5 model checks'
 	@echo 'make benchmark        Fixed 80-prompt saved-prefill decode study'
 	@echo 'make profile          Fixed-prompt NPU prefill + DFlash performance JSON'
 	@echo 'make full20           Nightly B1 + DFlash study, 4 prompts per dataset'
