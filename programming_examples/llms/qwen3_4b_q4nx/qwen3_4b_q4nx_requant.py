@@ -64,11 +64,16 @@ def _cat(*mats):
     return tuple(np.concatenate(p, 0) for p in zip(*mats))
 
 
-def build_requant_cache(model, fd, cache_path, verbose=True):
+def build_requant_cache(model, fd, cache_path, verbose=True, requant=False):
     """Cascade-pack the Qwen3-4B model.q4nx weights into the .npz.
 
     `fd` = the loaded fused_decode module (DECODE_MODEL=qwen3-4b) supplying the
-    cascade geometry + pack_q4k_cascade + phase indices."""
+    cascade geometry + pack_q4k_cascade + phase indices.
+
+    By default the bundle's Q4 values are packed as they are. requant=True
+    dequantizes each projection to float32 and re-quantizes it with per-group
+    min/max instead (llms/dflash/qwen3_4b); the two caches hold different
+    weights and are not interchangeable."""
     from qwen3_4b_q4nx_weights import Q4nxModel, D, VOCAB
 
     qm_model = Q4nxModel(model)
@@ -91,7 +96,10 @@ def build_requant_cache(model, fd, cache_path, verbose=True):
 
     def _q4(k, nm):
         t, M, Kc = PROJ[nm]
-        return qm_model.q4nx(f"model.layers.{k}.{t}.weight", M, Kc)
+        name = f"model.layers.{k}.{t}.weight"
+        if requant:
+            return _requant_q4k(qm_model.dequant(name, M, Kc), G)
+        return qm_model.q4nx(name, M, Kc)
 
     W_all, RMS_in, RMS_post = [], [], []
     for k in range(n_layers):

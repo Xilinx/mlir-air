@@ -107,8 +107,7 @@ compiled object/LLVM IR used by each herd or function.
 | [model_paths.py](../model_paths.py) | Exact target/tokenizer/drafter revisions, cache defaults and tokenizer loading. |
 | [resources.py](../resources.py) | Online preparation or offline completeness checks for the pinned HF snapshots. |
 | [draft_weights.py](../draft_weights.py) | `DraftWeights` adapts official drafter tensors, layer geometry, target tap slots and mask-token metadata to the decoder interface. |
-| [prepare_weights.py](../prepare_weights.py) | Validates or creates persistent target/drafter packed caches and their preparation manifest. |
-| [target_packing.py](../target_packing.py) | Reproduces the selected target's Q4NX → BF16 dequantization → group-32 Q4 repacking. See [compatibility](compatibility.md) for its distinction from upstream raw-Q4 packing. |
+| [prepare_weights.py](../prepare_weights.py) | Validates or creates persistent target/drafter packed caches and their preparation manifest. The target cache is `qwen3_4b_q4nx_requant.build_requant_cache(requant=True)`: Q4NX → float32 → group-32 min/max Q4, unlike upstream B1's raw-Q4 packing. |
 | [weight_io.py](../weight_io.py) | Uploads the packed weight payload with bounded host-memory use. |
 | [requirements.txt](../requirements.txt) | Python dependencies added to the standard AIR environment. |
 
