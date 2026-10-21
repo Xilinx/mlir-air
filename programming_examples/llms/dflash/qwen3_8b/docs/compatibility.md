@@ -41,5 +41,12 @@ binary argument metadata. The B1 comparator uses upstream's retained xclbin/temp
 path, also used by the 4B DFlash comparator. This supports the installed XRT
 2.21 binding: it lacks `run.get_ctrl_scratchpad_bo()`, required by upstream's
 newer default ELF scratchpad path. An ELF build completed but could not run
-with that binding. No XRT replacement or scratchpad emulation is required. Decoder manifests retain the configuration, ABI, source snapshot,
+with that binding. No XRT replacement or scratchpad emulation is required.
+Decoder manifests retain the configuration, ABI, source snapshot,
 compiler/source hashes and artifact hashes; stale builds are rejected.
+
+For benchmark interpretation, the supplied B1 xclbin uses the fixed-capacity
+readback convention documented in `fused_decode/decode_insts_gen.py`.
+Upstream also has runtime-round xclbin support using an additional readback
+calibration artifact, as well as the newer ELF path. This study does not enable
+those modes; the reported denominator is the supplied C4096 template runner.

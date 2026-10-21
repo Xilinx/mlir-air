@@ -15,9 +15,11 @@ state identities prevent reusing another model's KV or stale tensors. Each
 source/build combination gets a separate cache generation; identical artifacts
 are reusable despite changes to incidental build paths or timestamps.
 
-Full80 permits up to three hours per LIT test, including cold preparation.
-Full20 remains in the normal nightly suite; exact measured duration is recorded
-with the qualification results.
+Full20 permits up to one hour per LIT test, including cold preparation. The
+qualified warm pair took 23.0 minutes; the initial 20 NPU-prefill states took
+another 6.1 minutes, before compilation and weight preparation. The former
+30-minute limit did not leave room for a cold 8B run. Full80 permits up to three
+hours and remains optional.
 
 Device commands serialize through `/tmp/mlir-air-npu.lock`. Do not wrap them in
 `/tmp/npu.lock`, which the shared prefill cache takes internally. CPU reference
@@ -40,8 +42,31 @@ accuracy beyond the compared prefix. The separate DFlash oracle/state checks
 cover greedy acceptance and committed-cache behavior; a B1 GEMV result is not
 a bitwise oracle for B8 BFP projection arithmetic.
 
+NPU prefill also uses the existing BFP attention primitive. Extending a prompt
+inside an incomplete eight-key exponent group can change rounding in that
+group. The loop check records those differences and requires exact equality for
+completed groups and aligned-tile prefixes, plus repeated identical prompts.
+Both benchmark engines receive the same saved prefill states.
+
 Build and run commands are in [the README](../README.md). Each verification
 invocation writes fresh JSON under `BUILD_DIR/verification/`; each paired study
 retains separate engine logs and detailed request records. Use a fresh output
 name when repeating a study. Fresh qualification results are recorded alongside
 source/artifact identities before publishing performance claims.
+
+## Additional arithmetic probes
+
+From the model example directory, these commands reproduce the standalone
+attention and prepass probes in addition to `make verify`:
+
+```sh
+python tests/check_attention.py --build --source build/target --output build/attention-check
+flock /tmp/mlir-air-npu.lock python tests/check_attention.py --run --output build/attention-check --result build/attention-check.json
+python tests/check_attention.py --build --no-causal --source build/draft --output build/draft-attention-check
+flock /tmp/mlir-air-npu.lock python tests/check_attention.py --run --no-causal --output build/draft-attention-check --result build/draft-attention-check.json
+make benchmark-data PER_DATASET=4 BENCHMARK_BUNDLE=build/prompt-states
+flock /tmp/mlir-air-npu.lock python tests/check_prepass.py --artifacts build/prepass --fixture build/prompt-states/inputs/gsm8k_264.npz --output build/prepass-check.json
+```
+
+The prepass fixture is produced locally by NPU prefill from the pinned checkpoint
+and frozen prompt; it does not require a private development artifact.

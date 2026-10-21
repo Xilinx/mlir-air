@@ -223,7 +223,7 @@ add_lit_testsuite(check-programming-examples-llms-full20
   "Running nightly paired LLM Full20 studies (sequential)"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS ${AIR_TEST_LIT_ARGS} -j1 --timeout 1800 --filter "llms/.*/run_npu2_full20"
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --timeout 3600 --filter "llms/.*/run_npu2_full20"
 )
 set_target_properties(check-programming-examples-llms-full20 PROPERTIES FOLDER "Tests")
 
