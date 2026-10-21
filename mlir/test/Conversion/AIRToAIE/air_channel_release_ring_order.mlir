@@ -7,11 +7,9 @@
 
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
-// One channel fills K, then V twice. With two credits the DMA holds K and the
-// first V; each release lets in the next fill in order: the second V once
-// @pv is done with the first, then the next trip's K, whose last reader @qk
-// ran before, so both releases go after the first @pv. The last one waits
-// for the second @pv, the next trip's first V going into the same buffer.
+// One channel fills K, then V twice into one buffer, with two credits. The
+// second V and the next trip's K may come in once the first @pv is done; the
+// next trip's first V waits for the second @pv.
 // CHECK-LABEL: aie.core
 // CHECK: func.call @qk
 // CHECK: func.call @pv

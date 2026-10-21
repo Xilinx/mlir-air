@@ -6973,25 +6973,26 @@ public:
     return lastAccessOp ? lastAccessOp : lastFreeOp;
   }
 
-  /// The op after which the core releases its channel slot for `get`, when
-  /// the core's gets on the channel reuse a buffer. The channel's DMA fills its
-  /// BDs in program order and one counting lock with `slots` credits gates
-  /// them all, so the k-th release of a trip lets BD (slots + k) in, whatever
-  /// buffer the core just finished with. That BD's buffer must no longer hold
-  /// data the core still reads: release k goes after the last use of the
-  /// buffer's previous fill, and no earlier than release k - 1 or the trip's
-  /// first get. Fails unless the gets are all in one block of one core.
+  /// Where to release `get`'s slot when its channel's gets reuse a buffer.
+  /// The channel's BDs share one counting lock, so release k of a trip admits
+  /// BD `slots + k`, whichever buffer that fills: the release follows that
+  /// buffer's last use and release k - 1. Fails unless the core's gets on this
+  /// DMA channel are one channel in one block.
   FailureOr<Operation *> findRingReleasePoint(air::MemcpyInterface get,
                                               ArrayRef<Operation *> ringOps,
                                               int64_t slots) {
+    auto self = dyn_cast<air::ChannelGetOp>(get.getOperation());
+    if (!self)
+      return failure();
     Block *block = get->getBlock();
     auto core = get->getParentOfType<AIE::CoreOp>();
+    auto chan = self.getChanName();
     SmallVector<air::ChannelGetOp> ring;
     for (Operation *o : ringOps) {
       if (!o || o->getParentOfType<AIE::CoreOp>() != core)
         continue;
       auto g = dyn_cast<air::ChannelGetOp>(o);
-      if (!g || g->getBlock() != block)
+      if (!g || g->getBlock() != block || g.getChanName() != chan)
         return failure();
       ring.push_back(g);
     }
@@ -7001,55 +7002,49 @@ public:
     llvm::sort(ring, [](air::ChannelGetOp a, air::ChannelGetOp b) {
       return a->isBeforeInBlock(b);
     });
-    auto *it = llvm::find(ring, get.getOperation());
+    auto *it = llvm::find(ring, self);
     if (it == ring.end())
       return failure();
-    int64_t self = it - ring.begin();
+    int64_t idx = it - ring.begin();
+    auto root = [&](int64_t i) {
+      return air::resolveBufferRoot(ring[i % n].getMemref());
+    };
 
-    // the last op of the block reading or writing `buf` after `from` and
-    // before `to` (the end of the block when null); deallocs do not count
+    // last op after `from` and before `to` (or the block end) touching any
+    // view of `buf`; deallocs do not count
     auto lastUse = [&](Operation *from, Operation *to,
                        Value buf) -> Operation * {
-      SetVector<Value> views;
-      views.insert(buf);
       Operation *last = nullptr;
       for (Operation *op = from->getNextNode(); op && op != to;
-           op = op->getNextNode()) {
-        auto visit = [&](Operation *o) {
-          if (auto view = dyn_cast<ViewLikeOpInterface>(o))
-            if (views.contains(view.getViewSource()))
-              views.insert(view->getResult(0));
-          if (!isa<memref::DeallocOp>(o) && isReadOrWriteToBuffer(o, views))
+           op = op->getNextNode())
+        op->walk([&](Operation *o) {
+          if (isa<memref::DeallocOp>(o) || air::isPure(o))
+            return;
+          if (llvm::any_of(o->getOperands(), [&](Value v) {
+                return isa<BaseMemRefType>(v.getType()) &&
+                       air::resolveBufferRoot(v) == buf;
+              }))
             last = op;
-        };
-        visit(op);
-        for (Region &region : op->getRegions())
-          region.walk(visit);
-      }
+        });
       return last;
     };
 
-    // position of each release up to this get's, as the op it follows
     Operation *pos = ring.front();
-    for (int64_t k = 0; k <= self; k++) {
-      int64_t m = slots + k; // the BD this release lets in
-      Value buf = ring[m % n].getMemref();
-      // its buffer's previous fill, if it is in this trip
-      Operation *bound = nullptr;
-      for (int64_t q = m - 1; q > m - 1 - n; q--) {
-        if (q < 0)
-          break;
-        if (ring[q % n].getMemref() != buf)
+    for (int64_t k = 0; k <= idx; k++) {
+      int64_t m = slots + k;
+      Value buf = root(m);
+      for (int64_t q = m - 1; q > m - 1 - n && q >= 0; q--) {
+        if (root(q) != buf)
           continue;
         if (q >= n)
-          return failure(); // more credits than the ring has buffers
+          return failure(); // more credits than buffers in the ring
         Operation *next = m < n ? ring[m].getOperation() : nullptr;
         Operation *use = lastUse(ring[q], next, buf);
-        bound = use ? use : ring[q].getOperation();
+        Operation *bound = use ? use : ring[q].getOperation();
+        if (pos->isBeforeInBlock(bound))
+          pos = bound;
         break;
       }
-      if (bound && pos->isBeforeInBlock(bound))
-        pos = bound;
     }
     return pos;
   }
@@ -7201,8 +7196,7 @@ public:
                                               *relLockOp.getInit())
                        : FailureOr<Operation *>(failure());
                succeeded(ringPos)) {
-      // The gets on this channel reuse a buffer: release in the order the
-      // DMA refills, as soon as the buffer it refills next is free.
+      // the channel's gets reuse a buffer: release as the DMA refills
       builder.setInsertionPointAfter(*ringPos);
       AIE::UseLockOp::create(builder, (*ringPos)->getLoc(), relLockOp,
                              AIE::LockAction::Release, lockRelValue);
