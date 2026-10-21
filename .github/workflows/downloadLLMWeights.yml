@@ -133,6 +133,7 @@ jobs:
           ATTEMPTS = 8
           rc = 0
           for m in models:
+              repo, separator, revision = m.partition("@")
               ok = False
               # The runner's HF egress resets connections intermittently.
               # snapshot_download resumes already-fetched files, so each attempt
@@ -143,7 +144,8 @@ jobs:
               for attempt in range(1, ATTEMPTS + 1):
                   try:
                       snapshot_download(
-                          m, allow_patterns=ALLOW, ignore_patterns=IGNORE,
+                          repo, revision=revision if separator else None,
+                          allow_patterns=ALLOW, ignore_patterns=IGNORE,
                           max_workers=1,
                       )
                       print(f"OK  {m}", flush=True)
@@ -167,6 +169,13 @@ jobs:
                   rc = 1
           sys.exit(rc)
           PY
+
+      - name: Seed the frozen DFlash Full80 inputs
+        run: |
+          source hf-venv/bin/activate
+          python3.12 programming_examples/llms/dflash/qwen3_4b/benchmark_data.py \
+            --destination "$HOME/.cache/mlir-air/dflash/benchmark-16x5-v1"
+          python3 programming_examples/llms/dflash/qwen3_4b/resources.py --reference --offline
 
       - name: Show HF cache AFTER
         if: always()

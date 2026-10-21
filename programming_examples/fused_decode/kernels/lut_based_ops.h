@@ -923,7 +923,17 @@ __attribute__((always_inline)) v16accfloat getExpBf16(v16bfloat16 x) {
   aie::vector<int16, 32> input0 = v32int16(bfloat16_to_int(input_bf16, 8));
   aie::vector<int16, 16> input = aie::filter_even(input0);
 
-  I_val_vec = lookup_i.fetch(input.cast_to<uint16>());
+  // parallel_lookup forms byte addresses with an accumulator right shift.
+  // That shift obeys the core rounding mode; lut_oor_policy::truncate only
+  // wraps the table index. Under conv_even, a fractional input just below an
+  // integer can therefore select the NEXT integer's exponential while the
+  // fractional lookup still selects the previous interval. This gives an
+  // erroneous factor of e (even exp(-epsilon) > 1 in online softmax).
+  // Remove the fractional bits explicitly so address generation is exact in
+  // every rounding mode. Preserve them for the fractional table below.
+  auto integer_input =
+      aie::bit_and(input.cast_to<uint16>(), aie::broadcast<uint16, 16>(0xff00));
+  I_val_vec = lookup_i.fetch(integer_input);
   F_val_vec = lookup_f.fetch(input.cast_to<uint16>());
   exp_val = aie::mul(I_val_vec, F_val_vec);
   return v16accfloat(exp_val);

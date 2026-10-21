@@ -36,20 +36,21 @@ on:
       suites:
         description: >-
           Comma-separated lit suites to run: verify, profile, sweep,
-          prefill-sweep. Defaults to all four, which is what the schedule runs.
+          prefill-sweep, full20, full80. The schedule runs the first five; Full80 is opt-in.
           Narrow it to iterate on one suite without paying for the others -- a full
-          run is ~7h, sweep alone well under an hour, prefill-sweep ~2.7h. A
-          narrowed run does NOT publish (see below), because its perf.json is
+          run was ~7h before paired studies; budget about 15 extra minutes for
+          Full20. Optional Full80 adds about one hour. Sweep alone is well under
+          an hour, prefill-sweep ~2.7h. A narrowed run does NOT publish (see below), because its perf.json is
           partial by construction.
 
           Neither does a run on any ref other than main, whatever the suite list:
           publishing is gated on the ref as well. A dispatch from a PR branch with
-          the default (all four) suites used to satisfy the gate and append to the
+          the then-default suites used to satisfy the gate and append to the
           durable perf-history branch. That is how a gemma4_e2b_q4nx verify=fail
           row from a PR branch reached the published page and then STUCK there --
           the model did not exist on main, so no later nightly could ever produce
           a row to supersede it.
-        default: verify,profile,sweep,prefill-sweep
+        default: verify,profile,sweep,prefill-sweep,full20
         type: string
 
 defaults:
@@ -107,7 +108,7 @@ jobs:
     # Bound total runtime so stuck NPU dispatch/downloads can't occupy the
     # dedicated runner indefinitely. Covers a full build + all models (each
     # model is also individually bounded by `timeout` in run_models.sh).
-    timeout-minutes: 480
+    timeout-minutes: 540
 
     steps:
 
@@ -345,9 +346,9 @@ jobs:
 
           # Install every model's Python deps (transformers/safetensors/torch/
           # huggingface_hub) — the lit-run inference imports them.
-          for req in programming_examples/llms/*/requirements.txt; do
+          while IFS= read -r -d '' req; do
             pip install -q -r "$req"
-          done
+          done < <(find programming_examples/llms -name requirements.txt -print0)
 
           # Run all models through the maintained lit/ninja targets (lit injects
           # the AIE tool env from the CMake build). lit runs every model even if
@@ -369,7 +370,7 @@ jobs:
           # `github.event_name == 'schedule'` (true) while the results file it
           # consumes is guarded by an `if [ -f ... ]` (a no-op when absent).
           # Neither check can see a suite that never ran.
-          SUITES="${{ github.event.inputs.suites || 'verify,profile,sweep,prefill-sweep' }}"
+          SUITES="${{ github.event.inputs.suites || 'verify,profile,sweep,prefill-sweep,full20' }}"
           echo "running suites: $SUITES"
           want() { case ",$SUITES," in *",$1,"*) return 0;; *) return 1;; esac; }
 
@@ -425,6 +426,17 @@ jobs:
             LIT_OPTS="--timeout 3600" \
               ninja check-programming-examples-llms-prefill-sweep || rc=1
           fi
+          if want full20; then
+            # Four fixed prompts per dataset, both B1 and DFlash.
+            LIT_OPTS="--timeout 1800" \
+              ninja check-programming-examples-llms-full20 || rc=1
+          fi
+          if want full80; then
+            # Optional paired study: measured 54 minutes with cached builds on
+            # HX370. Budget 90 minutes including its current-revision builds.
+            LIT_OPTS="--timeout 5400" \
+              ninja check-programming-examples-llms-full80 || rc=1
+          fi
           popd
           exit $rc
 
@@ -443,47 +455,13 @@ jobs:
           mkdir -p perf_out
           python3 - "$MLIR_AIE_HASH" "$LLVM_AIE_VERSION" "${{ github.sha }}" <<'PY'
           import datetime, glob, json, os, re, shutil, sys
-          import xml.etree.ElementTree as ET
 
           aie_hash, peano_ver, air_sha = sys.argv[1], sys.argv[2], sys.argv[3]
 
-          # Per-model verify status from the verify xunit output. A model may
-          # contribute several run_npu2_verify* lits (e.g. int4 ships a skipped
-          # REQUIRES:false one plus a passing bfp16-prefill one); collapse with
-          # precedence fail > pass > skip so a real result beats a skip.
-          vstatus = {}
-          rank = {"skip": 0, "pass": 1, "fail": 2}
-          if os.path.exists("verify.xml"):
-              for tc in ET.parse("verify.xml").getroot().iter("testcase"):
-                  name = (tc.get("classname") or "") + " " + (tc.get("name") or "")
-                  # xunit stores the dir in classname (…llms/<model>) and the lit
-                  # in name (run_npu2_verify.lit), joined here by a space — so the
-                  # separator before run_npu2_verify is " " or "/".
-                  m = re.search(r"llms/([^/ ]+)[ /]run_npu2_verify", name)
-                  if not m:
-                      continue
-                  if next(tc.iter("failure"), None) is not None:
-                      st = "fail"
-                  elif next(tc.iter("skipped"), None) is not None:
-                      st = "skip"
-                  else:
-                      st = "pass"
-                  model = m.group(1)
-                  prev = vstatus.get(model)
-                  if prev is None or rank[st] > rank[prev]:
-                      vstatus[model] = st
-
-          # A profile lit may record a variant under its own model name (the
-          # --model it passes to extract_perf.py, e.g. smolvla_all). The variant
-          # is verified by its directory's run_npu2_verify* lits, so it takes that
-          # status, and if its profile writes no record the loop below still
-          # gives it a null row.
-          for lit in glob.glob("programming_examples/llms/*/run_npu2_profile*.lit"):
-              model_dir = lit.split(os.sep)[2]
-              if model_dir not in vstatus:
-                  continue
-              for m in re.findall(r"extract_perf\.py\b.*--model\s+(\S+)", open(lit).read()):
-                  vstatus.setdefault(m, vstatus[model_dir])
+          # Include nested examples and explicitly declared profile model IDs.
+          sys.path.insert(0, "programming_examples/llms/bench")
+          from model_ids import verification_status
+          vstatus = verification_status("verify.xml")
 
           recs = []
           for f in sorted(glob.glob("build_assert/test/llms/**/*.perf.json", recursive=True)):
@@ -544,6 +522,29 @@ jobs:
           recs.sort(key=lambda r: r["model"])
           json.dump(recs, open("perf.json", "w"), indent=2)
           print(json.dumps(recs, indent=2))
+
+          # Keep the two cohorts distinct, including their partial request logs.
+          for size in (20, 80):
+              kind = f"full{size}"
+              for request_dir in sorted(glob.glob(f"build_assert/test/llms/**/*.{kind}-requests", recursive=True)):
+                  shutil.copytree(request_dir, f"perf_out/{os.path.basename(request_dir)}",
+                                  dirs_exist_ok=True)
+              studies = []
+              for f in sorted(glob.glob(f"build_assert/test/llms/**/*.{kind}.json", recursive=True)):
+                  try:
+                      d = json.load(open(f))
+                  except (json.JSONDecodeError, OSError) as e:
+                      print(f"WARNING: unreadable {kind} result {f}: {e}", file=sys.stderr)
+                      continue
+                  if d.get("status") != "completed" or d.get("requests_per_engine") != size:
+                      print(f"WARNING: incomplete {kind} result {f}", file=sys.stderr)
+                      continue
+                  d["runner"] = "amdryzenai5pro340"
+                  d["toolchain"] = dict(mlir_air_sha=air_sha, mlir_aie_hash=aie_hash,
+                                        llvm_aie_version=peano_ver)
+                  d["verify_status"] = vstatus.get(d["model"], "")
+                  studies.append(d)
+              json.dump(studies, open(f"{kind}.json", "w"), indent=2)
 
           # Decode tok/s-vs-context sweeps, kept in their own file rather than
           # folded into perf.json: a sweep is a curve, not a scalar, and
@@ -606,7 +607,7 @@ jobs:
         # run cancelled mid-profile appended rows with null metrics but
         # verify_status "pass". A *failed* run must still publish -- its other
         # models' rows are good.
-        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep')) }}
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full20')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -668,6 +669,21 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, os
           recs = json.load(open("perf.json")) if os.path.exists("perf.json") else []
+          for size in (20, 80):
+              file = f"full{size}.json"
+              studies = json.load(open(file)) if os.path.exists(file) else []
+              if not studies:
+                  continue
+              print(f"### Full{size}: matched B1 and DFlash, {size // 5} prompts per dataset\n")
+              print("| model | verify | B1 tok/s | DFlash tok/s | speedup | emitted/round |")
+              print("| --- | --- | ---: | ---: | ---: | ---: |")
+              for d in studies:
+                  m = d["overall"]
+                  print(f"| {d['model']} | {d['verify_status']} | {m['b1_tokens_per_second']:.3f} | "
+                        f"{m['dflash_tokens_per_second']:.3f} | {m['speedup']:.3f}x | "
+                        f"{m['emitted_per_round']:.3f} |")
+              print()
+
           print("### LLM/VLA perf benchmark\n")
           if not recs:
               print("**No results produced** — see step logs.")
@@ -691,28 +707,38 @@ jobs:
       # for `if:`. A cancelled full run is partial at an arbitrary point, so it
       # must land under the non-publishable name like a narrowed run does.
       - name: Upload perf artifact
-        if: ${{ !cancelled() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep')) }}
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full20')) }}
         uses: actions/upload-artifact@v4
         with:
           name: perf-${{ github.run_id }}
           path: |
             perf.json
+            full20.json
+            full80.json
             sweep.json
             prefill_sweep.json
             perf_out/
+            build_assert/test/llms/dflash/**/manifest.json
+            build_assert/test/llms/dflash/**/weights.json
+            build_assert/test/llms/dflash/**/verification/**/*.json
             verify.xml
 
       # Same payload, name the publisher ignores: still there to download.
       - name: Upload perf artifact (partial run)
-        if: ${{ cancelled() || !(github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep')) }}
+        if: ${{ cancelled() || !(github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full20')) }}
         uses: actions/upload-artifact@v4
         with:
           name: perf-partial-${{ github.run_id }}
           path: |
             perf.json
+            full20.json
+            full80.json
             sweep.json
             prefill_sweep.json
             perf_out/
+            build_assert/test/llms/dflash/**/manifest.json
+            build_assert/test/llms/dflash/**/weights.json
+            build_assert/test/llms/dflash/**/verification/**/*.json
             verify.xml
 
       # Refresh the GitHub Pages docs so the "Nightly LLM Benchmark" section
@@ -727,7 +753,7 @@ jobs:
         # Full, non-cancelled runs only -- same reasoning as the history append.
         # Note this gate alone never protected the page: the artifact naming
         # above is what actually decides, because generateDocs runs on push too.
-        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep')) }}
+        if: ${{ !cancelled() && hashFiles('perf.json') != '' && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full20')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

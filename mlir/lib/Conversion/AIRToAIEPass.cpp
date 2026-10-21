@@ -4251,9 +4251,20 @@ static void unifyOnChipArmBuffers(scf::IndexSwitchOp sw, ArmChannelMap &byChan,
     if (!sameTy)
       continue;
 
+    // Preserve placement/alignment/lifetime requirements when creating the
+    // shared allocation. Buffers on different memtiles cannot be unified.
+    auto firstAlloc = firstBuf.getDefiningOp<memref::AllocOp>();
+    if (!firstAlloc || !llvm::all_of(ops, [&](air::ChannelInterface ci) {
+          auto alloc = ci.getMemref().getDefiningOp<memref::AllocOp>();
+          return alloc &&
+                 alloc->getAttrDictionary() == firstAlloc->getAttrDictionary();
+        }))
+      continue;
+
     // Hoist one shared buffer above the switch.
     OpBuilder b(sw);
     Value shared = memref::AllocOp::create(b, sw.getLoc(), memrefTy);
+    shared.getDefiningOp()->setAttrs(firstAlloc->getAttrs());
 
     // Redirect every distinct arm buffer to the shared buffer, erasing the
     // per-arm alloc + its deallocs.
@@ -4331,8 +4342,15 @@ static void unifyIndexSwitchArmBuffers(AIE::DeviceOp d) {
       });
     }
 
-    breakIndexSwitchGetPutRelays(sw, regions);
-    dedicateArmVaryingGetChannels(sw, byChan, opRegion);
+    // Relay breaking inserts a core-executed copy; dedication sets compute
+    // tile port pins. Neither applies to segment-level L2 DMA, potentially on
+    // several memtiles. In particular, pinning an L2 get's channel declaration
+    // would constrain its producing core to a channel numbered across the
+    // entire segment. L2 forwarding uses shared-buffer DMA locks directly.
+    if (sw->getParentOfType<AIE::CoreOp>()) {
+      breakIndexSwitchGetPutRelays(sw, regions);
+      dedicateArmVaryingGetChannels(sw, byChan, opRegion);
+    }
     unifyOnChipArmBuffers(sw, byChan, opRegion);
   }
 }
@@ -7081,10 +7099,36 @@ public:
     else if (!tileInbound.value() &&
              isa<AIE::BufferOp>(alloc.getDefiningOp())) {
       if (sharedStagingBuffer) {
-        // Interleaved mode: acquire immediately before this specific put, so
-        // the core waits for the DMA to finish reading the previous put's
-        // data before overwriting the buffer.
-        builder.setInsertionPoint(memcpyOpIf);
+        // Protect the writes that PREPARE this send, not just the put. A
+        // put lowers to a DMA handoff, so acquiring immediately before it is
+        // too late: an opaque kernel may already have overwritten the buffer
+        // while the previous DMA is still reading it. Scan only this block
+        // and stop at a preceding DMA access (including one in a region), so
+        // consecutive sends remain separate critical sections. Opaque calls
+        // conservatively count as accesses regardless of argument order.
+        llvm::SmallDenseSet<Value> aliases;
+        air::collectBufferAliases(alloc, aliases);
+        Operation *firstAccess = memcpyOpIf.getOperation();
+        for (Operation *op = memcpyOpIf->getPrevNode(); op;
+             op = op->getPrevNode()) {
+          bool hasAccess = false;
+          bool hasDmaAccess = false;
+          op->walk([&](Operation *nested) {
+            if (air::isPure(nested))
+              return;
+            for (Value operand : nested->getOperands()) {
+              if (!aliases.contains(operand))
+                continue;
+              hasAccess = true;
+              hasDmaAccess |= isa<air::MemcpyInterface>(nested);
+            }
+          });
+          if (hasDmaAccess)
+            break;
+          if (hasAccess)
+            firstAccess = op;
+        }
+        builder.setInsertionPoint(firstAccess);
       } else {
         auto br = dyn_cast_if_present<cf::BranchOp>(
             memcpyOpIf->getBlock()->getTerminator());

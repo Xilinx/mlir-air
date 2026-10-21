@@ -1,0 +1,3 @@
+BasedOnStyle: InheritParentConfig
+# Preserve the readable, frozen benchmark manifest.
+DisableFormat: true
