@@ -139,7 +139,7 @@ def main():
         "-I" + str(HERE / "kernels"),
     ]
     flags += [
-        "-DDFLASH_VECTOR_ATTN_NORM",
+        "-DATTN_NORM_VECTOR",
         "-DPROJ_MM_BATCH=8",
         "-DDECODE_ROUND_NEAREST",
         "-DATTN_QUERY_TILE=4",
