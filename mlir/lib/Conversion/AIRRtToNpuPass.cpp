@@ -3870,6 +3870,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         SmallVector<Unit> pendingDrains;
         // Drain awaits waiting for the feed they guard.
         SmallVector<Operation *> pendingAwaits;
+        // Where each drain of the run was armed: the number of feeds before it.
+        llvm::DenseMap<Value, unsigned> drainPos;
         llvm::SmallPtrSet<Operation *, 8> travelling;
         SmallVector<Operation *> staleFrees;
 
@@ -3943,9 +3945,46 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           llvm::MapVector<StringRef, SmallVector<Unit>> drainsByChan;
           for (const Unit &u : drains)
             drainsByChan[u.chan].push_back(u);
+          // The round each feed goes in: one after its channel's previous
+          // feed, and, for a feed that awaits a drain, no earlier than any feed
+          // emitted before it -- one of those may be what fills the drain, and
+          // the wait would block the control program before it was issued. (By
+          // channel index alone a second herd's few feeds land in the first
+          // rounds, ahead of the GEMM engine feeds that produce what they
+          // read.) Without such a feed this is each feed's index in its
+          // channel.
+          llvm::DenseMap<Operation *, unsigned> roundOf;
           unsigned rounds = 0;
-          for (auto &kv : byChan)
-            rounds = std::max<unsigned>(rounds, kv.second.size());
+          {
+            llvm::StringMap<unsigned> last;
+            for (auto [k, u] : llvm::enumerate(run)) {
+              auto it = last.find(u.chan);
+              unsigned r = it == last.end() ? 0 : it->second + 1;
+              // Only the feeds emitted after the awaited drain was armed can
+              // fill it; this one goes after each of them (after an awaiting
+              // one's round, since awaiting feeds go last within a round).
+              for (Operation *a : u.prefix) {
+                auto pos =
+                    drainPos.find(cast<AIEX::DMAAwaitTaskOp>(a).getTask());
+                if (pos == drainPos.end())
+                  continue;
+                for (unsigned i = pos->second; i < k; i++)
+                  r = std::max(r, roundOf[run[i].start] +
+                                      (run[i].prefix.empty() ? 0 : 1));
+              }
+              roundOf[u.start] = r;
+              last[u.chan] = r;
+              rounds = std::max(rounds, r + 1);
+            }
+          }
+          // The round of the feed `drain` was emitted in front of, or `rounds`
+          // if no feed follows it.
+          auto roundBeforeFeed = [&](Unit drain) -> unsigned {
+            auto pos = drainPos.find(drain.cfg.getResult());
+            if (pos == drainPos.end() || pos->second >= run.size())
+              return rounds;
+            return roundOf[run[pos->second].start];
+          };
           // Every drain on a channel, ahead of the feeds and between them, in
           // program order: the order the channel fills them in.
           llvm::MapVector<StringRef, SmallVector<Unit>> allDrainsByChan;
@@ -3982,13 +4021,22 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           auto firstAwaiter = [&](Unit drain) {
             unsigned r = rounds;
             for (auto &ch : byChan)
-              for (auto [i, u] : llvm::enumerate(ch.second))
+              for (const Unit &u : ch.second)
                 if (llvm::any_of(u.prefix, [&](Operation *a) {
                       return cast<AIEX::DMAAwaitTaskOp>(a).getTask() ==
                              drain.cfg.getResult();
                     }))
-                  r = std::min<unsigned>(r, i);
+                  r = std::min<unsigned>(r, roundOf[u.start]);
             return r;
+          };
+          // Every woven drain's round, per channel in the channel's order.
+          llvm::MapVector<StringRef, SmallVector<std::pair<Unit, unsigned>>>
+              placed;
+          // The order they were placed in, which drainsAt keeps within a round.
+          SmallVector<std::pair<StringRef, unsigned>> placedOrder;
+          auto place = [&](StringRef chan, Unit u, unsigned r) {
+            placedOrder.push_back({chan, (unsigned)placed[chan].size()});
+            placed[chan].push_back({u, r});
           };
           if (weaveDrains) {
             for (auto &kv : drainsByChan) {
@@ -4005,7 +4053,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                 if (j)
                   r = std::max(r, lastLeadingRound[kv.first]);
                 lastLeadingRound[kv.first] = std::min(r, rounds);
-                drainsAt[std::min(r, rounds)].push_back(kv.second[j]);
+                place(kv.first, kv.second[j], r);
               }
             }
           }
@@ -4017,7 +4065,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             llvm::MapVector<StringRef, SmallVector<std::pair<Unit, unsigned>>>
                 midByChan;
             for (auto &[u, r] : midDrains)
-              midByChan[u.chan].push_back({u, std::min(r, firstAwaiter(u))});
+              midByChan[u.chan].push_back(
+                  {u, std::min(r == ~0u ? rounds : roundBeforeFeed(u),
+                               firstAwaiter(u))});
             for (auto &kv : midByChan) {
               auto &ds = kv.second;
               if (auto it = lastLeadingRound.find(kv.first);
@@ -4028,10 +4078,33 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
               for (unsigned j = ds.size(); j-- > 1;)
                 ds[j - 1].second = std::min(ds[j - 1].second, ds[j].second);
               for (auto &[u, r] : ds)
-                drainsAt[r].push_back(u);
+                place(kv.first, u, r);
             }
           }
 
+          // The channel order above (max with the previous drain) is applied
+          // after the cap at the awaiting feed, so it can put a drain behind
+          // that feed -- a use before its definition -- when the feed's
+          // channel carries far fewer tasks than the drain's (a second herd's
+          // feeds next to a GEMM engine's weight stream). Walk each channel
+          // backwards and pull a drain, and every older one, up to its first
+          // awaiter. A layout that already honours both is left as it was.
+          for (auto &kv : placed) {
+            auto &ds = kv.second;
+            for (unsigned j = ds.size(); j-- > 0;) {
+              ds[j].second = std::min(ds[j].second, firstAwaiter(ds[j].first));
+              if (j + 1 < ds.size())
+                ds[j].second = std::min(ds[j].second, ds[j + 1].second);
+            }
+          }
+          for (auto [chan, j] : placedOrder) {
+            auto &[u, r] = placed[chan][j];
+            drainsAt[std::min(r, rounds)].push_back(u);
+          }
+
+          // The next feed of each channel to go out; a channel's rounds only
+          // grow, so it is the one to look at in each round.
+          llvm::StringMap<unsigned> cursor;
           for (unsigned i = 0; i <= rounds; i++) {
             for (const Unit &u : drainsAt[i]) {
               u.cfg->moveBefore(fence);
@@ -4044,11 +4117,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             // program blocks.
             for (bool awaiting : {false, true})
               for (auto &kv : byChan) {
-                if (i >= kv.second.size())
+                unsigned &cur = cursor[kv.first];
+                if (cur >= kv.second.size() ||
+                    roundOf[kv.second[cur].start] != i)
                   continue;
-                const Unit &u = kv.second[i];
+                const Unit &u = kv.second[cur];
                 if (u.prefix.empty() == awaiting)
                   continue;
+                cur++;
                 for (Operation *a : u.prefix)
                   a->moveBefore(fence);
                 u.cfg->moveBefore(fence);
@@ -4083,6 +4159,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         };
         auto reset = [&]() {
           run.clear();
+          drainPos.clear();
           drains.clear();
           midDrains.clear();
           pendingDrains.clear();
@@ -4131,6 +4208,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             Operation *start = singleStart(cfg);
             StringRef chan = cfg.getAlloc().getLeafReference().getValue();
             if (start && isDrain(cfg)) {
+              drainPos[cfg.getResult()] = run.size();
               (run.empty() ? drains : pendingDrains)
                   .push_back({cfg, start, chan});
               continue;
