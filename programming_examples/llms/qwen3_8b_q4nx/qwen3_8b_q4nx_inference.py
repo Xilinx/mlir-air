@@ -210,9 +210,10 @@ class FusedDecoder:
 
         # host weights: embed (x0 gather), final_norm (RMS BO), per-layer qk-norm (rope_w).
         self.qm = gw.Q4nxModel(model)
-        embed, final_norm, _lm = self.qm.embed_norm_lmhead()
-        self.embed = np.asarray(embed, bfloat16).reshape(-1, self.K)
-        self.final_norm = np.asarray(final_norm, bfloat16)
+        # Decode gathers embeddings and uses the packed untied head below.
+        # Keep the BF16 embedding bits; avoid materializing an unused FP32 head.
+        self.embed = self.qm._raw_i16("model.embed_tokens.weight").view(bfloat16).reshape(-1, self.K)
+        self.final_norm = np.asarray(self.qm.bf16("model.norm.weight"), bfloat16)
         self.qk = [
             self.qm.layer_qk_norm(L) for L in range(self.UNI_DEC)
         ]  # (qn,kn) [DH]
@@ -220,7 +221,6 @@ class FusedDecoder:
         # decode weights (q4k-cascade) + the 2 RMS norm stacks from the requant cache.
         _z = np.load(os.environ["Q4NX_QWEN3_8B_DECODE_NPZ"])
         W = _z["W"].view(bfloat16)
-        self.Wv16 = W.view(np.int16) if W.dtype != np.int16 else W
         _rms = {n: list(_z[n].view(bfloat16)) for n in ("RMS_in", "RMS_post")}
         self.rms_slabs = np.concatenate(
             [
@@ -330,7 +330,7 @@ class FusedDecoder:
             )
             self._use_window(self.cur_maxl)
         if not self._wsplit:
-            self.w_bo.write(self.Wv16, 0)
+            self.w_bo.write(W.view(np.int16), 0)
             self.w_bo.sync(TO)
         self.KV = np.zeros((self.UNI_DEC, self.LREG), dtype=bfloat16)
 
