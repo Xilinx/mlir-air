@@ -38,6 +38,13 @@ def build_module(layout):
             + layout.UNI_LM * layout.VOCAB_SIZE_PADDED * layout.BATCH
         )
         y_l3 = layout.MemRefType.get([_y_elems], bf16)
+        # This graph uses a single KV buffer and does not implement the decode
+        # engine's KV split, so it cannot go past 4 GiB (see kv_layout).
+        if layout.KV_BO_SPLIT:
+            raise SystemExit(
+                f"KV capacity {layout.ATTN_MAXL} puts the cache past the 4 GiB one "
+                f"buffer is addressable over, and the batch graph has no KV split"
+            )
         kvc_l3 = layout.MemRefType.get(
             [layout.UNI_DEC * layout.ATTN_MAXL * layout.KVSZ_TOK], bf16
         )

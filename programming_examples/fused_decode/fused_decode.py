@@ -1415,12 +1415,57 @@ RMS_LAYER = N_NORMS * K  # rms weights / layer (2 llama pre-norm / 4 Gemma sandw
 KV_LAYER = ATTN_MAXL * KVSZ_TOK  # KV cache / layer
 # ShortConv carried state [BX[t-2] | BX[t-1]] per layer, also in arg4.
 CONV_ST_LAYER = 2 * CONV_DIM if CONV_MIXER else 0
-# A HYBRID puts the state region AFTER the whole KV region so BOTH stay a plain
+# KV-buffer grouping, the KV counterpart of W_GROUP. A shim BD offset is an i32
+# count of bf16 elements (AIRRtToNpuPass, aie.dma_bd), so it reaches 4 GiB into a
+# buffer. Past that it goes negative: an xclbin dispatch then reads and writes
+# outside the buffer without any error, and a full ELF fails to link (aiebu
+# rejects relocation addends wider than 32 bits). A cache larger than that is
+# split evenly over the fewest buffers that fit. Group 0 stays in the kvc arg,
+# followed by any ShortConv state; the other groups come after the weight
+# groups. With a single group the emitted IR does not change.
+BO_REACH_ELEMS = (1 << 32) // 2
+
+
+def kv_layout(attn_maxl):
+    """KV buffer layout at `attn_maxl`.
+
+    Returns (elements per layer slab, layer slabs per buffer, elements per
+    buffer, buffer-arg index per buffer). Buffer-arg indices count x, w, rms,
+    y, kvc, the weight groups and the lm-head, then KV groups 1 and up. Hosts
+    call this with the ATTN_MAXL of the artifact they run, which can differ
+    from the one this module was imported with. Buffer 0 also holds any
+    ShortConv state.
+    """
+    kv_layer = attn_maxl * KVSZ_TOK
+    extra0 = UNI_DEC * CONV_ST_LAYER if CONV_MIXER else 0
+    if kv_layer > BO_REACH_ELEMS - extra0:
+        raise SystemExit(
+            f"one layer's KV slab is {kv_layer * 2 / 2**30:.2f} GiB, past the "
+            f"4 GiB a shim BD reaches; lower ATTN_MAXL={attn_maxl}"
+        )
+    n = -(-UNI_DEC // ((BO_REACH_ELEMS - extra0) // kv_layer))
+    group = -(-UNI_DEC // n)
+    lens = [min(group, UNI_DEC - g * group) * kv_layer for g in range(n)]
+    if not CONV_MIXER:
+        bo0 = lens[0]
+    elif HYBRID_MIXER:
+        bo0 = lens[0] + extra0
+    else:  # ShortConv only: no KV
+        bo0 = extra0
+    args = [4] + [5 + (N_WGRP if W_SPLIT else 0) + g for g in range(n - 1)]
+    return kv_layer, group, [bo0] + lens[1:], args
+
+
+_kv_layer, KV_GROUP, KV_BO_ELEMS, KV_ARGS = kv_layout(ATTN_MAXL)
+assert _kv_layer == KV_LAYER
+N_KVGRP = len(KV_BO_ELEMS)
+KV_BO_SPLIT = N_KVGRP > 1
+# A HYBRID puts the state region after group 0's KV region so both stay a plain
 # `iv * slab`. Each region then carries UNI_DEC slabs of which only its own layer
 # kind's are ever touched -- ~42 MB of arg4 that is allocated and never read at
 # ATTN_MAXL=2048. That is DDR footprint, not bandwidth, and it is the price of
 # keeping every offset affine in the wave index.
-CONV_ST_BASE = UNI_DEC * KV_LAYER if HYBRID_MIXER else 0
+CONV_ST_BASE = KV_GROUP * KV_LAYER if HYBRID_MIXER else 0
 Y_LAYER = sum(
     ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p not in MIXER_DESTS
 )  # Y / layer
@@ -1480,11 +1525,7 @@ def build_module():
     # APPEND_OFF, then the whole cache is streamed back per CU (_d2wip shapes).
     # NLAYERS per-layer caches concatenated (offset iv*KV_LAYER).
     kvc_t = air_api.tensor(
-        (
-            [CONV_ST_BASE + UNI_DEC * CONV_ST_LAYER]  # conv state, after any KV
-            if CONV_MIXER
-            else [UNI_DEC * KV_LAYER]
-        ),
+        [KV_BO_ELEMS[0]],  # a hybrid's conv state follows its KV
         api_types.bf16,
         name="kvc",
         inout=True,
@@ -1495,20 +1536,38 @@ def build_module():
     # DDR argument positions -- and every host binding built around them -- are
     # unchanged. A rank-0 air.tensor is that scalar: it becomes a bare `i32`
     # func argument rather than a memref, which is what the host binds.
+    # air.tensor arguments are ordered by creation, not by position in
+    # _tensors, so create them in KV_ARGS order.
+    _wg_t = [
+        air_api.tensor([n], api_types.bf16, name=f"wg{i + 1}")
+        for i, n in enumerate(_wgrp_len[1:])
+    ] + ([air_api.tensor([_wvoc_len], api_types.bf16, name="wvoc")] if W_SPLIT else [])
+    # KV group 0 is kvc; groups 1 and up follow the weight groups.
+    _kvg_t = [kvc_t] + [
+        air_api.tensor([n], api_types.bf16, name=f"kvg{i + 1}", inout=True)
+        for i, n in enumerate(KV_BO_ELEMS[1:])
+    ]
     _tensors = (
         [x_t, w_t, rms_t, y_t, kvc_t]
-        + [
-            air_api.tensor([n], api_types.bf16, name=f"wg{i + 1}")
-            for i, n in enumerate(_wgrp_len[1:])
-        ]
-        + (
-            [air_api.tensor([_wvoc_len], api_types.bf16, name="wvoc")]
-            if W_SPLIT
-            else []
-        )
+        + _wg_t
+        + _kvg_t[1:]
         + ([air_api.tensor([], api_types.i32, name="seqlen")] if DYNSEQ else [])
         + ([air_api.tensor([], api_types.i32, name="kvblocks")] if RB_ARG else [])
     )
+    # Hosts bind arguments in _tensors order; check it matches creation order.
+    from air.api._trace import PENDING_TENSORS
+
+    _ids = {id(t) for t in _tensors}
+    assert [id(t) for t in PENDING_TENSORS if id(t) in _ids] == [
+        id(t) for t in _tensors
+    ], "air.tensor creation order differs from the host binding order"
+    for _t in _tensors:
+        if _t.shape and _t.shape[0] > BO_REACH_ELEMS:
+            raise SystemExit(
+                f"host operand {_t.name} is {_t.shape[0] * 2 / 2**30:.2f} GiB, past "
+                f"the 4 GiB a shim BD addresses; split it (DECODE_WGROUP for the "
+                f"weights)"
+            )
     if DYNSEQ:
         SEQ_SCALAR_ARGS["L"] = len(_tensors) - 1 - RB_ARG
     if RB_ARG:
@@ -2292,6 +2351,19 @@ def build_module():
                     _wbase = arith.muli(arith.subi(a_iv, _goff), idx(W_LAYER))
                 _rbase = _lbx(RMS_LAYER)  # rms weights slab for this layer
                 _kbase = _lb(KV_LAYER)  # KV cache slab for this layer
+                _kgi = None  # which KV buffer this decode wave appends to and reads
+                if KV_BO_SPLIT:
+                    # Same select chain as the weight split, over KV groups.
+                    assert a_iv is not None, "a KV split needs the wave loop"
+                    _kgi = idx(N_KVGRP - 1)
+                    _kgoff = idx((N_KVGRP - 1) * KV_GROUP)
+                    for _g in range(N_KVGRP - 2, -1, -1):
+                        _gc = arith.cmpi(
+                            arith.CmpIPredicate.slt, a_iv, idx((_g + 1) * KV_GROUP)
+                        )
+                        _kgi = arith.select(_gc, idx(_g), _kgi)
+                        _kgoff = arith.select(_gc, idx(_g * KV_GROUP), _kgoff)
+                    _kbase = arith.muli(arith.subi(a_iv, _kgoff), idx(KV_LAYER))
                 _ybase = _lbx(Y_LAYER)  # Y (host-drain) region for this layer
                 _u1 = arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
                 _u0 = arith.ConstantOp(IntegerAttr.get(i32, 0), None).result
@@ -2545,7 +2617,7 @@ def build_module():
                     # K/V into the cache at APPEND_OFF (device S2MM via appendK/appendV);
                     # (2) READ BACK the whole cache per CU (inKV, strided) for the flash
                     # block loop. = the reference _receive + _move.
-                    def _emit_append(_kbase=_kbase):
+                    def _emit_append(_kbase=_kbase, kv_t=kvc_t):
                         # K and V each drain to a shim S2MM; the allocator
                         # picks distinct shim tiles for the two decls.
                         # The readback below reads what these gets write, at
@@ -2565,7 +2637,7 @@ def build_module():
                             each row is transferred.
                             """
                             _o = _cidx(_off)
-                            return kvc_t[_o : _o + NGRP * REGION_STRIDE].reshape(
+                            return kv_t[_o : _o + NGRP * REGION_STRIDE].reshape(
                                 NGRP, REGION_STRIDE
                             )[:, 0:REGION_W]
 
@@ -2577,7 +2649,7 @@ def build_module():
                         )
                         return k, v
 
-                    def _emit_readback(appended, _kbase=_kbase):
+                    def _emit_readback(appended, _kbase=_kbase, kv_t=kvc_t):
                         # KV readback as ONE 4D strided nd-DMA per CU (was ATTN_ROUNDS
                         # separate per-block puts). The whole per-CU cache
                         # [ATTN_ROUNDS][2(K|V)][16 pos][KVPC_DH] is read in a single shim
@@ -2661,7 +2733,7 @@ def build_module():
 
                             def _kv_region(_off):
                                 _o = _cidx(_off)
-                                _r = kvc_t[_o : _o + _cw]
+                                _r = kv_t[_o : _o + _cw]
                                 return _r if _KV1D else _r.reshape(_cb, 16, REGION_W)
 
                             for gi in range(NGRP):
@@ -2713,7 +2785,24 @@ def build_module():
                         if p == KV_PHASE and ATTN_SUBSYS:
 
                             def _kv_traffic():
-                                _emit_readback(_emit_append())
+                                if not KV_BO_SPLIT:
+                                    _emit_readback(_emit_append())
+                                    return
+
+                                # One arm per KV buffer. The switch folds to a
+                                # single arm once the wave loop is unrolled.
+                                def _arm(g):
+                                    _kv = _kvg_t[g]
+                                    _emit_readback(_emit_append(kv_t=_kv), kv_t=_kv)
+                                    yield_([])
+
+                                index_switch(
+                                    [],
+                                    _kgi,
+                                    list(range(N_KVGRP - 1)),
+                                    case_body_builder=lambda op, i, cv: _arm(cv),
+                                    default_body_builder=lambda op: _arm(N_KVGRP - 1),
+                                )
 
                             # Attention waves only. The KV memtile behind
                             # this cannot be armed (segment scope), but it

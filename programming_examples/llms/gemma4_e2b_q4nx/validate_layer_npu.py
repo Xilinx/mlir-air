@@ -316,7 +316,7 @@ def main():
     n_y = (
         fd.HOST_ROUNDS + fd.LAYER_RNDS
     ) * fd.PAYLOAD + fd.UNI_LM * fd.VOCAB_SIZE_PADDED
-    n_kv = fd.UNI_DEC * fd.KV_LAYER
+    n_kv = fd.KV_SLABS * fd.KV_LAYER
 
     x_bo = xrt.bo(dev, K * 2, HO, g(3))
     w_bo = xrt.bo(dev, n_w * 2, HO, g(4))

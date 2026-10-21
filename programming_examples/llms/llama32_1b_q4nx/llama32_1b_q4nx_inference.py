@@ -429,6 +429,8 @@ class FusedDecoder:
         )
 
         # ONE artifact + ONE self-contained BO set (weight BO uploaded once)
+        from kv_bos import KVBuffers
+
         self.dev = xrt.device(0)
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.cur_maxl = self.ATTN_MAXL
@@ -443,8 +445,13 @@ class FusedDecoder:
             self.w_bo = xrt.ext.bo(self.dev, W.size * 2)
             self.r_bo = xrt.ext.bo(self.dev, self._RMS_SIZE * 2)
             self.y_bo = xrt.ext.bo(self.dev, self.ny * 2)
-            self.kvc = xrt.ext.bo(self.dev, 16 * self.LREG * 2)
-            self._elfdec.bind((self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc))
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.ext.bo(self.dev, n)
+            )
+            self.kvc = self.kvb.kvc
+            self._elfdec.bind(
+                (self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc) + self.kvb.extra
+            )
         else:
             self._kern = _stair.open_windows(self.dev, xrt, self.gen, self.windows)
             self.kern = self._kern[self.cur_maxl][1]
@@ -454,7 +461,10 @@ class FusedDecoder:
             self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
             self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
             self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
-            self.kvc = xrt.bo(self.dev, 16 * self.LREG * 2, HO, g(7))
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.bo(self.dev, n, HO, g(3 + a))
+            )
+            self.kvc = self.kvb.kvc
             self._ist = _stair.make_insts_states(
                 self.gen, xrt, self.dev, g(1), self.windows
             )
@@ -501,9 +511,7 @@ class FusedDecoder:
         TO = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         _lreg = self._geom.lreg(self.cur_maxl)
         for Lyr in range(16):
-            boff = Lyr * _lreg * 2
-            self.kvc.write(self.KV[Lyr, :_lreg].view(np.int16), boff)
-            self.kvc.sync(TO, _lreg * 2, boff)
+            self.kvb.write_layer(Lyr, self.KV[Lyr, :_lreg].view(np.int16), TO)
         self._kv_dirty = False  # already uploaded; dispatch skips it
 
     def dispatch(self, tok, p):
@@ -540,11 +548,7 @@ class FusedDecoder:
         # host copy dominated the per-token time, capping the chatbot at ~24 tok/s vs the
         # ~43 tok/s device rate). the reference likewise appends incrementally.
         if getattr(self, "_kv_dirty", True):
-            packed = np.ascontiguousarray(self.KV).reshape(
-                -1
-            )  # [16*ATTN_MAXL*KVSZ_TOK]
-            self.kvc.write(packed.view(np.int16), 0)
-            self.kvc.sync(TO)
+            self.kvb.write_layers(np.ascontiguousarray(self.KV).view(np.int16), TO)
             self._kv_dirty = False
         _t_kv = _tk() - _a
         _a = _tk()
@@ -590,6 +594,7 @@ class FusedDecoder:
                 self.r_bo,
                 self.y_bo,
                 self.kvc,
+                *self.kvb.extra,
             ).wait(60000)
         _t_dev = _tk() - _a
         _a = _tk()
@@ -621,6 +626,7 @@ class FusedDecoder:
         "_st",
         "_ist",
         "_elfdec",
+        "kvb",
         "kvc",
         "y_bo",
         "r_bo",

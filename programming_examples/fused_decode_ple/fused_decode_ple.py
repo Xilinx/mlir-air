@@ -1563,9 +1563,9 @@ assert UNI_LM == N_VOCAB_CHUNKS, (
     f"(VOCAB_CHUNK_I2={VOCAB_I2}); their product covers the padded vocab"
 )
 # Which decode wave's KV slab each wave READS, for models whose later layers
-# share a lower layer's cache instead of projecting k/v. Only the readback moves;
-# the append stays on the wave's own slab, which nothing else reads. Empty (every
-# model's default) means "read your own" and emits byte-identical IR.
+# share a lower layer's cache instead of projecting k/v. A wave whose source is
+# another wave appends to the scratch slab (see kv_slots). Empty (every model's
+# default) means "read your own" and emits byte-identical IR.
 KV_SRC = [int(t) for t in _os.environ.get("DECODE_KV_SRC", "").split(",") if t != ""]
 assert not KV_SRC or (
     len(KV_SRC) == UNI_DEC and all(0 <= s <= i for i, s in enumerate(KV_SRC))
@@ -1936,14 +1936,90 @@ W_DEC = sum(W_SLABS)  # all decode slabs; the LM head follows
 assert not (PER_CLASS and W_SPLIT), "per-class slabs assume one weight buffer"
 RMS_LAYER = N_NORMS * K  # rms weights / layer (2 llama pre-norm / 4 Gemma sandwich)
 KV_LAYER = ATTN_MAXL * KVSZ_TOK  # KV cache / layer
+
+
+# KV slabs are allocated only for waves that own a cache. A KV-shared wave reads
+# its source's slab, but its rope core still appends k/v every token; all such
+# appends go to one shared scratch slab that is never read. Without KV_SRC every
+# wave owns a slab and the emitted IR does not change.
+def kv_slots(kv_src, n_waves):
+    """(slab count, append slab per wave, read slab per wave) for a per-wave
+    KV source map. An empty map means every wave owns its slab."""
+    owners = [w for w in range(n_waves) if not kv_src or kv_src[w] == w]
+    assert not kv_src or all(
+        kv_src[s] == s for s in kv_src
+    ), f"DECODE_KV_SRC must point every wave at a slab that owns its cache: {kv_src}"
+    scratch = len(owners) if len(owners) < n_waves else None
+    rank = {w: i for i, w in enumerate(owners)}
+    wr = [rank.get(w, scratch) for w in range(n_waves)]
+    rd = [rank[kv_src[w] if kv_src else w] for w in range(n_waves)]
+    return len(owners) + (scratch is not None), wr, rd
+
+
+def model_kv_src(n_waves):
+    """Full-depth KV source map from MODEL: layers below FIRST_KV_SHARED own
+    their cache, later layers read the last owning layer of the same class
+    (full or sliding). Matches the model's kv_source_layer(); used to size
+    buffers without importing the model."""
+    first = MODEL.get("FIRST_KV_SHARED")
+    if not first:
+        return []
+    full = lambda l: l in MODEL["FULL_LAYERS"]
+    return [
+        l if l < first else max(s for s in range(first) if full(s) == full(l))
+        for l in range(n_waves)
+    ]
+
+
+KV_SLABS, KV_SLOT_WR, KV_SLOT_RD = kv_slots(KV_SRC, UNI_DEC)
+# How far a shim BD reaches into one host buffer. The offset is an i32 count of
+# elements (AIRRtToNpuPass, aie.dma_bd), so past 4 GiB of bf16 it goes negative
+# and points before the buffer. kv_layout splits the KV cache to stay below this,
+# and build_module() rejects any operand that is still larger.
+BO_REACH_BYTES = 1 << 32
 # ShortConv carried state [BX[t-2] | BX[t-1]] per layer, also in arg4.
 CONV_ST_LAYER = 2 * CONV_DIM if CONV_MIXER else 0
+
+
+def kv_layout(attn_maxl, kv_src=None):
+    """KV buffer layout at `attn_maxl` for a KV source map (default: this
+    build's).
+
+    Same as fused_decode.kv_layout, but grouped over the compacted slabs
+    instead of waves. Buffer-arg indices count x, w, rms, y, kvc, the weight
+    groups, the PLE pair, then KV buffers 1 and up.
+    """
+    kv_layer = attn_maxl * KVSZ_TOK
+    n_slabs = kv_slots(KV_SRC if kv_src is None else kv_src, UNI_DEC)[0]
+    reach = BO_REACH_BYTES // 2
+    extra0 = UNI_DEC * CONV_ST_LAYER if CONV_MIXER else 0
+    if kv_layer > reach - extra0:
+        raise SystemExit(
+            f"one layer's KV slab is {kv_layer * 2 / 2**30:.2f} GiB, past the "
+            f"4 GiB a shim BD reaches; lower ATTN_MAXL={attn_maxl}"
+        )
+    n = -(-n_slabs // ((reach - extra0) // kv_layer))
+    group = -(-n_slabs // n)
+    lens = [min(group, n_slabs - g * group) * kv_layer for g in range(n)]
+    if not CONV_MIXER:
+        bo0 = lens[0]
+    elif HYBRID_MIXER:
+        bo0 = lens[0] + extra0
+    else:  # ShortConv only: no KV
+        bo0 = extra0
+    first = 5 + (N_WGRP if W_SPLIT else 0) + (2 if PLE else 0)
+    return kv_layer, group, [bo0] + lens[1:], [4] + [first + g for g in range(n - 1)]
+
+
+_kv_layer, KV_GROUP, KV_BO_ELEMS, KV_ARGS = kv_layout(ATTN_MAXL)
+N_KVGRP = len(KV_BO_ELEMS)
+KV_BO_SPLIT = N_KVGRP > 1
 # A HYBRID puts the state region AFTER the whole KV region so BOTH stay a plain
 # `iv * slab`. Each region then carries UNI_DEC slabs of which only its own layer
 # kind's are ever touched -- ~42 MB of arg4 that is allocated and never read at
 # ATTN_MAXL=2048. That is DDR footprint, not bandwidth, and it is the price of
 # keeping every offset affine in the wave index.
-CONV_ST_BASE = UNI_DEC * KV_LAYER if HYBRID_MIXER else 0
+CONV_ST_BASE = KV_GROUP * KV_LAYER if HYBRID_MIXER else 0
 Y_LAYER = sum(
     ROUNDS_PER_DEST[p] * PAYLOAD for p in HOST_DRAIN if p not in MIXER_DESTS
 )  # Y / layer
@@ -2015,7 +2091,7 @@ def build_module():
             (
                 [CONV_ST_BASE + UNI_DEC * CONV_ST_LAYER]  # conv state, after any KV
                 if CONV_MIXER
-                else [UNI_DEC * KV_LAYER]
+                else [KV_BO_ELEMS[0]]
             ),
             bf16,
         )
@@ -2791,13 +2867,23 @@ def build_module():
         # scalar, which has to stay last. A non-PLE model contributes nothing
         # here, so every existing host binding position is unchanged.
         _ple_args = [plew_l3, plex0_l3] if PLE else []
+        # KV buffer 0 is kvc; KV buffers 1 and up are the last buffer args.
+        _kv_extra = [MemRefType.get([n], bf16) for n in KV_BO_ELEMS[1:]]
         _fn_args = (
             [x_l3, w_l3, rms_l3, y_l3]
             + ([kvc_l3] if MULTIBLK else [])
             + _w_extra
             + _ple_args
+            + _kv_extra
             + ([i32] if DYNSEQ else [])
         )
+        for _t in _fn_args:
+            if isinstance(_t, MemRefType) and _t.shape[0] * 2 > BO_REACH_BYTES:
+                raise SystemExit(
+                    f"host operand {_t} is {_t.shape[0] * 2 / 2**30:.2f} GiB, past "
+                    f"the 4 GiB a shim BD addresses; split it (DECODE_WGROUP for "
+                    f"the weights)"
+                )
         # Scalars after L: blocks per part; for a sliding wave, its blocks per
         # part, first block, and (split) part 1's first block.
         _rb_names = (["kvb"] if ELF_RB else []) + (
@@ -2832,6 +2918,7 @@ def build_module():
                 # Value => a runtime group index into _WBUFS[0:N_WGRP].
                 _wsel = [None]
                 KVC = _la[8] if MULTIBLK else None
+                _KVBUFS = [_la[4 + a] for a in KV_ARGS] if KV_BO_SPLIT else [KVC]
                 PLEW = _la[4 + PLEW_ARG] if PLE else None
                 PLEX0 = _la[4 + PLEX0_ARG] if PLE else None
                 # The dispatch-time context length (DYNSEQ). Last operand before
@@ -3136,21 +3223,47 @@ def build_module():
                     _rbase = _lb(RMS_LAYER)  # rms weights slab for this layer
                     _pbase = _lb(PLE_LAYER) if PLE else None  # PLE slab
                     _kbase = _lb(KV_LAYER)  # KV cache slab this layer APPENDS to
+
                     # ...and the one it READS. Same thing unless the layer shares
-                    # another's cache. Spelled as a select chain over the wave
-                    # index because airrt-to-npu's post-unroll fold set carries
-                    # cmpi/select/addi/subi/muli and nothing else -- an unfolded
-                    # switch here cannot parent aiex.dma_configure_task_for (the
-                    # same constraint the W_SPLIT group base is written around).
-                    _kbase_rd = _kbase
-                    if KV_SRC and a_iv is not None:
-                        _kbase_rd = idx(KV_SRC[-1] * KV_LAYER)
+                    # another's cache. With KV_SRC both come from the compacted
+                    # slab map (KV_SLOT_WR / KV_SLOT_RD). Spelled as a
+                    # select chain over the wave index because airrt-to-npu's
+                    # post-unroll fold set carries cmpi/select/addi/subi/muli and
+                    # nothing else -- an unfolded switch here cannot parent
+                    # aiex.dma_configure_task_for (the same constraint the W_SPLIT
+                    # group base is written around).
+                    def _by_wave(vals):
+                        _b = idx(vals[-1])
                         for _w in range(UNI_DEC - 2, -1, -1):
-                            _kbase_rd = arith.select(
+                            _b = arith.select(
                                 arith.cmpi(arith.CmpIPredicate.eq, a_iv, idx(_w)),
-                                idx(KV_SRC[_w] * KV_LAYER),
-                                _kbase_rd,
+                                idx(vals[_w]),
+                                _b,
                             )
+                        return _b
+
+                    def _kv_slot_base(slots):
+                        return _by_wave([s * KV_LAYER for s in slots])
+
+                    _kbase_rd = _kbase
+                    _ksel = None  # index into _kv_pairs when KV_BO_SPLIT
+                    if KV_BO_SPLIT:
+                        # (buffer, slab within buffer) for each wave's append and
+                        # read. A shared wave appends to the scratch slab and reads
+                        # its source's, which may be in different buffers, so the
+                        # switch is over (append buffer, read buffer) pairs.
+                        _G = KV_GROUP
+                        _wr = [(s // _G, s % _G) for s in KV_SLOT_WR]
+                        _rd = [(s // _G, s % _G) for s in KV_SLOT_RD]
+                        _kv_pairs = sorted({(w[0], r[0]) for w, r in zip(_wr, _rd)})
+                        _kbase = _kv_slot_base([o for _, o in _wr])
+                        _kbase_rd = _kv_slot_base([o for _, o in _rd])
+                        _ksel = _by_wave(
+                            [_kv_pairs.index((w[0], r[0])) for w, r in zip(_wr, _rd)]
+                        )
+                    elif KV_SRC and a_iv is not None:
+                        _kbase = _kv_slot_base(KV_SLOT_WR)
+                        _kbase_rd = _kv_slot_base(KV_SLOT_RD)
                     _ybase = _lb(Y_LAYER)  # Y (host-drain) region for this layer
                     if UNIFIED:
                         _u1 = arith.ConstantOp(IntegerAttr.get(i32, 1), None).result
@@ -3673,7 +3786,7 @@ def build_module():
                             # K/V into the cache at APPEND_OFF (device S2MM via appendK/appendV);
                             # (2) READ BACK the whole cache per CU (inKV, strided) for the flash
                             # block loop. = the reference _receive + _move.
-                            def _emit_append(_kbase=_kbase):
+                            def _emit_append(_kbase=_kbase, kvc=KVC):
                                 # K and V each drain to a shim S2MM; the allocator
                                 # picks distinct shim tiles for the two decls.
                                 # The readback below reads what these gets write, at
@@ -3688,7 +3801,7 @@ def build_module():
                                     # REGION_STRIDE, inner REGION_W contiguous.
                                     _apkG = ChannelGet(
                                         "appendK",
-                                        KVC,
+                                        kvc,
                                         indices=[idx(0)],
                                         offsets=[_loi_slot(_kbase, 0)],
                                         sizes=[idx(v) for v in APPEND_SIZES],
@@ -3697,7 +3810,7 @@ def build_module():
                                     )
                                     _apvG = ChannelGet(
                                         "appendV",
-                                        KVC,
+                                        kvc,
                                         indices=[idx(0)],
                                         offsets=[_loi_slot(_kbase, _vreg_off(0))],
                                         sizes=[idx(v) for v in APPEND_SIZES],
@@ -3706,7 +3819,7 @@ def build_module():
                                     )
                                     return _apkG.async_token, _apvG.async_token
 
-                            def _emit_readback(appended, _kbase=_kbase_rd):
+                            def _emit_readback(appended, _kbase=_kbase_rd, kvc=KVC):
                                 # KV readback as ONE 4D strided nd-DMA per CU (was ATTN_ROUNDS
                                 # separate per-block puts). The whole per-CU cache
                                 # [ATTN_ROUNDS][2(K|V)][16 pos][KVPC_DH] is read in a single shim
@@ -3881,7 +3994,7 @@ def build_module():
                                                             )
                                                         ChannelPut(
                                                             _ch,
-                                                            KVC,
+                                                            kvc,
                                                             indices=[idx(gi)],
                                                             async_token=AsyncTokenType.get(),
                                                             async_dependencies=[_dep],
@@ -3906,7 +4019,7 @@ def build_module():
                                         for gi in range(NGRP):
                                             ChannelPut(
                                                 "inKV_K",
-                                                KVC,
+                                                kvc,
                                                 indices=[idx(gi)],
                                                 async_token=AsyncTokenType.get(),
                                                 async_dependencies=[appended[0]],
@@ -3932,7 +4045,7 @@ def build_module():
                                             )
                                             ChannelPut(
                                                 "inKV_V",
-                                                KVC,
+                                                kvc,
                                                 indices=[idx(gi)],
                                                 async_token=AsyncTokenType.get(),
                                                 async_dependencies=[appended[1]],
@@ -4038,7 +4151,29 @@ def build_module():
                                 if MULTIBLK and p == KV_PHASE and ATTN_SUBSYS:
 
                                     def _kv_traffic():
-                                        _emit_readback(_emit_append())
+                                        if not KV_BO_SPLIT:
+                                            _emit_readback(_emit_append())
+                                            return
+
+                                        # One arm per (append, read) buffer pair.
+                                        # Folds to a single arm once the wave
+                                        # loop is unrolled.
+                                        def _arm(i):
+                                            _w, _r = (_KVBUFS[g] for g in _kv_pairs[i])
+                                            _emit_readback(_emit_append(kvc=_w), kvc=_r)
+                                            yield_([])
+
+                                        index_switch(
+                                            [],
+                                            _ksel,
+                                            list(range(len(_kv_pairs) - 1)),
+                                            case_body_builder=lambda op, i, cv: _arm(
+                                                cv
+                                            ),
+                                            default_body_builder=lambda op: _arm(
+                                                len(_kv_pairs) - 1
+                                            ),
+                                        )
 
                                     # Attention waves only. The KV memtile behind
                                     # this cannot be armed (segment scope), but it

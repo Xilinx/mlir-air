@@ -147,6 +147,13 @@ branch and the 4-bit LM head in a single dispatch per token. One template built
 at `RUN_LBUILD` serves every context length in `[1, ATTN_MAXL]`; the
 L-dependent instruction words are patched per token.
 
+The KV cache holds a slab only for each layer that owns a cache, plus one
+scratch slab. KV-shared layers read their source's slab; their per-token
+appends are never read and all go to the scratch slab. A shim BD can only
+address 4 GiB of one buffer, so when the slabs exceed that the builder splits
+them over several buffers, and `KVBuffers` (`../../fused_decode/kv_bos.py`)
+allocates and seeds them to match.
+
 `make run` is the gate. Greedy from `<bos> The capital of France is`, it must
 produce `[9079, 236761]` -- `' Paris.'` -- and then stop on `<end_of_turn>`.
 That sequence is not merely recorded from a device run: the CPU oracle
@@ -191,12 +198,12 @@ carries are wired up:
   (434 tok/s), first-token gate passing at every length.
 - `run_npu2_sweep.lit` -- decode tok/s vs KV depth, all 35 layers, 1k through
   128k. Whether the top two depths are reachable depends on how much host
-  memory XRT will pin for the KV BO, so they are expected-fail; the nightly
-  runner reaches both. The numbers are on the benchmark page, measured fresh
+  memory XRT will pin for the KV cache, so they are expected-fail. The numbers
+  are on the benchmark page, measured fresh
   each night rather than copied here.
 
 The decode sweep's points are no longer expected-fail except at 65536 and
-131072, which turn on how much host memory XRT will pin for the KV BO and so
+131072, which turn on how much host memory XRT will pin for the KV cache and so
 are a property of the machine rather than of this model.
 
 `run_npu2_profile.lit` still runs `profile-prefill`, so the published row
@@ -226,7 +233,7 @@ the development box reproduces it too at `default` power mode.
 A sweep-only dispatch of the nightly benchmark on its own runner took gemma4
 from 8/8 contexts hanging to 8/8 measured. `--expect-fail` is gone from
 `run_npu2_sweep.lit` accordingly, except at 65536 and 131072, which turn on how
-much host memory XRT will pin for the KV BO and are a property of the machine
+much host memory XRT will pin for the KV cache and are a property of the machine
 rather than of this defect. The sibling sweeps carry the same two.
 
 **The token gate still has no lit, but that is now work not yet done rather

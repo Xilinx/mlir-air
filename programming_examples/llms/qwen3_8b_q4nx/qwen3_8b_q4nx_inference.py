@@ -240,6 +240,8 @@ class FusedDecoder:
         )
 
         # ONE xclbin + ONE self-contained BO set (weight BO uploaded once)
+        from kv_bos import KVBuffers
+
         self.dev = xrt.device(0)
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.cur_maxl = self.ATTN_MAXL
@@ -272,10 +274,14 @@ class FusedDecoder:
                 self.w_bo = xrt.ext.bo(self.dev, W.size * 2)
             self.r_bo = xrt.ext.bo(self.dev, self._RMS_SIZE * 2)
             self.y_bo = xrt.ext.bo(self.dev, self.ny * 2)
-            self.kvc = xrt.ext.bo(self.dev, self.UNI_DEC * self.LREG * 2)
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.ext.bo(self.dev, n)
+            )
+            self.kvc = self.kvb.kvc
             self._elfdec.bind(
                 (self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc)
                 + tuple(self.w_bos[1:] if self._wsplit else ())
+                + self.kvb.extra
             )
             self._geom = _stair.KVGeometry(
                 self.UNI_DEC, self.KVSZ_TOK, self.REGION_W, self.NGRP, self.LREG
@@ -321,7 +327,10 @@ class FusedDecoder:
                 self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
             self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
             self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
-            self.kvc = xrt.bo(self.dev, self.UNI_DEC * self.LREG * 2, HO, g(7))
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.bo(self.dev, n, HO, g(3 + a))
+            )
+            self.kvc = self.kvb.kvc
             self._ist = _stair.make_insts_states(
                 self.gen, xrt, self.dev, g(1), self.windows
             )
@@ -359,9 +368,7 @@ class FusedDecoder:
         TO = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         _lreg = self._geom.lreg(self.cur_maxl)
         for Lyr in range(self.UNI_DEC):
-            boff = Lyr * _lreg * 2
-            self.kvc.write(self.KV[Lyr, :_lreg].view(np.int16), boff)
-            self.kvc.sync(TO, _lreg * 2, boff)
+            self.kvb.write_layer(Lyr, self.KV[Lyr, :_lreg].view(np.int16), TO)
         self._kv_dirty = False
 
     def _rope_slab(self, p):
@@ -391,9 +398,7 @@ class FusedDecoder:
             insts_size = _stair.patch_insts(self._st, L, xrt, TO)
         # KV uploaded once (seed), then device-resident (kernel appends in place).
         if getattr(self, "_kv_dirty", True):
-            packed = np.ascontiguousarray(self.KV).reshape(-1)
-            self.kvc.write(packed.view(np.int16), 0)
-            self.kvc.sync(TO)
+            self.kvb.write_layers(np.ascontiguousarray(self.KV).view(np.int16), TO)
             self._kv_dirty = False
         x0 = np.asarray(self.embed[tok], self.bf16)  # Qwen3 has no embedding scale
         # RMS BO: norm slabs + final_norm constant; write once, then patch the per-layer
@@ -428,6 +433,7 @@ class FusedDecoder:
                 self.y_bo,
                 self.kvc,
                 *(self.w_bos[1:] if self._wsplit else ()),
+                *self.kvb.extra,
             ).wait(60000)
         _voc_n = self.UNI_LM * self.VP
         self.y_bo.sync(FROM, _voc_n * 2, self.decode_y * 2)

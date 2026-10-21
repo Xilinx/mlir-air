@@ -97,7 +97,6 @@ measured context:
 | 8192 | 13.05 | |
 | 16384 | 11.74 | |
 | 32768 | 9.77 | |
-| 65536 | 5.93 | |
 
 The fused prefill handles prompts
 up to 2048 tokens (two kv heads put each head's records `max_blocks` apart);
