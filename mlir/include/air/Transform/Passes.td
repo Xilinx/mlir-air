@@ -1331,6 +1331,17 @@ def AIROptimizeMemtileDMABDs: Pass<"air-opt-memtile-dma-bds", "func::FuncOp"> {
   let constructor = "xilinx::air::createAIROptimizeMemtileDMABDs()";
   let description = [{
     Optimize the logical data movement by transforming them, represented as air.channel.put/get operations, into explicit representation of physical data movement block descriptors (BDs), also represented as air.channel.put/get operations.
+
+    A chain of puts of one L2 buffer on one channel -- consecutive in the
+    block, with the same static sizes and strides and no dependency the first
+    lacks -- whose offsets form a lattice (o0 + a * s1 + b * s2, in order, s1
+    and s2 positive) is folded first into one put with the lattice as its
+    outer dims: the stream is the same, in one BD instead of one per put.
+    Only a buffer filled whole is folded; one filled a slot at a time keeps a
+    BD per slot, so a drained slot refills while the rest drain.
+    Example: puts at offsets 0, 40960, 81920, 20480, 61440, 102400 of 5120
+    elements become one put of sizes [2, 3, 5120] and strides
+    [20480, 40960, 1].
   }];
   let options = [
     Option<"clDevice", "device", "std::string",

@@ -9360,6 +9360,213 @@ private:
 // A pass which performs a series of scf.for loop splitting, fusion and
 // specialization, with the goal of generating efficient memtile dma block
 // descriptors (BD).
+// A memtile put's chain: consecutive puts of one L2 buffer on one channel
+// (a FIFO, so they go out back to back), with the same static sizes and
+// strides and nothing to wait for that the first does not, whose offsets
+// form a lattice (o0 + a * s1 + b * s2, in order, s1 and s2 positive), of a
+// buffer filled whole. They are the one put with the lattice as its outer
+// dims: the same data in the same order, in one BD rather than one per put.
+// Such chains come from unrolled loops and from channels merged by
+// air-fuse-channels.
+
+// The put's static pattern: offsets, sizes, strides; empty if any is
+// dynamic or the put sends the whole buffer.
+static bool getStaticPattern(air::ChannelPutOp put,
+                             SmallVector<int64_t> &offsets,
+                             SmallVector<int64_t> &sizes,
+                             SmallVector<int64_t> &strides) {
+  auto get = [](ArrayRef<OpFoldResult> ofrs, SmallVector<int64_t> &out) {
+    for (auto ofr : ofrs) {
+      auto c = getConstantIntValue(ofr);
+      if (!c)
+        return false;
+      out.push_back(*c);
+    }
+    return true;
+  };
+  if (!get(put.getMixedSrcOffsets(), offsets) ||
+      !get(put.getMixedSrcSizes(), sizes) ||
+      !get(put.getMixedSrcStrides(), strides))
+    return false;
+  return !offsets.empty() && offsets.size() == sizes.size() &&
+         sizes.size() == strides.size();
+}
+
+static bool isL2Put(air::ChannelPutOp put) {
+  auto ty = dyn_cast<MemRefType>(put.getSrc().getType());
+  return ty && ty.getMemorySpaceAsInt() == (int)air::MemorySpace::L2;
+}
+
+// The next put of the chain: the next put in the block on the same
+// channel and indices (a channel is a FIFO, so it goes out next), of the
+// same buffer with the same sizes and strides, depending only on what the
+// chain's first put does or on `put`.
+static air::ChannelPutOp nextInChain(air::ChannelPutOp put,
+                                     air::ChannelPutOp first,
+                                     ArrayRef<int64_t> sizes,
+                                     ArrayRef<int64_t> strides) {
+  air::ChannelPutOp next = nullptr;
+  for (Operation *op = put->getNextNode(); op && !next;
+       op = op->getNextNode()) {
+    auto p = dyn_cast<air::ChannelPutOp>(op);
+    if (p && p.getChanName() == first.getChanName() &&
+        p.getIndices() == first.getIndices())
+      next = p;
+  }
+  if (!next || !next.getAsyncToken() || next.getSrc() != first.getSrc() ||
+      next.getDest() || !isL2Put(next))
+    return nullptr;
+  SmallVector<int64_t> o, sz, st;
+  if (!getStaticPattern(next, o, sz, st) || sz != sizes || st != strides)
+    return nullptr;
+  auto firstDeps = first.getAsyncDependencies();
+  for (Value d : next.getAsyncDependencies())
+    if (d != put.getAsyncToken() && !llvm::is_contained(firstDeps, d))
+      return nullptr;
+  return next;
+}
+
+// n offsets as o0 + a * s1 + b * s2 (i = a * n2 + b), outermost first;
+// one dim if the steps are all equal.
+static bool findLattice(ArrayRef<int64_t> lin, SmallVector<int64_t> &dims,
+                        SmallVector<int64_t> &steps) {
+  int64_t n = lin.size();
+  auto fits = [&](int64_t n2, int64_t s1, int64_t s2) {
+    for (int64_t i = 0; i < n; i++)
+      if (lin[i] != lin[0] + (i / n2) * s1 + (i % n2) * s2)
+        return false;
+    return true;
+  };
+  int64_t s2 = lin[1] - lin[0];
+  if (s2 <= 0)
+    return false;
+  if (fits(n, 0, s2)) {
+    dims = {n};
+    steps = {s2};
+    return true;
+  }
+  for (int64_t n2 = 2; n2 < n; n2++) {
+    if (n % n2)
+      continue;
+    int64_t s1 = lin[n2] - lin[0];
+    if (s1 > 0 && fits(n2, s1, s2)) {
+      dims = {n / n2, n2};
+      steps = {s1, s2};
+      return true;
+    }
+  }
+  return false;
+}
+
+// Whether the buffer is only ever filled whole. One filled a slot at a time
+// keeps a drain BD per slot, so a drained slot refills while the rest drain.
+static bool isFilledWhole(Value buf) {
+  for (Operation *user : buf.getUsers()) {
+    auto get = dyn_cast<air::ChannelGetOp>(user);
+    if (get &&
+        (!get.getMixedDstOffsets().empty() || !get.getMixedDstSizes().empty()))
+      return false;
+  }
+  return true;
+}
+
+static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
+                             llvm::DenseSet<Operation *> &erased) {
+  if (!first.getAsyncToken() || first.getDest() || !isL2Put(first) ||
+      !isFilledWhole(first.getSrc()))
+    return;
+  SmallVector<int64_t> offsets, sizes, strides;
+  if (!getStaticPattern(first, offsets, sizes, strides))
+    return;
+  SmallVector<air::ChannelPutOp> chain{first};
+  while (auto next = nextInChain(chain.back(), first, sizes, strides))
+    chain.push_back(next);
+  if (chain.size() < 2)
+    return;
+  // Each put's token must be used only by the next put or after the
+  // chain, where the folded put's token stands in for it.
+  Operation *last = chain.back();
+  for (size_t i = 0; i + 1 < chain.size(); i++)
+    for (Operation *user : chain[i].getAsyncToken().getUsers()) {
+      Operation *u = last->getBlock()->findAncestorOpInBlock(*user);
+      if (user != chain[i + 1] && (!u || !last->isBeforeInBlock(u)))
+        return;
+    }
+  SmallVector<int64_t> lin;
+  for (auto p : chain) {
+    SmallVector<int64_t> o, sz, st;
+    getStaticPattern(p, o, sz, st);
+    int64_t l = 0;
+    for (auto [oi, si] : llvm::zip(o, st))
+      l += oi * si;
+    lin.push_back(l);
+  }
+  SmallVector<int64_t> dims, steps;
+  if (!findLattice(lin, dims, steps))
+    return;
+  // Unit dims only offset the pattern: with a unit-stride innermost dim,
+  // their offset moves there and they go.
+  if (strides.back() == 1) {
+    SmallVector<int64_t> o, sz, st;
+    int64_t extra = 0;
+    for (size_t i = 0; i + 1 < sizes.size(); i++) {
+      if (sizes[i] == 1) {
+        extra += offsets[i] * strides[i];
+        continue;
+      }
+      o.push_back(offsets[i]);
+      sz.push_back(sizes[i]);
+      st.push_back(strides[i]);
+    }
+    o.push_back(offsets.back() + extra);
+    sz.push_back(sizes.back());
+    st.push_back(1);
+    offsets = o;
+    sizes = sz;
+    strides = st;
+  }
+  if (limits.dims >= 0 && (int)(dims.size() + sizes.size()) > limits.dims)
+    return;
+  for (auto [d, st] : llvm::zip(dims, steps))
+    if ((limits.maxWrap >= 0 && d > limits.maxWrap) || !limits.strideFits(st))
+      return;
+
+  OpBuilder b(last);
+  auto idx = [&](ArrayRef<int64_t> v) {
+    SmallVector<OpFoldResult> r;
+    for (auto x : v)
+      r.push_back(b.getIndexAttr(x));
+    return r;
+  };
+  SmallVector<int64_t> newOffsets(dims.size(), 0), newSizes(dims),
+      newStrides(steps);
+  newOffsets.append(offsets);
+  newSizes.append(sizes);
+  newStrides.append(strides);
+  SmallVector<Value> deps(first.getAsyncDependencies());
+  auto folded = air::ChannelPutOp::create(
+      b, first.getLoc(), air::AsyncTokenType::get(b.getContext()), deps,
+      first.getChanName(), first.getIndices(), first.getSrc(), idx(newOffsets),
+      idx(newSizes), idx(newStrides),
+      /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+  folded->setDiscardableAttrs(first->getDiscardableAttrDictionary());
+  for (auto p : chain)
+    p.getAsyncToken().replaceAllUsesWith(folded.getAsyncToken());
+  for (auto p : llvm::reverse(chain)) {
+    erased.insert(p);
+    p->erase();
+  }
+}
+
+static void foldL2ChannelPutChains(Region *region, const DmaBdLimits &limits) {
+  SmallVector<air::ChannelPutOp> puts;
+  region->walk([&](air::ChannelPutOp put) { puts.push_back(put); });
+  llvm::DenseSet<Operation *> erased;
+  for (auto put : puts)
+    if (!erased.contains(put))
+      foldPutChainFrom(put, limits, erased);
+}
+
 class AIROptimizeMemtileDMABDs
     : public xilinx::air::impl::AIROptimizeMemtileDMABDsBase<
           AIROptimizeMemtileDMABDs> {
@@ -9394,7 +9601,10 @@ public:
     // specialization patterns.
     llvm::SetVector<air::SegmentOp> segs;
     func.walk([&](air::SegmentOp seg) { segs.insert(seg); });
+    DmaBdLimits l2Limits =
+        getDmaBdLimits(AIE::getTargetModel(*device), MemorySpace::L2);
     for (auto seg : segs) {
+      foldL2ChannelPutChains(&seg.getBody(), l2Limits);
       air::applyAIRIsolateAsyncDmaLoopNestsPattern(&seg.getBody());
       air::applyAIRSpecializeChannelWrapAndStridePattern(
           &seg.getBody(), limits,
