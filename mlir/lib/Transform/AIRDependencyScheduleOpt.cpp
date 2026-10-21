@@ -7152,6 +7152,46 @@ struct UpdateSubViewOutputTypeAfterMemrefShrinkage
   }
 };
 
+// Recomputes the result type of a memref.expand_shape or
+// memref.collapse_shape from its source, whose type may have changed when a
+// memref it views was shrunk.
+struct UpdateExpandShapeTypeAfterMemrefShrinkage
+    : public OpRewritePattern<memref::ExpandShapeOp> {
+  using OpRewritePattern<memref::ExpandShapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::ExpandShapeOp op,
+                                PatternRewriter &rewriter) const override {
+    FailureOr<MemRefType> newResultType =
+        memref::ExpandShapeOp::computeExpandedType(
+            op.getSrcType(), op.getResultType().getShape(),
+            op.getReassociationIndices());
+    if (failed(newResultType) || *newResultType == op.getResultType())
+      return failure();
+    rewriter.modifyOpInPlace(op,
+                             [&]() { op.getResult().setType(*newResultType); });
+    return success();
+  }
+};
+
+struct UpdateCollapseShapeTypeAfterMemrefShrinkage
+    : public OpRewritePattern<memref::CollapseShapeOp> {
+  using OpRewritePattern<memref::CollapseShapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::CollapseShapeOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!memref::CollapseShapeOp::isGuaranteedCollapsible(
+            op.getSrcType(), op.getReassociationIndices()))
+      return failure();
+    MemRefType newResultType = memref::CollapseShapeOp::computeCollapsedType(
+        op.getSrcType(), op.getReassociationIndices());
+    if (newResultType == op.getResultType())
+      return failure();
+    rewriter.modifyOpInPlace(op,
+                             [&]() { op.getResult().setType(newResultType); });
+    return success();
+  }
+};
+
 // A pattern which attempts to shrink the memref sizes, based on the access
 // patterns of all its uses.
 struct ShrinkMemrefSizesByAccessPattern
@@ -8230,7 +8270,9 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<ShrinkMemrefSizesByAccessPattern,
-                    UpdateSubViewOutputTypeAfterMemrefShrinkage>(ctx);
+                    UpdateSubViewOutputTypeAfterMemrefShrinkage,
+                    UpdateExpandShapeTypeAfterMemrefShrinkage,
+                    UpdateCollapseShapeTypeAfterMemrefShrinkage>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
     // Update func.call declaration post memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
@@ -9758,7 +9800,9 @@ public:
     auto funcOp = getOperation();
     RewritePatternSet patterns(&getContext());
     patterns.insert<ShrinkMemrefSizesByAccessPattern,
-                    UpdateSubViewOutputTypeAfterMemrefShrinkage>(ctx);
+                    UpdateSubViewOutputTypeAfterMemrefShrinkage,
+                    UpdateExpandShapeTypeAfterMemrefShrinkage,
+                    UpdateCollapseShapeTypeAfterMemrefShrinkage>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
     // Update func.call declaration after memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;

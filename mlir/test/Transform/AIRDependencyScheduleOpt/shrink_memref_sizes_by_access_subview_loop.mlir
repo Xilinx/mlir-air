@@ -416,3 +416,44 @@ module {
     return
   }
 }
+
+// -----
+
+// Views of a subview take its new layout: after the buffer shrinks, the
+// expand_shape and collapse_shape result types follow the subview's strides.
+
+// CHECK-LABEL: func.func @views_of_subview
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<1x1x64xf32, 2>
+// CHECK: %[[S:.*]] = memref.subview {{.*}} : memref<1x1x64xf32, 2> to memref<1x1x32xf32, strided<[64, 64, 1], offset: ?>, 2>
+// CHECK: %[[E:.*]] = memref.expand_shape %[[S]] {{.*}} into memref<1x1x4x8xf32, strided<[64, 64, 8, 1], offset: ?>, 2>
+// CHECK: memref.collapse_shape %[[E]] {{.*}} into memref<4x8xf32, strided<[8, 1], offset: ?>, 2>
+module {
+  func.func @views_of_subview() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<2x2x64xf32, 2>) {
+          %a = memref.alloc() : memref<2x2x64xf32, 2>
+          air.execute_terminator %a : memref<2x2x64xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<2x2x64xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %c32 = arith.constant 32 : index
+          %c64 = arith.constant 64 : index
+          %f0 = arith.constant 0.000000e+00 : f32
+          scf.for %i = %c0 to %c64 step %c32 {
+            %sv = memref.subview %buf[%tx, %ty, %i] [1, 1, 32] [1, 1, 1] : memref<2x2x64xf32, 2> to memref<1x1x32xf32, strided<[128, 64, 1], offset: ?>, 2>
+            %e = memref.expand_shape %sv [[0], [1], [2, 3]] output_shape [1, 1, 4, 8] : memref<1x1x32xf32, strided<[128, 64, 1], offset: ?>, 2> into memref<1x1x4x8xf32, strided<[128, 64, 8, 1], offset: ?>, 2>
+            %c = memref.collapse_shape %e [[0, 1, 2], [3]] : memref<1x1x4x8xf32, strided<[128, 64, 8, 1], offset: ?>, 2> into memref<4x8xf32, strided<[8, 1], offset: ?>, 2>
+            linalg.fill ins(%f0 : f32) outs(%c : memref<4x8xf32, strided<[8, 1], offset: ?>, 2>)
+          }
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<2x2x64xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}
