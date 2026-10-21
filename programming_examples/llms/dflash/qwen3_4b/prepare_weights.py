@@ -71,7 +71,7 @@ def validate_cache(path: Path, config) -> dict:
 
 
 def build_draft_cache(path: Path, target_model, snapshot: Path) -> None:
-    from target_packing import _interleave512, _requant_q4k
+    from qwen3_4b_q4nx_requant import _interleave512, _requant_q4k
 
     config = selected_config("drafter")
     fd = load_geometry(config)
@@ -167,14 +167,17 @@ def main() -> None:
     draft_cache = args.draft_cache.expanduser().resolve()
 
     from qwen3_4b_q4nx_weights import Q4nxModel
-    from target_packing import build_requant_cache
+    from qwen3_4b_q4nx_requant import build_requant_cache
 
     source_model = resolve_target_model(args.target_model, offline=args.offline)
     target_model = Q4nxModel(source_model)
     if not target_cache.exists():
         target_cache.parent.mkdir(parents=True, exist_ok=True)
         build_requant_cache(
-            source_model, load_geometry(selected_config("target")), target_cache
+            source_model,
+            load_geometry(selected_config("target")),
+            target_cache,
+            requant=True,
         )
 
     snapshot = (args.draft_snapshot or default_draft_snapshot()).expanduser().resolve()

@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Run the frozen 16 x 5 saved-prefill decode study with the production loop."""
+"""Run the 16 x 5 saved-prefill decode benchmark with the DFlash loop."""
 
 import argparse
 from collections import defaultdict

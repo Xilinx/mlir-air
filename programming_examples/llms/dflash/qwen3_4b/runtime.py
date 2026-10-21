@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Small host API for prompt preparation and the selected NPU DFlash pair."""
+"""Host API for prompt preparation and the NPU DFlash target/drafter pair."""
 
 from __future__ import annotations
 

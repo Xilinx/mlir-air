@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Explicit greedy DFlash host loop over one target and one NPU drafter.
+"""Greedy DFlash host loop over one target and one NPU drafter.
 
 The target's committed prefix excludes the current anchor token. A round appends
 the anchor and candidate prefix to target KV and emits matching draft tokens plus
@@ -119,8 +119,8 @@ class DFlash:
             stages["draft"] += time.perf_counter() - t
             t = time.perf_counter()
             if official_start is None:
-                # Paper-era benchmark.py (5034c8b) starts its decode timer
-                # after the first complete draft, immediately before verify.
+                # Decode timing starts after the first complete draft,
+                # immediately before verify, as in the z-lab DFlash benchmark.
                 official_start = t
             verified = self.target.verify(block, position)
             stages["target"] += time.perf_counter() - t
@@ -135,8 +135,8 @@ class DFlash:
             output.extend(decision.tokens)
             stopped = decision.stopped_on_eos
             stages["accept"] += time.perf_counter() - t
-            # Fetch only the required boundaries; next round consumes only the
-            # committed rows. No stale or rejected row enters context features.
+            # Fetch only the committed boundary rows, so rejected rows never
+            # reach the next round's context features.
             t = time.perf_counter()
             if len(output) < max_new_tokens and not stopped:
                 bits = self.target.hidden(self.tap_slots)[:, :emitted]
@@ -176,7 +176,7 @@ class DFlash:
 
 
 def autoregressive(decoder, prefill, max_new_tokens, *, eos_ids=EOS_IDS, observer=None):
-    """GEMV production baseline or same-GEMM row-zero correctness control."""
+    """B1 GEMV baseline, or the same-GEMM row-zero correctness control."""
     p = len(prefill["input_ids"])
     if p + max(0, max_new_tokens - 1) + decoder.batch > decoder.capacity:
         raise ValueError("Capacity cannot cover the requested generation")

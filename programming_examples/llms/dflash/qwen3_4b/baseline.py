@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Adapt the upstream B1 production decoder to the saved-prefill benchmark."""
+"""Adapt the single-token (B1) Qwen3-4B decoder to the saved-prefill benchmark."""
 
 import os
 from pathlib import Path
@@ -15,7 +15,7 @@ def load_baseline(artifacts):
     artifacts = Path(artifacts).resolve()
     check_existing(artifacts, build_identity("baseline"))
     os.environ["Q4NX_QWEN3_4B_DECODE_DIR"] = str(artifacts)
-    # Match the frozen study's weight packing for B1 and B8.
+    # B1 decodes from the same requantized weight cache as B8.
     os.environ["Q4NX_QWEN3_4B_DECODE_NPZ"] = str(default_target_cache())
     os.environ["DECODE_ELF"] = "0"
     os.environ["W_DUAL_CHAN"] = "1"

@@ -1,6 +1,6 @@
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
-// Unpack and 1x4-blocked mmul primitives adapted from pr1942-port 67831a05.
+// Unpack and 1x4-blocked mmul primitives for packed Q4K blocks.
 // Packed Q4K blocks are addressed as raw BF16 words, never by sizeof(struct).
 // Inputs: A [K/8, token, 8]; B [output/8, K/8, 8, 8].
 // Output: [output/8, token, 8] FP32 accumulators.

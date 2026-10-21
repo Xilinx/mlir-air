@@ -1,8 +1,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Selected Qwen3-4B B8 graph: cached normalization and fused attention shards.
+"""Qwen3-4B B8 graph: cached normalization and fused attention shards.
 
-The explicit layout argument supplies shared model geometry and AIR operations.
+The layout argument supplies shared model geometry and AIR operations.
 The persistent projection weight path comes from fused_decode. DFlash adds
 batched projections, per-row positions/visibility, layer-boundary export and
 parallel attention, while keeping projection weights quantized in DDR.
@@ -495,10 +495,10 @@ def build_module(layout):
                                 _cb = min(_cbk, _nb - _ci)
                                 _coff = _ci * 16 * layout.REGION_W
                                 _cbv = lambda: _live_rounds(L_rt)
-                                # Current AIR lowers a runtime-length linear
-                                # transfer or a runtime repeat, but not both
-                                # dimensions together. Emit the eight reads
-                                # explicitly and retain one contiguous live span.
+                                # AIR lowers a runtime-length linear transfer
+                                # or a runtime repeat, but not both in one
+                                # transfer. Emit the eight reads one by one and
+                                # keep one contiguous live span.
                                 _rb = [idx(1)]
                                 _r0 = [idx(0)]
                                 for _query in range(layout.KV_QUERY_GROUPS):
@@ -676,7 +676,7 @@ def build_module(layout):
                             layout.yield_([])
 
                     # Projection inputs use K, DQ, K and GLU_OUT respectively.
-                    # Derive the total from their actual packed block counts.
+                    # Derive the total from their packed block counts.
                     assert layout.N_XBLK % layout.XCHUNK_MUL == 0
                     _xc_dec = layout.N_XBLK // layout.XCHUNK_MUL
                     _xc_voc = layout.VOCAB_RNDS * (layout.K // layout.XCHUNK)

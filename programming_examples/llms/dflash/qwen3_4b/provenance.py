@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Identify the actual host sources and model revisions used by a run."""
+"""Record the host sources and model revisions a run used."""
 
 import hashlib
 from pathlib import Path

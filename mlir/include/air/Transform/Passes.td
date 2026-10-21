@@ -1344,6 +1344,10 @@ def AIRFuseAllocDealloc: Pass<"air-fuse-alloc-dealloc", "func::FuncOp"> {
   let constructor = "xilinx::air::createAIRFuseAllocDealloc()";
   let description = [{
     Fuse pairs of memref.alloc/dealloc into the inner-most region, which contains all uses of the memref.
+
+    An alloc tagged `air.disable_alloc_sink` (on the alloc, or on an alloc
+    inside its enclosing `air.execute`) is not sunk into an `scf.for` or
+    `scf.parallel`; it stays allocated across the loop.
   }];
 }
 

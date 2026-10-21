@@ -1,10 +1,10 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Production DFlash token captures and the unchanged AIR top-5 comparator.
+"""DFlash token captures compared with llms/verify's top-5 comparator.
 
 Run NPU and HF captures in separate processes, then compare 32-token traces.
-With --inputs, decode follows the frozen prefill's first token. Otherwise use
-NPU prefill and capture the complete production path on two short prompts.
+With --inputs, decode follows the saved prefill's first token. Otherwise use
+NPU prefill and capture the full DFlash path on two short prompts.
 """
 
 import argparse

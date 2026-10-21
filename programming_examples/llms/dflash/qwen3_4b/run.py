@@ -55,7 +55,7 @@ def run_prompt(loop, tokenizer, prompt, args, *, prefill_model=None, npu_prefill
     stream = None if args.no_stream else TextStream(tokenizer)
     if stream is not None:
         print("Response: ", end="", flush=True)
-        # The selected prefill supplies the first output token. Subsequent callbacks
+        # Prefill supplies the first output token. Subsequent callbacks
         # receive only the accepted prefix + verifier token after each round.
         stream.put([prefill["first"]])
     try:

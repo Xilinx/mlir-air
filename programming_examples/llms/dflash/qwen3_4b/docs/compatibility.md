@@ -59,7 +59,7 @@ Two changes live under `programming_examples/fused_decode/kernels/`:
 
 - The exponential LUT explicitly masks fractional index bits before its integer
   lookup. This preserves the interval under nearest-even rounding, which B8 uses.
-- `DFLASH_VECTOR_ATTN_NORM` enables an eight-lane attention output normalization
+- `ATTN_NORM_VECTOR` enables an eight-lane attention output normalization
   path. Existing callers retain their default path unless they set this macro.
 
 These are device-kernel changes, separate from the AIR compiler fixes above.

@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Build the upstream single-token Qwen3-4B megakernel in an isolated directory."""
+"""Build the single-token (B1) Qwen3-4B megakernel in an isolated directory."""
 
 import argparse
 import json

@@ -170,6 +170,8 @@ jobs:
           # Leaving it to the nightly cost two consecutive red runs over a
           # constant one PR had deleted and another file still read.
           ninja check-programming-examples-llms-geometry
+          # Same reasoning: host-side LLM unit tests, pure Python, seconds.
+          ninja check-programming-examples-llms-host
 
           # Chess tests disabled to reduce CI time. Uncomment to re-enable:
           # ninja check-programming-examples-chess

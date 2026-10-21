@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Fixed-prompt profile of the production NPU prefill and DFlash decode path."""
+"""Fixed-prompt profile of NPU prefill and the DFlash decode loop."""
 
 import argparse
 import datetime
@@ -29,7 +29,7 @@ def main():
         prepass_artifacts=a.build / "prepass",
         prefill_artifacts=a.build / "prefill_C2048",
     )
-    # Both measurements use run/chat's production function; warmup is excluded.
+    # Both measurements call the function run/chat use; warmup is excluded.
     run_prompt(
         loop,
         tokenizer,

@@ -1,7 +1,7 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-# Prompt reference extracted from pr1942-port 67831a05 dflash_phase2_device.py.
-# Uses the current-main Qwen weight reader and pure NumPy arithmetic; no NPU imports.
+# CPU prompt reference: the Qwen3-4B Q4NX weight reader and NumPy arithmetic,
+# with no NPU imports.
 import numpy as np
 
 

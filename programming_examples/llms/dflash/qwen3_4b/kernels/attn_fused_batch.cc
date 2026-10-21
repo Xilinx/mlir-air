@@ -47,8 +47,8 @@ extern "C" __attribute__((noinline)) void dflash_fused_pv(bf16 *s, bf16 *v,
 
 // Scores are dead after final attention normalization. Reuse their 768-word
 // slab for the cascade join; 512 payload words plus zero padding per frame.
-// This avoids the current cascade lowering's nonzero-offset limitation and
-// does not borrow a DMA-owned input buffer.
+// The join then needs no nonzero offset into the cascade buffer and does not
+// borrow a DMA-owned input buffer.
 extern "C" __attribute__((always_inline)) void
 dflash_join_send(bf16 *stage, bf16 *output, int chunk) {
   for (int i = 0; i < 512; i += 64)

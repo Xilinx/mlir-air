@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Full-output B8 attention gate using the production graph and compiled object.
+"""Full-output B8 attention check on the graph and object the runtime uses.
 
 Reference: FP32 SDPA cast BF16, rtol=.016 / atol=.1, zero outliers.
 Repeat, row-isolation and visibility probes compare all applicable BF16 words.
