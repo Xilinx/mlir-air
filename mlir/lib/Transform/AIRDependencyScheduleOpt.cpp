@@ -7424,8 +7424,8 @@ private:
     auto static_sizes = subViewOp.getStaticSizes();
     auto static_strides = subViewOp.getStaticStrides();
     auto static_offsets = subViewOp.getStaticOffsets();
-    // The SSA offset of dim `i`, or null if that offset is static. Looked up
-    // by dim, since the dims below rewrite only some of them.
+    // Returns the dynamic offset operand of dim `i`, or null if the offset of
+    // dim `i` is static.
     auto offsetOf = [&](unsigned i) -> Value {
       if (!ShapedType::isDynamic(static_offsets[i]))
         return nullptr;
@@ -7434,7 +7434,7 @@ private:
       });
       return subViewOp.getOffsets()[k];
     };
-    // Rebase dim `i`'s offset onto the shrunk memref.
+    // Replaces the herd induction variables in dim `i`'s offset with 0.
     auto rebaseOffset = [&](unsigned i) {
       Value offset = offsetOf(i);
       if (auto updatedOffset = getUpdatedOffsetAfterShrinkage(offset, rewriter))
@@ -7554,7 +7554,7 @@ private:
              (int)air::getTensorVolume(subViewOp.getResult().getType());
     };
 
-    // A rank-reducing view stays: its users index it with its own rank.
+    // Keep rank-reducing subviews; their users expect the reduced rank.
     if (subViewOp.getSourceType().getRank() == subViewOp.getType().getRank() &&
         allOffsetsAreZeros() && allStridesAreOnes() &&
         memrefVolumeUnchanged()) {

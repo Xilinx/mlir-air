@@ -270,9 +270,8 @@ module {
 
 // -----
 
-// The herd dimensions' offsets are rebased to 0 whatever the dimensions in
-// between: here dim 2 (the loop's) shrinks and dim 3 has a static offset, and
-// both herd offsets, though not adjacent to a shrunk dimension, still go.
+// Both herd offsets are replaced with 0. Dims 0 and 1 keep their size, dim 2
+// shrinks, and dim 3 has a static offset.
 
 // CHECK-LABEL: func.func @herd_offsets_around_static
 // CHECK: memref.alloc() {air.shrinkage = true} : memref<1x1x4x8x8xbf16, 2>
@@ -310,8 +309,8 @@ module {
 
 // -----
 
-// A rank-reducing view of a core's slice, its herd offsets rebased to 0: it
-// stays, since its user indexes it with its own rank.
+// A rank-reducing subview whose offsets become all zero is kept, since its
+// user indexes it with the reduced rank.
 
 // CHECK-LABEL: func.func @rank_reducing_view_kept
 // CHECK: memref.alloc() {air.shrinkage = true} : memref<1x1x4x4xf32, 2>
@@ -335,6 +334,81 @@ module {
         }
         %t2 = air.execute [%t1] {
           memref.dealloc %alloc : memref<2x2x4x4xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The only herd offset is in dim 1, after a static offset in dim 0: it is
+// replaced with 0.
+
+// CHECK-LABEL: func.func @static_leading_offset
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<2x1x4x8xf32, 2>
+// CHECK: memref.subview %{{.*}}[0, %c0{{.*}}, %{{.*}}, 0] [2, 1, 1, 8]
+module {
+  func.func @static_leading_offset() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<2x2x4x8xf32, 2>) {
+          %a = memref.alloc() : memref<2x2x4x8xf32, 2>
+          air.execute_terminator %a : memref<2x2x4x8xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c1, %sy=%c2) args(%buf=%alloc) : memref<2x2x4x8xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %c1_h = arith.constant 1 : index
+          %c8 = arith.constant 8 : index
+          %f0 = arith.constant 0.000000e+00 : f32
+          %ub = arith.constant 4 : index
+          scf.for %i = %c0 to %ub step %c1_h {
+            %sv = memref.subview %buf[0, %ty, %i, 0] [2, 1, 1, 8] [1, 1, 1, 1] : memref<2x2x4x8xf32, 2> to memref<2x1x1x8xf32, strided<[64, 32, 8, 1], offset: ?>, 2>
+            linalg.fill ins(%f0 : f32) outs(%sv : memref<2x1x1x8xf32, strided<[64, 32, 8, 1], offset: ?>, 2>)
+          }
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<2x2x4x8xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Sizes given as SSA constants: both herd offsets are replaced with 0.
+
+// CHECK-LABEL: func.func @dynamic_sizes
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<1x1x4x8xf32, 2>
+// CHECK: memref.subview %{{.*}}[%c0{{.*}}, %c0{{.*}}, %{{.*}}, 0]
+module {
+  func.func @dynamic_sizes() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<2x2x4x8xf32, 2>) {
+          %a = memref.alloc() : memref<2x2x4x8xf32, 2>
+          air.execute_terminator %a : memref<2x2x4x8xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<2x2x4x8xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %c1_h = arith.constant 1 : index
+          %c8 = arith.constant 8 : index
+          %f0 = arith.constant 0.000000e+00 : f32
+          %ub = arith.constant 4 : index
+          scf.for %i = %c0 to %ub step %c1_h {
+            %sv = memref.subview %buf[%tx, %ty, %i, 0] [%c1_h, %c1_h, %c1_h, %c8] [1, 1, 1, 1] : memref<2x2x4x8xf32, 2> to memref<?x?x?x?xf32, strided<[64, 32, 8, 1], offset: ?>, 2>
+            linalg.fill ins(%f0 : f32) outs(%sv : memref<?x?x?x?xf32, strided<[64, 32, 8, 1], offset: ?>, 2>)
+          }
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<2x2x4x8xf32, 2>
         }
       }
     }
