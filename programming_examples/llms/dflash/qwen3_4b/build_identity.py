@@ -13,6 +13,15 @@ HERE = Path(__file__).resolve().parent
 EXAMPLES = HERE.parents[2]
 
 
+def package_version(name):
+    # An MLIR wheel unpacked rather than pip-installed has no metadata. The
+    # tool digests still pin the toolchain, so record the version as unknown.
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
 def digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -65,8 +74,7 @@ def build_identity(kind):
         },
         tools={name: digest(path) for name, path in tools.items()},
         dependencies={
-            name: importlib.metadata.version(name)
-            for name in ("mlir_aie", "llvm-aie", "mlir")
+            name: package_version(name) for name in ("mlir_aie", "llvm-aie", "mlir")
         },
     )
 
