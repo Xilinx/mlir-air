@@ -354,12 +354,13 @@ module {
     %c1 = arith.constant 1 : index
     air.launch (%arg0) in (%arg1=%c1) {
       air.segment @segment_0 {
+        %c1_s = arith.constant 1 : index
         %c2 = arith.constant 2 : index
         %t0, %alloc = air.execute -> (memref<2x2x4x8xf32, 2>) {
           %a = memref.alloc() : memref<2x2x4x8xf32, 2>
           air.execute_terminator %a : memref<2x2x4x8xf32, 2>
         }
-        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c1, %sy=%c2) args(%buf=%alloc) : memref<2x2x4x8xf32, 2> {
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c1_s, %sy=%c2) args(%buf=%alloc) : memref<2x2x4x8xf32, 2> {
           %c0 = arith.constant 0 : index
           %c1_h = arith.constant 1 : index
           %c8 = arith.constant 8 : index
