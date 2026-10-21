@@ -5324,11 +5324,8 @@ public:
           chan_merge_map[channelOps[j]] = channelOps[i];
         }
       }
-      // The merges' bookkeeping, of no use past this pass.
-      f.walk([](air::ChannelInterface chanOp) {
-        chanOp->removeAttr("air.merge_anchor");
-        chanOp->removeAttr("air.merged_after");
-      });
+      lastMergedAfter.clear();
+      mergedClones.clear();
     }
     renameSymbols(channelOps, chan_merge_map);
     // Walk the region and mutate scf.for loop bounds based on "setLB" and
@@ -6421,10 +6418,11 @@ private:
     return aAnchor->isBeforeInBlock(bAnchor) ? 1 : -1;
   }
 
+  // For each merge destination, the last op cloned after it by a merge.
+  llvm::DenseMap<Operation *, Operation *> lastMergedAfter;
+  // Ops cloned next to a merge destination.
+  llvm::DenseSet<Operation *> mergedClones;
   // With `dryRun`, only reports whether the merge is possible.
-  // Tags a merge destination, so later merges into it can find what earlier
-  // ones placed after it.
-  int64_t nextAnchor = 0;
   bool mergeChannelOps(RewriterBase &rewriter, air::ChannelInterface a,
                        air::ChannelInterface b, bool dryRun = false) {
     // fuse a and b under the same loop nest, if a and b are under different
@@ -6445,24 +6443,13 @@ private:
     IRMapping remap;
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder::InsertionGuard guard(rewriter);
-    // b goes after a and after any op an earlier merge already put after a,
-    // so three or more channels merged into a keep their order.
-    Operation *anchor = a;
-    for (Operation *op = a->getNextNode(); op; op = op->getNextNode()) {
-      // what sits between the merged channel ops: their cloned operands and
-      // the token joins
-      if (!isa<air::ChannelInterface>(op))
-        continue;
-      if (op->getAttr("air.merged_after") != a->getAttr("air.merge_anchor") ||
-          !a->hasAttr("air.merge_anchor"))
-        break;
-      anchor = op;
-    }
-    if (!a->hasAttr("air.merge_anchor"))
-      a->setAttr("air.merge_anchor", rewriter.getI64IntegerAttr(nextAnchor++));
-    rewriter.setInsertionPointAfter(anchor);
+    // Insert b after a and after any op that earlier merges into a placed
+    // after it, so that channels merged into a keep their merge order.
+    Operation *anchor = lastMergedAfter.lookup(a);
+    rewriter.setInsertionPointAfter(anchor ? anchor : a.getOperation());
     auto new_b = air::cloneOpAndOperands(rewriter, remap, b);
-    new_b->setAttr("air.merged_after", a->getAttr("air.merge_anchor"));
+    lastMergedAfter[a] = new_b;
+    mergedClones.insert(new_b);
     if (air::isAsyncOp(a) && air::isAsyncOp(new_b)) {
       auto newWaitAll = air::WaitAllOp::create(
           rewriter, a->getLoc(), air::AsyncTokenType::get(a->getContext()),
@@ -6506,17 +6493,22 @@ private:
         a->getParentRegion()))
       bRegion = bRegion->getParentOp()->getParentRegion();
     SmallVector<air::ChannelInterface> aChanOps, bChanOps;
-    // Ops an earlier merge put into a's nest are not a's own: they have no
-    // counterpart in b's.
-    aRegion->walk([&aChanOps](air::ChannelInterface chanOp) {
-      if (!chanOp->hasAttr("air.merged_after"))
+    // Skip ops that earlier merges cloned into a's nest; they have no
+    // counterpart in b's nest.
+    bool skippedClones = false;
+    aRegion->walk([&](air::ChannelInterface chanOp) {
+      if (mergedClones.contains(chanOp))
+        skippedClones = true;
+      else
         aChanOps.push_back(chanOp);
     });
     bRegion->walk([&bChanOps](air::ChannelInterface chanOp) {
       bChanOps.push_back(chanOp);
     });
+    // Without earlier clones in a's nest, unmatched nests are left as they
+    // are. With them, the ops cannot be paired, so the merge is not done.
     if (aChanOps.size() != bChanOps.size())
-      return true;
+      return !skippedClones;
     for (auto [aOtherOp, bOtherOp] : llvm::zip_equal(aChanOps, bChanOps))
       if (!sameGuardsBelow(aOtherOp, aRegion, bOtherOp, bRegion))
         return false;
