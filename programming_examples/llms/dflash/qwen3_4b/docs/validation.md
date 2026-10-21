@@ -7,7 +7,7 @@ NPU commands in the Makefile take an exclusive `/tmp/mlir-air-npu.lock`.
 ## Standard checks
 
 ```sh
-make verify-host   # 440 acceptance/EOS/clipping cases and streaming tests
+make verify-host   # Acceptance/EOS/clipping and streaming unit tests
 make verify-state  # Repeats, visibility, context injection, NPU prefill and loop
 make verify-model  # Separate NPU/HF captures, then the AIR top-5 comparison
 make verify        # All three

@@ -1,0 +1,10 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// DFlash's greedy acceptance and streaming unit tests, as a PR gate. They
+// import only speculative.py and streaming.py, so they need no NPU, no
+// weights and no compile; REQUIRES is empty so they run on every runner.
+// Collected by check-programming-examples-llms-host.
+//
+// RUN: %PYTHON -m unittest discover -s %S/tests -p 'test_*.py' 2>&1 | FileCheck %s
+// CHECK: OK

@@ -1,7 +1,8 @@
 # Nightly CI and persistent resources
 
-The example follows the upstream LLM LIT suites. No separate host-only PR-CI
-suite is added. Compile needs Peano and the upstream pre-23 `llvm-link`; device
+The example follows the upstream LLM LIT suites. Its host unit tests
+(`run_host_checks.lit`) run in PR CI through
+`check-programming-examples-llms-host`. Compile needs Peano and the upstream pre-23 `llvm-link`; device
 tests additionally need NPU2 and all three cached model repositories.
 
 The scheduled suites are `verify,profile,sweep,prefill-sweep,full20`. Full20 runs

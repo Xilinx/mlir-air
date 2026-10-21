@@ -123,13 +123,13 @@ compiled object/LLVM IR used by each herd or function.
 | [baseline.py](../baseline.py), [build_baseline.py](../build_baseline.py) | Adapt and build the existing single-token `FusedDecoder` for a fresh B1 control with the same target cache and inputs. |
 | [profile_dflash.py](../profile_dflash.py) | Standard short-prompt NPU-prefill/decode profile and upstream `.perf.json` output. |
 | [provenance.py](../provenance.py) | Records runtime/shared-source hashes and model revisions alongside measurements. |
-| [verify_loop.py](../verify_loop.py) | Host acceptance tests and repeated NPU-prefill DFlash/oracle/committed-KV verification. |
+| [verify_loop.py](../verify_loop.py) | Repeated NPU-prefill DFlash/oracle/committed-KV verification. |
 | [tests/check_decoder.py](../tests/check_decoder.py) | Decoder repeatability, visibility, context injection and untouched KV regions at selected lengths. |
-| [tests/check_loop.py](../tests/check_loop.py) | Saved-prefill DFlash versus a sequential oracle with matching B8 arithmetic, including per-round committed state. |
 | [tests/check_model.py](../tests/check_model.py) | Separate NPU/HF token captures and upstream-style mutual top-5 comparison at first divergence. |
 | [tests/check_attention.py](../tests/check_attention.py) | Production-linked attention output/reference checks, row isolation, visibility and repeatability. |
 | [tests/check_prepass.py](../tests/check_prepass.py), [tests/bfp_reference.py](../tests/bfp_reference.py) | Prepass full-output/repeat/chunk tests and its matching BFP arithmetic helper. |
-| [tests/checks.py](../tests/checks.py), [test_streaming.py](../test_streaming.py) | Test report/hash helpers and incremental-text tests. |
+| [tests/checks.py](../tests/checks.py) | Test report/hash helpers. |
+| [tests/test_speculative.py](../tests/test_speculative.py), [tests/test_streaming.py](../tests/test_streaming.py) | Host unit tests for greedy acceptance and incremental text; run in PR CI by [run_host_checks.lit](../run_host_checks.lit). |
 | [run_npu2_compile.lit](../run_npu2_compile.lit), [run_npu2_verify.lit](../run_npu2_verify.lit), [run_npu2_profile.lit](../run_npu2_profile.lit) | Upstream compile, correctness and short-profile suite entries. |
 | [run_npu2_full20.lit](../run_npu2_full20.lit), [run_npu2_full80.lit](../run_npu2_full80.lit) | Default nightly paired Full20 and explicitly enabled Full80. |
 

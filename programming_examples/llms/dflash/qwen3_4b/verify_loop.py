@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Focused host and device gates for the selected NPU DFlash delivery."""
+"""Repeated NPU prefill, then DFlash against its sequential oracle and committed KV."""
 
 from __future__ import annotations
 
@@ -18,31 +18,7 @@ from model_paths import (
     default_target_cache,
 )
 from runtime import load_pair, prepare_prompt, tokenize_prompt
-from speculative import accept_greedy, autoregressive
-
-
-def host_acceptance_gate() -> int:
-    checked = 0
-    for accepted in range(8):
-        block = [100] + list(range(1, 8))
-        target = list(range(1, 9))
-        if accepted < 7:
-            block[accepted + 1] = 99
-        sequence = list(range(1, accepted + 2))
-        for remaining in range(10):
-            for eos in (None, *sequence):
-                observed = accept_greedy(
-                    block, target, remaining, () if eos is None else (eos,)
-                )
-                expected = sequence[:remaining]
-                stopped = eos in expected if eos is not None else False
-                if stopped:
-                    expected = expected[: expected.index(eos) + 1]
-                assert observed.accepted_drafts == accepted
-                assert observed.tokens == expected
-                assert observed.stopped_on_eos == stopped
-                checked += 1
-    return checked
+from speculative import autoregressive
 
 
 def signature(generation) -> list[dict]:
@@ -55,7 +31,6 @@ def signature(generation) -> list[dict]:
 def main() -> None:
     here = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host-only", action="store_true")
     parser.add_argument("--prompt", default="Introduce me what is GPU")
     parser.add_argument("--tokens", type=int, default=32)
     parser.add_argument("--prefill", choices=("npu", "cpu"), default="npu")
@@ -72,11 +47,7 @@ def main() -> None:
     parser.add_argument("--draft-snapshot", type=Path, default=default_draft_snapshot())
     parser.add_argument("--output", type=Path, default=here / "build/verify.json")
     args = parser.parse_args()
-    result = {"passed": False, "host_acceptance_cases": host_acceptance_gate()}
-    if args.host_only:
-        result["passed"] = True
-        print(json.dumps(result, indent=2))
-        return
+    result = {"passed": False}
 
     tokenizer, input_ids = tokenize_prompt(args.prompt, args.tokenizer_model)
     if len(input_ids) + args.tokens - 1 + 8 > 4096:

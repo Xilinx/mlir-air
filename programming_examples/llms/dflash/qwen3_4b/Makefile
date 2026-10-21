@@ -78,8 +78,7 @@ chat:
 
 verify: verify-host verify-state verify-model
 verify-host:
-	$(PYTHON) $(srcdir)/verify_loop.py --host-only
-	$(PYTHON) $(srcdir)/test_streaming.py
+	$(PYTHON) -m unittest discover -s $(srcdir)/tests -p 'test_*.py'
 
 verify-state:
 	$(NPU_RUN) $(srcdir)/tests/check_decoder.py --artifact $(BUILD_DIR)/target --role target --prefixes 0 7 16 64 1024 4088 --output $(VERIFY_DIR)/target.json

@@ -152,6 +152,17 @@ add_lit_testsuite(check-programming-examples-llms-geometry
 )
 set_target_properties(check-programming-examples-llms-geometry PROPERTIES FOLDER "Tests")
 
+# LLM host-side unit tests (run_host_checks.lit): pure Python against an
+# example's host logic, so like the geometry check they need no NPU, no weights
+# and no compile, and can gate PRs.
+add_lit_testsuite(check-programming-examples-llms-host
+  "Running LLM host-side unit tests (no NPU, no weights)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} --filter "llms/.*/run_host_checks"
+)
+set_target_properties(check-programming-examples-llms-host PROPERTIES FOLDER "Tests")
+
 # LLM verify suite: all models, requires hf_token + NPU.
 # Sequential (-j1) mandatory — concurrent LLM inference causes NPU OOM.
 # Not invoked in PR CI (hf_token unavailable in fork PRs); run by repo
