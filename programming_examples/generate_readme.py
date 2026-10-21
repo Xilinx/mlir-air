@@ -632,11 +632,15 @@ def load_llm_sweep_history(path):
 
     Same reason as load_llm_history: a snapshot makes publishing destructive, so
     a run that swept nothing would empty the curve table.
+
+    A model keeps only the contexts its latest run swept. A context it no
+    longer sweeps would otherwise keep its last number on the table forever.
     """
     if not path or not Path(path).is_file():
         return []
     newest = {}
     verify = {}
+    run_ctxs, latest = {}, {}
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -648,6 +652,11 @@ def load_llm_sweep_history(path):
         if not model or ctx is None:
             continue
         ts = r.get("timestamp_utc") or r.get("date") or ""
+        run = r.get("run_id")
+        if run is not None:
+            run_ctxs.setdefault((model, run), set()).add(ctx)
+            if model not in latest or ts >= latest[model][0]:
+                latest[model] = (ts, run)
         cur = newest.get((model, ctx))
         # A measured point outranks a failed one at the same context, so a bad
         # run leaves the last real number rather than punching a hole.
@@ -666,6 +675,9 @@ def load_llm_sweep_history(path):
             verify[model] = (ts, r.get("verify_status", ""))
     curves = {}
     for (model, ctx), (_, _, r) in sorted(newest.items()):
+        live = run_ctxs.get((model, latest[model][1])) if model in latest else None
+        if live is not None and ctx not in live:
+            continue
         curves.setdefault(
             model,
             {"model": model, "points": [], "verify_status": verify[model][1]},

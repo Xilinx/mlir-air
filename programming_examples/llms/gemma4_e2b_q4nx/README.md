@@ -199,15 +199,14 @@ carries are wired up:
 - `run_npu2_prefill_sweep.lit` -- TTFT vs padded prompt length. Measured here:
   512 -> 1184 ms (432 tok/s), 1024 -> 2177 ms (470 tok/s), 2048 -> 4719 ms
   (434 tok/s), first-token gate passing at every length.
-- `run_npu2_sweep.lit` -- decode tok/s vs KV depth, all 35 layers, 1k through
-  128k. Whether the top two depths are reachable depends on how much host
-  memory XRT will pin for the KV cache, so they are expected-fail. The numbers
-  are on the benchmark page, measured fresh
-  each night rather than copied here.
+- `run_npu2_sweep.lit` -- decode tok/s vs KV depth, all 35 layers, at 2k, 8k,
+  32k and 128k. Whether 128k is reachable depends on how much host memory XRT
+  will pin for the KV cache, so it is expected-fail. The numbers are on the
+  benchmark page, measured fresh each night rather than copied here.
 
-The decode sweep's points are no longer expected-fail except at 65536 and
-131072, which turn on how much host memory XRT will pin for the KV cache and so
-are a property of the machine rather than of this model.
+The decode sweep's points are no longer expected-fail except at 131072, which
+turns on how much host memory XRT will pin for the KV cache and so is a
+property of the machine rather than of this model.
 
 `run_npu2_profile.lit` still runs `profile-prefill`, so the published row
 carries a real TTFT and a null decode tok/s. That is no longer forced -- see the
@@ -235,9 +234,9 @@ the development box reproduces it too at `default` power mode.
 
 A sweep-only dispatch of the nightly benchmark on its own runner took gemma4
 from 8/8 contexts hanging to 8/8 measured. `--expect-fail` is gone from
-`run_npu2_sweep.lit` accordingly, except at 65536 and 131072, which turn on how
-much host memory XRT will pin for the KV cache and are a property of the machine
-rather than of this defect. The sibling sweeps carry the same two.
+`run_npu2_sweep.lit` accordingly, except at 131072, which turns on how much
+host memory XRT will pin for the KV cache and is a property of the machine
+rather than of this defect. The sibling sweeps carry the same.
 
 **The token gate still has no lit, but that is now work not yet done rather
 than a blocker.** `make run` is a real gate and passes locally, and every one of

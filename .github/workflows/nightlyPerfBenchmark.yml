@@ -388,7 +388,7 @@ jobs:
           # <model>.sweep.json alongside. The profile capture above measures one
           # point at the profile prompt's ~6 tokens of context, which is the
           # flattering end of a ~12x range and cannot see a KV-path regression.
-          # Each sweep is ~4-5 min (a template build per context).
+          # Each context of a fused-decode sweep is a template build.
           if want sweep; then
             # Build the shared bench binary BEFORE any timed work. Every model's
             # `make clean` recurses into fused_decode's, which deletes it, so
