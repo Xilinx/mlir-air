@@ -17,6 +17,7 @@ make model weights, physical layouts or binaries interchangeable.
 | [context_reference.py](context_reference.py), [prefill_reference.py](prefill_reference.py) | CPU arithmetic references and tapped prefill | Model weights and semantic parameters |
 | [benchmark_runner.py](benchmark_runner.py), [paired_benchmark.py](paired_benchmark.py) | Fixed-cohort timing, aggregation and engine pairing | Explicit model loaders and validated prompt states |
 | [benchmark/prompts.json](benchmark/prompts.json) | Shared messages, source indices and frozen selection order | Tokenization and KV/features are generated for each model |
+| [attention_check.py](attention_check.py) | Production-linked attention arithmetic, visibility and repeatability probe | Model configuration and compiled attention object |
 | [build_identity.py](build_identity.py) | Source/tool/artifact identity and stale-build rejection | Model build inputs |
 
 The complete AIR assembly and residual/cache ownership are explicit in each
