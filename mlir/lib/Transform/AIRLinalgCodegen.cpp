@@ -3787,7 +3787,9 @@ static bool isMultipleOf(Value v, int64_t m) {
 }
 
 // extract_slice(collapse_shape(x)) -> collapse_shape(extract_slice'(x)) when,
-// in each collapsed dim, the slice takes whole rows of the group's inner dims.
+// in each collapsed dim, the slice takes whole rows of the dims of the group
+// after some dim `at`, and at most all of `at`, without crossing into the next
+// index of the dims before it. Those take one index each.
 struct BubbleSliceThroughCollapse
     : public OpRewritePattern<tensor::ExtractSliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -3808,48 +3810,76 @@ struct BubbleSliceThroughCollapse
       return failure();
     if (srcType.getNumElements() == 0)
       return failure();
-    // Per group, the number of elements in its inner dims; checked for every
-    // group before any IR is created.
-    SmallVector<int64_t> inners;
+    // Per group, the position in it of the dim the slice spans and the number
+    // of elements in the dims after that one; checked for every group before
+    // any IR is created.
+    SmallVector<std::pair<size_t, int64_t>> splits;
     for (auto [i, group] :
          llvm::enumerate(collapse.getReassociationIndices())) {
       OpFoldResult off = slice.getMixedOffsets()[i];
       if (!isConstantIntValue(slice.getMixedStrides()[i], 1))
         return failure();
-      int64_t inner = 1;
-      for (int64_t d : ArrayRef(group).drop_front())
-        inner *= srcType.getDimSize(d);
       auto s = getConstantIntValue(slice.getMixedSizes()[i]);
-      if (!s || *s % inner != 0 ||
-          *s / inner > srcType.getDimSize(group.front()))
+      if (!s)
         return failure();
+      // The outermost dim that holds the slice's rows. Past the group's
+      // first dim, the slice must also tile that dim exactly, so that an
+      // offset that is a multiple of its size stays within one index of the
+      // dims before it.
+      std::optional<std::pair<size_t, int64_t>> split;
+      for (size_t at = 0; at < group.size() && !split; ++at) {
+        int64_t inner = 1;
+        for (int64_t d : ArrayRef(group).drop_front(at + 1))
+          inner *= srcType.getDimSize(d);
+        int64_t dim = srcType.getDimSize(group[at]);
+        if (*s % inner != 0 || *s / inner > dim)
+          continue;
+        if (at > 0 && dim % (*s / inner) != 0)
+          continue;
+        split = {at, inner};
+      }
+      if (!split)
+        return failure();
+      int64_t step = split->first > 0 ? *s : split->second;
       if (auto c = getConstantIntValue(off)) {
-        if (*c % inner != 0)
+        if (*c % step != 0)
           return failure();
-      } else if (!isMultipleOf(cast<Value>(off), inner)) {
+      } else if (!isMultipleOf(cast<Value>(off), step)) {
         return failure();
       }
-      inners.push_back(inner);
+      splits.push_back(*split);
     }
     Location loc = slice.getLoc();
     SmallVector<OpFoldResult> offsets, sizes, strides;
     for (auto [i, group] :
          llvm::enumerate(collapse.getReassociationIndices())) {
       OpFoldResult off = slice.getMixedOffsets()[i];
-      int64_t inner = inners[i];
+      auto [at, inner] = splits[i];
       int64_t s = *getConstantIntValue(slice.getMixedSizes()[i]);
-      if (auto c = getConstantIntValue(off)) {
-        offsets.push_back(rewriter.getIndexAttr(*c / inner));
-      } else {
-        AffineExpr d0 = rewriter.getAffineDimExpr(0);
-        offsets.push_back(affine::makeComposedFoldedAffineApply(
-            rewriter, loc, d0.floorDiv(inner), {off}));
-      }
-      sizes.push_back(rewriter.getIndexAttr(s / inner));
-      strides.push_back(rewriter.getIndexAttr(1));
-      for (int64_t d : ArrayRef(group).drop_front()) {
-        offsets.push_back(rewriter.getIndexAttr(0));
-        sizes.push_back(rewriter.getIndexAttr(srcType.getDimSize(d)));
+      // The index of dim k of the group: the offset over the elements of
+      // the dims after k, within dim k's size (not for the first).
+      for (size_t k = 0; k < group.size(); ++k) {
+        int64_t after = 1;
+        for (int64_t d : ArrayRef(group).drop_front(k + 1))
+          after *= srcType.getDimSize(d);
+        int64_t dim = srcType.getDimSize(group[k]);
+        if (k > at) {
+          offsets.push_back(rewriter.getIndexAttr(0));
+          sizes.push_back(rewriter.getIndexAttr(dim));
+        } else {
+          if (auto c = getConstantIntValue(off)) {
+            int64_t idx = *c / after;
+            offsets.push_back(rewriter.getIndexAttr(k ? idx % dim : idx));
+          } else {
+            AffineExpr d0 = rewriter.getAffineDimExpr(0);
+            AffineExpr e = d0.floorDiv(after);
+            if (k)
+              e = e % dim;
+            offsets.push_back(
+                affine::makeComposedFoldedAffineApply(rewriter, loc, e, {off}));
+          }
+          sizes.push_back(rewriter.getIndexAttr(k == at ? s / inner : 1));
+        }
         strides.push_back(rewriter.getIndexAttr(1));
       }
     }
@@ -6969,13 +6999,50 @@ transform::MergeSiblingCopiesOp::apply(transform::TransformRewriter &rewriter,
           .push_back(*c);
     });
 
-    for (auto &[key, members] : groups) {
-      if (members.size() < 2)
-        continue;
-      // In program order; the region starts at the lowest offset.
-      llvm::sort(members, [](const SiblingCopy &a, const SiblingCopy &b) {
+    // Whether an op strictly between `from` and `to` may write memory. The
+    // candidate copies write only their own fresh buffers, so they do not
+    // count.
+    llvm::SmallPtrSet<Operation *, 16> candidates;
+    for (auto &[key, all] : groups)
+      for (SiblingCopy &m : all)
+        candidates.insert(m.copy);
+    auto writesBetween = [&](Operation *from, Operation *to) {
+      for (Operation *op = from->getNextNode(); op != to;
+           op = op->getNextNode()) {
+        if (candidates.contains(op))
+          continue;
+        std::optional<SmallVector<MemoryEffects::EffectInstance>> effects =
+            getEffectsRecursively(op);
+        if (!effects ||
+            llvm::any_of(*effects, [](const MemoryEffects::EffectInstance &e) {
+              return isa<MemoryEffects::Write>(e.getEffect());
+            }))
+          return true;
+      }
+      return false;
+    };
+    // Each group, in program order, as runs of copies with no write between
+    // them; a run is merged on its own. The merged copy runs where the first
+    // one did, so a write between two copies could otherwise change what the
+    // later one reads.
+    SmallVector<SmallVector<SiblingCopy>> runs;
+    for (auto &[key, all] : groups) {
+      llvm::sort(all, [](const SiblingCopy &a, const SiblingCopy &b) {
         return a.copy->isBeforeInBlock(b.copy);
       });
+      runs.emplace_back();
+      for (SiblingCopy &m : all) {
+        if (!runs.back().empty() &&
+            writesBetween(runs.back().back().copy, m.copy))
+          runs.emplace_back();
+        runs.back().push_back(m);
+      }
+    }
+
+    for (SmallVector<SiblingCopy> &members : runs) {
+      if (members.size() < 2)
+        continue;
+      // The region starts at the lowest offset.
       OpFoldResult firstOffset = members.front().view.getMixedOffsets()[0];
       SmallVector<int64_t> deltas;
       for (SiblingCopy &m : members) {
@@ -7043,25 +7110,6 @@ transform::MergeSiblingCopiesOp::apply(transform::TransformRewriter &rewriter,
           memberLast = std::max(memberLast, last);
         }
         ok = boxElems <= memberElems && boxLast <= memberLast;
-      }
-      // The merged copy runs where the first one did, so nothing between the
-      // first and the last may write memory: a later copy would otherwise
-      // read a stale snapshot of the source.
-      llvm::SmallPtrSet<Operation *, 8> memberOps;
-      for (SiblingCopy &m : members)
-        memberOps.insert(m.copy);
-      for (Operation *op = members.front().copy->getNextNode();
-           ok && op != members.back().copy.getOperation();
-           op = op->getNextNode()) {
-        if (memberOps.contains(op))
-          continue;
-        std::optional<SmallVector<MemoryEffects::EffectInstance>> effects =
-            getEffectsRecursively(op);
-        if (!effects ||
-            llvm::any_of(*effects, [](const MemoryEffects::EffectInstance &e) {
-              return isa<MemoryEffects::Write>(e.getEffect());
-            }))
-          ok = false;
       }
       if (!ok)
         continue;

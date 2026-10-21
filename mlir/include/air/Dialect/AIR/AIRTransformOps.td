@@ -1529,9 +1529,11 @@ def MergeSiblingCopiesOp : Op<Transform_Dialect, "air.merge_sibling_copies",
     `memref.reinterpret_cast` of a common base into a fresh `memref.alloc`
     read only through `bufferization.to_tensor`, and merges those whose
     views differ only by a constant offset: same base, element type, strides
-    and destination memory space, in the same block, with no write between
-    them. Each group becomes one alloc and one copy of the views' bounding
-    region, and each original buffer's `bufferization.to_tensor` a
+    and destination memory space, in the same block. A write between two of
+    them (other than another such copy, which writes only its own buffer)
+    splits the group there, and each run of copies with no write between them
+    is merged on its own. Each run becomes one alloc and one copy of the views'
+    bounding region, and each original buffer's `bufferization.to_tensor` a
     `tensor.extract_slice` of the merged buffer's tensor. Several fields of
     one packed buffer then move as one DMA stream.
 
