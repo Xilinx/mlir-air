@@ -4147,6 +4147,9 @@ keep that other arm's token live for no reason.</p>
 <h3 id="-air-fuse-alloc-dealloc"><code>-air-fuse-alloc-dealloc</code><a class="headerlink" href="#-air-fuse-alloc-dealloc" title="Permanent link">&para;</a></h3>
 <p><em>Fuse pairs of memref.alloc/dealloc ops into the inner-most region containing all uses of the memref.</em></p>
 <p>Fuse pairs of memref.alloc/dealloc into the inner-most region, which contains all uses of the memref.</p>
+<p>An alloc tagged <code>air.disable_alloc_sink</code> (on the alloc, or on an alloc
+inside its enclosing <code>air.execute</code>) is not sunk into an <code>scf.for</code> or
+<code>scf.parallel</code>; it stays allocated across the loop.</p>
 <h3 id="-air-fuse-channels"><code>-air-fuse-channels</code><a class="headerlink" href="#-air-fuse-channels" title="Permanent link">&para;</a></h3>
 <p><em>Fuse multiple air.channel ops into one</em></p>
 <p>This pass fuses multiple air.channel ops into one. The condition for fusing channels 
