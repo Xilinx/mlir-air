@@ -11,7 +11,7 @@
 // RUN: mkdir -p test_npu2_profile
 // RUN: cd test_npu2_profile
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile compile-decode-full PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile compile-decode-elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
 // RUN: make -f %S/Makefile compile-fused-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
 // RUN: make -f %S/Makefile profile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR N_TOKENS=64 PROMPT="What is the capital of France?" | tee profile.txt
 // RUN: %PYTHON %S/../bench/extract_perf.py profile.txt --model gemma4_e4b_q4nx > gemma4_e4b_q4nx.perf.json

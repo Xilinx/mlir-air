@@ -51,7 +51,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _PE = _HERE.parent.parent  # programming_examples
 _DEC = _PE / "fused_decode_ple"  # the PLE fork of the decode engine
-_FD = _PE / "fused_decode"  # decode_insts_gen / decode_staircase live here
+_FD = _PE / "fused_decode"  # decode_elf / decode_insts_gen / decode_staircase
 sys.path.insert(0, str(_HERE))
 import gemma4_e2b_q4nx_weights as _gw  # noqa: E402
 
@@ -93,12 +93,26 @@ _WCACHE_DIR = Path(
 VOCAB_CHUNK_I2 = str(_VARIANT["VOCAB_CHUNK_I2"])
 
 
-def _elf_on():
-    """DECODE_ELF=1 selects the full-ELF decode (`make compile-decode-elf`).
+_elf = None  # fused_decode/decode_elf.py, loaded on first use
 
-    Opt-in; the xclbin templates stay the default.
-    """
-    return os.environ.get("DECODE_ELF") == "1"
+
+def _load_elf_mod():
+    global _elf
+    if _elf is None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "decode_elf", str(_FD / "decode_elf.py")
+        )
+        _elf = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_elf)
+    return _elf
+
+
+def _elf_on():
+    """Full-ELF decode (`make compile-decode-elf`) unless DECODE_ELF=0, which
+    selects the xclbin templates. Same switch as the other fused_decode models."""
+    return _load_elf_mod().elf_on()
 
 
 def _fused_build():
@@ -195,8 +209,9 @@ class FusedDecoder:
             stamp = _DECODE_DIR / "decode_scratchpad.maxl"
             if not stamp.exists():
                 raise RuntimeError(
-                    f"DECODE_ELF=1 needs decode_scratchpad.maxl in {_DECODE_DIR}; "
-                    "run `make compile-decode-elf`"
+                    f"the full-ELF decode needs decode_scratchpad.maxl in "
+                    f"{_DECODE_DIR}; run `make compile-decode-elf`, or set "
+                    "DECODE_ELF=0 for the xclbin templates"
                 )
             self.ATTN_MAXL = int(stamp.read_text().split()[0])
         else:
@@ -291,14 +306,9 @@ class FusedDecoder:
             self.K,
         )
         if self.elf_mode:
-            import importlib.util
-
-            spec = importlib.util.spec_from_file_location(
-                "decode_elf", str(_FD / "decode_elf.py")
+            self._elfdec = _load_elf_mod().ElfDecode(
+                _DECODE_DIR, self.dev, xrt, self.REGION_W
             )
-            de = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(de)
-            self._elfdec = de.ElfDecode(_DECODE_DIR, self.dev, xrt, self.REGION_W)
             # An ELF kernel has no instruction argument to group BOs against.
             bos = [xrt.ext.bo(self.dev, n * 2) for n in sizes]
             self._elfdec.bind(bos)
