@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 #include "fused_decode/kernels/rms_residual.cc"
 
-// The same reduction and two-step reciprocal square root as upstream rms_norm.
-// Keep the factor separate so a normalized chunk can be regenerated without
-// retaining a second 40 KiB activation tensor on the residual tile.
+// The same reduction and two-step reciprocal square root as rms_residual.cc's
+// rms_norm. Keep the factor separate so a normalized chunk can be regenerated
+// without holding a second activation tensor on the residual tile.
 static float batch_rsqrt(const bf16 *x) {
   aie::accum<accfloat, 16> acc = aie::zeros<accfloat>();
   for (int j = 0; j < MODEL_DIM; j += 16)

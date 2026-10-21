@@ -304,7 +304,7 @@ __attribute__((noinline)) void scale_div_aie(bf16 *a, bf16 *o, float *l) {
 #ifdef ATTN_NORM_VECTOR
         // One 8-lane multiply per head: BF16 operands, FP32 products. Unlike
         // the scalar casts below, to_vector<bf16> rounds in the core's
-        // rounding mode (see DECODE_ROUND_NEAREST). Used by llms/dflash.
+        // rounding mode (see DECODE_ROUND_NEAREST).
         auto values = aie::load_v<8>(pa + grp * 8);
         auto product = aie::mul(values, aie::broadcast<bf16, 8>(iv));
         aie::store_v(po + op * 8, product.template to_vector<bf16>());

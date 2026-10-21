@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Load one frozen benchmark prefill and check its prompt token identity."""
+"""Load one saved benchmark prefill and check its prompt token identity."""
 
 from pathlib import Path
 import sys

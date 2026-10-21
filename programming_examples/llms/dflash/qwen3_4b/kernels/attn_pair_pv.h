@@ -1,6 +1,6 @@
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
-// Included after the safe masked-V wrapper and current PV implementation.
+// Included after the masked-V wrapper and the PV implementation it wraps.
 static_assert(KV_HEADS_PER_CU == 2 && Q_HEADS_PER_GROUP == 4 &&
               Q_HEADS_PADDED_PER_CU == 8 && DH == 128);
 static_assert(ATTN_QUERY_TILE >= 2 && ATTN_QUERY_TILE % 2 == 0);

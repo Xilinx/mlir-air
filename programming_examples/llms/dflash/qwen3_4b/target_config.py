@@ -1,8 +1,8 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Explicit configuration and buffer ABI for the standalone NPU target.
+"""Configuration and buffer ABI for the standalone NPU target.
 
-Importing the upstream builder is confined to a save/restore environment adapter.
+Importing fused_decode.py is confined to a save/restore environment adapter.
 The runtime consumes the saved manifest rather than ambient DECODE_* settings.
 """
 

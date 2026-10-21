@@ -3,7 +3,6 @@
 """B8 full outputs and state gate, one model resident and bounded KV scratch.
 
 Peer runs use separate processes and compare hashes covering every output word.
-No unused full-cache copy is retained across invocations.
 """
 
 import sys

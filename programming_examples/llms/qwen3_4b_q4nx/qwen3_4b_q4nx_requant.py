@@ -72,8 +72,8 @@ def build_requant_cache(model, fd, cache_path, verbose=True, requant=False):
 
     By default the bundle's Q4 values are packed as they are. requant=True
     dequantizes each projection to float32 and re-quantizes it with per-group
-    min/max instead (llms/dflash/qwen3_4b); the two caches hold different
-    weights and are not interchangeable."""
+    min/max instead; the two caches hold different weights and are not
+    interchangeable."""
     from qwen3_4b_q4nx_weights import Q4nxModel, D, VOCAB
 
     qm_model = Q4nxModel(model)
