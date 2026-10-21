@@ -572,3 +572,56 @@ module {
     return
   }
 }
+
+// -----
+
+// Test 7: the reset device clones every buffer of the device it resets, and
+// aiecc places them below each core's stack. The empty core in the clone keeps
+// the original core's stack_size: with the default one, a tile whose data
+// memory is filled up to a small stack does not fit the clone.
+
+// EMIT-TRUE-LABEL: aie.device(npu2) @segment_core_stack_reset {
+// EMIT-TRUE:   aie.core
+// EMIT-TRUE-NOT: link_with
+// EMIT-TRUE: stack_size = 512
+// EMIT-TRUE-LABEL: aie.device(npu2) @segment_core_stack {
+// EMIT-TRUE:   aie.core
+// EMIT-TRUE:   aie.runtime_sequence @func_core_stack
+
+// EMIT-FALSE-LABEL: aie.device(npu2) @segment_core_stack {
+// EMIT-FALSE-NOT: segment_core_stack_reset
+
+module {
+  aie.device(npu2) {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId12(%shim_noc_tile_0_0, S2MM, 0)
+
+    %mem_0_2 = aie.mem(%tile_0_2) {
+      %0 = aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 3)
+    ^bb1:
+      aie.end
+    ^bb2:
+      aie.end
+    }
+
+    // Core with link_with and a small stack: the reset device's empty core keeps the stack size
+    %core_0_2 = aie.core(%tile_0_2) {
+      aie.end
+    } {link_with = "kernel.o", stack_size = 512 : i32}
+  } {sym_name = "segment_core_stack"}
+
+  airrt.module_metadata{}
+
+  func.func @func_core_stack(%arg0: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c12_i32 = arith.constant 12 : i32
+    %0 = airrt.dma_memcpy_nd(%c12_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId12} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    airrt.wait_all %0 {"air.launch_end"}
+    %p = airrt.segment_load "segment_core_stack" : i64
+    return
+  }
+}
