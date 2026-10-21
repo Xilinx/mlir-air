@@ -20,7 +20,8 @@ def load(build_dir):
     os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
     _lib = ctypes.CDLL(os.path.join(build_dir, "libhostops.so"))
     _lib.tile_a.argtypes = [_p, _i, _i, _i, _i, _p]
-    _lib.tiles_bfp.argtypes = [_p, _i, _i, _i, _i, _i, _i, _p]
+    _l = ctypes.c_long
+    _lib.tiles_bfp.argtypes = [_p, _i, _i, _i, _i, _i, _i, _p, _l, _l]
     _lib.bfp_rows.argtypes = [_p, ctypes.c_long, _p]
     _lib.bf16_to_f32.argtypes = [_p, _i, _i, _i, _p]
     _lib.rms.argtypes = [_p, _i, _i, _p, _f, _p]
@@ -53,10 +54,15 @@ def _bf16_tiles(dst, tm, tk):
 
 
 def _to_bfp(tiles, t, dst, k0=0, k1=None):
-    """Rows [0, t), columns [k0, k1) of tiles into dst."""
+    """Rows [0, t), columns [k0, k1) of tiles into dst [M/tm, K/tk, tile],
+    which may be a strided view (Engine.a_chunk)."""
     _, ks, tm, tk = tiles.shape
     k1 = ks * tk if k1 is None else k1
-    _lib.tiles_bfp(tiles.ctypes.data, t, ks * tk, tm, tk, k0, k1, dst.ctypes.data)
+    assert dst.strides[2] == 1, dst.strides
+    dr, dk = (v // dst.shape[2] for v in dst.strides[:2])
+    _lib.tiles_bfp(
+        tiles.ctypes.data, t, ks * tk, tm, tk, k0, k1, dst.ctypes.data, dr, dk
+    )
 
 
 def tile_a(x, dst, tm, tk):

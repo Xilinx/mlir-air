@@ -179,7 +179,7 @@ class DensePrefill(Engine):
         emb = self._embed(ids)
         self.kv = [([], []) for _ in range(self.desc.layers)]
         x = np.array(emb, np.float32, order="C")
-        chunks = [(r0, min(D.M, n - r0)) for r0 in range(0, n, D.M)]
+        chunks = self.chunk_rows(n)
         for L in range(self.desc.layers):
             self._ffn_all(L, x, chunks, self._mix_all(L, x, chunks))
         self.current_context_length = n

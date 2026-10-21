@@ -430,9 +430,10 @@ void bfp_rows(const uint16_t *src, long n, uint8_t *dst) {
 
 // rows [0, t), columns [k0, k1) of the GEMM's A from bf16 tiles
 // [M/TM][K/TK][TM][TK] into bfp16, per tile the blocks [TM/16][TK/8][2]: row
-// blocks in pairs, rows m, groups along k. k0 and k1 are multiples of 8.
+// blocks in pairs, rows m, groups along k. k0 and k1 are multiples of 8. Tile
+// (ty, s) goes to dst + (ty * dr + s * dk) tiles.
 void tiles_bfp(const uint16_t *src, int t, int K, int TM, int TK, int k0,
-               int k1, uint8_t *dst) {
+               int k1, uint8_t *dst, long dr, long dk) {
   int ks = K / TK, nb = TM / 8, s0 = k0 / TK, ns = (k1 + TK - 1) / TK - s0;
   long tile = 72L * (TM / 8) * (TK / 8);
 #pragma omp parallel for num_threads(NT) schedule(static)
@@ -440,7 +441,7 @@ void tiles_bfp(const uint16_t *src, int t, int K, int TM, int TK, int k0,
     int rb = rs / ns, s = s0 + rs % ns;
     int ty = rb / nb, b = rb % nb;
     const uint16_t *blk = src + (((long)ty * ks + s) * TM + b * 8) * TK;
-    uint8_t *d = dst + ((long)ty * ks + s) * tile + 72L * (b % 2);
+    uint8_t *d = dst + (ty * dr + s * dk) * tile + 72L * (b % 2);
     for (int kb = 0; kb < TK / 8; kb++) {
       int k = s * TK + kb * 8;
       if (k >= k0 && k < k1)
