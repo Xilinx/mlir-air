@@ -316,13 +316,11 @@ def main():
     n_y = (
         fd.HOST_ROUNDS + fd.LAYER_RNDS
     ) * fd.PAYLOAD + fd.UNI_LM * fd.VOCAB_SIZE_PADDED
-    n_kv = fd.KV_SLABS * fd.KV_LAYER
 
     x_bo = xrt.bo(dev, K * 2, HO, g(3))
     w_bo = xrt.bo(dev, n_w * 2, HO, g(4))
     r_bo = xrt.bo(dev, n_rms * 2, HO, g(5))
     y_bo = xrt.bo(dev, n_y * 2, HO, g(6))
-    kv_bo = xrt.bo(dev, n_kv * 2, HO, g(7))
     pw_bo = px_bo = None
     if fd.PLE:
         pw_bo = xrt.bo(dev, fd.UNI_DEC * fd.PLE_LAYER * 2, HO, g(8))
@@ -378,12 +376,21 @@ def main():
         pw_bo.sync(TO)
         px_bo.write(np.asarray(x0, bfloat16).view(np.int16), 0)
         px_bo.sync(TO)
-    kv_bo.write(np.zeros(n_kv, np.int16), 0)
-    kv_bo.sync(TO)
+    # The KV cache is laid out by the builder (several buffers past 4 GiB).
+    from kv_bos import KVBuffers
+
+    kvb = KVBuffers(fd, fd.ATTN_MAXL, lambda n, a: xrt.bo(dev, n, HO, g(3 + a)))
+    zero = np.zeros(fd.KV_LAYER, np.int16)
+    for s in range(fd.KV_SLABS):
+        kvb.write_layer(s, zero, TO)
     x_bo.write(np.asarray(x, bfloat16).view(np.int16), 0)
     x_bo.sync(TO)
 
-    args = [x_bo, w_bo, r_bo, y_bo, kv_bo] + ([pw_bo, px_bo] if fd.PLE else [])
+    args = (
+        [x_bo, w_bo, r_bo, y_bo, kvb.kvc]
+        + ([pw_bo, px_bo] if fd.PLE else [])
+        + list(kvb.extra)
+    )
     # The PLE arm has a known liveness bug: about one dispatch in five times out
     # in the VOCAB drain, with the decode arm already finished -- X written back
     # and KV appended. DECODE_NO_PLE=1 is 20/20, so it takes the PLE feed.
@@ -417,9 +424,13 @@ def main():
         # the KV cache too: at pos 0 the correct attention output is just v, so
         # what the device stored there says whether the QKV path or the attend
         # path is at fault.
-        kv_bo.sync(FROM)
-        kv_out = np.frombuffer(kv_bo.map(), dtype=bfloat16, count=n_kv).astype(
-            np.float32
+        for bo in kvb.bos:
+            bo.sync(FROM)
+        kv_out = np.concatenate(
+            [
+                np.frombuffer(bo.map(), dtype=bfloat16, count=n).astype(np.float32)
+                for bo, n in zip(kvb.bos, kvb.sizes)
+            ]
         )
         # Y too. The QKV phase is host-drained, so Y[0 : HOST_ROUNDS*PAYLOAD] is
         # the device's own q|k|v (4096+1024+1024) -- the attention INPUT, and the

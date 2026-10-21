@@ -21,8 +21,8 @@ class KVBuffers:
     """
 
     def __init__(self, fd, attn_maxl, make_bo):
-        self.layer, self.group, sizes, self.args = fd.kv_layout(attn_maxl)
-        self.bos = [make_bo(n * 2, a) for n, a in zip(sizes, self.args)]
+        self.layer, self.group, self.sizes, self.args = fd.kv_layout(attn_maxl)
+        self.bos = [make_bo(n * 2, a) for n, a in zip(self.sizes, self.args)]
 
     @property
     def kvc(self):
