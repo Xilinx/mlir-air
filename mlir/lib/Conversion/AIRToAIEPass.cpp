@@ -6991,6 +6991,82 @@ public:
     return lastAccessOp ? lastAccessOp : lastFreeOp;
   }
 
+  /// Where to release `get`'s slot when its channel's gets reuse a buffer.
+  /// The channel's BDs share one counting lock, so release k of a trip admits
+  /// BD `slots + k`, whichever buffer that fills: the release follows that
+  /// buffer's last use and release k - 1. Fails unless the core's gets on this
+  /// DMA channel are one channel in one block.
+  FailureOr<Operation *> findRingReleasePoint(air::MemcpyInterface get,
+                                              ArrayRef<Operation *> ringOps,
+                                              int64_t slots) {
+    auto self = dyn_cast<air::ChannelGetOp>(get.getOperation());
+    if (!self)
+      return failure();
+    Block *block = get->getBlock();
+    auto core = get->getParentOfType<AIE::CoreOp>();
+    auto chan = self.getChanName();
+    SmallVector<air::ChannelGetOp> ring;
+    for (Operation *o : ringOps) {
+      if (!o || o->getParentOfType<AIE::CoreOp>() != core)
+        continue;
+      auto g = dyn_cast<air::ChannelGetOp>(o);
+      if (!g || g->getBlock() != block || g.getChanName() != chan)
+        return failure();
+      ring.push_back(g);
+    }
+    int64_t n = ring.size();
+    if (n < 2 || slots < 1)
+      return failure();
+    llvm::sort(ring, [](air::ChannelGetOp a, air::ChannelGetOp b) {
+      return a->isBeforeInBlock(b);
+    });
+    auto *it = llvm::find(ring, self);
+    if (it == ring.end())
+      return failure();
+    int64_t idx = it - ring.begin();
+    auto root = [&](int64_t i) {
+      return air::resolveBufferRoot(ring[i % n].getMemref());
+    };
+
+    // last op after `from` and before `to` (or the block end) touching any
+    // view of `buf`; deallocs do not count
+    auto lastUse = [&](Operation *from, Operation *to,
+                       Value buf) -> Operation * {
+      Operation *last = nullptr;
+      for (Operation *op = from->getNextNode(); op && op != to;
+           op = op->getNextNode())
+        op->walk([&](Operation *o) {
+          if (isa<memref::DeallocOp>(o) || air::isPure(o))
+            return;
+          if (llvm::any_of(o->getOperands(), [&](Value v) {
+                return isa<BaseMemRefType>(v.getType()) &&
+                       air::resolveBufferRoot(v) == buf;
+              }))
+            last = op;
+        });
+      return last;
+    };
+
+    Operation *pos = ring.front();
+    for (int64_t k = 0; k <= idx; k++) {
+      int64_t m = slots + k;
+      Value buf = root(m);
+      for (int64_t q = m - 1; q > m - 1 - n && q >= 0; q--) {
+        if (root(q) != buf)
+          continue;
+        if (q >= n)
+          return failure(); // more credits than buffers in the ring
+        Operation *next = m < n ? ring[m].getOperation() : nullptr;
+        Operation *use = lastUse(ring[q], next, buf);
+        Operation *bound = use ? use : ring[q].getOperation();
+        if (pos->isBeforeInBlock(bound))
+          pos = bound;
+        break;
+      }
+    }
+    return pos;
+  }
+
   LogicalResult allocateCoreLocksPerMemcpyOp(
       OpBuilder builder, air::MemcpyInterface memcpyOpIf,
       llvm::SetVector<Operation *> &allocs_to_remap,
@@ -7154,6 +7230,19 @@ public:
       // acquire(wlock) will block until the DMA completes reading.
       builder.setInsertionPointAfter(memcpyOpIf);
       AIE::UseLockOp::create(builder, memcpyOpIf->getLoc(), relLockOp,
+                             AIE::LockAction::Release, lockRelValue);
+    } else if (FailureOr<Operation *> ringPos =
+                   tileInbound.value() && UsesSemaphoreLocks &&
+                           relLockOp.getInit() &&
+                           !getsFillDistinctBuffers(memcpyOpIf)
+                       ? findRingReleasePoint(memcpyOpIf,
+                                              dma_alloc.value().memcpyOps,
+                                              *relLockOp.getInit())
+                       : FailureOr<Operation *>(failure());
+               succeeded(ringPos)) {
+      // the channel's gets reuse a buffer: release as the DMA refills
+      builder.setInsertionPointAfter(*ringPos);
+      AIE::UseLockOp::create(builder, (*ringPos)->getLoc(), relLockOp,
                              AIE::LockAction::Release, lockRelValue);
     } else if (auto nextWriter = findNextDmaWriteOp(memcpyOpIf, alloc)) {
       // Lifetime ends if dma writes into the same buffer.

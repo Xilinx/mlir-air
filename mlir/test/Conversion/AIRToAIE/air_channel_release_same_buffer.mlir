@@ -7,13 +7,14 @@
 
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
-// Two gets on one channel fill the same buffer: a release lets the DMA fill
-// the channel's next buffer, not the one just used, so the first release
-// stays where the dealloc is.
+// Two gets on one channel fill the same buffer. A release lets the DMA fill
+// the channel's next buffer in order, which here is that same buffer again,
+// so the first release goes after @work, its last reader, not to the dealloc.
 // CHECK: aie.core(%{{.*}})  {
 // CHECK-NOT: aie.end
 // CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK: func.call @work
+// CHECK-NEXT: aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK-NEXT: func.call @other
 // CHECK: aie.end
 
