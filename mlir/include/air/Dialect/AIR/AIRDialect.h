@@ -121,6 +121,12 @@ constexpr StringLiteral NoSplit = "air.no_split";
 // pin this buffer to that memtile column. Read by AIRToAIE's memtile bucketing,
 // and by air-split-l2-memref, which leaves an explicitly-placed buffer intact.
 constexpr StringLiteral MemtileCol = "air.memtile_col";
+// Opt-out (unit attr) on a memref.alloc (or one inside its enclosing
+// air.execute): air-fuse-alloc-dealloc leaves the alloc/dealloc pair where it
+// is instead of sinking it into the scf.for/scf.parallel that uses it. Keeps
+// a buffer allocated across the loop, e.g. a kernel's scratch, whose sunk
+// alloc would otherwise stop air-ping-pong-transform from rewriting the loop.
+constexpr StringLiteral DisableAllocSink = "air.disable_alloc_sink";
 } // namespace attrs
 
 // Largest routing id a packet header can carry. Mirrors the AIE target hook

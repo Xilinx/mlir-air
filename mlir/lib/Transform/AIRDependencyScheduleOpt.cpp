@@ -9459,12 +9459,12 @@ struct AIRFuseAllocDeallocToLoopLike : public OpRewritePattern<OpTy> {
       Operation *defOp = memref.getDefiningOp();
       if (!defOp)
         return false;
-      if (defOp->hasAttr("air.disable_alloc_sink"))
+      if (defOp->hasAttr(air::attrs::DisableAllocSink))
         return true;
       // air-dependency wraps the allocation but keeps its attributes inside.
       if (auto exec = dyn_cast<air::ExecuteOp>(defOp))
         for (auto alloc : exec.template getOps<memref::AllocOp>())
-          if (alloc->hasAttr("air.disable_alloc_sink"))
+          if (alloc->hasAttr(air::attrs::DisableAllocSink))
             return true;
       return false;
     };
