@@ -6493,22 +6493,18 @@ private:
         a->getParentRegion()))
       bRegion = bRegion->getParentOp()->getParentRegion();
     SmallVector<air::ChannelInterface> aChanOps, bChanOps;
-    // Skip ops that earlier merges cloned into a's nest; they have no
-    // counterpart in b's nest.
-    bool skippedClones = false;
+    // Skip ops that earlier merges cloned into either nest. They belong to
+    // other channels, so pairing them would misalign the ops of a and b.
     aRegion->walk([&](air::ChannelInterface chanOp) {
-      if (mergedClones.contains(chanOp))
-        skippedClones = true;
-      else
+      if (!mergedClones.contains(chanOp))
         aChanOps.push_back(chanOp);
     });
-    bRegion->walk([&bChanOps](air::ChannelInterface chanOp) {
-      bChanOps.push_back(chanOp);
+    bRegion->walk([&](air::ChannelInterface chanOp) {
+      if (!mergedClones.contains(chanOp))
+        bChanOps.push_back(chanOp);
     });
-    // Without earlier clones in a's nest, unmatched nests are left as they
-    // are. With them, the ops cannot be paired, so the merge is not done.
     if (aChanOps.size() != bChanOps.size())
-      return !skippedClones;
+      return true;
     for (auto [aOtherOp, bOtherOp] : llvm::zip_equal(aChanOps, bChanOps))
       if (!sameGuardsBelow(aOtherOp, aRegion, bOtherOp, bRegion))
         return false;
