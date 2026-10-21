@@ -152,7 +152,7 @@ class NpuRunner:
             raise SystemExit(
                 f"prompt is {len(ids)} tokens but the fused Gemma4 decode KV cache "
                 f"caps at {self.attn_maxl}. Rebuild with a larger cap "
-                f"(`make compile-decode-full RUN_LBUILD=...`)."
+                f"(`make compile-decode-elf RUN_LBUILD=...`)."
             )
         self.prefiller.clear_context()
         logits = np.asarray(self.prefiller.prefill(ids), np.float32)

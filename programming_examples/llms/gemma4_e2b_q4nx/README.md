@@ -11,7 +11,7 @@ The same code runs Gemma4-E4B at `GEMMA4_VARIANT=e4b`; see
 
 ```bash
 export PEANO_INSTALL_DIR=/path/to/llvm-aie   # must be >= 22.0.0, see Reproducibility
-make compile               # prefill ELFs + both decode templates
+make compile               # prefill ELFs, the decode ELF and the layer-gate template
 make run                   # generate on device; gated on the Paris continuation
 make ask PROMPT="..."      # a single Q&A turn
 make prefill               # prefill only, gated vs the CPU reference
@@ -23,11 +23,12 @@ make verify-topk           # the shared top-k gate vs the bf16 HF reference
 make help                  # everything else
 ```
 
-**Two decode templates, and they are not interchangeable.** `compile-decode`
-builds the layer gate's -- ONE decoder layer, left in the engine directory.
-`compile-decode-full` builds the token driver's -- all 35 layers, left here as
-`decode_L<N>.{xclbin,insts.bin}`. Pointing the driver at the gate's template does
-not fail; it dispatches a 1/35-scale model.
+**Two decode builds, and they are not interchangeable.** `compile-decode`
+builds the layer gate's template -- ONE decoder layer, left in the engine
+directory. `compile-decode-elf` builds the token driver's decode -- all 35
+layers, left here as `decode_scratchpad.*`. `compile-decode-full` builds the
+token driver's xclbin templates instead (`decode_L<N>.{xclbin,insts.bin}`), which
+the driver uses with `DECODE_ELF=0`.
 
 `make verify` here scores the decoder layer per class against a numpy reference
 rather than the siblings' top-k token-set check. That check is available as
@@ -143,9 +144,11 @@ against a float64 SDPA reference.
 
 `gemma4_e2b_q4nx_inference.py` runs the prefill, seeds the device KV cache from
 it, and then dispatches one token at a time: all 35 decoder layers, the PLE
-branch and the 4-bit LM head in a single dispatch per token. One template built
-at `RUN_LBUILD` serves every context length in `[1, ATTN_MAXL]`; the
-L-dependent instruction words are patched per token.
+branch and the 4-bit LM head in a single dispatch per token. One full ELF built
+at `RUN_LBUILD` serves every context length in `[1, ATTN_MAXL]`; the host writes
+the L-dependent values as scratchpad parameters each token
+(`../../fused_decode/decode_elf.py`). With `DECODE_ELF=0` the driver uses the
+xclbin templates instead and patches the L-dependent instruction words.
 
 `make run` is the gate. Greedy from `<bos> The capital of France is`, it must
 produce `[9079, 236761]` -- `' Paris.'` -- and then stop on `<end_of_turn>`.
