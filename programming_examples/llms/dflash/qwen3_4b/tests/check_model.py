@@ -75,10 +75,16 @@ def main(a):
                 dict(id=f"prompt-{i}", prompt=text) for i, text in enumerate(prompts)
             ]
         if a.phase == "hf":
-            from huggingface_hub import snapshot_download
+            from resources import prepare
             from runners.hf_runner import HfRunner
 
-            model = snapshot_download(TOKENIZER_MODEL, revision=TOKENIZER_REVISION)
+            # Only the pinned files are cached. A bare snapshot_download asks
+            # for the whole repo and fails offline.
+            (model,) = (
+                r["snapshot"]
+                for r in prepare(reference=True, offline=True)
+                if r["repo"] == TOKENIZER_MODEL
+            )
             runner = HfRunner(
                 model,
                 SimpleNamespace(n_layers=36, emb_dim=2560, n_kv_heads=8, head_dim=128),
