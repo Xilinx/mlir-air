@@ -121,3 +121,258 @@ module {
     return
   }
 }
+
+// -----
+
+// Offsets 0, 128, 64 do not form a lattice, nor does any run of them that
+// starts a chain: the puts stay.
+// CHECK-LABEL: func.func @not_a_lattice
+// CHECK-COUNT-3: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @not_a_lattice(%dyn: index) {
+    %0 = air.launch async () in () args(%d0=%dyn) : index {
+      %1 = air.segment @seg async args(%d=%d0) : index {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[128] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p2 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1, %p2]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The second put waits on a token the first does not: folding would
+// start it early. The puts stay.
+// CHECK-LABEL: func.func @extra_dependency
+// CHECK-COUNT-2: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @extra_dependency(%dyn: index) {
+    %0 = air.launch async () in () args(%d0=%dyn) : index {
+      %1 = air.segment @seg async args(%d=%d0) : index {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %t1 = air.wait_all async
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0, %t1] @chan[%c0, %c1] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The first put's token is used before the chain ends: the folded put's
+// token would not dominate that use. The puts stay.
+// CHECK-LABEL: func.func @token_used_inside_chain
+// CHECK-COUNT-2: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @token_used_inside_chain(%dyn: index) {
+    %0 = air.launch async () in () args(%d0=%dyn) : index {
+      %1 = air.segment @seg async args(%d=%d0) : index {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %e = air.wait_all async [%p0]
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%e, %p1]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The buffer is filled in two halves: its puts stay one per slot.
+// CHECK-LABEL: func.func @filled_by_slots
+// CHECK-COUNT-3: air.channel.put async {{.*}}@chan[%c0{{.*}}, %c1{{.*}}]
+module {
+  air.channel @chan [1, 4]
+  func.func @filled_by_slots(%dyn: index) {
+    %0 = air.launch async () in () args(%d0=%dyn) : index {
+      %1 = air.segment @seg async args(%d=%d0) : index {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %g0 = air.channel.get async [%t0] @chan[%c0, %c0] (%buf[0] [128] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %g1 = air.channel.get async [%g0] @chan[%c0, %c0] (%buf[128] [128] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p0 = air.channel.put async [%g1] @chan[%c0, %c1] (%buf[0] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%g1] @chan[%c0, %c1] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p2 = air.channel.put async [%g1] @chan[%c0, %c1] (%buf[128] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1, %p2]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A dynamic offset: the puts stay.
+// CHECK-LABEL: func.func @dynamic_offset
+// CHECK-COUNT-2: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @dynamic_offset(%dyn: index) {
+    %0 = air.launch async () in () args(%d0=%dyn) : index {
+      %1 = air.segment @seg async args(%d=%d0) : index {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[%d] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Two chains on different channel indices, interleaved: each folds on its
+// own.
+// CHECK-LABEL: func.func @interleaved_chains
+// CHECK-DAG: air.channel.put async {{.*}}@chan[%c0{{.*}}, %c1{{.*}}] (%{{.*}}[%c0{{.*}}] [%c192{{.*}}] [%c1{{.*}}])
+// CHECK-DAG: air.channel.put async {{.*}}@chan[%c0{{.*}}, %c2{{.*}}] (%{{.*}}[%c32{{.*}}] [%c192{{.*}}] [%c1{{.*}}])
+// CHECK-NOT: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @interleaved_chains(%dyn: index) {
+    %0 = air.launch async () in () args(%d0=%dyn) : index {
+      %1 = air.segment @seg async args(%d=%d0) : index {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %q0 = air.channel.put async [%t0] @chan[%c0, %c2] (%buf[32] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %q1 = air.channel.put async [%t0] @chan[%c0, %c2] (%buf[96] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p2 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[128] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %q2 = air.channel.put async [%t0] @chan[%c0, %c2] (%buf[160] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1, %p2, %q0, %q1, %q2]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Folding would give a put with more dims than a BD has: the puts stay.
+// CHECK-LABEL: func.func @too_many_dims
+// CHECK-COUNT-4: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @too_many_dims(%dyn: index) {
+    %0 = air.launch async () in () args(%d0=%dyn) : index {
+      %1 = air.segment @seg async args(%d=%d0) : index {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %t0, %buf = air.execute -> (memref<2x4x8x8xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<2x4x8x8xbf16, 1 : i32>
+          air.execute_terminator %a : memref<2x4x8x8xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0, 0, 0, 0] [2, 2, 2, 8] [256, 64, 8, 1]) : (memref<2x4x8x8xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0, 2, 0, 0] [2, 2, 2, 8] [256, 64, 8, 1]) : (memref<2x4x8x8xbf16, 1 : i32>)
+        %p2 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0, 0, 2, 0] [2, 2, 2, 8] [256, 64, 8, 1]) : (memref<2x4x8x8xbf16, 1 : i32>)
+        %p3 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0, 2, 2, 0] [2, 2, 2, 8] [256, 64, 8, 1]) : (memref<2x4x8x8xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1, %p2, %p3]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A re-fed buffer: its count is tied to its drain ops, so its puts stay.
+// CHECK-LABEL: func.func @refed_buffer
+// CHECK-COUNT-3: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @refed_buffer() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() {air.refeed_count = 2 : i32} : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p2 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[128] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1, %p2]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A re-fed put is not folded; the two puts after it, neither re-fed, still
+// fold.
+// CHECK-LABEL: func.func @refed_put
+// CHECK: air.channel.put async {{.*}} {air.refeed_count = 2 : i32}
+// CHECK: air.channel.put async {{.*}}[%c64{{.*}}] [%c128{{.*}}] [%c1{{.*}}]
+// CHECK-NOT: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @refed_put() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0] [64] [1]) {air.refeed_count = 2 : i32} : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p2 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[128] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1, %p2]
+      }
+    }
+    return
+  }
+}

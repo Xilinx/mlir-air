@@ -9360,17 +9360,8 @@ private:
 // A pass which performs a series of scf.for loop splitting, fusion and
 // specialization, with the goal of generating efficient memtile dma block
 // descriptors (BD).
-// A memtile put's chain: consecutive puts of one L2 buffer on one channel
-// (a FIFO, so they go out back to back), with the same static sizes and
-// strides and nothing to wait for that the first does not, whose offsets
-// form a lattice (o0 + a * s1 + b * s2, in order, s1 and s2 positive), of a
-// buffer filled whole. They are the one put with the lattice as its outer
-// dims: the same data in the same order, in one BD rather than one per put.
-// Such chains come from unrolled loops and from channels merged by
-// air-fuse-channels.
-
-// The put's static pattern: offsets, sizes, strides; empty if any is
-// dynamic or the put sends the whole buffer.
+// Returns the static offsets, sizes and strides of `put`. Fails if any of
+// them is dynamic or if the put has no explicit access pattern.
 static bool getStaticPattern(air::ChannelPutOp put,
                              SmallVector<int64_t> &offsets,
                              SmallVector<int64_t> &sizes,
@@ -9392,15 +9383,27 @@ static bool getStaticPattern(air::ChannelPutOp put,
          sizes.size() == strides.size();
 }
 
+// Returns true if `put`, or the L2 buffer it reads, is re-fed: a count-free
+// chain sends it several times per fill, and the count is tied to the number
+// of drain ops on the buffer.
+static bool isRefed(air::ChannelPutOp put) {
+  if (air::getRefeedCount(cast<air::ChannelInterface>(put.getOperation())) > 1)
+    return true;
+  Operation *def = put.getSrc().getDefiningOp();
+  if (auto exec = dyn_cast_if_present<air::ExecuteOp>(def))
+    def = exec.getChildOps().empty() ? nullptr : &exec.getChildOps().front();
+  return def && air::getRefeedCount(def) > 1;
+}
+
 static bool isL2Put(air::ChannelPutOp put) {
   auto ty = dyn_cast<MemRefType>(put.getSrc().getType());
   return ty && ty.getMemorySpaceAsInt() == (int)air::MemorySpace::L2;
 }
 
-// The next put of the chain: the next put in the block on the same
-// channel and indices (a channel is a FIFO, so it goes out next), of the
-// same buffer with the same sizes and strides, depending only on what the
-// chain's first put does or on `put`.
+// Returns the put that follows `put` in the chain started by `first`, or
+// null. It must be the next put in the block on the same channel and
+// indices, read the same buffer with the same sizes and strides, and depend
+// only on `put` or on dependencies of `first`.
 static air::ChannelPutOp nextInChain(air::ChannelPutOp put,
                                      air::ChannelPutOp first,
                                      ArrayRef<int64_t> sizes,
@@ -9414,7 +9417,7 @@ static air::ChannelPutOp nextInChain(air::ChannelPutOp put,
       next = p;
   }
   if (!next || !next.getAsyncToken() || next.getSrc() != first.getSrc() ||
-      next.getDest() || !isL2Put(next))
+      next.getDest() || !isL2Put(next) || isRefed(next))
     return nullptr;
   SmallVector<int64_t> o, sz, st;
   if (!getStaticPattern(next, o, sz, st) || sz != sizes || st != strides)
@@ -9426,8 +9429,9 @@ static air::ChannelPutOp nextInChain(air::ChannelPutOp put,
   return next;
 }
 
-// n offsets as o0 + a * s1 + b * s2 (i = a * n2 + b), outermost first;
-// one dim if the steps are all equal.
+// Writes `lin` as lin[0] + a * steps[0] + b * steps[1] with
+// i = a * dims[1] + b, or as lin[0] + i * steps[0] if the step is uniform.
+// Steps must be positive.
 static bool findLattice(ArrayRef<int64_t> lin, SmallVector<int64_t> &dims,
                         SmallVector<int64_t> &steps) {
   int64_t n = lin.size();
@@ -9458,8 +9462,9 @@ static bool findLattice(ArrayRef<int64_t> lin, SmallVector<int64_t> &dims,
   return false;
 }
 
-// Whether the buffer is only ever filled whole. One filled a slot at a time
-// keeps a drain BD per slot, so a drained slot refills while the rest drain.
+// Returns true if every get into `buf` writes the whole buffer. A buffer
+// filled slot by slot keeps one put per slot so that each slot can be
+// refilled as soon as it is drained.
 static bool isFilledWhole(Value buf) {
   for (Operation *user : buf.getUsers()) {
     auto get = dyn_cast<air::ChannelGetOp>(user);
@@ -9470,10 +9475,13 @@ static bool isFilledWhole(Value buf) {
   return true;
 }
 
+// Folds the chain of puts starting at `first` into a single put whose outer
+// dims step through the chain's start offsets. The folded put sends the same
+// data in the same order with one BD instead of one per put.
 static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
                              llvm::DenseSet<Operation *> &erased) {
   if (!first.getAsyncToken() || first.getDest() || !isL2Put(first) ||
-      !isFilledWhole(first.getSrc()))
+      isRefed(first) || !isFilledWhole(first.getSrc()))
     return;
   SmallVector<int64_t> offsets, sizes, strides;
   if (!getStaticPattern(first, offsets, sizes, strides))
@@ -9483,8 +9491,8 @@ static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
     chain.push_back(next);
   if (chain.size() < 2)
     return;
-  // Each put's token must be used only by the next put or after the
-  // chain, where the folded put's token stands in for it.
+  // The folded put replaces every token of the chain, so a token other than
+  // the last may only be used by the next put or by ops after the chain.
   Operation *last = chain.back();
   for (size_t i = 0; i + 1 < chain.size(); i++)
     for (Operation *user : chain[i].getAsyncToken().getUsers()) {
@@ -9504,8 +9512,7 @@ static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
   SmallVector<int64_t> dims, steps;
   if (!findLattice(lin, dims, steps))
     return;
-  // Unit dims only offset the pattern: with a unit-stride innermost dim,
-  // their offset moves there and they go.
+  // Drop unit dims, adding their offsets to the innermost offset.
   if (strides.back() == 1) {
     SmallVector<int64_t> o, sz, st;
     int64_t extra = 0;
@@ -9558,6 +9565,7 @@ static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
   }
 }
 
+// Folds, in program order, every chain of puts of an L2 buffer in `region`.
 static void foldL2ChannelPutChains(Region *region, const DmaBdLimits &limits) {
   SmallVector<air::ChannelPutOp> puts;
   region->walk([&](air::ChannelPutOp put) { puts.push_back(put); });
