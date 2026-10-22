@@ -77,7 +77,7 @@ def op_name(op, shape):
 
 def ops(spec):
     """(op, shape) of every op of the spec's device."""
-    out = [("g", s) for s in spec.gemm_shapes()]
+    out = [("g", (*s, p)) for s in spec.gemm_shapes() for p in (0, 1)]
     out += [(a, p) for a in D.attn_ops(spec.CFG) for p in spec.ATTN_POINTS.values()]
     return out
 
@@ -316,7 +316,7 @@ def main(spec_name, argv=None):
         digests = dict(ex.map(_compile, todo))
     heads = spec.ATTN_POINTS["base"][0]
     manifest = dict(
-        gemm=[op_name("g", s) for s in spec.gemm_shapes()],
+        gemm=[op_name("g", s) for op, s in ops(spec) if op == "g"],
         attn={a: seq_name(a, (heads,)) for a in D.attn_ops(spec.CFG)},
         heads=heads,
         lm="lm" if hasattr(spec, "lm_build") else None,

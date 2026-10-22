@@ -172,7 +172,7 @@ class FusedPrefill(Engine):
         tbl = tbl.reshape(n, gw.NUM_LAYERS, gw.PLI_D) * gw.PLE_EMBED_SCALE
         self.kv = {}
         x = np.array(emb, np.float32, order="C")
-        chunks = [(r0, min(D.M, n - r0)) for r0 in range(0, n, D.M)]
+        chunks = self.chunk_rows(n)
         pend = []
         for c, (r0, t) in enumerate(chunks):
             self._tile(x[r0 : r0 + t], gw.D, c)
