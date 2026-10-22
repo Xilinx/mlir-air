@@ -13,4 +13,6 @@ def rope_row(position, role):
     return generate_rope_lut(position)
 
 
+# Decoder-only callers have not imported the native prefill runner yet.
+sys.path.insert(0, str(HERE.parents[1] / "qwen3_4b"))
 from qwen3_4b_weights import LayerWeights as PrefillLayer

@@ -1,5 +1,20 @@
 # Local qualification
 
+## Upstream main compatibility
+
+The submission was rebuilt against upstream `a3946071` using unchanged tool
+dependency versions. Actual compile, verify and profile LIT pass. All recorded
+target/drafter call hashes at the six KV lengths below match the retained
+qualification, as do the 32-token loop, its 14 committed-KV checks and both
+NPU/HF model captures. The compiler suite passes 660 MLIR tests and three C++
+tests; the shared host LIT also passes. These are local self-validation results.
+Fresh one-layer Qwen3-8B target/drafter regressions pass 70/80 state checks at
+KV lengths 0, 7, 16, 64 and 248 after an explicit standalone weight import fix.
+
+The model, kernel and runtime sources are unchanged from the measured version.
+The Full20 table below retains its original compiler identity; it was not
+remeasured for this submission.
+
 ## FIFO refeed compiler qualification
 
 The retained Full20 measurement uses FIFO BD-chain ordering from AIR PR #2152
