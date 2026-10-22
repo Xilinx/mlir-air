@@ -3,7 +3,7 @@
 #include "fused_decode/kernels/proj_qmm.cc"
 #include "q4k_batch.h"
 
-static_assert(PROJ_MM_BATCH == 8);
+static_assert(PROJ_MM_BATCH == 8 || PROJ_MM_BATCH == 16);
 
 extern "C" {
 void proj_qmm_mm_zero(float *__restrict acc, int arm) {
@@ -17,7 +17,11 @@ void proj_qmm_mm_acc(bf16 *__restrict x, bf16 *__restrict packed,
   aie_round_nearest_even();
   q4k_unpack_block<Q4NX_ROW_BLOCK_SIZE, Q4NX_COL_BLOCK_SIZE>(
       reinterpret_cast<const q4k_block_t *>(packed), scratch);
+#if PROJ_MM_BATCH == 16
+  q4k_mmul_b16_2x2<Q4NX_ROW_BLOCK_SIZE, Q4NX_COL_BLOCK_SIZE>(x, scratch, acc);
+#else
   q4k_mmul_small<Q4NX_ROW_BLOCK_SIZE, Q4NX_COL_BLOCK_SIZE, 8>(x, scratch, acc);
+#endif
 }
 
 } // extern "C"

@@ -13,9 +13,11 @@ BATCH = 8
 from model_spec import TARGET_LAYERS, DRAFT_LAYERS
 
 
-def selected_config(role: str) -> TargetConfig:
+def selected_config(role: str, block_size: int = BATCH) -> TargetConfig:
     if role not in ("target", "drafter"):
         raise ValueError("role must be target or drafter")
+    if block_size != BATCH:
+        raise ValueError(f"Only B{BATCH} is selected for this model")
     return TargetConfig(
         role=role,
         capacity=CAPACITY,

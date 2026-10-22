@@ -6,4 +6,4 @@ from dflash_model import MODEL
 from common.profile import main
 
 if __name__ == "__main__":
-    main(MODEL, "qwen3_4b_dflash_b8")
+    main(MODEL, "qwen3_4b_dflash")

@@ -44,6 +44,7 @@ def build_identity(kind, model_dir):
                 "target_config.py",
                 "batch_graph.py",
                 "owner_graph.py",
+                "b16_owners.py",
                 "selected_config.py",
             )
         ]

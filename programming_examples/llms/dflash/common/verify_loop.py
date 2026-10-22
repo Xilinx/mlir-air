@@ -52,8 +52,6 @@ def main(model: DFlashModel) -> None:
     result = {"passed": False}
 
     tokenizer, input_ids = tokenize_prompt(model, args.prompt, args.tokenizer_model)
-    if len(input_ids) + args.tokens - 1 + 8 > 4096:
-        raise ValueError("Prompt plus verification output exceed C4096")
     if args.prefill == "npu":
         loop, engine = load_pipeline(
             model,
@@ -76,6 +74,9 @@ def main(model: DFlashModel) -> None:
             draft_cache=args.draft_cache,
             draft_snapshot=args.draft_snapshot,
         )
+    if len(input_ids) + args.tokens - 1 + loop.batch > loop.capacity:
+        raise ValueError("Prompt plus verification output exceed KV capacity")
+    result["block_size"] = loop.batch
     if args.prefill == "npu":
         prefill, prefill_seconds = engine.prepare(input_ids)
         repeated, _ = engine.prepare(input_ids)
@@ -159,7 +160,7 @@ def main(model: DFlashModel) -> None:
         prefill_seconds=prefill_seconds,
         cpu_prefill_seconds=prefill_seconds if args.prefill == "cpu" else None,
         dflash_repeats_exact=True,
-        same_b8_oracle_output_exact=True,
+        same_block_oracle_output_exact=True,
         committed_target_kv_exact=True,
         checked_rounds=len(first.rounds),
         round_kv_checks=round_kv_checks,

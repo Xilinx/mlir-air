@@ -52,6 +52,7 @@ def main(
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--role", choices=("target", "drafter"), default="target")
     ap.add_argument("--capacity", type=int, default=4096)
+    ap.add_argument("--block-size", type=int, choices=(8, 16), default=8)
     ap.add_argument(
         "--layers", type=int, help="Reduced layer count for focused validation"
     )
@@ -61,7 +62,7 @@ def main(
         help="Reuse matching target objects for the drafter",
     )
     args = ap.parse_args()
-    cfg = selected_config(args.role)
+    cfg = selected_config(args.role, args.block_size)
     cfg = replace(cfg, capacity=args.capacity, layers=args.layers or cfg.layers)
     dest = args.output.resolve()
     identity = build_identity("decoder", HERE)
@@ -153,7 +154,7 @@ def main(
     ]
     flags += [
         "-DATTN_NORM_VECTOR",
-        "-DPROJ_MM_BATCH=8",
+        f"-DPROJ_MM_BATCH={cfg.batch}",
         "-DDECODE_ROUND_NEAREST",
         "-DATTN_QUERY_TILE=4",
         "-DATTN_NATIVE_KEY=" + str(int(cfg.attention_native_key)),
@@ -199,6 +200,8 @@ def main(
             )
             if name == "norm_cache":
                 src = COMMON / "kernels/norm_cache.cc"
+            if name == "rms_residual" and cfg.batch == 16:
+                src = COMMON / "kernels/rms_b16.cc"
             attn = name.startswith("attn_")
             out = objdir / (name + (".ll" if attn else ".o"))
             cmd = [str(clang), *flags, "-O1" if attn else "-O2"]
@@ -240,7 +243,8 @@ def main(
                 kernel_name="MLIR_AIE",
                 stack_size=cfg.stack_bytes,
                 omit_pingpong="" if cfg.l2_pingpong else "L2",
-                use_lock_race_condition_fix_v2=True,
+                use_lock_race_condition_fix_v2=cfg.batch == 8,
+                use_lock_race_condition_fix_auto=True if cfg.batch == 16 else None,
                 coalesce_shim_dma=bool(fd.COALESCE),
                 emit_txn_cpp=cfg.dynamic_context,
                 target_device="npu2",

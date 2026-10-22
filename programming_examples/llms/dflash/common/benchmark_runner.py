@@ -20,6 +20,7 @@ def aggregate(rows):
     seconds = sum(r["seconds"] for r in rows)
     official = sum(r["official_seconds"] for r in rows)
     rounds = sum(r["rounds"] for r in rows)
+    proposed = sum(r["proposed_drafts"] for r in rows)
     return dict(
         requests=len(rows),
         emitted=emitted,
@@ -30,7 +31,7 @@ def aggregate(rows):
         / len(rows),
         emitted_per_round=emitted / rounds if rounds else None,
         acceptance_rate=(
-            sum(r["accepted_drafts"] for r in rows) / (7 * rounds) if rounds else None
+            sum(r["accepted_drafts"] for r in rows) / proposed if proposed else None
         ),
     )
 
@@ -75,7 +76,11 @@ def main(
         },
         max_new_tokens=a.tokens,
         per_dataset=a.per_dataset,
-        batch=8 if a.engine == "dflash" else 1,
+        batch=(
+            json.loads((a.target / "manifest.json").read_text())["config"]["batch"]
+            if a.engine == "dflash"
+            else 1
+        ),
         engine=a.engine,
         thinking=False,
         temperature=0,
@@ -154,9 +159,12 @@ def main(
                 seconds=g.wall_seconds,
                 official_seconds=g.official_seconds,
                 initial_draft_seconds=g.initial_draft_seconds,
-                tokens_per_second=emitted / g.wall_seconds if g.wall_seconds else None,
+                tokens_per_second=(
+                    emitted / g.wall_seconds if g.wall_seconds else None
+                ),
                 emitted_per_round=emitted / nr if nr else None,
                 accepted_drafts=sum(r["accepted_drafts"] for r in g.rounds),
+                proposed_drafts=sum(r["proposed"] for r in g.rounds),
                 stages=g.stages,
                 trace=g.rounds,
                 output_ids=g.output_ids,

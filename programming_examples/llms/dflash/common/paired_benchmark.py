@@ -86,8 +86,11 @@ def main(*, model, model_dir, verify_inputs):
             acceptance_rate=spec["acceptance_rate"],
         )
 
+    batch = results["dflash"]["batch"]
+    model = model.rsplit("_b", 1)[0] + f"_b{batch}"
     result = dict(
         model=model,
+        block_size=batch,
         status="completed",
         requests_per_engine=requests,
         samples_per_dataset=a.per_dataset,

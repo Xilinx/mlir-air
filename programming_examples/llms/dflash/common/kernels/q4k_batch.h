@@ -104,3 +104,35 @@ static inline void q4k_mmul_small(const bf16 *__restrict pA,
     aie::store_v(q + 3 * MMUL::size_C, C3.template to_vector<float>());
   }
 }
+
+// Two eight-row token groups share each dequantized weight block.
+template <int MROWS, int KCOL>
+static inline void q4k_mmul_b16_2x2(const bf16 *__restrict a,
+                                    const bf16 *__restrict b,
+                                    float *__restrict c) {
+  static_assert(MROWS % 16 == 0 && KCOL % 8 == 0);
+  using MM = aie::mmul<8, 8, 8, bf16, bf16, accauto>;
+
+  constexpr int nk = KCOL / 8;
+  for (int col = 0; col < MROWS / 8; col += 2) {
+    float *cp = c + col * 128;
+    MM c00(aie::load_v<64>(cp)), c10(aie::load_v<64>(cp + 64));
+    MM c01(aie::load_v<64>(cp + 128)), c11(aie::load_v<64>(cp + 192));
+    AIE_PREPARE_FOR_PIPELINING
+    AIE_LOOP_RANGE(nk, nk)
+    for (int k = 0; k < nk; ++k) {
+      auto a0 = aie::load_v<64>(a + k * 128);
+      auto a1 = aie::load_v<64>(a + k * 128 + 64);
+      auto w0 = aie::load_v<64>(b + (col * nk + k) * 64);
+      auto w1 = aie::load_v<64>(b + ((col + 1) * nk + k) * 64);
+      c00.mac(a0, w0);
+      c10.mac(a1, w0);
+      c01.mac(a0, w1);
+      c11.mac(a1, w1);
+    }
+    aie::store_v(cp, c00.template to_vector<float>());
+    aie::store_v(cp + 64, c10.template to_vector<float>());
+    aie::store_v(cp + 128, c01.template to_vector<float>());
+    aie::store_v(cp + 192, c11.template to_vector<float>());
+  }
+}
