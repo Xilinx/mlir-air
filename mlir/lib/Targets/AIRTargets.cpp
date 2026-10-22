@@ -9,12 +9,6 @@
 #include "AIRTargets.h"
 
 #include "air/Dialect/AIR/AIRDialect.h"
-#include "air/Dialect/AIRRt/AIRRtDialect.h"
-#include "air/Dialect/AIRRt/AIRRtOps.h"
-
-#if AIR_ENABLE_AIE
-#include "aie/Dialect/AIE/IR/AIEDialect.h"
-#endif
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -36,7 +30,6 @@
 #include "mlir/Transforms/Passes.h"
 
 #include "llvm/IR/Module.h"
-#include "llvm/Support/JSON.h"
 #include "llvm/Support/TargetSelect.h"
 
 using namespace mlir;
@@ -55,76 +48,10 @@ static llvm::cl::opt<int>
                 llvm::cl::desc("Number of columns of AIEs in the grid"),
                 llvm::cl::init(0));
 
-llvm::json::Value attrToJSON(Attribute &attr) {
-  if (auto a = llvm::dyn_cast_if_present<StringAttr>(attr)) {
-    return llvm::json::Value(a.getValue().str());
-  } else if (auto array_attr = llvm::dyn_cast_if_present<ArrayAttr>(attr)) {
-    llvm::json::Array arrayJSON;
-    for (auto a : array_attr)
-      arrayJSON.push_back(attrToJSON(a));
-    return llvm::json::Value(std::move(arrayJSON));
-  } else if (auto dict_attr = llvm::dyn_cast_if_present<DictionaryAttr>(attr)) {
-    llvm::json::Object dictJSON;
-    for (auto a : dict_attr) {
-      auto ident = a.getName();
-      auto attr = a.getValue();
-      dictJSON[ident.str()] = attrToJSON(attr);
-    }
-    return llvm::json::Value(std::move(dictJSON));
-  } else if (auto int_attr = llvm::dyn_cast_if_present<IntegerAttr>(attr)) {
-    return llvm::json::Value(int_attr.getInt());
-  } else
-    return llvm::json::Value(std::string(""));
-}
 } // namespace
 
 void registerAIRRtTranslations() {
 
-  TranslateFromMLIRRegistration registrationMMap(
-      "airrt-generate-json", "Transform airrt metadata to JSON",
-      [](ModuleOp module, raw_ostream &output) {
-        llvm::json::Object moduleJSON;
-        for (auto module_meta : module.getOps<airrt::ModuleMetadataOp>()) {
-          llvm::json::Object segmentJSON;
-          for (auto segment_meta :
-               module_meta.getOps<airrt::SegmentMetadataOp>()) {
-            for (auto herd_meta :
-                 segment_meta.getOps<airrt::HerdMetadataOp>()) {
-              llvm::json::Object herdJSON;
-              for (auto a : herd_meta->getAttrs()) {
-                auto ident = a.getName();
-                auto attr = a.getValue();
-                herdJSON[ident.str()] = attrToJSON(attr);
-              }
-              segmentJSON[herd_meta.getSymName()] =
-                  llvm::json::Value(std::move(herdJSON));
-            }
-            for (auto a : segment_meta->getAttrs()) {
-              auto ident = a.getName();
-              auto attr = a.getValue();
-              segmentJSON[ident.str()] = attrToJSON(attr);
-            }
-            moduleJSON[segment_meta.getSymName()] =
-                llvm::json::Value(std::move(segmentJSON));
-          }
-        }
-        llvm::json::Value topv(std::move(moduleJSON));
-        std::string ret;
-        llvm::raw_string_ostream ss(ret);
-        ss << llvm::formatv("{0:2}", topv) << "\n";
-        output << ss.str();
-        return success();
-      },
-      [](DialectRegistry &registry) {
-        registry.insert<xilinx::air::airDialect, xilinx::airrt::AIRRtDialect,
-                        func::FuncDialect, cf::ControlFlowDialect,
-                        arith::ArithDialect, memref::MemRefDialect,
-                        vector::VectorDialect, LLVM::LLVMDialect,
-                        scf::SCFDialect, affine::AffineDialect>();
-#if AIR_ENABLE_AIE
-        registry.insert<xilinx::AIE::AIEDialect>();
-#endif
-      });
   TranslateFromMLIRRegistration registrationXJSON(
       "air-herds-to-json", "Transform herd information to JSON",
       [](ModuleOp module, raw_ostream &output) {
