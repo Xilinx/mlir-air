@@ -1535,17 +1535,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#-airrt-to-llvm" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -airrt-to-llvm
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#-airrt-to-npu" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2037,17 +2026,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#-airrt-to-llvm" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -airrt-to-llvm
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#-airrt-to-npu" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2325,14 +2303,6 @@ it wraps all existing operations.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>-loop-bounds  : Specify upper bounds for scf.parallel loops
 <a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>-actual-sizes : Actual data sizes per launch dimension (for DMA padding). Attached as 'air.actual_sizes' on the created loop.
 </code></pre></div>
-<h3 id="-airrt-to-llvm"><code>-airrt-to-llvm</code><a class="headerlink" href="#-airrt-to-llvm" title="Permanent link">&para;</a></h3>
-<p><em>Lower AIRRt dialect to LLVM dialect</em></p>
-<p>This pass lowers AIRRt dialect to function calls and data structures
-matching those found in air_host.h.</p>
-<p>AIRRt static metadata is transformed to LLVM dialect data structures.
-The data is generated as a number of globals with external linkage.
-The data layout is closely tied the AIR runtime and the definitions in
-air_host.h.  Any changes to this pass must be reflected there.</p>
 <h3 id="-airrt-to-npu"><code>-airrt-to-npu</code><a class="headerlink" href="#-airrt-to-npu" title="Permanent link">&para;</a></h3>
 <p><em>Lower AIRRt dialect to AIEX.npu dialect</em></p>
 <p>Converts the runtime program, described in AIRRt dialect, into 
