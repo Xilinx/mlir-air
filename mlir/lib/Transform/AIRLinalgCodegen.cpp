@@ -3787,7 +3787,10 @@ static bool isMultipleOf(Value v, int64_t m) {
 }
 
 // extract_slice(collapse_shape(x)) -> collapse_shape(extract_slice'(x)) when,
-// in each collapsed dim, the slice takes whole rows of the group's inner dims.
+// for each collapsed dim, the slice covers whole rows of the group's dims after
+// some dim `at` and does not cross an index boundary of the dims before `at`.
+// The new slice takes one index of each dim before `at`, a range of `at`, and
+// all of each dim after it.
 struct BubbleSliceThroughCollapse
     : public OpRewritePattern<tensor::ExtractSliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -3808,48 +3811,76 @@ struct BubbleSliceThroughCollapse
       return failure();
     if (srcType.getNumElements() == 0)
       return failure();
-    // Per group, the number of elements in its inner dims; checked for every
-    // group before any IR is created.
-    SmallVector<int64_t> inners;
+    // For each group: the position of dim `at` and the number of elements in
+    // the dims after it. All groups are checked before any IR is created.
+    SmallVector<std::pair<size_t, int64_t>> splits;
     for (auto [i, group] :
          llvm::enumerate(collapse.getReassociationIndices())) {
       OpFoldResult off = slice.getMixedOffsets()[i];
       if (!isConstantIntValue(slice.getMixedStrides()[i], 1))
         return failure();
-      int64_t inner = 1;
-      for (int64_t d : ArrayRef(group).drop_front())
-        inner *= srcType.getDimSize(d);
       auto s = getConstantIntValue(slice.getMixedSizes()[i]);
-      if (!s || *s % inner != 0 ||
-          *s / inner > srcType.getDimSize(group.front()))
+      if (!s)
         return failure();
+      // Find the outermost dim `at` such that the slice covers whole rows of
+      // the dims after it. For `at` > 0 the number of indices the slice takes
+      // in dim `at` must also divide its extent, so that an offset aligned to
+      // the slice size never crosses into the next index of the dims before
+      // it.
+      std::optional<std::pair<size_t, int64_t>> split;
+      for (size_t at = 0; at < group.size() && !split; ++at) {
+        int64_t inner = 1;
+        for (int64_t d : ArrayRef(group).drop_front(at + 1))
+          inner *= srcType.getDimSize(d);
+        int64_t dim = srcType.getDimSize(group[at]);
+        if (*s % inner != 0 || *s / inner > dim)
+          continue;
+        if (at > 0 && dim % (*s / inner) != 0)
+          continue;
+        split = {at, inner};
+      }
+      if (!split)
+        return failure();
+      int64_t step = split->first > 0 ? *s : split->second;
       if (auto c = getConstantIntValue(off)) {
-        if (*c % inner != 0)
+        if (*c % step != 0)
           return failure();
-      } else if (!isMultipleOf(cast<Value>(off), inner)) {
+      } else if (!isMultipleOf(cast<Value>(off), step)) {
         return failure();
       }
-      inners.push_back(inner);
+      splits.push_back(*split);
     }
     Location loc = slice.getLoc();
     SmallVector<OpFoldResult> offsets, sizes, strides;
     for (auto [i, group] :
          llvm::enumerate(collapse.getReassociationIndices())) {
       OpFoldResult off = slice.getMixedOffsets()[i];
-      int64_t inner = inners[i];
+      auto [at, inner] = splits[i];
       int64_t s = *getConstantIntValue(slice.getMixedSizes()[i]);
-      if (auto c = getConstantIntValue(off)) {
-        offsets.push_back(rewriter.getIndexAttr(*c / inner));
-      } else {
-        AffineExpr d0 = rewriter.getAffineDimExpr(0);
-        offsets.push_back(affine::makeComposedFoldedAffineApply(
-            rewriter, loc, d0.floorDiv(inner), {off}));
-      }
-      sizes.push_back(rewriter.getIndexAttr(s / inner));
-      strides.push_back(rewriter.getIndexAttr(1));
-      for (int64_t d : ArrayRef(group).drop_front()) {
-        offsets.push_back(rewriter.getIndexAttr(0));
-        sizes.push_back(rewriter.getIndexAttr(srcType.getDimSize(d)));
+      // Offset of dim k: the slice offset divided by the number of elements
+      // after dim k, modulo the size of dim k for all but the first dim.
+      for (size_t k = 0; k < group.size(); ++k) {
+        int64_t after = 1;
+        for (int64_t d : ArrayRef(group).drop_front(k + 1))
+          after *= srcType.getDimSize(d);
+        int64_t dim = srcType.getDimSize(group[k]);
+        if (k > at) {
+          offsets.push_back(rewriter.getIndexAttr(0));
+          sizes.push_back(rewriter.getIndexAttr(dim));
+        } else {
+          if (auto c = getConstantIntValue(off)) {
+            int64_t idx = *c / after;
+            offsets.push_back(rewriter.getIndexAttr(k ? idx % dim : idx));
+          } else {
+            AffineExpr d0 = rewriter.getAffineDimExpr(0);
+            AffineExpr e = d0.floorDiv(after);
+            if (k)
+              e = e % dim;
+            offsets.push_back(
+                affine::makeComposedFoldedAffineApply(rewriter, loc, e, {off}));
+          }
+          sizes.push_back(rewriter.getIndexAttr(k == at ? s / inner : 1));
+        }
         strides.push_back(rewriter.getIndexAttr(1));
       }
     }

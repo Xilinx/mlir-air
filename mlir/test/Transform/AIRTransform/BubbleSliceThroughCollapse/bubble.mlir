@@ -106,3 +106,178 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// Rows of 16 behind a unit dim: one index of dims 0 and 1, all of dim 2.
+// CHECK-LABEL: @inner_dim
+// CHECK: scf.for %[[I:.*]] = %c0 to %c64 step %c16
+// CHECK: %[[O:.*]] = affine.apply #{{.*}}(%[[I]])
+// CHECK: %[[P:.*]] = affine.apply #{{.*}}(%[[I]])
+// CHECK: %[[S:.*]] = tensor.extract_slice %arg0[%[[O]], %[[P]], 0] [1, 1, 16] [1, 1, 1]
+// CHECK: tensor.collapse_shape %[[S]] {{\[}}[0, 1, 2]]
+func.func @inner_dim(%t: tensor<1x4x16xf32>, %acc: tensor<16xf32>) -> tensor<16xf32> {
+  %c0 = arith.constant 0 : index
+  %step = arith.constant 16 : index
+  %ub = arith.constant 64 : index
+  %c = tensor.collapse_shape %t [[0, 1, 2]] : tensor<1x4x16xf32> into tensor<64xf32>
+  %r = scf.for %i = %c0 to %ub step %step iter_args(%a = %acc) -> tensor<16xf32> {
+    %s = tensor.extract_slice %c[%i] [16] [1] : tensor<64xf32> to tensor<16xf32>
+    %n = arith.addf %a, %s : tensor<16xf32>
+    scf.yield %n : tensor<16xf32>
+  }
+  return %r : tensor<16xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.bubble_slice_through_collapse %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// Two rows of 8 at a time from a 2x4x8 group: a range of 2 in dim 1.
+// CHECK: #[[D0:.*]] = affine_map<(d0) -> (d0 floordiv 32)>
+// CHECK: #[[D1:.*]] = affine_map<(d0) -> ((d0 floordiv 8) mod 4)>
+// CHECK: func.func @middle_dim
+// CHECK: scf.for %[[I:[^ ]+]] =
+// CHECK: %[[O:.*]] = affine.apply #[[D0]](%[[I]])
+// CHECK: %[[P:.*]] = affine.apply #[[D1]](%[[I]])
+// CHECK: %[[S:.*]] = tensor.extract_slice %arg0[%[[O]], %[[P]], 0] [1, 2, 8] [1, 1, 1]
+// CHECK: tensor.collapse_shape %[[S]] {{\[}}[0, 1, 2]]
+func.func @middle_dim(%t: tensor<2x4x8xf32>, %acc: tensor<16xf32>) -> tensor<16xf32> {
+  %c0 = arith.constant 0 : index
+  %step = arith.constant 16 : index
+  %ub = arith.constant 64 : index
+  %c = tensor.collapse_shape %t [[0, 1, 2]] : tensor<2x4x8xf32> into tensor<64xf32>
+  %r = scf.for %i = %c0 to %ub step %step iter_args(%a = %acc) -> tensor<16xf32> {
+    %s = tensor.extract_slice %c[%i] [16] [1] : tensor<64xf32> to tensor<16xf32>
+    %n = arith.addf %a, %s : tensor<16xf32>
+    scf.yield %n : tensor<16xf32>
+  }
+  return %r : tensor<16xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.bubble_slice_through_collapse %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// Slices of 4 from a 2x4x8 group: a range of the innermost dim.
+// CHECK-LABEL: @innermost_dim
+// CHECK: %[[S:.*]] = tensor.extract_slice %arg0[%{{.*}}, %{{.*}}, %{{.*}}] [1, 1, 4] [1, 1, 1]
+// CHECK: tensor.collapse_shape %[[S]] {{\[}}[0, 1, 2]]
+func.func @innermost_dim(%t: tensor<2x4x8xf32>, %acc: tensor<4xf32>) -> tensor<4xf32> {
+  %c0 = arith.constant 0 : index
+  %step = arith.constant 4 : index
+  %ub = arith.constant 64 : index
+  %c = tensor.collapse_shape %t [[0, 1, 2]] : tensor<2x4x8xf32> into tensor<64xf32>
+  %r = scf.for %i = %c0 to %ub step %step iter_args(%a = %acc) -> tensor<4xf32> {
+    %s = tensor.extract_slice %c[%i] [4] [1] : tensor<64xf32> to tensor<4xf32>
+    %n = arith.addf %a, %s : tensor<4xf32>
+    scf.yield %n : tensor<4xf32>
+  }
+  return %r : tensor<4xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.bubble_slice_through_collapse %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// Slices of 16 from a 2x6x4 group: 16 does not divide the 6 rows of 4, so
+// a slice can cross into the next index of dim 0. Not rewritten.
+// CHECK-LABEL: @straddles_outer_index
+// CHECK: tensor.collapse_shape %arg0
+// CHECK: tensor.extract_slice %{{.*}}[%{{.*}}] [16]
+func.func @straddles_outer_index(%t: tensor<2x6x4xf32>, %acc: tensor<16xf32>) -> tensor<16xf32> {
+  %c0 = arith.constant 0 : index
+  %step = arith.constant 16 : index
+  %ub = arith.constant 48 : index
+  %c = tensor.collapse_shape %t [[0, 1, 2]] : tensor<2x6x4xf32> into tensor<48xf32>
+  %r = scf.for %i = %c0 to %ub step %step iter_args(%a = %acc) -> tensor<16xf32> {
+    %s = tensor.extract_slice %c[%i] [16] [1] : tensor<48xf32> to tensor<16xf32>
+    %n = arith.addf %a, %s : tensor<16xf32>
+    scf.yield %n : tensor<16xf32>
+  }
+  return %r : tensor<16xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.bubble_slice_through_collapse %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// Slices of 16 at a step of 8: the offset is not a multiple of 16. Not
+// rewritten.
+// CHECK-LABEL: @inner_offset_unaligned
+// CHECK: tensor.collapse_shape %arg0
+// CHECK: tensor.extract_slice %{{.*}}[%{{.*}}] [16]
+func.func @inner_offset_unaligned(%t: tensor<1x4x16xf32>, %acc: tensor<16xf32>) -> tensor<16xf32> {
+  %c0 = arith.constant 0 : index
+  %step = arith.constant 8 : index
+  %ub = arith.constant 48 : index
+  %c = tensor.collapse_shape %t [[0, 1, 2]] : tensor<1x4x16xf32> into tensor<64xf32>
+  %r = scf.for %i = %c0 to %ub step %step iter_args(%a = %acc) -> tensor<16xf32> {
+    %s = tensor.extract_slice %c[%i] [16] [1] : tensor<64xf32> to tensor<16xf32>
+    %n = arith.addf %a, %s : tensor<16xf32>
+    scf.yield %n : tensor<16xf32>
+  }
+  return %r : tensor<16xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.bubble_slice_through_collapse %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// A dynamic offset in the first group and a constant one in the second: 24
+// into a 2x2x8 group is index 1 of dim 0 and index 1 of dim 1.
+// CHECK-LABEL: @constant_offset_inner
+// CHECK: scf.for %[[I:[^ ]+]] =
+// CHECK: %[[O:.*]] = affine.apply #{{.*}}(%[[I]])
+// CHECK: %[[S:.*]] = tensor.extract_slice %arg0[%[[O]], 0, 1, 1, 0] [1, 8, 1, 1, 8] [1, 1, 1, 1, 1]
+// CHECK: tensor.collapse_shape %[[S]] {{\[}}[0, 1], [2, 3, 4]]
+func.func @constant_offset_inner(%t: tensor<4x8x2x2x8xf32>, %acc: tensor<8x8xf32>) -> tensor<8x8xf32> {
+  %c0 = arith.constant 0 : index
+  %c8 = arith.constant 8 : index
+  %c32 = arith.constant 32 : index
+  %c = tensor.collapse_shape %t [[0, 1], [2, 3, 4]] : tensor<4x8x2x2x8xf32> into tensor<32x32xf32>
+  %r = scf.for %i = %c0 to %c32 step %c8 iter_args(%a = %acc) -> tensor<8x8xf32> {
+    %s = tensor.extract_slice %c[%i, 24] [8, 8] [1, 1] : tensor<32x32xf32> to tensor<8x8xf32>
+    %n = arith.addf %a, %s : tensor<8x8xf32>
+    scf.yield %n : tensor<8x8xf32>
+  }
+  return %r : tensor<8x8xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.bubble_slice_through_collapse %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
