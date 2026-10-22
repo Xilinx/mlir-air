@@ -1,5 +1,29 @@
 # Local qualification
 
+## FIFO refeed compiler qualification
+
+The current branch replaces the initial separate-channel allocator workaround
+with FIFO BD-chain ordering from AIR PR #2152 (`51e0f801`), on upstream
+`9748ba54`. MLIR-AIE, Peano, host MLIR and XRT versions remain unchanged.
+Fresh target, drafter, NPU prepass and prefill builds pass the actual compile
+LIT. The actual verify LIT passes: six-prefix state/repeatability/visibility
+checks, exact DFlash same-B8 oracle and per-round committed KV, and two
+32-token NPU/HF captures with the upstream mutual top-5 comparison.
+
+All recorded logits/hidden/KV hashes in the six-prefix target/drafter tests
+match the retained pre-migration results. This is scoped to those calls; the
+HF comparator checks the common prefix and mutual top-5 at first divergence.
+The replay stream is O^8/down^8 on MemTile5 MM2S0. Its even/odd BD pools use
+22/24 and 5/24 descriptors at AIR-to-AIE output, and the complete programs
+compile and execute successfully. Compiler tests pass (657 MLIR, three C++),
+as do both NPU refeed-order test modes with dependent and independent producers.
+These are local self-validation results on Ryzen AI 9 HX 370 NPU2.
+
+The previous performance measurements below use the initial compiler.
+Full20 performance is being remeasured with the FIFO-chain compiler.
+
+## Initial qualification
+
 Qualified on October 21, 2026, on a Ryzen AI 9 HX 370 NPU2 with 96 GB unified
 memory. The execution source is `04bc59309efd761171ebfe3d641f861499acc360`, based
 on upstream `7e9ec2b2` and the compiler change described in [compatibility](compatibility.md).

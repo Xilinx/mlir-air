@@ -1,7 +1,8 @@
 # Upstream compatibility
 
 The example uses the normal AIR build and XRTBackend flows. The qualification
-base is upstream `7e9ec2b2c19e34907cf1cb54c516be73d1ef96c1`, with its dependency pins:
+base is upstream `9748ba54`, with FIFO replay ordering from #2152 (`51e0f801`).
+The dependency pins are unchanged:
 
 | Dependency | Version |
 |---|---|
