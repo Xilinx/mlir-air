@@ -1894,7 +1894,7 @@ public:
     auto seq = AIE::RuntimeSequenceOp::create(
         rewriter, op->getLoc(), op.getSymNameAttr(),
         /*emit_parameter_sync_preamble=*/nullptr, /*trace_buffer=*/nullptr,
-        /*trace_slices=*/nullptr);
+        /*trace_slices=*/nullptr, /*scratchpad_parameters=*/nullptr);
     seq.getBody().push_back(new Block);
 
     // Add and remap the arguments
@@ -2085,7 +2085,7 @@ AIE::DeviceOp createMainDeviceWrapper(
   auto mainSeq = AIE::RuntimeSequenceOp::create(
       builder, loc, builder.getStringAttr(mainSeqName.str()),
       /*emit_parameter_sync_preamble=*/nullptr, /*trace_buffer=*/nullptr,
-      /*trace_slices=*/nullptr);
+      /*trace_slices=*/nullptr, /*scratchpad_parameters=*/nullptr);
   mainSeq.getBody().push_back(new Block);
 
   // Add arguments to runtime_sequence based on first device's signature
