@@ -1,15 +1,16 @@
 # Upstream compatibility
 
-This example is based on upstream MLIR-AIR commit
-`4bf1d78ff1ab2addd000452b29b37d3c1eb8672f` (October 17, 2026). It uses the
-normal AIR environment and its pinned dependencies. The accompanying compiler
-fixes must be built into AIR before compiling this example.
+The B16 addition is based on upstream MLIR-AIR commit
+`3a6e98644aa9f2e5c8f7403b530d3aabadbe3818` (October 22, 2026), which already
+includes all three B8 model examples and their compiler prerequisites. B16
+uses the normal AIR environment and adds no compiler changes. Both block
+sizes use the same pinned checkpoints, packed caches and Python dependencies.
 
 ## Dependency versions for this integration
 
 | Dependency | Version |
 |---|---|
-| MLIR-AIE | `1.4.5.dev46+ge7048fa` |
+| MLIR-AIE | `1.4.5.dev51+ge040370` |
 | Peano / llvm-aie | `22.0.0.2026101201+83ba9ea9` |
 | Host LLVM/MLIR | `24.0.0.2026100106+bdf04ebb` |
 | `llvm-link` for inline attention | LLVM 21; upstream fused_decode requires LLVM <23 |
@@ -22,12 +23,16 @@ for this example. Check `make -C programming_examples/fused_decode preflight-llv
 when setting up the environment.
 
 `make` exports the existing `AIR_TARGET_DEVICE=npu2` option so shared prefill
-builders also work when the compilation host cannot query the device. The B8
+builders also work when the compilation host cannot query the device. The decoder
 builder explicitly selects `npu2`. Decoder builds use XRT's xclbin and generated
 transaction-header flow; the standalone prepass uses the multi-launch ELF flow.
 Both are supported upstream APIs.
 
-## Compiler changes included with the example
+## Compiler prerequisites already merged upstream
+
+The original B8 integration at `4bf1d78f` used MLIR-AIE dev46 and introduced
+the following fixes. They are part of the current upstream compiler; they are
+not additional changes in the B16 PR.
 
 | Change | Reason | Regression coverage |
 |---|---|---|
@@ -35,21 +40,21 @@ Both are supported upstream APIs.
 | Honor `air.disable_alloc_sink` on allocations / enclosing `air.execute` | Keep designated scratch storage outside the reduction loop so scratch does not prevent projection-weight ping-pong transformation. | `disable_alloc_sink.mlir` |
 | Preserve MemTile ownership during `index_switch` arm-buffer rewriting | Core relay copies and compute-tile channel pins do not apply to L2 forwarding; buffer unification must retain compatible allocation attributes, including MemTile placement. The clean build exposed invalid channel IDs and mixed packet/circuit routes. | `air_channel_index_switch_memtile.mlir`, plus the original core relay/dedication tests |
 
-These are AIR source changes, not environment-variable workarounds. Build this
-branch's AIR compiler before building DFlash. The full MLIR test suite passes
-647 tests, with 7 expected failures and 7 unsupported tests. The actual DFlash
-compile LIT completes target, drafter, prepass and prefill on these dependencies.
-Device validation and performance evidence are recorded separately in
-[validation.md](validation.md).
+That integration passed 647 MLIR tests, with 7 expected failures and 7
+unsupported tests, and its DFlash compile LIT. Those historical receipts and
+performance results remain in [validation.md](validation.md). B16's current
+validation is recorded in [b16-megakernel.md](b16-megakernel.md).
 
-This integration includes the seven upstream commits since the previous
-`25e913ff` validation. Dependency wheel pins are unchanged, but AIR is rebuilt
-and target, drafter, prepass and prefill artifacts are compiled from scratch.
-The three fixes above still apply on the new base.
+The B16 base also includes the NPU-only `aircc` cleanup (#2156). The compiler
+is rebuilt from that base before producing B16 artifacts. The shared fused
+prefill change in #2158 does not affect this example: its adapter calls
+`qwen3_4b_q4nx_prefill.Qwen3Q4nxPrefill`, which uses the native Qwen3 prefill
+builders rather than `llms/shared/fused_prefill`.
 
 Other historical DFlash-branch compiler patches are not prerequisites here:
-upstream already preserves the constant bias in dynamic DMA offsets; the B8
-mapping does not use the old B16 chain-lock annotation; current builds need no
+upstream already preserves the constant bias in dynamic DMA offsets. B8 keeps
+its existing lock selection; B16 uses upstream automatic lock selection,
+without the historical B16 chain-lock annotation. Current builds need no
 refeed routing patch or mixed-result branch-tracing patch. No generated AIE IR,
 BD assignments or routes are edited after compilation.
 

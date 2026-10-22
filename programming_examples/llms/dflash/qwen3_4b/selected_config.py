@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""The one validated NPU configuration delivered by this example."""
+"""The selected B8 and B16 NPU configurations delivered by this example."""
 
 from __future__ import annotations
 

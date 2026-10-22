@@ -7,7 +7,7 @@ B8 is the default; set `BLOCK_SIZE=16` for the two-wave B16 mapping.
 The results below describe B8. See [B16](docs/b16-megakernel.md) for its mapping
 and separately recorded qualification.
 
-**Current-base Full20 result:** 42.240 decode tokens/s versus 15.775 tokens/s
+**Recorded B8 Full20 result:** 42.240 decode tokens/s versus 15.775 tokens/s
 for B1 (**2.678×**), on HX370/NPU2 with upstream `4bf1d78f` and the included
 compiler fixes. The paired nightly study takes 13.8 minutes with cached builds;
 all 20 outputs per engine and 1,870 DFlash acceptance rounds match the preceding
@@ -27,8 +27,8 @@ control, rather than a new DFlash kernel optimization in this integration.
 
 Use the same MLIR-AIR build environment as the other `llms` examples. Source
 `utils/env_setup.sh` with your AIR, MLIR-AIE, Peano, and LLVM installations and
-source XRT's setup script. Build AIR with the accompanying compiler fixes
-before compiling this example. Install its additional Python packages:
+source XRT's setup script. Build the current upstream AIR compiler before
+compiling this example. Install its additional Python packages:
 
 ```sh
 cd programming_examples/llms/dflash/qwen3_4b
@@ -36,7 +36,7 @@ python -m pip install -r requirements.txt
 make help
 ```
 
-The checked upstream dependency versions and any required compiler changes are
+The checked upstream dependency versions and compiler history are
 listed in [compatibility.md](docs/compatibility.md). There is no DFlash-specific
 replacement toolchain or compiler downloaded by `make`.
 
