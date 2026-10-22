@@ -5324,6 +5324,8 @@ public:
           chan_merge_map[channelOps[j]] = channelOps[i];
         }
       }
+      lastMergedAfter.clear();
+      mergedClones.clear();
     }
     renameSymbols(channelOps, chan_merge_map);
     // Walk the region and mutate scf.for loop bounds based on "setLB" and
@@ -6416,6 +6418,10 @@ private:
     return aAnchor->isBeforeInBlock(bAnchor) ? 1 : -1;
   }
 
+  // For each merge destination, the last op cloned after it by a merge.
+  llvm::DenseMap<Operation *, Operation *> lastMergedAfter;
+  // Ops cloned next to a merge destination.
+  llvm::DenseSet<Operation *> mergedClones;
   // With `dryRun`, only reports whether the merge is possible.
   bool mergeChannelOps(RewriterBase &rewriter, air::ChannelInterface a,
                        air::ChannelInterface b, bool dryRun = false) {
@@ -6437,8 +6443,13 @@ private:
     IRMapping remap;
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointAfter(a);
+    // Insert b after a and after any op that earlier merges into a placed
+    // after it, so that channels merged into a keep their merge order.
+    Operation *anchor = lastMergedAfter.lookup(a);
+    rewriter.setInsertionPointAfter(anchor ? anchor : a.getOperation());
     auto new_b = air::cloneOpAndOperands(rewriter, remap, b);
+    lastMergedAfter[a] = new_b;
+    mergedClones.insert(new_b);
     if (air::isAsyncOp(a) && air::isAsyncOp(new_b)) {
       auto newWaitAll = air::WaitAllOp::create(
           rewriter, a->getLoc(), air::AsyncTokenType::get(a->getContext()),
@@ -6482,11 +6493,15 @@ private:
         a->getParentRegion()))
       bRegion = bRegion->getParentOp()->getParentRegion();
     SmallVector<air::ChannelInterface> aChanOps, bChanOps;
-    aRegion->walk([&aChanOps](air::ChannelInterface chanOp) {
-      aChanOps.push_back(chanOp);
+    // Skip ops that earlier merges cloned into either nest. They belong to
+    // other channels, so pairing them would misalign the ops of a and b.
+    aRegion->walk([&](air::ChannelInterface chanOp) {
+      if (!mergedClones.contains(chanOp))
+        aChanOps.push_back(chanOp);
     });
-    bRegion->walk([&bChanOps](air::ChannelInterface chanOp) {
-      bChanOps.push_back(chanOp);
+    bRegion->walk([&](air::ChannelInterface chanOp) {
+      if (!mergedClones.contains(chanOp))
+        bChanOps.push_back(chanOp);
     });
     if (aChanOps.size() != bChanOps.size())
       return true;
