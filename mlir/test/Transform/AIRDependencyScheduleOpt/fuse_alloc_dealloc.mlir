@@ -438,4 +438,29 @@ module {
     }
     return
   }
+
+// A herd operand list may repeat a value. Sinking the alloc rebuilds the herd,
+// so every body argument must be remapped by position, not by value: the two
+// stores below read one argument each (#2041).
+
+// CHECK-LABEL:   @func9
+// CHECK:   air.herd @herd_0 async tile ({{.*}}) in ({{.*}}) args(%[[A:.*]]=%arg0, %[[B:.*]]=%arg0) : i32, i32
+// CHECK:   memref.alloc()
+// CHECK:   memref.store %[[A]], %{{.*}}[%{{.*}}]
+// CHECK:   memref.store %[[B]], %{{.*}}[%{{.*}}]
+
+  func.func @func9(%arg0: i32) {
+    %c1 = arith.constant 1 : index
+    %async_token, %results = air.execute -> (memref<2xi32, 2 : i32>) {
+      %alloc = memref.alloc() : memref<2xi32, 2 : i32>
+      air.execute_terminator %alloc : memref<2xi32, 2 : i32>
+    }
+    %0 = air.herd @herd_0 async [%async_token] tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%buf=%results, %a=%arg0, %b=%arg0) : memref<2xi32, 2 : i32>, i32, i32 {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      memref.store %a, %buf[%c0] : memref<2xi32, 2 : i32>
+      memref.store %b, %buf[%c1_0] : memref<2xi32, 2 : i32>
+    }
+    return
+  }
 }

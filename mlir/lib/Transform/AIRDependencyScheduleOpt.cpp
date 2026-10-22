@@ -9860,7 +9860,10 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
         memref = alloc->getResult(1);
       else
         memref = dyn_cast_if_present<memref::AllocOp>(alloc).getMemref();
-      rewriter.replaceAllUsesWith(op.getTiedKernelArgument(memref), memref);
+      // By position: one value may feed several kernel operands.
+      for (unsigned i = 0; i < op.getNumKernelOperands(); i++)
+        if (op.getKernelOperand(i) == memref)
+          rewriter.replaceAllUsesWith(op.getKernelArgument(i), memref);
       // Remove alloc and dealloc results from the new herd's arg list.
       llvm::erase(kernelOpers, memref);
       if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc))
@@ -9990,9 +9993,13 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
       rewriter.replaceAllUsesWith(op.getIds()[i], newHerd.getIds()[i]);
       rewriter.replaceAllUsesWith(op.getSize()[i], newHerd.getSize()[i]);
     }
-    for (auto oper : kernelOpers)
-      rewriter.replaceAllUsesWith(op.getTiedKernelArgument(oper),
-                                  newHerd.getTiedKernelArgument(oper));
+    // Sunk memrefs were erased from kernelOpers wholesale, so the survivors
+    // keep their relative order.
+    unsigned newIdx = 0;
+    for (unsigned i = 0; i < op.getNumKernelOperands(); i++)
+      if (llvm::is_contained(kernelOpers, op.getKernelOperand(i)))
+        rewriter.replaceAllUsesWith(op.getKernelArgument(i),
+                                    newHerd.getKernelArgument(newIdx++));
     auto &bb = newHerd.getBody().front().getOperations();
     auto &body = op.getBody().front().getOperations();
     bb.splice(bb.begin(), body, body.begin(), --body.end());
