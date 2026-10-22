@@ -19,51 +19,62 @@ compile and execute successfully. Compiler tests pass (657 MLIR, three C++),
 as do both NPU refeed-order test modes with dependent and independent producers.
 These are local self-validation results on Ryzen AI 9 HX 370 NPU2.
 
-The previous performance measurements below use the initial compiler.
-Full20 performance is being remeasured with the FIFO-chain compiler.
+The measured execution source is `4b6caef7`; subsequent changes only update
+documentation. The full profile and Full20 LIT entries also pass with this
+compiler.
 
-## Initial qualification
-
-Qualified on October 21, 2026, on a Ryzen AI 9 HX 370 NPU2 with 96 GB unified
-memory. The execution source is `04bc59309efd761171ebfe3d641f861499acc360`, based
-on upstream `7e9ec2b2` and the compiler change described in [compatibility](compatibility.md).
-These are local self-validation results; no independent reviewer run is implied.
-
-## Full20
+## Full20 with the FIFO-chain compiler
 
 First four cases from each dataset in the shared frozen seed-0 manifest,
-greedy, thinking off, cap 2048/EOS, one pass per engine. Both engines use
-identical saved NPU-prefill states. Primary timing includes initial and
-incremental NPU prepass, draft, verify and host work, excluding saved prefill,
-loading, warmup, reset and the first token from prefill.
+greedy, thinking off, cap 2048/EOS, one pass per engine. MT-Bench uses its first
+turn only. Both engines use identical freshly prepared NPU-prefill states.
+Primary timing includes initial and incremental NPU prepass, draft, verify
+and host work, excluding saved prefill, loading, warmup, reset and prefill's
+first token.
 
 | Dataset | B1 tok/s | DFlash tok/s | Speedup | Emitted/round |
 |---|---:|---:|---:|---:|
-| Overall | 9.701 | 26.038 | 2.684× | 4.514 |
-| gsm8k | 9.721 | 31.731 | 3.264× | 5.411 |
-| math500 | 9.684 | 34.886 | 3.602× | 6.183 |
-| humaneval | 9.703 | 30.335 | 3.126× | 5.320 |
-| mbpp | 9.718 | 28.487 | 2.931× | 4.812 |
-| mt-bench | 9.703 | 12.567 | 1.295× | 2.158 |
+| Overall | 9.711 | 26.036 | 2.681× | 4.514 |
+| gsm8k | 9.735 | 31.797 | 3.266× | 5.411 |
+| math500 | 9.692 | 34.862 | 3.597× | 6.183 |
+| humaneval | 9.711 | 30.341 | 3.124× | 5.320 |
+| mbpp | 9.730 | 28.489 | 2.928× | 4.812 |
+| mt-bench | 9.712 | 12.560 | 1.293× | 2.158 |
 
-B1 generated 9,599 timed tokens in 989.473 seconds; DFlash generated 9,321 in
-357.977 seconds. Pooled throughput is total tokens / total decode time.
-Different arithmetic in B1 GEMV and B8 BFP can produce different greedy
-trajectories and lengths; speedup compares their measured throughputs.
-Acceptance among proposed candidates is 50.43% overall.
+B1 generated 9,599 timed tokens in 988.507 seconds; DFlash generated 9,321 in
+357.999 seconds. Pooled throughput is total tokens / total decode time.
+Candidate acceptance is 50.43%. All 40 request records passed cohort, source /
+artifact identity, timing and acceptance-trace audits. Benchmark runtime hashes
+match the NPU model-verification capture and the delivered source files.
 
-The B1 comparator follows the existing 4B DFlash study's C4096 xclbin/template
-convention. Its KV readback covers the allocated capacity while the RTP length
-bounds active attention; B8 uses live-context transfers. The ratios therefore
-characterize these supplied runners. Upstream's runtime-round xclbin and newer
-ELF/scratchpad B1 modes require separate paired measurements.
+All twenty freshly prepared prefill states match the original compiler's saved
+states byte for byte. Both engines reproduce all twenty complete output
+sequences, and all DFlash semantic acceptance traces match. The previous
+Full20 result was 26.038 DFlash / 9.701 B1 tok/s (2.684×); DFlash throughput
+changed by -0.006% in these single-pass measurements.
 
-The warm paired processes took 23.0 minutes, including loading. Preparing the
-20 initial NPU-prefill states took 6.1 minutes; subsequent runs reused them.
-The separate short GPU-explanation profile measured 13.386 tok/s and
-17.868 seconds TTFT. It is a different prompt/workload from this table.
+The B1 comparator uses the upstream C4096 xclbin/template runner, freshly
+rebuilt after the KV-buffer helper update. Its KV readback covers allocated
+capacity while RTP length bounds active attention; B8 uses live-context
+transfers. Different B1 GEMV and B8 BFP arithmetic can produce different greedy
+trajectories and lengths. These ratios characterize the supplied runners;
+runtime-round xclbin and newer ELF/scratchpad B1 modes need separate measurements.
 
-## Full80
+The paired processes took 23.7 minutes including loading. The twenty NPU-prefill
+computations took 6.1 minutes; the complete Full20 LIT including preparation
+and native B1 compilation took 31.6 minutes. The separate fixed-prompt profile
+measured 13.377 decode tok/s; its workload differs from this cohort.
+
+## Initial qualification
+
+The initial qualification on October 21, 2026 used execution source
+`04bc59309efd761171ebfe3d641f861499acc360`, based on upstream `7e9ec2b2`
+plus the former separate-channel allocator workaround `1bd7e222`.
+It ran on the same Ryzen AI 9 HX 370 NPU2 with 96 GB unified memory.
+The historical Full80 and initial numerical checks below retain that source;
+Full80 has not been rerun for the compiler migration.
+
+## Full80 with the initial compiler
 
 All sixteen cases per dataset from the same manifest, with the same settings
 and timing boundary as Full20. The earlier twenty saved input states are
@@ -133,7 +144,7 @@ import check resolves the same native prefill and `KernelCache` classes.
 The upstream `examples_sys_path.py` LIT and shared DFlash host LIT pass.
 The existing `verify_loop.py` naming follows the correction in #2123.
 
-These changes affect import setup and reference-file lookup. The benchmark
-tables remain measurements of `04bc5930`; no NPU or performance rerun was needed
-for this CI follow-up. GitHub nightly execution is separate from these local
+These initial CI changes affect import setup and reference-file lookup; they
+did not require an NPU or performance rerun. The later FIFO-chain qualification
+and new Full20 measurements are recorded at the top of this document. GitHub nightly execution is separate from these local
 checks and will run after the branch is submitted or explicitly dispatched.
