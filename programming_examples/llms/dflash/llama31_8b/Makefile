@@ -91,8 +91,9 @@ verify-model:
 	$(PYTHON) $(srcdir)/tests/check_model.py --phase hf --output $(VERIFY_DIR)/model-hf.json
 	$(PYTHON) $(srcdir)/tests/check_model.py --phase compare --npu-capture $(VERIFY_DIR)/model-npu.json --hf-capture $(VERIFY_DIR)/model-hf.json --output $(VERIFY_DIR)/model.json
 
+# Benchmark states are prepared with the C2048 prefill, whatever PREFILL_CTX is.
 benchmark-data:
-	$(NPU_RUN) $(srcdir)/benchmark_data.py --destination $(BENCHMARK_BUNDLE) --prefill-artifacts $(BUILD_DIR)/prefill_C$(PREFILL_CTX) --per-dataset $(PER_DATASET)
+	$(NPU_RUN) $(srcdir)/benchmark_data.py --destination $(BENCHMARK_BUNDLE) --prefill-artifacts $(BUILD_DIR)/prefill_C2048 --per-dataset $(PER_DATASET)
 
 benchmark: benchmark-data
 	$(NPU_RUN) $(srcdir)/benchmark.py --inputs $(BENCHMARK_BUNDLE)/inputs $(MODEL_PAIR) --output $(BENCHMARK_OUTPUT) --tokens $(STUDY_TOKENS) --per-dataset $(PER_DATASET)
