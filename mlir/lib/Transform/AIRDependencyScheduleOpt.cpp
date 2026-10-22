@@ -9993,8 +9993,8 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
       rewriter.replaceAllUsesWith(op.getIds()[i], newHerd.getIds()[i]);
       rewriter.replaceAllUsesWith(op.getSize()[i], newHerd.getSize()[i]);
     }
-    // Sunk memrefs were erased from kernelOpers wholesale, so the survivors
-    // keep their relative order.
+    // Every occurrence of a sunk memref was dropped, so the remaining operands
+    // map to the new op in order.
     unsigned newIdx = 0;
     for (unsigned i = 0; i < op.getNumKernelOperands(); i++)
       if (llvm::is_contained(kernelOpers, op.getKernelOperand(i)))

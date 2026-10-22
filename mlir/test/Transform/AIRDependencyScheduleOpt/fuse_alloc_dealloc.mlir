@@ -439,9 +439,7 @@ module {
     return
   }
 
-// A herd operand list may repeat a value. Sinking the alloc rebuilds the herd,
-// so every body argument must be remapped by position, not by value: the two
-// stores below read one argument each (#2041).
+// One value feeds two herd operands. Each body argument keeps its own use.
 
 // CHECK-LABEL:   @func9
 // CHECK:   air.herd @herd_0 async tile ({{.*}}) in ({{.*}}) args(%[[A:.*]]=%arg0, %[[B:.*]]=%arg0) : i32, i32
@@ -460,6 +458,56 @@ module {
       %c1_0 = arith.constant 1 : index
       memref.store %a, %buf[%c0] : memref<2xi32, 2 : i32>
       memref.store %b, %buf[%c1_0] : memref<2xi32, 2 : i32>
+    }
+    return
+  }
+
+// The sunk buffer feeds two operands, interleaved with the ones that stay.
+// Both buffer arguments become the alloc; the rest keep their order.
+
+// CHECK-LABEL:   @func10
+// CHECK:   air.herd @herd_0 async tile ({{.*}}) in ({{.*}}) args(%[[A:.*]]=%arg0, %[[B:.*]]=%arg1, %[[C:.*]]=%arg0) : i32, i32, i32
+// CHECK:   %{{.*}}, %[[BUF:.*]] = air.execute
+// CHECK-NEXT:   memref.alloc()
+// CHECK:   memref.store %[[A]], %[[BUF]][%{{.*}}]
+// CHECK:   memref.store %[[B]], %[[BUF]][%{{.*}}]
+// CHECK:   memref.store %[[C]], %[[BUF]][%{{.*}}]
+
+  func.func @func10(%arg0: i32, %arg1: i32) {
+    %c1 = arith.constant 1 : index
+    %async_token, %results = air.execute -> (memref<3xi32, 2 : i32>) {
+      %alloc = memref.alloc() : memref<3xi32, 2 : i32>
+      air.execute_terminator %alloc : memref<3xi32, 2 : i32>
+    }
+    %0 = air.herd @herd_0 async [%async_token] tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%a=%arg0, %buf=%results, %b=%arg1, %buf2=%results, %c=%arg0) : i32, memref<3xi32, 2 : i32>, i32, memref<3xi32, 2 : i32>, i32 {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      memref.store %a, %buf[%c0] : memref<3xi32, 2 : i32>
+      memref.store %b, %buf2[%c1_0] : memref<3xi32, 2 : i32>
+      memref.store %c, %buf[%c2] : memref<3xi32, 2 : i32>
+    }
+    return
+  }
+
+// Same remapping for air.segment.
+
+// CHECK-LABEL:   @func11
+// CHECK:   air.segment @segment_0 async args(%[[A:.*]]=%arg0, %[[B:.*]]=%arg0) : i32, i32
+// CHECK:   memref.alloc()
+// CHECK:   memref.store %[[A]], %{{.*}}[%{{.*}}]
+// CHECK:   memref.store %[[B]], %{{.*}}[%{{.*}}]
+
+  func.func @func11(%arg0: i32) {
+    %async_token, %results = air.execute -> (memref<2xi32, 1 : i32>) {
+      %alloc = memref.alloc() : memref<2xi32, 1 : i32>
+      air.execute_terminator %alloc : memref<2xi32, 1 : i32>
+    }
+    %0 = air.segment @segment_0 async [%async_token] args(%buf=%results, %a=%arg0, %b=%arg0) : memref<2xi32, 1 : i32>, i32, i32 {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      memref.store %a, %buf[%c0] : memref<2xi32, 1 : i32>
+      memref.store %b, %buf[%c1] : memref<2xi32, 1 : i32>
     }
     return
   }
