@@ -190,6 +190,8 @@ def run_transformer_block(
     layer_idx=0,
     cpu_attn=False,
     verbose=False,
+    *,
+    cache_host_args=True,
 ):
     """Execute one Llama-3.2-3B transformer block on NPU.
 
@@ -208,8 +210,13 @@ def run_transformer_block(
 
     intermediates = {}
 
-    _arg_cache = getattr(run_transformer_block, "_arg_cache", {})
-    run_transformer_block._arg_cache = _arg_cache
+    # A resident speculative pair can stream one layer at a time without
+    # retaining every layer's host scratch. Device BO reuse is independent.
+    _arg_cache = (
+        getattr(run_transformer_block, "_arg_cache", {}) if cache_host_args else {}
+    )
+    if cache_host_args:
+        run_transformer_block._arg_cache = _arg_cache
 
     # 1-6. RMSNorm + Q/K/V Projection + RoPE Q+K [6-launch multi-launch ELF]
     _rms_key = f"rms_gemms_rope_L{layer_idx}"

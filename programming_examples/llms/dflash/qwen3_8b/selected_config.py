@@ -10,8 +10,7 @@ from target_config import TargetConfig
 
 CAPACITY = 4096
 BATCH = 8
-TARGET_LAYERS = 36
-DRAFT_LAYERS = 5
+from model_spec import TARGET_LAYERS, DRAFT_LAYERS
 
 
 def selected_config(role: str) -> TargetConfig:

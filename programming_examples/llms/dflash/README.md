@@ -9,6 +9,7 @@ AMD NPU2 with MLIR-AIR. The host manages tokenization, acceptance, and KV state.
 |---|---|---|---|
 | [Qwen3-4B](qwen3_4b/README.md) | Qwen/Qwen3-4B, Q4NX | z-lab/Qwen3-4B-DFlash-b16, quantized decoder | 8 |
 | [Qwen3-8B](qwen3_8b/README.md) | Qwen/Qwen3-8B, Q4NX | z-lab/Qwen3-8B-DFlash-b16, quantized decoder | 8 |
+| [Llama-3.1-8B-Instruct](llama31_8b/README.md) | Llama-3.1-8B-Instruct, Q4NX | z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat, quantized decoder | 8 |
 
 Start with the model's README for installation and commands. Each example ships one selected mapping and a pinned model pair.
 The [shared package](common/README.md) contains the DFlash loop, decoder state
