@@ -58,7 +58,7 @@ and NPU model captures run in separate processes to bound memory.
 
 | Check | Coverage |
 |---|---|
-| Compiler LIT | Independent resident replay-ring allocation; ordinary packet-sharing control; complete compiler suite |
+| Compiler LIT | FIFO refeed ordering, folded counts and shared-flow cases; both NPU producer modes; compiler suite |
 | Decoder state | Prefixes 0, 7, 16, 64, 1024, 4088; repeated complete logits/hidden/KV, finite outputs, unchanged prefix/tail, target causality, draft bidirectionality and injected KV |
 | Attention primitive | Production object and shared attention graph, causal/bidirectional variants, full-output SDPA tolerance, row isolation and repeatability |
 | Context prepass | BFP arithmetic reference, full output tolerances, row scales/isolation, mixed positions, repeated calls, partial chunks and multi-chunk context |

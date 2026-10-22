@@ -37,13 +37,15 @@ Coordinates below use the device's compute rows 2–5; MemTiles occupy row 1.
 | Residual update demultiplex | MemTile2 distributes four-row halves |
 | Normalized-input join | MemTile3 reconstructs the projection input stream |
 | Projection activation fanout | MemTile4 |
-| O/down resident replay | MemTile5, independently allocated drain rings |
+| O/down resident replay | MemTile5, FIFO-ordered replay on one shared drain chain |
 
 All 32 compute tiles are occupied. The source also changes projection packet
 framing (`PAIR_ROWS=1`), GLU stream order, and output gathering to match these
-owners. The separate O/down replay rings are essential: down cannot be produced
-until the preceding O replays have completed. The compiler must not alternate
-these independent buffers on one lock-driven drain ring.
+owners. The O/down stream must send all eight O replays before the down
+replays: down cannot be produced until the preceding O replays finish. The
+compiler represents that FIFO order by repeating the appropriate descriptors
+in a shared circular DMA chain, as provided by PR #2152. It preserves the
+per-buffer lock credits and uses no extra DMA channel.
 
 Both examples compile shared arithmetic sources. The preserved 8B profile uses
 four-query shards and fused P/V rescaling. The later 4B native-K, early K-release

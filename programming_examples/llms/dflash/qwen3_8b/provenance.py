@@ -60,6 +60,7 @@ def runtime_identity(engine="dflash"):
                     "decode_insts_gen.py",
                     "decode_staircase.py",
                     "decode_elf.py",
+                    "kv_bos.py",
                 )
             }
             if engine == "b1"

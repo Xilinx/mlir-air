@@ -10,17 +10,23 @@ base is upstream `7e9ec2b2c19e34907cf1cb54c516be73d1ef96c1`, with its dependency
 | Host LLVM/MLIR | `24.0.0.2026100106+bdf04ebb` |
 | Inline-attention linker | Pre-23 `llvm-link`, as required by upstream fused decode |
 
-There is one additional compiler fix in this branch. Independent resident
-MemTile replay buffers must retain separate MM2S drain rings when they share a
-logical packet channel. Previously the allocator could collapse O and down
-onto an alternating ring, although down production depends on all eight O
-replays finishing. That build compiled but its first NPU call failed.
+The B8 mapping requires FIFO ordering for re-fed transfers, provided by
+[AIR PR #2152](https://github.com/Xilinx/mlir-air/pull/2152). O and down are
+resident in the same MemTile and feed one projection stream. Each O buffer must
+be sent eight times before its down buffer is sent eight times. Alternating
+one descriptor per buffer stalls when down production waits for all O replays.
+Allocating separate channels avoids that stall for dependent producers but does
+not establish FIFO ordering when both buffers can supply data independently.
 
-The fix lives in `mlir/lib/Conversion/AIRToAIESchedulingUtils.cpp`, with
-`mlir/test/Conversion/AIRToAIE/memtile_independent_refeed.mlir` covering independent
-replays and ordinary shared packet buffers. Channel exhaustion emits a diagnostic.
-The complete compiler LIT suite passed: 657 tests, 7 expected failures and
-7 unsupported tests. Build/install AIR with this fix before compiling 8B.
+The compiler constructs an ordered circular BD chain in
+`AIRToAIEPass.cpp` and `AIRToAIESchedulingUtils.cpp`, keeping the existing lock
+credits and DMA allocation. This replaces the initial separate-channel workaround.
+Tests are `mlir/test/Conversion/AIRToAIE/refeed_chain_order.mlir`,
+`mlir/test/CppUnitTests/circular_chain_bds.cpp`, and both modes of
+`test/xrt/56_refeed_chain_order`. Repeated descriptors must fit the MemTile BD
+pools; this is checked during compilation. Build/install AIR with #2152 before
+compiling this example. See [qualification](qualification.md) for the exact
+compiler revision and executed checks.
 
 Two small upstream Python interfaces support clean reuse:
 
