@@ -368,7 +368,7 @@ public:
 
   void updateDepList(func::FuncOp func, dependencyGraph &global_graph);
   std::pair<VertexId, dependencyGraph *>
-  getVertexFromOp(Operation *op, dependencyContext dep_ctx,
+  getVertexFromOp(Operation *op, const dependencyContext &dep_ctx,
                   std::string front_or_back = "front");
   // CDFG show cores in herd
   unsigned getTripCountInHierarchyOp(air::HierarchyInterface hier);
@@ -422,11 +422,11 @@ private:
   void connectAllTerminators(dependencyGraph &graph);
   void connectAndUpdateGraphPointers(dependencyGraph &graph,
                                      dependencyGraph *parent = nullptr);
-  void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx);
+  void parseDependencyEdgesInGraph(Graph &g, const dependencyContext &dep_ctx);
   void connectOpToItsDepListImpls(Operation *op, Graph &g,
-                                  dependencyContext dep_ctx);
+                                  const dependencyContext &dep_ctx);
   void connectOpToItsDepList(Operation *op, SmallVector<Value, 1> dep_list,
-                             Graph &g, dependencyContext dep_ctx);
+                             Graph &g, const dependencyContext &dep_ctx);
   std::vector<Operation *> traceOpFromToken(Operation *op, Value dep_token);
   void connectTerminatorInGraph(Graph &g);
   void connectStartNodeInCommandGraph(dependencyGraph &G);
