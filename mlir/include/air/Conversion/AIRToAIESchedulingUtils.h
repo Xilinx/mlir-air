@@ -87,6 +87,20 @@ bool chansPartOfSameRotation(air::ChannelInterface chanA,
 llvm::SetVector<Operation *>
 getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps);
 
+// The BDs, in order, of one circular chain whose repeating unit is `unit`.
+// A transfer re-fed n times (air.refeed_count) is one op but n sends per fill,
+// and a chain with one BD per op serves the ops round-robin. That is the wrong
+// order once two transfers of one logical flow share the chain: the flow is a
+// FIFO and wants x^n y^m, not (x y)^n. It is also a deadlock when transfers of
+// different flows are re-fed at different rates. Each op is repeated so that
+// a whole number of passes sends what every flow needs per fill, using the
+// fewest BDs that do so.
+// `sendsPerFill` gives an op's sends per fill, or nullopt when that is not
+// known, in which case `unit` is returned unchanged.
+SmallVector<Operation *> getCircularChainBDs(
+    ArrayRef<Operation *> unit,
+    llvm::function_ref<std::optional<int64_t>(Operation *)> sendsPerFill);
+
 std::vector<AIE::BDDimLayoutAttr>
 getWrapsAndStrides(ArrayRef<OpFoldResult> memcpy_sizes,
                    ArrayRef<OpFoldResult> memcpy_strides, MLIRContext *ctx);

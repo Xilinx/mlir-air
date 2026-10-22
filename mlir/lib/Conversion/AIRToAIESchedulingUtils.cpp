@@ -19,6 +19,7 @@
 
 #include <limits>
 #include <mutex>
+#include <numeric>
 #include <set>
 
 #define DEBUG_TYPE "air-to-aie-scheduling-utils"
@@ -936,6 +937,62 @@ bool xilinx::air::allocation_info_t::foundSameLogicalFlowInTile(
       return true;
   }
   return false;
+}
+
+// Do two endpoints feed one FIFO? Beyond isSameLogicalFlowEndpoint, a channel
+// declared with a single slot has one FIFO however its ops spell the index:
+// `@c[]` and `@c[0]` address the same slot.
+static bool isSameChannelFifo(air::MemcpyInterface a, air::MemcpyInterface b) {
+  if (isSameLogicalFlowEndpoint(a, b))
+    return true;
+  auto chanA = dyn_cast<air::ChannelInterface>(a.getOperation());
+  auto chanB = dyn_cast<air::ChannelInterface>(b.getOperation());
+  if (!chanA || !chanB)
+    return false;
+  auto decl = air::getChannelDeclarationThroughSymbol(chanA);
+  if (!decl || decl != air::getChannelDeclarationThroughSymbol(chanB))
+    return false;
+  return llvm::all_of(decl.getSize(), [](Attribute s) {
+    auto n = dyn_cast<IntegerAttr>(s);
+    return n && n.getInt() == 1;
+  });
+}
+
+SmallVector<Operation *> air::getCircularChainBDs(
+    ArrayRef<Operation *> unit,
+    llvm::function_ref<std::optional<int64_t>(Operation *)> sendsPerFill) {
+  SmallVector<Operation *> bds(unit.begin(), unit.end());
+  SmallVector<int64_t> sends;
+  for (auto *o : unit) {
+    auto n = sendsPerFill(o);
+    if (!n)
+      return bds;
+    sends.push_back(*n);
+  }
+  if (llvm::all_of(sends, [](int64_t n) { return n == 1; }))
+    return bds;
+
+  // Each logical flow is a FIFO, and per fill it must see each of its
+  // transfers sent as many times as that transfer is re-fed, back to back in
+  // program order. A flow with one transfer x re-fed n times wants x^n, which
+  // any number of passes dividing n can deliver. A flow with transfers x, y
+  // wants x^n y^m, which only a single pass can deliver. Every flow on the
+  // chain advances once per pass, so the number of passes per fill is the gcd
+  // of what each flow allows.
+  int64_t passes = 0;
+  for (size_t i = 0; i < unit.size(); i++) {
+    auto mc = cast<air::MemcpyInterface>(unit[i]);
+    bool sharesFlow = false;
+    for (size_t j = 0; j < unit.size() && !sharesFlow; j++)
+      sharesFlow =
+          j != i && isSameChannelFifo(mc, cast<air::MemcpyInterface>(unit[j]));
+    passes = std::gcd(passes, sharesFlow ? int64_t(1) : sends[i]);
+  }
+
+  bds.clear();
+  for (auto [o, n] : llvm::zip_equal(unit, sends))
+    bds.append(n / passes, o);
+  return bds;
 }
 
 // DMAAllocator impl.
