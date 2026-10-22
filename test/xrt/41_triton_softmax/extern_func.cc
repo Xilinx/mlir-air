@@ -62,6 +62,11 @@ float exp_f32(int num_elems, VecIteratorIn &in, VecIteratorOut &out) {
       lookup_f(lut_f, step_f);
   aie::accum<accfloat, VecLen> exp_val;
 
+  // fetch() shifts its index by the core's rounding mode, and the tables
+  // are laid out for floor. Set once around the loop, which keeps it
+  // pipelined.
+  aie::rounding_mode saved_rnd = aie::tile::current().get_rounding();
+  aie::tile::current().set_rounding(aie::rounding_mode::floor);
   // Main computation loop: convert to bf16, lookup exp values, store results
   for (int i = 0; i < elem_iters; i++) {
     // Load input (already normalized: x - max)
@@ -89,6 +94,7 @@ float exp_f32(int num_elems, VecIteratorIn &in, VecIteratorOut &out) {
     aie::store_v(out, exp_val.template to_vector<float>());
     out += VecLen;
   }
+  aie::tile::current().set_rounding(saved_rnd);
 
   // Return sum of all exp values (useful for softmax denominator)
   aie::vector<float, VecLen> reduce = exp_val_accum.template to_vector<float>();
