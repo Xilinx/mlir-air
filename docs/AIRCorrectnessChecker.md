@@ -574,9 +574,9 @@ specific diagnostics). The negative tests use the MLIR `// expected-error`
 annotation scheme so that `mlir-opt --verify-diagnostics` validates both the
 presence and the text of every error message.
 
-Positive tests draw from the existing `test/airhost/` programs (tests 46–51)
-which use the full scf.for iter_arg pipelining pattern verified by the model.
-These must all pass P1–P4 without false positives.
+Positive tests draw from programs using the full scf.for iter_arg pipelining
+pattern verified by the model. These must all pass P1–P4 without false
+positives.
 
 P5 already follows the positive/negative split described above, in
 `mlir/test/Transform/AIRVerifyChannelFifoOrder/{positive,negative}.mlir`.

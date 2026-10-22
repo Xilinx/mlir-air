@@ -14,7 +14,7 @@ The fastest way to get MLIR-AIR is to install the prebuilt wheel — no source b
 
 ### Steps
 
-AIR supports multiple backends — AIE (NPU / Versal AI Engines), [GPU](buildingGPU.md), and [VCK5000](buildingVCK5000.md). Backend dependencies are exposed as pip **extras** so you only install what you need. For the AIE backend on Ryzen™ AI, use the `[aie]` extra; pip reads the pinned `mlir_aie==<version>` and `llvm-aie` from the wheel's metadata and resolves them from the additional `--find-links` pages.
+AIR supports multiple backends — AIE (NPU) and [GPU](buildingGPU.md). Backend dependencies are exposed as pip **extras** so you only install what you need. For the AIE backend on Ryzen™ AI, use the `[aie]` extra; pip reads the pinned `mlir_aie==<version>` and `llvm-aie` from the wheel's metadata and resolves them from the additional `--find-links` pages.
 
 1. **Create a virtual environment:**
    ```bash
@@ -344,9 +344,9 @@ After this step, you are ready to build MLIR-AIR!
 
 ### Building
 
-To build MLIR-AIR provide the paths to llvm, cmakeModules, mlir-aie, libxaie, and xrt:
+To build MLIR-AIR provide the paths to llvm, cmakeModules, mlir-aie, Peano (llvm-aie), and xrt:
 ```bash
-./utils/build-mlir-air-xrt.sh llvm mlir-aie/cmake/modulesXilinx mlir-aie aienginev2/install /path/to/xrt
+./utils/build-mlir-air-xrt.sh llvm mlir-aie/cmake/modulesXilinx mlir-aie /path/to/llvm-aie /path/to/xrt
 ```
 
 ### Environment

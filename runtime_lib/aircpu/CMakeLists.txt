@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR}/../airhost/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 add_library(aircpu SHARED
@@ -15,3 +15,5 @@ set_property(TARGET aircpu PROPERTY POSITION_INDEPENDENT_CODE ON)
 set_target_properties(aircpu PROPERTIES
          LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${AIR_RUNTIME_TARGET}/aircpu)
 install(TARGETS aircpu DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIR_RUNTIME_TARGET}/aircpu)
+install(FILES include/air_tensor.h include/air_channel.h
+        DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIR_RUNTIME_TARGET}/aircpu/include)

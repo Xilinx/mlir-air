@@ -48,10 +48,8 @@ include(ExternalProject)
 find_package(MLIR REQUIRED CONFIG)
 if(AIR_ENABLE_AIE)
   find_package(AIE REQUIRED)
-  find_package(LibXAIE)
 endif()
 find_package(XRT)
-find_package(hsa-runtime64)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -182,8 +180,7 @@ set(AIR_RUNTIME_TEST_TARGET
     CACHE STRING "Runtime architecture to test with.")
 set(AIR_RUNTIME_TEST_TARGET_VAL ${AIR_RUNTIME_TEST_TARGET})
 
-# Runtime libraries depend on POSIX APIs (dlopen, mmap, ioctl) and the Linux
-# amdair kernel driver (/dev/amdair) that are not available on Windows.
+# Runtime libraries depend on POSIX APIs that are not available on Windows.
 if(NOT WIN32)
 foreach(target ${AIR_RUNTIME_TARGETS})
   # By default, we test the first architecture in AIR_RUNTIME_TARGETS.
@@ -215,9 +212,6 @@ foreach(target ${AIR_RUNTIME_TARGETS})
                -DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
                -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
                -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
-               -DLibXAIE_ROOT=${LibXAIE_ROOT}
-               -Dhsa-runtime64_DIR=${hsa-runtime64_DIR}
-               -Dhsakmt_DIR=${hsakmt_DIR}
                -DAIR_RUNTIME_TARGET=${target}
                -DAIE_DIR=${AIE_DIR}
                -DAIR_ENABLE_GPU=${AIR_ENABLE_GPU}
@@ -280,9 +274,9 @@ elseif(NOT AIR_RUNTIME_TEST_TARGET_VAL)
   message(
     "Skipping e2e tests: No Runtime architecture found. Please configure AIR_RUNTIME_TARGETS."
   )
-elseif(NOT hsa-runtime64_FOUND AND NOT XRT_FOUND)
+elseif(NOT XRT_FOUND)
   message(
-    "Skipping e2e tests because cmake did not find hsa-runtime64 or XRT."
+    "Skipping e2e tests because cmake did not find XRT."
   )
 else()
   add_subdirectory(test)

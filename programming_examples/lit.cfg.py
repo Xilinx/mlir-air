@@ -92,7 +92,6 @@ air_runtime_lib = os.path.join(
 
 config.substitutions.append(("%PYTHON", config.python_executable))
 config.substitutions.append(("%CLANG", "clang++ -fuse-ld=lld -DLIBXAIENGINEV2"))
-config.substitutions.append(("%LIBXAIE_DIR%", config.libxaie_dir))
 config.substitutions.append(
     (
         "%AIE_RUNTIME_DIR%",

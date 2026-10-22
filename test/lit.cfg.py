@@ -59,13 +59,8 @@ config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
 config.test_exec_root = os.path.join(config.air_obj_root, "test")
-air_runtime_lib = os.path.join(
-    config.air_obj_root, "runtime_lib", config.runtime_test_target
-)
-
 config.substitutions.append(("%PYTHON", config.python_executable))
 config.substitutions.append(("%CLANG", "clang++ -fuse-ld=lld -DLIBXAIENGINEV2"))
-config.substitutions.append(("%LIBXAIE_DIR%", config.libxaie_dir))
 config.substitutions.append(
     (
         "%AIE_RUNTIME_DIR%",
@@ -87,37 +82,6 @@ config.substitutions.append(
 
 # for xchesscc_wrapper
 llvm_config.with_environment("AIETOOLS", config.vitis_aietools_dir)
-
-if config.hsa_found:
-    # Getting the path to the ROCm directory. hsa-runtime64 points to the cmake
-    # directory so need to go up three directories
-    rocm_root = os.path.join(config.hsa_dir, "..", "..", "..")
-    print("Found ROCm:", rocm_root)
-    config.substitutions.append(("%HSA_DIR%", "{}".format(rocm_root)))
-    config.substitutions.append(
-        (
-            "%airhost_libs%",
-            " -I"
-            + air_runtime_lib
-            + "/airhost/include"
-            + " -L"
-            + air_runtime_lib
-            + "/airhost -Wl,--whole-archive -lairhost"
-            + " -Wl,-R{}/lib -Wl,-rpath,{}/lib -Wl,--whole-archive".format(
-                config.libxaie_dir, rocm_root
-            )
-            + " -Wl,--no-whole-archive -lpthread -lstdc++ -lsysfs -ldl -lrt -lelf",
-        )
-    )
-    if config.enable_run_airhost_tests:
-        config.substitutions.append(("%run_on_board", "flock /tmp/vck5000.lock"))
-    else:
-        print("Skipping execution of airhost tests (ENABLE_RUN_AIRHOST_TESTS=OFF)")
-        config.substitutions.append(("%run_on_board", "echo"))
-else:
-    print("ROCm not found")
-    config.excludes.append("airhost")
-
 
 run_on_npu1 = "echo"
 run_on_npu2 = "echo"

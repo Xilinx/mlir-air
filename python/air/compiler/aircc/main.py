@@ -12,5 +12,5 @@ binary (tools/aircc/aircc.cpp). All compilation is now handled by the C++
 binary, which is invoked by XRTBackend via subprocess.
 
 This module is kept only to preserve the configure utilities imported by
-other Python backends (cpu_backend, linalg_on_tensors).
+other Python backends (cpu_backend).
 """
