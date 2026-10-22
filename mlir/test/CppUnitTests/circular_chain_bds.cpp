@@ -81,8 +81,7 @@ static void check(MLIRContext &ctx, const std::string &what,
 // A put of buffer `buf` on `chan[idx]`, named after the buffer. `sends` of 0
 // leaves the count unknown.
 static std::string put(const std::string &chan, const std::string &idx,
-                       const std::string &buf, int sends,
-                       bool folded = false) {
+                       const std::string &buf, int sends, bool folded = false) {
   std::string attrs = "name = \"" + buf + "\"";
   if (sends > 0)
     attrs += ", sends = " + std::to_string(sends);
