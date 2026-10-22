@@ -1,9 +1,9 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Check repeated prefill, sequential oracle, acceptance and committed KV."""
+"""Repeated NPU prefill, then DFlash against its sequential oracle and committed KV."""
 
-from paths import HERE
-from common.verify_loop_8b import main
+from dflash_model import MODEL
+from common.verify_loop import main
 
 if __name__ == "__main__":
-    main()
+    main(MODEL)

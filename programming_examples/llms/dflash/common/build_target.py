@@ -15,18 +15,11 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-from paths import HERE, COMMON
-import model_spec as model
+from types import ModuleType
+
 from common.build_identity import build_identity, check_existing
 
-from target_config import (
-    HERE,
-    EXAMPLES,
-    FUSED,
-    REPO,
-    build_module,
-    load_geometry,
-)
+COMMON = Path(__file__).resolve().parent
 
 
 def sha(path):
@@ -37,7 +30,23 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
-def main():
+def main(
+    target_config: ModuleType,
+    selected_config,
+    kernel_defines,
+):
+    """Build with a model's `target_config` module and selected configurations.
+
+    `kernel_defines(cfg)` gives the model's kernel macros for a configuration:
+    the model the fused-decode headers select, and any layout or arithmetic
+    settings beyond the kernels' defaults.
+    """
+    HERE, EXAMPLES, FUSED, REPO = (
+        target_config.HERE,
+        target_config.EXAMPLES,
+        target_config.FUSED,
+        target_config.REPO,
+    )
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--check-existing", action="store_true")
     ap.add_argument("--output", type=Path, required=True)
@@ -52,8 +61,6 @@ def main():
         help="Reuse matching target objects for the drafter",
     )
     args = ap.parse_args()
-    from selected_config import selected_config
-
     cfg = selected_config(args.role)
     cfg = replace(cfg, capacity=args.capacity, layers=args.layers or cfg.layers)
     dest = args.output.resolve()
@@ -64,7 +71,7 @@ def main():
             raise ValueError("Build configuration differs; choose a fresh BUILD_DIR")
         return
     dest.mkdir(parents=True, exist_ok=False)
-    fd = load_geometry(cfg)
+    fd = target_config.load_geometry(cfg)
     inputs = (
         list(HERE.glob("*.py"))
         + list(COMMON.glob("*.py"))
@@ -134,11 +141,7 @@ def main():
         "-Wno-empty-body",
         "-Wno-deprecated-declarations",
         "-DNDEBUG",
-        "-DMODEL_TYPE="
-        + (model.TARGET_CXX if cfg.role == "target" else model.DRAFT_CXX),
-        "-DRMS_NORM_EPS="
-        + str(model.TARGET_RMS_EPS if cfg.role == "target" else model.DRAFT_RMS_EPS)
-        + "f",
+        *kernel_defines(cfg),
         "-D__AIE_API_AIE_ADF_HPP__",
         "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
         "-DGLU_SLICE_EXPECTED=" + str(fd.GLU_SLICE),
@@ -153,8 +156,6 @@ def main():
         "-DPROJ_MM_BATCH=8",
         "-DDECODE_ROUND_NEAREST",
         "-DATTN_QUERY_TILE=4",
-        "-DNORM_CACHE_ROWS=4",
-        "-DGLU_BATCH_WAVE_LAYOUT=1",
         "-DATTN_NATIVE_KEY=" + str(int(cfg.attention_native_key)),
         "-DATTN_PV_REUSE=" + str(int(cfg.attention_pv_reuse)),
     ]
@@ -205,15 +206,20 @@ def main():
             cmd += [str(src), "-o", str(out)]
             manifest["commands"].append(cmd)
             print("compiling", name, flush=True)
-            if reuse:
-                old = [c for c in reuse["commands"] if Path(c[-1]).name == out.name]
-                if len(old) == 1 and old[0][:-1] == cmd[:-1]:
-                    source = args.reuse_objects / "objects" / out.name
-                    shutil.copy2(source, out)
-                    manifest.setdefault("reused_object_hashes", {})[out.name] = sha(out)
-                else:
-                    subprocess.run(cmd, check=True)
+            old = (
+                [c for c in reuse["commands"] if Path(c[-1]).name == out.name]
+                if reuse
+                else []
+            )
+            if len(old) == 1 and old[0][:-1] == cmd[:-1]:
+                source = args.reuse_objects / "objects" / out.name
+                shutil.copy2(source, out)
+                manifest.setdefault("reused_object_hashes", {})[out.name] = sha(out)
             else:
+                # Without a reusable object, e.g. when the roles select
+                # different models in the kernel headers, compile it here.
+                if reuse:
+                    manifest.setdefault("recompiled_objects", []).append(out.name)
                 subprocess.run(cmd, check=True)
         from air.backend.xrt import XRTBackend
 
@@ -222,7 +228,7 @@ def main():
         work.mkdir()
         for p in objdir.iterdir():
             shutil.copy2(p, work / p.name)
-        module, interface = build_module(cfg, length)
+        module, interface = target_config.build_module(cfg, length)
         assert module.operation.verify()
         (work / "input.mlir").write_text(str(module))
         old = Path.cwd()
@@ -255,7 +261,8 @@ def main():
             shutil.copy2(source, out)
             manifest["artifacts"][out.name] = sha(out)
         manifest["abi"] = interface
-        manifest["physical_abi"] = interface["physical_abi"]
+        if "physical_abi" in interface:
+            manifest["physical_abi"] = interface["physical_abi"]
         write_json(dest / "manifest.json", manifest)
         manifest["status"] = "compiled"
         write_json(dest / "manifest.json", manifest)
@@ -265,7 +272,3 @@ def main():
         manifest["error"] = repr(e)
         write_json(dest / "manifest.json", manifest)
         raise
-
-
-if __name__ == "__main__":
-    main()

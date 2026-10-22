@@ -12,7 +12,6 @@ set(CONVERSION_SOURCES
 if(AIR_ENABLE_AIE)
   list(APPEND CONVERSION_SOURCES
     AIRLoweringPass.cpp
-    AIRRtToLLVMPass.cpp
     AIRToAIEPass.cpp
     AIRToAIESchedulingUtils.cpp
   )

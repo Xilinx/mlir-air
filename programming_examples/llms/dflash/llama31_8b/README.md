@@ -83,8 +83,8 @@ prompt states persist between nightly runs. The shared NPU is protected by
 | `build_target.py`, `build_bfp_prepass.py` | Compile decoder and context-preparation programs |
 | `target_weights.py`, `draft_weights.py`, `prepare_*.py` | Native weight readers, packing and input handling |
 | `npu_prefill.py`, `prefill_weights.py` | Native Llama prefill with tapped hidden states and streamed weights |
-| `runtime.py`, `target_runtime.py`, `run.py` | Shared model-pair runtime and streaming entry points |
-| `verify_loop.py`, `tests/` | State/visibility checks, sequential oracle and HF token comparison |
+| `dflash_model.py`, `target_runtime.py`, `run.py` | This model's decoders and caches for the shared runtime in `common/`, and the streaming entry point |
+| `verify_loop.py`, `tests/` | Entry points for the shared state/visibility checks, sequential oracle and HF token comparison in `common/` |
 | `baseline.py`, `benchmark*.py`, `paired_benchmark.py` | Native B1 comparator, frozen cohort and paired results |
 
 The B8 implementation is in
@@ -114,26 +114,11 @@ See [compatibility and pinned resources](docs/compatibility.md) and
 [tests/nightly integration](docs/validation.md) for the upstream interfaces
 and verification coverage.
 
-## Qualification
+## Verification scope
 
-The compile, verify and profile LIT entries have passed on a Ryzen AI 9 HX 370
-NPU2. Operator checks, the complete DFlash oracle/KV check and the Qwen3-8B /
-Qwen3-4B regressions also pass. See [local qualification](docs/qualification.md)
-for their numerical scope and benchmark results.
-
-The paired Full20 measured **24.166 DFlash tokens/s**
-versus **10.160 B1 tokens/s** (**2.379×**), with
-3.796 emitted tokens per round. These are pooled decode
-measurements using the timing and B1 mode defined above.
-
-The model check uses AIR's two-prompt,32-token mutual top-5 gate. It stops
+The model check uses AIR's two-prompt, 32-token mutual top-5 gate. It stops
 comparison at the first accepted divergence; the report records the actual
 visited prefix. Separate DFlash checks cover repeated outputs, causal and
 bidirectional visibility, KV injection, acceptance and committed KV against
-a sequential oracle using the same B8 arithmetic.
-
-This example uses the shared DFlash infrastructure and FIFO MemTile-refeed
-ordering already merged upstream in PRs #2145 and #2152. It adds named Llama
-role geometries to the Python builder and optional native prefill/cache
-adapters. No additional AIR compiler change or generated route/ABI rewriting
-is required.
+a sequential oracle using the same B8 arithmetic. See
+[CI and validation](docs/validation.md) for the commands and gates.

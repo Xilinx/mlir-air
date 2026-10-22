@@ -345,21 +345,6 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
   }];
 }
 
-def AIRRtToLLVM : Pass<"airrt-to-llvm", "ModuleOp"> {
-  let summary = "Lower AIRRt dialect to LLVM dialect";
-  let constructor = "xilinx::airrt::createAIRRtToLLVMPass()";
-  let description =  [{
-    This pass lowers AIRRt dialect to function calls and data structures
-    matching those found in air_host.h.
-
-    AIRRt static metadata is transformed to LLVM dialect data structures.
-    The data is generated as a number of globals with external linkage.
-    The data layout is closely tied the AIR runtime and the definitions in
-    air_host.h.  Any changes to this pass must be reflected there.
-  }];
-  let options = [];
-}
-
 def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
   let summary = "Lower AIRRt dialect to AIEX.npu dialect";
   let constructor = "xilinx::airrt::createAIRRtToNpuPass()";

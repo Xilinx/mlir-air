@@ -22,13 +22,13 @@ Nightly artifact patterns already include both DFlash model directories.
 
 ## Import names and offline references
 
-Follow the naming correction merged with Qwen3-4B in #2123: the loop checker
-is `verify_loop.py`, not `verify.py`, which would collide with `llms/verify`.
+The loop checker is `verify_loop.py`; a `verify.py` would collide with
+`llms/verify`.
 Shared upstream imports use the explicitly registered `air_examples` namespace;
 the example does not put `programming_examples/` or `llms/` on `sys.path`.
 `python/test/api/examples_sys_path.py` checks these rules in Python CI.
 
-The HF reference follows upstream #2142: it resolves the snapshot through
+The HF reference resolves the snapshot through
 `resources.prepare(reference=True, offline=True)`. This uses the same pinned
 file list as cache seeding, without requiring repository README/LICENSE files
 that nightly does not download. The reference weights, tokenizer, arithmetic
@@ -37,8 +37,7 @@ and comparison criteria remain unchanged.
 ## Resources and execution
 
 The existing Download LLM Weights workflow seeds all three pinned 8B snapshots,
-including the BF16 reference. Run it from this branch once before offline
-nightly execution. Weight caches persist under `~/.cache/mlir-air/dflash/qwen3_8b`.
+including the BF16 reference. Run it once before offline nightly execution. Weight caches persist under `~/.cache/mlir-air/dflash/qwen3_8b`.
 Prompt messages are included in the source tree; no dataset service is needed
 at runtime. The first Full20 prepares 20 NPU-prefill states, then caches them.
 Optional Full80 extends the same cohort to 80 states. Prefill source/build and
@@ -46,11 +45,8 @@ state identities prevent reusing another model's KV or stale tensors. Each
 source/build combination gets a separate cache generation; identical artifacts
 are reusable despite changes to incidental build paths or timestamps.
 
-Full20 permits up to one hour per LIT test, including cold preparation. The
-qualified warm pair took 23.0 minutes; the initial 20 NPU-prefill states took
-another 6.1 minutes, before compilation and weight preparation. The former
-30-minute limit did not leave room for a cold 8B run. Full80 permits up to three
-hours and remains optional.
+Full20 permits up to one hour per LIT test, which covers cold preparation of
+the prompt states. Full80 permits up to three hours and remains optional.
 
 Device commands serialize through `/tmp/mlir-air-npu.lock`. Do not wrap them in
 `/tmp/npu.lock`, which the shared prefill cache takes internally. CPU reference
@@ -58,7 +54,6 @@ and NPU model captures run in separate processes to bound memory.
 
 | Check | Coverage |
 |---|---|
-| Compiler LIT | FIFO refeed ordering, folded counts and shared-flow cases; both NPU producer modes; compiler suite |
 | Decoder state | Prefixes 0, 7, 16, 64, 1024, 4088; repeated complete logits/hidden/KV, finite outputs, unchanged prefix/tail, target causality, draft bidirectionality and injected KV |
 | Attention primitive | Production object and shared attention graph, causal/bidirectional variants, full-output SDPA tolerance, row isolation and repeatability |
 | Context prepass | BFP arithmetic reference, full output tolerances, row scales/isolation, mixed positions, repeated calls, partial chunks and multi-chunk context |
