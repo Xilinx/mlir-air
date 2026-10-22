@@ -2546,12 +2546,25 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
   }
 }
 
+// The vertex and graph recorded for an op's type-id pair, or defaults when
+// none is.
+static std::pair<Graph::VertexId, dependencyGraph *>
+lookupVertex(const dependencyContext &dep_ctx,
+             const std::pair<std::string, unsigned> &key) {
+  std::pair<Graph::VertexId, dependencyGraph *> out{};
+  if (auto it = dep_ctx.op_to_v.find(key); it != dep_ctx.op_to_v.end())
+    out.first = it->second;
+  if (auto it = dep_ctx.op_to_g.find(key); it != dep_ctx.op_to_g.end())
+    out.second = it->second;
+  return out;
+}
+
 // Get vertex descriptor from op
 // "front_or_back": if op is an air.execute, then "front" returns the first op
 // in region, while "back" returns the terminator in region.
 std::pair<Graph::VertexId, dependencyGraph *>
 dependencyCanonicalizer::getVertexFromOp(Operation *op,
-                                         dependencyContext dep_ctx,
+                                         const dependencyContext &dep_ctx,
                                          std::string front_or_back) {
   std::pair<Graph::VertexId, dependencyGraph *> output;
   if (auto execute_op = dyn_cast_if_present<xilinx::air::ExecuteOp>(op)) {
@@ -2559,30 +2572,27 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
       auto execute_front_op = &execute_op.getChildOps().front();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_front_op);
-      output.first = dep_ctx.op_to_v[entry_pair];
-      output.second = dep_ctx.op_to_g[entry_pair];
+      output = lookupVertex(dep_ctx, entry_pair);
     } else if (front_or_back == "back") {
       auto execute_end_op =
           execute_op.getRegion().getBlocks().front().getTerminator();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_end_op);
-      output.first = dep_ctx.op_to_v[entry_pair];
-      output.second = dep_ctx.op_to_g[entry_pair];
+      output = lookupVertex(dep_ctx, entry_pair);
     } else {
       op->emitOpError(
           "unknown string operand (only accepts 'front' or 'back')");
     }
   } else {
     std::pair<std::string, unsigned> entry_pair = getTypeIdPairFromOp(op);
-    output.first = dep_ctx.op_to_v[entry_pair];
-    output.second = dep_ctx.op_to_g[entry_pair];
+    output = lookupVertex(dep_ctx, entry_pair);
   }
   return output;
 }
 
 // Trace dependency of every op in a graph
 void dependencyCanonicalizer::parseDependencyEdgesInGraph(
-    Graph &g, dependencyContext dep_ctx) {
+    Graph &g, const dependencyContext &dep_ctx) {
   auto vp = g.getVertices();
   for (auto vit : vp) {
     auto op = g[vit].op;
@@ -2593,7 +2603,7 @@ void dependencyCanonicalizer::parseDependencyEdgesInGraph(
 }
 
 void dependencyCanonicalizer::connectOpToItsDepListImpls(
-    Operation *op, Graph &g, dependencyContext dep_ctx) {
+    Operation *op, Graph &g, const dependencyContext &dep_ctx) {
   SmallVector<Value, 1> dep_list;
   // Only async tokens carry dependency edges. A loop may also carry ordinary
   // data as an iter_arg (a runtime scalar, an accumulator), whose defining op
@@ -2648,7 +2658,7 @@ void dependencyCanonicalizer::connectOpToItsDepListImpls(
 // Connect an async op to ops in its dependency list
 void dependencyCanonicalizer::connectOpToItsDepList(
     Operation *op, SmallVector<Value, 1> dep_list, Graph &g,
-    dependencyContext dep_ctx) {
+    const dependencyContext &dep_ctx) {
   auto dst_v = getVertexFromOp(op, dep_ctx, "front").first;
   if (dep_list.size()) {
     for (auto dep_token : dep_list) {
