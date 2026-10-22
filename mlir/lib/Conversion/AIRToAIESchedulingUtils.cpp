@@ -1390,23 +1390,6 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
   return std::make_pair(rlock, wlock);
 }
 
-// Refeed buffers have independently granted drain credits. A later stage may
-// depend on all replays of an earlier one, so sharing one in-order drain ring
-// is not justified even if both buffers have the same refeed count.
-static bool independentMemtileReplays(air::MemcpyInterface a,
-                                      air::MemcpyInterface b) {
-  auto av = a.getSrcMemref(), bv = b.getSrcMemref();
-  if (!av || !bv)
-    return false;
-  auto ab = getUnderlyingBufferOp(av), bb = getUnderlyingBufferOp(bv);
-  if (!ab || !bb || ab == bb)
-    return false;
-  auto tile = dyn_cast_if_present<AIE::TileLike>(ab.getTile().getDefiningOp());
-  return tile && tile.isMemTile() &&
-         (air::getRefeedCount(ab.getOperation()) > 1 ||
-          air::getRefeedCount(bb.getOperation()) > 1);
-}
-
 // Allocate a new DMA channel
 FailureOr<air::allocation_info_t> air::DMAAllocator::allocNewDmaChannel(
     air::MemcpyInterface &memcpyOp, AIE::TileLike tile, int chan, int col = -1,
@@ -1424,12 +1407,6 @@ FailureOr<air::allocation_info_t> air::DMAAllocator::allocNewDmaChannel(
       isMM2S.value() ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
   aie_chan.channel = chan;
   for (auto &t : *allocs) {
-    if (isMM2S.value() && t.foundAlloc(tile) &&
-        llvm::any_of(t.memcpyOps, [&](Operation *op) {
-          auto existing = dyn_cast_if_present<air::MemcpyInterface>(op);
-          return existing && independentMemtileReplays(memcpyOp, existing);
-        }))
-      continue;
     if (t.foundAlloc(tile)) {
       if (t.dma_channel.direction == aie_chan.direction &&
           t.dma_channel.channel == aie_chan.channel) {
@@ -3261,35 +3238,12 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
 
   // Search for existing dma channel allocation
   unsigned num_allocs = 0;
-  bool needsIndependentReplay = false;
   for (auto &t : *allocs) {
     if (t.foundAlloc(tile))
       num_allocs++;
     if (t.foundAlloc(tile, memcpyOp)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
-    }
-    // A resident refeed is a count-free, lock-driven ring: one fill grants N
-    // drains. Distinct buffers can belong to dependent stages, so interleaving
-    // their drain BDs would wait for the later stage after only one replay of
-    // the earlier stage. Equal replay counts do not establish independence.
-    // Keep each such source separate; repeated drains of the SAME buffer can
-    // still use its existing channel.
-    if (isMM2S.value() && t.foundAlloc(tile)) {
-      bool independentRefeed = false;
-      for (Operation *op : t.memcpyOps) {
-        auto existing = dyn_cast_if_present<air::MemcpyInterface>(op);
-        if (!existing)
-          continue;
-        if (independentMemtileReplays(memcpyOp, existing)) {
-          independentRefeed = true;
-          break;
-        }
-      }
-      if (independentRefeed) {
-        needsIndependentReplay = true;
-        continue;
-      }
     }
     // Reuse an existing DMA channel on this tile instead of allocating a new
     // one.
@@ -3327,10 +3281,6 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   int memtile_dma_channels =
       isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
                      : tile.getNumDestConnections(AIE::WireBundle::DMA);
-  if (needsIndependentReplay && num_allocs >= unsigned(memtile_dma_channels))
-    return memcpyOp.emitOpError(
-        "no free MemTile MM2S channel for an independent resident replay; "
-        "move a replay buffer to another MemTile");
   if (chan == -1)
     chan = num_allocs % memtile_dma_channels;
   return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
@@ -3904,15 +3854,6 @@ LogicalResult air::simpleDMAChannelAllocation(
         // endpoints resolved elsewhere, not fan-in convergence onto one alloc.
         if (isPacket) {
           Operation *tileKey = getMM2SProducerTileKey(o);
-          // A MemTile may host independent resident replay sources. They
-          // require separate MM2S allocations even when their packet endpoint
-          // is the same. Key these producers by the underlying replay buffer;
-          // repeated operations on that buffer still form one source.
-          if (pms == air::MemorySpace::L2) {
-            auto buffer = getUnderlyingBufferOp(memcpyOpIf.getSrcMemref());
-            if (buffer && air::getRefeedCount(buffer.getOperation()) > 1)
-              tileKey = buffer.getOperation();
-          }
           idx = -1;
           for (int k = 0; k < (int)producerTiles.size(); k++)
             if (producerTiles[k] == tileKey) {
