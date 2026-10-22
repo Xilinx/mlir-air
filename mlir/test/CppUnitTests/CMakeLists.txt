@@ -16,6 +16,12 @@ if(AIR_ENABLE_AIE)
   target_link_libraries(dma_bd_limits PRIVATE AIRUtil AIRDialect AIE
     MLIRParser ${dialect_libs})
   list(APPEND AIR_CPP_UNIT_TESTS dma_bd_limits)
+
+  add_executable(circular_chain_bds circular_chain_bds.cpp)
+  add_test(NAME CircularChainBDs COMMAND circular_chain_bds)
+  target_link_libraries(circular_chain_bds PRIVATE AIRConversionPasses
+    AIRUtil AIRDialect AIE MLIRParser ${dialect_libs})
+  list(APPEND AIR_CPP_UNIT_TESTS circular_chain_bds)
 endif()
 
 add_custom_target(check-air-cpp COMMAND ${CMAKE_CTEST_COMMAND} DEPENDS ${AIR_CPP_UNIT_TESTS})
