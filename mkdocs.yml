@@ -28,8 +28,6 @@ exclude_docs: |
   /trace.md
   /AIRCorrectnessChecker.md
   /building.md
-  /buildingVCK5000.md
-  /vck190_microblaze_firmware.md
   /running.md
   /testing.md
 

@@ -18,7 +18,6 @@
 // 3. AIR transformation pipeline execution (in-process via PassManager)
 // 4. AIR-to-AIE conversion
 // 5. Invocation of aiecc (mlir-aie C++ compiler driver) for backend
-// 6. Host code compilation (optional, for non-NPU targets)
 //
 //===----------------------------------------------------------------------===//
 
@@ -48,7 +47,6 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/InitLLVM.h"
-#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
@@ -127,22 +125,6 @@ static cl::opt<unsigned>
                 cl::desc("Trace buffer offset appended to output"), cl::init(0),
                 cl::cat(airCompilerOptions));
 
-static cl::opt<std::string> cc("cc", cl::desc("Compiler to use for host code"),
-                               cl::init("clang"), cl::cat(airCompilerOptions));
-
-static cl::opt<std::string> sysroot("sysroot",
-                                    cl::desc("Sysroot for cross-compilation"),
-                                    cl::init(""), cl::cat(airCompilerOptions));
-
-static cl::opt<std::string>
-    hostTarget("host-target",
-               cl::desc("Target architecture of the host program"),
-               cl::init(""), cl::cat(airCompilerOptions));
-
-static cl::opt<bool>
-    shared("shared", cl::desc("Generate a shared library instead of static"),
-           cl::init(false), cl::cat(airCompilerOptions));
-
 static cl::opt<bool> xbridge("xbridge", cl::desc("Link using xbridge"),
                              cl::init(false), cl::cat(airCompilerOptions));
 
@@ -161,9 +143,9 @@ static cl::opt<std::string> peanoInstallDir(
              "Falls back to PEANO_INSTALL_DIR env var if not specified."),
     cl::init(""), cl::cat(airCompilerOptions));
 
-static cl::opt<std::string> deviceName("device", cl::desc("Target AIE device"),
-                                       cl::init("xcvc1902"),
-                                       cl::cat(airCompilerOptions));
+static cl::opt<std::string>
+    deviceName("device", cl::desc("Target NPU device (e.g. npu1, npu2)"),
+               cl::init(""), cl::cat(airCompilerOptions));
 
 static cl::opt<std::string> target("target",
                                    cl::desc("Target backend: 'aie' or 'gpu'"),
@@ -642,30 +624,6 @@ static LogicalResult runCommandCaptureOutput(ArrayRef<std::string> command,
   return success();
 }
 
-/// Write a string to a file.
-static LogicalResult writeFile(StringRef path, StringRef content) {
-  std::error_code ec;
-  raw_fd_ostream os(path, ec);
-  if (ec) {
-    llvm::errs() << "Error writing file " << path << ": " << ec.message()
-                 << "\n";
-    return failure();
-  }
-  os << content;
-  return success();
-}
-
-/// Copy a file (cross-platform replacement for "cp").
-static LogicalResult copyFile(StringRef src, StringRef dst) {
-  std::error_code ec = sys::fs::copy_file(src, dst);
-  if (ec) {
-    llvm::errs() << "Error copying " << src << " to " << dst << ": "
-                 << ec.message() << "\n";
-    return failure();
-  }
-  return success();
-}
-
 /// Run a single pass (wrapped in builtin.module) and save debug IR.
 static LogicalResult runSinglePass(StringRef passStr, ModuleOp moduleOp) {
   MLIRContext *ctx = moduleOp.getContext();
@@ -1028,6 +986,13 @@ static std::string buildOptimizationPipeline(int resolvedNumCols) {
 static LogicalResult runAieCompilation() {
   SmallString<256> airMlirFilename(sys::path::filename(inputFilename));
 
+  if (deviceName.getValue().find("npu") == std::string::npos) {
+    llvm::errs() << "Error: --device must name an NPU device (e.g. npu1, "
+                    "npu2), got '"
+                 << deviceName.getValue() << "'\n";
+    return failure();
+  }
+
   // Resolve default device parameters (-1 means unset / use default)
   int resolvedNumCols = numCols;
   if (resolvedNumCols < 0) {
@@ -1035,17 +1000,11 @@ static LogicalResult runAieCompilation() {
       resolvedNumCols = 4;
     else if (deviceName.getValue() == "npu2_4col")
       resolvedNumCols = 4;
-    else if (deviceName.getValue().find("npu2") != std::string::npos)
-      resolvedNumCols = 8;
     else
-      resolvedNumCols = 10;
+      resolvedNumCols = 8;
   }
 
-  int resolvedColOffset = colOffset;
-  if (resolvedColOffset < 0) {
-    resolvedColOffset =
-        (deviceName.getValue().find("npu") != std::string::npos) ? 0 : 7;
-  }
+  int resolvedColOffset = colOffset >= 0 ? (int)colOffset : 0;
 
   int resolvedNumRows = numRows >= 0 ? (int)numRows : 6;
   int resolvedRowOffset = rowOffset >= 0 ? (int)rowOffset : 2;
@@ -1162,22 +1121,14 @@ static LogicalResult runAieCompilation() {
     // Same slot, same reason. Derives a demux channel's packet id count from
     // its fan-out shape and checks the ids against the ones its kernel stamps.
     // Header emission is deferred to a second run of this pass, inside the
-    // optimization pipeline just after air-dependency -- see there. That
-    // pipeline is NPU-only, so anywhere else this slot has to do both.
-    bool deferHeaders = deviceName.getValue().find("npu") != std::string::npos;
-    os << ",air-annotate-packet-ids{assign=true";
-    if (deferHeaders)
-      os << " emit-headers=false";
-    os << "}";
+    // optimization pipeline just after air-dependency -- see there.
+    os << ",air-annotate-packet-ids{assign=true emit-headers=false}";
     os << ",air-rank-to-launch";
     os << ",air-insert-launch-around-herd{insert-segment=true}";
     os << ",func.func(air-lower-herd-parallel)";
     os << ",scf-forall-to-parallel";
 
-    // Add optimization passes for NPU targets
-    if (deviceName.getValue().find("npu") != std::string::npos) {
-      os << "," << buildOptimizationPipeline(resolvedNumCols);
-    }
+    os << "," << buildOptimizationPipeline(resolvedNumCols);
 
     // Place herds
     os << ",air-place-herds{";
@@ -1305,644 +1256,256 @@ static LogicalResult runAieCompilation() {
     addCheckpoint("AIR to AIE Conversion Complete", "aie.air.mlir");
 
   // --- NPU path ---
-  if (deviceName.getValue().find("npu") != std::string::npos) {
-    // Build shim DMA BD optimization pass
-    std::string shimBdPass;
-    {
-      raw_string_ostream os(shimBdPass);
-      os << "func.func(air-opt-shim-dma-bds{device=" << deviceName.getValue();
-      if (!runtimeLoopTilingSizes.empty()) {
-        os << " shim-dma-tile-sizes=";
-        for (size_t i = 0; i < runtimeLoopTilingSizes.size(); ++i) {
-          if (i > 0)
-            os << ",";
-          os << runtimeLoopTilingSizes[i];
-        }
+  // Build shim DMA BD optimization pass
+  std::string shimBdPass;
+  {
+    raw_string_ostream os(shimBdPass);
+    os << "func.func(air-opt-shim-dma-bds{device=" << deviceName.getValue();
+    if (!runtimeLoopTilingSizes.empty()) {
+      os << " shim-dma-tile-sizes=";
+      for (size_t i = 0; i < runtimeLoopTilingSizes.size(); ++i) {
+        if (i > 0)
+          os << ",";
+        os << runtimeLoopTilingSizes[i];
       }
-      os << "})";
     }
+    os << "})";
+  }
 
-    // Build airrt-to-npu pass
-    std::string airrtToNpuPass;
-    {
-      raw_string_ostream os(airrtToNpuPass);
-      os << "airrt-to-npu{";
-      os << " trace-size=" << traceSize;
-      os << " trace-offset=" << traceOffset;
-      bool outputElf = (outputFormat == OF_elf);
-      os << " output-elf=" << (outputElf ? "true" : "false");
-      os << " coalesce-shim-dma=" << (coalesceShimDma ? "true" : "false");
-      os << "}";
-    }
+  // Build airrt-to-npu pass
+  std::string airrtToNpuPass;
+  {
+    raw_string_ostream os(airrtToNpuPass);
+    os << "airrt-to-npu{";
+    os << " trace-size=" << traceSize;
+    os << " trace-offset=" << traceOffset;
+    bool outputElf = (outputFormat == OF_elf);
+    os << " output-elf=" << (outputElf ? "true" : "false");
+    os << " coalesce-shim-dma=" << (coalesceShimDma ? "true" : "false");
+    os << "}";
+  }
 
-    std::string npuPipeline;
-    {
-      raw_string_ostream os(npuPipeline);
-      os << "builtin.module(";
-      // No aie-place-tiles here. AIR sets a col hint on every shim
-      // aie.logical_tile (matching the compute-side col), and the
-      // downstream aiecc placer respects those hints — so airrt-to-npu's
-      // LTO-aware getColFromTileValue() reads the same col aiecc will
-      // pick. Calling the placer here too would mean two independent
-      // placement runs (this one + aiecc's), and any drift between them
-      // produces NPU instructions targeting different shim cols than the
-      // cores aiecc actually places. Place once, in aiecc only.
-      os << shimBdPass;
-      os << ",canonicalize,cse";
-      os << ",air-to-std";
-      os << ",symbol-dce";
-      os << ",affine-expand-index-ops";
-      os << ",canonicalize,cse";
-      os << "," << airrtToNpuPass;
-      os << ",canonicalize,cse";
-      os << ")";
-    }
+  std::string npuPipeline;
+  {
+    raw_string_ostream os(npuPipeline);
+    os << "builtin.module(";
+    // No aie-place-tiles here. AIR sets a col hint on every shim
+    // aie.logical_tile (matching the compute-side col), and the
+    // downstream aiecc placer respects those hints — so airrt-to-npu's
+    // LTO-aware getColFromTileValue() reads the same col aiecc will
+    // pick. Calling the placer here too would mean two independent
+    // placement runs (this one + aiecc's), and any drift between them
+    // produces NPU instructions targeting different shim cols than the
+    // cores aiecc actually places. Place once, in aiecc only.
+    os << shimBdPass;
+    os << ",canonicalize,cse";
+    os << ",air-to-std";
+    os << ",symbol-dce";
+    os << ",affine-expand-index-ops";
+    os << ",canonicalize,cse";
+    os << "," << airrtToNpuPass;
+    os << ",canonicalize,cse";
+    os << ")";
+  }
 
-    auto npuModule = cloneModule(aieModule.get());
-    if (!npuModule) {
-      llvm::errs() << "Error: failed to clone module for NPU lowering\n";
-      return failure();
-    }
+  auto npuModule = cloneModule(aieModule.get());
+  if (!npuModule) {
+    llvm::errs() << "Error: failed to clone module for NPU lowering\n";
+    return failure();
+  }
 
-    SmallString<256> npuFile(tmpDir);
-    sys::path::append(npuFile, "npu." + airMlirFilename);
-    if (failed(runPassPipeline(npuPipeline, npuModule.get())))
-      return failure();
-    if (failed(saveModule(npuModule.get(), npuFile)))
-      return failure();
+  SmallString<256> npuFile(tmpDir);
+  sys::path::append(npuFile, "npu." + airMlirFilename);
+  if (failed(runPassPipeline(npuPipeline, npuModule.get())))
+    return failure();
+  if (failed(saveModule(npuModule.get(), npuFile)))
+    return failure();
 
-    if (debugIr) {
-      addCheckpoint("NPU Instruction Generation Complete", "npu.air.mlir");
-      dumpPassLog();
-      if (verbose)
-        llvm::outs() << "Pass log written to: " << debugIrDir << "/pass.log\n";
-    }
-
-    // --- Invoke aiecc for backend compilation ---
-    std::string xclbinFile;
-    if (!outputFilename.empty()) {
-      xclbinFile = outputFilename.getValue();
-    } else {
-      xclbinFile = "aie.xclbin";
-    }
-
-    std::string instsFile;
-    if (!instsFilename.empty()) {
-      instsFile = instsFilename.getValue();
-    } else {
-      // Derive from xclbin name
-      instsFile = xclbinFile;
-      StringRef ref(instsFile);
-      if (ref.ends_with(".xclbin"))
-        instsFile = ref.drop_back(7).str() + ".insts.bin";
-    }
-
-    // Build aiecc command
-    std::vector<std::string> aieccCmd;
-    aieccCmd.push_back(*aiecc);
-
+  if (debugIr) {
+    addCheckpoint("NPU Instruction Generation Complete", "npu.air.mlir");
+    dumpPassLog();
     if (verbose)
-      aieccCmd.push_back("--verbose");
+      llvm::outs() << "Pass log written to: " << debugIrDir << "/pass.log\n";
+  }
 
-    // Core backend. mlir-aie #3501 dropped aiecc's --no-xchesscc/--no-xbridge
-    // and made Peano the default, so the Peano case is now expressed by saying
-    // nothing. The two Chess flags imply each other unless both are stated, so
-    // an asymmetric request has to spell out the negative half explicitly.
-    if (xchesscc || xbridge) {
-      aieccCmd.push_back(xchesscc ? "--xchesscc" : "--xchesscc=false");
-      aieccCmd.push_back(xbridge ? "--xbridge" : "--xbridge=false");
-    }
-    aieccCmd.push_back("--tmpdir=" + tmpDir.getValue());
-
-    // Output format options. The mlir-aie v1.4.0 aiecc is a declarative
-    // driver: each artifact is requested with --get-<name> and named with
-    // --<name>-name=. (Replaces the older --aie-generate-* toggles.)
-    if (outputFormat == OF_elf) {
-      aieccCmd.push_back("--get-full-elf");
-      aieccCmd.push_back("--expand-load-pdis");
-      aieccCmd.push_back("--full-elf-name=" + elfName.getValue());
-      // The scratchpad-parameter lowering runs unconditionally in aiecc; this
-      // only asks it to also write the layout out. Without params.txt the host
-      // has no way to name a runtime parameter -- ParameterScratchpad indexes
-      // the state table by the names in that file -- so an ELF carrying a
-      // runtime herd scalar would be unusable.
-      aieccCmd.push_back("--get-scratchpad-parameters");
-    } else if (outputFormat == OF_xclbin) {
-      aieccCmd.push_back("--get-xclbin");
-      aieccCmd.push_back("--xclbin-name=" + xclbinFile);
-    } else if (outputFormat == OF_txn) {
-      aieccCmd.push_back("--get-txn");
-      aieccCmd.push_back("--txn-name=" + (outputFilename.empty()
-                                              ? std::string("aie.txn.mlir")
-                                              : outputFilename.getValue()));
-    } else if (outputFormat == OF_pdi) {
-      aieccCmd.push_back("--get-pdi");
-      aieccCmd.push_back("--pdi-name=" + pdiName.getValue());
-    }
-    // OF_none = no output generation options
-
-    // NPU instruction generation.
-    // - ELF: sequences are embedded in the ELF by aiebu-asm, skip.
-    // - none: compile-only, no binary output requested, skip.
-    // - PDI: sidecar insts file needed by the alternative runtime to program
-    //   shim DMAs at dispatch time.
-    // - xclbin/txn: always needed.
-    // A runtime sequence holding a scalar cannot be frozen into insts.bin at
-    // all -- aiecc rightly refuses a non-constant write32 -- so ask for the
-    // lowered per-sequence module instead and hand that to the TXN builder.
-    // The host assembles the stream from it per dispatch.
-    if (emitTxnCpp) {
-      aieccCmd.push_back("--get=npu_seq_{0}.mlir");
-    } else if (outputFormat != OF_elf && outputFormat != OF_none) {
-      aieccCmd.push_back("--get-npu-insts");
-      aieccCmd.push_back("--npu-insts-name=" + instsFile);
-    }
-
-    // When tracing, also request the address-annotated module so downstream
-    // trace parsing (aie.utils.trace.parse) can map events back to source.
-    // The v1.4.0 aiecc writes --get-* artifacts (including
-    // input_with_addresses.mlir) to the current working directory, not the
-    // --tmpdir workdir.
-    if (traceSize > 0)
-      aieccCmd.push_back("--get-input-with-addresses");
-
-    // Xclbin metadata (xclbin mode only)
-    if (outputFormat == OF_xclbin) {
-      if (!kernelName.empty())
-        aieccCmd.push_back("--xclbin-kernel-name=" + kernelName.getValue());
-      if (!instanceName.empty())
-        aieccCmd.push_back("--xclbin-instance-name=" + instanceName.getValue());
-      if (!kernelId.empty())
-        aieccCmd.push_back("--xclbin-kernel-id=" + kernelId.getValue());
-      if (!xclbinInput.empty())
-        aieccCmd.push_back("--xclbin-input=" + xclbinInput.getValue());
-    }
-
-    // Peano — use --peano=<dir> (equals-joined) so that downstream aiecc
-    // never risks consuming the next argument as the peano value.
-    if (!peanoInstallDir.empty()) {
-      aieccCmd.push_back("--peano=" + peanoInstallDir.getValue());
-    }
-
-    aieccCmd.push_back("-O");
-    aieccCmd.push_back("3");
-    // Which core backend aiecc will use; the same condition selects it above.
-    const bool useChess = xchesscc || xbridge;
-    // Chess is not parallel-safe -- concurrent xchesscc/noodle instances die
-    // with a kill signal -- so it stays sequential. Peano has no such limit and
-    // builds cores in parallel. Both halves are stated rather than left to
-    // aiecc's default, which has flipped before (mlir-aie 1ba5b5c).
-    aieccCmd.push_back("-j");
-    aieccCmd.push_back(useChess ? "1" : "0");
-    // Lower each device's cores once rather than once per core; every core
-    // still compiles and links its own object. Asked for on the Peano path
-    // only, and asked for rather than stated on both: the two drivers disagree
-    // on the default (C++ aiecc per-core, aiecc.py unified), so naming Chess's
-    // half here would change it on one of them.
-    if (!useChess)
-      aieccCmd.push_back("--unified");
-
-    // bf16 emulation
-    if (bf16Emulation)
-      aieccCmd.push_back("--bf16-emulation");
-
-    // Input file
-    aieccCmd.push_back(npuFile.str().str());
-
-    if (verbose) {
-      llvm::outs() << "Running aiecc with options: ";
-      for (const auto &arg : aieccCmd) {
-        llvm::outs() << arg << " ";
-      }
-      llvm::outs() << "\n";
-    }
-
-    if (failed(runCommand(aieccCmd)))
-      return failure();
-
-    if (emitTxnCpp) {
-      SmallVector<std::string> seqFiles;
-      collectNpuSeqFiles(".", seqFiles);
-      collectNpuSeqFiles(tmpDir, seqFiles);
-      if (seqFiles.empty()) {
-        llvm::errs() << "Error: --emit-txn-cpp requested but aiecc produced no "
-                        "npu_seq_*.mlir\n";
-        return failure();
-      }
-      SmallString<256> headerFile(tmpDir);
-      sys::path::append(headerFile, "npu." + airMlirFilename);
-      sys::path::replace_extension(headerFile, "txn.h");
-      // aiecc writes one module per runtime sequence, and each holds every
-      // sequence of its device: several funcs sharing a device give several
-      // identical files and one header with a builder per sequence.
-      SmallVector<std::string> contents;
-      for (StringRef f : seqFiles) {
-        auto buf = MemoryBuffer::getFile(f);
-        if (!buf) {
-          llvm::errs() << "Error: cannot read " << f << "\n";
-          return failure();
-        }
-        contents.push_back((*buf)->getBuffer().str());
-      }
-      if (llvm::any_of(contents, [&](const std::string &c) {
-            return c != contents[0];
-          })) {
-        // Picking one silently would hand the host a builder for whichever
-        // sequence sorted first, so make it an error rather than a warning.
-        llvm::errs() << "Error: --emit-txn-cpp found " << seqFiles.size()
-                     << " runtime sequences and cannot choose between them:\n";
-        for (StringRef f : seqFiles)
-          llvm::errs() << "  " << f << "\n";
-        return failure();
-      }
-      if (failed(emitTxnCppBuilder(seqFiles.front(), headerFile)))
-        return failure();
-    }
-
+  // --- Invoke aiecc for backend compilation ---
+  std::string xclbinFile;
+  if (!outputFilename.empty()) {
+    xclbinFile = outputFilename.getValue();
   } else {
-    // --- Non-NPU path (Versal/legacy) ---
-    // This path generates host-side libraries using aiecc + clang
+    xclbinFile = "aie.xclbin";
+  }
 
-    // Run air-split-devices
-    std::string splitPipeline =
-        "builtin.module(air-split-devices{output-prefix=" + tmpDir.getValue() +
-        "/})";
-    auto splitModule = cloneModule(aieModule.get());
-    if (!splitModule) {
-      llvm::errs() << "Error: failed to clone module for device split\n";
+  std::string instsFile;
+  if (!instsFilename.empty()) {
+    instsFile = instsFilename.getValue();
+  } else {
+    // Derive from xclbin name
+    instsFile = xclbinFile;
+    StringRef ref(instsFile);
+    if (ref.ends_with(".xclbin"))
+      instsFile = ref.drop_back(7).str() + ".insts.bin";
+  }
+
+  // Build aiecc command
+  std::vector<std::string> aieccCmd;
+  aieccCmd.push_back(*aiecc);
+
+  if (verbose)
+    aieccCmd.push_back("--verbose");
+
+  // Core backend. mlir-aie #3501 dropped aiecc's --no-xchesscc/--no-xbridge
+  // and made Peano the default, so the Peano case is now expressed by saying
+  // nothing. The two Chess flags imply each other unless both are stated, so
+  // an asymmetric request has to spell out the negative half explicitly.
+  if (xchesscc || xbridge) {
+    aieccCmd.push_back(xchesscc ? "--xchesscc" : "--xchesscc=false");
+    aieccCmd.push_back(xbridge ? "--xbridge" : "--xbridge=false");
+  }
+  aieccCmd.push_back("--tmpdir=" + tmpDir.getValue());
+
+  // Output format options. The mlir-aie v1.4.0 aiecc is a declarative
+  // driver: each artifact is requested with --get-<name> and named with
+  // --<name>-name=. (Replaces the older --aie-generate-* toggles.)
+  if (outputFormat == OF_elf) {
+    aieccCmd.push_back("--get-full-elf");
+    aieccCmd.push_back("--expand-load-pdis");
+    aieccCmd.push_back("--full-elf-name=" + elfName.getValue());
+    // The scratchpad-parameter lowering runs unconditionally in aiecc; this
+    // only asks it to also write the layout out. Without params.txt the host
+    // has no way to name a runtime parameter -- ParameterScratchpad indexes
+    // the state table by the names in that file -- so an ELF carrying a
+    // runtime herd scalar would be unusable.
+    aieccCmd.push_back("--get-scratchpad-parameters");
+  } else if (outputFormat == OF_xclbin) {
+    aieccCmd.push_back("--get-xclbin");
+    aieccCmd.push_back("--xclbin-name=" + xclbinFile);
+  } else if (outputFormat == OF_txn) {
+    aieccCmd.push_back("--get-txn");
+    aieccCmd.push_back("--txn-name=" + (outputFilename.empty()
+                                            ? std::string("aie.txn.mlir")
+                                            : outputFilename.getValue()));
+  } else if (outputFormat == OF_pdi) {
+    aieccCmd.push_back("--get-pdi");
+    aieccCmd.push_back("--pdi-name=" + pdiName.getValue());
+  }
+  // OF_none = no output generation options
+
+  // NPU instruction generation.
+  // - ELF: sequences are embedded in the ELF by aiebu-asm, skip.
+  // - none: compile-only, no binary output requested, skip.
+  // - PDI: sidecar insts file needed by the alternative runtime to program
+  //   shim DMAs at dispatch time.
+  // - xclbin/txn: always needed.
+  // A runtime sequence holding a scalar cannot be frozen into insts.bin at
+  // all -- aiecc rightly refuses a non-constant write32 -- so ask for the
+  // lowered per-sequence module instead and hand that to the TXN builder.
+  // The host assembles the stream from it per dispatch.
+  if (emitTxnCpp) {
+    aieccCmd.push_back("--get=npu_seq_{0}.mlir");
+  } else if (outputFormat != OF_elf && outputFormat != OF_none) {
+    aieccCmd.push_back("--get-npu-insts");
+    aieccCmd.push_back("--npu-insts-name=" + instsFile);
+  }
+
+  // When tracing, also request the address-annotated module so downstream
+  // trace parsing (aie.utils.trace.parse) can map events back to source.
+  // The v1.4.0 aiecc writes --get-* artifacts (including
+  // input_with_addresses.mlir) to the current working directory, not the
+  // --tmpdir workdir.
+  if (traceSize > 0)
+    aieccCmd.push_back("--get-input-with-addresses");
+
+  // Xclbin metadata (xclbin mode only)
+  if (outputFormat == OF_xclbin) {
+    if (!kernelName.empty())
+      aieccCmd.push_back("--xclbin-kernel-name=" + kernelName.getValue());
+    if (!instanceName.empty())
+      aieccCmd.push_back("--xclbin-instance-name=" + instanceName.getValue());
+    if (!kernelId.empty())
+      aieccCmd.push_back("--xclbin-kernel-id=" + kernelId.getValue());
+    if (!xclbinInput.empty())
+      aieccCmd.push_back("--xclbin-input=" + xclbinInput.getValue());
+  }
+
+  // Peano — use --peano=<dir> (equals-joined) so that downstream aiecc
+  // never risks consuming the next argument as the peano value.
+  if (!peanoInstallDir.empty()) {
+    aieccCmd.push_back("--peano=" + peanoInstallDir.getValue());
+  }
+
+  aieccCmd.push_back("-O");
+  aieccCmd.push_back("3");
+  // Which core backend aiecc will use; the same condition selects it above.
+  const bool useChess = xchesscc || xbridge;
+  // Chess is not parallel-safe -- concurrent xchesscc/noodle instances die
+  // with a kill signal -- so it stays sequential. Peano has no such limit and
+  // builds cores in parallel. Both halves are stated rather than left to
+  // aiecc's default, which has flipped before (mlir-aie 1ba5b5c).
+  aieccCmd.push_back("-j");
+  aieccCmd.push_back(useChess ? "1" : "0");
+  // Lower each device's cores once rather than once per core; every core
+  // still compiles and links its own object. Asked for on the Peano path
+  // only, and asked for rather than stated on both: the two drivers disagree
+  // on the default (C++ aiecc per-core, aiecc.py unified), so naming Chess's
+  // half here would change it on one of them.
+  if (!useChess)
+    aieccCmd.push_back("--unified");
+
+  // bf16 emulation
+  if (bf16Emulation)
+    aieccCmd.push_back("--bf16-emulation");
+
+  // Input file
+  aieccCmd.push_back(npuFile.str().str());
+
+  if (verbose) {
+    llvm::outs() << "Running aiecc with options: ";
+    for (const auto &arg : aieccCmd) {
+      llvm::outs() << arg << " ";
+    }
+    llvm::outs() << "\n";
+  }
+
+  if (failed(runCommand(aieccCmd)))
+    return failure();
+
+  if (emitTxnCpp) {
+    SmallVector<std::string> seqFiles;
+    collectNpuSeqFiles(".", seqFiles);
+    collectNpuSeqFiles(tmpDir, seqFiles);
+    if (seqFiles.empty()) {
+      llvm::errs() << "Error: --emit-txn-cpp requested but aiecc produced no "
+                      "npu_seq_*.mlir\n";
       return failure();
     }
-    if (failed(runPassPipeline(splitPipeline, splitModule.get())))
-      return failure();
-
-    // Lower AIRRt to host code
-    auto airrtModule = cloneModule(splitModule.get());
-    if (!airrtModule) {
-      llvm::errs() << "Error: failed to clone module for AIRRt lowering\n";
-      return failure();
-    }
-
-    SmallString<256> aieCtrlAirrt(tmpDir);
-    sys::path::append(aieCtrlAirrt, "airrt." + airMlirFilename);
-    {
-      std::string pipeline;
-      raw_string_ostream os(pipeline);
-      os << "builtin.module(";
-      os << "convert-vector-to-llvm,convert-math-to-llvm";
-      os << ",func.func(air-label-broadcast-channel-with-tile)";
-      os << ",lower-affine";
-      os << ",func.func(air-opt-shim-dma-bds{device=" << deviceName.getValue()
-         << "})";
-      os << ",air-to-std,air-lower-linalg-tensors";
-      os << ",canonicalize,cse";
-      os << ")";
-      if (failed(runPassPipeline(pipeline, airrtModule.get())))
+    SmallString<256> headerFile(tmpDir);
+    sys::path::append(headerFile, "npu." + airMlirFilename);
+    sys::path::replace_extension(headerFile, "txn.h");
+    // aiecc writes one module per runtime sequence, and each holds every
+    // sequence of its device: several funcs sharing a device give several
+    // identical files and one header with a builder per sequence.
+    SmallVector<std::string> contents;
+    for (StringRef f : seqFiles) {
+      auto buf = MemoryBuffer::getFile(f);
+      if (!buf) {
+        llvm::errs() << "Error: cannot read " << f << "\n";
         return failure();
-      if (failed(saveModule(airrtModule.get(), aieCtrlAirrt)))
-        return failure();
-    }
-
-    // Lower to LLVM (airrt-to-llvm + bufferize)
-    SmallString<256> aieCtrlFile(tmpDir);
-    sys::path::append(aieCtrlFile, "aie_ctrl." + airMlirFilename);
-    {
-      std::string pipeline;
-      raw_string_ostream os(pipeline);
-      os << "builtin.module(airrt-to-llvm,one-shot-bufferize)";
-      if (failed(runPassPipeline(pipeline, airrtModule.get())))
-        return failure();
-      if (failed(saveModule(airrtModule.get(), aieCtrlFile)))
-        return failure();
-    }
-
-    // Generate refback (reference backend) by running the full AIRRt→LLVM
-    // pipeline on a fresh clone of the placed module.
-    {
-      auto refbackModule = cloneModule(placedModule.get());
-      if (refbackModule) {
-        SmallString<256> refbackFile(tmpDir);
-        sys::path::append(refbackFile, "refback." + airMlirFilename);
-        std::string pipeline;
-        raw_string_ostream os(pipeline);
-        os << "builtin.module(";
-        os << "convert-vector-to-llvm,convert-math-to-llvm";
-        os << ",func.func(air-label-broadcast-channel-with-tile)";
-        os << ",lower-affine";
-        os << ",func.func(air-opt-shim-dma-bds{device=" << deviceName.getValue()
-           << "})";
-        os << ",air-to-std,air-lower-linalg-tensors";
-        os << ",canonicalize,cse";
-        os << ",airrt-to-llvm";
-        os << ",canonicalize,cse";
-        os << ")";
-        if (succeeded(runPassPipeline(pipeline, refbackModule.get())))
-          (void)saveModule(refbackModule.get(), refbackFile);
-        // Failure is non-fatal — refback is a debugging artifact
       }
+      contents.push_back((*buf)->getBuffer().str());
     }
-
-    SmallString<256> aieCtrlLlvm(tmpDir);
-    sys::path::append(aieCtrlLlvm, "llvm." + airMlirFilename);
-    {
-      std::string pipeline;
-      raw_string_ostream os(pipeline);
-      os << "builtin.module(";
-      os << "expand-strided-metadata,lower-affine,convert-scf-to-cf";
-      os << ",finalize-memref-to-llvm,convert-func-to-llvm";
-      os << ",convert-arith-to-llvm,convert-cf-to-llvm";
-      os << ",canonicalize,cse";
-      os << ")";
-      if (failed(runPassPipeline(pipeline, airrtModule.get())))
-        return failure();
-      if (failed(saveModule(airrtModule.get(), aieCtrlLlvm)))
-        return failure();
-    }
-
-    // Translate to LLVM IR
-    SmallString<256> llvmIr(tmpDir);
-    sys::path::append(llvmIr, airMlirFilename.str() + ".ll");
-    if (failed(runCommand({"aie-translate", "--mlir-to-llvmir",
-                           aieCtrlLlvm.str().str(), "-o", llvmIr.str().str()})))
-      return failure();
-
-    // Optimize LLVM IR
-    SmallString<256> optBc(tmpDir);
-    sys::path::append(optBc, airMlirFilename.str() + ".opt.bc");
-    if (failed(runCommand(
-            {"opt", "-O3", llvmIr.str().str(), "-o", optBc.str().str()})))
-      return failure();
-
-    SmallString<256> optIr(tmpDir);
-    sys::path::append(optIr, airMlirFilename.str() + ".opt.ll");
-    if (failed(runCommand(
-            {"llvm-dis", optBc.str().str(), "-o", optIr.str().str()})))
-      return failure();
-
-    // Compile to object file
-    SmallString<256> objFile(tmpDir);
-    sys::path::append(objFile, airMlirFilename.str() + ".o");
-
-    std::vector<std::string> llcCmd = {"llc", "-O3", "--filetype=obj",
-                                       "--relocation-model=pic"};
-    if (!hostTarget.empty()) {
-      StringRef ht = hostTarget.getValue();
-      if (ht.contains("x86_64"))
-        llcCmd.push_back("-march=x86-64");
-      else if (ht.contains("aarch64"))
-        llcCmd.push_back("-march=aarch64");
-    }
-    llcCmd.push_back(optIr.str().str());
-    llcCmd.push_back("-o");
-    llcCmd.push_back(objFile.str().str());
-    if (failed(runCommand(llcCmd)))
-      return failure();
-
-    // Get segment metadata via air-translate
-    std::string jsonOutput;
-    if (failed(
-            runCommandCaptureOutput({"air-translate", "--airrt-generate-json",
-                                     aieCtrlAirrt.str().str()},
-                                    jsonOutput)))
-      return failure();
-
-    // Parse JSON to extract segment names
-    // The Python version uses eval() on the JSON - we parse it manually
-    // For now, this is a simplified version. A full implementation would
-    // use llvm::json::parse.
-    auto jsonVal = json::parse(jsonOutput);
-    if (!jsonVal) {
-      llvm::errs() << "Error parsing JSON from air-translate\n";
+    if (llvm::any_of(contents,
+                     [&](const std::string &c) { return c != contents[0]; })) {
+      // Picking one silently would hand the host a builder for whichever
+      // sequence sorted first, so make it an error rather than a warning.
+      llvm::errs() << "Error: --emit-txn-cpp found " << seqFiles.size()
+                   << " runtime sequences and cannot choose between them:\n";
+      for (StringRef f : seqFiles)
+        llvm::errs() << "  " << f << "\n";
       return failure();
     }
-
-    std::vector<std::string> segments;
-    if (auto *obj = jsonVal->getAsObject()) {
-      for (auto &kv : *obj) {
-        if (auto *segObj = kv.second.getAsObject()) {
-          if (auto symName = segObj->getString("sym_name")) {
-            segments.push_back(symName->str());
-          }
-        }
-      }
-    }
-
-    // Compile each segment with aiecc
-    std::vector<std::string> allObjFiles = {objFile.str().str()};
-
-    for (const auto &segment : segments) {
-      if (verbose)
-        llvm::outs() << "Compiling segment: " << segment << "\n";
-
-      SmallString<256> segmentFile(tmpDir);
-      sys::path::append(segmentFile, "aie." + segment + ".mlir");
-
-      SmallString<256> aieccFile(tmpDir);
-      sys::path::append(aieccFile, "aiecc." + segment + ".mlir");
-
-      SmallString<256> aieccDir(tmpDir);
-      sys::path::append(aieccDir, segment);
-
-      // Lower segment
-      if (failed(runCommand({"air-opt", segmentFile.str().str(),
-                             "-air-lower-linalg-tensors", "-lower-affine",
-                             "-canonicalize", "-cse", "-o",
-                             aieccFile.str().str()})))
-        return failure();
-
-      // Determine host target
-      std::string aieccTarget;
-      if (!hostTarget.empty()) {
-        aieccTarget = hostTarget.getValue();
-      } else {
-#if defined(__x86_64__) || defined(_M_X64)
-        aieccTarget = "x86_64-amd-linux-gnu";
-#elif defined(__aarch64__) || defined(_M_ARM64)
-        aieccTarget = "aarch64-linux-gnu";
-#else
-        aieccTarget = "x86_64-amd-linux-gnu";
-#endif
-      }
-
-      // Run aiecc on segment
-      std::string sysrootVal = sysroot.empty() ? "/" : sysroot.getValue();
-      std::vector<std::string> segAieccCmd;
-      segAieccCmd.push_back(*aiecc);
-      if (verbose)
-        segAieccCmd.push_back("-v");
-      segAieccCmd.push_back("--sysroot");
-      segAieccCmd.push_back(sysrootVal);
-      segAieccCmd.push_back("--host-target");
-      segAieccCmd.push_back(aieccTarget);
-      segAieccCmd.push_back("--tmpdir");
-      segAieccCmd.push_back(aieccDir.str().str());
-      segAieccCmd.push_back("--no-aiesim");
-      segAieccCmd.push_back("--compile-host");
-      if (xchesscc || xbridge) {
-        segAieccCmd.push_back(xchesscc ? "--xchesscc" : "--xchesscc=false");
-        segAieccCmd.push_back(xbridge ? "--xbridge" : "--xbridge=false");
-      }
-      segAieccCmd.push_back(aieccFile.str().str());
-
-      if (failed(runCommand(segAieccCmd)))
-        return failure();
-
-      // Copy and compile wrapper
-      SmallString<256> incFile(tmpDir);
-      sys::path::append(incFile,
-                        airMlirFilename.str() + "." + segment + ".inc");
-
-      SmallString<256> srcIncFile(aieccDir);
-      sys::path::append(srcIncFile, "aie_inc.cpp");
-      if (failed(copyFile(srcIncFile, incFile)))
-        return failure();
-
-      // Generate wrapper cpp
-      SmallString<256> cppFile(tmpDir);
-      sys::path::append(cppFile,
-                        airMlirFilename.str() + "." + segment + ".cpp");
-
-      SmallString<256> segObjFile(tmpDir);
-      sys::path::append(segObjFile,
-                        airMlirFilename.str() + "." + segment + ".o");
-
-      {
-        std::string wrapper;
-        raw_string_ostream ws(wrapper);
-        ws << "// generated by aircc, do not edit\n";
-        ws << "#include \"stdio.h\"\n";
-        ws << "#include \"assert.h\"\n";
-        ws << "#include \"air_host.h\"\n";
-        ws << "#include \"air_host_impl.h\"\n\n";
-        ws << "namespace air {\nnamespace segments {\n";
-        ws << "namespace " << segment << " {\n";
-        ws << "#include \"" << incFile.str() << "\"\n";
-        ws << "}\n}\n}\n\n";
-        ws << "using namespace air::segments::" << segment << ";\n";
-        ws << "extern \"C\" {\n";
-        ws << "air_rt_aie_functions_t __airrt_" << segment
-           << "_aie_functions {\n";
-        ws << "  .configure_cores = &mlir_aie_configure_cores,\n";
-        ws << "  .configure_switchboxes = &mlir_aie_configure_switchboxes,\n";
-        ws << "  .initialize_locks = &mlir_aie_initialize_locks,\n";
-        ws << "  .configure_dmas = &mlir_aie_configure_dmas,\n";
-        ws << "  .start_cores = &mlir_aie_start_cores\n";
-        ws << "};\n}\n";
-        if (failed(writeFile(cppFile, wrapper)))
-          return failure();
-      }
-
-      // Compile wrapper
-      std::vector<std::string> compileCmd;
-      compileCmd.push_back(cc.getValue());
-      compileCmd.push_back("-std=c++17");
-      compileCmd.push_back("-g");
-      compileCmd.push_back("-I.");
-
-      if (!sysroot.empty()) {
-        compileCmd.push_back("--sysroot=" + sysroot.getValue());
-        if (StringRef(aieccTarget).contains("aarch64-linux-gnu"))
-          compileCmd.push_back("--gcc-toolchain=" + sysroot.getValue() +
-                               "/usr");
-      }
-      if (!hostTarget.empty())
-        compileCmd.push_back("--target=" + hostTarget.getValue());
-
-      // Find include paths relative to the aircc/aiecc executable directory.
-      // This mirrors the Python driver's include path setup.
-      SmallString<256> exePath(sys::fs::getMainExecutable(nullptr, nullptr));
-      sys::path::remove_filename(exePath);
-
-      // AIR host runtime include
-      SmallString<256> airHostInclude(exePath);
-      sys::path::append(airHostInclude, "..", "runtime_lib", "airhost",
-                        "include");
-      compileCmd.push_back("-I" + airHostInclude.str().str());
-
-      // aiecc runtime test_lib includes (architecture-specific)
-      SmallString<256> aieccPath(*aiecc);
-      sys::path::remove_filename(aieccPath);
-      if (StringRef(aieccTarget).contains("x86_64")) {
-        SmallString<256> testLibInc(aieccPath);
-        sys::path::append(testLibInc, "..");
-        sys::path::append(testLibInc, "runtime_lib", "x86_64");
-        sys::path::append(testLibInc, "test_lib", "include");
-        compileCmd.push_back("-I" + testLibInc.str().str());
-      }
-      if (StringRef(aieccTarget).contains("aarch64")) {
-        SmallString<256> testLibInc(aieccPath);
-        sys::path::append(testLibInc, "..");
-        sys::path::append(testLibInc, "runtime_lib", "aarch64");
-        sys::path::append(testLibInc, "test_lib", "include");
-        compileCmd.push_back("-I" + testLibInc.str().str());
-      }
-
-      // libxaie include (from LIBXAIE_DIR env var if set)
-      if (auto libxaiePath = sys::Process::GetEnv("LIBXAIE_DIR")) {
-        compileCmd.push_back("-I" + *libxaiePath + "/include");
-      }
-
-      // ROCm/HSA include (from ROCM_PATH env var if set)
-      if (auto rocmPath = sys::Process::GetEnv("ROCM_PATH")) {
-        SmallString<256> hsaInc(*rocmPath);
-        sys::path::append(hsaInc, "..", "..", "..", "include");
-        compileCmd.push_back("-I" + hsaInc.str().str());
-      }
-
-      compileCmd.push_back("-DLIBXAIENGINEV2");
-      compileCmd.push_back("-DAIE_LIBXAIE_ENABLE");
-      compileCmd.push_back("-fPIC");
-      compileCmd.push_back("-c");
-      compileCmd.push_back("-o");
-      compileCmd.push_back(segObjFile.str().str());
-      compileCmd.push_back(cppFile.str().str());
-
-      if (failed(runCommand(compileCmd)))
-        return failure();
-
-      allObjFiles.push_back(segObjFile.str().str());
-    }
-
-    // Link all object files
-    std::string libExt;
-#ifdef _WIN32
-    libExt = shared ? ".dll" : ".lib";
-#else
-    libExt = shared ? ".so" : ".a";
-#endif
-
-    SmallString<256> libFile(tmpDir);
-    sys::path::append(libFile, airMlirFilename.str() + libExt);
-
-    if (shared) {
-      std::vector<std::string> linkCmd = {cc.getValue(), "-shared"};
-      if (!sysroot.empty()) {
-        linkCmd.push_back("--sysroot");
-        linkCmd.push_back(sysroot.getValue());
-      }
-      if (!hostTarget.empty()) {
-        linkCmd.push_back("-target");
-        linkCmd.push_back(hostTarget.getValue());
-      }
-      linkCmd.push_back("-fuse-ld=lld");
-      linkCmd.push_back("-o");
-      linkCmd.push_back(libFile.str().str());
-      for (const auto &obj : allObjFiles)
-        linkCmd.push_back(obj);
-      if (failed(runCommand(linkCmd)))
-        return failure();
-    } else {
-      std::vector<std::string> arCmd = {"llvm-ar", "rc", libFile.str().str()};
-      for (const auto &obj : allObjFiles)
-        arCmd.push_back(obj);
-      if (failed(runCommand(arCmd)))
-        return failure();
-    }
-
-    // Copy to output file
-    if (!outputFilename.empty()) {
-      if (failed(copyFile(libFile, outputFilename.getValue())))
-        return failure();
-    }
+    if (failed(emitTxnCppBuilder(seqFiles.front(), headerFile)))
+      return failure();
   }
 
   return success();

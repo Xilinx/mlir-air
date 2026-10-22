@@ -4,7 +4,7 @@
 AIR_ROOT = $(dir $(shell which air-opt))/..
 CC = clang
 CFLAGS = -O2 -std=c++17 \
-	-I$(AIR_ROOT)/runtime_lib/airhost/include \
+	-I$(AIR_ROOT)/runtime_lib/aircpu/include \
 	-I$(AIR_ROOT)/include
 LDFLAGS = -L$(AIR_ROOT)/lib -lmlir_async_runtime
 LDFLAGS += -L$(AIR_ROOT)/runtime_lib/aircpu -laircpu
@@ -35,9 +35,6 @@ channel.async.bc: channel.async.ll
 
 channel.async.o: channel.async.bc
 	$(CC) -g -O0 -o $@ -c $<
-
-channel.air.a: channel.air.mlir
-	aircc -o $@ --sysroot=${SYSROOT} -row-offset=2 -col-offset=7 $<
 
 clean:
 	rm -rf air_project channel.async.* channel.*mlir* *.elf *.exe *.o *.a

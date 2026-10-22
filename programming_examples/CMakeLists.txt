@@ -26,7 +26,6 @@ find_package(MLIR REQUIRED CONFIG)
 find_package(Python3 COMPONENTS Interpreter)
 
 if(AIR_ENABLE_AIE)
-  find_package(LibXAIE)
   if(NOT AIE_BINARY_DIR)
     find_package(AIE REQUIRED CONFIG)
   endif()

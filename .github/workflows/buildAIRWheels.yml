@@ -327,7 +327,7 @@ jobs:
 
             ### Installation
 
-            AIR supports multiple backends (AIE, GPU, VCK5000); backend dependencies are exposed as pip extras. For the AIE backend, the `[aie]` extra pulls the matching pinned `mlir_aie` and `llvm-aie` from the additional `--find-links` pages:
+            AIR supports multiple backends (AIE, GPU); backend dependencies are exposed as pip extras. For the AIE backend, the `[aie]` extra pulls the matching pinned `mlir_aie` and `llvm-aie` from the additional `--find-links` pages:
 
             ```bash
             pip install 'mlir_air[aie]' \
@@ -524,7 +524,7 @@ jobs:
 
             ### Installation
 
-            AIR supports multiple backends (AIE, GPU, VCK5000); backend dependencies are exposed as pip extras. For the AIE backend, the `[aie]` extra pulls the matching pinned `mlir_aie` and `llvm-aie` from the additional `--find-links` pages:
+            AIR supports multiple backends (AIE, GPU); backend dependencies are exposed as pip extras. For the AIE backend, the `[aie]` extra pulls the matching pinned `mlir_aie` and `llvm-aie` from the additional `--find-links` pages:
 
             ```bash
             pip install 'mlir_air[aie]' \

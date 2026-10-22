@@ -25,8 +25,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 find_package(MLIR REQUIRED CONFIG)
 find_package(Python3 COMPONENTS Interpreter)
 
-find_package(LibXAIE)
-
 if(NOT AIE_BINARY_DIR)
 find_package(AIE REQUIRED CONFIG)
 endif()
@@ -48,7 +46,6 @@ option(LLVM_BUILD_TOOLS "Build the LLVM tools. If OFF, just generate build targe
 
 # ON: build and run end-to-end tests
 # OFF: build only
-option(ENABLE_RUN_AIRHOST_TESTS "Run end-to-end tests on vck5000 with libairhost" OFF)
 option(ENABLE_RUN_XRT_TESTS "Run end-to-end tests on Ryzen AI with XRT" OFF)
 
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)

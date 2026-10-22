@@ -18,9 +18,6 @@ runtimes and compilers.
 - [AIR Conversion Passes](AIRConversionPasses.html)
 - [Transform Dialect Extensions](AIRTransformOps.html)
 
-### AIR Platform Documentation
-- [VCK5000 platform](https://github.com/Xilinx/ROCm-air-platforms) 
-
 ### AIR Compute Model
 - [AIR Compute Model](AIRComputeModel.md) — formal semantics of the AIR hierarchy and memory model, with NPU and GPU backend mappings
 

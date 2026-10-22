@@ -321,7 +321,7 @@ def get_extras_require():
             "psutil",
         ],
     }
-    # AIR supports multiple backends (AIE, GPU, VCK5000), so backend
+    # AIR supports multiple backends (AIE, GPU), so backend
     # dependencies live under per-backend extras rather than as hard
     # `install_requires`. `pip install mlir_air[aie]` pulls the matching
     # mlir_aie + Peano; users targeting other backends skip the extra.

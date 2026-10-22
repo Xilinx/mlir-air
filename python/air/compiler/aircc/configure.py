@@ -9,8 +9,6 @@ import os
 # These are overridden by the cmake-generated version during install
 air_link_with_xchesscc = False
 air_compile_with_xchesscc = False
-libxaie_path = ""
-rocm_path = ""
 
 
 def install_path():
