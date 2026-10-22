@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""B8 full outputs and state gate, one model resident and bounded KV scratch.
+"""B8/B16 full outputs and state gate, one model resident and bounded KV scratch.
 
 Peer runs use separate processes and compare hashes covering every output word.
 """
@@ -61,10 +61,32 @@ def main(a):
     try:
         print(json.dumps(dict(phase="load", artifact=str(a.artifact))), flush=True)
         m = decoder(a.artifact, a.role)
-        assert m.batch == 8
+        assert m.batch in (8, 16)
+        r["block_size"] = m.batch
         state = np.frombuffer(m.bo["kv"].map(), np.uint16).reshape(m.kv_shape)
-        ids = np.array([47, 2698, 374, 279, 6864, 315, 9822, 30])
-        for p in a.prefixes:
+        ids = np.array(
+            [
+                47,
+                2698,
+                374,
+                279,
+                6864,
+                315,
+                9822,
+                30,
+                817,
+                13,
+                123,
+                42,
+                220,
+                147,
+                812,
+                29,
+            ]
+        )[: m.batch]
+        for p in a.prefixes or [0, 7, 16, 64, 1024, m.capacity - m.batch]:
+            if not 0 <= p <= m.capacity - m.batch:
+                raise ValueError("Prefix exceeds full-block capacity")
             checks = {}
             row = dict(prefix=p, checks=checks, call_hashes={})
             r["cases"].append(row)
@@ -89,7 +111,7 @@ def main(a):
                 save()
                 seed(future)
                 prefix_before = digest(state[:, :, :p])
-                tail_before = digest(state[:, :, p + 8 :])
+                tail_before = digest(state[:, :, p + m.batch :])
                 for name in ("x", "y"):
                     m.bo[name].write(
                         np.full(m.n[name], 0x7FC1, np.uint16).view(np.int16), 0
@@ -106,11 +128,11 @@ def main(a):
                     digest(state[:, :, :p]) == prefix_before
                 )
                 checks[kind + "_tail_unchanged"] = (
-                    digest(state[:, :, p + 8 :]) == tail_before
+                    digest(state[:, :, p + m.batch :]) == tail_before
                 )
                 hashes = [digest(v.logits), digest(hidden), digest(state)]
                 row["call_hashes"][kind] = hashes
-                return v.logits, hidden, hashes, digest(state[:, :, : p + 8])
+                return v.logits, hidden, hashes, digest(state[:, :, : p + m.batch])
 
             ref = call(ids, "first")
             for rep in range(2):
@@ -124,37 +146,52 @@ def main(a):
             altered[-1] = 13
             other = call(altered, "last_row")
             if a.role == "target":
-                checks["causal_rows0to6_exact"] = np.array_equal(
-                    other[0][:7], ref[0][:7]
-                ) and np.array_equal(other[1][:, :7], ref[1][:, :7])
+                checks[f"causal_rows0to{m.batch - 2}_exact"] = np.array_equal(
+                    other[0][: m.batch - 1], ref[0][: m.batch - 1]
+                ) and np.array_equal(
+                    other[1][:, : m.batch - 1], ref[1][:, : m.batch - 1]
+                )
+                if m.batch == 16:
+                    changed = ids.copy()
+                    changed[8] = 13
+                    boundary = call(changed, "wave_boundary")
+                    checks["causal_first_wave_exact"] = np.array_equal(
+                        boundary[0][:8], ref[0][:8]
+                    ) and np.array_equal(boundary[1][:, :8], ref[1][:, :8])
+                    checks["second_wave_input_observed"] = not np.array_equal(
+                        boundary[1][1, 8], ref[1][1, 8]
+                    )
             else:
-                checks["row0_sees_row7"] = not np.array_equal(
+                checks[f"row0_sees_row{m.batch - 1}"] = not np.array_equal(
                     other[1][1, 0], ref[1][1, 0]
                 )
                 rng = np.random.default_rng(20261008 + p)
                 keys = (
-                    rng.normal(0, 0.2, (m.layers, 8, 1024))
+                    rng.normal(0, 0.2, (m.layers, m.batch, 1024))
                     .astype(bfloat16)
                     .view(np.uint16)
                 )
                 vals = (
-                    rng.normal(0, 0.2, (m.layers, 8, 1024))
+                    rng.normal(0, 0.2, (m.layers, m.batch, 1024))
                     .astype(bfloat16)
                     .view(np.uint16)
                 )
-                start = max(0, p - 8)
+                start = max(0, p - m.batch)
                 seed()
-                before = (digest(state[:, :, :start]), digest(state[:, :, start + 8 :]))
+                before = (
+                    digest(state[:, :, :start]),
+                    digest(state[:, :, start + m.batch :]),
+                )
                 m.append_context_kv(keys, vals, start)
                 m.bo["kv"].sync(m.FROM)
                 checks["injection_other_words_unchanged"] = before == (
                     digest(state[:, :, :start]),
-                    digest(state[:, :, start + 8 :]),
+                    digest(state[:, :, start + m.batch :]),
                 )
                 checks["injected_KV_exact"] = all(
                     np.array_equal(
-                        state[:, off : off + 2, start : start + 8],
-                        x.reshape(m.layers, 8, 2, 512).transpose(0, 2, 1, 3),
+                        state[:, off : off + 2, start : start + m.batch],
+                        x.reshape(m.layers, m.batch, 2, 512).transpose(0, 2, 1, 3),
                     )
                     for off, x in ((0, keys), (2, vals))
                 )
@@ -168,7 +205,8 @@ def main(a):
             save()
             assert all(checks.values()), row
             print(
-                json.dumps(dict(prefix=p, passed=True, checks=len(checks))), flush=True
+                json.dumps(dict(prefix=p, passed=True, checks=len(checks))),
+                flush=True,
             )
         r.update(passed=True, status="passed")
         save()
@@ -184,7 +222,5 @@ if __name__ == "__main__":
     for key in ("artifact", "output"):
         p.add_argument("--" + key, type=Path, required=True)
     p.add_argument("--role", choices=("target", "drafter"), required=True)
-    p.add_argument(
-        "--prefixes", type=int, nargs="+", default=[0, 7, 16, 31, 64, 112, 1024, 4088]
-    )
+    p.add_argument("--prefixes", type=int, nargs="+", default=None)
     main(p.parse_args())

@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""B8 attention: eight four-query/head shards and two Q/K relays.
+"""B8/B16 attention: eight four-query/head shards and two Q/K relays.
 
 This file is the selected fused-shards attention graph used by target and drafter builds.
 Keep each query's key-block order and pair grouping unchanged. The full decoder
@@ -95,14 +95,14 @@ class ParallelAttentionGraph:
         fn.attributes["link_with_mode"] = self.f.StringAttr.get("merge")
         return fn
 
-    def query(self, slab):
+    def query(self, slab, rows=None):
         f = self.f
         for group in range(2):
             f.ChannelPut(
                 f"pqcol{group}",
                 slab,
                 offsets=[0, 0, group * 16, 0],
-                sizes=[f.BATCH, 16, 16, 8],
+                sizes=[f.BATCH if rows is None else rows, 16, 16, 8],
                 strides=[4096, 8, 128, 1],
             )
 
@@ -155,9 +155,13 @@ class ParallelAttentionGraph:
                     )
                     for kind, buf in (("K", kb), ("V", vb)):
                         f.ChannelGet(
-                            (f"inKV_{kind}"),
+                            (
+                                f"inKV_{kind}_group{group}"
+                                if f.BATCH == 16
+                                else f"inKV_{kind}"
+                            ),
                             buf,
-                            indices=[ix(group)],
+                            indices=[] if f.BATCH == 16 else [ix(group)],
                         )
                     f.ChannelPut(
                         f"pkcol{group}",
@@ -396,6 +400,11 @@ class ParallelAttentionGraph:
 
     def gather(self, slab):
         f = self.f
+        # Two eight-row core sends form one complete producer transaction for
+        # B16. Independent shard receivers let every shard drain wave 0 while
+        # wave 1 starts; the projection reader waits for all complete receives.
+        # B16 builds use AIR's automatic lock strategy for this fan-in. Forcing
+        # a chain here serializes the receivers and can stall shared KV supply.
         for cu in range(4):
             f.ChannelGet(
                 "parallel_attention_output",

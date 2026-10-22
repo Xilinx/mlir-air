@@ -14,11 +14,13 @@ TARGET_LAYERS = 36
 DRAFT_LAYERS = 5
 
 
-def selected_config(role: str) -> TargetConfig:
+def selected_config(role: str, block_size: int = BATCH) -> TargetConfig:
     if role not in ("target", "drafter"):
         raise ValueError("role must be target or drafter")
     return TargetConfig(
         role=role,
+        batch=block_size,
+        projection_schedule="2x2" if block_size == 16 else "groups",
         capacity=CAPACITY,
         layers=TARGET_LAYERS if role == "target" else DRAFT_LAYERS,
         causal=role == "target",
@@ -26,7 +28,7 @@ def selected_config(role: str) -> TargetConfig:
 
 
 def require_selected(config: TargetConfig, role: str) -> None:
-    expected = asdict(selected_config(role))
+    expected = asdict(selected_config(role, config.batch))
     observed = asdict(config)
     if observed != expected:
         differences = {

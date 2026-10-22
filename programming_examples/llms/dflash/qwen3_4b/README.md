@@ -1,8 +1,11 @@
-# Qwen3-4B DFlash B8
+# Qwen3-4B DFlash B8 and B16
 
 Run Qwen3-4B with greedy, thinking-disabled speculative decoding on AMD NPU2.
 The selected mapping uses cached normalized activations, parallel attention
 shards, native K layout, and reuse of the attention P/V operands.
+B8 is the default; set `BLOCK_SIZE=16` for the two-wave B16 mapping.
+The results below describe B8. See [B16](docs/b16-megakernel.md) for its mapping
+and separately recorded qualification.
 
 **Current-base Full20 result:** 42.240 decode tokens/s versus 15.775 tokens/s
 for B1 (**2.678×**), on HX370/NPU2 with upstream `4bf1d78f` and the included
@@ -62,6 +65,12 @@ make compile-baseline  # Current upstream B1, for the paired study
 make full20            # Nightly paired B1 + DFlash, 4 inputs per dataset
 make full80            # Optional paired B1 + DFlash, 16 inputs per dataset
 make profile           # Short fixed-prompt NPU prefill + decode profile
+
+make compile BLOCK_SIZE=16
+make run BLOCK_SIZE=16
+make verify BLOCK_SIZE=16
+make compile-baseline BLOCK_SIZE=16
+make full20 BLOCK_SIZE=16
 ```
 
 NPU execution is serialized with `/tmp/mlir-air-npu.lock`. `chat` treats each prompt as an
@@ -80,14 +89,18 @@ The local Full20 LIT completes in **13.8 minutes** with cached builds; see
 | Component | Source and computation |
 |---|---|
 | Target | `FastFlowLM/Qwen3-4B-NPU2` Q4NX bundle for `Qwen/Qwen3-4B`; 36 decoder layers |
-| Drafter | `z-lab/Qwen3-4B-DFlash-b16`; five layers, executed with block size 8 |
+| Drafter | `z-lab/Qwen3-4B-DFlash-b16`; five layers, executed with block size 8 or 16 |
 | Decoder projections | Group32 affine Q4 weights; BF16 activations; BFP16 matrix products with FP32 accumulators |
 | Context preparation | Official BF16 projection weights; BF16/BFP16 matrix products, normalization and RoPE |
 | Host loop | Greedy acceptance; no sampling or thinking mode |
 
-The checkpoint is trained at block size 16; this example uses its first eight
-positions. Each round processes an anchor and seven proposed positions. The
-number of newly emitted tokens is between one and eight.
+The checkpoint is trained at block size 16. B8 uses its first eight positions;
+B16 uses all sixteen. Each round processes one anchor and `BLOCK_SIZE - 1`
+proposed positions, emitting between one and `BLOCK_SIZE` new tokens.
+B8 artifacts default to `build/`, B16 to `build_b16/`. If you override
+`BUILD_DIR`, use a distinct directory for each block size; the builder rejects
+configuration mismatches. Checkpoints, packed weights, and benchmark downloads
+are shared across both configurations.
 
 `model_paths.py` records exact checkpoint revisions. Packed caches default to
 `~/.cache/mlir-air/dflash/qwen3_4b/` and can be overridden with
@@ -104,6 +117,8 @@ checkpoint and context-preparation weights, not all decoder projections.
   shared upstream code and validation entry points.
 - [From B1 to B8](docs/b8-megakernel.md): operator changes, weight reuse,
   activation storage, parallel attention, hardware constraints and source anchors.
+- [B16 mapping](docs/b16-megakernel.md): two residual/cache pairs, projection
+  scheduling, two-wave attention and block-size-specific commands.
 - [speculative.py](../common/speculative.py): complete greedy draft/verify/commit loop.
 - [batch_graph.py](batch_graph.py), [fused_attention_graph.py](../common/fused_attention_graph.py),
   [kernels/](../common/kernels): AIR mapping and compute-tile implementation.

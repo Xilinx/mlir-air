@@ -146,3 +146,13 @@ Outside this example, the PR updates the LLM weight list/download workflow,
 CMake/LIT suite discovery, nested model-result association and nightly result
 collection. The three AIR compiler fixes and two shared kernel/loader changes
 are described with their regression tests in [compatibility](compatibility.md).
+
+## B16 extension
+
+`selected_config.py` and `target_config.py` select the explicit B8 or B16
+profile. `b16_owners.py` owns B16's two residual/cache pairs. Shared
+`common/kernels/q4k_batch.h` implements the additional 2×2 projection schedule;
+`common/fused_attention_graph.py` runs and drains the two attention waves.
+The runtime loads block size from the saved manifest. `Makefile` separates
+artifacts, tests, and performance filenames through `BLOCK_SIZE`. See
+[b16-megakernel.md](b16-megakernel.md) for ownership and reproduction commands.

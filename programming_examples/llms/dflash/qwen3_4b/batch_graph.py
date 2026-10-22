@@ -80,9 +80,7 @@ def build_module(layout):
         ropeq_l1 = layout.MemRefType.get([layout.DQ_PADDED], bf16, memory_space=l1)
         ropekv_l1 = layout.MemRefType.get([layout.DK], bf16, memory_space=l1)
         ropelut_l1 = layout.MemRefType.get([layout.ROPE_W_LEN], bf16, memory_space=l1)
-        qmt_l2 = layout.MemRefType.get(
-            [layout.BATCH * layout.DQ_PADDED], bf16, memory_space=l2
-        )
+        qmt_l2 = layout.MemRefType.get([8 * layout.DQ_PADDED], bf16, memory_space=l2)
         omt_l2 = layout.MemRefType.get(
             [layout.BATCH * layout.DQ], bf16, memory_space=l2
         )
@@ -101,7 +99,7 @@ def build_module(layout):
         down_l2 = layout.MemRefType.get(
             [layout.BATCH * layout.GLU_OUT], bf16, memory_space=l2
         )
-        RELAY_COLS = [3, 5, 4][: layout.NDEST]
+        RELAY_COLS = [5 if layout.BATCH == 16 else 3, 5, 4][: layout.NDEST]
         mm_zero = layout.FuncOp(
             "proj_qmm_mm_zero", ([yacc_mm_l1, i32], []), visibility="private"
         )
@@ -118,30 +116,35 @@ def build_module(layout):
             visibility="private",
         )
         mm_flush.attributes["link_with"] = layout.StringAttr.get("proj_qmm.o")
-        rms_scale_row_aie = layout.FuncOp(
-            "rms_scale_row_aie",
-            ([rscl_l1, rmsb_l1, i32, i32], []),
-            visibility="private",
-        )
-        rms_scale_row_aie.attributes["link_with"] = layout.StringAttr.get(
-            "rms_residual.o"
-        )
-        rms_chunk_aie = layout.FuncOp(
-            "rms_chunk_aie",
-            ([rstg_l1, rmsb_l1, rms_l1, rscl_l1, i32, i32, i32], []),
-            visibility="private",
-        )
-        rms_chunk_aie.attributes["link_with"] = layout.StringAttr.get("rms_residual.o")
-        residual_acc_row_aie = layout.FuncOp(
-            "residual_acc_row_aie",
-            ([rmsb_l1, rstg_l1, i32, i32, i32], []),
-            visibility="private",
-        )
-        residual_acc_row_aie.attributes["link_with"] = layout.StringAttr.get(
-            "rms_residual.o"
-        )
+        if layout.BATCH == 8:
+            rms_scale_row_aie = layout.FuncOp(
+                "rms_scale_row_aie",
+                ([rscl_l1, rmsb_l1, i32, i32], []),
+                visibility="private",
+            )
+            rms_scale_row_aie.attributes["link_with"] = layout.StringAttr.get(
+                "rms_residual.o"
+            )
+            rms_chunk_aie = layout.FuncOp(
+                "rms_chunk_aie",
+                ([rstg_l1, rmsb_l1, rms_l1, rscl_l1, i32, i32, i32], []),
+                visibility="private",
+            )
+            rms_chunk_aie.attributes["link_with"] = layout.StringAttr.get(
+                "rms_residual.o"
+            )
+            residual_acc_row_aie = layout.FuncOp(
+                "residual_acc_row_aie",
+                ([rmsb_l1, rstg_l1, i32, i32, i32], []),
+                visibility="private",
+            )
+            residual_acc_row_aie.attributes["link_with"] = layout.StringAttr.get(
+                "rms_residual.o"
+            )
         glu_row_aie = layout.FuncOp(
-            "glu_row_aie", ([glu_hid_l1, glu_x_l1, i32, i32], []), visibility="private"
+            "glu_row_aie",
+            ([glu_hid_l1, glu_x_l1, i32, i32], []),
+            visibility="private",
         )
         glu_row_aie.attributes["link_with"] = layout.StringAttr.get("glu.o")
         glu_copy_aie = layout.FuncOp(
@@ -157,13 +160,18 @@ def build_module(layout):
         )
         rope_compute.attributes["link_with"] = layout.StringAttr.get("rope.o")
         parallel_attention = layout.ParallelAttentionGraph(layout)
-        assert layout.BATCH == 8 and layout.XCHUNK == 512
-        cache_copy = layout.FuncOp(
-            "normalized_cache_chunk",
-            ([rstg_l1, rmsb_l1, i32], []),
-            visibility="private",
-        )
-        cache_copy.attributes["link_with"] = layout.StringAttr.get("norm_cache.o")
+        from b16_owners import B16Owners
+
+        owners = B16Owners(layout) if layout.BATCH == 16 else None
+        assert layout.BATCH in (8, 16)
+        assert layout.XCHUNK == (256 if layout.BATCH == 16 else 512)
+        if owners is None:
+            cache_copy = layout.FuncOp(
+                "normalized_cache_chunk",
+                ([rstg_l1, rmsb_l1, i32], []),
+                visibility="private",
+            )
+            cache_copy.attributes["link_with"] = layout.StringAttr.get("norm_cache.o")
         layout.channel_decl("rmsX", size=[1], channel_type="npu_dma_packet")
         layout.channel_decl("rmsW", size=[1])
         layout.channel_decl("rmsW2", size=[1])
@@ -171,10 +179,11 @@ def build_module(layout):
         # slab over a circuit stream. xnorm replays cached chunks as packets
         # through the activation MemTile to the projection cores.
         layout.channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
-        _fill = layout.channel_decl("xnorm_fill", size=[1])
-        _fill.operation.attributes["air.tile_dma_channel"] = layout.IntegerAttr.get(
-            i32, 0
-        )
+        if owners is None:
+            _fill = layout.channel_decl("xnorm_fill", size=[1])
+            _fill.operation.attributes["air.tile_dma_channel"] = layout.IntegerAttr.get(
+                i32, 0
+            )
         _XCHUNK = layout.XCHUNK
 
         def _xnorm_put(buf, width, **kw):
@@ -200,7 +209,11 @@ def build_module(layout):
         layout.channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
         layout.channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
         for kind in ("K", "V"):
-            layout.channel_decl(f"inKV_{kind}", size=[len(layout.ATTN_COL_GROUPS)])
+            if owners is not None:
+                for gi in range(len(layout.ATTN_COL_GROUPS)):
+                    layout.channel_decl(f"inKV_{kind}_group{gi}", size=[1])
+            else:
+                layout.channel_decl(f"inKV_{kind}", size=[len(layout.ATTN_COL_GROUPS)])
         for _wc in range(layout.NCX):
             for _nm in (layout._wname(0, _wc), layout._wname(1, _wc)):
                 layout.channel_decl(_nm, size=[1])
@@ -396,23 +409,53 @@ def build_module(layout):
                                 idx(layout.VOCAB_SIZE_PADDED * layout.BATCH),
                             ),
                         )
-                        layout.ChannelPut(
-                            "rmsX",
-                            X,
-                            offsets=[_x_final],
-                            sizes=[layout.BATCH * layout.K],
-                            strides=[1],
-                        )
-                        layout.ChannelPut(
-                            "rmsW",
-                            RMS,
-                            offsets=[_final_norm_off],
-                            sizes=[layout.K],
-                            strides=[1],
-                        )
-                        layout.ChannelPut(
-                            "rmsW2", RMS, offsets=[0], sizes=[layout.K], strides=[1]
-                        )
+                        if owners is not None:
+                            layout.ChannelPut(
+                                "owner_source_host",
+                                X,
+                                indices=[0],
+                                offsets=[_x_final],
+                                sizes=[layout.BATCH * layout.K],
+                                strides=[1],
+                            )
+                            layout.ChannelPut(
+                                "owner_source_host",
+                                RMS,
+                                indices=[0],
+                                offsets=[_final_norm_off],
+                                sizes=[layout.K],
+                                strides=[1],
+                            )
+                            layout.ChannelPut(
+                                "owner_source_host",
+                                RMS,
+                                indices=[0],
+                                offsets=[0],
+                                sizes=[layout.K],
+                                strides=[1],
+                            )
+                        else:
+                            layout.ChannelPut(
+                                "rmsX",
+                                X,
+                                offsets=[_x_final],
+                                sizes=[layout.BATCH * layout.K],
+                                strides=[1],
+                            )
+                            layout.ChannelPut(
+                                "rmsW",
+                                RMS,
+                                offsets=[_final_norm_off],
+                                sizes=[layout.K],
+                                strides=[1],
+                            )
+                            layout.ChannelPut(
+                                "rmsW2",
+                                RMS,
+                                offsets=[0],
+                                sizes=[layout.K],
+                                strides=[1],
+                            )
                         assert layout.VOCAB_PER_COL % layout.NCY == 0
                         _colspan = layout.VOCAB_PER_COL * blk
                         _feed_wcols(_vwb, _colspan, layout.VOCAB_PER_COL // layout.NCY)
@@ -431,27 +474,58 @@ def build_module(layout):
                         layout.yield_([])
 
                     def _uni_dec():
-                        layout.ChannelPut(
-                            "rmsX",
-                            X,
-                            offsets=[_x_in()],
-                            sizes=[layout.BATCH * layout.K],
-                            strides=[1],
-                        )
-                        layout.ChannelPut(
-                            "rmsW", RMS, offsets=[_rbase], sizes=[layout.K], strides=[1]
-                        )
-                        layout.ChannelPut(
-                            "rmsW2",
-                            RMS,
-                            offsets=[_lo(_rbase, layout.K)],
-                            sizes=[layout.K],
-                            strides=[1],
-                        )
+                        if owners is not None:
+                            layout.ChannelPut(
+                                "owner_source_host",
+                                X,
+                                indices=[0],
+                                offsets=[_x_in()],
+                                sizes=[layout.BATCH * layout.K],
+                                strides=[1],
+                            )
+                            layout.ChannelPut(
+                                "owner_source_host",
+                                RMS,
+                                indices=[0],
+                                offsets=[_rbase],
+                                sizes=[layout.K],
+                                strides=[1],
+                            )
+                            layout.ChannelPut(
+                                "owner_source_host",
+                                RMS,
+                                indices=[0],
+                                offsets=[_lo(_rbase, layout.K)],
+                                sizes=[layout.K],
+                                strides=[1],
+                            )
+                        else:
+                            layout.ChannelPut(
+                                "rmsX",
+                                X,
+                                offsets=[_x_in()],
+                                sizes=[layout.BATCH * layout.K],
+                                strides=[1],
+                            )
+                            layout.ChannelPut(
+                                "rmsW",
+                                RMS,
+                                offsets=[_rbase],
+                                sizes=[layout.K],
+                                strides=[1],
+                            )
+                            layout.ChannelPut(
+                                "rmsW2",
+                                RMS,
+                                offsets=[_lo(_rbase, layout.K)],
+                                sizes=[layout.K],
+                                strides=[1],
+                            )
                         _lut_off = layout.UNI_DEC * layout.RMS_LAYER
                         _rope_off = _lo(_lb(layout.BATCH * layout.ROPE_W_LEN), _lut_off)
-                        # One RoPE LUT row per token, in token order.
-                        _tl_range = range(layout.BATCH)
+                        # B16 uses one contiguous transfer to avoid filling the
+                        # shim queue before projection weights can be issued.
+                        _tl_range = range(1 if owners is not None else layout.BATCH)
                         for _tl in _tl_range:
                             _lo_t = _tl * layout.ROPE_W_LEN
                             if not _lo_t:
@@ -464,7 +538,10 @@ def build_module(layout):
                                 "ropeLUT",
                                 RMS,
                                 offsets=[_off_t],
-                                sizes=[layout.ROPE_W_LEN * (1)],
+                                sizes=[
+                                    layout.ROPE_W_LEN
+                                    * (layout.BATCH if owners is not None else 1)
+                                ],
                                 strides=[1],
                             )
 
@@ -511,13 +588,20 @@ def build_module(layout):
                                 for _query in range(layout.KV_QUERY_GROUPS):
                                     for gi in range(layout.NGRP):
                                         layout.ChannelPut(
-                                            "inKV_K",
+                                            (
+                                                f"inKV_K_group{gi}"
+                                                if owners is not None
+                                                else "inKV_K"
+                                            ),
                                             KVC,
-                                            indices=[idx(gi)],
+                                            indices=(
+                                                [] if owners is not None else [idx(gi)]
+                                            ),
                                             offsets=_r0
                                             + [
                                                 _loi(
-                                                    _kbase, layout._kreg_off(gi) + _coff
+                                                    _kbase,
+                                                    layout._kreg_off(gi) + _coff,
                                                 )
                                             ],
                                             sizes=(
@@ -538,13 +622,20 @@ def build_module(layout):
                                             ),
                                         )
                                         layout.ChannelPut(
-                                            "inKV_V",
+                                            (
+                                                f"inKV_V_group{gi}"
+                                                if owners is not None
+                                                else "inKV_V"
+                                            ),
                                             KVC,
-                                            indices=[idx(gi)],
+                                            indices=(
+                                                [] if owners is not None else [idx(gi)]
+                                            ),
                                             offsets=_r0
                                             + [
                                                 _loi(
-                                                    _kbase, layout._vreg_off(gi) + _coff
+                                                    _kbase,
+                                                    layout._vreg_off(gi) + _coff,
                                                 )
                                             ],
                                             sizes=(
@@ -597,14 +688,26 @@ def build_module(layout):
                             roff += layout.ROUNDS_PER_DEST[p]
                         _out_bo = X
                         _out_base = _x_out()
-                        layout.ChannelGet(
-                            "layerOut",
-                            _out_bo,
-                            indices=[idx(0)],
-                            offsets=[_out_base],
-                            sizes=[layout.BATCH * layout.LAYER_RNDS * layout.PAYLOAD],
-                            strides=[1],
-                        )
+                        if owners is not None:
+                            for owner in range(2):
+                                layout.ChannelGet(
+                                    f"owner_final_{owner}",
+                                    _out_bo,
+                                    offsets=[_lo(_out_base, owner * 8 * layout.K)],
+                                    sizes=[8 * layout.K],
+                                    strides=[1],
+                                )
+                        else:
+                            layout.ChannelGet(
+                                "layerOut",
+                                _out_bo,
+                                indices=[idx(0)],
+                                offsets=[_out_base],
+                                sizes=[
+                                    layout.BATCH * layout.LAYER_RNDS * layout.PAYLOAD
+                                ],
+                                strides=[1],
+                            )
                         layout.yield_([])
 
                     layout.index_switch(
@@ -632,7 +735,9 @@ def build_module(layout):
 
                     if _seg_iv is not None:
                         _seg_cmp = layout.arith.cmpi(
-                            layout.arith.CmpIPredicate.slt, _seg_iv, idx(layout.UNI_DEC)
+                            layout.arith.CmpIPredicate.slt,
+                            _seg_iv,
+                            idx(layout.UNI_DEC),
                         )
                         _seg_arm = layout.arith.select(
                             _seg_cmp,
@@ -650,6 +755,11 @@ def build_module(layout):
                         _seg_arm = layout.arith.ConstantOp(
                             layout.IntegerAttr.get(i32, 1), None
                         ).result
+
+                    if owners is not None:
+                        # The second normalized cache joins both row groups
+                        # in L1 and feeds projections on its own packet stream.
+                        owners.emit(_seg_arm)
 
                     def _feed_inX(src, total_chunks):
                         for _rc in layout.for_(idx(0), idx(total_chunks), idx(1)):
@@ -969,10 +1079,10 @@ def build_module(layout):
                         layout.T.i64(), layout.RMS_PCOL
                     )
                     rope_h.attributes["y_loc"] = layout.IntegerAttr.get(
-                        layout.T.i64(), 3
+                        layout.T.i64(), 5 if owners is not None else 3
                     )
 
-                    def _qmtb_dec():
+                    def _qmtb_wave():
                         qmtb = layout.AllocOp(qmt_l2, [], [])
                         qmtb.operation.attributes["air.memtile_col"] = (
                             layout.IntegerAttr.get(layout.T.i32(), 5)
@@ -982,11 +1092,19 @@ def build_module(layout):
                             qmtb,
                             indices=[idx(0)],
                             offsets=[idx(0)],
-                            sizes=[idx(layout.BATCH * layout.DQ_PADDED)],
+                            sizes=[idx(8 * layout.DQ_PADDED)],
                             strides=[idx(1)],
                         )
-                        parallel_attention.query(qmtb)
+                        parallel_attention.query(qmtb, rows=8)
                         layout.DeallocOp(qmtb)
+
+                    def _qmtb_dec():
+                        if owners is None:
+                            _qmtb_wave()
+                        else:
+                            for wave in layout.for_(idx(0), idx(2), idx(1)):
+                                _qmtb_wave()
+                                layout.yield_([])
 
                     if _seg_arm_i is not None:
 
@@ -1214,7 +1332,8 @@ def build_module(layout):
                     )
                     db = layout.AllocOp(down_l2, [], [])
                     db.operation.attributes["air.memtile_col"] = layout.IntegerAttr.get(
-                        layout.T.i32(), layout.DOWN_PCOL
+                        layout.T.i32(),
+                        3 if owners is not None else layout.DOWN_PCOL,
                     )
                     for _s in layout.for_(idx(0), idx(layout.NGLU), idx(1)):
                         soff = layout.arith.muli(_s, idx(layout.GLU_HID))
@@ -1491,7 +1610,13 @@ def build_module(layout):
                                 for t in range(layout.BATCH):
                                     layout.CallOp(
                                         residual_acc_row_aie,
-                                        [xb, stg, _i32(t), off, _i32(layout.PAYLOAD)],
+                                        [
+                                            xb,
+                                            stg,
+                                            _i32(t),
+                                            off,
+                                            _i32(layout.PAYLOAD),
+                                        ],
                                     )
                                 layout.yield_([])
 
@@ -1516,78 +1641,89 @@ def build_module(layout):
                         for _b in (w2, w, scl, stg, xb):
                             layout.DeallocOp(_b)
 
-                    rms_h = layout.herd(name="rms", sizes=[1, 1], operands=[_arm_rms])(
-                        _rms_body
-                    )
-                    rms_h.attributes["link_with"] = layout.StringAttr.get(
-                        "rms_residual.o"
-                    )
-                    rms_h.attributes["x_loc"] = layout.IntegerAttr.get(
-                        layout.T.i64(), layout.RMS_PCOL
-                    )
-                    rms_h.attributes["y_loc"] = layout.IntegerAttr.get(
-                        layout.T.i64(), 2
-                    )
+                    if owners is None:
+                        rms_h = layout.herd(
+                            name="rms", sizes=[1, 1], operands=[_arm_rms]
+                        )(_rms_body)
+                        rms_h.attributes["link_with"] = layout.StringAttr.get(
+                            "rms_residual.o"
+                        )
+                        rms_h.attributes["x_loc"] = layout.IntegerAttr.get(
+                            layout.T.i64(), layout.RMS_PCOL
+                        )
+                        rms_h.attributes["y_loc"] = layout.IntegerAttr.get(
+                            layout.T.i64(), 2
+                        )
 
-                    @layout.herd(name="norm_cache", sizes=[1, 1], operands=[_arm_rms])
-                    def cache_h(tx, ty, sx, sy, arm):
-                        slab = layout.AllocOp(rmsb_l1, [], [])
-                        out = layout.AllocOp(rstg_l1, [], [])
-                        for buf in (slab, out):
-                            buf.operation.attributes["air.disable_alloc_sink"] = (
+                        @layout.herd(
+                            name="norm_cache", sizes=[1, 1], operands=[_arm_rms]
+                        )
+                        def cache_h(tx, ty, sx, sy, arm):
+                            slab = layout.AllocOp(rmsb_l1, [], [])
+                            out = layout.AllocOp(rstg_l1, [], [])
+                            for buf in (slab, out):
+                                buf.operation.attributes["air.disable_alloc_sink"] = (
+                                    layout.UnitAttr.get()
+                                )
+
+                            def emit(count):
+                                layout.ChannelGet("xnorm_fill", slab)
+                                for _r in layout.for_(idx(0), count, idx(1)):
+                                    for c in layout.for_(
+                                        idx(0),
+                                        idx(layout.K // layout.XCHUNK),
+                                        idx(1),
+                                    ):
+                                        layout.CallOp(
+                                            cache_copy,
+                                            [
+                                                out,
+                                                slab,
+                                                layout.arith.index_cast(i32, c),
+                                            ],
+                                        )
+                                        layout.ChannelPut(
+                                            "xnorm",
+                                            out,
+                                            offsets=[idx(0)],
+                                            sizes=[idx(layout.BATCH * layout.XCHUNK)],
+                                            strides=[idx(1)],
+                                        )
+                                        layout.yield_([])
+                                    layout.yield_([])
+
+                            is_decode = layout.arith.cmpi(
+                                layout.arith.CmpIPredicate.ne,
+                                arm,
+                                layout.arith.ConstantOp(
+                                    layout.IntegerAttr.get(i32, 0), None
+                                ).result,
+                            )
+                            first_count = layout.arith.select(
+                                is_decode,
+                                idx(layout.REFEED[0]),
+                                idx(layout.VOCAB_RNDS),
+                            )
+                            emit(first_count)
+                            branch = layout.IfOp(is_decode, [], has_else=False)
+                            branch.operation.attributes["air.arm_select"] = (
                                 layout.UnitAttr.get()
                             )
-
-                        def emit(count):
-                            layout.ChannelGet("xnorm_fill", slab)
-                            for _r in layout.for_(idx(0), count, idx(1)):
-                                for c in layout.for_(
-                                    idx(0), idx(layout.K // layout.XCHUNK), idx(1)
-                                ):
-                                    layout.CallOp(
-                                        cache_copy,
-                                        [out, slab, layout.arith.index_cast(i32, c)],
-                                    )
-                                    layout.ChannelPut(
-                                        "xnorm",
-                                        out,
-                                        offsets=[idx(0)],
-                                        sizes=[idx(layout.BATCH * layout.XCHUNK)],
-                                        strides=[idx(1)],
-                                    )
-                                    layout.yield_([])
+                            with layout.InsertionPoint(branch.thenRegion.blocks[0]):
+                                emit(idx(layout.REFEED[layout.GATEUP_PHASE]))
                                 layout.yield_([])
+                            layout.DeallocOp(out)
+                            layout.DeallocOp(slab)
 
-                        is_decode = layout.arith.cmpi(
-                            layout.arith.CmpIPredicate.ne,
-                            arm,
-                            layout.arith.ConstantOp(
-                                layout.IntegerAttr.get(i32, 0), None
-                            ).result,
+                        cache_h.attributes["link_with"] = layout.StringAttr.get(
+                            "norm_cache.o"
                         )
-                        first_count = layout.arith.select(
-                            is_decode, idx(layout.REFEED[0]), idx(layout.VOCAB_RNDS)
+                        cache_h.attributes["x_loc"] = layout.IntegerAttr.get(
+                            layout.T.i64(), layout.RMS_PCOL
                         )
-                        emit(first_count)
-                        branch = layout.IfOp(is_decode, [], has_else=False)
-                        branch.operation.attributes["air.arm_select"] = (
-                            layout.UnitAttr.get()
+                        cache_h.attributes["y_loc"] = layout.IntegerAttr.get(
+                            layout.T.i64(), 3
                         )
-                        with layout.InsertionPoint(branch.thenRegion.blocks[0]):
-                            emit(idx(layout.REFEED[layout.GATEUP_PHASE]))
-                            layout.yield_([])
-                        layout.DeallocOp(out)
-                        layout.DeallocOp(slab)
-
-                    cache_h.attributes["link_with"] = layout.StringAttr.get(
-                        "norm_cache.o"
-                    )
-                    cache_h.attributes["x_loc"] = layout.IntegerAttr.get(
-                        layout.T.i64(), layout.RMS_PCOL
-                    )
-                    cache_h.attributes["y_loc"] = layout.IntegerAttr.get(
-                        layout.T.i64(), 3
-                    )
 
             def _emit_wave_loop(lo, hi):
                 if lo >= hi:

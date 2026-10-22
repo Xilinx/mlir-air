@@ -16,13 +16,20 @@ def verification_status(xml_file, llms_root="programming_examples/llms"):
         names = re.findall(r"^//\s*PERF_MODEL:\s*(\S+)", text, re.M)
         names += re.findall(r"extract_perf\.py\b.*--model\s+(\S+)", text)
         aliases.setdefault(directory, set()).update(names)
+    # Multiple block sizes share a model directory. A verification test may
+    # identify its own profile explicitly instead of qualifying every variant.
+    exact = {}
+    for lit in root.rglob("run_npu2_verify*.lit"):
+        names = re.findall(r"^//\s*PERF_MODEL:\s*(\S+)", lit.read_text(), re.M)
+        if names:
+            exact[lit.relative_to(root).as_posix()] = set(names)
     result = {}
     rank = {"skip": 0, "pass": 1, "fail": 2}
     if not Path(xml_file).exists():
         return result
     for case in ET.parse(xml_file).getroot().iter("testcase"):
         name = (case.get("classname") or "") + " " + (case.get("name") or "")
-        match = re.search(r"llms/([^ ]+?)[ /]run_npu2_verify", name)
+        match = re.search(r"llms/([^ ]+?)[ /](run_npu2_verify[^ ]*?\.lit)", name)
         if not match:
             continue
         directory = match.group(1)
@@ -31,7 +38,11 @@ def verification_status(xml_file, llms_root="programming_examples/llms"):
             if next(case.iter("failure"), None) is not None
             else "skip" if next(case.iter("skipped"), None) is not None else "pass"
         )
-        names = aliases.get(directory) or {directory.replace("/", "_")}
+        names = (
+            exact.get(directory + "/" + match.group(2))
+            or aliases.get(directory)
+            or {directory.replace("/", "_")}
+        )
         for model in names:
             if model not in result or rank[status] > rank[result[model]]:
                 result[model] = status

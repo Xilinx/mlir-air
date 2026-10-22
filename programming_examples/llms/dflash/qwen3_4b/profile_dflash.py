@@ -18,7 +18,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--build", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--model", default="qwen3_4b_dflash_b8")
+    p.add_argument(
+        "--model", help="Optional identity, checked against the loaded block size"
+    )
     p.add_argument("--prompt", default="Introduce me what is GPU")
     p.add_argument("--tokens", type=int, default=256)
     a = p.parse_args()
@@ -29,6 +31,9 @@ def main():
         prepass_artifacts=a.build / "prepass",
         prefill_artifacts=a.build / "prefill_C2048",
     )
+    model = f"qwen3_4b_dflash_b{loop.batch}"
+    if a.model is not None and a.model != model:
+        raise ValueError(f"Loaded artifacts are {model}, not {a.model}")
     # Both measurements call the function run/chat use; warmup is excluded.
     run_prompt(
         loop,
@@ -47,7 +52,7 @@ def main():
     if row["decode_tokens"] <= 0 or row["decode_seconds"] <= 0:
         raise RuntimeError("Profile produced no timed decode tokens")
     result = dict(
-        model=a.model,
+        model=model,
         timestamp_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         runner="",
         verify_status="",
@@ -60,7 +65,7 @@ def main():
         run_params=dict(
             prompt=a.prompt,
             n_tokens=a.tokens,
-            batch=8,
+            batch=loop.batch,
             thinking=False,
             protocol="dflash-npu-prefill-profile-v1",
         ),
