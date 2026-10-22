@@ -38,7 +38,6 @@ namespace air {
 // Centralized so producers and consumers agree (a mistyped literal silently
 // no-ops). See the AIRRtToNpu / AIRToAIE passes for their semantics.
 namespace attrs {
-constexpr StringLiteral RuntimeHoist = "air.runtime_hoist";
 constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 // Marker on a shim MM2S configure task produced by the coalesce-shim-dma merge:
 // its BD covers a whole contiguous run merged from several smaller feeds, so
@@ -136,7 +135,7 @@ constexpr StringLiteral DisableAllocSink = "air.disable_alloc_sink";
 constexpr int kMaxPacketID = 31;
 
 // Copy the DMA-steering / runtime-ordering markers
-// (attrs::RuntimeHoist, RefeedCount, PacketIDs, KeepPktHeader) that must
+// (RefeedCount, PacketIDs, KeepPktHeader) that must
 // survive channel-op re-instantiation from src to dst. Single source of truth
 // for the marker set, so copy sites (Util::copyPaddingAttributes,
 // ComposeMemrefOpOnChannelOp, SpecializeChannelBundlePattern) cannot diverge.
