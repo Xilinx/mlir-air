@@ -54,7 +54,11 @@ def runtime_identity(engine="dflash"):
         baseline_source_sha256=(
             {
                 name: hashlib.sha256((fused / name).read_bytes()).hexdigest()
-                for name in ("decode_insts_gen.py", "decode_staircase.py", "decode_elf.py")
+                for name in (
+                    "decode_insts_gen.py",
+                    "decode_staircase.py",
+                    "decode_elf.py",
+                )
             }
             if engine == "b1"
             else {}

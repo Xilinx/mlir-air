@@ -88,7 +88,9 @@ def _bf(a):
 class Qwen3Q4nxPrefill:
     """AIR realization of the Q4NX causal-LM prefill interface (Qwen3-8B)."""
 
-    def __init__(self, seq_len=2048, n_layers=36, cache_dir=None, verbose=False, *, cache=None):
+    def __init__(
+        self, seq_len=2048, n_layers=36, cache_dir=None, verbose=False, *, cache=None
+    ):
         self.seq = seq_len
         self.n_layers = n_layers
         self.MAX_L = seq_len
@@ -109,7 +111,11 @@ class Qwen3Q4nxPrefill:
         # attention backend, since only one of the two builds flash_attn).
         _att = "cpu" if self.cpu_attn else "fa"
         cache_dir = cache_dir or str(_HERE / f"_q4nx_cache_seq{seq_len}_{_att}")
-        self.cache = cache if cache is not None else KernelCache(cache_dir=cache_dir, verbose=verbose)
+        self.cache = (
+            cache
+            if cache is not None
+            else KernelCache(cache_dir=cache_dir, verbose=verbose)
+        )
 
         self.D = self.config.emb_dim
         self.KV_DIM = self.config.n_kv_heads * self.config.head_dim

@@ -1394,7 +1394,7 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
 // depend on all replays of an earlier one, so sharing one in-order drain ring
 // is not justified even if both buffers have the same refeed count.
 static bool independentMemtileReplays(air::MemcpyInterface a,
-                                     air::MemcpyInterface b) {
+                                      air::MemcpyInterface b) {
   auto av = a.getSrcMemref(), bv = b.getSrcMemref();
   if (!av || !bv)
     return false;
@@ -3326,7 +3326,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   // its tile_type).
   int memtile_dma_channels =
       isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
-                    : tile.getNumDestConnections(AIE::WireBundle::DMA);
+                     : tile.getNumDestConnections(AIE::WireBundle::DMA);
   if (needsIndependentReplay && num_allocs >= unsigned(memtile_dma_channels))
     return memcpyOp.emitOpError(
         "no free MemTile MM2S channel for an independent resident replay; "

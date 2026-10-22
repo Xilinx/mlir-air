@@ -11,15 +11,17 @@
 // RTP word displaced .data to ...e004, whereas the standalone probe happened
 // to place it at ...a000. Use the actual API requirement, not the older 32-byte
 // vector annotation; ...e020 also fails the NPU2 requirement.
-extern float activation_lut_ab[] __attribute__((aligned(aie::vector_decl_align)));
-extern float activation_lut_cd[] __attribute__((aligned(aie::vector_decl_align)));
+extern float activation_lut_ab[]
+    __attribute__((aligned(aie::vector_decl_align)));
+extern float activation_lut_cd[]
+    __attribute__((aligned(aie::vector_decl_align)));
 #include "fused_decode/kernels/glu.cc"
 
 static_assert(GLU_SLICE == 1024);
 // The core receives [up/gate wave, token, 512] linearly. A DMA scatter into
 // [token,1024] would require an unencodable 256-word innermost wrap on NPU2.
-extern "C" void glu_row_aie(bf16 *__restrict y, bf16 *__restrict x,
-                             int row, int arm) {
+extern "C" void glu_row_aie(bf16 *__restrict y, bf16 *__restrict x, int row,
+                            int arm) {
   (void)arm;
   aie_round_nearest_even();
   const bf16 *up = x + row * 512;
@@ -31,8 +33,8 @@ extern "C" void glu_row_aie(bf16 *__restrict y, bf16 *__restrict x,
   }
 }
 
-extern "C" void glu_copy_aie(bf16 *__restrict y, bf16 *__restrict x,
-                              int offset, int size, int arm) {
+extern "C" void glu_copy_aie(bf16 *__restrict y, bf16 *__restrict x, int offset,
+                             int size, int arm) {
   (void)arm;
   aie_round_nearest_even();
   // Vocabulary has no activation: restore [token,1024] while draining two

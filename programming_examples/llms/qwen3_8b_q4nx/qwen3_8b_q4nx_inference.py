@@ -212,7 +212,11 @@ class FusedDecoder:
         self.qm = gw.Q4nxModel(model)
         # Decode gathers embeddings and uses the packed untied head below.
         # Keep the BF16 embedding bits; avoid materializing an unused FP32 head.
-        self.embed = self.qm._raw_i16("model.embed_tokens.weight").view(bfloat16).reshape(-1, self.K)
+        self.embed = (
+            self.qm._raw_i16("model.embed_tokens.weight")
+            .view(bfloat16)
+            .reshape(-1, self.K)
+        )
         self.final_norm = np.asarray(self.qm.bf16("model.norm.weight"), bfloat16)
         self.qk = [
             self.qm.layer_qk_norm(L) for L in range(self.UNI_DEC)

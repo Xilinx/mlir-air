@@ -579,7 +579,9 @@ if "DECODE_PAIR_ROWS" in _os.environ:
     phase_blocks = [count * MODEL["PAIR_ROWS"] for count in MODEL["I2P"]]
     vocab_blocks = MODEL["VOCAB_CHUNK_I2"] * MODEL["PAIR_ROWS"]
     if any(count % pair_rows for count in phase_blocks + [vocab_blocks]):
-        raise ValueError("Projection phases cannot be divided into the requested row pairs")
+        raise ValueError(
+            "Projection phases cannot be divided into the requested row pairs"
+        )
     MODEL["I2P"] = [count // pair_rows for count in phase_blocks]
     MODEL["VOCAB_CHUNK_I2"] = vocab_blocks // pair_rows
     MODEL["PAIR_ROWS"] = pair_rows
