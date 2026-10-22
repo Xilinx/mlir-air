@@ -2032,9 +2032,8 @@ forward slashes.</p>
 <a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>-- Using AIEConfig.cmake in: .../mlir_aie/lib/cmake/aie
 <a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>-- Skipping e2e tests on Windows (runtime libraries not built)
 </code></pre></div>
-<p>The third is expected: the <code>airhost</code> / <code>aircpu</code> host runtimes need POSIX APIs
-(<code>dlopen</code>, <code>mmap</code>, <code>ioctl</code>) and the Linux <code>amdair</code> kernel driver, so CMake skips
-them, and with them the <code>test/</code> tree. Reports that Vitis, <code>xchesscc</code>, AIETools,
+<p>The third is expected: the <code>aircpu</code> host runtime needs POSIX APIs, so CMake
+skips it, and with it the <code>test/</code> tree. Reports that Vitis, <code>xchesscc</code>, AIETools,
 and LibXAIE were not found are also expected and harmless: Windows uses Peano
 exclusively, and Chess-gated tests report <em>unsupported</em> rather than failing.</p>
 <p>Then build and install:</p>

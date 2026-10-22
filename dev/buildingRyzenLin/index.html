@@ -1866,7 +1866,7 @@
 <p>This guide covers Linux only. Windows wheels are also published — see <a href="../buildingRyzenWin/">Getting Started and Running on Windows Ryzen™ AI</a> for the native Windows setup, including <code>cmd.exe</code> and PowerShell equivalents of the <code>source</code>/<code>export</code> commands below.</p>
 </blockquote>
 <h3 id="steps">Steps<a class="headerlink" href="#steps" title="Permanent link">&para;</a></h3>
-<p>AIR supports multiple backends — AIE (NPU / Versal AI Engines), <a href="../buildingGPU/">GPU</a>, and <a href="../buildingVCK5000/">VCK5000</a>. Backend dependencies are exposed as pip <strong>extras</strong> so you only install what you need. For the AIE backend on Ryzen™ AI, use the <code>[aie]</code> extra; pip reads the pinned <code>mlir_aie==&lt;version&gt;</code> and <code>llvm-aie</code> from the wheel's metadata and resolves them from the additional <code>--find-links</code> pages.</p>
+<p>AIR supports multiple backends — AIE (NPU) and <a href="../buildingGPU/">GPU</a>. Backend dependencies are exposed as pip <strong>extras</strong> so you only install what you need. For the AIE backend on Ryzen™ AI, use the <code>[aie]</code> extra; pip reads the pinned <code>mlir_aie==&lt;version&gt;</code> and <code>llvm-aie</code> from the wheel's metadata and resolves them from the additional <code>--find-links</code> pages.</p>
 <ol>
 <li>
 <p><strong>Create a virtual environment:</strong>
@@ -2133,8 +2133,8 @@ Once the prerequisites are set up, run the following commands to build MLIR-AIE.
 </code></pre></div></p>
 <p>After this step, you are ready to build MLIR-AIR!</p>
 <h3 id="building">Building<a class="headerlink" href="#building" title="Permanent link">&para;</a></h3>
-<p>To build MLIR-AIR provide the paths to llvm, cmakeModules, mlir-aie, libxaie, and xrt:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>./utils/build-mlir-air-xrt.sh<span class="w"> </span>llvm<span class="w"> </span>mlir-aie/cmake/modulesXilinx<span class="w"> </span>mlir-aie<span class="w"> </span>aienginev2/install<span class="w"> </span>/path/to/xrt
+<p>To build MLIR-AIR provide the paths to llvm, cmakeModules, mlir-aie, Peano (llvm-aie), and xrt:
+<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>./utils/build-mlir-air-xrt.sh<span class="w"> </span>llvm<span class="w"> </span>mlir-aie/cmake/modulesXilinx<span class="w"> </span>mlir-aie<span class="w"> </span>/path/to/llvm-aie<span class="w"> </span>/path/to/xrt
 </code></pre></div></p>
 <h3 id="environment_1">Environment<a class="headerlink" href="#environment_1" title="Permanent link">&para;</a></h3>
 <p>To setup your environment after building:
