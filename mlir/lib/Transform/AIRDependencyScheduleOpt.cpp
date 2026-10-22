@@ -9400,24 +9400,62 @@ static bool isL2Put(air::ChannelPutOp put) {
   return ty && ty.getMemorySpaceAsInt() == (int)air::MemorySpace::L2;
 }
 
+static bool isPadded(air::ChannelPutOp put) {
+  return put.getPadBefore().has_value() || put.getPadAfter().has_value();
+}
+
+// Returns the constant values of `indices`, or nothing if any is not
+// constant.
+static std::optional<SmallVector<int64_t>> constantIndices(ValueRange indices) {
+  SmallVector<int64_t> out;
+  for (Value v : indices) {
+    auto c = getConstantIntValue(v);
+    if (!c)
+      return std::nullopt;
+    out.push_back(*c);
+  }
+  return out;
+}
+
+// Returns true if `op` can stay between two puts of a chain while their
+// sends move to the last one: it has no memory effects, or it is a put on a
+// different channel, or on the same channel at constant indices that differ
+// from `first`'s.
+static bool mayCross(Operation *op, air::ChannelPutOp first) {
+  if (isMemoryEffectFree(op))
+    return true;
+  auto put = dyn_cast<air::ChannelPutOp>(op);
+  if (!put)
+    return false;
+  if (put.getChanName() != first.getChanName())
+    return true;
+  auto a = constantIndices(first.getIndices());
+  auto b = constantIndices(put.getIndices());
+  return a && b && *a != *b;
+}
+
 // Returns the put that follows `put` in the chain started by `first`, or
 // null. It must be the next put in the block on the same channel and
-// indices, read the same buffer with the same sizes and strides, and depend
+// indices, with only ops that `mayCross` allows in between. It must read the
+// same buffer with the same sizes and strides, have no padding, and depend
 // only on `put` or on dependencies of `first`.
 static air::ChannelPutOp nextInChain(air::ChannelPutOp put,
                                      air::ChannelPutOp first,
                                      ArrayRef<int64_t> sizes,
                                      ArrayRef<int64_t> strides) {
   air::ChannelPutOp next = nullptr;
-  for (Operation *op = put->getNextNode(); op && !next;
-       op = op->getNextNode()) {
+  for (Operation *op = put->getNextNode(); op; op = op->getNextNode()) {
     auto p = dyn_cast<air::ChannelPutOp>(op);
     if (p && p.getChanName() == first.getChanName() &&
-        p.getIndices() == first.getIndices())
+        p.getIndices() == first.getIndices()) {
       next = p;
+      break;
+    }
+    if (!mayCross(op, first))
+      return nullptr;
   }
   if (!next || !next.getAsyncToken() || next.getSrc() != first.getSrc() ||
-      next.getDest() || !isL2Put(next) || isRefed(next))
+      next.getDest() || !isL2Put(next) || isRefed(next) || isPadded(next))
     return nullptr;
   SmallVector<int64_t> o, sz, st;
   if (!getStaticPattern(next, o, sz, st) || sz != sizes || st != strides)
@@ -9462,14 +9500,17 @@ static bool findLattice(ArrayRef<int64_t> lin, SmallVector<int64_t> &dims,
   return false;
 }
 
-// Returns true if every get into `buf` writes the whole buffer. A buffer
-// filled slot by slot keeps one put per slot so that each slot can be
-// refilled as soon as it is drained.
+// Returns true if `buf` is only used by channel puts, channel gets that
+// write the whole buffer, and its dealloc. A buffer filled slot by slot keeps
+// one put per slot so that each slot can be refilled as soon as it is
+// drained; any other use, such as a view, may hide such a fill.
 static bool isFilledWhole(Value buf) {
   for (Operation *user : buf.getUsers()) {
+    if (isa<air::ChannelPutOp, memref::DeallocOp>(user))
+      continue;
     auto get = dyn_cast<air::ChannelGetOp>(user);
-    if (get &&
-        (!get.getMixedDstOffsets().empty() || !get.getMixedDstSizes().empty()))
+    if (!get || !get.getMixedDstOffsets().empty() ||
+        !get.getMixedDstSizes().empty())
       return false;
   }
   return true;
@@ -9481,7 +9522,7 @@ static bool isFilledWhole(Value buf) {
 static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
                              llvm::DenseSet<Operation *> &erased) {
   if (!first.getAsyncToken() || first.getDest() || !isL2Put(first) ||
-      isRefed(first) || !isFilledWhole(first.getSrc()))
+      isRefed(first) || isPadded(first) || !isFilledWhole(first.getSrc()))
     return;
   SmallVector<int64_t> offsets, sizes, strides;
   if (!getStaticPattern(first, offsets, sizes, strides))
@@ -9491,29 +9532,36 @@ static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
     chain.push_back(next);
   if (chain.size() < 2)
     return;
-  // The folded put replaces every token of the chain, so a token other than
-  // the last may only be used by the next put or by ops after the chain.
+  // The folded put's token completes with the whole chain. A token other
+  // than the last may therefore only be used by a chain member, or by an op
+  // that also waits on the last token.
   Operation *last = chain.back();
+  Value lastToken = chain.back().getAsyncToken();
+  llvm::SmallPtrSet<Operation *, 8> members;
+  for (auto p : chain)
+    members.insert(p);
   for (size_t i = 0; i + 1 < chain.size(); i++)
-    for (Operation *user : chain[i].getAsyncToken().getUsers()) {
-      Operation *u = last->getBlock()->findAncestorOpInBlock(*user);
-      if (user != chain[i + 1] && (!u || !last->isBeforeInBlock(u)))
+    for (Operation *user : chain[i].getAsyncToken().getUsers())
+      if (!members.contains(user) &&
+          !llvm::is_contained(user->getOperands(), lastToken))
         return;
-    }
   SmallVector<int64_t> lin;
   for (auto p : chain) {
     SmallVector<int64_t> o, sz, st;
     getStaticPattern(p, o, sz, st);
-    int64_t l = 0;
-    for (auto [oi, si] : llvm::zip(o, st))
-      l += oi * si;
+    // As the lowering reads it: the innermost offset counts elements, the
+    // others count strides.
+    int64_t l = o.back();
+    for (size_t d = 0; d + 1 < o.size(); d++)
+      l += o[d] * st[d];
     lin.push_back(l);
   }
   SmallVector<int64_t> dims, steps;
   if (!findLattice(lin, dims, steps))
     return;
-  // Drop unit dims, adding their offsets to the innermost offset.
-  if (strides.back() == 1) {
+  // Drop unit dims, adding their offsets to the innermost offset, which
+  // counts elements.
+  {
     SmallVector<int64_t> o, sz, st;
     int64_t extra = 0;
     for (size_t i = 0; i + 1 < sizes.size(); i++) {
@@ -9527,7 +9575,7 @@ static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
     }
     o.push_back(offsets.back() + extra);
     sz.push_back(sizes.back());
-    st.push_back(1);
+    st.push_back(strides.back());
     offsets = o;
     sizes = sz;
     strides = st;

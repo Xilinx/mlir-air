@@ -376,3 +376,177 @@ module {
     return
   }
 }
+
+// -----
+
+// A padded put sends extra zeros: the chain is not folded.
+// CHECK-LABEL: func.func @padded_put
+// CHECK-COUNT-2: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @padded_put() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[64] [64] [1]) {pad_after = array<i32: 4>, pad_before = array<i32: 0>} : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A get between the puts: moving the first send past it could stall the
+// consumer. The puts stay.
+// CHECK-LABEL: func.func @get_in_between
+// CHECK-COUNT-2: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  air.channel @ack [1, 1]
+  func.func @get_in_between() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %t1, %x = air.execute -> (memref<64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %g = air.channel.get async [%t1] @ack[] (%x[] [] []) : (memref<64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %g, %p1]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A put on the same channel at an index that may equal the chain's: moving
+// the first send past it could reorder that FIFO. The puts stay.
+// CHECK-LABEL: func.func @same_channel_unknown_index
+// CHECK-COUNT-3: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @same_channel_unknown_index(%arg0: index, %arg1: index) {
+    %0 = air.launch async () in () args(%ai=%arg0, %aj=%arg1) : index, index {
+      %1 = air.segment @seg async args(%i=%ai, %j=%aj) : index, index {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %i] (%buf[0] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %q = air.channel.put async [%t0] @chan[%c0, %j] (%buf[128] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %i] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %q, %p1]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The buffer is filled through views, which may be slots: the puts stay.
+// CHECK-LABEL: func.func @filled_through_views
+// CHECK-COUNT-2: air.channel.put async {{.*}}@chan
+module {
+  air.channel @chan [1, 4]
+  air.channel @in [1, 1]
+  func.func @filled_through_views() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %s0 = memref.subview %buf[0, 0] [2, 64] [1, 1] : memref<4x64xbf16, 1 : i32> to memref<2x64xbf16, strided<[64, 1]>, 1 : i32>
+        %s1 = memref.subview %buf[2, 0] [2, 64] [1, 1] : memref<4x64xbf16, 1 : i32> to memref<2x64xbf16, strided<[64, 1], offset: 128>, 1 : i32>
+        %g0 = air.channel.get async [%t0] @in[] (%s0[] [] []) : (memref<2x64xbf16, strided<[64, 1]>, 1 : i32>)
+        %g1 = air.channel.get async [%t0] @in[] (%s1[] [] []) : (memref<2x64xbf16, strided<[64, 1], offset: 128>, 1 : i32>)
+        %p0 = air.channel.put async [%g0, %g1] @chan[%c0, %c1] (%buf[0] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%g0, %g1] @chan[%c0, %c1] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// An op after the chain waits only on the first put: tying it to the whole
+// chain could stall the consumer of the second. The puts stay.
+// CHECK-LABEL: func.func @early_token_user
+// CHECK-COUNT-2: air.channel.put async {{.*}}@chan
+module {
+  air.channel @chan [1, 4]
+  air.channel @ctl [1, 1]
+  func.func @early_token_user() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %t1, %x = air.execute -> (memref<64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[64] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %ctl = air.channel.put async [%p0, %t1] @ctl[] (%x[] [] []) : (memref<64xbf16, 1 : i32>)
+        %w = air.wait_all async [%ctl, %p1]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A non-unit innermost stride: the innermost offset counts elements, so the
+// puts at 0 and 8 are 8 elements apart, not 16, and together they read every
+// other element of the first 16.
+// CHECK-LABEL: func.func @inner_stride
+// CHECK: air.channel.put async {{.*}}@chan[{{.*}}] (%{{.*}}[%c0{{.*}}] [%c8{{.*}}] [%c2{{.*}}])
+// CHECK-NOT: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @inner_stride() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %t0, %buf = air.execute -> (memref<32xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<32xbf16, 1 : i32>
+          air.execute_terminator %a : memref<32xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0] [4] [2]) : (memref<32xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[8] [4] [2]) : (memref<32xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1]
+      }
+    }
+    return
+  }
+}
