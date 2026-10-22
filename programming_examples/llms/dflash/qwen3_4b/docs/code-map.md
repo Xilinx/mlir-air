@@ -8,7 +8,7 @@ The host's draft/verify/commit loop is in [speculative.py](../../common/speculat
 
 All paths below are relative to the Qwen3-4B example unless stated otherwise.
 The supported configuration is selected by `selected_config()` and the flags
-in `build_target.py`. This example contains the selected B8 path; historical
+in `build_target.py` and `common/build_target.py`. This example contains the selected B8 path; historical
 mapping experiments are outside its source tree.
 
 ## Follow a build or request
@@ -24,7 +24,7 @@ flowchart TB
   A --> X
   K --> X
   X --> T["target_runtime.py: TargetDecoder"]
-  R["run.py"] --> P["runtime.py: load_pipeline / load_pair"]
+  R["run.py"] --> P["common/runtime.py: load_pipeline / load_pair"]
   P --> T
   P --> F["npu_prefill.py: NpuPrefill"]
   P --> N["bfp_context_prepass.py: BFPContextPrepass"]
@@ -45,8 +45,9 @@ verification. [ARCHITECTURE.md](../ARCHITECTURE.md) describes that state flow.
 | File | Responsibility and useful entry points |
 |---|---|
 | [Makefile](../Makefile) | User commands, artifact locations, cache variables and exclusive NPU session lock. |
-| [run.py](../run.py) | CLI for a single prompt or resident interactive session; initializes the pipeline and streams committed output. |
-| [runtime.py](../runtime.py) | `load_pair()` constructs target, drafter and NPU prepass; `load_pipeline()` also prepares NPU prefill and shares weights. Includes CPU-prefill helpers for the explicit CPU path. |
+| [dflash_model.py](../dflash_model.py) | This model's decoders, caches and checkpoints, passed to the shared host code. |
+| [run.py](../run.py), [common/run.py](../../common/run.py) | CLI for a single prompt or resident interactive session; initializes the pipeline and streams committed output. |
+| [common/runtime.py](../../common/runtime.py) | `load_pair()` constructs target, drafter and NPU prepass; `load_pipeline()` also prepares NPU prefill and shares weights. Includes CPU-prefill helpers for the explicit CPU path. |
 | [speculative.py](../../common/speculative.py) | `DFlash.reset()` / `generate()`, greedy acceptance, token budget/EOS, committed positions, target-feature selection, round traces and decode timing. `autoregressive()` is the benchmark's B1 loop. |
 | [target_runtime.py](../target_runtime.py) | `TargetDecoder` loads either role's artifacts/weights, owns model-specific XRT buffers and weight binding. Shared `common/decoder.py` implements `verify()`, logits/hidden access and KV operations. The method name `verify()` is also used for the drafter forward. |
 | [decode_dynseq.py](../../common/decode_dynseq.py) | `DynseqInstsGen` uses the compiler-generated transaction builder to construct instructions for the current KV length. |
@@ -105,7 +106,7 @@ compiled object/LLVM IR used by each herd or function.
 | File | Responsibility |
 |---|---|
 | [model_paths.py](../model_paths.py) | Exact target/tokenizer/drafter revisions, cache defaults and tokenizer loading. |
-| [resources.py](../resources.py) | Online preparation or offline completeness checks for the pinned HF snapshots. |
+| [resources.py](../resources.py), [common/resources.py](../../common/resources.py) | Online preparation or offline completeness checks for the pinned HF snapshots. |
 | [draft_weights.py](../draft_weights.py) | `DraftWeights` adapts official drafter tensors, layer geometry, target tap slots and mask-token metadata to the decoder interface. |
 | [prepare_weights.py](../prepare_weights.py) | Validates or creates persistent target/drafter packed caches and their preparation manifest. The target cache is `qwen3_4b_q4nx_requant.build_requant_cache(requant=True)`: Q4NX → float32 → group-32 min/max Q4, unlike upstream B1's raw-Q4 packing. |
 | [weight_io.py](../../common/weight_io.py) | Uploads the packed weight payload with bounded host-memory use. |
@@ -120,14 +121,14 @@ compiled object/LLVM IR used by each herd or function.
 | [benchmark.py](../benchmark.py) | Runs one engine on the selected cases; records tokens, acceptance traces and timings; updates per-dataset and pooled summaries. |
 | [paired_benchmark.py](../paired_benchmark.py) | Runs B1 and DFlash in separate processes, selects 4 or 16 fixed cases per dataset, validates paired identities and reports Full20/Full80 speedup. |
 | [baseline.py](../baseline.py), [build_baseline.py](../build_baseline.py) | Adapt and build the existing single-token `FusedDecoder` for a fresh B1 control with the same target cache and inputs. |
-| [profile_dflash.py](../profile_dflash.py) | Standard short-prompt NPU-prefill/decode profile and upstream `.perf.json` output. |
+| [profile_dflash.py](../profile_dflash.py), [common/profile.py](../../common/profile.py) | Standard short-prompt NPU-prefill/decode profile and upstream `.perf.json` output. |
 | [provenance.py](../provenance.py) | Records runtime/shared-source hashes and model revisions alongside measurements. |
-| [verify_loop.py](../verify_loop.py) | Repeated NPU-prefill DFlash/oracle/committed-KV verification. |
-| [tests/check_decoder.py](../tests/check_decoder.py) | Decoder repeatability, visibility, context injection and untouched KV regions at selected lengths. |
-| [tests/check_model.py](../tests/check_model.py) | Separate NPU/HF token captures and upstream-style mutual top-5 comparison at first divergence. |
+| [verify_loop.py](../verify_loop.py), [common/verify_loop.py](../../common/verify_loop.py) | Repeated NPU-prefill DFlash/oracle/committed-KV verification. |
+| [tests/check_decoder.py](../tests/check_decoder.py), [common/check_decoder.py](../../common/check_decoder.py) | Decoder repeatability, visibility, context injection and untouched KV regions at selected lengths. |
+| [tests/check_model.py](../tests/check_model.py), [common/check_model.py](../../common/check_model.py) | Separate NPU/HF token captures and upstream-style mutual top-5 comparison at first divergence. |
 | [tests/check_attention.py](../tests/check_attention.py) | Production-linked attention output/reference checks, row isolation, visibility and repeatability. |
-| [tests/check_prepass.py](../tests/check_prepass.py), [tests/bfp_reference.py](../tests/bfp_reference.py) | Prepass full-output/repeat/chunk tests and its matching BFP arithmetic helper. |
-| [tests/checks.py](../tests/checks.py) | Test report/hash helpers. |
+| [tests/check_prepass.py](../tests/check_prepass.py), [common/check_prepass.py](../../common/check_prepass.py), [common/bfp_reference.py](../../common/bfp_reference.py) | Prepass full-output/repeat/chunk tests and its matching BFP arithmetic helper. |
+| [common/checks.py](../../common/checks.py) | Test report/hash helpers. |
 | [tests/test_speculative.py](../tests/test_speculative.py), [tests/test_streaming.py](../tests/test_streaming.py) | Host unit tests for greedy acceptance and incremental text; run in PR CI by [run_host_checks.lit](../run_host_checks.lit). |
 | [run_npu2_compile.lit](../run_npu2_compile.lit), [run_npu2_verify.lit](../run_npu2_verify.lit), [run_npu2_profile.lit](../run_npu2_profile.lit) | Upstream compile, correctness and short-profile suite entries. |
 | [run_npu2_full20.lit](../run_npu2_full20.lit), [run_npu2_full80.lit](../run_npu2_full80.lit) | Default nightly paired Full20 and explicitly enabled Full80. |

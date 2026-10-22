@@ -1,19 +1,9 @@
 # Toolchain and checkpoint compatibility
 
-This example uses the standard AIR Python builders and `XRTBackend`, including
-the Qwen3-8B DFlash infrastructure and FIFO MemTile-refeed ordering already
-merged upstream in PRs #2145 and #2152. There is no additional AIR compiler
-change for Llama.
-
-The qualification environment uses these upstream dependency versions:
-
-| Dependency | Version |
-|---|---|
-| MLIR-AIE | `1.4.5.dev51+ge040370` |
-| Peano | `22.0.0.2026101201+83ba9ea9` |
-| Host LLVM/MLIR | `24.0.0.2026100106+bdf04ebb` |
-| Inline-attention linker | LLVM 21; upstream fused decode requires `llvm-link` <23 |
-| XRT Python binding | 2.21; the supplied B1 comparator uses the xclbin path |
+This example uses the standard AIR Python builders and `XRTBackend`, the
+shared DFlash 8B infrastructure, and the dependency versions pinned under
+`utils/`. It needs an AIR build that orders re-fed MemTile transfers on a shared
+DMA chain, as the Qwen3-8B example does.
 
 Use the same AIR environment as the other LLM examples. Install
 [`requirements.txt`](../requirements.txt) for model preparation and the HF
@@ -39,11 +29,10 @@ build-input change.
   holding two packed-model copies during cold preparation. The packed words
   and file format are unchanged.
 
-The native B1 xclbin path remains usable with XRT 2.21. Upstream's newer ELF
-path requires a scratchpad Python binding absent from this XRT installation;
-this example does not emulate that binding. See the shared
-[8B compatibility notes](../../qwen3_8b/docs/compatibility.md) for the compiler
-refeed fix and B1 timing mode.
+The native B1 comparator uses the xclbin path, which runs with XRT Python
+bindings that lack `run.get_ctrl_scratchpad_bo()`. See the shared
+[8B compatibility notes](../../qwen3_8b/docs/compatibility.md) for the B1
+timing mode.
 
 ## Download once, reuse offline
 

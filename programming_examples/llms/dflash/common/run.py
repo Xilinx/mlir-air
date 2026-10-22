@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Streaming greedy generation and resident prompt sessions on NPU."""
+"""Streaming greedy generation and resident, thinking-disabled chat on NPU."""
 
 from __future__ import annotations
 
@@ -10,16 +10,14 @@ import os
 import time
 from pathlib import Path
 
-from model_paths import (
-    TARGET_MODEL,
-    TOKENIZER_MODEL,
-    default_draft_cache,
-    default_draft_snapshot,
-    default_target_cache,
+from common.model import DFlashModel
+from common.runtime import (
+    PrefillWeights,
+    encode_prompt,
+    load_pair,
+    load_pipeline,
+    prepare_prompt,
 )
-from runtime import load_pair, tokenize_prompt
-import model_spec
-from paths import HERE, COMMON
 from common.streaming import TextStream
 
 
@@ -32,9 +30,18 @@ def check_capacity(loop, input_ids, tokens):
         )
 
 
-def run_prompt(loop, tokenizer, prompt, args, *, prefill_model=None, npu_prefill=None):
+def run_prompt(
+    model: DFlashModel,
+    loop,
+    tokenizer,
+    prompt,
+    args,
+    *,
+    prefill_model=None,
+    npu_prefill=None,
+):
     started = time.perf_counter()
-    _, input_ids = tokenize_prompt(prompt, tokenizer=tokenizer)
+    input_ids = encode_prompt(model, tokenizer, prompt)
     check_capacity(loop, input_ids, args.tokens)
     if npu_prefill is not None and len(input_ids) > npu_prefill.seq:
         raise ValueError(
@@ -44,8 +51,6 @@ def run_prompt(loop, tokenizer, prompt, args, *, prefill_model=None, npu_prefill
         f"{args.prefill.upper()} prefill: {len(input_ids)} input tokens...", flush=True
     )
     if npu_prefill is None:
-        from runtime import prepare_prompt
-
         prefill, prefill_seconds = prepare_prompt(
             loop.target, input_ids, loop.tap_slots, prefill_model=prefill_model
         )
@@ -65,7 +70,7 @@ def run_prompt(loop, tokenizer, prompt, args, *, prefill_model=None, npu_prefill
     try:
         generated = loop.generate(
             args.tokens,
-            eos_ids=model_spec.EOS_IDS,
+            eos_ids=model.eos_ids,
             observer=(
                 None
                 if stream is None
@@ -150,7 +155,7 @@ def save_result(result, output, *, append=False):
             handle.write(json.dumps(result, indent=None if append else 2) + "\n")
 
 
-def chat(loop, tokenizer, args, prefill_model, npu_prefill):
+def chat(model: DFlashModel, loop, tokenizer, args, prefill_model, npu_prefill):
     print("\nReady. Each prompt is independent (no conversation history).", flush=True)
     print("Enter /quit or /exit, or press Ctrl-D / Ctrl-C to exit.\n", flush=True)
     while True:
@@ -165,7 +170,7 @@ def chat(loop, tokenizer, args, prefill_model, npu_prefill):
             continue
         # Reject an oversized request before touching device state and keep
         # the resident session available for the next prompt.
-        _, input_ids = tokenize_prompt(prompt, tokenizer=tokenizer)
+        input_ids = encode_prompt(model, tokenizer, prompt)
         try:
             check_capacity(loop, input_ids, args.tokens)
             if npu_prefill is not None and len(input_ids) > npu_prefill.seq:
@@ -176,6 +181,7 @@ def chat(loop, tokenizer, args, prefill_model, npu_prefill):
             print(error, flush=True)
             continue
         result = run_prompt(
+            model,
             loop,
             tokenizer,
             prompt,
@@ -187,8 +193,8 @@ def chat(loop, tokenizer, args, prefill_model, npu_prefill):
         print(flush=True)
 
 
-def main() -> None:
-    here = HERE
+def _run(model: DFlashModel) -> None:
+    here = model.directory
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--prompt",
@@ -199,7 +205,7 @@ def main() -> None:
     parser.add_argument("--tokens", type=int, default=64)
     parser.add_argument(
         "--prefill",
-        choices=(("npu", "cpu") if model_spec.CPU_PREFILL else ("npu",)),
+        choices=("npu", "cpu") if model.cpu_prefill else ("npu",),
         default="npu",
     )
     parser.add_argument(
@@ -220,11 +226,15 @@ def main() -> None:
     )
     parser.add_argument("--target-artifacts", type=Path, default=here / "build/target")
     parser.add_argument("--draft-artifacts", type=Path, default=here / "build/draft")
-    parser.add_argument("--target-model", default=TARGET_MODEL)
-    parser.add_argument("--tokenizer-model", default=TOKENIZER_MODEL)
-    parser.add_argument("--target-cache", type=Path, default=default_target_cache())
-    parser.add_argument("--draft-cache", type=Path, default=default_draft_cache())
-    parser.add_argument("--draft-snapshot", type=Path, default=default_draft_snapshot())
+    parser.add_argument("--target-model", default=model.target_model)
+    parser.add_argument("--tokenizer-model", default=model.tokenizer_model)
+    parser.add_argument(
+        "--target-cache", type=Path, default=model.default_target_cache()
+    )
+    parser.add_argument("--draft-cache", type=Path, default=model.default_draft_cache())
+    parser.add_argument(
+        "--draft-snapshot", type=Path, default=model.default_draft_snapshot()
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -240,15 +250,12 @@ def main() -> None:
     print(
         "Loading tokenizer, target, drafter, and NPU context preparation...", flush=True
     )
-    from model_paths import load_tokenizer
-
-    tokenizer = load_tokenizer(args.tokenizer_model)
-    from runtime import load_pipeline
-
+    tokenizer = model.load_tokenizer(args.tokenizer_model)
     prefill_model = npu_prefill = None
     if args.prefill == "npu":
         print("Preparing NPU prefill and resident model weights...", flush=True)
         loop, npu_prefill = load_pipeline(
+            model,
             args.target_artifacts,
             args.draft_artifacts,
             target_model=args.target_model,
@@ -260,6 +267,7 @@ def main() -> None:
         )
     else:
         loop = load_pair(
+            model,
             args.target_artifacts,
             args.draft_artifacts,
             target_model=args.target_model,
@@ -268,8 +276,6 @@ def main() -> None:
             draft_snapshot=args.draft_snapshot,
         )
         if args.interactive:
-            from runtime import PrefillWeights
-
             prefill_model = PrefillWeights(loop.target)
             print(
                 f"Resident CPU prefill weights: {prefill_model.nbytes / 2**30:.2f} GiB",
@@ -277,15 +283,17 @@ def main() -> None:
             )
     print(f"Initialization: {time.perf_counter() - started:.2f} s", flush=True)
     if args.interactive:
-        chat(loop, tokenizer, args, prefill_model, npu_prefill)
+        chat(model, loop, tokenizer, args, prefill_model, npu_prefill)
     else:
-        result = run_prompt(loop, tokenizer, args.prompt, args, npu_prefill=npu_prefill)
+        result = run_prompt(
+            model, loop, tokenizer, args.prompt, args, npu_prefill=npu_prefill
+        )
         save_result(result, args.output)
 
 
-if __name__ == "__main__":
+def main(model: DFlashModel) -> None:
     try:
-        main()
+        _run(model)
     except KeyboardInterrupt:
         # Exit on interruption during generation rather than reuse a context
         # whose device dispatch may still be outstanding.

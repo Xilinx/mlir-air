@@ -1,13 +1,9 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Stream one response or enter a resident prompt session."""
+"""Streaming greedy generation and resident, thinking-disabled chat on NPU."""
 
-from paths import HERE
-from common.run_8b import main, run_prompt
+from dflash_model import MODEL
+from common.run import main
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n[Interrupted]", flush=True)
-        raise SystemExit(130)
+    main(MODEL)

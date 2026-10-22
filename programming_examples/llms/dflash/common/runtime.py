@@ -9,74 +9,67 @@ import time
 import numpy as np
 from ml_dtypes import bfloat16
 
-from bfp_context_prepass import BFPContextPrepass, BF16ContextReference
-from draft_weights import DraftWeights
-from model_paths import (
-    TARGET_MODEL,
-    load_tokenizer,
-    TOKENIZER_MODEL,
-    default_draft_cache,
-    default_draft_snapshot,
-    default_target_cache,
-)
+from pathlib import Path
+
+from common.model import DFlashModel
 from common.prefill_reference import forward_prompt_with_taps
-from selected_config import require_selected
-from paths import HERE, COMMON
 from common.speculative import DFlash
-from target_runtime import TargetDecoder
 
 
 def load_pair(
+    model: DFlashModel,
     target_artifacts,
     draft_artifacts,
     *,
     prepass_artifacts=None,
-    target_model=TARGET_MODEL,
+    target_model=None,
     target_cache=None,
     draft_cache=None,
     draft_snapshot=None,
 ):
-    target_cache = target_cache or default_target_cache()
-    draft_cache = draft_cache or default_draft_cache()
-    draft_snapshot = draft_snapshot or default_draft_snapshot()
-    target = TargetDecoder(
+    target_model = target_model or model.target_model
+    target_cache = target_cache or model.default_target_cache()
+    draft_cache = draft_cache or model.default_draft_cache()
+    draft_snapshot = draft_snapshot or model.default_draft_snapshot()
+    target = model.target_decoder(
         target_artifacts,
         packed_cache=target_cache,
         model_source=target_model,
         stream_weights=True,
     )
-    require_selected(target.config, "target")
-    weights = DraftWeights(
+    model.require_selected(target.config, "target")
+    weights = model.draft_weights(
         target_model=target.model,
         snapshot=draft_snapshot,
         shared_embedding=target.embed,
     )
-    drafter = TargetDecoder(
+    drafter = model.target_decoder(
         draft_artifacts,
         packed_cache=draft_cache,
         model_weights=weights,
         stream_weights=True,
     )
-    require_selected(drafter.config, "drafter")
-    from pathlib import Path
-
+    model.require_selected(drafter.config, "drafter")
     prepass_artifacts = (
         prepass_artifacts or Path(target_artifacts).resolve().parent / "prepass"
     )
-    prepass = BFPContextPrepass(
-        prepass_artifacts, BF16ContextReference(weights), capacity=target.capacity
+    prepass = model.context_prepass(
+        prepass_artifacts,
+        model.context_reference(weights),
+        capacity=target.capacity,
     )
     return DFlash(target, drafter, prepass, weights.tap_slots, weights.mask_token_id)
 
 
 def load_pipeline(
+    model: DFlashModel,
     target_artifacts,
     draft_artifacts,
     *,
     prefill_context=2048,
     prefill_artifacts=None,
     prepass_artifacts=None,
-    target_model=TARGET_MODEL,
+    target_model=None,
     target_cache=None,
     draft_cache=None,
     draft_snapshot=None,
@@ -86,16 +79,18 @@ def load_pipeline(
     Prefill reuses its uploaded MLP weights before the decoder weight BOs are
     allocated. All three model programs remain resident for subsequent prompts.
     """
-    from npu_prefill import NpuPrefill
-
-    metadata = DraftWeights(snapshot=draft_snapshot or default_draft_snapshot())
-    prefill = NpuPrefill(
+    target_model = target_model or model.target_model
+    metadata = model.draft_weights(
+        snapshot=draft_snapshot or model.default_draft_snapshot()
+    )
+    prefill = model.npu_prefill()(
         seq_len=prefill_context,
         cache_dir=prefill_artifacts,
         tap_slots=metadata.tap_slots,
     )
     prefill.load_weights(model=target_model)
     loop = load_pair(
+        model,
         target_artifacts,
         draft_artifacts,
         prepass_artifacts=prepass_artifacts,
@@ -108,16 +103,22 @@ def load_pipeline(
     return loop, prefill
 
 
-def tokenize_prompt(prompt: str, tokenizer_model=TOKENIZER_MODEL, *, tokenizer=None):
-    if tokenizer is None:
-        tokenizer = load_tokenizer(tokenizer_model)
+def encode_prompt(model: DFlashModel, tokenizer, prompt: str) -> list[int]:
     text = tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt}],
         tokenize=False,
         add_generation_prompt=True,
-        enable_thinking=False,
+        **model.chat_options,
     )
-    return tokenizer, tokenizer.encode(text, add_special_tokens=False)
+    return tokenizer.encode(text, add_special_tokens=False)
+
+
+def tokenize_prompt(
+    model: DFlashModel, prompt: str, tokenizer_model=None, *, tokenizer=None
+):
+    if tokenizer is None:
+        tokenizer = model.load_tokenizer(tokenizer_model or model.tokenizer_model)
+    return tokenizer, encode_prompt(model, tokenizer, prompt)
 
 
 class PrefillWeights:
@@ -128,7 +129,7 @@ class PrefillWeights:
     It changes preparation cost and memory use, not prefill arithmetic.
     """
 
-    def __init__(self, target: TargetDecoder):
+    def __init__(self, target):
         model = target.model
         self._embed = model.embed_norm_lmhead()
         self._layers = [model.layer_weights(i) for i in range(target.layers)]
@@ -153,7 +154,7 @@ class PrefillWeights:
 
 
 def prepare_prompt(
-    target: TargetDecoder,
+    target,
     input_ids: list[int],
     tap_slots: list[int],
     *,

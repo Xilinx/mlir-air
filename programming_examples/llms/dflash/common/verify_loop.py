@@ -10,16 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
-from model_paths import (
-    TARGET_MODEL,
-    TOKENIZER_MODEL,
-    default_draft_cache,
-    default_draft_snapshot,
-    default_target_cache,
-)
-from runtime import load_pair, tokenize_prompt
-import model_spec
-from paths import HERE, COMMON
+from common.model import DFlashModel
+from common.runtime import load_pair, load_pipeline, prepare_prompt, tokenize_prompt
 from common.speculative import autoregressive
 
 
@@ -30,14 +22,14 @@ def signature(generation) -> list[dict]:
     ]
 
 
-def main() -> None:
-    here = HERE
+def main(model: DFlashModel) -> None:
+    here = model.directory
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prompt", default="Introduce me what is GPU")
     parser.add_argument("--tokens", type=int, default=32)
     parser.add_argument(
         "--prefill",
-        choices=(("npu", "cpu") if model_spec.CPU_PREFILL else ("npu",)),
+        choices=("npu", "cpu") if model.cpu_prefill else ("npu",),
         default="npu",
     )
     parser.add_argument(
@@ -46,22 +38,25 @@ def main() -> None:
     parser.add_argument("--prefill-artifacts", type=Path)
     parser.add_argument("--target-artifacts", type=Path, default=here / "build/target")
     parser.add_argument("--draft-artifacts", type=Path, default=here / "build/draft")
-    parser.add_argument("--target-model", default=TARGET_MODEL)
-    parser.add_argument("--tokenizer-model", default=TOKENIZER_MODEL)
-    parser.add_argument("--target-cache", type=Path, default=default_target_cache())
-    parser.add_argument("--draft-cache", type=Path, default=default_draft_cache())
-    parser.add_argument("--draft-snapshot", type=Path, default=default_draft_snapshot())
+    parser.add_argument("--target-model", default=model.target_model)
+    parser.add_argument("--tokenizer-model", default=model.tokenizer_model)
+    parser.add_argument(
+        "--target-cache", type=Path, default=model.default_target_cache()
+    )
+    parser.add_argument("--draft-cache", type=Path, default=model.default_draft_cache())
+    parser.add_argument(
+        "--draft-snapshot", type=Path, default=model.default_draft_snapshot()
+    )
     parser.add_argument("--output", type=Path, default=here / "build/verify.json")
     args = parser.parse_args()
     result = {"passed": False}
 
-    tokenizer, input_ids = tokenize_prompt(args.prompt, args.tokenizer_model)
+    tokenizer, input_ids = tokenize_prompt(model, args.prompt, args.tokenizer_model)
     if len(input_ids) + args.tokens - 1 + 8 > 4096:
         raise ValueError("Prompt plus verification output exceed C4096")
-    from runtime import load_pipeline
-
     if args.prefill == "npu":
         loop, engine = load_pipeline(
+            model,
             args.target_artifacts,
             args.draft_artifacts,
             target_model=args.target_model,
@@ -73,6 +68,7 @@ def main() -> None:
         )
     else:
         loop = load_pair(
+            model,
             args.target_artifacts,
             args.draft_artifacts,
             target_model=args.target_model,
@@ -127,8 +123,6 @@ def main() -> None:
             prefill_padded_length=engine.seq,
         )
     else:
-        from runtime import prepare_prompt
-
         prefill, prefill_seconds = prepare_prompt(
             loop.target, input_ids, loop.tap_slots
         )
@@ -173,7 +167,3 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
-
-
-if __name__ == "__main__":
-    main()
