@@ -124,7 +124,7 @@ class DensePrefill(Engine):
                 for w, r in (("q", dq), ("k", dk), ("v", dk))
             ]
             qkv = [np.concatenate(a) for a in zip(*raw)]
-            self.gemm_site(f"{L}.qkv", e.d, dq + 2 * dk, P.pack_q4(*qkv), 1)
+            self.gemm_site(f"{L}.qkv", e.d, dq + 2 * dk, self.pack_q4(*qkv), 1)
             for name, t, rows, k in (
                 ("o", "self_attn.o_proj", e.d, dq),
                 ("gate", "mlp.gate_proj", e.inter, e.d),
@@ -132,7 +132,7 @@ class DensePrefill(Engine):
                 ("down", "mlp.down_proj", e.d, e.inter),
             ):
                 raw = b.q4nx(p + t + ".weight", rows, k)
-                self.gemm_site(f"{L}.{name}", k, rows, P.pack_q4(*raw), 1)
+                self.gemm_site(f"{L}.{name}", k, rows, self.pack_q4(*raw), 1)
             nm = {k: b.bf16(p + n + ".weight") for k, n in norms.items()}
             if e.qk_norm:
                 nm["q_norm"] = b.bf16(p + "self_attn.q_norm.weight")
@@ -152,10 +152,10 @@ class DensePrefill(Engine):
             raw = b.q4nx("lm_head.weight", e.vocab, e.d)
         for i, (n0, n1) in enumerate(self.lm):
             if e.tied:
-                self.gemm_site(f"lm.{i}", e.d, n1 - n0, P.pack_bf16(emb[n0:n1]), 0)
+                self.gemm_site(f"lm.{i}", e.d, n1 - n0, self.pack_bf16(emb[n0:n1]), 0)
             else:
                 self.gemm_site(
-                    f"lm.{i}", e.d, n1 - n0, P.pack_q4(*(a[n0:n1] for a in raw)), 1
+                    f"lm.{i}", e.d, n1 - n0, self.pack_q4(*(a[n0:n1] for a in raw)), 1
                 )
         self.attn_setup()
         self.kvb = [self.kv_bo(layer_op(e, L)) for L in range(e.layers)]

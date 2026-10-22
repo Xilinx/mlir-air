@@ -46,7 +46,7 @@ _tiles = {}
 
 def _bf16_tiles(dst, tm, tk):
     """The bf16 tiles [M/tm, K/tk, tm, tk] the tilers fill for dst, the GEMM's
-    A as bfp16 bytes [M/tm, K/tk, tile]; reused per K."""
+    A; reused per K."""
     key = (dst.shape[0], dst.shape[1], tm, tk)
     if key not in _tiles:
         _tiles[key] = np.zeros(key, np.uint16)
@@ -54,10 +54,23 @@ def _bf16_tiles(dst, tm, tk):
 
 
 def _to_bfp(tiles, t, dst, k0=0, k1=None):
-    """Rows [0, t), columns [k0, k1) of tiles into dst [M/tm, K/tk, tile],
-    which may be a strided view (Engine.a_chunk)."""
+    """Rows [0, t), columns [k0, k1) of tiles into dst: bfp16 bytes
+    [M/tm, K/tk, tile], or bf16 tiles [M/tm, K/tk, tm, tk] for a GEMM that
+    reads bf16 (packing.a_layout). Either may be a strided view
+    (Engine.a_chunk)."""
     _, ks, tm, tk = tiles.shape
     k1 = ks * tk if k1 is None else k1
+    if dst.ndim == 4:
+        nb = -(-t // tm)  # row blocks with rows below t
+        src = tiles[:nb].view(dst.dtype)
+        # whole K steps in one copy, a partial step at either end on its own
+        s0, s1 = -(-k0 // tk), k1 // tk
+        dst[:nb, s0:s1] = src[:, s0:s1]
+        for s in {k0 // tk, s1} - set(range(s0, s1)):
+            c0, c1 = max(k0 - s * tk, 0), min(k1 - s * tk, tk)
+            if c0 < c1:
+                dst[:nb, s, :, c0:c1] = src[:, s, :, c0:c1]
+        return
     assert dst.strides[2] == 1, dst.strides
     dr, dk = (v // dst.shape[2] for v in dst.strides[:2])
     _lib.tiles_bfp(
