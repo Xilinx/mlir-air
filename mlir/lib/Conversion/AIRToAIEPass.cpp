@@ -7086,13 +7086,17 @@ public:
         for (Block *o : llvm::make_first_range(byBlock))
           if (b != o && b->findAncestorOpInBlock(*o->getParentOp()))
             return failure();
-      SmallVector<Value> chain;
-      for (auto g : ring) {
-        Value r = air::resolveBufferRoot(g.getMemref());
-        if (llvm::is_contained(chain, r))
-          break;
-        chain.push_back(r);
-      }
+      // the chain: the shortest unit this block's gets repeat, which may
+      // fill one buffer more than once
+      SmallVector<Value> roots;
+      for (auto g : ring)
+        roots.push_back(air::resolveBufferRoot(g.getMemref()));
+      size_t p = 1;
+      while (p < roots.size() &&
+             llvm::any_of(llvm::seq(p, roots.size()),
+                          [&](size_t i) { return roots[i] != roots[i % p]; }))
+        p++;
+      ArrayRef<Value> chain = ArrayRef<Value>(roots).take_front(p);
       for (auto &[b, gets] : byBlock) {
         if (gets.size() % chain.size())
           return failure();

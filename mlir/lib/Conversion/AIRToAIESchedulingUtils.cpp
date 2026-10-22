@@ -282,34 +282,25 @@ bool air::memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB) {
 }
 
 // Canonicalize a chain of memcpy ops as candidates to map to dma bds, by
-// removing repetitive patterns. Returns the unique repeating unit, or an empty
-// vector when the chain does not repeat.
+// removing repetitive patterns. Returns the shortest unit the chain repeats
+// (its tail may be a prefix of the unit), the whole chain when no two of its
+// ops are equivalent, or an empty vector otherwise. A unit may move one buffer
+// more than once.
 llvm::SetVector<Operation *>
 air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
-  // Get a vector of unique BDs.
-  llvm::SetVector<Operation *> uniqueBDPattern;
-  auto opIt = memcpyIOps.begin();
-  while (opIt != memcpyIOps.end() &&
-         llvm::none_of(uniqueBDPattern, [opIt](Operation *op1) {
-           return memcpyIMappedToEquivalentBDs(*opIt, op1);
-         })) {
-    uniqueBDPattern.insert(*opIt);
-    opIt++;
+  ArrayRef<Operation *> ops = memcpyIOps.getArrayRef();
+  for (size_t p = 1; p < ops.size(); p++) {
+    bool repeats = true;
+    for (size_t i = p; i < ops.size() && repeats; i++)
+      repeats = memcpyIMappedToEquivalentBDs(ops[i], ops[i % p]);
+    if (repeats)
+      return llvm::SetVector<Operation *>(ops.begin(), ops.begin() + p);
   }
-
-  unsigned idx = 0;
-  while (opIt != memcpyIOps.end()) {
-    // BD repetition found. Check if repeating pattern.
-    if (!memcpyIMappedToEquivalentBDs(*opIt, uniqueBDPattern[idx]))
-      return llvm::SetVector<Operation *>(); // Chain isn't repeating. Return
-                                             // an empty vector.
-    opIt++;
-    idx++;
-    idx %= uniqueBDPattern.size();
-  }
-
-  // Repeating BD chain successfully detected.
-  return uniqueBDPattern;
+  for (size_t i = 0; i < ops.size(); i++)
+    for (size_t j = 0; j < i; j++)
+      if (memcpyIMappedToEquivalentBDs(ops[i], ops[j]))
+        return llvm::SetVector<Operation *>();
+  return memcpyIOps;
 }
 
 // Given a vector of memcpy operations, split them into BD tasks paired with the
