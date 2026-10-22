@@ -7422,9 +7422,53 @@ public:
                 "other tasks; its BD repeat count would be fixed in the "
                 "configuration");
 
+      // Sends per fill of a re-fed producer (air.refeed_count), read off the
+      // same carrier the lock allocation reads: the put for a core producer,
+      // the buffer for a memtile one. A memtile buffer drained by several ops
+      // carries their summed count, so each op's share is unknown. Such a
+      // buffer, and a transfer holding another side's locks, keep the chain as
+      // built.
+      auto sendsPerFill = [&](Operation *op) -> std::optional<int64_t> {
+        if (dir != AIE::DMAChannelDir::MM2S)
+          return 1;
+        if constexpr (std::is_same_v<dmaAllocatorTy, air::TileDMAAllocator>) {
+          if (auto chanIf = dyn_cast<air::ChannelInterface>(op))
+            return air::getRefeedCount(chanIf);
+          return 1;
+        } else if constexpr (std::is_same_v<dmaAllocatorTy,
+                                            air::MemTileDMAAllocator>) {
+          auto memcpyOp = cast<air::MemcpyInterface>(op);
+          auto buf = dmaAlloc.getBuffer(BufferId, nullptr, memcpyOp);
+          if (failed(buf))
+            return std::nullopt;
+          int64_t n = air::getRefeedCount(buf.value().getOperation());
+          if (n == 1)
+            return 1;
+          if (holdsLocks(dir, op))
+            return std::nullopt;
+          for (auto *user : buf.value().getResult().getUsers()) {
+            auto other = dyn_cast<air::MemcpyInterface>(user);
+            if (other && user != op &&
+                other.getSrcMemref() == buf.value().getResult())
+              return std::nullopt;
+          }
+          return n;
+        } else {
+          return 1;
+        }
+      };
+
       unsigned taskId = 0;
       // For every BD task
       for (auto &[rep, task_ops] : repeat_counts) {
+        // A circular chain sends each re-fed transfer as many times per fill
+        // as its flow needs (see getCircularChainBDs); a finite task runs its
+        // BDs once per repeat.
+        SmallVector<Operation *> bd_ops =
+            infiniteBDLoopMode
+                ? air::getCircularChainBDs(memcpy_ops, task_ops.getArrayRef(),
+                                           sendsPerFill)
+                : SmallVector<Operation *>(task_ops.begin(), task_ops.end());
         // The block containing aie.dma_start
         Block *start_bb = new Block();
         mem.getBody().push_back(start_bb);
@@ -7440,15 +7484,15 @@ public:
         Block *first_bd = new Block();
         first_bd->insertBefore(end_bb);
         Block *next_bd = nullptr;
-        for (size_t i = 0; i < task_ops.size(); i++) {
-          auto memcpyOp = cast<air::MemcpyInterface>(task_ops[i]);
+        for (size_t i = 0; i < bd_ops.size(); i++) {
+          auto memcpyOp = cast<air::MemcpyInterface>(bd_ops[i]);
           Block *bd;
           if (i == 0)
             bd = first_bd;
           else
             bd = next_bd;
           auto b = OpBuilder::atBlockEnd(bd);
-          if (i == task_ops.size() - 1) {
+          if (i == bd_ops.size() - 1) {
             if (infiniteBDLoopMode)
               AIE::NextBDOp::create(b, loc, first_bd);
             else
