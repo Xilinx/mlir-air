@@ -79,17 +79,22 @@ def n_pad(n):
     return -(-n // D.NR) * D.NR
 
 
-def pack_q4(q, scale, mn):
-    """[out, in] raw Q4NX -> GEMM B packets [N/TN, K/TK, QB] uint8
-    (gemm_bfp16.cc dq4_bfp16), output columns padded to whole rounds with zero
-    weights."""
+def pack_q4(q, scale, mn, gemm_format="bfp16"):
+    """[out, in] raw Q4NX -> GEMM B packets [N/TN, K/TK, QB] uint8, output
+    columns padded to whole rounds with zero weights. The nibbles of a B tile
+    run along k for "bfp16" (gemm_bfp16.cc dq4_bfp16, rows n), along n for
+    "bf16" (B tiles [MM k][MM n])."""
     n, k = q.shape
     npd = n_pad(n)
     pad = lambda a: np.pad(a.T, ((0, 0), (0, npd - n)))  # noqa: E731
     q, scale, mn = pad(q), pad(scale), pad(mn)
     TK, TN, MM = D.TK, D.TN, D.MM
     qt = q.reshape(k // TK, TK // MM, MM, npd // TN, TN // MM, MM)  # ks kb kk nt nb nn
-    qt = qt.transpose(3, 0, 4, 1, 5, 2).reshape(npd // TN, k // TK, -1)
+    if gemm_format == "bf16":
+        qt = qt.transpose(3, 0, 4, 1, 2, 5)
+    else:
+        qt = qt.transpose(3, 0, 4, 1, 5, 2)
+    qt = qt.reshape(npd // TN, k // TK, -1)
     qb = (qt[..., 0::2] | (qt[..., 1::2] << 4)).astype(np.uint8)
 
     def grp(a):
@@ -103,21 +108,40 @@ def pack_q4(q, scale, mn):
     return np.ascontiguousarray(np.concatenate([qb, grp(scale), grp(mn)], axis=2))
 
 
-def pack_bf16(w):
-    """[out, in] float -> GEMM B packets [N/TN, K/TK * 2, QB] uint8: per K
-    step two packets, one per K half, of bfp16 blocks [TN/16][TK/16][2]
-    (gemm_bfp16.cc mm_bfp16_pkt)."""
+def pack_bf16(w, gemm_format="bfp16"):
+    """[out, in] float -> GEMM B packets uint8. "bfp16": [N/TN, K/TK * 2, QB],
+    per K step two packets, one per K half, of bfp16 blocks [TN/16][TK/16][2]
+    (gemm_bfp16.cc mm_bfp16_pkt). "bf16": [N/TN, K/TK * 4, QB], per K step four
+    packets of TN x 32 bf16 as B tiles [TN/MM][32/MM][MM k][MM n]."""
     n, k = w.shape
     npd = n_pad(n)
     b = np.zeros((k, npd), bfloat16)
     b[:, :n] = np.asarray(w, np.float32).T
     TK, TN, MM = D.TK, D.TN, D.MM
-    t = b.reshape(k // TK, 2, TK // 16, MM, npd // TN, TN // 16, 2, MM)
-    t = t.transpose(4, 0, 1, 5, 2, 6, 7, 3)  # nt ks h np kb i nn kk
-    g = H.bfp_rows(t).reshape(npd // TN, k // TK * 2, -1)
-    out = np.zeros((npd // TN, k // TK * 2, D.QB), np.uint8)
+    if gemm_format == "bf16":
+        t = b.reshape(k // TK, 4, 32 // MM, MM, npd // TN, TN // MM, MM)
+        t = t.transpose(4, 0, 1, 5, 2, 3, 6)  # nt ks j nb kb kk nn
+        g = t.reshape(npd // TN, k // TK * 4, -1).view(np.uint8)
+    else:
+        t = b.reshape(k // TK, 2, TK // 16, MM, npd // TN, TN // 16, 2, MM)
+        t = t.transpose(4, 0, 1, 5, 2, 6, 7, 3)  # nt ks h np kb i nn kk
+        g = H.bfp_rows(t).reshape(npd // TN, k // TK * 2, -1)
+    out = np.zeros(g.shape[:2] + (D.QB,), np.uint8)
     out[..., : g.shape[-1]] = g
     return out
+
+
+def a_layout(gemm_format, k, chunks=1):
+    """dtype and shape [HR, K steps, chunk, tile] of the GEMM's A for depth k
+    on `chunks` chunks, a K step's tiles of the chunks side by side, K padded
+    to the device's (device.k_pad). "bfp16" is this builder's GEMM
+    (gemm_bfp16.cc); "bf16" is A as bf16 tiles [TM, TK], for a device whose
+    GEMMs are built elsewhere and read bf16."""
+    steps = D.k_pad(k) // D.TK
+    if gemm_format == "bf16":
+        return bfloat16, (D.HR, steps, chunks, D.TM, D.TK)
+    assert gemm_format == "bfp16", gemm_format
+    return np.uint8, (D.HR, steps, chunks, D.A_BFP)
 
 
 def kv_records(g, k, v):

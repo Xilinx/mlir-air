@@ -63,18 +63,24 @@ class FusedPrefill(Engine):
         for L in range(gw.NUM_LAYERS):
             for name, raw in _layer_q4(qm, self.bundle, L).items():
                 self.gemm_site(
-                    f"{L}.{name}", raw[0].shape[1], raw[0].shape[0], P.pack_q4(*raw), 1
+                    f"{L}.{name}",
+                    raw[0].shape[1],
+                    raw[0].shape[0],
+                    self.pack_q4(*raw),
+                    1,
                 )
             pw = qm.layer_ple(L)
             for name, w in (
                 ("ple_gate", pw["inp_gate"]),
                 ("ple_proj", pw["per_layer_projection"]),
             ):
-                self.gemm_site(f"{L}.{name}", w.shape[1], w.shape[0], P.pack_bf16(w), 0)
+                self.gemm_site(
+                    f"{L}.{name}", w.shape[1], w.shape[0], self.pack_bf16(w), 0
+                )
         mp = np.concatenate(
             [qm.layer_ple(L)["model_proj"] for L in range(gw.NUM_LAYERS)]
         )
-        self.gemm_site("mp", mp.shape[1], mp.shape[0], P.pack_bf16(mp), 0)
+        self.gemm_site("mp", mp.shape[1], mp.shape[0], self.pack_bf16(mp), 0)
         self.norms = [
             {
                 k: (np.asarray(v, np.float32) if isinstance(v, np.ndarray) else v)
@@ -104,7 +110,7 @@ class FusedPrefill(Engine):
             self.lm = D.n_split(gw.VOCAB)
             for i, (n0, n1) in enumerate(self.lm):
                 self.gemm_site(
-                    f"lm.{i}", gw.D, n1 - n0, P.pack_q4(*(a[n0:n1] for a in raw)), 1
+                    f"lm.{i}", gw.D, n1 - n0, self.pack_q4(*(a[n0:n1] for a in raw)), 1
                 )
             return
         ctx = Ctx(self.dev, self.dir / "lm.xclbin")

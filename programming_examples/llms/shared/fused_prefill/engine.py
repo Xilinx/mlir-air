@@ -100,6 +100,10 @@ class Engine:
         self.dir = Path(build_dir)
         self.cfg = cfg
         self.man = json.loads((self.dir / "manifest.json").read_text())
+        # the operand format of the device's GEMMs (packing.a_layout), and
+        # whether it has ops for chunk pairs (_pair)
+        self.gemm_format = self.man.get("gemm_format", "bfp16")
+        self.gemm_pairs = self.man.get("gemm_pairs", True)
         self.max_len = max_len
         # first kernel BO argument of each group: the GEMM's, then the
         # attention groups' in config order
@@ -138,16 +142,31 @@ class Engine:
         if "COMPLETED" not in str(st):
             raise RuntimeError(f"fused prefill {tag}: {st}")
 
+    def _a_buf(self, k, chunks):
+        """A new zeroed A buffer for GEMMs of depth k on `chunks` chunks, and
+        its view [HR, K steps, chunk, tile]."""
+        dt, shape = P.a_layout(self.gemm_format, k, chunks)
+        a = self.fp.bo(np.prod(shape) * np.dtype(dt).itemsize, 0)
+        am = view(a, dt, shape)
+        am[:] = 0
+        return a, am
+
+    def pack_q4(self, q, scale, mn):
+        """Q4NX weights as the device's GEMM reads them (packing.pack_q4)."""
+        return P.pack_q4(q, scale, mn, self.gemm_format)
+
+    def pack_bf16(self, w):
+        """bf16 weights as the device's GEMM reads them (packing.pack_bf16)."""
+        return P.pack_bf16(w, self.gemm_format)
+
     def gemm_site(self, site, k, n, packed, wq):
-        """Load one weight matrix (packed by pack_q4 if wq, else pack_bf16)."""
+        """Load one weight matrix (packed by self.pack_q4 if wq, else
+        self.pack_bf16)."""
         fp = self.fp
         npd = P.n_pad(n)
         if k not in self.abuf:
-            am_shape = (D.HR, D.k_pad(k) // D.TK, D.A_BFP)
-            a = fp.bo(np.prod(am_shape), 0)
-            am = view(a, np.uint8, am_shape)
-            am[:] = 0
-            self.abuf[k] = dict(a=a, am=am[:, : k // D.TK], last=None)
+            a, am = self._a_buf(k, 1)
+            self.abuf[k] = dict(a=a, am=am[:, : k // D.TK, 0], last=None)
         # the device's K steps past k read zero packets
         kp = packed.shape[1] * D.k_pad(k) // k
         packed = np.pad(packed, ((0, 0), (0, kp - packed.shape[1]), (0, 0)))
@@ -204,10 +223,10 @@ class Engine:
         return chunks
 
     def _pair(self, c):
-        """(pair, slot) of chunk c when it runs with a partner, else None. Two
-        chunks run one at a time: a pair would keep the device idle until the
-        host has prepared both."""
-        if self.n_chunks < 3 or c | 1 >= self.n_chunks:
+        """(pair, slot) of chunk c when it runs with a partner, else None:
+        always on a device without pair ops. Two chunks run one at a time: a
+        pair would keep the device idle until the host has prepared both."""
+        if not self.gemm_pairs or self.n_chunks < 3 or c | 1 >= self.n_chunks:
             return None
         return c // 2, c % 2
 
@@ -218,11 +237,7 @@ class Engine:
         pr = self._pair(c)
         key = ("a", k, pr[0] if pr else c, pr is not None)
         if key not in self.chunk_bufs:
-            am_shape = (D.HR, D.k_pad(k) // D.TK, 1 + (pr is not None), D.A_BFP)
-            a = self.fp.bo(np.prod(am_shape), 0)
-            am = view(a, np.uint8, am_shape)
-            am[:] = 0
-            self.chunk_bufs[key] = (a, am)
+            self.chunk_bufs[key] = self._a_buf(k, 1 + (pr is not None))
         a, am = self.chunk_bufs[key]
         return a, am[:, : k // D.TK, pr[1] if pr else 0]
 
