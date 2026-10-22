@@ -19,8 +19,6 @@ export FUSED_PREFILL_DIR
 
 .PHONY: compile-fused-prefill fused-prefill fused-prefill-long
 
-compile: compile-fused-prefill
-
 ## The fused prefill: every op of a 128-token chunk on one configured device,
 ## int4 weights dequantized on the cores.
 compile-fused-prefill:

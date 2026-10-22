@@ -3,7 +3,7 @@
 //
 // Llama-3.1-8B Q4NX verify gate: top-k token-level inclusion check, NPU q4nx vs
 // HF bf16, 2 prompts × 32 greedy tokens, k=5 (use `make verify-full` for the
-// full sweep locally). Exercises the full production prefill + decode path
+// full sweep locally). Exercises the full production (fused) prefill + decode path
 // through the verify subsystem (verify/verify_runner.py); NPU weights come from
 // the FastFlowLM model.q4nx bundle, the reference from the HF bf16 checkpoint.
 //
@@ -21,5 +21,6 @@
 // RUN: cd test_peano_verify
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile compile-decode PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile compile-fused-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
 // RUN: make -f %S/Makefile verify PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: [verify] PASS
