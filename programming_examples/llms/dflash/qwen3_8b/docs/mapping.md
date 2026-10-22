@@ -42,10 +42,9 @@ Coordinates below use the device's compute rows 2–5; MemTiles occupy row 1.
 All 32 compute tiles are occupied. The source also changes projection packet
 framing (`PAIR_ROWS=1`), GLU stream order, and output gathering to match these
 owners. The O/down stream must send all eight O replays before the down
-replays: down cannot be produced until the preceding O replays finish. The
-compiler represents that FIFO order by repeating the appropriate descriptors
-in a shared circular DMA chain, as provided by PR #2152. It preserves the
-per-buffer lock credits and uses no extra DMA channel.
+replays: down cannot be produced until the preceding O replays finish. AIR
+emits that order on the shared DMA chain, repeating each buffer's descriptor as
+many times as it is re-fed.
 
 Both examples compile shared arithmetic sources. The preserved 8B profile uses
 four-query shards and fused P/V rescaling. The later 4B native-K, early K-release
@@ -61,18 +60,18 @@ Sharing source does not silently enable new arithmetic or mapping optimizations.
 | [owner_graph.py](../owner_graph.py) → [common/b8_owners.py](../../common/b8_owners.py) | Two residual owners, two caches, four-row update routing and normalized-input join |
 | [common/fused_attention_graph.py](../../common/fused_attention_graph.py) | Shared query/KV distribution, query/head shards and output gather |
 | [common/kernels/](../../common/kernels/) | Shared projection, attention, RMS/residual, cache, GLU and context-prepass arithmetic |
-| [build_target.py](../build_target.py), [build_bfp_prepass.py](../build_bfp_prepass.py) | Decoder compilation delegates to [common/build_b8.py](../../common/build_b8.py); Peano objects and standard AIR compilation; source/artifact/tool identities and optional compatible object reuse |
+| [build_target.py](../build_target.py), [common/build_target.py](../../common/build_target.py), [build_bfp_prepass.py](../build_bfp_prepass.py) | This model's kernel defines; shared Peano objects and standard AIR compilation, source/artifact/tool identities and optional compatible object reuse |
 | [target_runtime.py](../target_runtime.py), [common/decoder.py](../../common/decoder.py) | Model-specific BO/weight binding; shared dispatch, logits/hidden access and KV operations |
 | [common/buffers.py](../../common/buffers.py) | Disjoint logical tensor views in bounded physical BOs; offsets originate in AIR subviews |
-| [runtime.py](../runtime.py), [run.py](../run.py) | Model initialization, NPU prefill, single-prompt streaming and resident chat |
+| [dflash_model.py](../dflash_model.py), [common/runtime.py](../../common/runtime.py), [common/run.py](../../common/run.py) | This model's decoders and caches; shared initialization, NPU prefill, single-prompt streaming and resident chat |
 | [common/speculative.py](../../common/speculative.py) | Shared draft/verify/accept/commit loop, EOS/budget handling and timers |
 | [npu_prefill.py](../npu_prefill.py), [prefill_weights.py](../prefill_weights.py) | Existing upstream Q4NX prefill with tapped outputs and mapped, streamed BF16 weights |
 | [common/prepass.py](../../common/prepass.py), [common/build_prepass.py](../../common/build_prepass.py) | Standalone NPU context preparation; width is 4096 here, 2560 for 4B |
 | [prepare_target.py](../prepare_target.py), [prepare_draft.py](../prepare_draft.py) | Raw target block reordering and drafter quantization; inverse packing checks |
-| [model_paths.py](../model_paths.py), [resources.py](../resources.py), [prepare_weights.py](../prepare_weights.py) | Pinned resources, persistent cache preparation and identity checks |
+| [model_paths.py](../model_paths.py), [resources.py](../resources.py), [prepare_weights.py](../prepare_weights.py) | Pinned resources, persistent cache preparation and identity checks; snapshot resolution is in [common/resources.py](../../common/resources.py) |
 | [benchmark_data.py](../benchmark_data.py), [common/benchmark_runner.py](../../common/benchmark_runner.py), [common/paired_benchmark.py](../../common/paired_benchmark.py) | Model-specific prompt states, common timing/aggregation and paired studies |
 | [baseline.py](../baseline.py), [build_baseline.py](../build_baseline.py) | Native upstream B1 xclbin builder and benchmark adapter |
-| [verify_loop.py](../verify_loop.py), [tests/](../tests/) | State, arithmetic, loop and model-token verification |
+| [tests/](../tests/), [common/verify_loop.py](../../common/verify_loop.py) | State, arithmetic, loop and model-token verification; the checks are shared in `common/` |
 
 The target and drafter are separate programs built from this mapping with their
 own role/layer/visibility settings and weights. The context prepass is a third

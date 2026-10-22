@@ -68,12 +68,12 @@ def build_identity(kind, model_dir):
         sources += [
             COMMON / name
             for name in (
+                "build_target.py",
                 "fused_attention_graph.py",
                 "buffers.py",
                 "b8_graph.py",
                 "b8_owners.py",
                 "b8_config.py",
-                "build_b8.py",
             )
         ]
     tools = {

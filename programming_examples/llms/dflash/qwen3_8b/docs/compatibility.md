@@ -1,33 +1,13 @@
 # Upstream compatibility
 
-The example uses the normal AIR build and XRTBackend flows. The qualification
-base is upstream `9748ba54`, with FIFO replay ordering from #2152 (`51e0f801`).
-The dependency pins are unchanged:
+The example uses the normal AIR build and XRTBackend flows and the
+dependency versions pinned under `utils/`.
 
-| Dependency | Version |
-|---|---|
-| MLIR-AIE | `1.4.5.dev51+ge040370` |
-| Peano | `22.0.0.2026101201+83ba9ea9` |
-| Host LLVM/MLIR | `24.0.0.2026100106+bdf04ebb` |
-| Inline-attention linker | Pre-23 `llvm-link`, as required by upstream fused decode |
-
-The B8 mapping requires FIFO ordering for re-fed transfers, provided by
-[AIR PR #2152](https://github.com/Xilinx/mlir-air/pull/2152). O and down are
-resident in the same MemTile and feed one projection stream. Each O buffer must
-be sent eight times before its down buffer is sent eight times. Alternating
-one descriptor per buffer stalls when down production waits for all O replays.
-Allocating separate channels avoids that stall for dependent producers but does
-not establish FIFO ordering when both buffers can supply data independently.
-
-The compiler constructs an ordered circular BD chain in
-`AIRToAIEPass.cpp` and `AIRToAIESchedulingUtils.cpp`, keeping the existing lock
-credits and DMA allocation. This replaces the initial separate-channel workaround.
-Tests are `mlir/test/Conversion/AIRToAIE/refeed_chain_order.mlir`,
-`mlir/test/CppUnitTests/circular_chain_bds.cpp`, and both modes of
-`test/xrt/56_refeed_chain_order`. Repeated descriptors must fit the MemTile BD
-pools; this is checked during compilation. Build/install AIR with #2152 before
-compiling this example. See [qualification](qualification.md) for the exact
-compiler revision and executed checks.
+The B8 mapping keeps O and down resident in the same MemTile, feeding one
+projection stream. Each O buffer is sent eight times before its down buffer is
+sent eight times, and down is only produced after the O sends are consumed.
+AIR emits that order on one circular DMA chain for re-fed transfers that share
+a flow; earlier AIR builds alternate the two buffers and stall.
 
 Two small upstream Python interfaces support clean reuse:
 
@@ -45,10 +25,9 @@ cache atomically; packing arithmetic, phase order and B1 dispatch are unchanged.
 The B8 physical ABI is emitted as AIR subviews. O/down replay is handled by the
 compiler. The build does not rewrite generated routes, locks, instructions or
 binary argument metadata. The B1 comparator uses upstream's retained xclbin/template
-path, also used by the 4B DFlash comparator. This supports the installed XRT
-2.21 binding: it lacks `run.get_ctrl_scratchpad_bo()`, required by upstream's
-newer default ELF scratchpad path. An ELF build completed but could not run
-with that binding. No XRT replacement or scratchpad emulation is required.
+path, also used by the 4B DFlash comparator. That path runs with XRT Python
+bindings that lack `run.get_ctrl_scratchpad_bo()`, which upstream's ELF
+scratchpad path requires.
 Decoder manifests retain the configuration, ABI, source snapshot,
 compiler/source hashes and artifact hashes; stale builds are rejected.
 

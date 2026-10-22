@@ -101,8 +101,6 @@ throughput, emitted tokens/round, acceptance, individual outputs and round trace
 are retained. A paper-era timer that excludes the first preparation/draft is
 reported separately; it is not the primary speedup metric.
 
-Local results and actual validation coverage are in [qualification](docs/qualification.md).
-
 Outputs default to `build/qwen3_8b_dflash_b8.full20.json` (or `.full80.json`).
 For a repeat, choose a fresh output name:
 

@@ -10,7 +10,7 @@ from model_paths import TARGET_REVISION, TOKENIZER_REVISION, DRAFT_REVISION
 def runtime_identity(engine="dflash"):
     here = Path(__file__).resolve().parent
     names = (
-        "runtime.py",
+        "dflash_model.py",
         "target_runtime.py",
         "draft_weights.py",
         "bfp_context_prepass.py",
@@ -21,6 +21,9 @@ def runtime_identity(engine="dflash"):
     )
     llms = here.parents[1]
     shared_names = (
+        "dflash/common/model.py",
+        "dflash/common/runtime.py",
+        "dflash/common/run.py",
         "dflash/common/speculative.py",
         "dflash/common/benchmark_runner.py",
         "dflash/common/paired_benchmark.py",

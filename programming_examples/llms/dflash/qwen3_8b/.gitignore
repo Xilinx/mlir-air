@@ -1,0 +1,8 @@
+/build*/
+__pycache__/
+*.o
+*.elf
+*.xclbin
+!build_target.py
+!build_bfp_prepass.py
+!build_baseline.py

@@ -266,7 +266,7 @@ on top of the multi-token decoder.
 The AIR compiler allocates buffers and locks and routes the declared channels.
 Build directories retain `compile_L*/input.mlir`, lowered intermediates and
 per-core ELF files for inspecting how these declarations were implemented.
-[build_target.py](../build_target.py) records the compiler options, source and
+[common/build_target.py](../../common/build_target.py) records the compiler options, source and
 artifact hashes in each manifest; [compatibility.md](compatibility.md) lists
 the required AIR fixes.
 
