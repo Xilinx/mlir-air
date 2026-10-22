@@ -17,7 +17,7 @@ FUSED_JOBS ?= 6
 FUSED_PREFILL_DIR ?= $(FUSED_DIR)
 export FUSED_PREFILL_DIR
 
-.PHONY: compile-fused-prefill fused-prefill fused-prefill-long
+.PHONY: compile-fused-prefill fused-prefill fused-prefill-long profile-fused-prefill
 
 ## The fused prefill: every op of a 128-token chunk on one configured device,
 ## int4 weights dequantized on the cores.
@@ -33,5 +33,12 @@ fused-prefill:
 fused-prefill-long:
 	python3 $(FUSED_MAIN) verify $(FUSED_MODEL) $(FUSED_DIR) --model $(MODEL_SOURCE) \
 	  --text-file $(FUSED_TEXT) --text-tokens 280 --repeat 1
+
+## Prefill time at each of FUSED_LENGTHS on synthetic prompts, no reference.
+## The build must take the longest (FUSED_MAX_LEN).
+FUSED_LENGTHS ?= 512,2048
+profile-fused-prefill:
+	python3 $(FUSED_MAIN) bench $(FUSED_MODEL) $(FUSED_DIR) --model $(MODEL_SOURCE) \
+	  --lengths $(FUSED_LENGTHS)
 
 FUSED_TEXT ?= $(dir $(lastword $(MAKEFILE_LIST)))../../README.md

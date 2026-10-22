@@ -407,21 +407,18 @@ jobs:
             LIT_OPTS="--timeout 3600" \
               ninja check-programming-examples-llms-sweep || rc=1
           fi
-          # Prefill TTFT vs PADDED prefill length: writes <model>.prefill_sweep.json
+          # Prefill TTFT vs prefill length: writes <model>.prefill_sweep.json
           # alongside. The other axis from the decode sweep above -- that one walks
-          # KV depth, this walks the length the prefill ELFs are built for, which is
-          # what TTFT scales with. Deliberately not the prompt length: the prompt is
-          # padded to the built length, so at a fixed engine TTFT is flat (measured
-          # on llama32_1b_q4nx: 959 ms at 128 tokens vs 983 ms at 2048). Each point
-          # is a fresh build, ~2 min for the small models and ~8 min for the 7B/8B.
+          # KV depth, this walks how many token rows the prefill computes, which is
+          # what TTFT scales with.
           #
-          # 4096 is the dearest column: a build scales with the padded length, so
-          # those eight points cost roughly what 512+1024+2048 cost together, and
-          # the suite goes ~1.7h -> ~2.7h. That is what took timeout-minutes to 480.
-          # It needs the M=4096 GEMM registry rows to configure an engine at that
-          # length, and the shim-BD / FlashAttention work to compile one; without
-          # either, every model reports no_registry_shape or bd_exhaustion at 4096
-          # and the column is a wall of red rather than a missing column.
+          # The models with a fused prefill time it on a prompt of each length:
+          # one build, for the longest length, serves every point. The others
+          # time their per-op prefill, which pads the prompt to the length its
+          # ELFs were built for, so each of their points is a fresh build whose
+          # cost grows with the length; their longest points need GEMM registry
+          # rows and shim-BD / FlashAttention support at that length, and report
+          # no_registry_shape or bd_exhaustion without them.
           if want prefill-sweep; then
             LIT_OPTS="--timeout 3600" \
               ninja check-programming-examples-llms-prefill-sweep || rc=1
