@@ -95,10 +95,11 @@ getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps);
 // different flows are re-fed at different rates. Each op is repeated so that
 // a whole number of passes sends what every flow needs per fill, using the
 // fewest BDs that do so.
-// `sendsPerFill` gives an op's sends per fill, or nullopt when that is not
-// known, in which case `unit` is returned unchanged.
+// `ops` are the chain's transfers in program order, which the emitter folded
+// to `unit`. `sendsPerFill` gives an op's sends per fill, or nullopt when that
+// is not known, in which case `unit` is returned unchanged.
 SmallVector<Operation *> getCircularChainBDs(
-    ArrayRef<Operation *> unit,
+    ArrayRef<Operation *> ops, ArrayRef<Operation *> unit,
     llvm::function_ref<std::optional<int64_t>(Operation *)> sendsPerFill);
 
 std::vector<AIE::BDDimLayoutAttr>

@@ -7466,7 +7466,8 @@ public:
         // BDs once per repeat.
         SmallVector<Operation *> bd_ops =
             infiniteBDLoopMode
-                ? air::getCircularChainBDs(task_ops.getArrayRef(), sendsPerFill)
+                ? air::getCircularChainBDs(memcpy_ops, task_ops.getArrayRef(),
+                                           sendsPerFill)
                 : SmallVector<Operation *>(task_ops.begin(), task_ops.end());
         // The block containing aie.dma_start
         Block *start_bb = new Block();

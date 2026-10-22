@@ -459,3 +459,83 @@ func.func @core_one_flow() {
   }
   return
 }
+
+// -----
+
+// The emitter folds the chain [x, w, w, w, w] to [x, w], so the w BD stands
+// for four transfers. x is re-fed 4 times, so x and w are in step at one BD
+// each.
+// CHECK-LABEL: aie.device
+// CHECK: aie.memtile_dma
+// CHECK: aie.dma_start(MM2S, 0, ^[[B0:bb[0-9]+]],
+// CHECK: ^[[B0]]:
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.dma_bd(%[[X:buf[0-9]+]] :
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.next_bd ^[[B1:bb[0-9]+]]
+// CHECK: ^[[B1]]:
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.dma_bd(%[[W:buf[0-9]+]] :
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.next_bd ^[[B0]]
+
+air.channel @fillX [1]
+air.channel @fillY [1]
+air.channel @done [1]
+air.channel @outX [1] {channel_type = "npu_dma_packet"}
+air.channel @outY [1] {channel_type = "npu_dma_packet"}
+func.func @refeed_next_to_folded_suffix(%a: memref<64xbf16>, %b: memref<64xbf16>, %y: memref<64xbf16>) {
+  %c1 = arith.constant 1 : index
+  air.launch (%a0, %a1) in (%s0=%c1, %s1=%c1) args(%aa=%a, %bb=%b, %yy=%y) : memref<64xbf16>, memref<64xbf16>, memref<64xbf16> {
+    air.channel.put @fillX[] (%aa[] [] []) : (memref<64xbf16>)
+    air.channel.put @fillY[] (%bb[] [] []) : (memref<64xbf16>)
+    air.channel.put @fillY[] (%bb[] [] []) : (memref<64xbf16>)
+    air.channel.put @fillY[] (%bb[] [] []) : (memref<64xbf16>)
+    air.channel.put @fillY[] (%bb[] [] []) : (memref<64xbf16>)
+    air.segment @seg {
+      %t0, %x = air.execute -> (memref<64xbf16, 1>) {
+        %allocated = memref.alloc() {air.refeed_count = 4 : i32} : memref<64xbf16, 1>
+        air.execute_terminator %allocated : memref<64xbf16, 1>
+      }
+      %t1, %w = air.execute -> (memref<64xbf16, 1>) {
+        %allocated = memref.alloc() : memref<64xbf16, 1>
+        air.execute_terminator %allocated : memref<64xbf16, 1>
+      }
+      air.channel.get @fillX[] (%x[] [] []) : (memref<64xbf16, 1>)
+      air.channel.put @outX[] (%x[] [] []) : (memref<64xbf16, 1>)
+      air.channel.get @fillY[] (%w[] [] []) : (memref<64xbf16, 1>)
+      air.channel.put @outY[] (%w[] [] []) : (memref<64xbf16, 1>)
+      air.channel.get @fillY[] (%w[] [] []) : (memref<64xbf16, 1>)
+      air.channel.put @outY[] (%w[] [] []) : (memref<64xbf16, 1>)
+      air.channel.get @fillY[] (%w[] [] []) : (memref<64xbf16, 1>)
+      air.channel.put @outY[] (%w[] [] []) : (memref<64xbf16, 1>)
+      air.channel.get @fillY[] (%w[] [] []) : (memref<64xbf16, 1>)
+      air.channel.put @outY[] (%w[] [] []) : (memref<64xbf16, 1>)
+      %d0 = air.execute { memref.dealloc %x : memref<64xbf16, 1> }
+      %d1 = air.execute { memref.dealloc %w : memref<64xbf16, 1> }
+      %one = arith.constant 1 : index
+      air.herd @h tile(%tx, %ty) in (%sx=%one, %sy=%one) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+        %c0 = arith.constant 0 : index
+        %c1_h = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %t2, %bx = air.execute -> (memref<64xbf16, 2>) {
+          %allocated = memref.alloc() : memref<64xbf16, 2>
+          air.execute_terminator %allocated : memref<64xbf16, 2>
+        }
+        %t3, %bw = air.execute -> (memref<64xbf16, 2>) {
+          %allocated = memref.alloc() : memref<64xbf16, 2>
+          air.execute_terminator %allocated : memref<64xbf16, 2>
+        }
+        scf.for %i = %c0 to %c4 step %c1_h {
+          air.channel.get @outX[] (%bx[] [] []) : (memref<64xbf16, 2>)
+          air.channel.get @outY[] (%bw[] [] []) : (memref<64xbf16, 2>)
+        }
+        air.channel.put @done[] (%bx[] [] []) : (memref<64xbf16, 2>)
+        %d2 = air.execute { memref.dealloc %bx : memref<64xbf16, 2> }
+        %d3 = air.execute { memref.dealloc %bw : memref<64xbf16, 2> }
+      }
+    }
+    air.channel.get @done[] (%yy[] [] []) : (memref<64xbf16>)
+  }
+  return
+}

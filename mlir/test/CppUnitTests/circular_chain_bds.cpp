@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 // getCircularChainBDs: the BDs of one circular chain, given each transfer's
-// sends per fill. Each case parses channel puts, reads a transfer's sends per
-// fill from a `sends` attribute (absent means unknown), and checks the BD
-// sequence by the puts' `name` attributes.
+// sends per fill. Each case parses channel puts in program order. A put's
+// `sends` attribute is its sends per fill (absent means unknown), a `folded`
+// put is in the chain's transfers but not in its unit, and the BD sequence is
+// checked by the puts' `name` attributes.
 
 #include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Dialect/AIR/AIRDialect.h"
@@ -31,10 +32,12 @@ static const char *kChannels = R"mlir(
   air.channel @d [2]
 )mlir";
 
-// Wraps `puts` in a function over %m, with %c0 and %c1 in scope.
+// Wraps `puts` in a function over buffers %x, %y, %z, %w, with %c0 and %c1 in
+// scope.
 static std::string module(const std::string &puts) {
   return std::string(kChannels) + R"mlir(
-  func.func @f(%m: memref<4xi32>) {
+  func.func @f(%x: memref<4xi32>, %y: memref<4xi32>, %z: memref<4xi32>,
+               %w: memref<4xi32>) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
 )mlir" + puts +
@@ -53,8 +56,12 @@ static void check(MLIRContext &ctx, const std::string &what,
     failures++;
     return;
   }
-  SmallVector<Operation *> unit;
-  mod->walk([&](air::ChannelPutOp put) { unit.push_back(put); });
+  SmallVector<Operation *> ops, unit;
+  mod->walk([&](air::ChannelPutOp put) {
+    ops.push_back(put);
+    if (!put->hasAttr("folded"))
+      unit.push_back(put);
+  });
 
   auto sends = [](Operation *op) -> std::optional<int64_t> {
     if (auto n = op->getAttrOfType<IntegerAttr>("sends"))
@@ -62,7 +69,7 @@ static void check(MLIRContext &ctx, const std::string &what,
     return std::nullopt;
   };
   std::string actual;
-  for (Operation *op : air::getCircularChainBDs(unit, sends))
+  for (Operation *op : air::getCircularChainBDs(ops, unit, sends))
     actual += op->getAttrOfType<StringAttr>("name").str();
   if (actual == expected)
     return;
@@ -71,13 +78,18 @@ static void check(MLIRContext &ctx, const std::string &what,
   failures++;
 }
 
+// A put of buffer `buf` on `chan[idx]`, named after the buffer. `sends` of 0
+// leaves the count unknown.
 static std::string put(const std::string &chan, const std::string &idx,
-                       const std::string &name, int sends) {
-  std::string attrs = "name = \"" + name + "\"";
+                       const std::string &buf, int sends,
+                       bool folded = false) {
+  std::string attrs = "name = \"" + buf + "\"";
   if (sends > 0)
     attrs += ", sends = " + std::to_string(sends);
-  return "    air.channel.put @" + chan + "[" + idx + "] (%m[] [] []) {" +
-         attrs + "} : (memref<4xi32>)\n";
+  if (folded)
+    attrs += ", folded";
+  return "    air.channel.put @" + chan + "[" + idx + "] (%" + buf +
+         "[] [] []) {" + attrs + "} : (memref<4xi32>)\n";
 }
 
 int main() {
@@ -114,6 +126,25 @@ int main() {
   check(ctx, "shared flow next to a re-fed one",
         put("a", "", "x", 2) + put("a", "", "y", 1) + put("c", "", "w", 4),
         "xxywwww");
+
+  // A unit op stands for every transfer it is equivalent to. Repeating the
+  // whole unit keeps the counts in proportion.
+  check(ctx, "repeated unit",
+        put("a", "", "x", 4) + put("b", "", "z", 2) +
+            put("a", "", "x", 4, /*folded=*/true) +
+            put("b", "", "z", 2, /*folded=*/true),
+        "xxz");
+  // A folded suffix does not: z below is sent four times per pass of x.
+  check(ctx, "folded suffix in step with a re-fed flow",
+        put("a", "", "x", 4) + put("b", "", "z", 1) +
+            put("b", "", "z", 1, /*folded=*/true) +
+            put("b", "", "z", 1, /*folded=*/true) +
+            put("b", "", "z", 1, /*folded=*/true),
+        "xz");
+  check(ctx, "folded suffix at half the re-fed rate",
+        put("a", "", "x", 4) + put("b", "", "z", 1) +
+            put("b", "", "z", 1, /*folded=*/true),
+        "xxz");
 
   check(ctx, "an unknown count leaves the chain alone",
         put("a", "", "x", 4) + put("a", "", "z", 0), "xz");
