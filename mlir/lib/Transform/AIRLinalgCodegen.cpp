@@ -3823,9 +3823,10 @@ struct BubbleSliceThroughCollapse
       if (!s)
         return failure();
       // Find the outermost dim `at` such that the slice covers whole rows of
-      // the dims after it. For `at` > 0 the slice size must also divide dim
-      // `at`, so that an aligned offset never crosses into the next index of
-      // the dims before it.
+      // the dims after it. For `at` > 0 the number of indices the slice takes
+      // in dim `at` must also divide its extent, so that an offset aligned to
+      // the slice size never crosses into the next index of the dims before
+      // it.
       std::optional<std::pair<size_t, int64_t>> split;
       for (size_t at = 0; at < group.size() && !split; ++at) {
         int64_t inner = 1;
