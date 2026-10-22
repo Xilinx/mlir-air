@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from speculative import accept_greedy
+from paths import HERE, COMMON
+from common.speculative import accept_greedy
 
 
 class AcceptGreedyTests(unittest.TestCase):

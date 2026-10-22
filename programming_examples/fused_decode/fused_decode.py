@@ -569,6 +569,22 @@ _MODELS = {
 }
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
 MODEL = {**_MODEL_DEFAULTS, **_MODELS[MODEL_NAME]}
+# A multi-token mapping may distribute each output block to an independent
+# emitter instead of pairing two rows. Preserve each phase's output extent;
+# the default is the model's existing single-token mapping.
+if "DECODE_PAIR_ROWS" in _os.environ:
+    pair_rows = int(_os.environ["DECODE_PAIR_ROWS"])
+    if pair_rows not in (1, 2):
+        raise ValueError("DECODE_PAIR_ROWS must be 1 or 2")
+    phase_blocks = [count * MODEL["PAIR_ROWS"] for count in MODEL["I2P"]]
+    vocab_blocks = MODEL["VOCAB_CHUNK_I2"] * MODEL["PAIR_ROWS"]
+    if any(count % pair_rows for count in phase_blocks + [vocab_blocks]):
+        raise ValueError(
+            "Projection phases cannot be divided into the requested row pairs"
+        )
+    MODEL["I2P"] = [count // pair_rows for count in phase_blocks]
+    MODEL["VOCAB_CHUNK_I2"] = vocab_blocks // pair_rows
+    MODEL["PAIR_ROWS"] = pair_rows
 # The build stamps embed this so editing a model's entry invalidates its warm
 # templates. Queried by the Makefiles with FUSED_DECODE_PRINT_CONST, which prints
 # any global by name -- the same hook GLU_SLICE uses.

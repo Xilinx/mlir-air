@@ -28,7 +28,7 @@ class ContextPrepass:
 
     def from_features(self, features, positions):
         features = np.asarray(features, np.float32)
-        if features.shape != (len(positions), 2560):
+        if features.shape != (len(positions), self.fc.shape[0]):
             raise ValueError("Features and absolute positions disagree")
         keys, values = [], []
         for layer, weight in enumerate(self.kv_weights):

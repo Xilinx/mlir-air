@@ -9,7 +9,8 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from build_identity import build_identity, check_existing, digest
+from paths import HERE, COMMON
+from common.build_identity import build_identity, check_existing, digest
 from target_config import FUSED
 
 
@@ -18,7 +19,7 @@ def main():
     p.add_argument("--output", required=True, type=Path)
     a = p.parse_args()
     out = a.output.resolve()
-    identity = build_identity("baseline")
+    identity = build_identity("baseline", HERE)
     if out.exists():
         check_existing(out, identity)
         return

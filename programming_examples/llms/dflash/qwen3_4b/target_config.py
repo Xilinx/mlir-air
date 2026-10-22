@@ -7,6 +7,7 @@ The runtime consumes the saved manifest rather than ambient DECODE_* settings.
 """
 
 from __future__ import annotations
+from paths import HERE, COMMON, EXAMPLES, REPO, FUSED
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import importlib.util
@@ -15,10 +16,6 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
-HERE = Path(__file__).resolve().parent
-EXAMPLES = HERE.parents[2]
-REPO = HERE.parents[3]
-FUSED = EXAMPLES / "fused_decode"
 ABI_VERSION = 1
 
 
@@ -253,7 +250,7 @@ def load_layout(config, length=None):
         "outy_tokmajor": outy_tokmajor,
         "contextlib": __import__("contextlib"),
     }
-    from fused_attention_graph import ParallelAttentionGraph
+    from common.fused_attention_graph import ParallelAttentionGraph
 
     ns = vars(fd).copy()
     ns.update(extra)

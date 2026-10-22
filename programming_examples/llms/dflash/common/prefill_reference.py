@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-# CPU prompt reference: the Qwen3-4B Q4NX weight reader and NumPy arithmetic,
+# CPU prompt reference: the Qwen Q4NX weight reader and NumPy arithmetic,
 # with no NPU imports.
 import numpy as np
 

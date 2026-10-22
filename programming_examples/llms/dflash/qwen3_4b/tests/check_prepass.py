@@ -18,7 +18,7 @@ from ml_dtypes import bfloat16
 from bfp_context_prepass import BF16ContextReference as ContextPrepass
 from bfp_context_prepass import BFPContextPrepass as NPUContextPrepass
 from bfp_reference import bfp_operand
-from context_prepass import rmsnorm, rope
+from common.context_reference import rmsnorm, rope
 
 
 def error_metrics(actual, expected):

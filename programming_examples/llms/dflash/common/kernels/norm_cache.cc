@@ -1,6 +1,10 @@
 // Bit-preserving replay of one chunk from a resident normalized activation.
 #include <aie_api/aie.hpp>
 #include <cstdint>
+#ifndef NORM_CACHE_ROWS
+#define NORM_CACHE_ROWS 8
+#endif
+static_assert(NORM_CACHE_ROWS == 4 || NORM_CACHE_ROWS == 8);
 // The B16 residual owners emit narrow [chunk128, row8, 128] packets.
 // Regroup four packets into [row8, 512] without repeating normalization.
 extern "C" void b16_normalized_cache_chunk(bfloat16 *restrict out,
@@ -16,8 +20,8 @@ extern "C" void b16_normalized_cache_chunk(bfloat16 *restrict out,
 extern "C" void normalized_cache_chunk(bfloat16 *restrict out,
                                        const bfloat16 *restrict slab,
                                        int32_t chunk) {
-  const bfloat16 *src = slab + chunk * 4096;
-  for (int i = 0; i < 4096; i += 64) {
+  const bfloat16 *src = slab + chunk * (NORM_CACHE_ROWS * 512);
+  for (int i = 0; i < NORM_CACHE_ROWS * 512; i += 64) {
     aie::store_v(out + i, aie::load_v<64>(src + i));
   }
 }

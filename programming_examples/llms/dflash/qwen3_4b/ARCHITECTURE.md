@@ -66,8 +66,8 @@ projection arithmetic, per-layer weight identities and decode timing boundaries.
 ## Selected B8 floorplan
 
 The whole AIR graph is in [batch_graph.py](batch_graph.py), with the attention
-subgraph in [fused_attention_graph.py](fused_attention_graph.py) and tile
-arithmetic in [kernels/](kernels/). The [B1-to-B8 design guide](docs/b8-megakernel.md)
+subgraph in [fused_attention_graph.py](../common/fused_attention_graph.py) and tile
+arithmetic in [kernels/](../common/kernels). The [B1-to-B8 design guide](docs/b8-megakernel.md)
 connects the following choices to formulas, buffer sizes and source functions.
 
 The projection subsystem retains the B1 decoder's quantized weight stream.

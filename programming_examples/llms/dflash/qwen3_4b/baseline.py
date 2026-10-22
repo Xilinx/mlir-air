@@ -7,13 +7,14 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
-from build_identity import build_identity, check_existing
+from paths import HERE, COMMON
+from common.build_identity import build_identity, check_existing
 from model_paths import default_target_cache, resolve_target_model
 
 
 def load_baseline(artifacts):
     artifacts = Path(artifacts).resolve()
-    check_existing(artifacts, build_identity("baseline"))
+    check_existing(artifacts, build_identity("baseline", HERE))
     os.environ["Q4NX_QWEN3_4B_DECODE_DIR"] = str(artifacts)
     # B1 decodes from the same requantized weight cache as B8.
     os.environ["Q4NX_QWEN3_4B_DECODE_NPZ"] = str(default_target_cache())

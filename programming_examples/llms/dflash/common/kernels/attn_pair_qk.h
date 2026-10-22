@@ -5,6 +5,9 @@ static_assert(KV_HEADS_PER_CU == 2 && Q_HEADS_PER_GROUP == 4 &&
               Q_HEADS_PADDED_PER_CU == 8 && DH == 128);
 static_assert(ATTN_QUERY_TILE >= 2 && ATTN_QUERY_TILE % 2 == 0);
 
+#ifndef ATTN_NATIVE_KEY
+#define ATTN_NATIVE_KEY 1
+#endif
 static_assert(AIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16);
 static inline __attribute__((always_inline)) aie::block_vector<bfp16ebs8, 64>
 dflash_qk_native_key(const bf16 *keys) {
@@ -17,7 +20,11 @@ dflash_qk_native_key(const bf16 *keys) {
 static inline __attribute__((always_inline)) void
 dflash_qk_pair_raw(bf16 *__restrict queries, bf16 *__restrict keys,
                    bf16 *__restrict scores, int first_row, int local) {
+#if ATTN_NATIVE_KEY
   using MM = aie::mmul<8, 8, 8, bf16, bfp16ebs8, accfloat>;
+#else
+  using MM = aie::mmul<8, 8, 8, bf16, bf16, accfloat>;
+#endif
   constexpr int query_width = Q_HEADS_PADDED_PER_CU * DH;
 #pragma clang loop unroll(disable)
   for (int group = 0; group < 2; ++group) {
@@ -30,8 +37,13 @@ dflash_qk_pair_raw(bf16 *__restrict queries, bf16 *__restrict keys,
                       aie::load_v<32>(queries + (first_row + 1) * query_width +
                                       d * 64 + group * 32));
       bf16 *k = keys + group * DH * 16 + d * 128;
+#if ATTN_NATIVE_KEY
       left.mac(a, aie::op_transpose(dflash_qk_native_key(k)));
       right.mac(a, aie::op_transpose(dflash_qk_native_key(k + 64)));
+#else
+      left.mac(a, aie::transpose(aie::load_v<64>(k), 8, 8));
+      right.mac(a, aie::transpose(aie::load_v<64>(k + 64), 8, 8));
+#endif
     }
     auto interleaved = aie::interleave_zip(left.template to_vector<bf16>(),
                                            right.template to_vector<bf16>(), 8);

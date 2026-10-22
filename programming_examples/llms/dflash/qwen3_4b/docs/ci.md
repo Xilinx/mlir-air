@@ -131,7 +131,8 @@ The October 17 Full20 LIT on upstream base `4bf1d78f` passed in
 **827.82 seconds (13.8 minutes)**
 with cached device builds. Its B1 process took 9.8 minutes and DFlash 3.9 minutes;
 the LIT also checked resources and existing artifacts. Allow about 15 minutes
-for a warm Full20 run, with a 30-minute LIT timeout. Full20's measured pooled
+for a warm 4B Full20 run. The shared LIT timeout is now one hour to also cover
+Qwen3-8B cold preparation. Full20's measured pooled
 throughputs are 15.775 / 42.240 tokens/s (B1 / DFlash), or 2.678×. Its smaller
 cohort is a separate performance series from Full80.
 
@@ -143,8 +144,9 @@ Fresh compilation of those components took 6.5 minutes; fresh packing took
 52 seconds. Verify/profile LITs took 4.5/1.8 minutes, including initialization.
 
 Budget 50–60 minutes for the optional warm Full80 study, at least an additional
-seven minutes for a fully cold device build, and 90 minutes for the Full80 LIT
-timeout. Downloads are seeded separately. The full nightly job limit remains
+seven minutes for a fully cold 4B device build. The shared Full80 LIT timeout
+is now three hours to accommodate Qwen3-8B as well. Downloads are seeded
+separately. The full nightly job limit remains
 540 minutes to accommodate an explicitly requested Full80 run as well.
 These measurements are local; the nightly/Krackan runner needs its own execution.
 Local jobs used a 20 GiB memory cap. Current-base verification/profile sampled

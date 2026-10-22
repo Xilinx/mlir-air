@@ -6,8 +6,8 @@ adds per-position attention visibility and RoPE, and changes on-chip storage and
 data supply to support the larger working set.
 
 The implementation has two parts: [batch_graph.py](../batch_graph.py) describes
-the complete AIR dataflow, and [kernels/](../kernels/) contains the operations
-executed on each compute tile. [fused_attention_graph.py](../fused_attention_graph.py)
+the complete AIR dataflow, and [kernels/](../../common/kernels) contains the operations
+executed on each compute tile. [fused_attention_graph.py](../../common/fused_attention_graph.py)
 defines the attention subgraph. Use the [code map](code-map.md) to follow the
 build and runtime entry points.
 
@@ -85,8 +85,8 @@ batch_graph: _mm()
   -> proj_qmm_mm_flush_token() for each output token
 ```
 
-The C++ functions are in [proj_batch.cc](../kernels/proj_batch.cc) and
-[q4k_batch.h](../kernels/q4k_batch.h). The matrix primitive is
+The C++ functions are in [proj_batch.cc](../../common/kernels/proj_batch.cc) and
+[q4k_batch.h](../../common/kernels/q4k_batch.h). The matrix primitive is
 `aie::mmul<8,8,8>`: each invocation covers eight token rows, eight reduction
 elements and eight output channels. Four accumulators cover 32 output channels
 while reusing a loaded activation operand. The build enables the standard
@@ -150,12 +150,12 @@ flowchart LR
 Source anchors in [batch_graph.py](../batch_graph.py):
 
 - `_rms_batched_norm()` computes each row factor and produces chunks through
-  `rms_chunk_aie()` in [rms_batch.cc](../kernels/rms_batch.cc). Its selected callers
+  `rms_chunk_aie()` in [rms_batch.cc](../../common/kernels/rms_batch.cc). Its selected callers
   request one production pass per normalization stage.
 - The `rms` herd keeps the residual and applies O/down updates row by row.
 - The `norm_cache` herd receives `xnorm_fill`, then replays the slab according
   to `REFEED` or `VOCAB_RNDS`. Its
-  [normalized_cache_chunk()](../kernels/norm_cache.cc) helper copies 4096 BF16
+  [normalized_cache_chunk()](../../common/kernels/norm_cache.cc) helper copies 4096 BF16
   values per chunk; five chunks cover the eight rows of width 2560.
 
 Thus normalization arithmetic stays with residual ownership, while storage and
@@ -212,19 +212,19 @@ within the available tile DMA and routing resources. V uses its own channels.
 Two further changes reduce work inside this mapping:
 
 - **Native K layout and early release.** `dflash_qk_pair_raw()` in
-  [attn_pair_qk.h](../kernels/attn_pair_qk.h) consumes K using BFP operands and
+  [attn_pair_qk.h](../../common/kernels/attn_pair_qk.h) consumes K using BFP operands and
   the matrix transpose modifier. The selected path avoids materializing the
   BF16 8-by-8 transpose. In the graph, the K last-use region ends before the
   shard acquires V, allowing the K input buffer to be reused earlier.
 - **P/V operand reuse.** For a fully visible key block,
-  [dflash_pv_reuse_v()](../kernels/attn_reuse_pv.h) prepares probabilities for
+  [dflash_pv_reuse_v()](../../common/kernels/attn_reuse_pv.h) prepares probabilities for
   two query pairs outside the head-dimension loop and shares each loaded V
   operand between the pairs. It preserves the separate FP32 rescale and add.
 
 At a partial causal boundary, different queries need different valid V values.
 BFP shares exponents across groups of eight reduction elements, so a masked
 future V could otherwise affect conversion of a visible value. The wrapper in
-[attn_kv_batch.cc](../kernels/attn_kv_batch.cc) clears invalid V elements before
+[attn_kv_batch.cc](../../common/kernels/attn_kv_batch.cc) clears invalid V elements before
 conversion and processes queries from the least to the most restrictive mask.
 Fully visible blocks take the shared-operand path; boundary blocks retain this
 per-query handling. The visibility tests exercise this distinction.
@@ -237,7 +237,7 @@ the transaction builder and graph. The selected attention/readback work visits
 `ceil((p+8)/16)` key blocks, with visibility still checked per query. Capacity
 4096 defines allocation and bounds; the current KV length defines executed
 attention work. The relevant sources are [target_runtime.py](../target_runtime.py),
-[decode_dynseq.py](../decode_dynseq.py) and `_live_rounds()` in the main graph.
+[decode_dynseq.py](../../common/decode_dynseq.py) and `_live_rounds()` in the main graph.
 
 The graph writes all eight new KV slots before verification completes. Host
 acceptance advances the committed prefix by the number of emitted tokens.

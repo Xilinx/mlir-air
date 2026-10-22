@@ -11,7 +11,7 @@ class NPUContextPrepass:
         taps = np.asarray(taps, np.float32)
         positions = np.asarray(positions, np.int64)
         n = len(positions)
-        if not 1 <= n <= 8 or taps.shape != (n, 12800):
+        if not 1 <= n <= 8 or taps.shape != (n, self.feature_width):
             raise ValueError(
                 ("Expected one to eight prepass rows", taps.shape, positions.shape)
             )
@@ -60,12 +60,12 @@ class NPUContextPrepass:
     def run(self, taps, positions):
         taps = np.asarray(taps, np.float32)
         positions = np.asarray(positions, np.int64)
-        if taps.shape != (len(positions), 12800) or positions.ndim != 1:
+        if taps.shape != (len(positions), self.feature_width) or positions.ndim != 1:
             raise ValueError("Target taps and absolute positions disagree")
         self.last_calls = []
         if not len(positions):
             return (
-                np.empty((0, 2560), np.float32),
+                np.empty((0, self.hidden_size), np.float32),
                 np.empty((5, 0, 1024), np.float32),
                 np.empty((5, 0, 1024), np.float32),
             )
@@ -80,4 +80,4 @@ class NPUContextPrepass:
 
     def warmup(self):
         for _ in range(3):
-            self.run(np.zeros((8, 12800), np.float32), np.arange(8))
+            self.run(np.zeros((8, self.feature_width), np.float32), np.arange(8))

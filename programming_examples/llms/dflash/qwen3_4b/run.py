@@ -18,7 +18,8 @@ from model_paths import (
     default_target_cache,
 )
 from runtime import PrefillWeights, load_pair, prepare_prompt, tokenize_prompt
-from streaming import TextStream
+from paths import HERE, COMMON
+from common.streaming import TextStream
 
 
 def check_capacity(loop, input_ids, tokens):

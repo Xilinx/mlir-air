@@ -12,18 +12,25 @@ def runtime_identity(engine="dflash"):
     names = (
         "runtime.py",
         "target_runtime.py",
-        "speculative.py",
-        "decode_dynseq.py",
         "draft_weights.py",
         "bfp_context_prepass.py",
-        "npu_context_prepass.py",
         "npu_prefill.py",
         "model_paths.py",
-        "weight_io.py",
+        "paths.py",
         "provenance.py",
     )
     llms = here.parents[1]
     shared_names = (
+        "dflash/common/speculative.py",
+        "dflash/common/benchmark_runner.py",
+        "dflash/common/paired_benchmark.py",
+        "dflash/common/streaming.py",
+        "dflash/common/weight_io.py",
+        "dflash/common/decoder.py",
+        "dflash/common/prepass.py",
+        "dflash/common/prepass_runtime.py",
+        "dflash/common/context_reference.py",
+        "dflash/common/decode_dynseq.py",
         "qwen3_4b_q4nx/qwen3_4b_q4nx_weights.py",
         "qwen3_8b_q4nx/qwen3_8b_q4nx_weights.py",
         "qwen3_4b_q4nx/qwen3_4b_q4nx_prefill.py",
@@ -47,7 +54,11 @@ def runtime_identity(engine="dflash"):
         baseline_source_sha256=(
             {
                 name: hashlib.sha256((fused / name).read_bytes()).hexdigest()
-                for name in ("decode_insts_gen.py", "decode_staircase.py")
+                for name in (
+                    "decode_insts_gen.py",
+                    "decode_staircase.py",
+                    "decode_elf.py",
+                )
             }
             if engine == "b1"
             else {}
