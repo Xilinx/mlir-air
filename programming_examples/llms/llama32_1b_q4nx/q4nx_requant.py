@@ -9,6 +9,9 @@
 # which is bf16, is quantized here. Cached to an .npz (keys W / RMS_in /
 # RMS_post) since the pack is deterministic + xclbin-independent.
 import os
+import mmap
+import tempfile
+import zipfile
 import numpy as np
 from ml_dtypes import bfloat16
 
@@ -112,63 +115,91 @@ def build_requant_cache(
         "down": (fd.K, fd.GLU_OUT),
     }
 
-    W_all, RMS_in, RMS_post = [], [], []
-    for k in range(n_layers):
-        R = {
-            nm: qm_model.q4nx(f"model.layers.{k}.{t}.weight", *dims[nm])
-            for nm, t in _PROJ.items()
-        }
-        qm = [None] * NPH
-        qm[0] = _cat(R["q"], R["k"], R["v"])
-        qm[OP] = R["o"]
-        qm[GP] = _interleave512(R["up"], R["gate"], GLU_CHUNK)
-        qm[DP] = R["down"]
-        W_all.append(
-            np.concatenate(
-                [
-                    fd.pack_q4k_cascade(
-                        *qm[p], NCX, NCY, iter_major=True, dual_chan=DUAL
+    # Keep the same NPY members and word order as np.savez, but write each
+    # projection immediately. Retaining all layers and their concatenation
+    # needs two full packed-model copies during cold 8B cache preparation.
+    RMS_in, RMS_post = [], []
+    total_words = n_layers * W_LAYER + UNI_LM * fd.VOCAB_W_BLOCKS * fd.BLOCK_BF16
+    directory = os.path.dirname(os.path.abspath(cache_path))
+    os.makedirs(directory, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=directory) as staging:
+        temporary_path = os.path.join(staging, "weights.npz")
+        with open(temporary_path, "w+b") as tmp, zipfile.ZipFile(
+            tmp, "w", compression=zipfile.ZIP_STORED
+        ) as archive:
+            with archive.open("W.npy", "w", force_zip64=True) as output:
+                np.lib.format.write_array_header_1_0(
+                    output,
+                    dict(
+                        descr=np.dtype(np.int16).str,
+                        fortran_order=False,
+                        shape=(total_words,),
+                    ),
+                )
+                words = 0
+
+                def write_weights(packed):
+                    nonlocal words
+                    data = np.ascontiguousarray(packed).view(np.int16)
+                    output.write(memoryview(data).cast("B"))
+                    words += data.size
+
+                for k in range(n_layers):
+                    R = {
+                        nm: qm_model.q4nx(f"model.layers.{k}.{t}.weight", *dims[nm])
+                        for nm, t in _PROJ.items()
+                    }
+                    qm = [None] * NPH
+                    qm[0] = _cat(R["q"], R["k"], R["v"])
+                    qm[OP] = R["o"]
+                    qm[GP] = _interleave512(R["up"], R["gate"], GLU_CHUNK)
+                    qm[DP] = R["down"]
+                    start = words
+                    for p in range(NPH):
+                        write_weights(
+                            fd.pack_q4k_cascade(
+                                *qm[p], NCX, NCY, iter_major=True, dual_chan=DUAL
+                            )
+                        )
+                    assert words - start == W_LAYER, (words - start, W_LAYER)
+                    rin, rpo = qm_model.layer_rms(k)
+                    RMS_in.append(np.asarray(rin, bfloat16))
+                    RMS_post.append(np.asarray(rpo, bfloat16))
+                    del qm, R
+                    qm_model._mm._mmap.madvise(mmap.MADV_DONTNEED)
+                    tmp.flush()
+                    os.posix_fadvise(tmp.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+                    if verbose:
+                        print(f"[q4nx_requant] layer {k} packed", flush=True)
+
+                if tie_lm_head:
+                    # Tied: quantize the BF16 embedding, as in the old packer.
+                    lm_pad = np.zeros((VPF, K), np.float32)
+                    lm_pad[:VOCAB] = qm_model.bf16("model.embed_tokens.weight")[:VOCAB]
+                    lq, ls, lm_ = _requant_q4k(lm_pad, G)
+                    del lm_pad
+                else:
+                    # Untied: preserve the bundle's real quantized LM head.
+                    lq, ls, lm_ = _pad_rows(
+                        qm_model.q4nx("lm_head.weight", VOCAB, K), VPF
                     )
-                    for p in range(NPH)
-                ]
-            )
-        )
-        rin, rpo = qm_model.layer_rms(k)
-        RMS_in.append(np.asarray(rin, bfloat16))
-        RMS_post.append(np.asarray(rpo, bfloat16))
-        assert W_all[-1].size == W_LAYER, (W_all[-1].size, W_LAYER)
-        if verbose:
-            print(f"[q4nx_requant] layer {k} packed", flush=True)
-    if tie_lm_head:
-        # lm_head is tied to embed (config tie_word_embeddings=true): use the
-        # full-precision embed matrix, not the bundle's separate Q4NX lm_head tensor.
-        lm_pad = np.zeros((VPF, K), np.float32)
-        lm_pad[:VOCAB] = qm_model.bf16("model.embed_tokens.weight")[:VOCAB]
-        lq, ls, lm_ = _requant_q4k(lm_pad, G)
-    else:
-        # Untied: the bundle's own quantized lm_head is the LM head. Its I8 header
-        # does not carry the logical shape, so pass (VOCAB, K) from the config.
-        lq, ls, lm_ = _pad_rows(qm_model.q4nx("lm_head.weight", VOCAB, K), VPF)
-    Wv = [
-        fd.pack_q4k_cascade(
-            lq[w * VP : (w + 1) * VP],
-            ls[w * VP : (w + 1) * VP],
-            lm_[w * VP : (w + 1) * VP],
-            NCX,
-            NCY,
-            iter_major=True,
-            dual_chan=DUAL,
-        )
-        for w in range(UNI_LM)
-    ]
-    W = np.concatenate([np.asarray(w) for w in W_all] + Wv)
-    os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
-    np.savez(
-        cache_path,
-        W=np.asarray(W).view(np.int16),
-        RMS_in=np.stack(RMS_in).view(np.int16),
-        RMS_post=np.stack(RMS_post).view(np.int16),
-    )
+                for w in range(UNI_LM):
+                    write_weights(
+                        fd.pack_q4k_cascade(
+                            lq[w * VP : (w + 1) * VP],
+                            ls[w * VP : (w + 1) * VP],
+                            lm_[w * VP : (w + 1) * VP],
+                            NCX,
+                            NCY,
+                            iter_major=True,
+                            dual_chan=DUAL,
+                        )
+                    )
+                assert words == total_words, (words, total_words)
+            for name, values in (("RMS_in", RMS_in), ("RMS_post", RMS_post)):
+                with archive.open(name + ".npy", "w") as output:
+                    np.lib.format.write_array(output, np.stack(values).view(np.int16))
+        os.replace(temporary_path, cache_path)
     if verbose:
         print(f"[q4nx_requant] wrote {cache_path}", flush=True)
     return cache_path

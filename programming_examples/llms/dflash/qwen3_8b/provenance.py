@@ -19,6 +19,8 @@ def runtime_identity(engine="dflash"):
         "model_paths.py",
         "paths.py",
         "provenance.py",
+        "model_spec.py",
+        "target_weights.py",
     )
     llms = here.parents[1]
     shared_names = (
@@ -28,6 +30,14 @@ def runtime_identity(engine="dflash"):
         "dflash/common/streaming.py",
         "dflash/common/weight_io.py",
         "dflash/common/decoder.py",
+        "dflash/common/decoder_8b.py",
+        "dflash/common/b8_config.py",
+        "dflash/common/q4nx_blocks.py",
+        "dflash/common/pipeline_8b.py",
+        "dflash/common/draft_weights_8b.py",
+        "dflash/common/prefill_weights_8b.py",
+        "dflash/common/prefill_cache.py",
+        "dflash/common/run_8b.py",
         "dflash/common/prepass.py",
         "dflash/common/prepass_runtime.py",
         "dflash/common/context_reference.py",

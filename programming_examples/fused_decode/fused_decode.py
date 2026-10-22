@@ -567,6 +567,27 @@ _MODELS = {
         ATTN_LAYERS=(2, 5, 8, 10, 12, 14),
     ),
 }
+# DFlash's Llama pair shares the 4096-wide B8 mapping, but its roles differ:
+# target FFN=14336 without Q/K norm; drafter FFN=12288 with Q/K norm.
+# Both use Llama's vocabulary and sixteen 8192-row head waves. Native B1
+# entries above retain their original projection pairing and vocabulary waves.
+_MODELS["llama-3.1-8b-dflash-target"] = dict(
+    _MODELS["llama-3.1-8b"],
+    PAIR_ROWS=1,
+    I2P=[12, 8, 56, 8],
+    VOCAB_CHUNK_I2=16,
+    UNI_LM=16,
+)
+_MODELS["llama-3.1-8b-dflash-drafter"] = dict(
+    _MODELS["qwen3-8b"],
+    PAIR_ROWS=1,
+    I2P=[12, 8, 48, 8],
+    VOCAB_SIZE=128256,
+    VOCAB_CHUNK_I2=16,
+    UNI_LM=16,
+    UNI_DEC=5,
+    DECODE_WGROUP=8,
+)
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
 MODEL = {**_MODEL_DEFAULTS, **_MODELS[MODEL_NAME]}
 # A multi-token mapping may distribute each output block to an independent

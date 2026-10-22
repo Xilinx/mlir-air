@@ -59,10 +59,22 @@ def build_identity(kind, model_dir):
                 model_dir / "build_baseline.py",
                 COMMON / "build_identity.py",
             ] + [p for p in sources if fused in p.parents]
-    sources += [COMMON / "build_identity.py", model_dir / "paths.py"]
+    sources += [
+        COMMON / "build_identity.py",
+        model_dir / "paths.py",
+        model_dir / "model_spec.py",
+    ]
     if kind == "decoder":
         sources += [
-            COMMON / name for name in ("fused_attention_graph.py", "buffers.py")
+            COMMON / name
+            for name in (
+                "fused_attention_graph.py",
+                "buffers.py",
+                "b8_graph.py",
+                "b8_owners.py",
+                "b8_config.py",
+                "build_b8.py",
+            )
         ]
     tools = {
         "air-opt": Path(shutil.which("air-opt")),

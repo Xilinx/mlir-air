@@ -60,6 +60,9 @@ def preparation_identity(artifacts):
             for p in (
                 HERE / "npu_prefill.py",
                 HERE / "prefill_weights.py",
+                HERE / "model_spec.py",
+                COMMON / "prefill_weights_8b.py",
+                COMMON / "prefill_cache.py",
                 HERE.parents[1] / "qwen3_8b_q4nx/qwen3_8b_q4nx_prefill.py",
                 HERE.parents[1] / "qwen3_8b_q4nx/qwen3_8b_q4nx_weights.py",
                 HERE.parents[1] / "shared/infra/cache.py",

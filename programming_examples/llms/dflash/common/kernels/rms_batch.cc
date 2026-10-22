@@ -10,7 +10,7 @@ static float batch_rsqrt(const bf16 *x) {
   for (int j = 0; j < MODEL_DIM; j += 16)
     acc = aie::mac_square(acc, aie::load_v<16>(x + j));
   float sum = aie::reduce_add(acc.template to_vector<float>());
-  sum = sum * (1.0f / MODEL_DIM) + 1.0e-6f;
+  sum = sum * (1.0f / MODEL_DIM) + RMS_NORM_EPS;
   float half = sum * 0.5f;
   uint32_t bits = __builtin_bit_cast(uint32_t, sum);
   bits = 0x5f3759df - (bits >> 1);

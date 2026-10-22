@@ -177,6 +177,7 @@ jobs:
             --destination "$HOME/.cache/mlir-air/dflash/benchmark-16x5-v1"
           python3 programming_examples/llms/dflash/qwen3_4b/resources.py --reference --offline
           python3 programming_examples/llms/dflash/qwen3_8b/resources.py --reference --offline
+          python3 programming_examples/llms/dflash/llama31_8b/resources.py --reference --offline
 
       - name: Show HF cache AFTER
         if: always()

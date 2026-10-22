@@ -57,11 +57,11 @@ Sharing source does not silently enable new arithmetic or mapping optimizations.
 | File | Role |
 |---|---|
 | [selected_config.py](../selected_config.py), [target_config.py](../target_config.py) | Model-role configuration, selected C4096/B8 mapping, upstream geometry adapter and logical/physical buffer ABI |
-| [batch_graph.py](../batch_graph.py) | Complete AIR graph: weight feed, activation fanout, projection packets, RoPE, KV append, attention and GLU |
-| [owner_graph.py](../owner_graph.py) | Two residual owners, two caches, four-row update routing and normalized-input join |
+| [batch_graph.py](../batch_graph.py) → [common/b8_graph.py](../../common/b8_graph.py) | Complete AIR graph: weight feed, activation fanout, projection packets, RoPE, KV append, attention and GLU |
+| [owner_graph.py](../owner_graph.py) → [common/b8_owners.py](../../common/b8_owners.py) | Two residual owners, two caches, four-row update routing and normalized-input join |
 | [common/fused_attention_graph.py](../../common/fused_attention_graph.py) | Shared query/KV distribution, query/head shards and output gather |
 | [common/kernels/](../../common/kernels/) | Shared projection, attention, RMS/residual, cache, GLU and context-prepass arithmetic |
-| [build_target.py](../build_target.py), [build_bfp_prepass.py](../build_bfp_prepass.py) | Peano objects and standard AIR compilation; source/artifact/tool identities and optional compatible object reuse |
+| [build_target.py](../build_target.py), [build_bfp_prepass.py](../build_bfp_prepass.py) | Decoder compilation delegates to [common/build_b8.py](../../common/build_b8.py); Peano objects and standard AIR compilation; source/artifact/tool identities and optional compatible object reuse |
 | [target_runtime.py](../target_runtime.py), [common/decoder.py](../../common/decoder.py) | Model-specific BO/weight binding; shared dispatch, logits/hidden access and KV operations |
 | [common/buffers.py](../../common/buffers.py) | Disjoint logical tensor views in bounded physical BOs; offsets originate in AIR subviews |
 | [runtime.py](../runtime.py), [run.py](../run.py) | Model initialization, NPU prefill, single-prompt streaming and resident chat |

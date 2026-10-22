@@ -1,0 +1,5 @@
+# Additional packages on top of the normal MLIR-AIR environment.
+huggingface_hub
+transformers
+safetensors
+torch

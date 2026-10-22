@@ -42,7 +42,8 @@ def main(
     load_prefill,
     runtime_identity,
     load_pair,
-    load_baseline
+    load_baseline,
+    eos_ids=(151643, 151645),
 ):
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("inputs", "target", "output"):
@@ -130,17 +131,17 @@ def main(
         if a.engine == "dflash":
             loop.prepass.warmup()
             loop.reset(initial)
-            loop.generate(17)
+            loop.generate(17, eos_ids=eos_ids)
         else:
-            autoregressive(target, initial, 17)
+            autoregressive(target, initial, 17, eos_ids=eos_ids)
         metadata["status"] = "running"
         for case in cases:
             prefill = load_prefill(a.inputs, case)
             if a.engine == "dflash":
                 loop.reset(prefill)
-                g = loop.generate(a.tokens)
+                g = loop.generate(a.tokens, eos_ids=eos_ids)
             else:
-                g = autoregressive(target, prefill, a.tokens)
+                g = autoregressive(target, prefill, a.tokens, eos_ids=eos_ids)
             emitted = len(g.output_ids) - 1
             nr = len(g.rounds)
             row = dict(

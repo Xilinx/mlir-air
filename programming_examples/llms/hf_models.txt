@@ -115,3 +115,8 @@ FastFlowLM/Gemma4-E2B-IT-NPU2
 # Gemma4-E4B (text), same packaging. Used by llms/gemma4_e4b_q4nx; listed alone
 # for the same reason as E2B.
 FastFlowLM/Gemma4-E4B-IT-NPU2
+
+# Llama-3.1-8B DFlash B8: pinned target, BF16 reference/tokenizer, and drafter.
+FastFlowLM/Llama-3.1-8B-NPU2@527006483dca6c9d75474ff92b8a6bdd8f257914
+NousResearch/Meta-Llama-3.1-8B-Instruct@d10aef7999a2b5ba950ab3974312feeedbfe0b77
+z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat@d3af30def9601abdd10810aba220d692f0e803f0

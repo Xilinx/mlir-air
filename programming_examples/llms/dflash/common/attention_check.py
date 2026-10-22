@@ -96,7 +96,7 @@ def build(a, config_type, load_layout):
         config_type(**seed["config"]),
         causal=a.causal,
         role="target" if a.causal else "drafter",
-        layers=36 if a.causal else 5,
+        layers=config_type().layers if a.causal else 5,
     )
     assert cfg.batch == 8
     obj = a.source / "objects/attn_fused.ll"

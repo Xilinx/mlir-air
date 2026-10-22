@@ -142,7 +142,11 @@ class DecoderState:
         # Generate the shared single-theta cos/sin once per position, then
         # broadcast it across layers. The existing helper defines the BF16 bits.
         for row in range(self.batch):
-            self.rope[:, row, :128] = self.weights.generate_rope_lut(position + row)
+            self.rope[:, row, :128] = (
+                self.rope_row(position + row)
+                if hasattr(self, "rope_row")
+                else self.weights.generate_rope_lut(position + row)
+            )
         self.bo["r"].write(
             self.rope.view(np.int16).reshape(-1), self.offset["rope"] * 2
         )
