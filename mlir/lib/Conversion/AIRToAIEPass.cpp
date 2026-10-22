@@ -6995,7 +6995,8 @@ public:
   /// The channel's BDs share one counting lock, so release k of a trip admits
   /// BD `slots + k`, whichever buffer that fills: the release follows that
   /// buffer's last use and release k - 1. Fails unless the core's gets on this
-  /// DMA channel are one channel in one block.
+  /// DMA channel are one channel, in one block or in blocks that each take the
+  /// channel's buffers whole and in order.
   FailureOr<Operation *> findRingReleasePoint(air::MemcpyInterface get,
                                               ArrayRef<Operation *> ringOps,
                                               int64_t slots) {
@@ -7005,21 +7006,46 @@ public:
     Block *block = get->getBlock();
     auto core = get->getParentOfType<AIE::CoreOp>();
     auto chan = self.getChanName();
-    SmallVector<air::ChannelGetOp> ring;
+    llvm::MapVector<Block *, SmallVector<air::ChannelGetOp>> byBlock;
     for (Operation *o : ringOps) {
       if (!o || o->getParentOfType<AIE::CoreOp>() != core)
         continue;
       auto g = dyn_cast<air::ChannelGetOp>(o);
-      if (!g || g->getBlock() != block || g.getChanName() != chan)
+      if (!g || g.getChanName() != chan)
         return failure();
-      ring.push_back(g);
+      byBlock[g->getBlock()].push_back(g);
     }
+    for (auto &[b, gets] : byBlock)
+      llvm::sort(gets, [](air::ChannelGetOp a, air::ChannelGetOp b) {
+        return a->isBeforeInBlock(b);
+      });
+    SmallVector<air::ChannelGetOp> ring = byBlock.lookup(block);
     int64_t n = ring.size();
     if (n < 2 || slots < 1)
       return failure();
-    llvm::sort(ring, [](air::ChannelGetOp a, air::ChannelGetOp b) {
-      return a->isBeforeInBlock(b);
-    });
+    // Gets in several blocks: each block must take the BD chain whole, in
+    // order, so the DMA is at the chain's start whenever a block begins, and
+    // no block may hold another, whose gets would run in the middle of it.
+    if (byBlock.size() > 1) {
+      for (Block *b : llvm::make_first_range(byBlock))
+        for (Block *o : llvm::make_first_range(byBlock))
+          if (b != o && b->findAncestorOpInBlock(*o->getParentOp()))
+            return failure();
+      SmallVector<Value> chain;
+      for (auto g : ring) {
+        Value r = air::resolveBufferRoot(g.getMemref());
+        if (llvm::is_contained(chain, r))
+          break;
+        chain.push_back(r);
+      }
+      for (auto &[b, gets] : byBlock) {
+        if (gets.size() % chain.size())
+          return failure();
+        for (auto [i, g] : llvm::enumerate(gets))
+          if (air::resolveBufferRoot(g.getMemref()) != chain[i % chain.size()])
+            return failure();
+      }
+    }
     auto *it = llvm::find(ring, self);
     if (it == ring.end())
       return failure();
