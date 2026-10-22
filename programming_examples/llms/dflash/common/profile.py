@@ -13,11 +13,14 @@ from common.run import run_prompt
 from common.runtime import load_pipeline
 
 
-def main(model: DFlashModel, perf_model: str):
+def main(model: DFlashModel, perf_name: str):
+    """`perf_name` names the model's results; the block size is appended."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--build", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--model", default=perf_model)
+    p.add_argument(
+        "--model", help="Optional identity, checked against the loaded block size"
+    )
     p.add_argument("--prompt", default="Introduce me what is GPU")
     p.add_argument("--tokens", type=int, default=256)
     a = p.parse_args()
@@ -29,6 +32,9 @@ def main(model: DFlashModel, perf_model: str):
         prepass_artifacts=a.build / "prepass",
         prefill_artifacts=a.build / "prefill_C2048",
     )
+    name = f"{perf_name}_b{loop.batch}"
+    if a.model is not None and a.model != name:
+        raise ValueError(f"Loaded artifacts are {name}, not {a.model}")
     # Both measurements call the function run/chat use; warmup is excluded.
     run_prompt(
         model,
@@ -48,12 +54,12 @@ def main(model: DFlashModel, perf_model: str):
     )
     if row["decode_tokens"] <= 0 or row["decode_seconds"] <= 0:
         raise RuntimeError("Profile produced no timed decode tokens")
-    run_params = dict(prompt=a.prompt, n_tokens=a.tokens, batch=8)
+    run_params = dict(prompt=a.prompt, n_tokens=a.tokens, batch=loop.batch)
     if "enable_thinking" in model.chat_options:
         run_params["thinking"] = model.chat_options["enable_thinking"]
     run_params["protocol"] = "dflash-npu-prefill-profile-v1"
     result = dict(
-        model=a.model,
+        model=name,
         timestamp_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         runner="",
         verify_status="",

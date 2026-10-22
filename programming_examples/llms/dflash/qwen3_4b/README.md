@@ -3,28 +3,9 @@
 Run Qwen3-4B with greedy, thinking-disabled speculative decoding on AMD NPU2.
 The selected mapping uses cached normalized activations, parallel attention
 shards, native K layout, and reuse of the attention P/V operands.
-B8 is the default; set `BLOCK_SIZE=16` for the two-wave B16 mapping.
-**B16 Full20 on upstream `3a6e9864`:** 39.238 decode tokens/s versus 15.787
-for the native B1 control (**2.486×**), with 5.697 emitted tokens per round.
-See [B16](docs/b16-megakernel.md) for the mapping, per-dataset results and
-fresh compile/verify/profile/Full20 qualification. The recorded results below
-describe B8 on its earlier integration bases.
-
-**Recorded B8 Full20 result:** 42.240 decode tokens/s versus 15.775 tokens/s
-for B1 (**2.678×**), on HX370/NPU2 with upstream `4bf1d78f` and the original
-B8 integration's compiler fixes. The paired study took 13.8 minutes with cached builds;
-all 20 outputs per engine and 1,870 DFlash acceptance rounds match the preceding
-Full20 run. See [validation](docs/validation.md) for the per-dataset results.
-
-**Recorded Full80 result:** 40.787 decode tokens/s versus 15.809 tokens/s
-for the freshly measured upstream B1 control (**2.580×**), on HX370/NPU2 with
-upstream base `25e913ff` (October 16) and the original B8 compiler fixes. All 80
-DFlash output arrays and acceptance traces match the preserved selected B8 run.
-See [validation](docs/validation.md) for settings and scope.
-
-The historical pair was 40.045 / 19.310 tokens/s (2.074×). Keep these baselines
-separate: the larger recent ratios primarily reflect the slower new B1
-control, rather than a new DFlash kernel optimization in this integration.
+B8 is the default; set `BLOCK_SIZE=16` for the two-wave B16 mapping described
+in [B16](docs/b16-megakernel.md). Measured results and their scope are in
+[validation](docs/validation.md).
 
 ## Environment
 

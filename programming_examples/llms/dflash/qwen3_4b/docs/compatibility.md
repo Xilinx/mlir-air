@@ -1,21 +1,14 @@
 # Upstream compatibility
 
-The B16 addition is based on upstream MLIR-AIR commit
-`3a6e98644aa9f2e5c8f7403b530d3aabadbe3818` (October 22, 2026), which already
-includes all three B8 model examples and their compiler prerequisites. B16
-uses the normal AIR environment and adds no compiler changes. Both block
-sizes use the same pinned checkpoints, packed caches and Python dependencies.
+The example uses the normal AIR environment and the dependency versions
+pinned under `utils/`. Both block sizes use the same pinned checkpoints, packed
+caches and Python dependencies.
 
-## Dependency versions for this integration
-
-| Dependency | Version |
+| Requirement | Detail |
 |---|---|
-| MLIR-AIE | `1.4.5.dev51+ge040370` |
-| Peano / llvm-aie | `22.0.0.2026101201+83ba9ea9` |
-| Host LLVM/MLIR | `24.0.0.2026100106+bdf04ebb` |
-| `llvm-link` for inline attention | LLVM 21; upstream fused_decode requires LLVM <23 |
-| Device | NPU2, eight-column partition, Linux XRT 2.21.0 |
-| Host | Python 3.12; a C++17 `g++` for upstream `TxnBuilder` |
+| `llvm-link` for inline attention | Older than LLVM 23, as upstream fused_decode requires |
+| Device | NPU2, eight-column partition |
+| Host | A C++17 `g++` for upstream `TxnBuilder` |
 
 The extra LLVM linker follows the upstream `fused_decode` preflight and CI
 setup. Peano still compiles the device kernels. It is not a replacement compiler
@@ -28,11 +21,9 @@ builder explicitly selects `npu2`. Decoder builds use XRT's xclbin and generated
 transaction-header flow; the standalone prepass uses the multi-launch ELF flow.
 Both are supported upstream APIs.
 
-## Compiler prerequisites already merged upstream
+## Compiler behaviour this example relies on
 
-The original B8 integration at `4bf1d78f` used MLIR-AIE dev46 and introduced
-the following fixes. They are part of the current upstream compiler; they are
-not additional changes in the B16 PR.
+Each of these AIR fixes has a regression test.
 
 | Change | Reason | Regression coverage |
 |---|---|---|
@@ -40,23 +31,8 @@ not additional changes in the B16 PR.
 | Honor `air.disable_alloc_sink` on allocations / enclosing `air.execute` | Keep designated scratch storage outside the reduction loop so scratch does not prevent projection-weight ping-pong transformation. | `disable_alloc_sink.mlir` |
 | Preserve MemTile ownership during `index_switch` arm-buffer rewriting | Core relay copies and compute-tile channel pins do not apply to L2 forwarding; buffer unification must retain compatible allocation attributes, including MemTile placement. The clean build exposed invalid channel IDs and mixed packet/circuit routes. | `air_channel_index_switch_memtile.mlir`, plus the original core relay/dedication tests |
 
-That integration passed 647 MLIR tests, with 7 expected failures and 7
-unsupported tests, and its DFlash compile LIT. Those historical receipts and
-performance results remain in [validation.md](validation.md). B16's current
-validation is recorded in [b16-megakernel.md](b16-megakernel.md).
-
-The B16 base also includes the NPU-only `aircc` cleanup (#2156). The compiler
-is rebuilt from that base before producing B16 artifacts. The shared fused
-prefill change in #2158 does not affect this example: its adapter calls
-`qwen3_4b_q4nx_prefill.Qwen3Q4nxPrefill`, which uses the native Qwen3 prefill
-builders rather than `llms/shared/fused_prefill`.
-
-Other historical DFlash-branch compiler patches are not prerequisites here:
-upstream already preserves the constant bias in dynamic DMA offsets. B8 keeps
-its existing lock selection; B16 uses upstream automatic lock selection,
-without the historical B16 chain-lock annotation. Current builds need no
-refeed routing patch or mixed-result branch-tracing patch. No generated AIE IR,
-BD assignments or routes are edited after compilation.
+B8 keeps its existing lock selection; B16 uses AIR's automatic lock selection.
+No generated AIE IR, BD assignments or routes are edited after compilation.
 
 ## Shared kernel changes
 
@@ -107,5 +83,4 @@ existing artifacts and rejects stale builds. Use a fresh `BUILD_DIR` after
 changing the compiler, sources or dependency versions. For prefill, also use a
 fresh directory: its shared cache is not keyed by all toolchain inputs.
 
-Historical performance is labeled separately from this port's new-toolchain
-validation. See [validation.md](validation.md) for the executed coverage.
+See [validation.md](validation.md) for the executed coverage.
