@@ -241,6 +241,8 @@ class FusedDecode3B:
         # Host-only BOs are host memory registered with the device, not bound to a
         # hw_context slot, so the same set is valid on every window's kernel -- which is
         # what makes a window switch cheap (no 2 GB weight re-upload).
+        from kv_bos import KVBuffers
+
         self.dev = xrt.device(0)
         self.TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.FROM = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
@@ -254,8 +256,13 @@ class FusedDecode3B:
             self.w_bo = xrt.ext.bo(self.dev, W.size * 2)
             self.r_bo = xrt.ext.bo(self.dev, RMS_SIZE * 2)
             self.y_bo = xrt.ext.bo(self.dev, self.ny * 2)
-            self.kvc = xrt.ext.bo(self.dev, self.N_LAYERS * self.LREG * 2)
-            self._elfdec.bind((self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc))
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.ext.bo(self.dev, n)
+            )
+            self.kvc = self.kvb.kvc
+            self._elfdec.bind(
+                (self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc) + self.kvb.extra
+            )
         else:
             self._kern = stair.open_windows(self.dev, xrt, self.gen, self.windows)
             self.kern = self._kern[self.cur_maxl][1]
@@ -265,7 +272,10 @@ class FusedDecode3B:
             self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
             self.r_bo = xrt.bo(self.dev, RMS_SIZE * 2, HO, g(5))
             self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
-            self.kvc = xrt.bo(self.dev, self.N_LAYERS * self.LREG * 2, HO, g(7))
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.bo(self.dev, n, HO, g(3 + a))
+            )
+            self.kvc = self.kvb.kvc
 
         self.w_bo.write(Wv16, 0)
         self.w_bo.sync(self.TO)
@@ -297,9 +307,10 @@ class FusedDecode3B:
 
     def reset_kv(self):
         """Zero the device-resident KV cache (start a fresh sequence)."""
-        KV = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
-        self.kvc.write(KV.view(np.int16), 0)
-        self.kvc.sync(self.TO)
+        # One layer at a time, to avoid a host copy of the whole cache.
+        zero = np.zeros(self.LREG, dtype=np.int16)
+        for L in range(self.N_LAYERS):
+            self.kvb.write_layer(L, zero, self.TO)
         # A fresh sequence starts at L=1, so drop back to the cheapest window.
         if getattr(self, "_ist", None):
             self._use_window(self.windows[0])
@@ -323,19 +334,19 @@ class FusedDecode3B:
             )
         region_stride = self.cur_maxl * fd.REGION_W
         lreg = self._geom.lreg(self.cur_maxl)
-        buf = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
+        # One layer at a time, as in reset_kv.
+        buf = np.zeros(lreg, dtype=bfloat16)
         for L in range(self.N_LAYERS):
             kL = np.asarray(k_layers[L], bfloat16).reshape(ctx, -1)
             vL = np.asarray(v_layers[L], bfloat16).reshape(ctx, -1)
-            base = L * lreg
+            buf[:] = 0
             for gi in range(fd.NGRP):
                 cols = slice(gi * fd.REGION_W, (gi + 1) * fd.REGION_W)
-                kreg = base + gi * region_stride
-                vreg = base + (fd.NGRP + gi) * region_stride
+                kreg = gi * region_stride
+                vreg = (fd.NGRP + gi) * region_stride
                 buf[kreg : kreg + ctx * fd.REGION_W] = kL[:, cols].reshape(-1)
                 buf[vreg : vreg + ctx * fd.REGION_W] = vL[:, cols].reshape(-1)
-        self.kvc.write(buf.view(np.int16), 0)
-        self.kvc.sync(self.TO)
+            self.kvb.write_layer(L, buf.view(np.int16), self.TO)
         return ctx
 
     def dispatch(self, tok, p):
@@ -365,6 +376,7 @@ class FusedDecode3B:
                 self.r_bo,
                 self.y_bo,
                 self.kvc,
+                *self.kvb.extra,
             ).wait(60000)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")
@@ -389,6 +401,7 @@ class FusedDecode3B:
         "ib",
         "_st",
         "_ist",
+        "kvb",
         "kvc",
         "y_bo",
         "r_bo",

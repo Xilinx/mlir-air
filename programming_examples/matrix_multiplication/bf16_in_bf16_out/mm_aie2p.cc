@@ -432,11 +432,11 @@ void SYM(f32_to_bf16_n)(float *src, bfloat16 *dst, int n) {
 // no vector f32 multiply, so an f32 x^3 would emit scalar libcalls, and the f32
 // narrowing goes through an accumulator because a per-element cast loop is
 // scalar and costs more than the tanh it feeds.
-void SYM(f32_to_bf16_gelu_mn)(float *src, bfloat16 *dst) {
+void SYM(f32_to_bf16_gelu_mn)(float *__restrict src, bfloat16 *__restrict dst) {
   ::aie::set_rounding(aie::rounding_mode::conv_even);
-  constexpr unsigned VW = 16;
+  constexpr unsigned VW = 32;
   constexpr unsigned NTOT = DIM_M * DIM_N;
-  static_assert(NTOT % VW == 0, "DIM_M*DIM_N must be a multiple of 16");
+  static_assert(NTOT % VW == 0, "DIM_M*DIM_N must be a multiple of 32");
   const aie::vector<bfloat16, VW> half_v =
       aie::broadcast<bfloat16, VW>((bfloat16)0.5f);
   const aie::vector<bfloat16, VW> one_v =
@@ -445,6 +445,8 @@ void SYM(f32_to_bf16_gelu_mn)(float *src, bfloat16 *dst) {
       aie::broadcast<bfloat16, VW>((bfloat16)0.7978845608f);
   const aie::vector<bfloat16, VW> beta_v =
       aie::broadcast<bfloat16, VW>((bfloat16)0.044715f);
+  // unrolled, with restrict pointers, so that the loop is software-pipelined
+#pragma clang loop unroll_count(2)
   for (unsigned i = 0; i < NTOT; i += VW)
     chess_prepare_for_pipelining chess_loop_range(16, ) {
       aie::vector<float, VW> f = aie::load_v<VW>(src + i);

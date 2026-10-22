@@ -15,7 +15,7 @@
 // report a number tens of times too good.
 //
 // 65536 and 131072 are expected-fail because how much host memory XRT will pin
-// for the KV BO differs between otherwise similar boxes, so reaching those
+// for the KV cache differs between otherwise similar boxes, so reaching those
 // depths is a property of the machine. The sibling sweeps carry the same two.
 // --expect-fail forgives ONLY a dispatch that reached the device and did not
 // complete (sweep_decode.EXPECTABLE); a build, staging or stale-template

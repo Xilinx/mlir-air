@@ -259,6 +259,8 @@ class FusedDecode8B:
         # Host-only BOs are host memory registered with the device, not bound to a
         # hw_context slot, so the same set is valid on every window's kernel -- which is
         # what makes a window switch cheap (no 2 GB weight re-upload).
+        from kv_bos import KVBuffers
+
         self.dev = xrt.device(0)
         self.TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.FROM = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
@@ -283,7 +285,8 @@ class FusedDecode8B:
         self.x_bo = mkbo(self.K * 2, 3)
         self.r_bo = mkbo(RMS_SIZE * 2, 5)
         self.y_bo = mkbo(self.ny * 2, 6)
-        self.kvc = mkbo(self.N_LAYERS * self.LREG * 2, 7)
+        self.kvb = KVBuffers(fd, self.ATTN_MAXL, lambda n, a: mkbo(n, 3 + a))
+        self.kvc = self.kvb.kvc
         # DECODE_WGROUP: the engine splits the weights over ceil(UNI_DEC/G) layer
         # buffers plus a dedicated lm-head buffer, because one BO is addressable
         # only over a 4 GiB span. Group 0 stays on the original arg (g(4)); the
@@ -321,6 +324,7 @@ class FusedDecode8B:
             self._elfdec.bind(
                 (self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc)
                 + tuple(self.w_bos[1:] if self._wsplit else ())
+                + self.kvb.extra
             )
         # KV cache seeded empty; the kernel appends each token in-place at slot `pos`.
         self.reset_kv()
@@ -350,9 +354,10 @@ class FusedDecode8B:
 
     def reset_kv(self):
         """Zero the device-resident KV cache (start a fresh sequence)."""
-        KV = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
-        self.kvc.write(KV.view(np.int16), 0)
-        self.kvc.sync(self.TO)
+        # One layer at a time, to avoid a host copy of the whole cache.
+        zero = np.zeros(self.LREG, dtype=np.int16)
+        for L in range(self.N_LAYERS):
+            self.kvb.write_layer(L, zero, self.TO)
         # A fresh sequence starts at L=1, so drop back to the cheapest window.
         if getattr(self, "_ist", None):
             self._use_window(self.windows[0])
@@ -376,19 +381,19 @@ class FusedDecode8B:
             )
         region_stride = self.cur_maxl * fd.REGION_W
         lreg = self._geom.lreg(self.cur_maxl)
-        buf = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
+        # One layer at a time, as in reset_kv.
+        buf = np.zeros(lreg, dtype=bfloat16)
         for L in range(self.N_LAYERS):
             kL = np.asarray(k_layers[L], bfloat16).reshape(ctx, -1)
             vL = np.asarray(v_layers[L], bfloat16).reshape(ctx, -1)
-            base = L * lreg
+            buf[:] = 0
             for gi in range(fd.NGRP):
                 cols = slice(gi * fd.REGION_W, (gi + 1) * fd.REGION_W)
-                kreg = base + gi * region_stride
-                vreg = base + (fd.NGRP + gi) * region_stride
+                kreg = gi * region_stride
+                vreg = (fd.NGRP + gi) * region_stride
                 buf[kreg : kreg + ctx * fd.REGION_W] = kL[:, cols].reshape(-1)
                 buf[vreg : vreg + ctx * fd.REGION_W] = vL[:, cols].reshape(-1)
-        self.kvc.write(buf.view(np.int16), 0)
-        self.kvc.sync(self.TO)
+            self.kvb.write_layer(L, buf.view(np.int16), self.TO)
         return ctx
 
     def dispatch(self, tok, p):
@@ -419,6 +424,7 @@ class FusedDecode8B:
                 self.y_bo,
                 self.kvc,
                 *(self.w_bos[1:] if self._wsplit else ()),
+                *self.kvb.extra,
             ).wait(60000)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")

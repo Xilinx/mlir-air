@@ -1,0 +1,11 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Device-free check of KVBuffers: a KV cache split over several buffers holds
+// the same data as a single buffer.
+//
+// RUN: %PYTHON %S/check_kv_bos.py | FileCheck %s
+//
+// CHECK: one buffer: True
+// CHECK: split, uneven last group: True
+// CHECK: split with ShortConv state: True
