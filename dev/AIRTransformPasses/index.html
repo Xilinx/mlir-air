@@ -4442,6 +4442,18 @@ attributes, then:</p>
 <h3 id="-air-opt-memtile-dma-bds"><code>-air-opt-memtile-dma-bds</code><a class="headerlink" href="#-air-opt-memtile-dma-bds" title="Permanent link">&para;</a></h3>
 <p><em>Optimize logical air.channel.put/get op into efficient AIE memtile dma block descriptor (BD)</em></p>
 <p>Optimize the logical data movement by transforming them, represented as air.channel.put/get operations, into explicit representation of physical data movement block descriptors (BDs), also represented as air.channel.put/get operations.</p>
+<p>Before that, the pass folds chains of puts that read one L2 buffer into
+single puts. The puts in a chain are consecutive on the same channel and
+indices, have the same static sizes and strides, and depend on nothing
+the first put does not. If their start offsets form a 1-D or 2-D lattice
+with positive steps, the lattice becomes the outer dims of one put, which
+sends the same data in the same order with one BD. Buffers that are
+filled slot by slot are not folded, so that each slot can be refilled as
+soon as it is drained, nor are re-fed buffers and puts
+(<code>air.refeed_count</code>), whose count is tied to their drain ops.</p>
+<p>Example: puts of 5120 elements at offsets 0, 40960, 81920, 20480, 61440
+and 102400 become one put with sizes [2, 3, 5120] and strides
+[20480, 40960, 1].</p>
 <h4 id="options_15">Options<a class="headerlink" href="#options_15" title="Permanent link">&para;</a></h4>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>-device : AIE device to target.
 </code></pre></div>
