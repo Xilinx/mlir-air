@@ -9,8 +9,6 @@
 #include "air/Conversion/PassDetail.h"
 
 #include "air/Dialect/AIR/AIRDialect.h"
-#include "air/Dialect/AIRRt/AIRRtDialect.h"
-#include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -803,8 +801,7 @@ public:
         LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
         affine::AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
         memref::MemRefDialect, bufferization::BufferizationDialect,
-        xilinx::airrt::AIRRtDialect, async::AsyncDialect,
-        mlir::BuiltinDialect>();
+        async::AsyncDialect, mlir::BuiltinDialect>();
 
     // air.memcpy_nd conversion
     RewritePatternSet air_dma_patterns(context);
