@@ -30,6 +30,8 @@ class Desc(NamedTuple):
     max_len: int = 2048
     lkp: int = 32
     family: str = "dense"  # "lfm2": lfm2.py
+    codec: str = "q4nx"  # the bundle's int4 matrices: "q4nx", or "q4_0"
+    base: str = ""  # HF repo of the config and tokenizer, if `repo` has none
     tol: float = 0.99  # verify's logit cosine gate against the fp32 reference
 
 
@@ -146,5 +148,21 @@ MODELS = {
     ),
     "phi4_mini_q4nx": Desc(
         "FastFlowLM/Phi4-mini-Instruct-NPU2", 3072, 128, 24, 8, 8192, 32, 200064
+    ),
+    # The config ties the LM head to the embedding, but the bundle ships a
+    # quantized lm_head and the decode uses it.
+    "qwen25_3b_q4": Desc(
+        "FastFlowLM/Qwen2.5-3B-Instruct-NPU2",
+        2048,
+        128,
+        16,
+        2,
+        11008,
+        36,
+        151936,
+        qkv_bias=True,
+        tied=False,
+        codec="q4_0",
+        base="Qwen/Qwen2.5-3B-Instruct",
     ),
 }

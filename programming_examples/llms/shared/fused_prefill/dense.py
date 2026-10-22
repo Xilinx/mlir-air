@@ -31,15 +31,26 @@ def resolve(desc, model=None):
         return m / "model.q4nx"
     from huggingface_hub import hf_hub_download
 
-    for f in ("config.json", "tokenizer.json", "tokenizer_config.json"):
-        hf_hub_download(model or desc.repo, f)
+    if not desc.base:
+        for f in ("config.json", "tokenizer.json", "tokenizer_config.json"):
+            hf_hub_download(model or desc.repo, f)
     return Path(hf_hub_download(model or desc.repo, "model.q4nx"))
 
 
+def meta_dir(desc, path):
+    """The directory of the config.json and tokenizer that go with the weights
+    at `path`: theirs, or desc.base's when their repo ships only weights."""
+    if not desc.base:
+        return Path(path).parent
+    from huggingface_hub import snapshot_download
+
+    return Path(snapshot_download(desc.base, allow_patterns=["*.json", "*.txt"]))
+
+
 def config(desc, path):
-    """(eps, {op: inv_freq}, rot, rope_scale) from the bundle's config.json,
+    """(eps, {op: inv_freq}, rot, rope_scale) from the weights' config.json,
     after checking its shape against desc."""
-    c = json.loads((Path(path).parent / "config.json").read_text())
+    c = json.loads((meta_dir(desc, path) / "config.json").read_text())
     c = c.get("text_config", c)
     got = (
         c["hidden_size"],
@@ -114,7 +125,7 @@ class DensePrefill(Engine):
                 pre_ffn="pre_feedforward_layernorm",
                 post_ffn="post_feedforward_layernorm",
             )
-        b = self.bundle = P.Bundle(path)
+        b = self.bundle = P.open_weights(e.codec, path)
         dq, dk = e.heads * e.dh, e.kv_heads * e.dh
         self.norms, self.bias = [], []
         for L in range(e.layers):
@@ -374,7 +385,7 @@ def reference(desc, model, ids):
     weights: the gate the fused prefill is checked against."""
     path = resolve(desc, model)
     eps, inv, rot, scale = config(desc, path)
-    b = P.Bundle(path)
+    b = P.open_weights(desc.codec, path)
     e, n = desc, len(ids)
     dq, dk, G = e.heads * e.dh, e.kv_heads * e.dh, e.heads // e.kv_heads
 

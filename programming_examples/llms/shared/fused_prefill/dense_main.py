@@ -67,7 +67,8 @@ def verify(name, argv):
     else:
         fam = dense
     path = fam.resolve(desc, a.model)
-    tok = AutoTokenizer.from_pretrained(path.parent)
+    meta = path.parent if desc.family == "lfm2" else dense.meta_dir(desc, path)
+    tok = AutoTokenizer.from_pretrained(meta)
     prompt = a.prompt
     if a.text_file:
         body = tok(Path(a.text_file).read_text())["input_ids"]

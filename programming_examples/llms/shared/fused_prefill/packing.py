@@ -3,8 +3,9 @@
 """Host-side layouts of the fused prefill device and the LM-head GEMV.
 
 Weights are repacked once at load. The packed layouts keep Q4NX's values
-(4-bit q, bf16 scale and min per 32-wide K group, w = q * scale + min); there
-is no requantization.
+(4-bit q, bf16 scale and min per 32-wide K group, w = q * scale + min); a
+bundle of Q4_0 matrices is put on that grid exactly. There is no
+requantization.
 """
 
 import json
@@ -62,10 +63,41 @@ class Bundle:
         return out.astype(np.float32)
 
     def q4nx(self, name, rows, K):
-        """A Q4NX (Codec B) matrix [rows, K] as raw (q, scale, min)."""
-        nb = (rows // ROW_BLOCK) * (K // COL_BLOCK)
+        """A Q4NX (Codec B) matrix [rows, K] as raw (q, scale, min). A bundle
+        may store one of the two dimensions zero-padded; the [rows, K] corner
+        is returned."""
+        nbi, nbj = rows // ROW_BLOCK, K // COL_BLOCK
+        nb = self.hdr[name]["shape"][0]
+        if nb != nbi * nbj:
+            if nb % nbi == 0 and nb // nbi > nbj:
+                nbj = nb // nbi
+            elif nb % nbj == 0 and nb // nbj > nbi:
+                nbi = nb // nbj
+            else:
+                raise ValueError(f"{name}: {nb} blocks do not hold [{rows}, {K}]")
         i16 = self._read(name, np.int16, nb * BLOCK_BF16)
-        return q4nx_raw(i16.reshape(nb, BLOCK_BF16), rows, K)
+        q, scale, mn = q4nx_raw(
+            i16.reshape(nb, BLOCK_BF16), nbi * ROW_BLOCK, nbj * COL_BLOCK
+        )
+        g = K // 32
+        return q[:rows, :K], scale[:rows, :g], mn[:rows, :g]
+
+
+class Q40Bundle(Bundle):
+    """A bundle whose int4 matrices are Q4_0: signed nibbles, w = q * scale,
+    the min field unused. As Q4NX that is q + 8 with min = -8 scale, exact in
+    bf16."""
+
+    def q4nx(self, name, rows, K):
+        q, scale, _ = super().q4nx(name, rows, K)
+        return q ^ 8, scale, -8 * scale
+
+
+def open_weights(codec, path):
+    """The weights at `path` (resolve()'s result) for a model of `codec`."""
+    if codec == "q4_0":
+        return Q40Bundle(path)
+    return Bundle(path)
 
 
 def q4nx_raw(i16, rows, K):
