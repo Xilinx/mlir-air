@@ -1266,11 +1266,6 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     if (paced)
       configTaskOp->setAttr(air::attrs::PreserveShimDmaOrder,
                             rewriter.getUnitAttr());
-    // Carry the runtime-sequence hoist marker onto the task so the
-    // post-lowering reordering step can move this input feed ahead of the
-    // weight stream.
-    if (op->hasAttr(air::attrs::RuntimeHoist))
-      configTaskOp->setAttr(air::attrs::RuntimeHoist, rewriter.getUnitAttr());
     // Carry the coalesced-feed marker so the double-buffered await synthesis
     // paces this merged channel at depth 1 (no cross-run overlap).
     if (op->hasAttr(air::attrs::CoalescedShimFeed))
@@ -3461,7 +3456,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             g.syncs.push_back(o);
           else if (isa<AIEX::SetLockOp>(o))
             g.locks.push_back(o);
-          else if (!o->hasAttr(air::attrs::RuntimeHoist) && !g.anchor)
+          else if (!g.anchor)
             g.anchor = o;
         }
         // Each move inserts immediately before the anchor, so the order these
@@ -3572,62 +3567,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           for (auto *u : cfg.getResult().getUsers())
             if (isa<AIEX::DMAStartTaskOp>(u) && !u->isBeforeInBlock(anchor))
               u->moveBefore(anchor);
-        }
-      }
-    });
-
-    // Hoist input DMA feeds (air.runtime_hoist). This opt-in ordering targets
-    // a single configuration region, so anchor it at the front of the block.
-    module.walk([&](AIE::RuntimeSequenceOp seq) {
-      if (seq.getBody().empty())
-        return;
-      // Rolled, the hoisted feeds live in a loop body or a select arm, so
-      // every block is visited, not just the entry block.
-      SmallVector<Block *> blocks;
-      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
-      for (Block *blkPtr : blocks) {
-        Block &blk = *blkPtr;
-        Operation *anchor = nullptr;
-        for (auto &o : blk) {
-          if (isa<AIEX::NpuLoadPdiOp, AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(&o))
-            continue;
-          if (o.hasAttr(air::attrs::RuntimeHoist))
-            continue;
-          anchor = &o;
-          break;
-        }
-        if (!anchor)
-          return; // nothing to order before.
-        // Hoist input DMA feeds marked `air.runtime_hoist` ahead of the bulk
-        // input-feed DMAs. Otherwise the control program can block on a later
-        // input's dma_await -- whose consumer is stalled in a feedback loop
-        // waiting on the compute that the hoisted feed drives -- BEFORE it ever
-        // issues the hoisted feed, so that compute never receives its input,
-        // produces no output, and the sequence deadlocks. Each configure task
-        // and its single start task are moved together, preserving relative
-        // order.
-        SmallVector<AIEX::DMAConfigureTaskForOp> hoistCfgs;
-        for (auto &o : blk)
-          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
-            if (c->hasAttr(air::attrs::RuntimeHoist))
-              hoistCfgs.push_back(c);
-        for (auto c : hoistCfgs) {
-          Operation *startOp = nullptr;
-          for (auto *u : c.getResult().getUsers())
-            if (isa<AIEX::DMAStartTaskOp>(u)) {
-              startOp = u;
-              break;
-            }
-          c->moveBefore(anchor);
-          if (startOp)
-            startOp->moveBefore(anchor);
-          else
-            // A present marker that cannot be honored is a silent-deadlock
-            // hazard; surface it rather than dropping the requested ordering
-            // quietly.
-            c->emitWarning("air.runtime_hoist: no matching dma_start_task; the "
-                           "feed was hoisted but its start was not, so the "
-                           "requested ordering may not take effect");
         }
       }
     });
@@ -3804,14 +3743,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         return;
 
       // A feed whose position is already load-bearing is left alone, and fences
-      // the burst it sits in: `air.runtime_hoist` was deliberately moved to the
-      // front, and the paced/coalesced feeds are bounded by
+      // the burst it sits in: the paced/coalesced feeds are bounded by
       // synthesizeDoubleBufferedAwaits.
       auto channelDir = [&](AIEX::DMAConfigureTaskForOp cfg)
           -> std::optional<AIE::DMAChannelDir> {
         for (StringRef a :
-             {air::attrs::RuntimeHoist, air::attrs::PreserveShimDmaOrder,
-              air::attrs::CoalescedShimFeed})
+             {air::attrs::PreserveShimDmaOrder, air::attrs::CoalescedShimFeed})
           if (cfg->hasAttr(a))
             return std::nullopt;
         auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(

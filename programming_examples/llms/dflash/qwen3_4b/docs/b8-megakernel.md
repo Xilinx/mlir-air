@@ -259,7 +259,7 @@ on top of the multi-token decoder.
 |---|---|---|
 | 64 KiB L1 per compute tile | Separate residual and normalized-slab ownership; bounded chunks for replay and output. | `rms`, `norm_cache`, `rmsb_l1`, `rstg_l1` in `batch_graph.py`. |
 | Weight/activation buffers and scratch need overlapping lifetimes | Preserve scratch/activation allocations outside reduction loops and pipeline weight transfer. | `_wscr_alloc()`, `_core_blk()`, `air.disable_alloc_sink`. |
-| MemTile capacity, six DMA channels per direction and packet/circuit routing compatibility | Explicit B8 placement: activation staging in column 4, main projection gather in column 2; distribute attention rings separately. | `target_config.load_layout()`, `air.memtile_col`, and `air.memtile_dma_channel_min` annotations. |
+| MemTile capacity, six DMA channels per direction and packet/circuit routing compatibility | Explicit B8 placement: activation staging in column 4, main projection gather in column 2; distribute attention rings separately. | `target_config.load_layout()` and `air.memtile_col` annotations. |
 | DMA-owned storage must remain valid until consumption ends | Shared channel locks protect producer reuse; early K release exposes its actual last use; MemTile forwarding preserves its L2 owner. | Channel declarations, `ParallelAttentionGraph.emit()`, and the [compiler fixes](compatibility.md). |
 | Shard outputs must join without borrowing live input storage | Reuse the dead score slab for the cascade output join. | `dflash_join_send()` / `dflash_join_receive()` in `attn_fused_batch.cc`. |
 

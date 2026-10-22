@@ -126,10 +126,6 @@ static LogicalResult canonicalizeHierarchyOpArgs(T op,
 //===----------------------------------------------------------------------===//
 
 void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
-  // Runtime-sequence ordering marker (input-feed hoist), consumed by
-  // AIRRtToNpu.
-  if (auto rh = src->getAttr(attrs::RuntimeHoist))
-    dst->setAttr(attrs::RuntimeHoist, rh);
   // Producer-side re-feed count (single-buffer count-free re-broadcast), read
   // by AIRToAIE's lock allocators.
   if (auto rc = src->getAttrOfType<IntegerAttr>(attrs::RefeedCount))

@@ -175,10 +175,6 @@ class ParallelAttentionGraph:
                             sizes=[2, 32, 8, 8],
                             strides=[4096, 8, 512, 1],
                         )
-                        if group == 0:
-                            pv.operation.attributes["air.memtile_dma_channel_min"] = (
-                                f.IntegerAttr.get(self.i32, 1)
-                            )
                     f.DeallocOp(kb)
                     f.DeallocOp(vb)
                     f.yield_([])
@@ -197,10 +193,6 @@ class ParallelAttentionGraph:
                             sizes=[4096],
                             strides=[1],
                         )
-                        if group == 0:
-                            put.operation.attributes["air.memtile_dma_channel_min"] = (
-                                f.IntegerAttr.get(self.i32, 1)
-                            )
                     f.DeallocOp(stage)
                     f.yield_([])
 

@@ -846,10 +846,6 @@ def build_module(layout):
                                 sizes=[idx(_len)],
                                 strides=[idx(1)],
                             )
-                            if RELAY_COLS[0] in layout._ATTN_COLS:
-                                _pt.operation.attributes[
-                                    "air.memtile_dma_channel_min"
-                                ] = layout.IntegerAttr.get(layout.T.i32(), 1)
                         layout.DeallocOp(qmt)
 
                     if _seg_arm_i is not None:
