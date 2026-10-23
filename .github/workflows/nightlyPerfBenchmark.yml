@@ -54,8 +54,8 @@ on:
         type: string
       compile_cache:
         description: >-
-          Reuse aircc builds from the runner's compile cache. Turn off to build
-          everything from scratch.
+          Reuse aircc builds and kernel compiles from the runner's compile
+          cache. Turn off to build everything from scratch.
         default: true
         type: boolean
 
@@ -366,10 +366,10 @@ jobs:
           # unrelated load competing for DRAM bandwidth.
           echo "platform profile: $(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo n/a) |$(uptime | sed 's/.*load average/ load average/')"
 
-          # Reuse aircc builds across nights (python/air/backend/compile_cache.py):
-          # a build is reused only when its module, options, linked objects and
-          # toolchain all match. Sundays build from scratch, so a reuse that an
-          # incomplete key let through lasts at most a week.
+          # Reuse aircc builds and kernel compiles across nights
+          # (python/air/backend/compile_cache.py): each is reused only when
+          # everything it was made from matches. Sundays build from scratch, so
+          # a reuse that an incomplete key let through lasts at most a week.
           if [ "${{ github.event.inputs.compile_cache || 'true' }}" = "true" ] && [ "$(date -u +%u)" != 7 ]; then
             export AIR_COMPILE_CACHE="$HOME/.cache/mlir-air/compile-cache"
             echo "compile cache: $AIR_COMPILE_CACHE"
