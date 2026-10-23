@@ -215,6 +215,13 @@ class FusedDecoder:
         # decode weights (q4k-cascade) + the 2 RMS norm stacks from the requant cache.
         _z = np.load(os.environ["Q4NX_QWEN25_7B_DECODE_NPZ"])
         W = _z["W"].view(bfloat16)
+        # A DECODE_UNI_DEC bisect build runs the first UNI_DEC layers, then the
+        # lm head: drop the layer slabs it skips from a cache packed for more.
+        _cached = _z["RMS_in"].shape[0]
+        if self.UNI_DEC < _cached:
+            W = np.concatenate(
+                [W[: self.UNI_DEC * fd.W_LAYER], W[_cached * fd.W_LAYER :]]
+            )
         self.Wv16 = W.view(np.int16) if W.dtype != np.int16 else W
         _rms = {n: list(_z[n].view(bfloat16)) for n in ("RMS_in", "RMS_post")}
         self.rms_slabs = np.concatenate(
