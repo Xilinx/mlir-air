@@ -423,16 +423,16 @@ jobs:
             LIT_OPTS="--timeout 3600" \
               ninja check-programming-examples-llms-prefill-sweep || rc=1
           fi
+          # Full20 and Full80 take their per-test timeouts from their CMake
+          # targets. Don't set --timeout in LIT_OPTS here: lit lets LIT_OPTS
+          # override the target's own arguments.
           if want full20; then
             # Four fixed prompts per dataset, both B1 and DFlash.
-            LIT_OPTS="--timeout 1800" \
-              ninja check-programming-examples-llms-full20 || rc=1
+            ninja check-programming-examples-llms-full20 || rc=1
           fi
           if want full80; then
-            # Optional paired study: measured 54 minutes with cached builds on
-            # HX370. Budget 90 minutes including its current-revision builds.
-            LIT_OPTS="--timeout 5400" \
-              ninja check-programming-examples-llms-full80 || rc=1
+            # Optional paired study over all sixteen prompts per dataset.
+            ninja check-programming-examples-llms-full80 || rc=1
           fi
           popd
           exit $rc
