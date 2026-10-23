@@ -106,9 +106,10 @@ help:
 	@echo " QWEN2.5-7B Q4NX decode on NPU2 (MLIR-AIR)"
 	@echo "============================================================"
 	@echo ""
-	@echo "  make compile LBUILD=16   Prefill ELFs + decode templates, small (Paris gate)"
+	@echo "  make compile LBUILD=16   Fused prefill + decode templates, small (Paris gate)"
 	@echo "  make compile             Production build (ATTN_MAXL=2048, ~15 min)"
-	@echo "  make compile-prefill     Prefill ELFs only (weight-free)"
+	@echo "  make compile-fused-prefill  Fused prefill only (weight-free)"
+	@echo "  make compile-prefill     Per-op prefill ELFs only (weight-free)"
 	@echo "  make compile-decode      Decode templates only (weight-free)"
 	@echo "  make run                 Decode 'The capital of France is' -> Paris gate"
 	@echo "  make ask PROMPT=\"...\"    Single Q&A turn"
@@ -188,9 +189,10 @@ prefill:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(PREFILL_DRIVER)
 
-## Build everything the end-to-end chatbot needs: the prefill ELFs and the
-## decode templates.
-compile: compile-prefill compile-decode
+## Build everything the end-to-end chatbot needs: the fused prefill and the
+## decode templates. run, verify and profile prefill on the fused prefill when
+## it is built, and on the per-op prefill otherwise.
+compile: compile-fused-prefill compile-decode
 
 ## Run inference (NPU prefill + fused NPU decode). With no PROMPT this is the
 ## canonical Paris gate: PASS iff the first token is 12095 (" Paris").
@@ -315,3 +317,7 @@ _compile_decode_elf_build:
 
 # The ELF is a decode artifact like the templates, so compile-decode builds it.
 compile-decode: compile-decode-elf
+
+# The fused prefill: the shared fused_prefill/ device, built for this model.
+FUSED_MODEL := qwen25_7b_q4nx
+include $(srcdir)/../shared/fused_prefill/fused_prefill.mk

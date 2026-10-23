@@ -13,8 +13,9 @@ is that same checkpoint and the gate measures the 4-bit loss and nothing else --
 ungated, rope_theta 1e6. NOT the -1M long-context variant, which shares the
 geometry but ropes at 1e7.
 
-`prefill()` runs `Qwen25Q4nxPrefill` (full logits + per-layer roped-K / raw-V) and
-seeds the decode's device KV cache from it; each `decode_step()` then dispatches
+`prefill()` runs the fused prefill when FUSED_PREFILL_DIR holds a build, else
+`Qwen25Q4nxPrefill` (full logits + per-layer roped-K / raw-V), and seeds the
+decode's device KV cache from it; each `decode_step()` then dispatches
 one fused token.
 
 Pointed at via `--runner=qwen25_7b_q4nx.verify_adapter`.
@@ -37,6 +38,7 @@ for _p in (str(_VERIFY), str(_THIS_DIR)):
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
+from runners import fused_prefill  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
 # Qwen2.5-7B geometry. Taken from qwen25_7b_q4nx_weights rather than restated, so
@@ -107,8 +109,9 @@ def build_runner(
 class NpuRunner:
     """Adapter over the Q4NX batched prefill + one-xclbin fused Qwen2.5-7B decode.
 
-    prefill() runs `Qwen25Q4nxPrefill` (full logits + per-layer roped-K / raw-V)
-    and seeds the decoder's KV cache; decode_step() dispatches one fused token
+    prefill() runs the fused prefill when FUSED_PREFILL_DIR holds a build, else
+    `Qwen25Q4nxPrefill` (full logits + per-layer roped-K / raw-V), and seeds the
+    decoder's KV cache; decode_step() dispatches one fused token
     (28 layers + the untied LM head) through `FusedDecoder`. Mirrors the loop in
     `qwen25_7b_q4nx_inference.generate`."""
 
@@ -121,10 +124,12 @@ class NpuRunner:
         from qwen25_7b_q4nx_prefill import Qwen25Q4nxPrefill
         from qwen25_7b_q4nx_inference import FusedDecoder
 
-        self.prefiller = Qwen25Q4nxPrefill(
-            seq_len=_SEQ_LEN, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
-        )
-        self.prefiller.load_weights(model=Q4NX_MODEL_SOURCE)
+        self.prefiller = fused_prefill.load("qwen25_7b_q4nx", Q4NX_MODEL_SOURCE)
+        if self.prefiller is None:
+            self.prefiller = Qwen25Q4nxPrefill(
+                seq_len=_SEQ_LEN, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
+            )
+            self.prefiller.load_weights(model=Q4NX_MODEL_SOURCE)
         self.dec = FusedDecoder(model=Q4NX_MODEL_SOURCE)
         self.attn_maxl = self.dec.ATTN_MAXL
         self._P = 0
@@ -141,6 +146,8 @@ class NpuRunner:
         logits = np.asarray(self.prefiller.prefill(ids), np.float32)
         first = int(logits.argmax())
         Kc, Vc = self.prefiller.kv_stack()
+        if hasattr(self.prefiller, "suspend"):
+            self.prefiller.suspend()  # free its hw_context for the decoder
         self._P = Kc.shape[1]
         self.dec.seed_kv(Kc, Vc, self._P)
 

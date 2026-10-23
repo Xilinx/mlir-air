@@ -203,7 +203,16 @@ def build_kernels(out, cfg):
         key = (g.lkp, g.dvt)
         if seen.setdefault(g.dh, key) != key:
             raise ValueError(f"attention groups with head_dim {g.dh} differ in tiling")
-    for dh in {g.dh for g in cfg.attn.values() if g.kern == "bfp16"}:
+    split = {}
+    for g in cfg.attn.values():
+        if (
+            g.kern == "bfp16"
+            and split.setdefault(g.dh, g.split_scores) != g.split_scores
+        ):
+            raise ValueError(
+                f"attention groups with head_dim {g.dh} differ in split_scores"
+            )
+    for dh, sp in split.items():
         jobs.append(
             [
                 cc,
@@ -213,6 +222,7 @@ def build_kernels(out, cfg):
                 "-o",
                 out / f"attn_bfp16_d{dh}.o",
                 f"-DDH={dh}",
+                *(["-DATTN_SPLIT_SCORES"] if sp else []),
                 *[f"-D{fn}={fn}_d{dh}" for fn in ("attn_init", "attn_blk", "attn_fin")],
             ]
         )

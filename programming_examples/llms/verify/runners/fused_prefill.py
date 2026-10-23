@@ -31,6 +31,9 @@ def load(name, model=None):
         pf = rt.FusedPrefill(d)
         pf.load_weights(model=model)
         return pf
-    from air_examples.llms.shared.fused_prefill import dense
+    from air_examples.llms.shared.fused_prefill import dense, packing
+    from air_examples.llms.shared.fused_prefill.models import MODELS
 
+    if not packing.reads(MODELS[name], model):
+        return None
     return dense.load(name, d, model)
