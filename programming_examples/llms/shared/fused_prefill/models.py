@@ -64,6 +64,7 @@ def spec(desc):
         max_blocks=desc.max_len // desc.lkp + bfp,
         window_rtp=bool(desc.window),
         kern="bfp16" if bfp else "npu2",
+        split_scores=desc.qkv_bias,
     )
     groups = ("a0", "a1")
     cfg = D.Config(

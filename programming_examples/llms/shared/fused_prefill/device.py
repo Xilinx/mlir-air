@@ -72,6 +72,10 @@ class Attn(NamedTuple):
     # "bfp16": attn_bfp16.cc, the host packing q, K and V as bfp16 and one
     # call per K block (dh <= 128, dvt == dh); "npu2": attn_npu2.cc
     kern: str = "npu2"
+    # attn_bfp16 only: take the running max off the scores before they are
+    # rounded to bf16, for models whose q/k biases put scores far above the
+    # differences between them (attn_bfp16.cc, ATTN_SPLIT_SCORES)
+    split_scores: bool = False
 
 
 # a window no prompt reaches, which makes the window mask causal
