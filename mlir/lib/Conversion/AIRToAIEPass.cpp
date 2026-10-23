@@ -4791,6 +4791,9 @@ public:
     // Complete stage: Canonicalization and op removal
     RewritePatternSet patterns(ctx);
     air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
+    // Channel lowering can leave a dead host-selection switch yielding only
+    // empty async tokens. Remove its unused results before legalizing waits.
+    scf::IndexSwitchOp::getCanonicalizationPatterns(patterns, ctx);
     (void)applyPatternsGreedily(device, std::move(patterns));
 
     RewritePatternSet removepatterns(ctx);
@@ -9489,6 +9492,8 @@ public:
 
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
+      // Discard dead host-selection results before legalizing their waits.
+      scf::IndexSwitchOp::getCanonicalizationPatterns(patterns, ctx);
       (void)applyPatternsGreedily(device, std::move(patterns));
 
       // Remove ops via rewrite patterns.
