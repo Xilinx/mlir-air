@@ -540,6 +540,14 @@ jobs:
                   d["toolchain"] = dict(mlir_air_sha=air_sha, mlir_aie_hash=aie_hash,
                                         llvm_aie_version=peano_ver)
                   d["verify_status"] = vstatus.get(d["model"], "")
+                  # Prompt lengths live only in the per-request log; the docs
+                  # page states the range the study covered.
+                  log = os.path.join(os.path.dirname(f), (d.get("records") or {}).get("dflash", ""))
+                  try:
+                      lens = [json.loads(l)["input_tokens"] for l in open(log) if l.strip()]
+                      d["prompt_tokens"] = {"min": min(lens), "max": max(lens)}
+                  except (OSError, ValueError, KeyError) as e:
+                      print(f"WARNING: no prompt lengths from {log}: {e}", file=sys.stderr)
                   studies.append(d)
               json.dump(studies, open(f"{kind}.json", "w"), indent=2)
 
@@ -647,11 +655,19 @@ jobs:
               --history "$workdir/prefill_sweep_history.ndjson" \
               --run-id "${{ github.run_id }}"
           fi
+          # Speculative decoding: the paired Full20 study, one row per dataset.
+          if [ -f full20.json ]; then
+            python3 programming_examples/llms/bench/append_history.py \
+              --spec-decode full20.json \
+              --history "$workdir/spec_decode_history.ndjson" \
+              --run-id "${{ github.run_id }}"
+          fi
           pushd "$workdir"
           if [ -n "$(git status --porcelain)" ]; then
             git add history.ndjson
             [ -f sweep_history.ndjson ] && git add sweep_history.ndjson
             [ -f prefill_sweep_history.ndjson ] && git add prefill_sweep_history.ndjson
+            [ -f spec_decode_history.ndjson ] && git add spec_decode_history.ndjson
             git commit -m "perf-history: nightly ${{ github.sha }} run ${{ github.run_id }}"
             git push origin HEAD:perf-history
           else

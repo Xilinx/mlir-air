@@ -30,12 +30,15 @@ HERE = Path(__file__).resolve().parent
 APPEND = HERE / "llms" / "bench" / "append_history.py"
 
 from generate_readme import (  # noqa: E402
+    _VERIFY_CELL,
     load_llm_history,
     load_llm_prefill_sweep_history,
     load_llm_sweep_history,
+    load_spec_decode_history,
     render_llm_benchmark,
     render_llm_prefill_sweep,
     render_llm_sweep,
+    render_spec_decode,
     render_vla_benchmark,
 )
 
@@ -106,6 +109,44 @@ SWEEP = [
     },
 ]
 
+SPEC = [
+    {
+        "model": "toy_4b_spec",
+        "timestamp_utc": "2026-10-22T08:53:06Z",
+        "runner": RUNNER,
+        "verify_status": "pass",
+        "toolchain": TOOLCHAIN,
+        "protocol": "toy-paired-v1",
+        "requests_per_engine": 4,
+        "samples_per_dataset": 2,
+        "max_new_tokens": 256,
+        "prompt_tokens": {"min": 31, "max": 207},
+        "overall": {
+            "b1_tokens_per_second": 17.5,
+            "dflash_tokens_per_second": 35.0,
+            "speedup": 2.0,
+            "emitted_per_round": 4.0,
+            "acceptance_rate": 0.5,
+        },
+        "per_dataset": {
+            "gsm8k": {
+                "b1_tokens_per_second": 17.0,
+                "dflash_tokens_per_second": 51.0,
+                "speedup": 3.0,
+                "emitted_per_round": 5.0,
+                "acceptance_rate": 0.6,
+            },
+            "mt-bench": {
+                "b1_tokens_per_second": 18.0,
+                "dflash_tokens_per_second": 21.6,
+                "speedup": 1.2,
+                "emitted_per_round": 2.0,
+                "acceptance_rate": 0.15,
+            },
+        },
+    }
+]
+
 FAILURES = []
 
 
@@ -146,6 +187,11 @@ def _history(tmp, recs, name):
     path = tmp / name
     append("perf", recs, path, 1)
     return path
+
+
+def _rows(page, name):
+    """Table rows whose Model cell shows `name`."""
+    return [l for l in page.splitlines() if l.startswith("| ") and f'">{name}</a>' in l]
 
 
 def main():
@@ -313,7 +359,7 @@ def main():
         # Row count, not a substring count: _llm_model_cell emits the name
         # twice per row (label + repo path).
         check(
-            sum(1 for l in vla_page.splitlines() if l.startswith("| [smolvla]")) == 1,
+            len(_rows(vla_page, "smolvla_base")) == 1,
             "a VLA model is listed once, not in both tables",
         )
         check(
@@ -339,8 +385,7 @@ def main():
             None, history_path=_history(tmp, vla_all, "vla_all.ndjson")
         )
         check(
-            sum(1 for l in all_page.splitlines() if l.startswith("| [smolvla_all]"))
-            == 1,
+            len(_rows(all_page, "smolvla_base, all stages on NPU")) == 1,
             "a variant record is a VLA row of its own",
         )
         check(
@@ -348,7 +393,7 @@ def main():
             "the variant row is in the VLA table with its chunk latency",
         )
         check(
-            "[smolvla_all](llms/smolvla/)" in all_page
+            'llms/smolvla/">smolvla_base, all stages on NPU</a>' in all_page
             and "llms/smolvla_all/" not in all_page,
             "the variant row links to the directory that implements it",
         )
@@ -386,7 +431,7 @@ def main():
         )
         check(bool(page), "an absent perf.json does not blank the section")
         check(RUNNER not in page, "the CI runner label stays off the page")
-        check("| 🟢 |" in page, "scalar table renders a verify badge")
+        check(f'{_VERIFY_CELL["pass"]} |' in page, "scalar table renders a verify cell")
 
         # A model in the sweep belongs to the sweep table ONLY, even when every
         # one of its contexts failed and it therefore contributes no number.
@@ -436,17 +481,12 @@ def main():
         hang_page = render_llm_benchmark(
             None, sweep_recs=curves + [allfail], history_path=str(hang_hist)
         )
-        # Rows, not name occurrences: the model cell is a link, so the name
-        # appears twice in every row it is on.
-        hang_rows = sum(
-            1 for l in hang_page.splitlines() if l.startswith("| [toy_hang_q4nx]")
-        )
-        check(hang_rows == 2, "an all-failed sweep model keeps one row per table")
-        hang_scalar = next(
-            l for l in hang_page.splitlines() if l.startswith("| [toy_hang_q4nx]")
-        )
+        hang_rows = _rows(hang_page, "toy_hang_q4nx")
+        check(len(hang_rows) == 2, "an all-failed sweep model keeps one row per table")
+        hang_scalar = hang_rows[0]
         check(
-            hang_scalar.rstrip().endswith("| 🟢 |") and "| ↓ |" in hang_scalar,
+            hang_scalar.rstrip().endswith(f'{_VERIFY_CELL["pass"]} |')
+            and "| ↓ |" in hang_scalar,
             "its decode cell defers to the curve instead of repeating a number",
         )
 
@@ -484,8 +524,9 @@ def main():
 
         sweep_md = render_llm_sweep(curves)
         check(
-            sweep_md.count("🟢") == 1 and sweep_md.count("⚪") == 1,
-            "sweep table renders one badge per model",
+            sweep_md.count("air-verify-pass") == 1
+            and sweep_md.count("air-verify-skip") == 1,
+            "sweep table renders one verify cell per model",
         )
         check("| 60.00 |" in sweep_md, "a measured point renders its number")
         check("✗" in sweep_md, "a build_fail renders as a failure, not a dash")
@@ -514,6 +555,86 @@ def main():
         check(
             "✗" not in clean and "—" not in clean,
             "an all-measured table carries no legend",
+        )
+
+        print("speculative decoding: full20.json -> ndjson -> page")
+        spec_hist = tmp / "spec_decode_history.ndjson"
+        append("spec-decode", SPEC, spec_hist, 1)
+        spec_rows = [json.loads(l) for l in spec_hist.read_text().splitlines()]
+        check(
+            sorted(r["dataset"] for r in spec_rows) == ["all", "gsm8k", "mt-bench"],
+            "one row per dataset plus the all-requests row",
+        )
+        check(
+            all(
+                r["verify_status"] == "pass" and r["prompt_tokens_max"] == 207
+                for r in spec_rows
+            ),
+            "spec rows keep verify_status and the prompt length range",
+        )
+        check(
+            "no change" in append("spec-decode", SPEC, spec_hist, 1),
+            "re-append is a no-op",
+        )
+        newer = [dict(SPEC[0], timestamp_utc="2026-10-23T08:53:06Z", per_dataset={})]
+        newer[0]["overall"] = dict(SPEC[0]["overall"], speedup=2.5)
+        append("spec-decode", newer, spec_hist, 2)
+        studies = load_spec_decode_history(spec_hist)
+        check(
+            len(studies) == 1
+            and studies[0]["overall"]["speedup"] == 2.5
+            and studies[0]["per_dataset"] == {},
+            "the newest study replaces the older one rather than mixing rows",
+        )
+
+        studies = load_spec_decode_history(tmp / "spec_one.ndjson")
+        check(studies == [], "an absent spec history loads as nothing")
+        append("spec-decode", SPEC, tmp / "spec_one.ndjson", 1)
+        studies = load_spec_decode_history(tmp / "spec_one.ndjson")
+        spec_md = render_spec_decode(studies)
+        check(
+            spec_md.count("<tr>") == 1 + 3,
+            "the spec table has a header plus a row per dataset and the total",
+        )
+        check(
+            spec_md.count('rowspan="3"') == 2 and spec_md.count("air-verify-pass") == 1,
+            "model and verify span the study's rows instead of repeating",
+        )
+        check("Prompts are 31–207 tokens." in spec_md, "the prompt range is stated")
+        check(render_spec_decode([]) == "", "no study renders no spec section")
+
+        variants = [
+            dict(studies[0], model="qwen3_4b_dflash_b16"),
+            dict(studies[0], model="qwen3_4b_dflash_b8"),
+        ]
+        var_md = render_spec_decode(variants)
+        check(
+            var_md.count('llms/dflash/qwen3_4b/"') == 2
+            and "llms/qwen3_4b_dflash" not in var_md,
+            "every block-size variant links to its implementation directory",
+        )
+        check(
+            var_md.index("block 8") < var_md.index("block 16"),
+            "variants of one target are ordered by block size",
+        )
+
+        spec_perf = [dict(PERF[0], model="toy_4b_spec")]
+        spec_page = render_llm_benchmark(
+            None,
+            history_path=_history(tmp, spec_perf, "spec_perf.ndjson"),
+            spec_decode_recs=studies,
+        )
+        check(
+            not _rows(spec_page, "toy_4b_spec")
+            and "| Model | Context | TTFT (ms) |" not in spec_page,
+            "a model with a paired study leaves the single-point table",
+        )
+        lone_page = render_llm_benchmark(
+            None, history_path=_history(tmp, spec_perf, "spec_lone.ndjson")
+        )
+        check(
+            len(_rows(lone_page, "toy_4b_spec")) == 1,
+            "...but keeps its row when no study is available",
         )
 
     print()

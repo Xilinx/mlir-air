@@ -180,13 +180,16 @@ jobs:
             git show FETCH_HEAD:prefill_sweep_history.ndjson > /tmp/llmperf_history/prefill_sweep_history.ndjson \
               && echo "prefill_sweep_history.ndjson fetched" \
               || echo "perf-history branch has no prefill_sweep_history.ndjson"
+            git show FETCH_HEAD:spec_decode_history.ndjson > /tmp/llmperf_history/spec_decode_history.ndjson \
+              && echo "spec_decode_history.ndjson fetched" \
+              || echo "perf-history branch has no spec_decode_history.ndjson"
           else
             echo "no perf-history branch yet; empty-state page"
           fi
 
       # Generate the CI-produced MkDocs pages into the docs tree:
       #   - Operator Dashboard (operators only)
-      #   - LLMs on NPU overview (live nightly benchmark table)
+      #   - LLMs and VLAs on NPU overview (live nightly benchmark tables)
       #   - LLM/VLA Performance History (charts, embedded for Material)
       - name: Generate dashboard pages
         run: |
@@ -203,6 +206,8 @@ jobs:
             --llm-sweep /tmp/llmperf/sweep.json \
             --llm-prefill-sweep-history /tmp/llmperf_history/prefill_sweep_history.ndjson \
             --llm-prefill-sweep /tmp/llmperf/prefill_sweep.json \
+            --llm-spec-decode-history /tmp/llmperf_history/spec_decode_history.ndjson \
+            --llm-spec-decode /tmp/llmperf/full20.json \
             --output docs/llms/index.md
           python3 programming_examples/generate_perf_history.py \
             --embed --history /tmp/llmperf_history/history.ndjson \
