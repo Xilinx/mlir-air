@@ -367,14 +367,15 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
 def _compile_conv1d_o():
     """Compile conv1d_depthwise.cc -> conv1d_depthwise.o into the cwd."""
     import os
-    import subprocess
+
+    from air.backend.compile_cache import run_compiler
 
     peano = os.environ.get("PEANO_INSTALL_DIR")
     aieopt = os.environ.get("MLIR_AIE_INSTALL_DIR") or os.environ.get("AIEOPT_DIR")
     if not peano:
         raise RuntimeError("PEANO_INSTALL_DIR is not set")
     src = _PROG_EXAMPLES / "conv1d_depthwise" / "conv1d_depthwise.cc"
-    subprocess.run(
+    run_compiler(
         [
             f"{peano}/bin/clang++",
             "-O2",

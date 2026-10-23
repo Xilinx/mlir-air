@@ -14,9 +14,15 @@
 #
 # Each output keeps its flags in <out>.flags and its header dependencies in
 # <out>.d, next to it.
+#
+# With AIR_COMPILE_CACHE set, each compile goes through
+# python/air/backend/compile_cache.py, which reuses an identical earlier one.
 
 # These rules must not become the including Makefile's default goal.
 _kernel_rules_goal := $(.DEFAULT_GOAL)
+
+_kernel_cache := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))../python/air/backend/compile_cache.py)
+KERNEL_LAUNCHER ?= $(if $(AIR_COMPILE_CACHE),$(or $(PYTHON),python3) $(_kernel_cache) cc)
 
 .PHONY: _kernel_flags_check
 
@@ -32,7 +38,7 @@ $(1).flags: _kernel_flags_check
 
 $(1): $$($(1)_SRC) $(1).flags $$(KERNEL_CXX)
 	@echo "    $$(notdir $$<) -> $$(notdir $$@)"
-	@$$(KERNEL_CXX) $$($(1)_FLAGS) -MMD -MP -MF $$@.d $$< -o $$@
+	@$$(KERNEL_LAUNCHER) $$(KERNEL_CXX) $$($(1)_FLAGS) -MMD -MP -MF $$@.d $$< -o $$@
 endef
 
 $(foreach o,$(KERNEL_OUTS),$(eval $(call _kernel_rule,$(o))))
