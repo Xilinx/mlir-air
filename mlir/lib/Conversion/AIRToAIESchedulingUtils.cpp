@@ -3687,9 +3687,15 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
 
 namespace xilinx {
 
+static bool hasL3Producer(const air::MemcpyBundleAsFlow &f) {
+  return llvm::any_of(f.MM2S, [](Operation *op) {
+    auto dma = cast<air::MemcpyInterface>(op);
+    return air::isL3(cast<BaseMemRefType>(dma.getSrcMemref().getType()));
+  });
+}
+
 bool air::isPacketShimFlow(const air::MemcpyBundleAsFlow &f) {
-  return f.memcpyResourceType == "npu_dma_packet" &&
-         f.MM2S_memspace == air::MemorySpace::L3;
+  return f.memcpyResourceType == "npu_dma_packet" && hasL3Producer(f);
 }
 
 // Identify the unique parent core (== receiver tile) of a flow's S2MM
@@ -4048,7 +4054,7 @@ LogicalResult air::simpleDMAChannelAllocation(
   // so they can land on any shim col with free MM2S. Other L3 flows are
   // column-rigid (paired to a specific memtile LTO or a placed core).
   auto isBroadcastL3MM2S = [](const MemcpyBundleAsFlow &f) {
-    if (f.MM2S_memspace != air::MemorySpace::L3)
+    if (!hasL3Producer(f))
       return false;
     for (auto o : f.MM2S) {
       auto chanIf = dyn_cast_if_present<air::ChannelInterface>(o);
@@ -4074,10 +4080,22 @@ LogicalResult air::simpleDMAChannelAllocation(
   auto allocateL3 = [&](MemcpyBundleAsFlow &f) -> LogicalResult {
     if (f.memcpyResourceType == "npu_mmio")
       return success();
-    if (f.MM2S_memspace == air::MemorySpace::L3) {
-      // L3 (shim/host) producers stay single-producer (numMM2SAllocs==1).
+    if (hasL3Producer(f)) {
+      // A packet channel may converge on-device and shim producers. Keep the
+      // on-device allocations and append one shim endpoint for the L3 puts.
+      // The aggregate memory space only describes the last visited producer.
+      unsigned shimIndex = 0;
+      if (llvm::any_of(f.MM2S_alloc, [](auto &a) { return a.valid(); })) {
+        if (f.memcpyResourceType != "npu_dma_packet")
+          return f.air_flow_op->emitOpError(
+              "mixed shim and on-device producers require a packet channel");
+        shimIndex = f.MM2S_alloc.size();
+        f.MM2S_alloc.emplace_back();
+      }
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.MM2S) {
+          if (getMM2SProducerMemorySpace(o) != air::MemorySpace::L3)
+            continue;
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           if (f.memcpyResourceType != "npu_dma_stream" &&
               f.memcpyResourceType != "npu_dma_packet")
@@ -4093,9 +4111,10 @@ LogicalResult air::simpleDMAChannelAllocation(
               s2mmTile.tryGetRow().value_or(-1), f.S2MM[i]);
           if (failed(alloc_res) || !alloc_res->valid())
             return failure();
-          f.MM2S_alloc[0] = alloc_res.value();
+          f.MM2S_alloc[shimIndex] = alloc_res.value();
         }
       }
+      f.numMM2SAllocs = f.MM2S_alloc.size();
     }
     if (f.S2MM_memspace == air::MemorySpace::L3) {
       if (f.S2MM.size() > 1) {
