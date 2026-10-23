@@ -3561,7 +3561,6 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp) {
     return memcpyOp->emitOpError("unrecognized memory space on memref");
   S2MM_memspace = *dstMS;
   MM2S.push_back(memcpyOp.getOperation());
-  MM2S_memspace = *srcMS;
   memcpyResourceType = "npu_dma_stream";
   return success();
 }
@@ -3623,11 +3622,9 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp) {
   auto chan = air::getChannelDeclarationThroughSymbol(memcpyOp);
   air_flow_op = chan.getOperation();
   MM2S.push_back(memcpyOp.getOperation());
-  auto putMS = air::getMemorySpace(
-      llvm::cast<BaseMemRefType>(memcpyOp.getMemref().getType()));
-  if (!putMS)
+  if (!air::getMemorySpace(
+          llvm::cast<BaseMemRefType>(memcpyOp.getMemref().getType())))
     return memcpyOp->emitOpError("unrecognized memory space on memref");
-  MM2S_memspace = *putMS;
   memcpyResourceType = chan.getChannelType().str();
   // numMM2SAllocs (number of DISTINCT producer tiles) is computed during DMA
   // channel allocation, where each put's tile is resolved -- a single producer
@@ -3686,11 +3683,6 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
 } // namespace xilinx
 
 namespace xilinx {
-
-bool air::isPacketShimFlow(const air::MemcpyBundleAsFlow &f) {
-  return f.memcpyResourceType == "npu_dma_packet" &&
-         f.MM2S_memspace == air::MemorySpace::L3;
-}
 
 // Identify the unique parent core (== receiver tile) of a flow's S2MM
 // receivers. Returns null if there isn't exactly one. Reordering across
@@ -3853,12 +3845,24 @@ getS2MMReceiverMemorySpace(Operation *o) {
 
 // Resolve the memory space of a single MM2S producer op (the source of the data
 // movement). A convergent flow may have producers in DIFFERENT memory spaces
-// (e.g. an L1 compute core + an L2 memtile both feeding one S2MM), so MM2S
-// allocation must dispatch per-producer rather than
-// on the flow's aggregate MM2S_memspace.
+// (e.g. an L3 host buffer, an L2 memtile and an L1 compute core all feeding
+// one S2MM), so MM2S allocation dispatches per producer.
 static std::optional<air::MemorySpace>
 getMM2SProducerMemorySpace(Operation *o) {
   return getMemcpyEndpointMemorySpace(o, /*isSource=*/true);
+}
+
+static bool hasMM2SProducerIn(const air::MemcpyBundleAsFlow &f,
+                              ArrayRef<air::MemorySpace> spaces) {
+  return llvm::any_of(f.MM2S, [&](Operation *o) {
+    auto ms = getMM2SProducerMemorySpace(o);
+    return ms && llvm::is_contained(spaces, *ms);
+  });
+}
+
+bool air::isPacketShimFlow(const air::MemcpyBundleAsFlow &f) {
+  return f.memcpyResourceType == "npu_dma_packet" &&
+         hasMM2SProducerIn(f, air::MemorySpace::L3);
 }
 
 // The producer tile of an MM2S op, used as the grouping key that collapses
@@ -4048,7 +4052,7 @@ LogicalResult air::simpleDMAChannelAllocation(
   // so they can land on any shim col with free MM2S. Other L3 flows are
   // column-rigid (paired to a specific memtile LTO or a placed core).
   auto isBroadcastL3MM2S = [](const MemcpyBundleAsFlow &f) {
-    if (f.MM2S_memspace != air::MemorySpace::L3)
+    if (!hasMM2SProducerIn(f, air::MemorySpace::L3))
       return false;
     for (auto o : f.MM2S) {
       auto chanIf = dyn_cast_if_present<air::ChannelInterface>(o);
@@ -4074,10 +4078,23 @@ LogicalResult air::simpleDMAChannelAllocation(
   auto allocateL3 = [&](MemcpyBundleAsFlow &f) -> LogicalResult {
     if (f.memcpyResourceType == "npu_mmio")
       return success();
-    if (f.MM2S_memspace == air::MemorySpace::L3) {
-      // L3 (shim/host) producers stay single-producer (numMM2SAllocs==1).
+    if (hasMM2SProducerIn(f, air::MemorySpace::L3)) {
+      // L3 (shim/host) puts share one shim MM2S allocation. A packet flow may
+      // also converge on-device producers onto the same destination; those
+      // already hold the first numMM2SAllocs allocations, so the shim one is
+      // appended after them.
+      int shimIdx = 0;
+      if (hasMM2SProducerIn(f, {air::MemorySpace::L1, air::MemorySpace::L2})) {
+        if (f.memcpyResourceType != "npu_dma_packet")
+          return f.air_flow_op->emitOpError(
+              "only a packet channel can mix L3 and on-device producers");
+        shimIdx = f.numMM2SAllocs++;
+        f.MM2S_alloc.resize(f.numMM2SAllocs);
+      }
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.MM2S) {
+          if (getMM2SProducerMemorySpace(o) != air::MemorySpace::L3)
+            continue;
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           if (f.memcpyResourceType != "npu_dma_stream" &&
               f.memcpyResourceType != "npu_dma_packet")
@@ -4093,7 +4110,7 @@ LogicalResult air::simpleDMAChannelAllocation(
               s2mmTile.tryGetRow().value_or(-1), f.S2MM[i]);
           if (failed(alloc_res) || !alloc_res->valid())
             return failure();
-          f.MM2S_alloc[0] = alloc_res.value();
+          f.MM2S_alloc[shimIdx] = alloc_res.value();
         }
       }
     }
