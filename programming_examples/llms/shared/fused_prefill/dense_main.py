@@ -70,7 +70,9 @@ def verify(name, argv):
     tok = AutoTokenizer.from_pretrained(path.parent)
     prompt = a.prompt
     if a.text_file:
-        body = tok(Path(a.text_file).read_text())["input_ids"][: a.text_tokens]
+        body = tok(Path(a.text_file).read_text())["input_ids"]
+        # repeated when shorter, so a prompt of any length comes from one file
+        body = (body * -(-a.text_tokens // len(body)))[: a.text_tokens]
         prompt = "Summarize this:\n" + tok.decode(body)
     ids = tok.apply_chat_template(
         [{"role": "user", "content": prompt}],
