@@ -14,7 +14,9 @@ return each int4 matrix as raw Q4NX (q, scale, min):
   Q40Bundle   reads a bundle of Q4_0 matrices (signed nibbles, w = q * scale)
               as q + 8 with min = -8 scale, the same values exactly;
   HFBundle    reads a full-precision checkpoint and rounds it onto the grid of
-              host_weights.requant_q4k, scale and min in bf16.
+              host_weights.requant_q4k, scale and min in bf16;
+
+and reads/codec pick which of them a weight source gets.
 
 Synthetic files only: matrices packed with the fused decode's own packer.
 """
@@ -35,6 +37,7 @@ sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path_
 ]
 from air_examples.fused_decode.proj_qmm_pack import pack_q4k_blocks  # noqa: E402
 from air_examples.llms.shared.fused_prefill import packing as P  # noqa: E402
+from air_examples.llms.shared.fused_prefill.models import MODELS  # noqa: E402
 from air_examples.llms.shared.infra import host_weights  # noqa: E402
 
 rng = np.random.default_rng(0)
@@ -81,17 +84,21 @@ def same(a, b):
 
 # Bundle: a plain matrix, then the corners of a column- and a row-padded one.
 full = q4nx(64, 512)
-kpad = q4nx(64, 768)
+kpad = q4nx(96, 768)
 rpad = q4nx(96, 256)
+both = q4nx(128, 256)
 bundle = work / "model.q4nx"
-write_tensors(bundle, {"full": i8(*full), "kpad": i8(*kpad), "rpad": i8(*rpad)})
+write_tensors(
+    bundle,
+    {"full": i8(*full), "kpad": i8(*kpad), "rpad": i8(*rpad), "both": i8(*both)},
+)
 b = P.Bundle(bundle)
 print("plain:", same(b.q4nx("full", 64, 512), full))
 # CHECK: plain: True
 print(
     "K padded:",
     same(
-        b.q4nx("kpad", 64, 512),
+        b.q4nx("kpad", 96, 512),
         (kpad[0][:, :512],) + tuple(a[:, :16] for a in kpad[1:]),
     ),
 )
@@ -104,6 +111,33 @@ try:
 except ValueError:
     print("too small: ValueError")
 # CHECK: too small: ValueError
+# [128, 256] read as [64, 256]: four blocks could be K padded to 512 or rows
+# padded to 128, so the reader refuses rather than guess.
+try:
+    b.q4nx("both", 64, 256)
+    print("ambiguous: no error")
+except ValueError:
+    print("ambiguous: ValueError")
+# CHECK: ambiguous: ValueError
+
+# Which reader a weight source gets. Q4_0 (qwen25_3b_q4) reads only bundles;
+# an "hf" model (qwen25_7b_q4nx) reads a checkpoint, or a Q4NX bundle as one.
+q40, hf = MODELS["qwen25_3b_q4"], MODELS["qwen25_7b_q4nx"]
+ckpt = work / "ckpt"
+ckpt.mkdir()
+(ckpt / "config.json").write_text("{}")
+print("Q4_0 model reads a bundle:", P.reads(q40, work), P.codec(q40, bundle))
+# CHECK: Q4_0 model reads a bundle: True q4_0
+print("Q4_0 model reads a checkpoint:", P.reads(q40, ckpt))
+# CHECK: Q4_0 model reads a checkpoint: False
+print(
+    "hf model reads both:",
+    P.reads(hf, ckpt),
+    P.codec(hf, ckpt / "config.json"),
+    P.reads(hf, work),
+    P.codec(hf, bundle),
+)
+# CHECK: hf model reads both: True hf True q4nx
 
 # Q40Bundle: signed q, negative scales allowed, mins stored as zero.
 qs = rng.integers(-8, 8, (64, 256)).astype(np.int8)

@@ -67,16 +67,19 @@ class Bundle:
     def q4nx(self, name, rows, K):
         """A Q4NX (Codec B) matrix [rows, K] as raw (q, scale, min). A bundle
         may store one of the two dimensions zero-padded; the [rows, K] corner
-        is returned."""
+        is returned. The block count must say which dimension that is."""
         nbi, nbj = rows // ROW_BLOCK, K // COL_BLOCK
         nb = self.hdr[name]["shape"][0]
         if nb != nbi * nbj:
-            if nb % nbi == 0 and nb // nbi > nbj:
+            cols = nb % nbi == 0 and nb // nbi > nbj
+            rows_ = nb % nbj == 0 and nb // nbj > nbi
+            if cols == rows_:
+                why = "could pad either dimension" if cols else "do not hold"
+                raise ValueError(f"{name}: {nb} blocks {why} [{rows}, {K}]")
+            if cols:
                 nbj = nb // nbi
-            elif nb % nbj == 0 and nb // nbj > nbi:
-                nbi = nb // nbj
             else:
-                raise ValueError(f"{name}: {nb} blocks do not hold [{rows}, {K}]")
+                nbi = nb // nbj
         i16 = self._read(name, np.int16, nb * BLOCK_BF16)
         q, scale, mn = q4nx_raw(
             i16.reshape(nb, BLOCK_BF16), nbi * ROW_BLOCK, nbj * COL_BLOCK
@@ -119,6 +122,35 @@ class HFBundle:
         q, scale, mn = host_weights.requant_q4k(self.hf.bf16(name)[:rows, :K], 32)
         bf = lambda a: a.astype(bfloat16).astype(np.float32)  # noqa: E731
         return q, bf(scale), bf(mn)
+
+
+def is_bundle(model):
+    """Whether `model` -- a file, directory or HF repo id -- is a model.q4nx
+    bundle."""
+    m = Path(model)
+    if m.is_file():
+        return m.suffix == ".q4nx"
+    if m.is_dir():
+        return (m / "model.q4nx").is_file()
+    from huggingface_hub import file_exists
+
+    return file_exists(model, "model.q4nx")
+
+
+def reads(desc, model=None):
+    """Whether the fused prefill reads `model`'s weights as desc's decode does:
+    a bundle in desc's codec, or for an "hf" desc either a checkpoint or a Q4NX
+    bundle. Callers fall back to the per-op prefill when it does not."""
+    if model is None or str(model) == desc.repo or desc.codec == "hf":
+        return True
+    return is_bundle(model)
+
+
+def codec(desc, path):
+    """The reader (packing.open_weights) for the resolved weights at path."""
+    if Path(path).suffix == ".q4nx":
+        return "q4nx" if desc.codec == "hf" else desc.codec
+    return "hf"
 
 
 def open_weights(codec, path):

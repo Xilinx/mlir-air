@@ -457,7 +457,8 @@ class FusedDecoder:
 
 def _build_prefiller(model, seq_len=None, fused=None):
     """Construct the AIR prefill engine and load its resident weight BOs: the
-    fused prefill when `fused` names a build, else the per-op one.
+    fused prefill when `fused` names a build that reads `model`, else the
+    per-op one.
 
     This is the model-load cost -- the ELF cache plus the Q4NX host dequant of
     ~6 GB and the one-time write of every weight into its BO. Split out from the
@@ -467,14 +468,19 @@ def _build_prefiller(model, seq_len=None, fused=None):
     import types
 
     t_load = time.perf_counter()
+    pf = None
     if fused:
         sys.modules.setdefault(
             "air_examples", types.ModuleType("air_examples")
         ).__path__ = [str(_PE)]
-        from air_examples.llms.shared.fused_prefill import dense
+        from air_examples.llms.shared.fused_prefill import dense, packing
+        from air_examples.llms.shared.fused_prefill.models import MODELS
 
-        pf = dense.load("qwen25_7b_q4nx", fused, model)
-    else:
+        # a weight source the fused prefill does not read as the decode does
+        # takes the per-op prefill
+        if packing.reads(MODELS["qwen25_7b_q4nx"], model):
+            pf = dense.load("qwen25_7b_q4nx", fused, model)
+    if pf is None:
         from qwen25_7b_q4nx_prefill import Qwen25Q4nxPrefill
 
         seq_len = seq_len or int(os.environ.get("Q4NX_SEQ_LEN", "2048"))

@@ -23,26 +23,26 @@ from .models import layer_op, spec
 
 
 def resolve(desc, model=None):
-    """The desc's weights (or `model`'s, a file, directory or repo id): its
+    """The desc's weights (or `model`'s, a file, directory or repo id): a
     model.q4nx, or for a full-precision checkpoint its config.json, which sits
     with the safetensors."""
     m = Path(model) if model else None
     if m and m.is_file():
         return m
-    if desc.codec == "hf":
+    if m and (m / "model.q4nx").is_file():
+        return m / "model.q4nx"
+    from huggingface_hub import hf_hub_download, snapshot_download
+
+    # an "hf" model reads its checkpoint unless pointed at a bundle
+    other = model and str(model) != desc.repo
+    if desc.codec == "hf" and not (other and P.is_bundle(model)):
         if m and m.is_dir():
             return m / "config.json"
-        from huggingface_hub import snapshot_download
-
         d = snapshot_download(
             model or desc.repo, allow_patterns=["*.safetensors", "*.json"]
         )
         return Path(d) / "config.json"
-    if m and (m / "model.q4nx").is_file():
-        return m / "model.q4nx"
-    from huggingface_hub import hf_hub_download
-
-    if not desc.base:
+    if not desc.base and desc.codec != "hf":
         for f in ("config.json", "tokenizer.json", "tokenizer_config.json"):
             hf_hub_download(model or desc.repo, f)
     return Path(hf_hub_download(model or desc.repo, "model.q4nx"))
@@ -50,12 +50,19 @@ def resolve(desc, model=None):
 
 def meta_dir(desc, path):
     """The directory of the config.json and tokenizer that go with the weights
-    at `path`: theirs, or desc.base's when their repo ships only weights."""
-    if not desc.base:
+    at `path`: theirs, desc.base's when their repo ships only weights, or for a
+    bundle of an "hf" model without them, its checkpoint's."""
+    if desc.base:
+        repo = desc.base
+    elif (Path(path).parent / "config.json").is_file():
+        return Path(path).parent
+    elif desc.codec == "hf":
+        repo = desc.repo
+    else:
         return Path(path).parent
     from huggingface_hub import snapshot_download
 
-    return Path(snapshot_download(desc.base, allow_patterns=["*.json", "*.txt"]))
+    return Path(snapshot_download(repo, allow_patterns=["*.json", "*.txt"]))
 
 
 def config(desc, path):
@@ -136,7 +143,7 @@ class DensePrefill(Engine):
                 pre_ffn="pre_feedforward_layernorm",
                 post_ffn="post_feedforward_layernorm",
             )
-        b = self.bundle = P.open_weights(e.codec, path)
+        b = self.bundle = P.open_weights(P.codec(e, path), path)
         dq, dk = e.heads * e.dh, e.kv_heads * e.dh
         self.norms, self.bias = [], []
         for L in range(e.layers):
@@ -396,7 +403,7 @@ def reference(desc, model, ids):
     weights: the gate the fused prefill is checked against."""
     path = resolve(desc, model)
     eps, inv, rot, scale = config(desc, path)
-    b = P.open_weights(desc.codec, path)
+    b = P.open_weights(P.codec(desc, path), path)
     e, n = desc, len(ids)
     dq, dk, G = e.heads * e.dh, e.kv_heads * e.dh, e.heads // e.kv_heads
 
