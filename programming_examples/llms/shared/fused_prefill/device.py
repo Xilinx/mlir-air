@@ -134,8 +134,14 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps):
                 .broadcast_to(rounds, ksteps * P * A_BFP),
                 indices=[ty],
             )
-        for tx in range(GNC):
-            b_in.put(B.reshape(rounds, GNC, L)[0:rounds, tx, 0:L], indices=[tx])
+        # One put per round and column, so a packet's start goes in the
+        # buffer offset: as a BD stride, GNC packets of a long K overflow
+        # the shim BD's stride field.
+        Bp = B.reshape(rounds * GNC, L)
+        for r in range(rounds):
+            for tx in range(GNC):
+                i = r * GNC + tx
+                b_in.put(Bp[i : i + 1, 0:L], indices=[tx])
         for tx in range(GNC):
             c_out.get(
                 C.reshape(P, M, rounds, GNC, TN)[
