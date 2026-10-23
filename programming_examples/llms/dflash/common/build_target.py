@@ -17,6 +17,7 @@ import shutil
 import subprocess
 from types import ModuleType
 
+from air.backend.compile_cache import run_compiler
 from common.build_identity import build_identity, check_existing
 
 COMMON = Path(__file__).resolve().parent
@@ -223,7 +224,7 @@ def main(
                 # different models in the kernel headers, compile it here.
                 if reuse:
                     manifest.setdefault("recompiled_objects", []).append(out.name)
-                subprocess.run(cmd, check=True)
+                run_compiler(cmd, check=True)
         from air.backend.xrt import XRTBackend
 
         length = cfg.build_length

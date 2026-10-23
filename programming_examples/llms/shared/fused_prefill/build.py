@@ -21,9 +21,10 @@ import importlib
 import json
 import os
 import shutil
-import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+
+from air.backend.compile_cache import run_compiler
 
 from . import device as D
 
@@ -265,7 +266,7 @@ def build_kernels(out, cfg):
         ]
     )
     for j in jobs:
-        subprocess.run([str(x) for x in j], check=True)
+        run_compiler([str(x) for x in j], check=True)
 
 
 def _compile(args):
