@@ -45,4 +45,4 @@ def rope_row(position, role):
     return np.concatenate((np.cos(angles), np.sin(angles))).astype(bfloat16)
 
 
-from llama32_3b_weights import LayerWeights as PrefillLayer
+from air_examples.llms.llama32_3b.llama32_3b_weights import LayerWeights as PrefillLayer

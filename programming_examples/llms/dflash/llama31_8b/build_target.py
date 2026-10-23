@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Compile the B8 target or drafter and save its ABI."""
+"""Compile the selected B8/B16 target or drafter and save its ABI."""
 
 from paths import HERE
 import model_spec
@@ -13,11 +13,11 @@ def kernel_defines(cfg):
     target = cfg.role == "target"
     eps = model_spec.TARGET_RMS_EPS if target else model_spec.DRAFT_RMS_EPS
     return [
-        "-DMODEL_TYPE="
-        + (model_spec.TARGET_CXX if target else model_spec.DRAFT_CXX),
+        "-DMODEL_TYPE=" + (model_spec.TARGET_CXX if target else model_spec.DRAFT_CXX),
         f"-DRMS_NORM_EPS={eps}f",
         "-DNORM_CACHE_ROWS=4",
         "-DGLU_BATCH_WAVE_LAYOUT=1",
+        f"-DGLU_BATCH={cfg.batch}",
     ]
 
 

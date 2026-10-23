@@ -55,3 +55,12 @@ prefill states once; a later `make full80` adds the remaining selected requests.
 `BENCHMARK_BUNDLE` selects this persistent cache. Source, checkpoint, prompt and
 prefill-binary identities select its generation, and saved state hashes are
 checked before use.
+
+## B16 compiler requirements
+
+B16 uses the same [four-owner AIR mapping and compiler fixes](../../common/docs/b16-ddr-replay.md)
+as Qwen3-8B: mixed-feed tail-wait scheduling and mixed-memory packet-producer
+allocation, with independently reviewable switch cleanup. Build/install that
+AIR revision before compiling B16. The source contains the complete mapping;
+there is no generated-route or runtime-wait repair step. External dependencies
+follow the normal repository setup.
