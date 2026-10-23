@@ -29,11 +29,12 @@ compiles = work / "compiles.txt"
 
 cc = work / "fake_cc"
 SCRIPT = f"""#!{sys.executable}
-import sys
+import os, sys
 args = sys.argv[1:]
 src = next(a for a in args if a.endswith(".cc"))
 out = args[args.index("-o") + 1]
-text = open(src).read() + open("kernel.h").read() + " ".join(a for a in args if a.startswith("-D"))
+header = os.path.join(os.environ.get("CPATH", "."), "kernel.h")
+text = open(src).read() + open(header).read() + " ".join(a for a in args if a.startswith("-D"))
 if "-MF" in args:
     target = args[args.index("-MT") + 1] if "-MT" in args else out
     open(args[args.index("-MF") + 1], "w").write(target + ": " + src + " kernel.h\\n")
@@ -119,6 +120,18 @@ for f in ("kernel.cc", "kernel.h"):
 compile(label="other cwd", cwd=sub)
 # CHECK: written into cwd: True
 print("written into cwd:", (sub / "kernel.o").exists())
+
+# CHECK-LABEL: the environment the compile runs in is the one keyed
+print("the environment the compile runs in is the one keyed")
+for name, text in (("inc_a", "// header a"), ("inc_b", "// header b")):
+    (work / name).mkdir()
+    (work / name / "kernel.h").write_text(text)
+# CHECK: header dir a: compiled
+compile(label="header dir a", env=dict(os.environ, CPATH=str(work / "inc_a")))
+# CHECK: header dir b: compiled
+compile(label="header dir b", env=dict(os.environ, CPATH=str(work / "inc_b")))
+# CHECK: header dir a again: reused
+compile(label="header dir a again", env=dict(os.environ, CPATH=str(work / "inc_a")))
 
 # CHECK-LABEL: commands that are not one compile run as given
 print("commands that are not one compile run as given")

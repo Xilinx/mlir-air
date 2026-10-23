@@ -642,7 +642,8 @@ class XRTBackend(AirBackend):
 
             # The files callers read back after a build. Trace and debug-IR
             # builds leave other files for a person to inspect, so they are
-            # always rebuilt.
+            # always rebuilt. So are Chess builds: TOOLCHAIN does not cover
+            # Chess.
             outputs = [output_binary]
             if self.emit_txn_cpp:
                 outputs.append(os.path.join("air_project", "npu.air.txn.h"))
@@ -658,6 +659,7 @@ class XRTBackend(AirBackend):
                 outputs,
                 optional_dirs=[os.path.join("air_project", "cdo_seg")],
                 cacheable=self.output_format in ("xclbin", "elf", "pdi")
+                and peano_package_dir != ""
                 and not self.debug_ir
                 and self.trace_size == 0,
             )

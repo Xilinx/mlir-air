@@ -203,28 +203,39 @@ class Entry:
             return self.outputs[f["output"]]
         return os.path.join(self.optional_dirs[f["dir"]], f["path"])
 
+    def _discard(self):
+        """Remove a damaged entry so the rebuild can be stored in its place.
+        Entries are published whole by a rename, so one that exists and does
+        not check out is damaged, never half-written."""
+        aside = self.dir.parent / f".tmp-{os.getpid()}-{self.key[:12]}"
+        try:
+            self.dir.rename(aside)
+        except OSError:
+            return
+        shutil.rmtree(aside, ignore_errors=True)
+
     def restore(self):
         """Copy a stored build into place. False if there is none, or if any
         stored file no longer matches the hash recorded for it."""
-        manifest = self.dir / "manifest.json"
-        if not manifest.is_file():
+        if not self.dir.exists():
             return False
         try:
-            files = json.loads(manifest.read_text())["files"]
+            files = json.loads((self.dir / "manifest.json").read_text())["files"]
             dests = [self._destination(f) for f in files]
-        except (OSError, KeyError, IndexError, json.JSONDecodeError):
+            for f in files:
+                blob = self.dir / "blobs" / f["blob"]
+                if _sha256(blob) != f["sha256"]:
+                    raise ValueError(blob)
+        except (OSError, KeyError, IndexError, ValueError):
+            self._discard()
             return False
-        for f in files:
-            blob = self.dir / "blobs" / f["blob"]
-            if not blob.is_file() or _sha256(blob) != f["sha256"]:
-                return False
         for i, d in enumerate(self.optional_dirs):
             if any(f.get("dir") == i for f in files):
                 shutil.rmtree(d, ignore_errors=True)
         for f, dest in zip(files, dests):
             Path(dest).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(self.dir / "blobs" / f["blob"], dest)
-        os.utime(manifest)
+        os.utime(self.dir / "manifest.json")
         print(f"compile cache hit {self.key[:12]}: {self.label}", flush=True)
         return True
 
@@ -293,7 +304,7 @@ def entry_for(
 _OUTPUT_OPTS = ("-o", "-MF", "-MT", "-MQ")
 
 
-def _object_entry(cmd, cwd):
+def _object_entry(cmd, cwd, env):
     """The cache entry for one compiler invocation, or None if caching is off
     or the invocation is not a single compile to one output."""
     root = os.environ.get(ENV, "").strip()
@@ -303,7 +314,8 @@ def _object_entry(cmd, cwd):
     out = args[args.index("-o") + 1]
     compiler = str(cmd[0])
     if os.sep not in compiler:
-        compiler = shutil.which(compiler) or compiler
+        path = (env or os.environ).get("PATH")
+        compiler = shutil.which(compiler, path=path) or compiler
 
     # The preprocessed source stands in for the source and every header it
     # includes. Preprocessing also writes the dependency file a build asked
@@ -314,7 +326,7 @@ def _object_entry(cmd, cwd):
         pre.append("-E")
         if "-MF" in args and not {"-MT", "-MQ"} & set(args):
             pre += ["-MT", out]
-        r = subprocess.run([compiler] + pre, cwd=cwd, capture_output=True)
+        r = subprocess.run([compiler] + pre, cwd=cwd, env=env, capture_output=True)
         if r.returncode != 0:
             return None
         source = _sha256(os.path.join(tmp, "pre"))
@@ -341,7 +353,7 @@ def run_compiler(cmd, **kwargs):
     """subprocess.run for one kernel compile, reusing the output from
     AIR_COMPILE_CACHE when the compiler, its arguments and the preprocessed
     source all match. Without the cache it is subprocess.run."""
-    entry = _object_entry(cmd, kwargs.get("cwd"))
+    entry = _object_entry(cmd, kwargs.get("cwd"), kwargs.get("env"))
     if entry is not None and entry.restore():
         empty = "" if kwargs.get("text") or kwargs.get("universal_newlines") else b""
         return subprocess.CompletedProcess(cmd, 0, empty, empty)

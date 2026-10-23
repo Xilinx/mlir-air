@@ -115,11 +115,13 @@ build(label="registered dependency")
 # CHECK: same again: reused
 build(label="same again")
 
-# CHECK-LABEL: a damaged entry is rebuilt, not restored
-print("a damaged entry is rebuilt, not restored")
+# CHECK-LABEL: a damaged entry is rebuilt, not restored, and then replaced
+print("a damaged entry is rebuilt, not restored, and then replaced")
 for blob in cache.glob("??/*/blobs/*"):
     blob.write_text("damaged")
 # CHECK: ran aircc
+build()
+# CHECK: reused
 build()
 
 # CHECK-LABEL: unresolvable or unkeyable builds are never cached
@@ -133,6 +135,15 @@ build(module=missing)
 build(debug_ir=True)
 # CHECK: ran aircc
 build(debug_ir=True)
+find_peano = xrt._find_peano_install_dir
+xrt._find_peano_install_dir = lambda: ""
+del os.environ["PEANO_INSTALL_DIR"]
+# CHECK: chess: ran aircc
+build(label="chess")
+# CHECK: chess again: ran aircc
+build(label="chess again")
+os.environ["PEANO_INSTALL_DIR"] = str(peano)
+xrt._find_peano_install_dir = find_peano
 
 # CHECK-LABEL: elf builds restore params.txt
 print("elf builds restore params.txt")

@@ -368,10 +368,14 @@ jobs:
 
           # Reuse aircc builds and kernel compiles across nights
           # (python/air/backend/compile_cache.py): each is reused only when
-          # everything it was made from matches. Sundays build from scratch, so
-          # a reuse that an incomplete key let through lasts at most a week.
-          if [ "${{ github.event.inputs.compile_cache || 'true' }}" = "true" ] && [ "$(date -u +%u)" != 7 ]; then
+          # everything it was made from matches. Sundays empty the cache first,
+          # so a reuse that an incomplete key let through lasts at most a week.
+          if [ "${{ github.event.inputs.compile_cache || 'true' }}" = "true" ]; then
             export AIR_COMPILE_CACHE="$HOME/.cache/mlir-air/compile-cache"
+            if [ "$(date -u +%u)" = 7 ]; then
+              rm -rf "$AIR_COMPILE_CACHE"
+              echo "compile cache: emptied, building from scratch"
+            fi
             echo "compile cache: $AIR_COMPILE_CACHE"
           else
             echo "compile cache: off, building from scratch"
