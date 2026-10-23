@@ -52,9 +52,7 @@ def build_module(layout):
         ropekv_l1 = layout.MemRefType.get([layout.DK], bf16, memory_space=l1)
         ropelut_l1 = layout.MemRefType.get([layout.ROPE_W_LEN], bf16, memory_space=l1)
         qkvmt_l2 = layout.MemRefType.get([layout.M], bf16, memory_space=l2)
-        qmt_l2 = layout.MemRefType.get(
-            [layout.BATCH * layout.DQ_PADDED], bf16, memory_space=l2
-        )
+        qmt_l2 = layout.MemRefType.get([8 * layout.DQ_PADDED], bf16, memory_space=l2)
         omt_l2 = layout.MemRefType.get(
             [layout.BATCH * layout.DQ], bf16, memory_space=l2
         )
@@ -73,7 +71,7 @@ def build_module(layout):
         down_l2 = layout.MemRefType.get(
             [layout.BATCH * layout.GLU_OUT], bf16, memory_space=l2
         )
-        RELAY_COLS = [3, 5, 4][: layout.NDEST]
+        RELAY_COLS = [layout.QKV_PCOL, 5, 4][: layout.NDEST]
         RELAY_COLS[0] = int(RELAY_COLS[0])
         mm_zero = layout.FuncOp(
             "proj_qmm_mm_zero", ([yacc_mm_l1, i32], []), visibility="private"
@@ -130,14 +128,14 @@ def build_module(layout):
         )
         rope_compute.attributes["link_with"] = layout.StringAttr.get("rope.o")
         parallel_attention = layout.ParallelAttentionGraph(layout)
-        assert layout.BATCH == 8 and layout.XCHUNK == 512
+        assert layout.BATCH in (8, 16) and layout.XCHUNK == 512
         cache_copy = layout.FuncOp(
             "normalized_cache_chunk",
             ([rstg_l1, rmsb_l1, i32], []),
             visibility="private",
         )
         cache_copy.attributes["link_with"] = layout.StringAttr.get("norm_cache.o")
-        for owner in range(2):
+        for owner in range(layout.BATCH // 4):
             for name in (
                 "owner_source",
                 "owner_fill",
@@ -146,6 +144,54 @@ def build_module(layout):
                 "owner_final",
             ):
                 layout.channel_decl(f"{name}_{owner}", size=[1])
+        if layout.NORM_DDR_CACHE:
+            layout.channel_decl("owner_pair", size=[2], channel_type="npu_cascade")
+            source_broadcast = layout.Channel(
+                "owner_source_all", size=[1, 1], broadcast_shape=[4, 1]
+            )
+            source_broadcast.operation.attributes["air.shared_resident_ring"] = (
+                layout.UnitAttr.get()
+            )
+            update_broadcast = layout.Channel(
+                "owner_update_all", size=[1, 1], broadcast_shape=[4, 1]
+            )
+            update_broadcast.operation.attributes["air.shared_resident_ring"] = (
+                layout.UnitAttr.get()
+            )
+            layout.channel_decl("owner_source_host", size=[1])
+            owner_load = layout.FuncOp(
+                "owner_load_chunk",
+                (
+                    [
+                        layout.MemRefType.get([512], bf16, memory_space=l1),
+                        rmsb_l1,
+                        rms_l1,
+                        rms_l1,
+                        i32,
+                        i32,
+                    ],
+                    [],
+                ),
+                visibility="private",
+            )
+            owner_load.attributes["link_with"] = layout.StringAttr.get("rms_residual.o")
+            owner_store = layout.FuncOp(
+                "owner_store_chunk", ([rstg_l1, rmsb_l1, i32], []), visibility="private"
+            )
+            owner_store.attributes["link_with"] = layout.StringAttr.get(
+                "rms_residual.o"
+            )
+            owner_copy_peer = layout.FuncOp(
+                "owner_copy_peer",
+                (
+                    [rstg_l1, layout.MemRefType.get([512], bf16, memory_space=l1), i32],
+                    [],
+                ),
+                visibility="private",
+            )
+            owner_copy_peer.attributes["link_with"] = layout.StringAttr.get(
+                "rms_residual.o"
+            )
         layout.channel_decl("xnorm", size=[1], channel_type="npu_dma_packet")
         _XCHUNK = layout.XCHUNK
 
@@ -179,8 +225,12 @@ def build_module(layout):
         layout.channel_decl("toV", size=[layout.N_ATTN_CU])
         _apK = layout.channel_decl("appendK", size=[1], channel_type="npu_dma_packet")
         _apV = layout.channel_decl("appendV", size=[1], channel_type="npu_dma_packet")
-        layout.channel_decl("inKV_K", size=[len(layout.ATTN_COL_GROUPS)])
-        layout.channel_decl("inKV_V", size=[len(layout.ATTN_COL_GROUPS)])
+        for kind in ("K", "V"):
+            if layout.BATCH == 16:
+                for group in range(len(layout.ATTN_COL_GROUPS)):
+                    layout.channel_decl(f"inKV_{kind}_group{group}", size=[1])
+            else:
+                layout.channel_decl(f"inKV_{kind}", size=[len(layout.ATTN_COL_GROUPS)])
         layout.channel_decl("attnO", size=[layout.N_ATTN_CU])
         for _wc in range(layout.NCX):
             for _nm in (layout._wname(0, _wc), layout._wname(1, _wc)):
@@ -340,9 +390,15 @@ def build_module(layout):
                             strides=[1],
                         )
 
-                def _feed_wcols(_wcol0, _colspan, nsteps):
+                def _feed_wcols(_wcol0, _colspan, nsteps, norm_replays=0):
 
                     def _fan(Wb):
+                        # Replay and its consuming weights must be issued in
+                        # the same selected bank region. A replay in the parent
+                        # block can be fenced before this branch is entered.
+                        if norm_replays:
+                            _capture_norm()
+                            _replay_norm(norm_replays)
                         for _cxi in range(layout.NCX):
                             _cbase = (
                                 _wcol0 + _cxi * _colspan
@@ -358,6 +414,8 @@ def build_module(layout):
                         _fan(W)
                     elif _wsel[0] is None:
                         _fan(_WBUFS[layout.N_WGRP])
+                    elif isinstance(_wsel[0], int):
+                        _fan(_WBUFS[_wsel[0]])
                     else:
 
                         def arm(g):
@@ -413,6 +471,37 @@ def build_module(layout):
                         + layout.UNI_DEC * layout.ROPE_W_LEN * layout.BATCH
                     )
 
+                    def _capture_norm():
+                        # Both paired DMA writers complete before scratch replay;
+                        # this phase's readers finish before the next capture.
+                        for owner in range(2):
+                            layout.ChannelGet(
+                                f"owner_fill_{owner}",
+                                Y,
+                                offsets=[
+                                    0,
+                                    0,
+                                    0,
+                                    layout.NORM_SCRATCH_OFFSET + owner * 4 * layout.K,
+                                ],
+                                sizes=[layout.K // layout.XCHUNK, 2, 4, layout.XCHUNK],
+                                strides=[layout.XCHUNK, 8 * layout.K, layout.K, 1],
+                            )
+
+                    def _replay_norm(replays):
+                        layout.ChannelPut(
+                            "xnorm",
+                            Y,
+                            offsets=[0, 0, 0, layout.NORM_SCRATCH_OFFSET],
+                            sizes=[
+                                replays,
+                                layout.K // layout.XCHUNK,
+                                layout.BATCH,
+                                layout.XCHUNK,
+                            ],
+                            strides=[0, layout.XCHUNK, layout.K, 1],
+                        )
+
                     def _uni_voc():
                         _wsel[0] = None
                         _vwb = layout.arith.addi(
@@ -435,31 +524,62 @@ def build_module(layout):
                                 idx(layout.VOCAB_SIZE_PADDED * layout.BATCH),
                             ),
                         )
-                        for owner in range(2):
+                        if layout.NORM_DDR_CACHE:
                             layout.ChannelPut(
-                                f"owner_source_{owner}",
+                                "owner_source_host",
                                 X,
-                                offsets=[_x_final + owner * 4 * layout.K],
-                                sizes=[4 * layout.K],
+                                indices=[0],
+                                offsets=[_x_final],
+                                sizes=[layout.BATCH * layout.K],
                                 strides=[1],
                             )
                             layout.ChannelPut(
-                                f"owner_source_{owner}",
+                                "owner_source_host",
                                 RMS,
+                                indices=[0],
                                 offsets=[_final_norm_off],
                                 sizes=[layout.K],
                                 strides=[1],
                             )
                             layout.ChannelPut(
-                                f"owner_source_{owner}",
+                                "owner_source_host",
                                 RMS,
+                                indices=[0],
                                 offsets=[0],
                                 sizes=[layout.K],
                                 strides=[1],
                             )
+                        else:
+                            for owner in range(layout.BATCH // 4):
+                                layout.ChannelPut(
+                                    f"owner_source_{owner}",
+                                    X,
+                                    offsets=[_x_final + owner * 4 * layout.K],
+                                    sizes=[4 * layout.K],
+                                    strides=[1],
+                                )
+                                layout.ChannelPut(
+                                    f"owner_source_{owner}",
+                                    RMS,
+                                    offsets=[_final_norm_off],
+                                    sizes=[layout.K],
+                                    strides=[1],
+                                )
+                                layout.ChannelPut(
+                                    f"owner_source_{owner}",
+                                    RMS,
+                                    offsets=[0],
+                                    sizes=[layout.K],
+                                    strides=[1],
+                                )
                         assert layout.VOCAB_PER_COL % layout.NCY == 0
                         _colspan = layout.VOCAB_PER_COL * blk
-                        _feed_wcols(_vwb, _colspan, layout.VOCAB_PER_COL // layout.NCY)
+                        _feed_wcols(
+                            _vwb,
+                            _colspan,
+                            layout.VOCAB_PER_COL // layout.NCY,
+                            layout.VOCAB_RNDS if layout.NORM_DDR_CACHE else 0,
+                        )
                         layout.ChannelGet(
                             "vocOut",
                             Y,
@@ -474,33 +594,62 @@ def build_module(layout):
                         )
                         layout.yield_([])
 
-                    def _uni_dec():
-                        _wsel[0] = _wgi
-                        for owner in range(2):
+                    def _uni_dec(weight_bank=None):
+                        _wsel[0] = _wgi if weight_bank is None else weight_bank
+                        if layout.NORM_DDR_CACHE:
                             layout.ChannelPut(
-                                f"owner_source_{owner}",
+                                "owner_source_host",
                                 X,
-                                offsets=[_lo(_x_in(), owner * 4 * layout.K)],
-                                sizes=[4 * layout.K],
+                                indices=[0],
+                                offsets=[_x_in()],
+                                sizes=[layout.BATCH * layout.K],
                                 strides=[1],
                             )
                             layout.ChannelPut(
-                                f"owner_source_{owner}",
+                                "owner_source_host",
                                 RMS,
+                                indices=[0],
                                 offsets=[_rbase],
                                 sizes=[layout.K],
                                 strides=[1],
                             )
                             layout.ChannelPut(
-                                f"owner_source_{owner}",
+                                "owner_source_host",
                                 RMS,
+                                indices=[0],
                                 offsets=[_lo(_rbase, layout.K)],
                                 sizes=[layout.K],
                                 strides=[1],
                             )
+                        else:
+                            for owner in range(layout.BATCH // 4):
+                                layout.ChannelPut(
+                                    f"owner_source_{owner}",
+                                    X,
+                                    offsets=[_lo(_x_in(), owner * 4 * layout.K)],
+                                    sizes=[4 * layout.K],
+                                    strides=[1],
+                                )
+                                layout.ChannelPut(
+                                    f"owner_source_{owner}",
+                                    RMS,
+                                    offsets=[_rbase],
+                                    sizes=[layout.K],
+                                    strides=[1],
+                                )
+                                layout.ChannelPut(
+                                    f"owner_source_{owner}",
+                                    RMS,
+                                    offsets=[_lo(_rbase, layout.K)],
+                                    sizes=[layout.K],
+                                    strides=[1],
+                                )
                         _lut_off = layout.UNI_DEC * layout.RMS_LAYER
                         _rope_off = _lo(_lb(layout.BATCH * layout.ROPE_W_LEN), _lut_off)
-                        _tl_range = range(layout.BATCH)
+                        # B16 sends the complete contiguous LUT frame with one
+                        # descriptor. Sixteen small tasks can fill the shim
+                        # queue before QKV weights are submitted.
+                        _tl_range = range(1 if layout.NORM_DDR_CACHE else layout.BATCH)
                         for _tl in _tl_range:
                             _lo_t = _tl * layout.ROPE_W_LEN
                             if not _lo_t:
@@ -513,7 +662,10 @@ def build_module(layout):
                                 "ropeLUT",
                                 RMS,
                                 offsets=[_off_t],
-                                sizes=[layout.ROPE_W_LEN],
+                                sizes=[
+                                    layout.ROPE_W_LEN
+                                    * (layout.BATCH if layout.NORM_DDR_CACHE else 1)
+                                ],
                                 strides=[1],
                             )
 
@@ -557,9 +709,17 @@ def build_module(layout):
                                 for _query in range(layout.KV_QUERY_GROUPS):
                                     for gi in range(layout.NGRP):
                                         layout.ChannelPut(
-                                            "inKV_K",
+                                            (
+                                                f"inKV_K_group{gi}"
+                                                if layout.NORM_DDR_CACHE
+                                                else "inKV_K"
+                                            ),
                                             KVC,
-                                            indices=[idx(gi)],
+                                            indices=(
+                                                []
+                                                if layout.NORM_DDR_CACHE
+                                                else [idx(gi)]
+                                            ),
                                             offsets=_r0
                                             + [
                                                 _loi(
@@ -588,9 +748,17 @@ def build_module(layout):
                                             ),
                                         )
                                         layout.ChannelPut(
-                                            "inKV_V",
+                                            (
+                                                f"inKV_V_group{gi}"
+                                                if layout.NORM_DDR_CACHE
+                                                else "inKV_V"
+                                            ),
                                             KVC,
-                                            indices=[idx(gi)],
+                                            indices=(
+                                                []
+                                                if layout.NORM_DDR_CACHE
+                                                else [idx(gi)]
+                                            ),
                                             offsets=_r0
                                             + [
                                                 _loi(
@@ -623,11 +791,16 @@ def build_module(layout):
 
                         woff = 0
                         for p in range(layout.NPH):
+                            norm_replays = 0
+                            if layout.NORM_DDR_CACHE and p in (0, layout.GATEUP_PHASE):
+                                norm_replays = layout.REFEED[p]
                             per_col = layout.PER_COL_PH[p]
                             assert per_col % layout.NCY == 0
                             _colspan = per_col * blk
                             _wcol0 = _lo(_wbase, woff)
-                            _feed_wcols(_wcol0, _colspan, per_col // layout.NCY)
+                            _feed_wcols(
+                                _wcol0, _colspan, per_col // layout.NCY, norm_replays
+                            )
                             woff += layout.NCX * per_col * blk
                             if layout.MULTIBLK and p == 0:
                                 _emit_append()
@@ -652,21 +825,61 @@ def build_module(layout):
                         _out_bo = X
                         _out_base = _x_out()
                         for owner in range(2):
-                            layout.ChannelGet(
-                                f"owner_final_{owner}",
-                                _out_bo,
-                                offsets=[_lo(_out_base, owner * 4 * layout.K)],
-                                sizes=[4 * layout.K],
-                                strides=[1],
-                            )
+                            if layout.NORM_DDR_CACHE:
+                                # Owners send [chunk, row, 512]. Restore each
+                                # row's complete hidden vector in the X buffer.
+                                layout.ChannelGet(
+                                    f"owner_fill_{owner}",
+                                    _out_bo,
+                                    offsets=[
+                                        0,
+                                        0,
+                                        0,
+                                        _lo(_out_base, owner * 4 * layout.K),
+                                    ],
+                                    sizes=[
+                                        layout.K // layout.XCHUNK,
+                                        2,
+                                        4,
+                                        layout.XCHUNK,
+                                    ],
+                                    strides=[layout.XCHUNK, 8 * layout.K, layout.K, 1],
+                                )
+                            else:
+                                layout.ChannelGet(
+                                    f"owner_final_{owner}",
+                                    _out_bo,
+                                    offsets=[_lo(_out_base, owner * 4 * layout.K)],
+                                    sizes=[4 * layout.K],
+                                    strides=[1],
+                                )
                         layout.yield_([])
+
+                    def _select_dec():
+                        if layout.NORM_DDR_CACHE and _wgi is not None:
+                            # All captures on owner_fill share a FIFO. Select
+                            # the weight bank for the complete layer so a final
+                            # hidden receive cannot be hoisted ahead of a
+                            # normalization capture in a nested phase branch.
+                            layout.index_switch(
+                                [],
+                                _wgi,
+                                list(range(layout.N_WGRP - 1)),
+                                case_body_builder=lambda op, i, cv: _uni_dec(cv),
+                                default_body_builder=lambda op: _uni_dec(
+                                    layout.N_WGRP - 1
+                                ),
+                            )
+                            layout.yield_([])
+                        else:
+                            _uni_dec()
 
                     layout.index_switch(
                         [],
                         _uarm_i,
                         [0],
                         case_body_builder=lambda op, i, cv: _uni_voc(),
-                        default_body_builder=lambda op: _uni_dec(),
+                        default_body_builder=lambda op: _select_dec(),
                     )
                 _seg_opers = ([a_iv] if a_iv is not None else []) + [L_rt]
 
@@ -732,7 +945,10 @@ def build_module(layout):
                     if _seg_arm_i is not None:
 
                         def _xs_voc():
-                            _feed_inX("xnorm", _xc_voc)
+                            _feed_inX(
+                                "xnorm",
+                                _xc_voc,
+                            )
                             layout.yield_([])
 
                         def _xs_dec():
@@ -1008,7 +1224,7 @@ def build_module(layout):
                         layout.T.i64(), 5
                     )
 
-                    def _qmtb_dec():
+                    def _qmtb_wave():
                         qmtb = layout.AllocOp(qmt_l2, [], [])
                         qmtb.operation.attributes["air.memtile_col"] = (
                             layout.IntegerAttr.get(layout.T.i32(), 5)
@@ -1018,15 +1234,23 @@ def build_module(layout):
                             qmtb,
                             indices=[idx(0)],
                             offsets=[idx(0)],
-                            sizes=[idx(layout.BATCH * layout.DQ_PADDED)],
+                            sizes=[idx(8 * layout.DQ_PADDED)],
                             strides=[idx(1)],
                         )
                         _qmtb_fan(qmtb)
                         layout.DeallocOp(qmtb)
 
                     def _qmtb_fan(qmtb):
-                        parallel_attention.query(qmtb)
+                        parallel_attention.query(qmtb, rows=8)
                         return
+
+                    def _qmtb_dec():
+                        if layout.BATCH == 8:
+                            _qmtb_wave()
+                        else:
+                            for wave in layout.for_(idx(0), idx(2), idx(1)):
+                                _qmtb_wave()
+                                layout.yield_([])
 
                     if _seg_arm_i is not None:
 
@@ -1203,15 +1427,23 @@ def build_module(layout):
                                 default_body_builder=lambda op: _dec_case(),
                             )
                         else:
-                            _gx = [layout.AllocOp(glu_x_l1, [], []) for _ in range(2)]
-                            _gh = [layout.AllocOp(glu_hid_l1, [], []) for _ in range(2)]
+                            # B16's input/output pair already occupies 48 KiB.
+                            # One reusable pair leaves room for the LUT/stack;
+                            # B8 retains its two-slot pipeline.
+                            slots = 1 if layout.BATCH == 16 else 2
+                            _gx = [
+                                layout.AllocOp(glu_x_l1, [], []) for _ in range(slots)
+                            ]
+                            _gh = [
+                                layout.AllocOp(glu_hid_l1, [], []) for _ in range(slots)
+                            ]
 
                             def _glu_dec_body():
                                 for _s in layout.for_(
                                     idx(0), idx(layout.NGLU // 2), idx(1)
                                 ):
                                     _glu_slice(_gx[0], lambda: _gh[0])
-                                    _glu_slice(_gx[1], lambda: _gh[1])
+                                    _glu_slice(_gx[-1], lambda: _gh[-1])
                                     layout.yield_([])
 
                             def _glu_voc_body():
@@ -1219,7 +1451,7 @@ def build_module(layout):
                                     idx(0), idx(layout.VOC_ROTATIONS), idx(1)
                                 ):
                                     _voc_slice(_gx[0], lambda: _gh[0])
-                                    _voc_slice(_gx[1], lambda: _gh[1])
+                                    _voc_slice(_gx[-1], lambda: _gh[-1])
                                     layout.yield_([])
 
                             _outer = None
@@ -1259,7 +1491,7 @@ def build_module(layout):
                         layout.T.i64(), layout.GLU_PCOL
                     )
                     glu_h.attributes["y_loc"] = layout.IntegerAttr.get(
-                        layout.T.i64(), 3
+                        layout.T.i64(), 5 if layout.BATCH == 16 else 3
                     )
                     db = layout.AllocOp(down_l2, [], [])
                     db.operation.attributes["air.memtile_col"] = layout.IntegerAttr.get(
@@ -1451,6 +1683,15 @@ def build_module(layout):
                         rms_chunk_aie,
                         residual_acc_row_aie,
                         cache_copy,
+                        **(
+                            {
+                                "load": owner_load,
+                                "store": owner_store,
+                                "copy_peer": owner_copy_peer,
+                            }
+                            if layout.NORM_DDR_CACHE
+                            else {}
+                        ),
                     )
                     owners.emit(_arm_rms)
 

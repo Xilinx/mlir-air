@@ -5,6 +5,9 @@
 #define GLU_BATCH_WAVE_LAYOUT 0
 #endif
 #if GLU_BATCH_WAVE_LAYOUT
+#ifndef GLU_BATCH
+#define GLU_BATCH 8
+#endif
 #include <aie_api/aie.hpp>
 // aie::lut requires vector_decl_align (64 bytes on NPU2). The inherited
 // chess_storage annotation did not survive this Peano build: the full graph's
@@ -25,7 +28,7 @@ extern "C" void glu_row_aie(bf16 *__restrict y, bf16 *__restrict x, int row,
   (void)arm;
   aie_round_nearest_even();
   const bf16 *up = x + row * 512;
-  const bf16 *gate = x + 8 * 512 + row * 512;
+  const bf16 *gate = x + GLU_BATCH * 512 + row * 512;
   for (int i = 0; i < 512; i += 16) {
     aie::vector<bf16, 16> g = getActivationBf16(aie::load_v<16>(gate + i));
     aie::vector<bf16, 16> product = aie::mul(g, aie::load_v<16>(up + i));
@@ -43,7 +46,8 @@ extern "C" void glu_copy_aie(bf16 *__restrict y, bf16 *__restrict x, int offset,
     int linear = offset + j;
     int token = linear / 1024;
     int channel = linear % 1024;
-    int source = (channel / 512) * (8 * 512) + token * 512 + channel % 512;
+    int source =
+        (channel / 512) * (GLU_BATCH * 512) + token * 512 + channel % 512;
     aie::store_v(y + j, aie::load_v<16>(x + source));
   }
 }

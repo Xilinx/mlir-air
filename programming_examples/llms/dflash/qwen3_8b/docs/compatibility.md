@@ -36,3 +36,13 @@ readback convention documented in `fused_decode/decode_insts_gen.py`.
 Upstream also has runtime-round xclbin support using an additional readback
 calibration artifact, as well as the newer ELF path. This study does not enable
 those modes; the reported denominator is the supplied C4096 template runner.
+
+## B16 compiler requirements
+
+The B16 DDR-replay mapping uses the existing AIR passes with mixed-feed DMA
+scheduling and mixed-memory packet-producer allocation fixes. Build/install
+that AIR revision before compiling B16. The [shared B16 design](../../common/docs/b16-ddr-replay.md)
+explains the source/compiler boundary, former generated-IR repairs, structural
+trigger conditions and regression coverage. The optional dead-switch cleanup
+is recorded separately. Dependency packages follow the normal repository setup;
+Make does not install a replacement compiler.

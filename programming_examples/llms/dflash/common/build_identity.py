@@ -28,6 +28,8 @@ def digest(path):
 
 
 def build_identity(kind, model_dir):
+    from air.tools import resolve_tool
+
     model_dir = Path(model_dir).resolve()
     if kind == "prepass":
         sources = [
@@ -74,11 +76,13 @@ def build_identity(kind, model_dir):
                 "buffers.py",
                 "b8_graph.py",
                 "b8_owners.py",
+                "b16_owners.py",
                 "b8_config.py",
             )
         ]
     tools = {
         "air-opt": Path(shutil.which("air-opt")),
+        "aircc": resolve_tool("aircc"),
         "clang++": Path(os.environ["PEANO_INSTALL_DIR"]) / "bin/clang++",
         "llvm-link": Path(shutil.which("llvm-link")),
     }

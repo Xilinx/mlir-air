@@ -53,16 +53,37 @@ class TargetConfig:
 
     def __post_init__(self):
         # Mapping choices are recorded in each artifact, but are not tuning
-        # options: this example ships one B8 floorplan and arithmetic path.
+        # options: each block size selects a fixed floorplan and arithmetic path.
         from dataclasses import fields
 
-        variable = {"role", "capacity", "layers", "causal"}
+        variable = {
+            "role",
+            "capacity",
+            "layers",
+            "causal",
+            "batch",
+            "projection_schedule",
+            "attention_native_key",
+            "attention_early_key_release",
+            "attention_pv_reuse",
+        }
+        if self.batch not in (8, 16):
+            raise ValueError("Block size must be 8 or 16")
+        if self.projection_schedule != ("2x2" if self.batch == 16 else "groups"):
+            raise ValueError("Projection schedule does not match block size")
+        for name in (
+            "attention_native_key",
+            "attention_early_key_release",
+            "attention_pv_reuse",
+        ):
+            if getattr(self, name) != (self.batch == 16):
+                raise ValueError(f"Unsupported mapping option: {name}")
         for field in fields(self):
             if (
                 field.name not in variable
                 and getattr(self, field.name) != field.default
             ):
-                raise ValueError(f"Unsupported B8 mapping option: {field.name}")
+                raise ValueError(f"Unsupported mapping option: {field.name}")
         if self.role not in ("target", "drafter"):
             raise ValueError("role must be target or drafter")
         if self.causal != (self.role == "target"):
@@ -188,7 +209,9 @@ def abi(config, fd):
             "w": config.layers * fd.W_LAYER
             + fd.UNI_LM * fd.VOCAB_W_BLOCKS * fd.BLOCK_BF16,
             "r": final_offset + fd.K,
-            "y": decode_y + fd.UNI_LM * b * fd.VOCAB_SIZE_PADDED,
+            "y": decode_y
+            + fd.UNI_LM * b * fd.VOCAB_SIZE_PADDED
+            + (b * fd.K if b == 16 else 0),
             "kv": config.layers * config.capacity * fd.KVSZ_TOK,
         },
         "offsets": {
@@ -201,6 +224,13 @@ def abi(config, fd):
         "hidden_layout": "[layer boundary, token, hidden]; boundary 0 is the input",
     }
 
+    if b == 16:
+        result["offsets"]["norm_scratch"] = (
+            decode_y + fd.UNI_LM * b * fd.VOCAB_SIZE_PADDED
+        )
+        result["normalization_cache"] = (
+            "Four four-row owners, NPU DMA capture/replay through DDR scratch"
+        )
     group_words = (
         [
             min(fd.W_GROUP, config.layers - g * fd.W_GROUP) * fd.W_LAYER
@@ -240,7 +270,9 @@ def load_layout(config, length=None):
 
     extra = {
         "BATCH": b,
-        "DOWN_PCOL": 5,
+        "DOWN_PCOL": 3 if b == 16 else 5,
+        "NORM_DDR_CACHE": b == 16,
+        "QKV_PCOL": 5 if b == 16 else 3,
         "CAUSAL": config.causal,
         "ARM_IDLE_CASES": [0],
         "MULTIBLK": True,
@@ -319,9 +351,13 @@ def load_layout(config, length=None):
         X_SLOTS=config.layers + 1 if config.taps else 1,
     )
 
-    from common.b8_owners import ShardedOwners
+    if b == 16:
+        from common.b16_owners import B16Owners as ShardedOwners
+    else:
+        from common.b8_owners import ShardedOwners
 
     ns["ShardedOwners"] = ShardedOwners
+    ns["NORM_SCRATCH_OFFSET"] = abi(config, fd)["offsets"].get("norm_scratch")
     ns["BUFFER_ABI"] = abi(config, fd)["physical_abi"]
     ns["WEIGHT_BUFFERS"] = abi(config, fd)["weight_buffers"]
     return SimpleNamespace(**ns)
