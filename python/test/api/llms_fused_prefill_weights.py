@@ -12,7 +12,9 @@ return each int4 matrix as raw Q4NX (q, scale, min):
   Bundle      reads a Q4NX bundle, taking the [rows, K] corner of a matrix the
               bundle stores with one dimension zero-padded;
   Q40Bundle   reads a bundle of Q4_0 matrices (signed nibbles, w = q * scale)
-              as q + 8 with min = -8 scale, the same values exactly.
+              as q + 8 with min = -8 scale, the same values exactly;
+  HFBundle    reads a full-precision checkpoint and rounds it onto the grid of
+              host_weights.requant_q4k, scale and min in bf16.
 
 Synthetic files only: matrices packed with the fused decode's own packer.
 """
@@ -33,6 +35,7 @@ sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path_
 ]
 from air_examples.fused_decode.proj_qmm_pack import pack_q4k_blocks  # noqa: E402
 from air_examples.llms.shared.fused_prefill import packing as P  # noqa: E402
+from air_examples.llms.shared.infra import host_weights  # noqa: E402
 
 rng = np.random.default_rng(0)
 work = Path(tempfile.mkdtemp())
@@ -119,3 +122,28 @@ print(
     np.array_equal(m, bf(m)) and np.array_equal(m, -8 * s),
 )
 # CHECK: Q4_0 min is -8 scale in bf16: True
+
+# HFBundle: a BF16 checkpoint, quantized on read.
+w = rng.standard_normal((64, 256)).astype(bfloat16)
+emb = rng.standard_normal((10, 256)).astype(bfloat16)
+hf = work / "hf"
+hf.mkdir()
+write_tensors(
+    hf / "model.safetensors",
+    {
+        "w": ("BF16", [64, 256], w.tobytes()),
+        "emb": ("BF16", [10, 256], emb.tobytes()),
+    },
+)
+hb = P.HFBundle(hf)
+want = host_weights.requant_q4k(w.astype(np.float32), 32)
+print(
+    "HF on the requant_q4k grid:",
+    same(hb.q4nx("w", 64, 256), (want[0], bf(want[1]), bf(want[2]))),
+)
+# CHECK: HF on the requant_q4k grid: True
+print(
+    "HF rows:",
+    np.array_equal(hb.rows("emb", [3, 0, 9]), emb.astype(np.float32)[[3, 0, 9]]),
+)
+# CHECK: HF rows: True

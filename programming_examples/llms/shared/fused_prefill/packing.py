@@ -3,12 +3,14 @@
 """Host-side layouts of the fused prefill device and the LM-head GEMV.
 
 Weights are repacked once at load. The packed layouts keep Q4NX's values
-(4-bit q, bf16 scale and min per 32-wide K group, w = q * scale + min); a
-bundle of Q4_0 matrices is put on that grid exactly. There is no
-requantization.
+(4-bit q, bf16 scale and min per 32-wide K group, w = q * scale + min). A
+model whose weights are not a Q4NX bundle is put on that grid exactly (Q4_0)
+or by the quantizer its fused decode uses (a full-precision checkpoint), so
+prefill and decode compute with the same weights.
 """
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -93,8 +95,36 @@ class Q40Bundle(Bundle):
         return q ^ 8, scale, -8 * scale
 
 
+class HFBundle:
+    """A full-precision HF checkpoint behind Bundle's interface. Each matrix is
+    rounded onto the Q4NX grid when read, by the fused decode's quantizer, with
+    scale and min in bf16 as the device holds them."""
+
+    def __init__(self, d):
+        # q4_0_codec imports its fused_decode siblings top-level
+        fd = str(Path(__file__).resolve().parents[3] / "fused_decode")
+        if fd not in sys.path:
+            sys.path.insert(0, fd)
+        from q4_0_codec import HFModel
+
+        self.hf = HFModel(str(d))
+
+    def bf16(self, name):
+        return self.hf.bf16(name)
+
+    def rows(self, name, ids):
+        return self.hf.rows(name, ids)
+
+    def q4nx(self, name, rows, K):
+        q, scale, mn = host_weights.requant_q4k(self.hf.bf16(name)[:rows, :K], 32)
+        bf = lambda a: a.astype(bfloat16).astype(np.float32)  # noqa: E731
+        return q, bf(scale), bf(mn)
+
+
 def open_weights(codec, path):
     """The weights at `path` (resolve()'s result) for a model of `codec`."""
+    if codec == "hf":
+        return HFBundle(Path(path).parent)
     if codec == "q4_0":
         return Q40Bundle(path)
     return Bundle(path)

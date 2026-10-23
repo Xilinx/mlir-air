@@ -23,10 +23,21 @@ from .models import layer_op, spec
 
 
 def resolve(desc, model=None):
-    """model.q4nx of the desc's bundle (or of `model`, a file or directory)."""
+    """The desc's weights (or `model`'s, a file, directory or repo id): its
+    model.q4nx, or for a full-precision checkpoint its config.json, which sits
+    with the safetensors."""
     m = Path(model) if model else None
     if m and m.is_file():
         return m
+    if desc.codec == "hf":
+        if m and m.is_dir():
+            return m / "config.json"
+        from huggingface_hub import snapshot_download
+
+        d = snapshot_download(
+            model or desc.repo, allow_patterns=["*.safetensors", "*.json"]
+        )
+        return Path(d) / "config.json"
     if m and (m / "model.q4nx").is_file():
         return m / "model.q4nx"
     from huggingface_hub import hf_hub_download
