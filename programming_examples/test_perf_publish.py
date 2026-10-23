@@ -493,6 +493,21 @@ def main():
         check("Prompts are 31–207 tokens." in spec_md, "the prompt range is stated")
         check(render_spec_decode([]) == "", "no study renders no spec section")
 
+        variants = [
+            dict(studies[0], model="qwen3_4b_dflash_b16"),
+            dict(studies[0], model="qwen3_4b_dflash_b8"),
+        ]
+        var_md = render_spec_decode(variants)
+        check(
+            var_md.count('llms/dflash/qwen3_4b/"') == 2
+            and "llms/qwen3_4b_dflash" not in var_md,
+            "every block-size variant links to its implementation directory",
+        )
+        check(
+            var_md.index("block 8") < var_md.index("block 16"),
+            "variants of one target are ordered by block size",
+        )
+
         spec_perf = [dict(PERF[0], model="toy_4b_spec")]
         spec_page = render_llm_benchmark(
             None,

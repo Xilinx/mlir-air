@@ -573,7 +573,13 @@ _VLA_MODELS = frozenset({"smolvla", "smolvla_all"})
 # Records that are a variant of an example rather than an example of their own,
 # mapped to the directory under llms/ that implements them. smolvla_all is
 # smolvla with every stage on the NPU (run_npu2_profile_all.lit).
-_MODEL_DIRS = {"smolvla_all": "smolvla", "qwen3_4b_dflash_b8": "dflash/qwen3_4b"}
+_MODEL_DIRS = {
+    "smolvla_all": "smolvla",
+    "qwen3_4b_dflash_b8": "dflash/qwen3_4b",
+    "qwen3_4b_dflash_b16": "dflash/qwen3_4b",
+    "qwen3_8b_dflash_b8": "dflash/qwen3_8b",
+    "llama31_8b_dflash_b8": "dflash/llama31_8b",
+}
 
 # ── LLM model registry ────────────────────────────────────────────────
 # Maps the perf.json "model" key (which matches the directory name under
@@ -583,7 +589,9 @@ _MODEL_DIRS = {"smolvla_all": "smolvla", "qwen3_4b_dflash_b8": "dflash/qwen3_4b"
 # instruct variants, and some load weights indirectly). Keep in sync with
 # programming_examples/llms/hf_models.txt.
 LLM_HF_MODELS = {
+    "dflash/llama31_8b": "meta-llama/Llama-3.1-8B-Instruct",
     "dflash/qwen3_4b": "Qwen/Qwen3-4B",
+    "dflash/qwen3_8b": "Qwen/Qwen3-8B",
     "gemma3_4b_q4nx": "FastFlowLM/Gemma3-4B-NPU2",
     "gemma4_e2b_q4nx": "FastFlowLM/Gemma4-E2B-IT-NPU2",
     "gemma4_e4b_q4nx": "FastFlowLM/Gemma4-E4B-IT-NPU2",
@@ -635,7 +643,7 @@ LLM_DISPLAY = {
     "gemma3_4b_q4nx": ("gemma-3-4b-it", "Q4NX", "gemma3"),
     "gemma4_e2b_q4nx": ("gemma-4-E2B-it", "Q4NX", "gemma4e"),
     "gemma4_e4b_q4nx": ("gemma-4-E4B-it", "Q4NX", "gemma4e"),
-    "lfm2_1_2b_q4nx": ("LFM2-1.2B", "Q4NX", "lfm2"),
+    "lfm2_1_2b_q4nx": ("LFM2-1.2B", "Q4_0", "lfm2"),
     "llama31_8b_q4nx": ("Llama-3.1-8B-Instruct", "Q4NX", "llama3"),
     "llama32_1b": ("Llama-3.2-1B", "bf16", None),
     "llama32_1b_int4": ("Llama-3.2-1B-Instruct", "int4 AWQ", None),
@@ -655,6 +663,9 @@ LLM_DISPLAY = {
     "qwen3_8b_q4nx": ("Qwen3-8B", "Q4NX", "qwen3"),
     "smollm2_1_7b": ("SmolLM2-1.7B", "bf16", None),
     "qwen3_4b_dflash_b8": ("Qwen3-4B", "Q4NX", None),
+    "qwen3_4b_dflash_b16": ("Qwen3-4B", "Q4NX", None),
+    "qwen3_8b_dflash_b8": ("Qwen3-8B", "Q4NX", None),
+    "llama31_8b_dflash_b8": ("Llama-3.1-8B-Instruct", "Q4NX", None),
     "smolvla": ("smolvla_base", None, None),
     "smolvla_all": ("smolvla_base, all stages on NPU", None, None),
 }
@@ -1120,8 +1131,14 @@ def load_spec_decode(path):
 # Dataset key of the all-requests row in spec_decode_history.ndjson.
 SPEC_ALL = "all"
 
-# The draft model each speculative-decoding record pairs with its target.
-_SPEC_DRAFTS = {"qwen3_4b_dflash_b8": "z-lab/Qwen3-4B-DFlash-b16"}
+# The draft model each speculative-decoding record pairs with its target, and
+# the number of tokens the target verifies per pass.
+_SPEC_DRAFTS = {
+    "qwen3_4b_dflash_b8": ("z-lab/Qwen3-4B-DFlash-b16", 8),
+    "qwen3_4b_dflash_b16": ("z-lab/Qwen3-4B-DFlash-b16", 16),
+    "qwen3_8b_dflash_b8": ("z-lab/Qwen3-8B-DFlash-b16", 8),
+    "llama31_8b_dflash_b8": ("z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat", 8),
+}
 
 
 def _num(v, fmt):
@@ -1138,6 +1155,12 @@ def render_spec_decode(studies, base_url=""):
     studies = [d for d in studies if d.get("per_dataset") or d.get("overall")]
     if not studies:
         return ""
+    studies.sort(
+        key=lambda d: (
+            LLM_DISPLAY.get(d.get("model"), (d.get("model", ""),))[0],
+            _SPEC_DRAFTS.get(d.get("model"), (None, 0))[1],
+        )
+    )
     td_l, td_r = '<td style="text-align: left;">', '<td style="text-align: right;">'
 
     def cells(name, m):
@@ -1157,11 +1180,11 @@ def render_spec_decode(studies, base_url=""):
         metrics = list(per.values()) + [d.get("overall") or {}]
         span = len(names)
         model = _llm_model_cell(d.get("model", ""), base_url)
-        draft = _SPEC_DRAFTS.get(d.get("model"))
+        draft, block = _SPEC_DRAFTS.get(d.get("model"), (None, None))
         if draft:
             model += (
                 f'<br>draft: <a href="https://huggingface.co/{draft}">'
-                f'{draft.split("/")[-1]}</a>'
+                f'{draft.split("/")[-1]}</a>, block {block}'
             )
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         for i, (name, m) in enumerate(zip(names, metrics)):
@@ -1178,12 +1201,10 @@ def render_spec_decode(studies, base_url=""):
             body.append(f"<tr>{lead}{cells(name, m)}{tail}</tr>")
 
     d = studies[0]
-    pt = d.get("prompt_tokens") or {}
-    prompts = (
-        f" Prompts are {pt['min']}–{pt['max']} tokens."
-        if pt.get("min") is not None and pt.get("max") is not None
-        else ""
-    )
+    pts = [x.get("prompt_tokens") or {} for x in studies]
+    lo = [p["min"] for p in pts if p.get("min") is not None]
+    hi = [p["max"] for p in pts if p.get("max") is not None]
+    prompts = f" Prompts are {min(lo)}–{max(hi)} tokens." if lo and hi else ""
     datasets = ", ".join(d.get("per_dataset") or {})
     th = '<th style="text-align: {};">{}</th>'.format
     head = "".join(
