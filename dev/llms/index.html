@@ -1364,30 +1364,6 @@
 <h2 id="nightly-llm-benchmark-npu2">Nightly LLM Benchmark (NPU2)<a class="headerlink" href="#nightly-llm-benchmark-npu2" title="Permanent link">&para;</a></h2>
 <p>End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Point, NPU2) benchmark runner — 2×32 GB DDR5-5600 SODIMM — refreshed nightly. <strong>TTFT</strong> is time to first token (prefill latency); <strong>Decode</strong> is steady-state generation throughput.</p>
 <p>Verify (<code>make verify</code>): <span class="air-verify-key air-verify-pass">pass</span> <span class="air-verify-key air-verify-fail">fail</span> <span class="air-verify-key air-verify-skip">skipped</span>. &nbsp; — not measured.</p>
-<p>Single-point rows — metrics that do not yet have a curve below. ↓ means that
-model's number for this metric is in a curve instead.</p>
-<table>
-<thead>
-<tr>
-<th style="text-align: left;">Model</th>
-<th style="text-align: right;">Context</th>
-<th style="text-align: right;">TTFT (ms)</th>
-<th style="text-align: right;">Decode (tok/s)</th>
-<th style="text-align: left;">Measured</th>
-<th style="text-align: center;">Verify</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/dflash/llama31_8b/">Llama-3.1-8B-Instruct</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct">HF</a>)</span></td>
-<td style="text-align: right;">16</td>
-<td style="text-align: right;">10881.934458389878</td>
-<td style="text-align: right;">17.576547665135575</td>
-<td style="text-align: left;">2026-10-23</td>
-<td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
-</tr>
-</tbody>
-</table>
 <h3 id="decode-throughput-vs-context-toks">Decode throughput vs context (tok/s)<a class="headerlink" href="#decode-throughput-vs-context-toks" title="Permanent link">&para;</a></h3>
 <p>Steady-state decode throughput at increasing KV-cache depth.</p>
 <table>
@@ -1395,13 +1371,9 @@ model's number for this metric is in a curve instead.</p>
 <tr>
 <th style="text-align: left;">Model</th>
 <th style="text-align: left;">Weights</th>
-<th style="text-align: right;">1k</th>
 <th style="text-align: right;">2k</th>
-<th style="text-align: right;">4k</th>
 <th style="text-align: right;">8k</th>
-<th style="text-align: right;">16k</th>
 <th style="text-align: right;">32k</th>
-<th style="text-align: right;">64k</th>
 <th style="text-align: right;">128k</th>
 <th style="text-align: center;">Verify</th>
 </tr>
@@ -1410,285 +1382,197 @@ model's number for this metric is in a curve instead.</p>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma3_4b_q4nx/">gemma-3-4b-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma3-4B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">20.95</td>
-<td style="text-align: right;">19.78</td>
-<td style="text-align: right;">17.85</td>
+<td style="text-align: right;">19.82</td>
 <td style="text-align: right;">14.92</td>
-<td style="text-align: right;">11.14</td>
-<td style="text-align: right;">7.33</td>
-<td style="text-align: right;">4.33</td>
-<td style="text-align: right;">2.35</td>
+<td style="text-align: right;">7.25</td>
+<td style="text-align: right;">2.36</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma4_e2b_q4nx/">gemma-4-E2B-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma4e.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma4-E2B-IT-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">34.36</td>
-<td style="text-align: right;">33.95</td>
-<td style="text-align: right;">33.21</td>
-<td style="text-align: right;">32.06</td>
-<td style="text-align: right;">29.62</td>
-<td style="text-align: right;">26.13</td>
-<td style="text-align: right;">20.78</td>
-<td style="text-align: right;">14.65</td>
+<td style="text-align: right;">33.98</td>
+<td style="text-align: right;">32.07</td>
+<td style="text-align: right;">25.99</td>
+<td style="text-align: right;">14.66</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma4_e4b_q4nx/">gemma-4-E4B-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma4e.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma4-E4B-IT-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">16.01</td>
-<td style="text-align: right;">15.74</td>
-<td style="text-align: right;">15.24</td>
-<td style="text-align: right;">14.33</td>
-<td style="text-align: right;">12.79</td>
-<td style="text-align: right;">10.51</td>
-<td style="text-align: right;">7.76</td>
+<td style="text-align: right;">15.75</td>
+<td style="text-align: right;">14.34</td>
+<td style="text-align: right;">10.53</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/lfm2_1_2b_q4nx/">LFM2-1.2B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_lfm2.cpp">FLM</a>, <a href="https://huggingface.co/LiquidAI/LFM2-1.2B">HF</a>)</span></td>
 <td style="text-align: left;">Q4_0</td>
-<td style="text-align: right;">69.09</td>
-<td style="text-align: right;">65.00</td>
-<td style="text-align: right;">58.05</td>
+<td style="text-align: right;">64.95</td>
 <td style="text-align: right;">47.87</td>
-<td style="text-align: right;">35.45</td>
-<td style="text-align: right;">23.34</td>
-<td style="text-align: right;">13.89</td>
+<td style="text-align: right;">23.35</td>
 <td style="text-align: right;">7.66</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama31_8b_q4nx/">Llama-3.1-8B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">13.41</td>
-<td style="text-align: right;">12.95</td>
-<td style="text-align: right;">12.12</td>
+<td style="text-align: right;">12.96</td>
 <td style="text-align: right;">10.73</td>
-<td style="text-align: right;">8.73</td>
-<td style="text-align: right;">6.29</td>
-<td style="text-align: right;">3.94</td>
+<td style="text-align: right;">6.32</td>
 <td style="text-align: right;">2.30</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b/">Llama-3.2-1B</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.2-1B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">10.37</td>
-<td style="text-align: right;">8.92</td>
-<td style="text-align: right;">6.64</td>
-<td style="text-align: right;">4.52</td>
-<td style="text-align: right;">2.69</td>
-<td style="text-align: right;">1.13</td>
-<td style="text-align: right;">0.49</td>
+<td style="text-align: right;">8.09</td>
+<td style="text-align: right;">4.49</td>
+<td style="text-align: right;">1.21</td>
 <td style="text-align: right;">0.22</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_int4/">Llama-3.2-1B-Instruct</a> <span class="air-nowrap">(<a href="https://huggingface.co/amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead">HF</a>)</span></td>
 <td style="text-align: left;">int4 AWQ</td>
-<td style="text-align: right;">12.72</td>
-<td style="text-align: right;">11.84</td>
-<td style="text-align: right;">7.74</td>
-<td style="text-align: right;">5.01</td>
-<td style="text-align: right;">2.77</td>
-<td style="text-align: right;">1.11</td>
-<td style="text-align: right;">0.47</td>
-<td style="text-align: right;">0.18</td>
+<td style="text-align: right;">10.05</td>
+<td style="text-align: right;">4.38</td>
+<td style="text-align: right;">1.07</td>
+<td style="text-align: right;">0.17</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_q4nx/">Llama-3.2-1B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.2-1B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">70.30</td>
-<td style="text-align: right;">66.04</td>
-<td style="text-align: right;">58.84</td>
-<td style="text-align: right;">48.28</td>
-<td style="text-align: right;">35.65</td>
-<td style="text-align: right;">23.42</td>
-<td style="text-align: right;">13.90</td>
+<td style="text-align: right;">65.92</td>
+<td style="text-align: right;">48.29</td>
+<td style="text-align: right;">23.43</td>
 <td style="text-align: right;">7.66</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b/">Llama-3.2-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.2-3B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">4.32</td>
-<td style="text-align: right;">3.37</td>
-<td style="text-align: right;">2.43</td>
-<td style="text-align: right;">1.90</td>
-<td style="text-align: right;">0.77</td>
-<td style="text-align: right;">0.37</td>
-<td style="text-align: right;">—</td>
+<td style="text-align: right;">3.50</td>
+<td style="text-align: right;">1.88</td>
+<td style="text-align: right;">0.36</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b_q4nx/">Llama-3.2-3B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.2-3B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">28.23</td>
-<td style="text-align: right;">25.95</td>
-<td style="text-align: right;">22.21</td>
-<td style="text-align: right;">17.37</td>
-<td style="text-align: right;">12.08</td>
+<td style="text-align: right;">25.83</td>
+<td style="text-align: right;">17.35</td>
 <td style="text-align: right;">7.51</td>
-<td style="text-align: right;">4.28</td>
 <td style="text-align: right;">2.30</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/phi4_mini_q4nx/">Phi-4-mini-instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_phi4.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Phi4-mini-Instruct-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">23.66</td>
-<td style="text-align: right;">21.76</td>
-<td style="text-align: right;">18.80</td>
+<td style="text-align: right;">21.79</td>
 <td style="text-align: right;">14.79</td>
-<td style="text-align: right;">10.37</td>
-<td style="text-align: right;">6.50</td>
-<td style="text-align: right;">3.72</td>
+<td style="text-align: right;">6.49</td>
 <td style="text-align: right;">2.00</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_0_5b/">Qwen2.5-0.5B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-0.5B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">10.08</td>
-<td style="text-align: right;">10.02</td>
-<td style="text-align: right;">8.37</td>
-<td style="text-align: right;">5.84</td>
-<td style="text-align: right;">3.82</td>
-<td style="text-align: right;">1.81</td>
-<td style="text-align: right;">0.58</td>
-<td style="text-align: right;">0.30</td>
+<td style="text-align: right;">9.54</td>
+<td style="text-align: right;">5.36</td>
+<td style="text-align: right;">1.54</td>
+<td style="text-align: right;">0.27</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_1_5b/">Qwen2.5-1.5B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-1.5B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">6.44</td>
-<td style="text-align: right;">5.78</td>
-<td style="text-align: right;">4.87</td>
-<td style="text-align: right;">3.48</td>
-<td style="text-align: right;">1.83</td>
-<td style="text-align: right;">0.81</td>
-<td style="text-align: right;">0.41</td>
-<td style="text-align: right;">0.16</td>
+<td style="text-align: right;">6.29</td>
+<td style="text-align: right;">3.58</td>
+<td style="text-align: right;">0.79</td>
+<td style="text-align: right;">0.17</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b/">Qwen2.5-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-3B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">4.17</td>
-<td style="text-align: right;">3.45</td>
-<td style="text-align: right;">3.06</td>
-<td style="text-align: right;">2.16</td>
-<td style="text-align: right;">1.12</td>
-<td style="text-align: right;">0.47</td>
-<td style="text-align: right;">0.24</td>
+<td style="text-align: right;">3.82</td>
+<td style="text-align: right;">2.21</td>
+<td style="text-align: right;">0.49</td>
 <td style="text-align: right;">0.10</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b_q4/">Qwen2.5-3B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Q4_0</td>
-<td style="text-align: right;">22.90</td>
-<td style="text-align: right;">21.79</td>
-<td style="text-align: right;">19.82</td>
-<td style="text-align: right;">16.81</td>
-<td style="text-align: right;">12.87</td>
-<td style="text-align: right;">8.79</td>
-<td style="text-align: right;">5.40</td>
-<td style="text-align: right;">3.04</td>
+<td style="text-align: right;">21.46</td>
+<td style="text-align: right;">16.40</td>
+<td style="text-align: right;">8.47</td>
+<td style="text-align: right;">2.89</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">Qwen2.5-7B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">13.41</td>
-<td style="text-align: right;">12.85</td>
-<td style="text-align: right;">11.86</td>
-<td style="text-align: right;">10.28</td>
-<td style="text-align: right;">8.13</td>
-<td style="text-align: right;">5.73</td>
-<td style="text-align: right;">3.61</td>
-<td style="text-align: right;">2.07</td>
-<td style="text-align: center;"><span class="air-verify-fail" title="fail"></span></td>
+<td style="text-align: right;">12.80</td>
+<td style="text-align: right;">10.20</td>
+<td style="text-align: right;">5.64</td>
+<td style="text-align: right;">2.02</td>
+<td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_0_6b/">Qwen3-0.6B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-0.6B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">8.47</td>
-<td style="text-align: right;">6.15</td>
-<td style="text-align: right;">4.32</td>
-<td style="text-align: right;">2.79</td>
-<td style="text-align: right;">1.22</td>
-<td style="text-align: right;">0.48</td>
-<td style="text-align: right;">—</td>
+<td style="text-align: right;">6.18</td>
+<td style="text-align: right;">2.80</td>
+<td style="text-align: right;">0.50</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_1_7b/">Qwen3-1.7B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-1.7B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">6.12</td>
-<td style="text-align: right;">4.77</td>
-<td style="text-align: right;">3.29</td>
-<td style="text-align: right;">2.30</td>
-<td style="text-align: right;">1.17</td>
-<td style="text-align: right;">0.48</td>
-<td style="text-align: right;">—</td>
+<td style="text-align: right;">4.46</td>
+<td style="text-align: right;">2.55</td>
+<td style="text-align: right;">0.50</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">3.23</td>
-<td style="text-align: right;">2.55</td>
-<td style="text-align: right;">1.74</td>
-<td style="text-align: right;">1.28</td>
-<td style="text-align: right;">0.57</td>
+<td style="text-align: right;">2.38</td>
+<td style="text-align: right;">1.33</td>
 <td style="text-align: right;">0.24</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b_q4nx/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">20.96</td>
-<td style="text-align: right;">19.22</td>
-<td style="text-align: right;">16.48</td>
-<td style="text-align: right;">12.84</td>
-<td style="text-align: right;">8.90</td>
+<td style="text-align: right;">19.23</td>
+<td style="text-align: right;">12.82</td>
 <td style="text-align: right;">5.52</td>
-<td style="text-align: right;">3.13</td>
 <td style="text-align: right;">1.68</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">12.74</td>
-<td style="text-align: right;">12.06</td>
-<td style="text-align: right;">10.90</td>
+<td style="text-align: right;">12.04</td>
 <td style="text-align: right;">9.17</td>
-<td style="text-align: right;">6.96</td>
-<td style="text-align: right;">4.70</td>
-<td style="text-align: right;">2.84</td>
+<td style="text-align: right;">4.69</td>
 <td style="text-align: right;">1.59</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm2_1_7b/">SmolLM2-1.7B</a> <span class="air-nowrap">(<a href="https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">5.85</td>
-<td style="text-align: right;">4.53</td>
-<td style="text-align: right;">3.59</td>
-<td style="text-align: right;">2.17</td>
-<td style="text-align: right;">1.28</td>
-<td style="text-align: right;">—</td>
+<td style="text-align: right;">4.95</td>
+<td style="text-align: right;">2.19</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
@@ -1711,6 +1595,8 @@ than the number of real prompt tokens.</p>
 <th style="text-align: right;">1k</th>
 <th style="text-align: right;">2k</th>
 <th style="text-align: right;">4k</th>
+<th style="text-align: right;">8k</th>
+<th style="text-align: right;">32k</th>
 <th style="text-align: center;">Verify</th>
 </tr>
 </thead>
@@ -1718,154 +1604,188 @@ than the number of real prompt tokens.</p>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma3_4b_q4nx/">gemma-3-4b-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma3-4B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">972</td>
-<td style="text-align: right;">1706</td>
-<td style="text-align: right;">3319</td>
-<td style="text-align: right;">6755</td>
+<td style="text-align: right;">304</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">1261</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">5945</td>
+<td style="text-align: right;">31873</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma4_e2b_q4nx/">gemma-4-E2B-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma4e.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma4-E2B-IT-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">877</td>
-<td style="text-align: right;">1441</td>
-<td style="text-align: right;">2445</td>
+<td style="text-align: right;">839</td>
+<td style="text-align: right;">1396</td>
+<td style="text-align: right;">2393</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma4_e4b_q4nx/">gemma-4-E4B-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma4e.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma4-E4B-IT-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">1286</td>
-<td style="text-align: right;">2349</td>
-<td style="text-align: right;">4663</td>
+<td style="text-align: right;">1403</td>
+<td style="text-align: right;">2328</td>
+<td style="text-align: right;">4633</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/lfm2_1_2b_q4nx/">LFM2-1.2B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_lfm2.cpp">FLM</a>, <a href="https://huggingface.co/LiquidAI/LFM2-1.2B">HF</a>)</span></td>
 <td style="text-align: left;">Q4_0</td>
-<td style="text-align: right;">351</td>
-<td style="text-align: right;">570</td>
-<td style="text-align: right;">978</td>
-<td style="text-align: right;">81879</td>
+<td style="text-align: right;">136</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">545</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">3073</td>
+<td style="text-align: right;">25986</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama31_8b_q4nx/">Llama-3.1-8B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">1286</td>
-<td style="text-align: right;">2318</td>
-<td style="text-align: right;">5424</td>
-<td style="text-align: right;">16191</td>
+<td style="text-align: right;">568</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">2595</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">17176</td>
+<td style="text-align: right;">177940</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b/">Llama-3.2-1B</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.2-1B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">265</td>
-<td style="text-align: right;">453</td>
-<td style="text-align: right;">854</td>
+<td style="text-align: right;">253</td>
+<td style="text-align: right;">469</td>
+<td style="text-align: right;">857</td>
 <td style="text-align: right;">1778</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_int4/">Llama-3.2-1B-Instruct</a> <span class="air-nowrap">(<a href="https://huggingface.co/amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead">HF</a>)</span></td>
 <td style="text-align: left;">int4 AWQ</td>
-<td style="text-align: right;">259</td>
-<td style="text-align: right;">453</td>
+<td style="text-align: right;">252</td>
+<td style="text-align: right;">468</td>
 <td style="text-align: right;">864</td>
-<td style="text-align: right;">1794</td>
+<td style="text-align: right;">1789</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_q4nx/">Llama-3.2-1B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.2-1B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">245</td>
-<td style="text-align: right;">405</td>
-<td style="text-align: right;">743</td>
-<td style="text-align: right;">1625</td>
+<td style="text-align: right;">122</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">580</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">4666</td>
+<td style="text-align: right;">55218</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b/">Llama-3.2-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.2-3B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">627</td>
-<td style="text-align: right;">1066</td>
-<td style="text-align: right;">2219</td>
-<td style="text-align: right;">6798</td>
+<td style="text-align: right;">608</td>
+<td style="text-align: right;">1059</td>
+<td style="text-align: right;">2159</td>
+<td style="text-align: right;">10289</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b_q4nx/">Llama-3.2-3B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.2-3B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">607</td>
-<td style="text-align: right;">1073</td>
-<td style="text-align: right;">2150</td>
-<td style="text-align: right;">4718</td>
+<td style="text-align: right;">276</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">1280</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">9745</td>
+<td style="text-align: right;">110636</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/phi4_mini_q4nx/">Phi-4-mini-instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_phi4.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Phi4-mini-Instruct-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">735</td>
-<td style="text-align: right;">1197</td>
-<td style="text-align: right;">2434</td>
-<td style="text-align: right;">5400</td>
+<td style="text-align: right;">320</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">1463</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">11140</td>
+<td style="text-align: right;">126456</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_0_5b/">Qwen2.5-0.5B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-0.5B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">326</td>
-<td style="text-align: right;">484</td>
+<td style="text-align: right;">327</td>
+<td style="text-align: right;">487</td>
 <td style="text-align: right;">797</td>
-<td style="text-align: right;">1455</td>
+<td style="text-align: right;">1485</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_1_5b/">Qwen2.5-1.5B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-1.5B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">632</td>
-<td style="text-align: right;">1179</td>
-<td style="text-align: right;">2142</td>
-<td style="text-align: right;">4358</td>
+<td style="text-align: right;">637</td>
+<td style="text-align: right;">1127</td>
+<td style="text-align: right;">2106</td>
+<td style="text-align: right;">4330</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b/">Qwen2.5-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-3B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
 <td style="text-align: right;">1131</td>
-<td style="text-align: right;">2032</td>
-<td style="text-align: right;">3982</td>
-<td style="text-align: right;">8232</td>
+<td style="text-align: right;">2023</td>
+<td style="text-align: right;">4004</td>
+<td style="text-align: right;">8199</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b_q4/">Qwen2.5-3B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Q4_0</td>
-<td style="text-align: right;">1151</td>
-<td style="text-align: right;">2050</td>
-<td style="text-align: right;">4054</td>
-<td style="text-align: right;">8211</td>
+<td style="text-align: right;">286</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">1225</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">7825</td>
+<td style="text-align: right;">73883</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">Qwen2.5-7B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">2096</td>
-<td style="text-align: right;">3836</td>
-<td style="text-align: right;">7673</td>
-<td style="text-align: right;">15894</td>
-<td style="text-align: center;"><span class="air-verify-fail" title="fail"></span></td>
+<td style="text-align: right;">569</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">2200</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">12312</td>
+<td style="text-align: right;">107494</td>
+<td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_0_6b/">Qwen3-0.6B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-0.6B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">382</td>
-<td style="text-align: right;">690</td>
-<td style="text-align: right;">1258</td>
-<td style="text-align: right;">2660</td>
+<td style="text-align: right;">385</td>
+<td style="text-align: right;">666</td>
+<td style="text-align: right;">1257</td>
+<td style="text-align: right;">2687</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1873,72 +1793,88 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;">bf16</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
-<td style="text-align: right;">1787</td>
-<td style="text-align: right;">3791</td>
+<td style="text-align: right;">1823</td>
+<td style="text-align: right;">3825</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">1242</td>
-<td style="text-align: right;">2414</td>
-<td style="text-align: right;">4742</td>
-<td style="text-align: right;">10181</td>
+<td style="text-align: right;">1247</td>
+<td style="text-align: right;">2401</td>
+<td style="text-align: right;">4753</td>
+<td style="text-align: right;">10190</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b_q4nx/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">1239</td>
-<td style="text-align: right;">2408</td>
-<td style="text-align: right;">4673</td>
-<td style="text-align: right;">9844</td>
+<td style="text-align: right;">371</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">1841</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">15349</td>
+<td style="text-align: right;">184235</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">1754</td>
-<td style="text-align: right;">3413</td>
-<td style="text-align: right;">6628</td>
-<td style="text-align: right;">13634</td>
+<td style="text-align: right;">573</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">2660</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">18314</td>
+<td style="text-align: right;">196073</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm2_1_7b/">SmolLM2-1.7B</a> <span class="air-nowrap">(<a href="https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B">HF</a>)</span></td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">410</td>
-<td style="text-align: right;">751</td>
-<td style="text-align: right;">1464</td>
-<td style="text-align: right;">3074</td>
+<td style="text-align: right;">408</td>
+<td style="text-align: right;">752</td>
+<td style="text-align: right;">1462</td>
+<td style="text-align: right;">3055</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 </tbody>
 </table>
 <p>— not swept at this length, or an expected failure.</p>
 <h3 id="speculative-decoding">Speculative decoding<a class="headerlink" href="#speculative-decoding" title="Permanent link">&para;</a></h3>
-<p>A draft model proposes a block of tokens and the target model verifies the block in one pass. <strong>Target only</strong> is the same target model decoding one token per pass. Both decode the same 20 prompts, 4 from each of gsm8k, math500, humaneval, mbpp, mt-bench, greedy, up to 2048 new tokens, prefill excluded. Throughput is each engine's total generated tokens divided by its total decode time over the requests in the row. The two engines use different matrix arithmetic (single-token GEMV vs batched verification), so their greedy outputs diverge and the generated token counts differ.</p>
+<p>A draft model proposes a block of tokens and the target model verifies the block in one pass. <strong>Target only</strong> is the same target model decoding one token per pass. Both decode the same 20 prompts, 4 from each of gsm8k, math500, humaneval, mbpp, mt-bench, greedy, up to 2048 new tokens, prefill excluded. Prompts are 20–305 tokens. Throughput is each engine's total generated tokens divided by its total decode time over the requests in the row. The two engines use different matrix arithmetic (single-token GEMV vs batched verification), so their greedy outputs diverge and the generated token counts differ.</p>
 <table>
 <thead><tr><th style="text-align: left;">Model</th><th style="text-align: left;">Dataset</th><th style="text-align: right;">Target only (tok/s)</th><th style="text-align: right;">Speculative (tok/s)</th><th style="text-align: right;">Speedup</th><th style="text-align: right;">Tokens / pass</th><th style="text-align: right;">Acceptance</th><th style="text-align: center;">Verify</th></tr></thead>
 <tbody>
-<tr><td style="text-align: left; vertical-align: middle;" rowspan="6"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/dflash/qwen3_4b/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</span><br>draft: <a href="https://huggingface.co/z-lab/Qwen3-4B-DFlash-b16">Qwen3-4B-DFlash-b16</a>, block 8</td><td style="text-align: left;">gsm8k</td><td style="text-align: right;">17.70</td><td style="text-align: right;">51.30</td><td style="text-align: right;">2.90×</td><td style="text-align: right;">5.25</td><td style="text-align: right;">0.61</td><td style="text-align: center; vertical-align: middle;" rowspan="6"><span class="air-verify-pass" title="pass"></span></td></tr>
-<tr><td style="text-align: left;">math500</td><td style="text-align: right;">17.61</td><td style="text-align: right;">56.45</td><td style="text-align: right;">3.21×</td><td style="text-align: right;">6.07</td><td style="text-align: right;">0.73</td></tr>
-<tr><td style="text-align: left;">humaneval</td><td style="text-align: right;">17.67</td><td style="text-align: right;">49.05</td><td style="text-align: right;">2.78×</td><td style="text-align: right;">5.19</td><td style="text-align: right;">0.60</td></tr>
-<tr><td style="text-align: left;">mbpp</td><td style="text-align: right;">17.71</td><td style="text-align: right;">49.98</td><td style="text-align: right;">2.82×</td><td style="text-align: right;">5.08</td><td style="text-align: right;">0.59</td></tr>
-<tr><td style="text-align: left;">mt-bench</td><td style="text-align: right;">16.77</td><td style="text-align: right;">20.25</td><td style="text-align: right;">1.21×</td><td style="text-align: right;">2.08</td><td style="text-align: right;">0.16</td></tr>
-<tr><td style="text-align: left;"><strong>all 20</strong></td><td style="text-align: right;">17.51</td><td style="text-align: right;">42.98</td><td style="text-align: right;">2.45×</td><td style="text-align: right;">4.49</td><td style="text-align: right;">0.50</td></tr>
-<tr><td style="text-align: left; vertical-align: middle;" rowspan="6"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/dflash/qwen3_4b/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</span><br>draft: <a href="https://huggingface.co/z-lab/Qwen3-4B-DFlash-b16">Qwen3-4B-DFlash-b16</a>, block 16</td><td style="text-align: left;">gsm8k</td><td style="text-align: right;">17.62</td><td style="text-align: right;">52.23</td><td style="text-align: right;">2.96×</td><td style="text-align: right;">7.14</td><td style="text-align: right;">0.41</td><td style="text-align: center; vertical-align: middle;" rowspan="6"><span class="air-verify-pass" title="pass"></span></td></tr>
-<tr><td style="text-align: left;">math500</td><td style="text-align: right;">17.51</td><td style="text-align: right;">62.21</td><td style="text-align: right;">3.55×</td><td style="text-align: right;">9.09</td><td style="text-align: right;">0.54</td></tr>
-<tr><td style="text-align: left;">humaneval</td><td style="text-align: right;">17.56</td><td style="text-align: right;">48.37</td><td style="text-align: right;">2.76×</td><td style="text-align: right;">6.91</td><td style="text-align: right;">0.40</td></tr>
-<tr><td style="text-align: left;">mbpp</td><td style="text-align: right;">17.61</td><td style="text-align: right;">43.90</td><td style="text-align: right;">2.49×</td><td style="text-align: right;">5.93</td><td style="text-align: right;">0.33</td></tr>
-<tr><td style="text-align: left;">mt-bench</td><td style="text-align: right;">17.63</td><td style="text-align: right;">16.69</td><td style="text-align: right;">0.95×</td><td style="text-align: right;">2.28</td><td style="text-align: right;">0.09</td></tr>
-<tr><td style="text-align: left;"><strong>all 20</strong></td><td style="text-align: right;">17.57</td><td style="text-align: right;">40.77</td><td style="text-align: right;">2.32×</td><td style="text-align: right;">5.70</td><td style="text-align: right;">0.31</td></tr>
-<tr><td style="text-align: left; vertical-align: middle;" rowspan="6"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/dflash/qwen3_8b/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-8B">HF</a>)</span><br>draft: <a href="https://huggingface.co/z-lab/Qwen3-8B-DFlash-b16">Qwen3-8B-DFlash-b16</a>, block 8</td><td style="text-align: left;">gsm8k</td><td style="text-align: right;">11.42</td><td style="text-align: right;">33.94</td><td style="text-align: right;">2.97×</td><td style="text-align: right;">5.69</td><td style="text-align: right;">0.67</td><td style="text-align: center; vertical-align: middle;" rowspan="6"><span class="air-verify-pass" title="pass"></span></td></tr>
-<tr><td style="text-align: left;">math500</td><td style="text-align: right;">10.34</td><td style="text-align: right;">33.82</td><td style="text-align: right;">3.27×</td><td style="text-align: right;">5.89</td><td style="text-align: right;">0.70</td></tr>
-<tr><td style="text-align: left;">humaneval</td><td style="text-align: right;">9.56</td><td style="text-align: right;">29.64</td><td style="text-align: right;">3.10×</td><td style="text-align: right;">5.13</td><td style="text-align: right;">0.59</td></tr>
-<tr><td style="text-align: left;">mbpp</td><td style="text-align: right;">9.53</td><td style="text-align: right;">27.05</td><td style="text-align: right;">2.84×</td><td style="text-align: right;">4.52</td><td style="text-align: right;">0.51</td></tr>
-<tr><td style="text-align: left;">mt-bench</td><td style="text-align: right;">9.37</td><td style="text-align: right;">13.35</td><td style="text-align: right;">1.43×</td><td style="text-align: right;">2.26</td><td style="text-align: right;">0.18</td></tr>
-<tr><td style="text-align: left;"><strong>all 20</strong></td><td style="text-align: right;">10.03</td><td style="text-align: right;">26.02</td><td style="text-align: right;">2.60×</td><td style="text-align: right;">4.45</td><td style="text-align: right;">0.49</td></tr>
+<tr><td style="text-align: left; vertical-align: middle;" rowspan="6"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/dflash/llama31_8b/">Llama-3.1-8B-Instruct</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct">HF</a>)</span><br>draft: <a href="https://huggingface.co/z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat">LLaMA3.1-8B-Instruct-DFlash-UltraChat</a>, block 8</td><td style="text-align: left;">gsm8k</td><td style="text-align: right;">11.83</td><td style="text-align: right;">27.24</td><td style="text-align: right;">2.30×</td><td style="text-align: right;">4.18</td><td style="text-align: right;">0.45</td><td style="text-align: center; vertical-align: middle;" rowspan="6"><span class="air-verify-pass" title="pass"></span></td></tr>
+<tr><td style="text-align: left;">math500</td><td style="text-align: right;">9.66</td><td style="text-align: right;">21.91</td><td style="text-align: right;">2.27×</td><td style="text-align: right;">3.39</td><td style="text-align: right;">0.34</td></tr>
+<tr><td style="text-align: left;">humaneval</td><td style="text-align: right;">9.58</td><td style="text-align: right;">31.15</td><td style="text-align: right;">3.25×</td><td style="text-align: right;">4.96</td><td style="text-align: right;">0.57</td></tr>
+<tr><td style="text-align: left;">mbpp</td><td style="text-align: right;">9.54</td><td style="text-align: right;">30.20</td><td style="text-align: right;">3.17×</td><td style="text-align: right;">4.62</td><td style="text-align: right;">0.52</td></tr>
+<tr><td style="text-align: left;">mt-bench</td><td style="text-align: right;">9.62</td><td style="text-align: right;">17.83</td><td style="text-align: right;">1.85×</td><td style="text-align: right;">2.76</td><td style="text-align: right;">0.25</td></tr>
+<tr><td style="text-align: left;"><strong>all 20</strong></td><td style="text-align: right;">10.06</td><td style="text-align: right;">24.30</td><td style="text-align: right;">2.41×</td><td style="text-align: right;">3.77</td><td style="text-align: right;">0.40</td></tr>
+<tr><td style="text-align: left; vertical-align: middle;" rowspan="6"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/dflash/qwen3_4b/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</span><br>draft: <a href="https://huggingface.co/z-lab/Qwen3-4B-DFlash-b16">Qwen3-4B-DFlash-b16</a>, block 8</td><td style="text-align: left;">gsm8k</td><td style="text-align: right;">17.62</td><td style="text-align: right;">51.15</td><td style="text-align: right;">2.90×</td><td style="text-align: right;">5.25</td><td style="text-align: right;">0.61</td><td style="text-align: center; vertical-align: middle;" rowspan="6"><span class="air-verify-pass" title="pass"></span></td></tr>
+<tr><td style="text-align: left;">math500</td><td style="text-align: right;">17.60</td><td style="text-align: right;">56.54</td><td style="text-align: right;">3.21×</td><td style="text-align: right;">6.07</td><td style="text-align: right;">0.73</td></tr>
+<tr><td style="text-align: left;">humaneval</td><td style="text-align: right;">17.67</td><td style="text-align: right;">49.19</td><td style="text-align: right;">2.78×</td><td style="text-align: right;">5.19</td><td style="text-align: right;">0.60</td></tr>
+<tr><td style="text-align: left;">mbpp</td><td style="text-align: right;">17.69</td><td style="text-align: right;">50.03</td><td style="text-align: right;">2.83×</td><td style="text-align: right;">5.08</td><td style="text-align: right;">0.59</td></tr>
+<tr><td style="text-align: left;">mt-bench</td><td style="text-align: right;">17.61</td><td style="text-align: right;">20.28</td><td style="text-align: right;">1.15×</td><td style="text-align: right;">2.08</td><td style="text-align: right;">0.16</td></tr>
+<tr><td style="text-align: left;"><strong>all 20</strong></td><td style="text-align: right;">17.63</td><td style="text-align: right;">43.02</td><td style="text-align: right;">2.44×</td><td style="text-align: right;">4.49</td><td style="text-align: right;">0.50</td></tr>
+<tr><td style="text-align: left; vertical-align: middle;" rowspan="6"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/dflash/qwen3_4b/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</span><br>draft: <a href="https://huggingface.co/z-lab/Qwen3-4B-DFlash-b16">Qwen3-4B-DFlash-b16</a>, block 16</td><td style="text-align: left;">gsm8k</td><td style="text-align: right;">17.66</td><td style="text-align: right;">52.52</td><td style="text-align: right;">2.97×</td><td style="text-align: right;">7.14</td><td style="text-align: right;">0.41</td><td style="text-align: center; vertical-align: middle;" rowspan="6"><span class="air-verify-pass" title="pass"></span></td></tr>
+<tr><td style="text-align: left;">math500</td><td style="text-align: right;">17.59</td><td style="text-align: right;">62.41</td><td style="text-align: right;">3.55×</td><td style="text-align: right;">9.09</td><td style="text-align: right;">0.54</td></tr>
+<tr><td style="text-align: left;">humaneval</td><td style="text-align: right;">17.55</td><td style="text-align: right;">48.31</td><td style="text-align: right;">2.75×</td><td style="text-align: right;">6.91</td><td style="text-align: right;">0.40</td></tr>
+<tr><td style="text-align: left;">mbpp</td><td style="text-align: right;">17.72</td><td style="text-align: right;">44.00</td><td style="text-align: right;">2.48×</td><td style="text-align: right;">5.93</td><td style="text-align: right;">0.33</td></tr>
+<tr><td style="text-align: left;">mt-bench</td><td style="text-align: right;">17.68</td><td style="text-align: right;">16.71</td><td style="text-align: right;">0.95×</td><td style="text-align: right;">2.28</td><td style="text-align: right;">0.09</td></tr>
+<tr><td style="text-align: left;"><strong>all 20</strong></td><td style="text-align: right;">17.62</td><td style="text-align: right;">40.85</td><td style="text-align: right;">2.32×</td><td style="text-align: right;">5.70</td><td style="text-align: right;">0.31</td></tr>
+<tr><td style="text-align: left; vertical-align: middle;" rowspan="6"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/dflash/qwen3_8b/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-8B">HF</a>)</span><br>draft: <a href="https://huggingface.co/z-lab/Qwen3-8B-DFlash-b16">Qwen3-8B-DFlash-b16</a>, block 8</td><td style="text-align: left;">gsm8k</td><td style="text-align: right;">11.44</td><td style="text-align: right;">33.79</td><td style="text-align: right;">2.95×</td><td style="text-align: right;">5.69</td><td style="text-align: right;">0.67</td><td style="text-align: center; vertical-align: middle;" rowspan="6"><span class="air-verify-pass" title="pass"></span></td></tr>
+<tr><td style="text-align: left;">math500</td><td style="text-align: right;">10.43</td><td style="text-align: right;">33.86</td><td style="text-align: right;">3.25×</td><td style="text-align: right;">5.89</td><td style="text-align: right;">0.70</td></tr>
+<tr><td style="text-align: left;">humaneval</td><td style="text-align: right;">9.64</td><td style="text-align: right;">29.61</td><td style="text-align: right;">3.07×</td><td style="text-align: right;">5.13</td><td style="text-align: right;">0.59</td></tr>
+<tr><td style="text-align: left;">mbpp</td><td style="text-align: right;">9.60</td><td style="text-align: right;">27.15</td><td style="text-align: right;">2.83×</td><td style="text-align: right;">4.52</td><td style="text-align: right;">0.51</td></tr>
+<tr><td style="text-align: left;">mt-bench</td><td style="text-align: right;">9.61</td><td style="text-align: right;">13.35</td><td style="text-align: right;">1.39×</td><td style="text-align: right;">2.26</td><td style="text-align: right;">0.18</td></tr>
+<tr><td style="text-align: left;"><strong>all 20</strong></td><td style="text-align: right;">10.13</td><td style="text-align: right;">26.02</td><td style="text-align: right;">2.57×</td><td style="text-align: right;">4.45</td><td style="text-align: right;">0.49</td></tr>
 </tbody>
 </table>
 
@@ -1961,21 +1897,21 @@ token stream, so there is no decode throughput and no context to sweep.
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smolvla/">smolvla_base</a> <span class="air-nowrap">(<a href="https://huggingface.co/lerobot/smolvla_base">HF</a>)</span></td>
 <td style="text-align: right;">241</td>
-<td style="text-align: right;">613.9</td>
+<td style="text-align: right;">618.2</td>
 <td style="text-align: left;">2026-10-23</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smolvla/">smolvla_base, all stages on NPU</a> <span class="air-nowrap">(<a href="https://huggingface.co/lerobot/smolvla_base">HF</a>)</span></td>
 <td style="text-align: right;">241</td>
-<td style="text-align: right;">368.5</td>
+<td style="text-align: right;">370.5</td>
 <td style="text-align: left;">2026-10-23</td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 </tbody>
 </table>
 <p>📈 <a href="perf-history/">Performance history over time</a> — per-nightly TTFT and decode throughput plotted per model.</p>
-<p><em>Last updated 2026-10-23 · mlir-air 453e0bd · mlir-aie 843e9c3 · llvm-aie 22.0.0.2026101901+4f5df13d</em></p>
+<p><em>Last updated 2026-10-23 · mlir-air 3a83303 · mlir-aie 843e9c3 · llvm-aie 22.0.0.2026101901+4f5df13d</em></p>
 
 
 
