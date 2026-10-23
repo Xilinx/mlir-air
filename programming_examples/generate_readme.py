@@ -545,7 +545,19 @@ def generate_dashboard_table(base_url=""):
     return rows
 
 
-_VERIFY_EMOJI = {"pass": "\U0001f7e2", "fail": "\U0001f534", "skip": "⚪"}
+# The cell colour comes from docs/assets/css/air.css; the title keeps the
+# result readable on hover and in the page source.
+_VERIFY_CELL = {
+    s: f'<span class="air-verify-{s}" title="{s}"></span>'
+    for s in ("pass", "fail", "skip")
+}
+_VERIFY_LEGEND = (
+    "Verify (`make verify`): "
+    '<span class="air-verify-key air-verify-pass">pass</span> '
+    '<span class="air-verify-key air-verify-fail">fail</span> '
+    '<span class="air-verify-key air-verify-skip">skipped</span>. '
+    "&nbsp; — not measured."
+)
 
 # Models that are NOT autoregressive language models and so cannot share the
 # LLM table. A vision-language-action policy emits one action chunk, not a token
@@ -606,20 +618,71 @@ LLM_HF_MODELS = {
     "qwen3_4b_q4nx": "FastFlowLM/Qwen3-4B-NPU2",
     "qwen3_8b_q4nx": "FastFlowLM/Qwen3-8B-NPU2",
     "smollm2_1_7b": "HuggingFaceTB/SmolLM2-1.7B",
+    "smolvla": "lerobot/smolvla_base",
+}
+
+# Pinned so each link shows the code that was reimplemented, not whatever
+# that file has become since.
+_FLM_SRC = (
+    "https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974"
+    "/src/common/AutoModel/modeling_{}.cpp"
+)
+
+# Per record: the upstream model's HF name, the weight format, and the
+# FastFlowLM modeling file the design reimplements (None if it is not a
+# FastFlowLM reimplementation). Records missing here render under their own key.
+LLM_DISPLAY = {
+    "gemma3_4b_q4nx": ("gemma-3-4b-it", "Q4NX", "gemma3"),
+    "gemma4_e2b_q4nx": ("gemma-4-E2B-it", "Q4NX", "gemma4e"),
+    "gemma4_e4b_q4nx": ("gemma-4-E4B-it", "Q4NX", "gemma4e"),
+    "lfm2_1_2b_q4nx": ("LFM2-1.2B", "Q4NX", "lfm2"),
+    "llama31_8b_q4nx": ("Llama-3.1-8B-Instruct", "Q4NX", "llama3"),
+    "llama32_1b": ("Llama-3.2-1B", "bf16", None),
+    "llama32_1b_int4": ("Llama-3.2-1B-Instruct", "int4 AWQ", None),
+    "llama32_1b_q4nx": ("Llama-3.2-1B-Instruct", "Q4NX", "llama3"),
+    "llama32_3b": ("Llama-3.2-3B", "bf16", None),
+    "llama32_3b_q4nx": ("Llama-3.2-3B-Instruct", "Q4NX", "llama3"),
+    "phi4_mini_q4nx": ("Phi-4-mini-instruct", "Q4NX", "phi4"),
+    "qwen25_0_5b": ("Qwen2.5-0.5B", "bf16", None),
+    "qwen25_1_5b": ("Qwen2.5-1.5B", "bf16", None),
+    "qwen25_3b": ("Qwen2.5-3B", "bf16", None),
+    "qwen25_3b_q4": ("Qwen2.5-3B-Instruct", "Q4_0", "qwen2"),
+    "qwen25_7b_q4nx": ("Qwen2.5-7B-Instruct", "Q4NX", "qwen2"),
+    "qwen3_0_6b": ("Qwen3-0.6B", "bf16", None),
+    "qwen3_1_7b": ("Qwen3-1.7B", "bf16", None),
+    "qwen3_4b": ("Qwen3-4B", "bf16", None),
+    "qwen3_4b_q4nx": ("Qwen3-4B", "Q4NX", "qwen3"),
+    "qwen3_8b_q4nx": ("Qwen3-8B", "Q4NX", "qwen3"),
+    "smollm2_1_7b": ("SmolLM2-1.7B", "bf16", None),
+    "qwen3_4b_dflash_b8": ("Qwen3-4B", "Q4NX", None),
+    "smolvla": ("smolvla_base", None, None),
+    "smolvla_all": ("smolvla_base, all stages on NPU", None, None),
 }
 
 
 def _llm_model_cell(model, base_url):
-    """Render the Model column: name linked to its repo implementation, with a
-    trailing (HF) link to the HuggingFace model page when known."""
+    """Render the Model column: the model name linked to its example, then
+    (FLM, HF) links to the FastFlowLM source and the HuggingFace page when
+    known. HTML so that neither part wraps inside itself."""
     if not model:
         return ""
     model_dir = _MODEL_DIRS.get(model, model)
-    name_link = f"[{model}]({base_url}llms/{model_dir}/)"
+    name, _, flm = LLM_DISPLAY.get(model, (model, None, None))
+    cell = f'<a class="air-nowrap" href="{base_url}llms/{model_dir}/">{name}</a>'
+    links = []
+    if flm:
+        links.append(f'<a href="{_FLM_SRC.format(flm)}">FLM</a>')
     hf_id = LLM_HF_MODELS.get(model_dir)
     if hf_id:
-        return f"{name_link} ([HF](https://huggingface.co/{hf_id}))"
-    return name_link
+        links.append(f'<a href="https://huggingface.co/{hf_id}">HF</a>')
+    if links:
+        cell += f' <span class="air-nowrap">({", ".join(links)})</span>'
+    return cell
+
+
+def _llm_weights(model):
+    # Blank rather than a dash: on these tables a dash means "not measured".
+    return LLM_DISPLAY.get(model, (None, None, None))[1] or ""
 
 
 def _ctx_label(n):
@@ -752,8 +815,10 @@ def render_llm_sweep(recs, base_url=""):
     if not ctxs:
         return ""
 
-    head = "| Model | " + " | ".join(_ctx_label(c) for c in ctxs) + " | Verify |"
-    sep = "|:------|" + "".join("------:|" for _ in ctxs) + ":------:|"
+    head = (
+        "| Model | Weights | " + " | ".join(_ctx_label(c) for c in ctxs) + " | Verify |"
+    )
+    sep = "|:------|:--------|" + "".join("------:|" for _ in ctxs) + ":------:|"
 
     rows, markers = [], set()
     for d in sorted(recs, key=lambda r: r.get("model", "")):
@@ -764,9 +829,10 @@ def render_llm_sweep(recs, base_url=""):
             if cell in ("—", "✗"):
                 markers.add(cell)
             cells.append(cell)
-        verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
+        verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
-            f'| {_llm_model_cell(d.get("model", ""), base_url)} | '
+            f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+            f'| {_llm_weights(d.get("model", ""))} | '
             + " | ".join(cells)
             + f" | {verify} |"
         )
@@ -792,10 +858,6 @@ def render_llm_sweep(recs, base_url=""):
 ### Decode throughput vs context (tok/s)
 
 Steady-state decode throughput at increasing KV-cache depth.
-
-The models below reimplement AMD NPU LLM designs originally developed by the
-[FastFlowLM](https://github.com/ROCm/FastFlowLM) team, using the higher-level
-abstractions of the MLIR-AIR dialect.
 
 {head}
 {sep}
@@ -877,8 +939,10 @@ def render_llm_prefill_sweep(recs, base_url=""):
     if not lens:
         return ""
 
-    head = "| Model | " + " | ".join(_ctx_label(l) for l in lens) + " | Verify |"
-    sep = "|:------|" + "".join("------:|" for _ in lens) + ":------:|"
+    head = (
+        "| Model | Weights | " + " | ".join(_ctx_label(l) for l in lens) + " | Verify |"
+    )
+    sep = "|:------|:--------|" + "".join("------:|" for _ in lens) + ":------:|"
 
     rows, markers = [], set()
     for d in sorted(recs, key=lambda r: r.get("model", "")):
@@ -889,9 +953,10 @@ def render_llm_prefill_sweep(recs, base_url=""):
             if cell in ("—", "✗"):
                 markers.add(cell)
             cells.append(cell)
-        verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
+        verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
-            f'| {_llm_model_cell(d.get("model", ""), base_url)} | '
+            f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+            f'| {_llm_weights(d.get("model", ""))} | '
             + " | ".join(cells)
             + f" | {verify} |"
         )
@@ -991,6 +1056,165 @@ def _prefill_swept_models(recs):
     return frozenset(d.get("model", "") for d in recs)
 
 
+def load_spec_decode_history(path):
+    """Newest study per model from spec_decode_history.ndjson, in full20.json
+    shape (overall + per_dataset), so a night whose study did not finish keeps
+    the previous one on the page."""
+    if not path or not Path(path).is_file():
+        return []
+    rows = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if r.get("model") and r.get("dataset"):
+            rows.setdefault(r["model"], []).append(r)
+    studies = []
+    for model in sorted(rows):
+        newest = max(r.get("timestamp_utc") or "" for r in rows[model])
+        run = [r for r in rows[model] if (r.get("timestamp_utc") or "") == newest]
+        first = run[0]
+        metrics = {
+            r["dataset"]: {
+                "b1_tokens_per_second": r.get("target_tokens_per_sec"),
+                "dflash_tokens_per_second": r.get("spec_tokens_per_sec"),
+                "speedup": r.get("speedup"),
+                "emitted_per_round": r.get("emitted_per_round"),
+                "acceptance_rate": r.get("acceptance_rate"),
+            }
+            for r in run
+        }
+        studies.append(
+            {
+                "model": model,
+                "timestamp_utc": newest,
+                "verify_status": first.get("verify_status", ""),
+                "samples_per_dataset": first.get("samples_per_dataset"),
+                "requests_per_engine": first.get("requests_per_engine"),
+                "max_new_tokens": first.get("max_new_tokens"),
+                "prompt_tokens": {
+                    "min": first.get("prompt_tokens_min"),
+                    "max": first.get("prompt_tokens_max"),
+                },
+                "overall": metrics.pop(SPEC_ALL, {}),
+                "per_dataset": metrics,
+            }
+        )
+    return studies
+
+
+def load_spec_decode(path):
+    """Read a nightly full20.json (list of paired studies), or []."""
+    if not path or not Path(path).is_file():
+        return []
+    try:
+        recs = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    return [r for r in recs if isinstance(r, dict)] if isinstance(recs, list) else []
+
+
+# Dataset key of the all-requests row in spec_decode_history.ndjson.
+SPEC_ALL = "all"
+
+# The draft model each speculative-decoding record pairs with its target.
+_SPEC_DRAFTS = {"qwen3_4b_dflash_b8": "z-lab/Qwen3-4B-DFlash-b16"}
+
+
+def _num(v, fmt):
+    return "—" if v is None else format(v, fmt)
+
+
+def render_spec_decode(studies, base_url=""):
+    """The speculative-decoding section, or "" with no study to show.
+
+    One row per dataset plus the total, so a speedup that varies by workload is
+    not hidden behind a single number. HTML rather than a markdown table: the
+    model and its verify result span all of a study's rows.
+    """
+    studies = [d for d in studies if d.get("per_dataset") or d.get("overall")]
+    if not studies:
+        return ""
+    td_l, td_r = '<td style="text-align: left;">', '<td style="text-align: right;">'
+
+    def cells(name, m):
+        return (
+            f"{td_l}{name}</td>"
+            f'{td_r}{_num(m.get("b1_tokens_per_second"), ".2f")}</td>'
+            f'{td_r}{_num(m.get("dflash_tokens_per_second"), ".2f")}</td>'
+            f'{td_r}{_num(m.get("speedup"), ".2f")}×</td>'
+            f'{td_r}{_num(m.get("emitted_per_round"), ".2f")}</td>'
+            f'{td_r}{_num(m.get("acceptance_rate"), ".2f")}</td>'
+        )
+
+    body = []
+    for d in studies:
+        per = d.get("per_dataset") or {}
+        names = list(per) + [f"<strong>all {d.get('requests_per_engine', '')}</strong>"]
+        metrics = list(per.values()) + [d.get("overall") or {}]
+        span = len(names)
+        model = _llm_model_cell(d.get("model", ""), base_url)
+        draft = _SPEC_DRAFTS.get(d.get("model"))
+        if draft:
+            model += (
+                f'<br>draft: <a href="https://huggingface.co/{draft}">'
+                f'{draft.split("/")[-1]}</a>'
+            )
+        verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
+        for i, (name, m) in enumerate(zip(names, metrics)):
+            lead = tail = ""
+            if i == 0:
+                lead = (
+                    f'<td style="text-align: left; vertical-align: middle;" '
+                    f'rowspan="{span}">{model}</td>'
+                )
+                tail = (
+                    f'<td style="text-align: center; vertical-align: middle;" '
+                    f'rowspan="{span}">{verify}</td>'
+                )
+            body.append(f"<tr>{lead}{cells(name, m)}{tail}</tr>")
+
+    d = studies[0]
+    pt = d.get("prompt_tokens") or {}
+    prompts = (
+        f" Prompts are {pt['min']}–{pt['max']} tokens."
+        if pt.get("min") is not None and pt.get("max") is not None
+        else ""
+    )
+    datasets = ", ".join(d.get("per_dataset") or {})
+    th = '<th style="text-align: {};">{}</th>'.format
+    head = "".join(
+        [th("left", "Model"), th("left", "Dataset")]
+        + [
+            th("right", h)
+            for h in (
+                "Target only (tok/s)",
+                "Speculative (tok/s)",
+                "Speedup",
+                "Tokens / pass",
+                "Acceptance",
+            )
+        ]
+        + [th("center", "Verify")]
+    )
+    return f"""
+### Speculative decoding
+
+A draft model proposes a block of tokens and the target model verifies the block in one pass. **Target only** is the same target model decoding one token per pass. Both decode the same {d.get("requests_per_engine")} prompts, {d.get("samples_per_dataset")} from each of {datasets}, greedy, up to {d.get("max_new_tokens")} new tokens, prefill excluded.{prompts} Throughput is each engine's total generated tokens divided by its total decode time over the requests in the row. The two engines use different matrix arithmetic (single-token GEMV vs batched verification), so their greedy outputs diverge and the generated token counts differ.
+
+<table>
+<thead><tr>{head}</tr></thead>
+<tbody>
+{chr(10).join(body)}
+</tbody>
+</table>
+
+"""
+
+
 def render_vla_benchmark(recs, base_url=""):
     """The VLA section, or "" when no VLA model has a row.
 
@@ -1010,7 +1234,7 @@ def render_vla_benchmark(recs, base_url=""):
         f'| {"—" if (m := d.get("metrics", {})).get("context_len") is None else m["context_len"]} '
         f'| {"—" if m.get("ttft_ms") is None else m["ttft_ms"]} '
         f'| {(d.get("timestamp_utc") or "")[:10] or "—"} '
-        f'| {_VERIFY_EMOJI.get(d.get("verify_status", ""), "")} |'
+        f'| {_VERIFY_CELL.get(d.get("verify_status", ""), "")} |'
         for d in sorted(rows, key=lambda r: r.get("model", ""))
     )
     return f"""\
@@ -1035,6 +1259,7 @@ def render_llm_benchmark(
     sweep_recs=(),
     prefill_sweep_recs=(),
     history_path=None,
+    spec_decode_recs=(),
 ):
     """Render the nightly LLM benchmark section.
 
@@ -1082,18 +1307,22 @@ def render_llm_benchmark(
     # failure the comment above warns about.
     prefill_swept = _prefill_swept_models(prefill_sweep_recs)
 
+    # A speculative-decoding record's profile row is one short prompt; its own
+    # section reports the paired study instead.
+    spec = {d.get("model") for d in spec_decode_recs if d.get("per_dataset")}
+
     rows = []
     for d in sorted(recs, key=lambda r: r.get("model", "")):
         # A VLA model is published in its own table below; two of these three
         # columns do not apply to it. See _VLA_MODELS.
         name = d.get("model")
-        if name in _VLA_MODELS:
+        if name in _VLA_MODELS or name in spec:
             continue
         in_decode, in_prefill = name in swept, name in prefill_swept
         if in_decode and in_prefill:
             continue
         m = d.get("metrics", {})
-        verify = _VERIFY_EMOJI.get(d.get("verify_status", ""), "")
+        verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         # Blank whichever metric a curve below already carries, so the reader is
         # never invited to compare a single near-zero-context point against that
         # model's own curve.
@@ -1131,6 +1360,7 @@ def render_llm_benchmark(
 
     _sweep_table = render_llm_sweep(sweep_recs, base_url=base_url)
     _prefill_table = render_llm_prefill_sweep(prefill_sweep_recs, base_url=base_url)
+    _spec_table = render_spec_decode(spec_decode_recs, base_url=base_url)
     _vla_table = render_vla_benchmark(recs, base_url=base_url)
 
     # The single-point table is for models that have no curve yet. Once every
@@ -1157,11 +1387,11 @@ model's number for this metric is in a curve instead.
 
 End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Point, NPU2) benchmark runner — 2×32 GB DDR5-5600 SODIMM — refreshed nightly. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
 
-Verify: \U0001f7e2 pass &nbsp; \U0001f534 fail &nbsp; ⚪ skipped. &nbsp; — not measured.
+{_VERIFY_LEGEND}
 
 {_scalar_table}{_sweep_table}
 {_prefill_table}
-{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
+{_spec_table}{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
 _{provenance}_
 
@@ -1227,6 +1457,8 @@ def generate_readme(
     llm_sweep_history_path=None,
     llm_prefill_sweep_path=None,
     llm_prefill_sweep_history_path=None,
+    llm_spec_decode_path=None,
+    llm_spec_decode_history_path=None,
 ):
     """Generate dashboard content.
 
@@ -1241,6 +1473,10 @@ def generate_readme(
     if section == "operators":
         return _operator_dashboard(base_url=base_url)
 
+    spec_decode_recs = load_spec_decode_history(
+        llm_spec_decode_history_path
+    ) or load_spec_decode(llm_spec_decode_path)
+
     if section == "llm":
         llm_section = render_llm_benchmark(
             llm_perf_path,
@@ -1253,13 +1489,14 @@ def generate_readme(
             )
             or load_llm_sweeps(llm_prefill_sweep_path),
             history_path=llm_history_path,
+            spec_decode_recs=spec_decode_recs,
         )
         return f"""\
 <!-- This file is auto-generated by generate_readme.py. Do not edit manually. -->
 
-# LLMs on NPU
+# LLMs and VLAs on NPU
 
-End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped to the AMD NPU2 in bf16 via MLIR-AIR. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
+End-to-end inference of decoder-only LLMs and vision-language-action (VLA) policies on the AMD NPU2 via MLIR-AIR, with bf16 and 4-bit (Q4NX, int4, Q4_0) weights. Models with an FLM link reimplement AMD NPU LLM designs originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team, using the higher-level abstractions of the MLIR-AIR dialect; the link points to the original FastFlowLM code. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
 {llm_section}"""
 
     # section == "full" (legacy single-page dashboard)
@@ -1273,6 +1510,7 @@ End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped t
         )
         or load_llm_sweeps(llm_prefill_sweep_path),
         history_path=llm_history_path,
+        spec_decode_recs=spec_decode_recs,
     )
     return (
         _operator_dashboard(base_url=base_url) + llm_section + _getting_started_footer()
@@ -1333,6 +1571,18 @@ if __name__ == "__main__":
         "--llm-prefill-sweep, same reason as --llm-history.",
     )
     parser.add_argument(
+        "--llm-spec-decode",
+        default=None,
+        help="Path to the nightly full20.json (paired target-only vs "
+        "speculative decoding study). Omitted when absent.",
+    )
+    parser.add_argument(
+        "--llm-spec-decode-history",
+        default=None,
+        help="Path to spec_decode_history.ndjson. Preferred over "
+        "--llm-spec-decode, same reason as --llm-history.",
+    )
+    parser.add_argument(
         "--section",
         choices=["full", "operators", "llm"],
         default="full",
@@ -1350,6 +1600,8 @@ if __name__ == "__main__":
         llm_sweep_history_path=args.llm_sweep_history,
         llm_prefill_sweep_path=args.llm_prefill_sweep,
         llm_prefill_sweep_history_path=args.llm_prefill_sweep_history,
+        llm_spec_decode_path=args.llm_spec_decode,
+        llm_spec_decode_history_path=args.llm_spec_decode_history,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # Explicit encoding: the tables carry the verify/status emoji, and on a
