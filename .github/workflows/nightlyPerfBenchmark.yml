@@ -52,6 +52,12 @@ on:
           a row to supersede it.
         default: verify,profile,sweep,prefill-sweep,full20
         type: string
+      compile_cache:
+        description: >-
+          Reuse aircc builds from the runner's compile cache. Turn off to build
+          everything from scratch.
+        default: true
+        type: boolean
 
 defaults:
   run:
@@ -360,6 +366,17 @@ jobs:
           # unrelated load competing for DRAM bandwidth.
           echo "platform profile: $(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo n/a) |$(uptime | sed 's/.*load average/ load average/')"
 
+          # Reuse aircc builds across nights (python/air/backend/compile_cache.py):
+          # a build is reused only when its module, options, linked objects and
+          # toolchain all match. Sundays build from scratch, so a reuse that an
+          # incomplete key let through lasts at most a week.
+          if [ "${{ github.event.inputs.compile_cache || 'true' }}" = "true" ] && [ "$(date -u +%u)" != 7 ]; then
+            export AIR_COMPILE_CACHE="$HOME/.cache/mlir-air/compile-cache"
+            echo "compile cache: $AIR_COMPILE_CACHE"
+          else
+            echo "compile cache: off, building from scratch"
+          fi
+
           rc=0
           pushd build_assert
           # A scheduled run has no `inputs`, and workflow_dispatch defaults are
@@ -435,6 +452,9 @@ jobs:
             ninja check-programming-examples-llms-full80 || rc=1
           fi
           popd
+          if [ -n "${AIR_COMPILE_CACHE:-}" ]; then
+            python3 python/air/backend/compile_cache.py prune --max-gb 30 || true
+          fi
           exit $rc
 
       - name: Combine perf JSON
