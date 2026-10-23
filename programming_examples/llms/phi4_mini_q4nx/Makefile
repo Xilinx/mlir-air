@@ -14,7 +14,8 @@
 # dispatch per token.
 #
 # Quick start:
-#   make compile        — Compile the prefill ELFs (~4 min; no weights needed)
+#   make compile        — Build the fused prefill (one build for any prompt up to its max_len)
+#   make compile-prefill — Build the per-op prefill ELFs instead (no weights needed)
 #   make compile-decode — Build the fused decode templates (~15 min; no weights)
 #   make run            — Run inference: 32 layers + LM head on-device, per token
 #   make verify         — Top-k token-set inclusion gate: NPU q4nx vs HF bf16
@@ -97,7 +98,7 @@ CTX ?= 2048
 # parses fine and is ~4x too slow. bench/sweep_prefill.py guards against it too.
 export Q4NX_SEQ_LEN := $(CTX)
 
-.PHONY: help compile compile-decode _compile_decode_build run profile chat verify \
+.PHONY: help compile compile-prefill compile-decode _compile_decode_build run profile chat verify \
         verify-full ask gen diagnosis verify-paris profile-prefill clean
 
 help:
@@ -106,7 +107,8 @@ help:
 	@echo "============================================================"
 	@echo ""
 	@echo "Quick start:"
-	@echo "  make compile          Compile prefill ELFs (~4 min, one-time; no weights)"
+	@echo "  make compile          Build the fused prefill (one build, any prompt up to its max_len)"
+	@echo "  make compile-prefill  Build the per-op prefill ELFs instead (no weights)"
 	@echo "  make compile-decode   Decode templates, built into this dir (~15 min, no weights)"
 	@echo "  make compile-decode-elf  Full-ELF decode only"
 	@echo "  make  Staircase: one template pair per ATTN_MAXL ($(WINDOWS)); ~1.11x decode"
@@ -129,9 +131,13 @@ help:
 	@echo "  MODEL_SOURCE=...      Q4NX weight source (default: $(MODEL_SOURCE))"
 	@echo "  LBUILD=2048           ATTN_MAXL the decode templates are built for"
 
-## Compile the prefill ELFs (~4 min, cached; no weights needed). The fused decode
+## Build the fused prefill (../shared/fused_prefill). run, verify and profile
+## prefill on it when it is built, and on the per-op prefill otherwise.
+compile: compile-fused-prefill
+
+## Compile the per-op prefill ELFs (cached; no weights needed). The fused decode
 ## templates are a separate ~15 min build -- see `make compile-decode`.
-compile:
+compile-prefill:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(DRIVER) --compile-only
 

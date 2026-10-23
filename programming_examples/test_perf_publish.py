@@ -31,8 +31,10 @@ APPEND = HERE / "llms" / "bench" / "append_history.py"
 
 from generate_readme import (  # noqa: E402
     load_llm_history,
+    load_llm_prefill_sweep_history,
     load_llm_sweep_history,
     render_llm_benchmark,
+    render_llm_prefill_sweep,
     render_llm_sweep,
     render_vla_benchmark,
 )
@@ -177,6 +179,114 @@ def main():
             byname["toy_1b_q4nx"].get("verify_status") == "pass"
             and byname["toy_3b_q4nx"].get("verify_status") == "skip",
             "sweep load carries verify_status onto each curve",
+        )
+
+        print("prefill table keeps each model's latest lengths")
+
+        # Two models sweeping different lengths: a length one model's latest
+        # run did not sweep leaves its row while the other model still fills
+        # the column.
+        def prefill(model, ts, lens):
+            return {
+                "model": model,
+                "timestamp_utc": ts,
+                "runner": RUNNER,
+                "verify_status": "pass",
+                "toolchain": TOOLCHAIN,
+                "points": [
+                    {"prefill_len": n, "ttft_ms": float(n), "status": "ok"}
+                    for n in lens
+                ],
+            }
+
+        pf_hist = tmp / "prefill_sweep_history.ndjson"
+        per_op = [512, 1024, 2048, 4096]
+        append(
+            "prefill-sweep",
+            [
+                prefill("fused_m", "2026-10-20T07:00:00Z", per_op),
+                prefill("perop_m", "2026-10-20T07:00:00Z", per_op),
+            ],
+            pf_hist,
+            1,
+        )
+        append(
+            "prefill-sweep",
+            [
+                prefill("fused_m", "2026-10-21T07:00:00Z", [512, 2048, 8192, 32768]),
+                prefill("perop_m", "2026-10-21T07:00:00Z", per_op),
+            ],
+            pf_hist,
+            2,
+        )
+        pc = {c["model"]: c for c in load_llm_prefill_sweep_history(pf_hist)}
+        plens = lambda m: [p["prefill_len"] for p in pc[m]["points"]]  # noqa: E731
+        check(
+            plens("fused_m") == [512, 2048, 8192, 32768] and plens("perop_m") == per_op,
+            "each model keeps the lengths of its own latest run",
+        )
+        ptable = render_llm_prefill_sweep(list(pc.values()))
+        row = next(l for l in ptable.splitlines() if l.startswith("| [fused_m]"))
+        check(
+            row.count("—") == 2,
+            "the fused model shows a dash under the lengths it no longer sweeps",
+        )
+
+        print("sweep table follows the contexts the latest run swept")
+
+        # A context a model's latest run did not sweep leaves its row instead
+        # of keeping the last number recorded there.
+        def curve(model, ts, points):
+            return {
+                "model": model,
+                "timestamp_utc": ts,
+                "runner": RUNNER,
+                "verify_status": "pass",
+                "toolchain": TOOLCHAIN,
+                "points": [
+                    {
+                        "context_len": c,
+                        "decode_tokens_per_sec": v,
+                        "status": "ok" if v is not None else "xrt_incomplete",
+                    }
+                    for c, v in points
+                ],
+            }
+
+        moved = tmp / "moved_sweep_history.ndjson"
+        old_ts, new_ts = "2026-10-20T07:00:00Z", "2026-10-21T07:00:00Z"
+        append(
+            "sweep",
+            [
+                curve("a", old_ts, [(1024, 30.0), (2048, 28.0), (4096, 25.0)]),
+                curve("b", old_ts, [(1024, 9.0)]),
+            ],
+            moved,
+            1,
+        )
+        append(
+            "sweep",
+            [
+                curve("a", new_ts, [(2048, 27.0), (8192, 20.0)]),
+                curve("b", new_ts, [(2048, 8.0), (8192, None)]),
+            ],
+            moved,
+            2,
+        )
+        mc = {c["model"]: c for c in load_llm_sweep_history(moved)}
+        ctxs = lambda m: [p["context_len"] for p in mc[m]["points"]]
+        check(
+            ctxs("a") == [2048, 8192] and ctxs("b") == [2048, 8192],
+            "each model keeps the contexts of its own latest run",
+        )
+        check(
+            mc["a"]["points"][0]["decode_tokens_per_sec"] == 27.0,
+            "a kept context shows the latest run's number",
+        )
+        head = render_llm_sweep(list(mc.values())).split("| Model |")[1].split("\n")[0]
+        check(
+            "2k" in head and "8k" in head and "1k" not in head and "4k" not in head,
+            "the table's columns are the latest run's contexts",
         )
 
         print("VLA models are not LLM rows")

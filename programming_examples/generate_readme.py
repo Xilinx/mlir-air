@@ -632,11 +632,15 @@ def load_llm_sweep_history(path):
 
     Same reason as load_llm_history: a snapshot makes publishing destructive, so
     a run that swept nothing would empty the curve table.
+
+    A model keeps only the contexts its latest run swept. A context it no
+    longer sweeps would otherwise keep its last number on the table forever.
     """
     if not path or not Path(path).is_file():
         return []
     newest = {}
     verify = {}
+    run_ctxs, latest = {}, {}
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -648,6 +652,11 @@ def load_llm_sweep_history(path):
         if not model or ctx is None:
             continue
         ts = r.get("timestamp_utc") or r.get("date") or ""
+        run = r.get("run_id")
+        if run is not None:
+            run_ctxs.setdefault((model, run), set()).add(ctx)
+            if model not in latest or ts >= latest[model][0]:
+                latest[model] = (ts, run)
         cur = newest.get((model, ctx))
         # A measured point outranks a failed one at the same context, so a bad
         # run leaves the last real number rather than punching a hole.
@@ -666,6 +675,9 @@ def load_llm_sweep_history(path):
             verify[model] = (ts, r.get("verify_status", ""))
     curves = {}
     for (model, ctx), (_, _, r) in sorted(newest.items()):
+        live = run_ctxs.get((model, latest[model][1])) if model in latest else None
+        if live is not None and ctx not in live:
+            continue
         curves.setdefault(
             model,
             {"model": model, "points": [], "verify_status": verify[model][1]},
@@ -806,14 +818,19 @@ abstractions of the MLIR-AIR dialect.
 
 
 def load_llm_prefill_sweep_history(path):
-    """Newest point per (model, padded prefill length) from the TTFT series.
+    """Newest point per (model, prefill length) from the TTFT series.
 
     Same merge semantics as load_llm_sweep_history -- a run that swept nothing
     must not empty the table -- against the prefill_len axis instead.
+
+    A model keeps only the lengths its latest run swept. Models do not share one
+    list of lengths here, and a length a model no longer sweeps would otherwise
+    keep its last number on the table forever.
     """
     if not path or not Path(path).is_file():
         return []
     newest, verify = {}, {}
+    run_lens, latest = {}, {}
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -825,6 +842,11 @@ def load_llm_prefill_sweep_history(path):
         if not model or plen is None:
             continue
         ts = r.get("timestamp_utc") or r.get("date") or ""
+        run = r.get("run_id")
+        if run is not None:
+            run_lens.setdefault((model, run), set()).add(plen)
+            if model not in latest or ts >= latest[model][0]:
+                latest[model] = (ts, run)
         cur = newest.get((model, plen))
         better = r.get("ttft_ms") is not None
         if cur is None or (better, ts) >= (cur[0], cur[1]):
@@ -833,6 +855,9 @@ def load_llm_prefill_sweep_history(path):
             verify[model] = (ts, r.get("verify_status", ""))
     curves = {}
     for (model, plen), (_, _, r) in sorted(newest.items()):
+        live = run_lens.get((model, latest[model][1])) if model in latest else None
+        if live is not None and plen not in live:
+            continue
         curves.setdefault(
             model,
             {"model": model, "points": [], "verify_status": verify[model][1]},
@@ -855,13 +880,14 @@ def _prefill_sweep_cell(pt):
 
 
 def render_llm_prefill_sweep(recs, base_url=""):
-    """Render prefill TTFT against padded prefill length, one row per model.
+    """Render prefill TTFT against prefill length, one row per model.
 
-    The x-axis is the length the prefill ELFs were BUILT for, which is what TTFT
-    scales with. It is deliberately not "prompt length": these prefills pad the
-    prompt to the built length and read the last real token's row, so at a fixed
-    engine a 128-token prompt and a 2048-token one cost the same (measured on
-    llama32_1b_q4nx: 959 ms vs 983 ms). Each column here is a separate build.
+    The x-axis is the number of token rows the prefill computes, which is what
+    TTFT scales with. A fused prefill is timed on a prompt of that many tokens,
+    one build serving every length. A per-op prefill pads the prompt to the
+    length its ELFs were built for and reads the last real token's row, so for
+    it the column is the built length and each column a separate build (at a
+    fixed engine a 128-token prompt and a 2048-token one cost the same).
     """
     if not recs:
         return ""
@@ -911,11 +937,13 @@ def render_llm_prefill_sweep(recs, base_url=""):
 
     return f"""
 
-### Prefill latency vs padded prefill length (TTFT, ms)
+### Prefill latency vs prefill length (TTFT, ms)
 
-Time to first token at increasing padded prefill length. Each column is a
-separate build of the prefill ELFs: the prompt is padded to the built length,
-so TTFT tracks that length rather than the number of real prompt tokens.
+Time to first token at increasing prefill length. A model with a fused prefill
+is timed on a prompt of exactly that many tokens, one build serving every
+length. A per-op prefill pads the prompt to the length its ELFs were built for,
+so each of its columns is a separate build and TTFT tracks that length rather
+than the number of real prompt tokens.
 
 {head}
 {sep}

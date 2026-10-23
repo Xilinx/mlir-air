@@ -116,8 +116,10 @@ Optional overrides (skip the derivation if you pre-supply them): `Q4NX_DECODE_WE
 ## Quick Start
 
 ```bash
-# Build 1 — Prefill ELFs (per seq_len; no weights/NPU needed) — ~3 min
-make compile CTX=2048
+# Build 1 — The fused prefill: one build for any prompt up to its max_len
+#   (no weights/NPU needed). `make compile-prefill CTX=2048` builds the per-op
+#   prefill ELFs for one seq_len instead.
+make compile
 
 # Build 2 — Decode kernels + two templates (decode_L2048 + decode_L2047 slope ref).
 #   ~15 min; weight-free build, but needs a pre-change llvm-link (see Reproducibility).

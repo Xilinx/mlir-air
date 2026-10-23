@@ -111,9 +111,9 @@ help:
 	@echo " QWEN3-4B Q4NX decode on NPU2 (MLIR-AIR) -- the DFlash target model"
 	@echo "============================================================"
 	@echo ""
-	@echo "  make compile LBUILD=16   Prefill ELFs + decode templates, small (Paris gate)"
+	@echo "  make compile LBUILD=16   Fused prefill + decode templates, small (Paris gate)"
 	@echo "  make compile             Production build (ATTN_MAXL=2048, ~15 min)"
-	@echo "  make compile-prefill     Prefill ELFs only (weight-free)"
+	@echo "  make compile-prefill     Per-op prefill ELFs only (weight-free)"
 	@echo "  make compile-decode      Decode templates only (weight-free)"
 	@echo "  make run                 Decode 'The capital of France is' -> Paris gate"
 	@echo "  make ask PROMPT=\"...\"    Single Q&A turn"
@@ -193,9 +193,9 @@ prefill:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 $(PREFILL_DRIVER)
 
-## Build everything the end-to-end chatbot needs: the prefill ELFs and the
-## decode templates.
-compile: compile-prefill compile-decode
+## Build everything the end-to-end chatbot needs: the fused prefill and the
+## decode templates. The per-op prefill ELFs are `compile-prefill`.
+compile: compile-fused-prefill compile-decode
 
 ## Run inference (NPU prefill + fused NPU decode). With no PROMPT this is the
 ## canonical Paris gate: PASS iff the first token is 12095 (" Paris").
