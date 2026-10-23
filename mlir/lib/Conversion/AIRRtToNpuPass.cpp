@@ -4698,19 +4698,51 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // drain site below for the measured case.
     llvm::DenseMap<std::pair<Block *, int64_t>, AIEX::DMAStartTaskOp>
         segLastStart;
+    using SegmentKey = std::pair<Block *, int64_t>;
+    llvm::DenseMap<SegmentKey, AIEX::DMAStartTaskOp> allSegLastStart;
+    llvm::DenseMap<SegmentKey, llvm::DenseSet<StringRef>> coalescedChannels;
+    llvm::DenseMap<SegmentKey, llvm::DenseSet<StringRef>> pacedChannels;
+    llvm::DenseSet<SegmentKey> multipleCoalescedPhases;
     for (auto &kv : groups)
       for (auto ct : kv.second) {
-        if (ct->hasAttr(air::attrs::CoalescedShimFeed))
-          continue;
         auto st = startOf.lookup(ct.getOperation());
         if (!st)
           continue;
         auto key = std::make_pair(st->getBlock(), waveOf(ct));
+        auto all = allSegLastStart.find(key);
+        if (all == allSegLastStart.end() ||
+            all->second->isBeforeInBlock(st.getOperation()))
+          allSegLastStart[key] = st;
+        if (ct->hasAttr(air::attrs::CoalescedShimFeed)) {
+          if (!coalescedChannels[key].insert(kv.first).second)
+            multipleCoalescedPhases.insert(key);
+          continue;
+        }
+        pacedChannels[key].insert(kv.first);
         auto it = segLastStart.find(key);
         if (it == segLastStart.end() ||
             it->second->isBeforeInBlock(st.getOperation()))
           segLastStart[key] = st;
       }
+    // A segment with a single coalesced phase may also contain ordinary
+    // paced inputs consumed alongside it. Their tail drains must use the same
+    // last-start anchor, regardless of which kind of input was emitted first.
+    // A repeated coalesced channel marks multiple phases; retain those phase
+    // barriers rather than extending a drain across a later phase.
+    auto singlePhaseAnchor = [&](SegmentKey key) -> AIEX::DMAStartTaskOp {
+      if (!coalescedChannels.count(key) ||
+          multipleCoalescedPhases.contains(key))
+        return nullptr;
+      // A coalesced run followed by fragments on the same channel needs its
+      // existing run boundary. Only join distinct sibling channels here.
+      for (StringRef channel : coalescedChannels[key])
+        if (pacedChannels[key].contains(channel))
+          return nullptr;
+      return allSegLastStart.lookup(key);
+    };
+    for (auto &kv : segLastStart)
+      if (auto anchor = singlePhaseAnchor(kv.first))
+        kv.second = anchor;
     // `fenceEnd` forces the segment's in-flight tail to be fully drained after
     // its last start (a per-iteration fence) even when the segment fits in
     // flight; used for the per-iteration segments of a fused multi-iteration
@@ -4833,6 +4865,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         }
         if (!cur.empty())
           phaseGroups.push_back(cur);
+        llvm::DenseSet<SegmentKey> extendedPacedSegments;
         for (auto &grp : phaseGroups) {
           // Insert the phase's awaits after its last start (program order), so
           // the whole phase drains before the next phase's first start.
@@ -4846,6 +4879,28 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           }
           if (!lastStart)
             continue;
+          // An ordinary sibling may be the activation input of a later
+          // coalesced phase. Drain its tail after the first phase whose last
+          // start follows it, not at that input's own start. Keep the other
+          // coalesced phase barriers in place and exclude channels whose
+          // ordinary tasks are fragments of their own coalesced runs.
+          auto key = std::make_pair(lastStart->getBlock(), waveOf(grp.front()));
+          auto paced = segLastStart.find(key);
+          bool disjoint =
+              llvm::none_of(coalescedChannels[key], [&](StringRef c) {
+                return pacedChannels[key].contains(c);
+              });
+          if (paced != segLastStart.end() && disjoint &&
+              !extendedPacedSegments.contains(key) &&
+              paced->second->isBeforeInBlock(lastStart.getOperation())) {
+            paced->second = lastStart;
+            extendedPacedSegments.insert(key);
+          }
+          // Include ordinary paced siblings in a single-phase segment too.
+          if (auto anchor = singlePhaseAnchor(
+                  std::make_pair(lastStart->getBlock(), waveOf(grp.front()))))
+            if (lastStart->isBeforeInBlock(anchor.getOperation()))
+              lastStart = anchor;
           OpBuilder b(lastStart);
           b.setInsertionPointAfter(lastStart);
           for (auto ct : grp)
