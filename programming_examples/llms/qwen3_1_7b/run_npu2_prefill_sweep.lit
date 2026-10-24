@@ -15,15 +15,6 @@
 //
 // Latency only, never a correctness gate (run_npu2_verify.lit is that).
 //
-// 512 and 1024 are swept but expected to fail, with the status naming why:
-// stitcher_mixed_tile_m. Every shape this model needs is in the registry at
-// those lengths and every row is measured -- but the registry's best method
-// FLIPS with length: the square Q/O proj is fused-cast (tile_m=64) at M=2048
-// and drain (tile_m=32) at 512/1024. This model's prefill stitcher fuses
-// several GEMMs into one ELF and assumes they share a tile_m, which held while
-// M=2048 was the only reachable length. Closing it is a stitcher change, not a
-// registry one.
-//
 // Measured on a Ryzen AI 9 HX 370:
 //   2048 -> 2289 ms
 //   4096 -> 5063 ms
@@ -32,12 +23,18 @@
 //
 // RUN: mkdir -p test_peano_prefill_sweep
 // RUN: cd test_peano_prefill_sweep
-// RUN: %PYTHON %S/../bench/sweep_prefill.py --model-name qwen3_1_7b --makefile %S/Makefile --lengths 512,1024,2048,4096 --expect-fail 512,1024 --seq-env LLM_SEQ_LEN --bench-env LLM_BENCH_L --peano-dir %PEANO_INSTALL_DIR --out qwen3_1_7b.prefill_sweep.json
+// RUN: %PYTHON %S/../bench/sweep_prefill.py --model-name qwen3_1_7b --makefile %S/Makefile --lengths 512,1024,2048,4096 --seq-env LLM_SEQ_LEN --bench-env LLM_BENCH_L --peano-dir %PEANO_INSTALL_DIR --out qwen3_1_7b.prefill_sweep.json
 // RUN: FileCheck %s < qwen3_1_7b.prefill_sweep.json
 // CHECK: "model": "qwen3_1_7b"
 // CHECK: "axis": "prefill_len"
-// A parsed number at the reference length, not just a well-formed file: if the
+// A parsed number at each length, not just a well-formed file: if the
 // driver's TTFT line drifts out of sweep_prefill.py's regex every point goes
 // null and the published curve silently empties while the test stays green.
+// 512 and 1024 also cover the O GEMM taking a different method from the FFN
+// GEMMs at short lengths.
+// CHECK: "prefill_len": 512
+// CHECK-NEXT: "ttft_ms": {{[0-9]}}
+// CHECK: "prefill_len": 1024
+// CHECK-NEXT: "ttft_ms": {{[0-9]}}
 // CHECK: "prefill_len": 2048
 // CHECK-NEXT: "ttft_ms": {{[0-9]}}
