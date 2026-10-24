@@ -1246,7 +1246,6 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
   if (!f)
     return failure();
 
-  llvm::SetVector<Operation *> erased;
   SmallVector<scf::ParallelOp> scf_pars;
   f.walk([&](scf::ParallelOp scf_par) { scf_pars.push_back(scf_par); });
   for (auto scf_par : scf_pars) {
@@ -1301,16 +1300,33 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
         builder.clone(o, remap);
       }
     }
-    erased.insert(scf_par);
-  }
-  for (auto a : erased) {
-    if (a->getNumResults())
-      for (auto token : a->getResults())
-        for (auto user : token.getUsers())
-          for (unsigned i = 0; i < user->getNumOperands(); i++)
-            if (user->getOperand(i) == token)
-              user->eraseOperand(i);
-    a->erase();
+    // Erase each scf.parallel right after converting it: an enclosing one,
+    // converted later, clones its body and would clone this one too. Its
+    // token is dropped from the waits that take it; a terminator must still
+    // pass a value, so it gets an event that is already complete.
+    for (auto token : scf_par->getResults()) {
+      if (!isa<airrt::EventType>(token.getType()))
+        return scf_par->emitOpError("result is not an airrt event");
+      // A user may take the token more than once; visit each user once.
+      llvm::SetVector<Operation *> users(token.getUsers().begin(),
+                                         token.getUsers().end());
+      for (Operation *user : users)
+        for (unsigned i = user->getNumOperands(); i-- > 0;) {
+          if (user->getOperand(i) != token)
+            continue;
+          if (!user->hasTrait<OpTrait::IsTerminator>()) {
+            user->eraseOperand(i);
+            continue;
+          }
+          OpBuilder b(user);
+          user->setOperand(i, airrt::WaitAllOp::create(
+                                  b, user->getLoc(),
+                                  airrt::EventType::get(user->getContext()),
+                                  ValueRange{})
+                                  .getResult(0));
+        }
+    }
+    scf_par->erase();
   }
   return success();
 }
