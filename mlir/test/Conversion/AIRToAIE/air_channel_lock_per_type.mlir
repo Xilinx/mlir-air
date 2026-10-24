@@ -193,3 +193,94 @@ func.func @two_a_then_b() {
   }
   return
 }
+
+// -----
+
+// As above, but the core takes the two A transfers into 16x64 views of 32x64
+// buffers. The views' type is not the buffers'; the buffers still rotate and
+// share a pair with two credits.
+
+// CHECK: aie.device
+// CHECK-DAG: aie.lock(%tile_2_4, 3) {init = 1 : i32}
+// CHECK-DAG: aie.lock(%tile_2_4, 1) {init = 2 : i32}
+
+air.channel @ab [1, 1]
+func.func private @use_a(memref<16x64xbf16, 2>)
+func.func private @use_a_view(memref<16x64xbf16, strided<[64, 1]>, 2>)
+func.func private @use_b(memref<16x32xbf16, 2>)
+func.func private @other()
+func.func @two_a_views_then_b() {
+  %c1 = arith.constant 1 : index
+  %0 = air.launch async (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) {
+    %1 = air.segment async {
+      %c1_0 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %2 = air.herd @herd_0 async tile (%arg8, %arg9) in (%arg10=%c1_0, %arg11=%c2) attributes {link_with = "w.o"} {
+        %c0_inner = arith.constant 0 : index
+        %cmp = arith.cmpi eq, %arg9, %c0_inner : index
+        %3 = scf.if %cmp -> (!air.async.token) {
+          %ta, %a = air.execute -> (memref<16x64xbf16, 2>) {
+            %alloc = memref.alloc() : memref<16x64xbf16, 2>
+            air.execute_terminator %alloc : memref<16x64xbf16, 2>
+          }
+          %tb, %b = air.execute -> (memref<16x32xbf16, 2>) {
+            %alloc = memref.alloc() : memref<16x32xbf16, 2>
+            air.execute_terminator %alloc : memref<16x32xbf16, 2>
+          }
+          %ta1, %a1 = air.execute -> (memref<16x64xbf16, 2>) {
+            %alloc = memref.alloc() : memref<16x64xbf16, 2>
+            air.execute_terminator %alloc : memref<16x64xbf16, 2>
+          }
+          %4 = air.channel.put async [%ta, %tb]  @ab[] (%a[] [] []) : (memref<16x64xbf16, 2>)
+          %41 = air.channel.put async [%4, %ta1]  @ab[] (%a1[] [] []) : (memref<16x64xbf16, 2>)
+          %5 = air.channel.put async [%41]  @ab[] (%b[] [] []) : (memref<16x32xbf16, 2>)
+          %da = air.execute [%5] {
+            memref.dealloc %a : memref<16x64xbf16, 2>
+          }
+          %db = air.execute [%da] {
+            memref.dealloc %b : memref<16x32xbf16, 2>
+          }
+          scf.yield %db : !air.async.token
+        } else {
+          %ta, %a = air.execute -> (memref<32x64xbf16, 2>) {
+            %alloc = memref.alloc() : memref<32x64xbf16, 2>
+            air.execute_terminator %alloc : memref<32x64xbf16, 2>
+          }
+          %a_v = memref.subview %a[0, 0] [16, 64] [1, 1] : memref<32x64xbf16, 2> to memref<16x64xbf16, strided<[64, 1]>, 2>
+          %tb, %b = air.execute -> (memref<16x32xbf16, 2>) {
+            %alloc = memref.alloc() : memref<16x32xbf16, 2>
+            air.execute_terminator %alloc : memref<16x32xbf16, 2>
+          }
+          %4 = air.channel.get async [%ta, %tb]  @ab[] (%a_v[] [] []) : (memref<16x64xbf16, strided<[64, 1]>, 2>)
+          %ua = air.execute [%4] {
+            func.call @use_a_view(%a_v) : (memref<16x64xbf16, strided<[64, 1]>, 2>) -> ()
+          }
+          %ta1, %a1 = air.execute -> (memref<32x64xbf16, 2>) {
+            %alloc = memref.alloc() : memref<32x64xbf16, 2>
+            air.execute_terminator %alloc : memref<32x64xbf16, 2>
+          }
+          %a1_v = memref.subview %a1[0, 0] [16, 64] [1, 1] : memref<32x64xbf16, 2> to memref<16x64xbf16, strided<[64, 1]>, 2>
+          %41 = air.channel.get async [%ua, %ta1]  @ab[] (%a1_v[] [] []) : (memref<16x64xbf16, strided<[64, 1]>, 2>)
+          %ua1 = air.execute [%41] {
+            func.call @use_a_view(%a1_v) : (memref<16x64xbf16, strided<[64, 1]>, 2>) -> ()
+          }
+          %5 = air.channel.get async [%ua1]  @ab[] (%b[] [] []) : (memref<16x32xbf16, 2>)
+          %ub = air.execute [%5] {
+            func.call @use_b(%b) : (memref<16x32xbf16, 2>) -> ()
+          }
+          %o = air.execute [%ub] {
+            func.call @other() : () -> ()
+          }
+          %da = air.execute [%o] {
+            memref.dealloc %a : memref<32x64xbf16, 2>
+          }
+          %db = air.execute [%da] {
+            memref.dealloc %b : memref<16x32xbf16, 2>
+          }
+          scf.yield %db : !air.async.token
+        }
+      }
+    }
+  }
+  return
+}

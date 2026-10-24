@@ -319,6 +319,8 @@ SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
 air::getRepeatCounts(std::vector<Operation *> memcpy_ops,
                      llvm::DenseMap<Operation *, int64_t> *copies) {
   SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeatCounts;
+  // Every transfer, before repeats are folded away below.
+  const std::vector<Operation *> allOps = memcpy_ops;
   llvm::SetVector<Operation *> memcpyIOps;
   for (auto o : memcpy_ops) {
     memcpyIOps.insert(o);
@@ -510,7 +512,7 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops,
       };
       Operation *fixedBelow = n.fixedBelow, *self = o;
       bool alone = fixedBelow && n.inner == tripCount && !refed(o) &&
-                   llvm::none_of(memcpyIOpVec, [&](Operation *x) {
+                   llvm::none_of(allOps, [&](Operation *x) {
                      return x != self && fixedBelow->isAncestor(x);
                    });
       if (sameBounds && tripCount > 1 && alone && copies)
@@ -782,6 +784,8 @@ air::DMAAllocator::pickChainBdLocks(const ChainLockSet &cls,
   return std::make_pair(toAcquire, toRelease);
 }
 
+AIE::BufferOp getUnderlyingBufferOp(Value buffer);
+
 std::pair<int64_t, int64_t>
 air::getLockValuePair(const AIE::AIETargetModel &targetModel,
                       Value buffer_memref, air::ChannelOp air_chan) {
@@ -799,7 +803,8 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
   // pair only with those of their type (see getLockForDMA), so only those
   // count.
   auto sameType = [&](Value v) {
-    return v.getType() == buffer_memref.getType();
+    AIE::BufferOp buf = getUnderlyingBufferOp(v);
+    return (buf ? buf.getType() : v.getType()) == buffer_memref.getType();
   };
   llvm::SmallSet<Operation *, 2> unique_write_buffers;
   llvm::SmallSet<Operation *, 2> unique_read_buffers;
