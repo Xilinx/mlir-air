@@ -55,15 +55,23 @@ XRT_FAIL_RE = re.compile(
     r"ERT_CMD_STATE|did not complete|not COMPLETED|command timeout|xrt::error", re.I
 )
 
+# A bench that could not allocate its buffers on the host, pinned KV included.
+# How much memory a box will give is a property of the box, as in the sibling
+# sweeps (sweep_prefill.py, sweep_decode_runtime.py).
+HOST_OOM_RE = re.compile(
+    r"std::bad_alloc|Cannot allocate|err=-12\b|Killed|out of memory", re.I
+)
+
 # Statuses --expect-fail is allowed to forgive: ONLY a dispatch that reached the
-# device and did not complete. Everything else a point can fail with --
-# build_fail, no_template, stale_template, run_fail -- is a regression in this
-# repo, and forgiving those would make a broken build indistinguishable from the
-# known runner defect a sweep is marked expected-fail for. That is not
-# hypothetical: gemma4_e2b_q4nx marks every context expected-fail for the
-# amdxdna dispatch hang (#1984), which under a blanket exemption would also have
-# turned a failed template build green.
-EXPECTABLE = frozenset({"xrt_incomplete"})
+# device and did not complete, or a bench the host could not allocate memory
+# for. Everything else a point can fail with -- build_fail, no_template,
+# stale_template, run_fail -- is a regression in this repo, and forgiving those
+# would make a broken build indistinguishable from the known runner defect a
+# sweep is marked expected-fail for. That is not hypothetical: gemma4_e2b_q4nx
+# marks every context expected-fail for the amdxdna dispatch hang (#1984), which
+# under a blanket exemption would also have turned a failed template build
+# green.
+EXPECTABLE = frozenset({"xrt_incomplete", "host_oom"})
 
 
 def _md5(path):
@@ -350,6 +358,11 @@ def main():
                     rec.update(
                         status="xrt_incomplete",
                         detail=_fail_context(out, XRT_FAIL_RE),
+                    )
+                elif HOST_OOM_RE.search(out):
+                    rec.update(
+                        status="host_oom",
+                        detail=_fail_context(out, HOST_OOM_RE),
                     )
                 else:
                     hint = re.search(
