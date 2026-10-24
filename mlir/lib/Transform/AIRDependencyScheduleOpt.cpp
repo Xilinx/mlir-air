@@ -8618,6 +8618,13 @@ findLockstepCoupledChannels(func::FuncOp func) {
 // (a, b) with v == a + b * iv, looking through index casts, extensions and
 // integer add, sub and mul; nothing if v depends on anything else.
 static std::optional<std::pair<int64_t, int64_t>> linearIn(Value v, Value iv) {
+  // Integers narrower than 32 bits could wrap within a transfer's range of
+  // offsets.
+  auto wide = [](Type t) {
+    return t.isIndex() || (t.isInteger() && t.getIntOrFloatBitWidth() >= 32);
+  };
+  if (!wide(v.getType()))
+    return std::nullopt;
   if (v == iv)
     return std::make_pair(int64_t(0), int64_t(1));
   if (auto c = getConstantIntValue(v))
@@ -8625,7 +8632,8 @@ static std::optional<std::pair<int64_t, int64_t>> linearIn(Value v, Value iv) {
   Operation *def = v.getDefiningOp();
   if (isa_and_present<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtSIOp,
                       arith::ExtUIOp>(def))
-    return linearIn(def->getOperand(0), iv);
+    return wide(def->getOperand(0).getType()) ? linearIn(def->getOperand(0), iv)
+                                              : std::nullopt;
   if (!isa_and_present<arith::AddIOp, arith::SubIOp, arith::MulIOp>(def))
     return std::nullopt;
   auto x = linearIn(def->getOperand(0), iv);
@@ -8661,7 +8669,16 @@ matchRunTimeContiguousPutLoop(scf::ForOp loop) {
       puts.push_back(put);
       continue;
     }
-    if (!isa<air::WaitAllOp>(op) && !isMemoryEffectFree(&op))
+    if (auto wait = dyn_cast<air::WaitAllOp>(op)) {
+      // A blocking wait synchronizes, and a wait for a token from outside
+      // the loop is a dependency the folded put would not have.
+      if (!wait.getAsyncToken() ||
+          llvm::any_of(wait.getAsyncDependencies(),
+                       [&](Value d) { return d.getParentBlock() != body; }))
+        return std::nullopt;
+      continue;
+    }
+    if (!isMemoryEffectFree(&op))
       return std::nullopt;
   }
   if (puts.empty())
@@ -8674,10 +8691,15 @@ matchRunTimeContiguousPutLoop(scf::ForOp loop) {
   int64_t start = 0, length = 0;
   SmallVector<int64_t> advances;
   for (auto put : puts) {
+    // Async, unrouted, unpadded puts of one buffer on one channel, which the
+    // loop does not compute.
     if (put.getChanName() != first.getChanName() ||
         put.getIndices() != first.getIndices() ||
         put.getSrc() != first.getSrc() || put.getPadBefore() ||
-        put.getPadAfter())
+        put.getPadAfter() || !put.getAsyncToken() || put.getDest() ||
+        !loop.isDefinedOutsideOfLoop(put.getSrc()) ||
+        !llvm::all_of(put.getIndices(),
+                      [&](Value i) { return loop.isDefinedOutsideOfLoop(i); }))
       return std::nullopt;
     // Only the loop's own transfers may be waited for.
     for (Value d : put.getAsyncDependencies())
@@ -8747,12 +8769,17 @@ static void foldRunTimeContiguousPutLoops(Region *region) {
         parent.getBody()->getTerminator()->getOperands() ==
             ValueRange(loop.getResults()) &&
         parent.isDefinedOutsideOfLoop(loop.getUpperBound()) &&
+        parent.isDefinedOutsideOfLoop(first.getSrc()) &&
+        llvm::all_of(
+            first.getIndices(),
+            [&](Value i) { return parent.isDefinedOutsideOfLoop(i); }) &&
         llvm::all_of(parent.getBody()->without_terminator(),
                      [&](Operation &op) {
                        return &op == loop.getOperation() ||
                               (isMemoryEffectFree(&op) && op.use_empty());
                      })) {
-      if (auto trips = air::getStaticScfForTripCountAsInt(parent)) {
+      if (auto trips = air::getStaticScfForTripCountAsInt(parent);
+          trips && *trips > 0) {
         outer = parent;
         repeat = *trips;
       }
@@ -8777,13 +8804,23 @@ static void foldRunTimeContiguousPutLoops(Region *region) {
       sizes.insert(sizes.begin(), index(repeat));
       strides.insert(strides.begin(), index(0));
     }
+    // The loop runs no trip unless ub > lb; it then sends nothing.
+    Type tokenTy = air::AsyncTokenType::get(b.getContext());
+    Value init = outer.getInitArgs()[0];
+    Value any =
+        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sgt, ub, lb);
+    auto ifOp = scf::IfOp::create(b, loc, TypeRange{tokenTy}, any,
+                                  /*withElseRegion=*/true);
+    OpBuilder thenB = ifOp.getThenBodyBuilder();
     auto put = air::ChannelPutOp::create(
-        b, loc, air::AsyncTokenType::get(b.getContext()),
-        SmallVector<Value>{outer.getInitArgs()[0]}, first.getChanName(),
+        thenB, loc, tokenTy, SmallVector<Value>{init}, first.getChanName(),
         first.getIndices(), first.getSrc(), offsets, sizes, strides,
         /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     put->setAttrs(first->getDiscardableAttrDictionary());
-    outer.getResult(0).replaceAllUsesWith(put.getAsyncToken());
+    scf::YieldOp::create(thenB, loc, put.getAsyncToken());
+    OpBuilder elseB = ifOp.getElseBodyBuilder();
+    scf::YieldOp::create(elseB, loc, init);
+    outer.getResult(0).replaceAllUsesWith(ifOp.getResult(0));
     erased.insert(outer);
     outer->erase();
   }

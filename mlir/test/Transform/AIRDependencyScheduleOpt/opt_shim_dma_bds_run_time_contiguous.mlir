@@ -14,7 +14,12 @@
 // CHECK-LABEL: func.func @ab_rounds
 // CHECK: %[[N:.*]] = arith.index_cast %arg1 : i32 to index
 // CHECK: %[[LEN:.*]] = arith.muli %[[N]], %c16384{{.*}} : index
-// CHECK: air.channel.put {{.*}} @ab[] (%arg0[%c0{{.*}}, %c0{{.*}}] [%c8{{.*}}, %[[LEN]]] [%c0{{.*}}, %c1{{.*}}])
+// CHECK: %[[ANY:.*]] = arith.cmpi sgt, %[[N]], %c0{{.*}} : index
+// CHECK: scf.if %[[ANY]] -> (!air.async.token) {
+// CHECK-NEXT: %[[P:.*]] = air.channel.put {{.*}} @ab[] (%arg0[%c0{{.*}}, %c0{{.*}}] [%c8{{.*}}, %[[LEN]]] [%c0{{.*}}, %c1{{.*}}])
+// CHECK-NEXT: scf.yield %[[P]]
+// CHECK-NEXT: } else {
+// CHECK-NEXT: scf.yield
 // CHECK-NOT: scf.for
 // CHECK-NOT: air.channel.put
 
@@ -57,6 +62,7 @@ module {
 // CHECK-LABEL: func.func @ab_once
 // CHECK: %[[N:.*]] = arith.subi %arg1, %c2{{.*}} : index
 // CHECK: %[[LEN:.*]] = arith.muli %[[N]], %c16384{{.*}} : index
+// CHECK: arith.cmpi sgt, %arg1, %c2{{.*}} : index
 // CHECK: air.channel.put {{.*}} @ab[] (%arg0[%c32768{{.*}}] [%[[LEN]]] [%c1{{.*}}])
 // CHECK-NOT: scf.for
 
@@ -226,11 +232,13 @@ module {
 
 // The static loop around the run-time one also sends on another channel. The
 // run-time loop folds into one put, but the static loop is not just a repeat
-// of it, so it gets no repeat dim; it is unrolled instead.
+// of it, so it gets no repeat dim and stays.
 
 // CHECK-LABEL: func.func @outer_holds_more
-// CHECK-COUNT-4: air.channel.put {{.*}} @ab[] (%arg0[%c0{{.*}}] [%{{.*}}] [%c1{{.*}}])
-// CHECK-NOT: scf.for
+// CHECK: scf.for
+// CHECK: scf.if
+// CHECK: air.channel.put {{.*}} @ab[] (%arg0[%c0{{.*}}] [%{{.*}}] [%c1{{.*}}])
+// CHECK: air.channel.put {{.*}} @c[]
 
 module {
   air.channel @ab [1, 1]
@@ -250,6 +258,167 @@ module {
       }
       %q = air.channel.put async [%2] @c[] (%other[%c0] [%c64] [%c1]) {metadata = @airMemcpyId2} : (memref<*xbf16>)
       scf.yield %q : !air.async.token
+    }
+    return
+  }
+}
+
+// -----
+
+// A blocking put: the folded put would be async, and what follows the loop
+// could run before the transfer ends. The loop stays.
+
+// CHECK-LABEL: func.func @sync_put
+// CHECK: scf.for
+// CHECK: air.channel.put  @ab[]
+
+module {
+  air.channel @ab [1, 1]
+  func.func @sync_put(%src: memref<*xbf16>, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8192 = arith.constant 8192 : index
+    %0 = air.wait_all async
+    %1 = scf.for %b = %c0 to %n step %c1 iter_args(%u = %0) -> (!air.async.token) {
+      %o = arith.muli %b, %c8192 : index
+      air.channel.put [%u] @ab[] (%src[%o] [%c8192] [%c1]) {metadata = @airMemcpyId1} : (memref<*xbf16>)
+      scf.yield %u : !air.async.token
+    }
+    return
+  }
+}
+
+// -----
+
+// A wait in the loop also takes a token from outside it, a dependency the
+// folded put would not have. The loop stays.
+
+// CHECK-LABEL: func.func @wait_outside
+// CHECK: scf.for
+// CHECK: air.channel.put
+
+module {
+  air.channel @ab [1, 1]
+  func.func @wait_outside(%src: memref<*xbf16>, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8192 = arith.constant 8192 : index
+    %te, %x = air.execute -> (memref<16xbf16, 1>) {
+      %a = memref.alloc() : memref<16xbf16, 1>
+      air.execute_terminator %a : memref<16xbf16, 1>
+    }
+    %0 = air.wait_all async
+    %1 = scf.for %b = %c0 to %n step %c1 iter_args(%u = %0) -> (!air.async.token) {
+      %o = arith.muli %b, %c8192 : index
+      %w = air.wait_all async [%u, %te]
+      %k = air.channel.put async [%w] @ab[] (%src[%o] [%c8192] [%c1]) {metadata = @airMemcpyId1} : (memref<*xbf16>)
+      scf.yield %k : !air.async.token
+    }
+    return
+  }
+}
+
+// -----
+
+// A put with a packet destination: the folded put would lose it. The loop
+// stays.
+
+// CHECK-LABEL: func.func @dest_put
+// CHECK: scf.for
+// CHECK: air.channel.put {{.*}} dest(
+
+module {
+  air.channel @ab [1, 1]
+  func.func @dest_put(%src: memref<*xbf16>, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8192 = arith.constant 8192 : index
+    %0 = air.wait_all async
+    %1 = scf.for %b = %c0 to %n step %c1 iter_args(%u = %0) -> (!air.async.token) {
+      %o = arith.muli %b, %c8192 : index
+      %k = air.channel.put async [%u] @ab[] (%src[%o] [%c8192] [%c1]) dest(%c0) {metadata = @airMemcpyId1} : (memref<*xbf16>)
+      scf.yield %k : !air.async.token
+    }
+    return
+  }
+}
+
+// -----
+
+// The offset goes through an i8, which wraps after 256 trips: it is not a
+// linear function of the trip. The loop stays.
+
+// CHECK-LABEL: func.func @narrow_cast
+// CHECK: scf.for
+// CHECK: air.channel.put
+
+module {
+  air.channel @ab [1, 1]
+  func.func @narrow_cast(%src: memref<*xbf16>, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8192 = arith.constant 8192 : index
+    %0 = air.wait_all async
+    %1 = scf.for %b = %c0 to %n step %c1 iter_args(%u = %0) -> (!air.async.token) {
+      %b8 = arith.index_cast %b : index to i8
+      %bx = arith.index_castui %b8 : i8 to index
+      %o = arith.muli %bx, %c8192 : index
+      %k = air.channel.put async [%u] @ab[] (%src[%o] [%c8192] [%c1]) {metadata = @airMemcpyId1} : (memref<*xbf16>)
+      scf.yield %k : !air.async.token
+    }
+    return
+  }
+}
+
+// -----
+
+// The source is a view made in the loop: the folded put, outside the loop,
+// could not use it. The loop stays.
+
+// CHECK-LABEL: func.func @loop_local_src
+// CHECK: scf.for
+// CHECK: air.channel.put
+
+module {
+  air.channel @ab [1, 1]
+  func.func @loop_local_src(%src: memref<65536xbf16>, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8192 = arith.constant 8192 : index
+    %0 = air.wait_all async
+    %1 = scf.for %b = %c0 to %n step %c1 iter_args(%u = %0) -> (!air.async.token) {
+      %o = arith.muli %b, %c8192 : index
+      %s = memref.cast %src : memref<65536xbf16> to memref<*xbf16>
+      %k = air.channel.put async [%u] @ab[] (%s[%o] [%c8192] [%c1]) {metadata = @airMemcpyId1} : (memref<*xbf16>)
+      scf.yield %k : !air.async.token
+    }
+    return
+  }
+}
+
+// -----
+
+// The static loop around the run-time one runs no trip. It is not taken as
+// a repeat of the folded put, which would then run once; nothing is sent.
+
+// CHECK-LABEL: func.func @zero_trip_rounds
+// CHECK-NOT: air.channel.put
+// CHECK: return
+
+module {
+  air.channel @ab [1, 1]
+  func.func @zero_trip_rounds(%src: memref<*xbf16>, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8192 = arith.constant 8192 : index
+    %0 = air.wait_all async
+    %r = scf.for %z = %c0 to %c0 step %c1 iter_args(%t = %0) -> (!air.async.token) {
+    %1 = scf.for %b = %c0 to %n step %c1 iter_args(%u = %t) -> (!air.async.token) {
+      %o = arith.muli %b, %c8192 : index
+      %k = air.channel.put async [%u] @ab[] (%src[%o] [%c8192] [%c1]) {metadata = @airMemcpyId1} : (memref<*xbf16>)
+      scf.yield %k : !air.async.token
+    }
+      scf.yield %1 : !air.async.token
     }
     return
   }
