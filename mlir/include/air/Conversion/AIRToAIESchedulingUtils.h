@@ -68,8 +68,13 @@ constexpr int kUnsupportedRunTimeRepeatCount = kRunTimeRepeatCount + 1;
 // the DMA runs the tasks back to back in the order returned. Grouping every
 // transfer that happens to share a trip count would hoist a later one into an
 // earlier task and emit it ahead of the transfers it must follow.
+//
+// A transfer alone in fixed loops inside a run-time loop runs several times a
+// trip, back to back. Such a transfer is accepted only when `timesPerTrip` is
+// given; it then maps the transfer to that number, for getCircularChainBDs.
 SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
-getRepeatCounts(std::vector<Operation *> memcpy_ops);
+getRepeatCounts(std::vector<Operation *> memcpy_ops,
+                llvm::DenseMap<Operation *, int64_t> *timesPerTrip = nullptr);
 
 // True if the two ops lower to interchangeable BDs (same memref and matching
 // offsets/sizes/strides for channel ops; structural equivalence for dma ops).
@@ -99,9 +104,13 @@ getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps);
 // `ops` are the chain's transfers in program order, which the emitter folded
 // to `unit`. `sendsPerFill` gives an op's sends per fill, or nullopt when that
 // is not known, in which case `unit` is returned unchanged.
+// `timesPerTrip` maps a transfer that runs several times in a row per trip
+// (see getRepeatCounts) to that number. Each of those runs is a fill of its
+// own, so the transfer takes that many BDs in a row, in program order.
 SmallVector<Operation *> getCircularChainBDs(
     ArrayRef<Operation *> ops, ArrayRef<Operation *> unit,
-    llvm::function_ref<std::optional<int64_t>(Operation *)> sendsPerFill);
+    llvm::function_ref<std::optional<int64_t>(Operation *)> sendsPerFill,
+    const llvm::DenseMap<Operation *, int64_t> &timesPerTrip = {});
 
 std::vector<AIE::BDDimLayoutAttr>
 getWrapsAndStrides(ArrayRef<OpFoldResult> memcpy_sizes,

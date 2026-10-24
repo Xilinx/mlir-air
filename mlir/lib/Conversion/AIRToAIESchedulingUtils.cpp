@@ -307,8 +307,11 @@ air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
 // repeat count each task runs at, relative to a common ancestor region. See the
 // header for why adjacency in program order gates the merge.
 SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
-air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
+air::getRepeatCounts(std::vector<Operation *> memcpy_ops,
+                     llvm::DenseMap<Operation *, int64_t> *timesPerTrip) {
   SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeatCounts;
+  // Every transfer, before repeats are folded away below.
+  const std::vector<Operation *> allOps = memcpy_ops;
   llvm::SetVector<Operation *> memcpyIOps;
   for (auto o : memcpy_ops) {
     memcpyIOps.insert(o);
@@ -421,41 +424,93 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   // and B afterwards. Counts stayed right, order did not.
   // A circular BD chain repeats the whole chain once per trip, and takes no
   // count. So every transfer in a run-time loop must run once per trip of
-  // loops with the same bounds as the first one's; the chain takes the
+  // loops with the same bounds as the first one's, unless it is alone in fixed
+  // loops inside its run-time one (see `alone` below); the chain takes the
   // transfers of such loops in turn, as when one loop's transfers were split
   // over several loops that run side by side.
-  std::optional<SmallVector<Value>> chainBounds;
-  for (auto o : memcpyIOpVec) {
-    int tripCount = 1;
+  // Each transfer's loops within the common region: the fixed trip counts
+  // inside and outside its run-time loop, if it has one.
+  struct Nest {
+    int inner = 1;
+    int outer = 1;
     SmallVector<Value> bounds;
-    scf::ForOp outer;
+    scf::ForOp runTime;
+    // The outermost fixed loop below the run-time one.
+    Operation *fixedBelow = nullptr;
+  };
+  SmallVector<Nest> nests;
+  for (auto o : memcpyIOpVec) {
+    Nest n;
     Region *currRegion = o->getParentRegion();
     while (commonRegion->isAncestor(currRegion)) {
       Operation *parent = currRegion->getParentOp();
       currRegion = currRegion->getParentRegion();
       auto affineFor = dyn_cast_if_present<affine::AffineForOp>(parent);
       auto scfFor = dyn_cast_if_present<scf::ForOp>(parent);
-      if (affineFor && affineFor.hasConstantBounds()) {
-        tripCount *= *air::getStaticAffineForTripCountAsInt(affineFor);
-      } else if (scfFor && air::getStaticScfForTripCountAsInt(scfFor)) {
-        tripCount *= *air::getStaticScfForTripCountAsInt(scfFor);
+      std::optional<int64_t> trips;
+      if (affineFor && affineFor.hasConstantBounds())
+        trips = air::getStaticAffineForTripCountAsInt(affineFor);
+      else if (scfFor)
+        trips = air::getStaticScfForTripCountAsInt(scfFor);
+      if (trips && n.runTime) {
+        n.outer *= *trips;
+      } else if (trips) {
+        n.inner *= *trips;
+        n.fixedBelow = parent;
       } else if (scfFor) {
-        bounds.append(
+        n.bounds.append(
             {scfFor.getLowerBound(), scfFor.getUpperBound(), scfFor.getStep()});
-        outer = scfFor;
+        n.runTime = scfFor;
       }
     }
+    nests.push_back(n);
+  }
+  // Fixed loops around the run-time ones that repeat every transfer of the
+  // chain alike only repeat the whole chain, which a circular chain does
+  // anyway. Otherwise they count, and the chain cannot express it.
+  std::optional<int> outerFactor;
+  bool sameOuter = true;
+  for (auto &n : nests)
+    if (n.runTime) {
+      if (outerFactor && *outerFactor != n.outer)
+        sameOuter = false;
+      outerFactor = n.outer;
+    }
+
+  std::optional<SmallVector<Value>> chainBounds;
+  for (auto [o, n] : llvm::zip_equal(memcpyIOpVec, nests)) {
+    int tripCount = n.inner * (n.runTime && sameOuter ? 1 : n.outer);
     // In English, repeat count is trip count minus one.
     int rep = tripCount - 1;
-    if (outer) {
+    if (n.runTime) {
       if (!chainBounds)
-        chainBounds = bounds;
-      bool sameBounds = llvm::equal(bounds, *chainBounds, [](Value a, Value b) {
-        auto ca = getConstantIntValue(a);
-        return a == b || (ca && ca == getConstantIntValue(b));
-      });
-      rep = tripCount == 1 && sameBounds ? air::kRunTimeRepeatCount
-                                         : air::kUnsupportedRunTimeRepeatCount;
+        chainBounds = n.bounds;
+      bool sameBounds =
+          llvm::equal(n.bounds, *chainBounds, [](Value a, Value b) {
+            auto ca = getConstantIntValue(a);
+            return a == b || (ca && ca == getConstantIntValue(b));
+          });
+      // A transfer alone in its fixed loops is sent that many times in a row
+      // each trip. A re-fed buffer is not: its locks count the sends of one
+      // fill, and the copies would be sends past them.
+      auto refed = [](Operation *x) {
+        auto ci = dyn_cast<air::ChannelInterface>(x);
+        if (!ci)
+          return false;
+        Operation *buf = air::resolveBufferRoot(ci.getMemref()).getDefiningOp();
+        return air::getRefeedCount(ci) > 1 ||
+               (buf && air::getRefeedCount(buf) > 1);
+      };
+      Operation *fixedBelow = n.fixedBelow, *self = o;
+      bool alone = fixedBelow && n.inner == tripCount && !refed(o) &&
+                   llvm::none_of(allOps, [&](Operation *x) {
+                     return x != self && fixedBelow->isAncestor(x);
+                   });
+      if (sameBounds && tripCount > 1 && alone && timesPerTrip)
+        (*timesPerTrip)[o] = tripCount;
+      rep = sameBounds && (tripCount == 1 || (alone && timesPerTrip))
+                ? air::kRunTimeRepeatCount
+                : air::kUnsupportedRunTimeRepeatCount;
     }
     if (repeatCounts.empty() || repeatCounts.back().first != rep)
       repeatCounts.emplace_back(rep, llvm::SetVector<Operation *>());
@@ -951,16 +1006,25 @@ static bool isSameChannelFifo(air::MemcpyInterface a, air::MemcpyInterface b) {
 
 SmallVector<Operation *> air::getCircularChainBDs(
     ArrayRef<Operation *> ops, ArrayRef<Operation *> unit,
-    llvm::function_ref<std::optional<int64_t>(Operation *)> sendsPerFill) {
+    llvm::function_ref<std::optional<int64_t>(Operation *)> sendsPerFill,
+    const llvm::DenseMap<Operation *, int64_t> &timesPerTrip) {
   SmallVector<Operation *> bds(unit.begin(), unit.end());
+  SmallVector<int64_t> times;
+  for (auto *o : unit)
+    times.push_back(std::max<int64_t>(timesPerTrip.lookup(o), 1));
   SmallVector<int64_t> sends;
   for (auto *o : unit) {
     auto n = sendsPerFill(o);
-    if (!n)
+    if (!n) {
+      bds.clear();
+      for (auto [u, t] : llvm::zip_equal(unit, times))
+        bds.append(t, u);
       return bds;
+    }
     sends.push_back(*n);
   }
-  if (llvm::all_of(sends, [](int64_t n) { return n == 1; }))
+  bool refed = llvm::any_of(sends, [](int64_t n) { return n != 1; });
+  if (!refed && llvm::all_of(times, [](int64_t n) { return n == 1; }))
     return bds;
 
   // A BD of the unit stands for every transfer in `ops` it is equivalent to.
@@ -968,23 +1032,29 @@ SmallVector<Operation *> air::getCircularChainBDs(
   // prefix and repeated suffix does not: [x, y, y, y, y] becomes [x, y], with
   // y standing for four transfers. Scale each transfer's sends by its copies,
   // relative to the copies a whole repetition of the unit accounts for.
-  SmallVector<int64_t> copies(unit.size(), 0);
-  for (auto *o : ops) {
-    const auto *it = llvm::find(unit, o);
-    if (it == unit.end())
-      it = llvm::find_if(unit, [&](Operation *u) {
-        return memcpyIMappedToEquivalentBDs(o, u);
-      });
-    if (it != unit.end())
-      copies[it - unit.begin()]++;
+  if (refed) {
+    SmallVector<int64_t> copies(unit.size(), 0);
+    for (auto *o : ops) {
+      const auto *it = llvm::find(unit, o);
+      if (it == unit.end())
+        it = llvm::find_if(unit, [&](Operation *u) {
+          return memcpyIMappedToEquivalentBDs(o, u);
+        });
+      if (it != unit.end())
+        copies[it - unit.begin()]++;
+    }
+    int64_t repetitions = 0;
+    for (int64_t c : copies)
+      repetitions = std::gcd(repetitions, c);
+    if (repetitions == 0)
+      return bds;
+    for (size_t i = 0; i < unit.size(); i++)
+      sends[i] = sends[i] * copies[i] / repetitions;
   }
-  int64_t repetitions = 0;
-  for (int64_t c : copies)
-    repetitions = std::gcd(repetitions, c);
-  if (repetitions == 0)
-    return bds;
+  // A transfer run several times in a row per trip fills its buffer anew each
+  // time, and the other side takes those fills in program order.
   for (size_t i = 0; i < unit.size(); i++)
-    sends[i] = sends[i] * copies[i] / repetitions;
+    sends[i] *= times[i];
 
   // Each logical flow is a FIFO, and per fill it must see each of its
   // transfers sent as many times as that transfer is re-fed, back to back in
@@ -993,10 +1063,12 @@ SmallVector<Operation *> air::getCircularChainBDs(
   // wants x^n y^m, which only a single pass can deliver. Every flow on the
   // chain advances once per pass, so the number of passes per fill is the gcd
   // of what each flow allows.
+  // Fills of one transfer in a row are taken in program order between the
+  // other transfers' fills, which again only a single pass delivers.
   int64_t passes = 0;
   for (size_t i = 0; i < unit.size(); i++) {
     auto mc = cast<air::MemcpyInterface>(unit[i]);
-    bool sharesFlow = false;
+    bool sharesFlow = times[i] > 1 && unit.size() > 1;
     for (size_t j = 0; j < unit.size() && !sharesFlow; j++)
       sharesFlow =
           j != i && isSameChannelFifo(mc, cast<air::MemcpyInterface>(unit[j]));
