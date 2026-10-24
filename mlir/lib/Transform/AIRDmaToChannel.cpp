@@ -145,9 +145,24 @@ static scf::ForOp getLoopCarryingValue(Value v, unsigned &index) {
   return loop;
 }
 
+// The value a flattened scf.if or affine.if gives its non-token result `v`:
+// the one its then branch yields.
+static Value getThenYieldedValue(OpResult v) {
+  Operation *ifOp = v.getOwner();
+  Block *then = nullptr;
+  if (auto scfIf = dyn_cast<scf::IfOp>(ifOp))
+    then = scfIf.thenBlock();
+  else if (auto affineIf = dyn_cast<affine::AffineIfOp>(ifOp))
+    then = affineIf.getThenBlock();
+  if (!then || isa<air::AsyncTokenType>(v.getType()))
+    return nullptr;
+  return then->getTerminator()->getOperand(v.getResultNumber());
+}
+
 // Whether hoisting `loop` carries its iter_arg `index`: an op marked "hoist"
-// reads the iter_arg, or a loop carrying a value passes it on as its yielded
-// or initial value.
+// reads the iter_arg or the loop's result, or passes it on to such an op as a
+// loop's yielded or initial value, or as a value an if yields. An op in an
+// air.execute counts if the execute is marked and cloned whole, being pure.
 static bool isCarriedForHoistedOps(scf::ForOp loop, unsigned index) {
   SmallVector<Value> work{loop.getRegionIterArgs()[index],
                           loop.getResult(index)};
@@ -159,57 +174,103 @@ static bool isCarriedForHoistedOps(scf::ForOp loop, unsigned index) {
     for (OpOperand &use : v.getUses()) {
       Operation *user = use.getOwner();
       unsigned i = use.getOperandNumber();
-      scf::ForOp next = nullptr;
-      if (isa<scf::YieldOp>(user)) {
-        next = dyn_cast<scf::ForOp>(user->getParentOp());
-      } else if (auto userLoop = dyn_cast<scf::ForOp>(user);
-                 userLoop && i >= userLoop.getNumControlOperands()) {
-        next = userLoop;
-        i -= userLoop.getNumControlOperands();
-      } else if (isa<BlockArgument>(v) && user->hasAttr("hoist")) {
-        return true;
-      }
-      if (next) {
+      if (isa<scf::YieldOp, affine::AffineYieldOp>(user)) {
+        Operation *parent = user->getParentOp();
+        if (auto next = dyn_cast<scf::ForOp>(parent)) {
+          work.push_back(next.getRegionIterArgs()[i]);
+          work.push_back(next.getResult(i));
+        } else if (isa<scf::IfOp, affine::AffineIfOp>(parent) &&
+                   user->getBlock() == &parent->getRegion(0).front()) {
+          work.push_back(parent->getResult(i));
+        }
+      } else if (auto next = dyn_cast<scf::ForOp>(user);
+                 next && i >= next.getNumControlOperands()) {
+        i -= next.getNumControlOperands();
         work.push_back(next.getRegionIterArgs()[i]);
         work.push_back(next.getResult(i));
+      } else if (auto exec = user->getParentOfType<air::ExecuteOp>()) {
+        if (exec->hasAttr("hoist") && air::isPure(exec))
+          return true;
+      } else if (user->hasAttr("hoist")) {
+        return true;
       }
     }
   }
   return false;
 }
 
-// Adds to `slice` what computes the iter_args that ops in `slice` read: their
-// loops are hoisted carrying them, so the yielded and initial values are
-// hoisted too.
-static void addSlicesOfCarriedValues(SetVector<Operation *> &slice,
-                                     const BackwardSliceOptions &options) {
-  DenseSet<Value> seen;
-  SmallVector<Value> work;
-  // The slice grows while it is walked; indexing reaches the added ops too.
-  for (unsigned n = 0; n < slice.size(); n++) {
-    Operation *op = slice[n];
-    auto opLoop = dyn_cast<scf::ForOp>(op);
-    for (OpOperand &use : op->getOpOperands())
-      if (isa<BlockArgument>(use.get()) &&
-          (!opLoop || use.getOperandNumber() < opLoop.getNumControlOperands()))
-        work.push_back(use.get());
-    while (!work.empty()) {
-      unsigned i = 0;
-      scf::ForOp loop = getLoopCarryingValue(work.pop_back_val(), i);
-      if (!loop || !seen.insert(loop.getRegionIterArgs()[i]).second)
-        continue;
-      Value yielded = loop.getBody()->getTerminator()->getOperand(i);
-      for (Value v : {yielded, loop.getInitArgs()[i]}) {
-        unsigned j = 0;
-        if (getLoopCarryingValue(v, j)) {
-          work.push_back(v);
-        } else if (Operation *def = v.getDefiningOp()) {
-          (void)getBackwardSlice(def, &slice, options);
-          slice.insert(def);
-        }
+// Keeps in `slice` the pure ops whose values the hoisted code uses, and adds
+// what computes the values that scf.for loops carry for it. The other ops in
+// the slice are cloned, or become waits, with their operands, and so is a
+// pure op whose result such an op reads. A loop carries a value one of them
+// reads, as iter_arg or result, so its yielded and initial values are needed
+// too. Pure ops nothing cloned reads are dropped: their clones would be
+// dead, and could read a value no clone defines.
+static void keepUsedOpsAndCarriedValues(SetVector<Operation *> &slice,
+                                        const BackwardSliceOptions &options) {
+  // Ops in an air.execute are cloned with it, keeping their marks.
+  auto droppable = [](Operation *op) {
+    return air::isPure(op) &&
+           (op->getNumRegions() == 0 || isa<air::ExecuteOp>(op)) &&
+           !op->getParentOfType<air::ExecuteOp>();
+  };
+  DenseSet<Operation *> used;
+  DenseSet<Value> carried;
+  SmallVector<Operation *> ops;
+  SmallVector<Value> values;
+  auto useValue = [&](Value v) {
+    unsigned i = 0;
+    if (scf::ForOp loop = getLoopCarryingValue(v, i)) {
+      if (used.insert(loop).second)
+        ops.push_back(loop);
+      if (carried.insert(loop.getRegionIterArgs()[i]).second) {
+        values.push_back(loop.getBody()->getTerminator()->getOperand(i));
+        values.push_back(loop.getInitArgs()[i]);
       }
+      return;
+    }
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return;
+    if (!slice.contains(def)) {
+      if (options.filter && !options.filter(def))
+        return;
+      (void)getBackwardSlice(def, &slice, options);
+      slice.insert(def);
+    }
+    if (used.insert(def).second)
+      ops.push_back(def);
+    if (Value yielded = getThenYieldedValue(cast<OpResult>(v)))
+      values.push_back(yielded);
+  };
+  auto useOperands = [&](Operation *op) {
+    if (auto exec = dyn_cast<air::ExecuteOp>(op); exec && air::isPure(exec))
+      visitUsedValuesDefinedAbove(exec->getRegions(), [&](OpOperand *use) {
+        values.push_back(use->get());
+      });
+    auto loop = dyn_cast<scf::ForOp>(op);
+    for (OpOperand &use : op->getOpOperands())
+      if (!loop || use.getOperandNumber() < loop.getNumControlOperands() ||
+          isa<air::AsyncTokenType>(use.get().getType()))
+        values.push_back(use.get());
+  };
+  // The slice grows while it is walked; indexing reaches the added ops too.
+  for (unsigned n = 0;;) {
+    if (!values.empty()) {
+      useValue(values.pop_back_val());
+    } else if (!ops.empty()) {
+      useOperands(ops.pop_back_val());
+    } else if (n < slice.size()) {
+      Operation *op = slice[n++];
+      if (!droppable(op) && !op->getParentOfType<air::ExecuteOp>() &&
+          used.insert(op).second)
+        ops.push_back(op);
+    } else {
+      break;
     }
   }
+  slice.remove_if(
+      [&](Operation *op) { return droppable(op) && !used.contains(op); });
 }
 
 // Clone ops in a block.
@@ -1002,7 +1063,6 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
         }
       }
     }
-    addSlicesOfCarriedValues(backwardSlice, bsOptions);
 
     // Label backward slices with attribute; ops not labelled with "hoist" flag
     // shall either not get hoisted, if IR is not async, or become air.wait_all
@@ -1015,6 +1075,7 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // "loop-carried-dep" to distinguish them from DMA-derived channel ops and
     // replaces them with wait_all instead of cloning to segment level.
     backwardSlice.insert(externalGetPuts.begin(), externalGetPuts.end());
+    keepUsedOpsAndCarriedValues(backwardSlice, bsOptions);
     for (auto b : backwardSlice) {
       b->setAttr("hoist", StringAttr::get(ctx, "dep"));
     }
@@ -1477,7 +1538,8 @@ class AIRDemoteDmaToAIRHierarchyConversion
           backwardSlice.insert(&childOp);
         }
       }
-      addSlicesOfCarriedValues(backwardSlice, bsOptions);
+      backwardSlice.insert(op.getOperation());
+      keepUsedOpsAndCarriedValues(backwardSlice, bsOptions);
       // Get constant values used by backward slices, and add to backward
       // slices.
       for (auto o : backwardSlice) {
