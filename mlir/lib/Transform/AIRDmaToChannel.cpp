@@ -390,7 +390,7 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
 // Whether the value `loop` carries in iter_arg `i` is updated by pure ops
 // alone, from the induction variable, itself and values from outside.
 template <typename T>
-static bool carriesThroughPureOps(T loop, unsigned i) {
+static bool carriesThroughPureOps(T loop, unsigned i, const IRMapping &remap) {
   if constexpr (!std::is_same_v<T, scf::ForOp>)
     return false;
   else {
@@ -400,9 +400,20 @@ static bool carriesThroughPureOps(T loop, unsigned i) {
     DenseSet<Value> seen;
     while (!work.empty()) {
       Value v = work.pop_back_val();
-      if (!seen.insert(v).second || v == arg || v == loop.getInductionVar() ||
-          !body->getParentOp()->isAncestor(v.getParentBlock()->getParentOp()))
+      if (!seen.insert(v).second || v == arg || v == loop.getInductionVar())
         continue;
+      if (!body->getParentOp()->isAncestor(v.getParentBlock()->getParentOp())) {
+        // From outside the loop: the hoisted copy can use it if it is mapped
+        // already, or computed by pure ops from such values and constants,
+        // which are cloned.
+        if (remap.contains(v))
+          continue;
+        Operation *def = v.getDefiningOp();
+        if (!def || !air::isPure(def) || def->getNumRegions())
+          return false;
+        llvm::append_range(work, def->getOperands());
+        continue;
+      }
       if (isa<BlockArgument>(v))
         return false;
       Operation *def = v.getDefiningOp();
@@ -426,7 +437,7 @@ air::cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
   for (auto [i, arg] :
        llvm::enumerate(air::getAsyncDependenciesFromOp(loop_op))) {
     if (!isa<air::AsyncTokenType>(arg.getType())) {
-      if (!carriesThroughPureOps(loop_op, i))
+      if (!carriesThroughPureOps(loop_op, i, remap))
         continue;
       if (!remap.contains(arg)) {
         Operation *def = arg.getDefiningOp();
@@ -503,13 +514,8 @@ air::cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
         Operation *def = v.getDefiningOp();
         if (!def)
           return v;
-        if (!loop_op->isAncestor(def)) {
-          if (!def->hasTrait<OpTrait::ConstantLike>())
-            return v;
-        } else {
-          for (Value operand : def->getOperands())
-            (void)materialize(operand);
-        }
+        for (Value operand : def->getOperands())
+          (void)materialize(operand);
         builder.clone(*def, remap)
             ->setAttr("hoist", StringAttr::get(loop_op->getContext(), "dep"));
         return remap.lookup(v);
@@ -1651,16 +1657,27 @@ static void putL3SideInMemoryOrder(air::DmaMemcpyNdOp dma) {
 // hold only waits, pure ops and other such loops. Hoisting DMAs out of herds
 // leaves them with no data movement, and they would stand between the puts
 // that channels later merge. Each is replaced by a wait on its init tokens.
-static bool onlyPassesTokens(scf::ForOp loop) {
+static bool onlyPassesTokens(scf::ForOp loop, Operation *root = nullptr) {
+  root = root ? root : loop.getOperation();
   if (!llvm::all_of(loop.getResultTypes(), llvm::IsaPred<air::AsyncTokenType>))
     return false;
   for (Operation &op : loop.getBody()->without_terminator()) {
     if (auto inner = dyn_cast<scf::ForOp>(op)) {
-      if (!onlyPassesTokens(inner))
+      if (!onlyPassesTokens(inner, root))
         return false;
-    } else if (!isa<air::WaitAllOp>(op) && !air::isPure(&op)) {
+    } else if (auto wait = dyn_cast<air::WaitAllOp>(op)) {
+      // A blocking wait synchronizes; it is not just passing tokens on.
+      if (!wait.getAsyncToken())
+        return false;
+    } else if (!air::isPure(&op)) {
       return false;
     }
+    // A token from outside the loops is a dependency a wait on the loop's
+    // init tokens would drop.
+    for (Value v : op.getOperands())
+      if (isa<air::AsyncTokenType>(v.getType()) &&
+          !root->isAncestor(v.getParentRegion()->getParentOp()))
+        return false;
   }
   return true;
 }
