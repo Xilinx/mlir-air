@@ -120,3 +120,40 @@ func.func @nested_par_tokens() {
   air.wait_all [%p]
   return
 }
+
+// The scf.parallel's token is yielded twice by the enclosing scf.for and also
+// waited for on its own. Every use is rewritten: each yield operand gets a
+// complete event, and the wait drops the token.
+
+// CHECK-LABEL: func.func @par_token_used_twice
+// CHECK: scf.for {{.*}} -> (!airrt.event, !airrt.event) {
+// CHECK: affine.for
+// CHECK: func.call @work
+// CHECK: %[[D1:.*]] = airrt.wait_all : !airrt.event
+// CHECK: %[[D0:.*]] = airrt.wait_all : !airrt.event
+// CHECK: scf.yield %[[D0]], %[[D1]] : !airrt.event, !airrt.event
+// CHECK-NOT: scf.parallel
+
+func.func @par_token_used_twice() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c3 = arith.constant 3 : index
+  %c4 = arith.constant 4 : index
+  %t0 = air.wait_all async
+  %r:2 = scf.for %k = %c0 to %c3 step %c1 iter_args(%x = %t0, %y = %t0) -> (!air.async.token, !air.async.token) {
+    %p = scf.parallel (%i) = (%c0) to (%c4) step (%c1) init (%x) -> !air.async.token {
+      %e = air.execute {
+        func.call @work(%k, %i) : (index, index) -> ()
+      }
+      scf.reduce(%e : !air.async.token) {
+      ^bb0(%a: !air.async.token, %b: !air.async.token):
+        %w = air.wait_all async [%a, %b]
+        scf.reduce.return %w : !air.async.token
+      }
+    }
+    %w2 = air.wait_all async [%p, %y]
+    scf.yield %p, %p : !air.async.token, !air.async.token
+  }
+  air.wait_all [%r#0, %r#1]
+  return
+}

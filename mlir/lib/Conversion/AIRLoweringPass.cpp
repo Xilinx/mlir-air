@@ -1307,7 +1307,10 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
     for (auto token : scf_par->getResults()) {
       if (!isa<airrt::EventType>(token.getType()))
         return scf_par->emitOpError("result is not an airrt event");
-      for (Operation *user : llvm::make_early_inc_range(token.getUsers()))
+      // A user may take the token more than once; visit each user once.
+      llvm::SetVector<Operation *> users(token.getUsers().begin(),
+                                         token.getUsers().end());
+      for (Operation *user : users)
         for (unsigned i = user->getNumOperands(); i-- > 0;) {
           if (user->getOperand(i) != token)
             continue;
