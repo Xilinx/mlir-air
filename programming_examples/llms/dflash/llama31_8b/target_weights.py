@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: MIT
 """Reuse AIR's Llama Q4NX reader with explicit projection dimensions."""
 
-from paths import HERE
+from paths import EXAMPLES, HERE
 import sys
+import types
 import numpy as np
 from ml_dtypes import bfloat16
 
@@ -45,4 +46,7 @@ def rope_row(position, role):
     return np.concatenate((np.cos(angles), np.sin(angles))).astype(bfloat16)
 
 
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(EXAMPLES)
+]
 from air_examples.llms.llama32_3b.llama32_3b_weights import LayerWeights as PrefillLayer
