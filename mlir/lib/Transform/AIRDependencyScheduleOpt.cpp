@@ -729,6 +729,26 @@ static void collectControlLeaves(Value v, SmallVectorImpl<Value> &leaves,
 }
 
 // Hoist the herd out of a parent scf.for loop.
+// Whether token `t` may complete only after a channel transfer: through its
+// async dependencies it reaches a channel op, or an op that is not an
+// air.execute or air.wait_all, which could hide one.
+static bool mayWaitForChannel(Value t) {
+  SmallVector<Value> work{t};
+  DenseSet<Value> seen;
+  while (!work.empty()) {
+    Value v = work.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return true;
+    if (!isa<air::ExecuteOp, air::WaitAllOp>(def))
+      return true;
+    llvm::append_range(work, air::getAsyncDependenciesFromOp(def));
+  }
+  return false;
+}
+
 FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
                                              Region *destRegion,
                                              OpBuilder &builder) {
@@ -750,6 +770,10 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   }
 
   if (for_loop_nest.empty())
+    return failure();
+  // The herd's body is spliced where the herd is, which must be the
+  // innermost loop's body (not, say, an scf.if in it).
+  if (herdOp->getBlock() != for_loop_nest.front().getBody())
     return failure();
 
   scf::ForOp outerMostLoop = for_loop_nest.back();
@@ -802,10 +826,14 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
         llvm::any_of(controlOps,
                      [&](Operation *c) { return c == v.getDefiningOp(); }))
       continue;
-    if (isa<air::AsyncTokenType>(v.getType()))
+    if (isa<air::AsyncTokenType>(v.getType())) {
+      // The herd would wait for it before starting. A channel transfer
+      // behind it may need the herd to make progress, so do not hoist then.
+      if (mayWaitForChannel(v))
+        return failure();
       extraTokens.push_back(v);
-    else if (Operation *def = v.getDefiningOp();
-             def && def->hasTrait<OpTrait::ConstantLike>())
+    } else if (Operation *def = v.getDefiningOp();
+               def && def->hasTrait<OpTrait::ConstantLike>())
       extraConstants.push_back(def);
     else if (!llvm::is_contained(herdOperands, v))
       extraOperands.push_back(v);
