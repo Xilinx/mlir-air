@@ -23,6 +23,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 
 #include <map>
+#include <numeric>
 
 using namespace mlir;
 
@@ -1450,6 +1451,129 @@ class AIRDemoteDmaToAIRHierarchyConversion
     return success();
   }
 };
+// Reorders the dims of a copy between L3 and L2 so that the L3 side walks
+// memory in order, if that makes it one contiguous run, so a shim descriptor
+// can move it as one linear run. The reordering goes to the L2 side, whose
+// descriptors take several dims. Copying the elements in another order puts
+// each in the same place.
+static void putL3SideInMemoryOrder(air::DmaMemcpyNdOp dma) {
+  auto srcTy = dyn_cast<BaseMemRefType>(dma.getSrcMemref().getType());
+  auto dstTy = dyn_cast<BaseMemRefType>(dma.getDstMemref().getType());
+  if (!srcTy || !dstTy)
+    return;
+  bool srcIsL3 = air::isL3(srcTy) && air::isL2(dstTy);
+  if (!srcIsL3 && !(air::isL3(dstTy) && air::isL2(srcTy)))
+    return;
+  auto constants =
+      [](ArrayRef<OpFoldResult> ofrs) -> std::optional<SmallVector<int64_t>> {
+    SmallVector<int64_t> out;
+    for (OpFoldResult ofr : ofrs) {
+      auto c = getConstantIntValue(ofr);
+      if (!c || *c <= 0)
+        return std::nullopt;
+      out.push_back(*c);
+    }
+    return out;
+  };
+  SmallVector<OpFoldResult> l3Offsets =
+      srcIsL3 ? dma.getMixedSrcOffsets() : dma.getMixedDstOffsets();
+  auto l3Sizes =
+      constants(srcIsL3 ? dma.getMixedSrcSizes() : dma.getMixedDstSizes());
+  auto l3Strides =
+      constants(srcIsL3 ? dma.getMixedSrcStrides() : dma.getMixedDstStrides());
+  if (!l3Sizes || !l3Strides || l3Sizes->size() < 2 ||
+      l3Strides->size() != l3Sizes->size() ||
+      l3Offsets.size() != l3Sizes->size())
+    return;
+  unsigned rank = l3Sizes->size();
+
+  // The L2 side, as explicit dims of the same sizes.
+  Builder b(dma.getContext());
+  auto l2Ty = dyn_cast<MemRefType>(srcIsL3 ? dstTy : srcTy);
+  SmallVector<OpFoldResult> l2Offsets =
+      srcIsL3 ? dma.getMixedDstOffsets() : dma.getMixedSrcOffsets();
+  SmallVector<OpFoldResult> l2Sizes =
+      srcIsL3 ? dma.getMixedDstSizes() : dma.getMixedSrcSizes();
+  SmallVector<int64_t> l2Strides;
+  if (l2Sizes.empty()) {
+    if (!l2Ty || !l2Ty.hasStaticShape() || !l2Ty.getLayout().isIdentity() ||
+        !llvm::equal(l2Ty.getShape(), *l3Sizes))
+      return;
+    l2Offsets.assign(rank, b.getIndexAttr(0));
+    l2Strides.assign(rank, 1);
+    for (int i = rank - 2; i >= 0; --i)
+      l2Strides[i] = l2Strides[i + 1] * (*l3Sizes)[i + 1];
+  } else {
+    auto sizes = constants(l2Sizes);
+    auto strides = constants(srcIsL3 ? dma.getMixedDstStrides()
+                                     : dma.getMixedSrcStrides());
+    if (!sizes || *sizes != *l3Sizes || !strides || l2Offsets.size() != rank)
+      return;
+    l2Strides = *strides;
+  }
+  // The reordered L2 side has to fit one memtile descriptor.
+  air::DmaBdLimits limits = air::getDmaBdLimits(dma, air::MemorySpace::L2);
+  if ((limits.dims >= 0 && rank > (unsigned)limits.dims) ||
+      (limits.maxWrap >= 0 &&
+       llvm::any_of(*l3Sizes, [&](int64_t s) { return s > limits.maxWrap; })) ||
+      !llvm::all_of(l2Strides, [&](int64_t s) { return limits.strideFits(s); }))
+    return;
+  // An L2 offset that is not a constant is walked by a loop around the copy.
+  // air-shrink-memref-sizes-by-access may then shrink the buffer to what one
+  // trip copies, and the walked offset is dropped only when the L2 side reads
+  // in row-major order. Reordered, the offset would stay and point past the
+  // shrunk buffer.
+  if (!llvm::all_of(l2Offsets, [](OpFoldResult ofr) {
+        return getConstantIntValue(ofr).has_value();
+      }))
+    return;
+
+  SmallVector<unsigned> perm(rank);
+  std::iota(perm.begin(), perm.end(), 0);
+  llvm::stable_sort(perm, [&](unsigned x, unsigned y) {
+    return (*l3Strides)[x] > (*l3Strides)[y];
+  });
+  if (llvm::is_sorted(perm))
+    return;
+  int64_t run = 1;
+  for (unsigned d : llvm::reverse(perm)) {
+    if ((*l3Strides)[d] != run)
+      return;
+    run *= (*l3Sizes)[d];
+  }
+
+  SmallVector<OpFoldResult> l3o, l3s, l3t, l2o, l2s, l2t;
+  for (unsigned d : perm) {
+    l3o.push_back(l3Offsets[d]);
+    l3s.push_back(b.getIndexAttr((*l3Sizes)[d]));
+    l3t.push_back(b.getIndexAttr((*l3Strides)[d]));
+    l2o.push_back(l2Offsets[d]);
+    l2s.push_back(b.getIndexAttr((*l3Sizes)[d]));
+    l2t.push_back(b.getIndexAttr(l2Strides[d]));
+  }
+  // Sets one of the op's index lists from `ofrs`.
+  auto set = [&](ArrayRef<OpFoldResult> ofrs, MutableOperandRange dynamic,
+                 auto setStatic) {
+    SmallVector<Value> dyn;
+    SmallVector<int64_t> stat;
+    dispatchIndexOpFoldResults(ofrs, dyn, stat);
+    dynamic.assign(dyn);
+    setStatic(stat);
+  };
+  set(srcIsL3 ? l3o : l2o, dma.getDynamicSrcOffsetsMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticSrcOffsets(v); });
+  set(srcIsL3 ? l3s : l2s, dma.getDynamicSrcSizesMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticSrcSizes(v); });
+  set(srcIsL3 ? l3t : l2t, dma.getDynamicSrcStridesMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticSrcStrides(v); });
+  set(srcIsL3 ? l2o : l3o, dma.getDynamicDstOffsetsMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticDstOffsets(v); });
+  set(srcIsL3 ? l2s : l3s, dma.getDynamicDstSizesMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticDstSizes(v); });
+  set(srcIsL3 ? l2t : l3t, dma.getDynamicDstStridesMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticDstStrides(v); });
+}
+
 struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
   DmaToChannelPass() = default;
@@ -1499,6 +1623,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       OpBuilder builder(pair.first);
       (void)AIRDemoteMemrefToAIRHierarchy(pair, builder);
     }
+
+    for (auto f : funcOps)
+      f.walk([](air::DmaMemcpyNdOp dma) { putL3SideInMemoryOrder(dma); });
 
     // First pattern to demote dma ops to corresponding air hierarchy
     ConversionTarget target_0(*context);
