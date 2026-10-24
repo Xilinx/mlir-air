@@ -5090,6 +5090,17 @@ public:
 
   void runOnFunction(func::FuncOp f, std::vector<air::ChannelOp> channelOps) {
     init_options();
+    currentFunction = f;
+    // The function's own multiplexing spaces, besides the option's.
+    if (auto spaces =
+            f->getAttrOfType<ArrayAttr>(air::attrs::ChannelMultiplexing))
+      for (Attribute a : spaces)
+        if (auto name = dyn_cast<StringAttr>(a))
+          if (auto ms = air::symbolizeMemorySpace(name.getValue()))
+            if (!llvm::is_contained(targetMemorySpaces, *ms)) {
+              targetMemorySpaces.push_back(*ms);
+              functionOnlySpaces.push_back(*ms);
+            }
     // The index is a pass member, so drop anything left from a previous
     // function on this pass instance rather than trusting the scope guard.
     invalidateChannelIndex();
@@ -5326,6 +5337,7 @@ public:
       }
       lastMergedAfter.clear();
       mergedClones.clear();
+      movedTokens.clear();
     }
     renameSymbols(channelOps, chan_merge_map);
     // Walk the region and mutate scf.for loop bounds based on "setLB" and
@@ -5415,6 +5427,7 @@ public:
 
   void init_options() {
     targetMemorySpaces.clear();
+    functionOnlySpaces.clear();
     if (clAggressiveMode.empty())
       return;
     for (unsigned i = 0; i < clAggressiveMode.size(); ++i) {
@@ -5427,6 +5440,9 @@ public:
   }
 
   SmallVector<air::MemorySpace> targetMemorySpaces;
+  // Spaces only the current function names in air.channel_multiplexing.
+  SmallVector<air::MemorySpace> functionOnlySpaces;
+  func::FuncOp currentFunction;
 
 private:
   // Get a vector of channel ops which can be fused using a new for loop.
@@ -5624,18 +5640,21 @@ private:
 
   // Check whether puts and gets hit the aggressive mode target memory spaces
   bool hitsMemorySpaceForAggMode(std::vector<air::ChannelPutOp> &puts,
-                                 std::vector<air::ChannelGetOp> &gets) {
+                                 std::vector<air::ChannelGetOp> &gets,
+                                 ArrayRef<air::MemorySpace> spaces = {}) {
+    if (spaces.empty())
+      spaces = targetMemorySpaces;
     for (auto put : puts) {
       BaseMemRefType ty = llvm::cast<BaseMemRefType>(put.getMemref().getType());
       auto ms = air::getMemorySpace(ty);
-      if (ms && llvm::is_contained(targetMemorySpaces, *ms)) {
+      if (ms && llvm::is_contained(spaces, *ms)) {
         return true;
       }
     }
     for (auto get : gets) {
       BaseMemRefType ty = llvm::cast<BaseMemRefType>(get.getMemref().getType());
       auto ms = air::getMemorySpace(ty);
-      if (ms && llvm::is_contained(targetMemorySpaces, *ms)) {
+      if (ms && llvm::is_contained(spaces, *ms)) {
         return true;
       }
     }
@@ -5667,24 +5686,56 @@ private:
       return false;
     if (!hitsMemorySpaceForAggMode(b_puts, b_gets))
       return false;
-    for (unsigned i = 0; i < a_puts.size(); i++) {
-      auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
-      auto b_put_loop_nest = getParentLoopNest(b_puts[i].getOperation());
-      if (a_put_loop_nest.size() != b_put_loop_nest.size())
+    // A merge that only the function's own spaces allow must not reach a
+    // channel other functions use too.
+    SmallVector<air::MemorySpace> moduleSpaces;
+    for (air::MemorySpace ms : targetMemorySpaces)
+      if (!llvm::is_contained(functionOnlySpaces, ms))
+        moduleSpaces.push_back(ms);
+    if (!functionOnlySpaces.empty() &&
+        !(!moduleSpaces.empty() &&
+          hitsMemorySpaceForAggMode(a_puts, a_gets, moduleSpaces) &&
+          hitsMemorySpaceForAggMode(b_puts, b_gets, moduleSpaces))) {
+      auto inFunction = [&](Operation *op) {
+        return currentFunction->isAncestor(op);
+      };
+      if (!llvm::all_of(a_puts, inFunction) ||
+          !llvm::all_of(a_gets, inFunction) ||
+          !llvm::all_of(b_puts, inFunction) ||
+          !llvm::all_of(b_gets, inFunction))
         return false;
-      for (unsigned i = 0; i < a_put_loop_nest.size(); i++)
-        if (!areEquivalentControlLoops(a_put_loop_nest[i], b_put_loop_nest[i]))
-          return false;
     }
-    for (unsigned i = 0; i < a_gets.size(); i++) {
-      auto a_get_loop_nest = getParentLoopNest(a_gets[i].getOperation());
-      auto b_get_loop_nest = getParentLoopNest(b_gets[i].getOperation());
-      if (a_get_loop_nest.size() != b_get_loop_nest.size())
+    // b's ops may sit in loops of their own inside the nest they share with
+    // a's (b runs several times for each a); the merge moves those loops
+    // with them. The shared loops must match.
+    auto sameOuterNest = [&](Operation *a, Operation *b) {
+      auto aNest = getParentLoopNest(a);
+      auto bNest = getParentLoopNest(b);
+      if (bNest.size() < aNest.size())
         return false;
-      for (unsigned i = 0; i < a_get_loop_nest.size(); i++)
-        if (!areEquivalentControlLoops(a_get_loop_nest[i], b_get_loop_nest[i]))
+      unsigned extra = bNest.size() - aNest.size();
+      // On a core, a and then b's loop run in program order inside the same
+      // loops. The L2 side must then send a's data and b's through one DMA
+      // channel, which needs L2 multiplexing; without it two memtile
+      // channels would feed one core channel.
+      if (extra && programOrderOnOneCore(a, b, /*bInLoops=*/true) == 1) {
+        Region *herdBody = &a->getParentOfType<air::HerdOp>().getRegion();
+        return sameGuardsBelow(a, herdBody, b, herdBody) &&
+               llvm::is_contained(targetMemorySpaces, air::MemorySpace::L2);
+      }
+      if (extra && !opToMergeWith(a, b))
+        return false;
+      for (unsigned i = 0; i < aNest.size(); i++)
+        if (!areEquivalentControlLoops(aNest[i], bNest[i + extra]))
           return false;
-    }
+      return true;
+    };
+    for (unsigned i = 0; i < a_puts.size(); i++)
+      if (!sameOuterNest(a_puts[i], b_puts[i]))
+        return false;
+    for (unsigned i = 0; i < a_gets.size(); i++)
+      if (!sameOuterNest(a_gets[i], b_gets[i]))
+        return false;
     return true;
   }
 
@@ -6393,8 +6444,12 @@ private:
 
   // When a and b are in one herd with only affine.if ops between them and
   // the block that holds both, a core that runs both runs them in program
-  // order: 1 if a comes first, -1 if b does. 0 otherwise.
-  static int programOrderOnOneCore(Operation *a, Operation *b) {
+  // order: 1 if a comes first, -1 if b does. 0 otherwise. With
+  // `bInLoops`, b may also sit in scf.for loops below that block, and a must
+  // come first: each time the core runs the block, it runs a once and then
+  // all of b's runs. 1 if so, 0 otherwise.
+  static int programOrderOnOneCore(Operation *a, Operation *b,
+                                   bool bInLoops = false) {
     auto herd = a->getParentOfType<air::HerdOp>();
     if (!herd || herd != b->getParentOfType<air::HerdOp>())
       return 0;
@@ -6407,7 +6462,8 @@ private:
       Operation *anchor = common->findAncestorOpInRegion(*op);
       for (Operation *p = op; p != anchor;) {
         p = p->getParentOp();
-        if (!isa<affine::AffineIfOp>(p))
+        if (!isa<affine::AffineIfOp>(p) &&
+            !(bInLoops && op == b && isa<scf::ForOp>(p)))
           return 0;
       }
     }
@@ -6415,13 +6471,95 @@ private:
     Operation *bAnchor = common->findAncestorOpInRegion(*b);
     if (aAnchor == bAnchor)
       return 0;
-    return aAnchor->isBeforeInBlock(bAnchor) ? 1 : -1;
+    if (aAnchor->isBeforeInBlock(bAnchor))
+      return 1;
+    return bInLoops ? 0 : -1;
   }
 
   // For each merge destination, the last op cloned after it by a merge.
   llvm::DenseMap<Operation *, Operation *> lastMergedAfter;
   // Ops cloned next to a merge destination.
   llvm::DenseSet<Operation *> mergedClones;
+  // For each op a merge moved, the air.wait_all left in its place, mapped to
+  // the token of its clone: an op merged later that waited for the moved op
+  // waits for the clone.
+  llvm::DenseMap<Value, Value> movedTokens;
+  // The tokens of the ops a dry run found it would move. Those ops are moved
+  // before any later op that waits for them, which then waits for the clone.
+  llvm::DenseSet<Value> dryMovedTokens;
+  // The outermost scf.for around b that a's nest has no counterpart for, if
+  // b sits deeper than a; b itself otherwise. Such loops run b several times
+  // for each run of a, and move with it. Null if they hold another channel
+  // op or are not all scf.for.
+  Operation *opToMergeWith(Operation *a, Operation *b) {
+    auto aNest = getParentLoopNest(a);
+    auto bNest = getParentLoopNest(b);
+    if (bNest.size() <= aNest.size())
+      return b;
+    Operation *stem = bNest[bNest.size() - aNest.size() - 1]->getParentOp();
+    for (unsigned i = 0; i < bNest.size() - aNest.size(); i++)
+      if (!isa<scf::ForOp>(bNest[i]->getParentOp()))
+        return nullptr;
+    bool alone = true;
+    stem->walk([&](air::ChannelInterface c) {
+      if (c.getOperation() != b)
+        alone = false;
+    });
+    return alone ? stem : nullptr;
+  }
+  // Maps what `loop`, the loops around b that a's nest has no counterpart
+  // for, uses from b's nest into a's, for a clone of it after a: pure
+  // producers are cloned, and an air.wait_all that does not dominate a is
+  // rebuilt from its mapped tokens. Fails on anything else, such as a token
+  // the clone would no longer wait for.
+  bool remapLoopIntoNestOf(RewriterBase &rewriter, IRMapping &remap,
+                           Operation *a, Operation *loop, bool dryRun) {
+    // The loop's one result, its token, is what the merge replaces.
+    if (loop->getNumResults() != 1 ||
+        !isa<air::AsyncTokenType>(loop->getResult(0).getType()))
+      return false;
+    DominanceInfo dom(a->getParentOfType<func::FuncOp>());
+    std::function<bool(Value)> mapValue = [&](Value v) -> bool {
+      if (remap.contains(v) || dom.properlyDominates(v, a))
+        return true;
+      if (Value moved = movedTokens.lookup(v)) {
+        remap.map(v, moved);
+        return true;
+      }
+      if (dryRun && dryMovedTokens.contains(v))
+        return true;
+      Operation *def = v.getDefiningOp();
+      if (!def || def->getNumRegions())
+        return false;
+      if (auto wa = dyn_cast<air::WaitAllOp>(def)) {
+        SmallVector<Value> deps;
+        for (Value d : wa.getAsyncDependencies()) {
+          if (!mapValue(d))
+            return false;
+          deps.push_back(remap.lookupOrDefault(d));
+        }
+        if (!dryRun)
+          remap.map(v, air::WaitAllOp::create(
+                           rewriter, wa.getLoc(),
+                           air::AsyncTokenType::get(wa.getContext()), deps)
+                           .getAsyncToken());
+        return true;
+      }
+      if (isa<air::AsyncTokenType>(v.getType()) || !air::isPure(def))
+        return false;
+      for (Value operand : def->getOperands())
+        if (!mapValue(operand))
+          return false;
+      if (!dryRun)
+        rewriter.clone(*def, remap);
+      return true;
+    };
+    SetVector<Value> used(loop->getOperands().begin(),
+                          loop->getOperands().end());
+    for (Region &r : loop->getRegions())
+      getUsedValuesDefinedAbove(r, used);
+    return llvm::all_of(used, mapValue);
+  }
   // With `dryRun`, only reports whether the merge is possible.
   bool mergeChannelOps(RewriterBase &rewriter, air::ChannelInterface a,
                        air::ChannelInterface b, bool dryRun = false) {
@@ -6429,45 +6567,81 @@ private:
     // loop nests
     if (a->getParentRegion() == b->getParentRegion())
       return true;
-    // b is cloned next to a. What b uses from a region enclosing both nests
-    // is not cloned with it, so it has to be defined before a.
-    DominanceInfo dom(a->getParentOfType<func::FuncOp>());
-    for (Value operand : b->getOperands()) {
-      Operation *def = operand.getDefiningOp();
-      if (def && def->getParentRegion()->isAncestor(a->getParentRegion()) &&
-          !hoistAllocAbove(operand, a, dom, dryRun))
+    // b, or the loops around b that a's nest has no counterpart for, is
+    // cloned next to a.
+    Operation *bOp = opToMergeWith(a, b);
+    if (!bOp)
+      return false;
+    Operation *bNestOp = bOp == b.getOperation() ? bOp : bOp->getParentOp();
+    auto aNest = getParentLoopNest(a);
+    auto bNest = getParentLoopNest(bNestOp);
+    if (bOp != b.getOperation() && aNest.size() != bNest.size())
+      return false;
+    for (auto [aBlk, bBlk] : llvm::zip(aNest, bNest))
+      if (bOp != b.getOperation() &&
+          aBlk->getNumArguments() != bBlk->getNumArguments())
         return false;
-    }
-    if (dryRun)
-      return true;
     IRMapping remap;
-    remapAllParentLoopArgs(remap, a, b);
+    remapAllParentLoopArgs(remap, a, bNestOp);
     OpBuilder::InsertionGuard guard(rewriter);
-    // Insert b after a and after any op that earlier merges into a placed
+    // Insert after a and after any op that earlier merges into a placed
     // after it, so that channels merged into a keep their merge order.
     Operation *anchor = lastMergedAfter.lookup(a);
     rewriter.setInsertionPointAfter(anchor ? anchor : a.getOperation());
-    auto new_b = air::cloneOpAndOperands(rewriter, remap, b);
-    lastMergedAfter[a] = new_b;
-    mergedClones.insert(new_b);
-    if (air::isAsyncOp(a) && air::isAsyncOp(new_b)) {
+    if (bOp == b.getOperation()) {
+      // What b uses from a region enclosing both nests is not cloned with
+      // it, so it has to be defined before a.
+      DominanceInfo dom(a->getParentOfType<func::FuncOp>());
+      for (Value operand : b->getOperands()) {
+        Operation *def = operand.getDefiningOp();
+        if (def && def->getParentRegion()->isAncestor(a->getParentRegion()) &&
+            !hoistAllocAbove(operand, a, dom, dryRun))
+          return false;
+      }
+      for (Value dep : air::getAsyncDependenciesFromOp(b))
+        if (Value moved = movedTokens.lookup(dep))
+          remap.map(dep, moved);
+    } else if (!remapLoopIntoNestOf(rewriter, remap, a, bOp, dryRun)) {
+      return false;
+    }
+    if (dryRun) {
+      if (Value t = air::getAsyncTokenFromOp(bOp))
+        dryMovedTokens.insert(t);
+      return true;
+    }
+    Operation *newB = bOp == b.getOperation()
+                          ? air::cloneOpAndOperands(rewriter, remap, b)
+                          : rewriter.clone(*bOp, remap);
+    lastMergedAfter[a] = newB;
+    newB->walk([&](air::ChannelInterface c) { mergedClones.insert(c); });
+    Value aToken = air::getAsyncTokenFromOp(a);
+    Value newToken = air::getAsyncTokenFromOp(newB);
+    if (aToken && newToken) {
       auto newWaitAll = air::WaitAllOp::create(
           rewriter, a->getLoc(), air::AsyncTokenType::get(a->getContext()),
-          SmallVector<Value>{air::getAsyncTokenFromOp(a),
-                             air::getAsyncTokenFromOp(new_b)});
-      air::getAsyncTokenFromOp(a).replaceAllUsesExcept(
-          newWaitAll.getAsyncToken(), newWaitAll);
+          SmallVector<Value>{aToken, newToken});
+      // Only what comes after the wait_all waits for both; the ops made
+      // between a and it, the clone among them, keep a's token.
+      DominanceInfo after(a->getParentOfType<func::FuncOp>());
+      aToken.replaceUsesWithIf(newWaitAll.getAsyncToken(), [&](OpOperand &u) {
+        return u.getOwner() != newWaitAll &&
+               after.properlyDominates(newWaitAll.getOperation(), u.getOwner());
+      });
     }
-    // Erase b
-    if (air::isAsyncOp(b)) {
+    // Erase b, or its loops.
+    if (air::isAsyncOp(bOp)) {
       IRMapping waitAllRemap;
-      rewriter.setInsertionPoint(b);
-      auto waitAll = air::replaceAsyncOpWithWaitAll(rewriter, waitAllRemap, b);
-      air::getAsyncTokenFromOp(b).replaceAllUsesWith(waitAll.getAsyncToken());
+      rewriter.setInsertionPoint(bOp);
+      auto waitAll =
+          air::replaceAsyncOpWithWaitAll(rewriter, waitAllRemap, bOp);
+      air::getAsyncTokenFromOp(bOp).replaceAllUsesWith(waitAll.getAsyncToken());
+      if (newToken)
+        movedTokens[waitAll.getAsyncToken()] = newToken;
     }
-    b->erase();
+    rewriter.eraseOp(bOp);
     return true;
   }
+
   // Fuse parent region nests to both a and b, interleaving pairs of
   // air::ChannelInterface ops, originating from a and b loop nests
   // respectively, into the fused loop nest.
@@ -6480,8 +6654,20 @@ private:
     // a first, so this holds only when the core takes a first too.
     if (programOrderOnOneCore(a, b) == 1)
       return true;
+    if (programOrderOnOneCore(a, b, /*bInLoops=*/true) == 1) {
+      Region *herdBody = &a->getParentOfType<air::HerdOp>().getRegion();
+      return sameGuardsBelow(a, herdBody, b, herdBody);
+    }
+    // b already runs after a in a's block, inside loops of its own: the
+    // channel takes a's transfer and then b's, in that order, as they are.
+    if (Operation *bAnchor = a->getParentRegion()->findAncestorOpInRegion(*b))
+      if (bAnchor != a && bAnchor != b &&
+          bAnchor->getBlock() == a->getBlock() && a->isBeforeInBlock(bAnchor))
+        return true;
+    // b in loops a has no counterpart for would need moving after a.
+    bool bDeeper = getParentLoopNest(b).size() > getParentLoopNest(a).size();
     if (!a->getParentOfType<LoopLikeOpInterface>())
-      return true;
+      return !bDeeper;
     if (!b->getParentOfType<LoopLikeOpInterface>())
       return true;
     Region *aRegion = a->getParentRegion();
@@ -6503,8 +6689,11 @@ private:
       if (!mergedClones.contains(chanOp))
         bChanOps.push_back(chanOp);
     });
+    // Nests whose transfers do not pair up merge their channels as they are.
+    // b in loops a has no counterpart for would then run in a loop of its
+    // own, which would interleave with a's, so it does not merge.
     if (aChanOps.size() != bChanOps.size())
-      return true;
+      return getParentLoopNest(b).size() <= getParentLoopNest(a).size();
     for (auto [aOtherOp, bOtherOp] : llvm::zip_equal(aChanOps, bChanOps))
       if (!sameGuardsBelow(aOtherOp, aRegion, bOtherOp, bRegion))
         return false;
@@ -6589,6 +6778,7 @@ private:
         getChannelGetOpThroughSymbol(chan_a);
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
+    dryMovedTokens.clear();
     for (unsigned i = 0; i < a_puts.size(); i++)
       if (!fuseParentRegionNestByIneterleaving(rewriter, a_puts[i], b_puts[i],
                                                /*dryRun=*/true))
