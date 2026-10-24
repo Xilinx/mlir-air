@@ -316,7 +316,8 @@ air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
 // repeat count each task runs at, relative to a common ancestor region. See the
 // header for why adjacency in program order gates the merge.
 SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
-air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
+air::getRepeatCounts(std::vector<Operation *> memcpy_ops,
+                     llvm::DenseMap<Operation *, int64_t> *copies) {
   SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeatCounts;
   llvm::SetVector<Operation *> memcpyIOps;
   for (auto o : memcpy_ops) {
@@ -430,41 +431,93 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   // and B afterwards. Counts stayed right, order did not.
   // A circular BD chain repeats the whole chain once per trip, and takes no
   // count. So every transfer in a run-time loop must run once per trip of
-  // loops with the same bounds as the first one's; the chain takes the
+  // loops with the same bounds as the first one's, unless it is alone in fixed
+  // loops inside its run-time one (see `alone` below); the chain takes the
   // transfers of such loops in turn, as when one loop's transfers were split
   // over several loops that run side by side.
-  std::optional<SmallVector<Value>> chainBounds;
-  for (auto o : memcpyIOpVec) {
-    int tripCount = 1;
+  // Each transfer's loops within the common region: the fixed trip counts
+  // inside and outside its run-time loop, if it has one.
+  struct Nest {
+    int inner = 1;
+    int outer = 1;
     SmallVector<Value> bounds;
-    scf::ForOp outer;
+    scf::ForOp runTime;
+    // The outermost fixed loop below the run-time one.
+    Operation *fixedBelow = nullptr;
+  };
+  SmallVector<Nest> nests;
+  for (auto o : memcpyIOpVec) {
+    Nest n;
     Region *currRegion = o->getParentRegion();
     while (commonRegion->isAncestor(currRegion)) {
       Operation *parent = currRegion->getParentOp();
       currRegion = currRegion->getParentRegion();
       auto affineFor = dyn_cast_if_present<affine::AffineForOp>(parent);
       auto scfFor = dyn_cast_if_present<scf::ForOp>(parent);
-      if (affineFor && affineFor.hasConstantBounds()) {
-        tripCount *= *air::getStaticAffineForTripCountAsInt(affineFor);
-      } else if (scfFor && air::getStaticScfForTripCountAsInt(scfFor)) {
-        tripCount *= *air::getStaticScfForTripCountAsInt(scfFor);
+      std::optional<int64_t> trips;
+      if (affineFor && affineFor.hasConstantBounds())
+        trips = air::getStaticAffineForTripCountAsInt(affineFor);
+      else if (scfFor)
+        trips = air::getStaticScfForTripCountAsInt(scfFor);
+      if (trips && n.runTime) {
+        n.outer *= *trips;
+      } else if (trips) {
+        n.inner *= *trips;
+        n.fixedBelow = parent;
       } else if (scfFor) {
-        bounds.append(
+        n.bounds.append(
             {scfFor.getLowerBound(), scfFor.getUpperBound(), scfFor.getStep()});
-        outer = scfFor;
+        n.runTime = scfFor;
       }
     }
+    nests.push_back(n);
+  }
+  // Fixed loops around the run-time ones that repeat every transfer of the
+  // chain alike only repeat the whole chain, which a circular chain does
+  // anyway. Otherwise they count, and the chain cannot express it.
+  std::optional<int> outerFactor;
+  bool sameOuter = true;
+  for (auto &n : nests)
+    if (n.runTime) {
+      if (outerFactor && *outerFactor != n.outer)
+        sameOuter = false;
+      outerFactor = n.outer;
+    }
+
+  std::optional<SmallVector<Value>> chainBounds;
+  for (auto [o, n] : llvm::zip_equal(memcpyIOpVec, nests)) {
+    int tripCount = n.inner * (n.runTime && sameOuter ? 1 : n.outer);
     // In English, repeat count is trip count minus one.
     int rep = tripCount - 1;
-    if (outer) {
+    if (n.runTime) {
       if (!chainBounds)
-        chainBounds = bounds;
-      bool sameBounds = llvm::equal(bounds, *chainBounds, [](Value a, Value b) {
-        auto ca = getConstantIntValue(a);
-        return a == b || (ca && ca == getConstantIntValue(b));
-      });
-      rep = tripCount == 1 && sameBounds ? air::kRunTimeRepeatCount
-                                         : air::kUnsupportedRunTimeRepeatCount;
+        chainBounds = n.bounds;
+      bool sameBounds =
+          llvm::equal(n.bounds, *chainBounds, [](Value a, Value b) {
+            auto ca = getConstantIntValue(a);
+            return a == b || (ca && ca == getConstantIntValue(b));
+          });
+      // A transfer alone in its fixed loops is sent that many times in a row
+      // each trip. A re-fed buffer is not: its locks count the sends of one
+      // fill, and the copies would be sends past them.
+      auto refed = [](Operation *x) {
+        auto ci = dyn_cast<air::ChannelInterface>(x);
+        if (!ci)
+          return false;
+        Operation *buf = air::resolveBufferRoot(ci.getMemref()).getDefiningOp();
+        return air::getRefeedCount(ci) > 1 ||
+               (buf && air::getRefeedCount(buf) > 1);
+      };
+      Operation *fixedBelow = n.fixedBelow;
+      bool alone = fixedBelow && n.inner == tripCount && !refed(o) &&
+                   llvm::none_of(memcpyIOpVec, [&](Operation *x) {
+                     return x != o && fixedBelow->isAncestor(x);
+                   });
+      if (sameBounds && tripCount > 1 && alone && copies)
+        (*copies)[o] = tripCount;
+      rep = sameBounds && (tripCount == 1 || (alone && copies))
+                ? air::kRunTimeRepeatCount
+                : air::kUnsupportedRunTimeRepeatCount;
     }
     if (repeatCounts.empty() || repeatCounts.back().first != rep)
       repeatCounts.emplace_back(rep, llvm::SetVector<Operation *>());
@@ -742,7 +795,12 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
     return getLockValuePair(targetModel, buffer_memref);
 
   // Infer semaphore lock values using air.channel. This method enables
-  // ping-pong compute-communication overlap.
+  // ping-pong compute-communication overlap. A tile's buffers share a lock
+  // pair only with those of their type (see getLockForDMA), so only those
+  // count.
+  auto sameType = [&](Value v) {
+    return v.getType() == buffer_memref.getType();
+  };
   llvm::SmallSet<Operation *, 2> unique_write_buffers;
   llvm::SmallSet<Operation *, 2> unique_read_buffers;
   for (auto get : getChannelGetOpThroughSymbol(air_chan)) {
@@ -753,7 +811,8 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
       break;
     } else if (auto core_op = get->getParentOfType<AIE::CoreOp>()) {
       if (core_op.getTileOp().getResult() ==
-          buffer_memref.getDefiningOp()->getOperand(0)) {
+              buffer_memref.getDefiningOp()->getOperand(0) &&
+          sameType(get.getMemref())) {
         unique_write_buffers.insert(get.getMemref().getDefiningOp());
       }
     }
@@ -766,7 +825,8 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
       break;
     } else if (auto core_op = put->getParentOfType<AIE::CoreOp>()) {
       if (core_op.getTileOp().getResult() ==
-          buffer_memref.getDefiningOp()->getOperand(0)) {
+              buffer_memref.getDefiningOp()->getOperand(0) &&
+          sameType(put.getMemref())) {
         unique_read_buffers.insert(put.getMemref().getDefiningOp());
       }
     }
@@ -1370,7 +1430,14 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
         } else if ((std::get<1>(lock_allocation_list[i]) == air_chan) &&
                    (std::get<0>(lock_allocation_list[i])->getOperand(0) ==
                     bufferOp->getOperand(0)) &&
-                   (std::get<2>(lock_allocation_list[i]) == channel)) {
+                   (std::get<2>(lock_allocation_list[i]) == channel) &&
+                   std::get<0>(lock_allocation_list[i])->getResultTypes() ==
+                       bufferOp->getResultTypes()) {
+          // Buffers of one type on a tile's channel are a rotation: they are
+          // filled and drained in turn, which one pair of counting locks
+          // tracks. Buffers of different types are not: a channel can fill
+          // one of them twice in a row, and a pair shared with the other
+          // would let the second fill start once the other buffer is drained.
           return std::make_pair(std::get<3>(lock_allocation_list[i]),
                                 std::get<4>(lock_allocation_list[i]));
         } else if ((std::get<0>(lock_allocation_list[i]) == bufferOp) &&

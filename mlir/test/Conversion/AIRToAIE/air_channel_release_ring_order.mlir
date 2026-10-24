@@ -7,17 +7,21 @@
 
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
-// One channel fills K, then V twice into one buffer, with two credits. The
-// second V and the next trip's K may come in once the first @pv is done; the
-// next trip's first V waits for the second @pv.
+// One channel fills K once, then V twice. K and V differ in type, so each
+// gets a lock of its own. V's is released after each @pv, so the second V can
+// come in once the first @pv is done and the next iteration's first V once
+// the second is. K's is released after its last use.
 // CHECK-LABEL: aie.core
-// CHECK: func.call @qk
-// CHECK: func.call @pv
-// CHECK-NEXT: aie.use_lock(%[[REL:[a-z0-9_]+]], Release, %{{.*}})
-// CHECK-NEXT: aie.use_lock(%[[REL]], Release, %{{.*}})
-// CHECK: func.call @pv
-// CHECK-NEXT: aie.use_lock(%[[REL]], Release, %{{.*}})
-// CHECK-NEXT: func.call @other
+// CHECK: aie.use_lock(%[[KACQ:[a-z0-9_]+]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: func.call @qk
+// CHECK-NEXT: aie.use_lock(%[[VACQ:[a-z0-9_]+]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: func.call @pv
+// CHECK-NEXT: aie.use_lock(%[[VREL:[a-z0-9_]+]], Release, %{{.*}})
+// CHECK-NEXT: aie.use_lock(%[[VACQ]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: func.call @pv
+// CHECK-NEXT: aie.use_lock(%[[VREL]], Release, %{{.*}})
+// CHECK: aie.use_lock(%[[KREL:[a-z0-9_]+]], Release, %{{.*}})
+// CHECK-NOT: aie.use_lock(%[[VREL]], Release
 
 air.channel @kv [1, 1]
 func.func private @qk(memref<16x64xbf16, 2>)
