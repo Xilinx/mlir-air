@@ -23,6 +23,8 @@ import time
 
 from air.tools import resolve_tool
 
+from . import compile_cache
+
 from ml_dtypes import bfloat16
 
 # Device name mappings aligned with mlir-aie (hostruntime.py, lit_config_helpers.py)
@@ -637,14 +639,41 @@ class XRTBackend(AirBackend):
                 aircc_exe = resolve_tool("aircc")
             except RuntimeError as exc:
                 raise AirBackendError(str(exc)) from exc
-            result = subprocess.run(
-                [str(aircc_exe)] + aircc_options,
-                capture_output=True,
-                text=True,
+
+            # The files callers read back after a build. Trace and debug-IR
+            # builds leave other files for a person to inspect, so they are
+            # always rebuilt. So are Chess builds: TOOLCHAIN does not cover
+            # Chess.
+            outputs = [output_binary]
+            if self.emit_txn_cpp:
+                outputs.append(os.path.join("air_project", "npu.air.txn.h"))
+            elif self.output_format in ("xclbin", "pdi"):
+                outputs.append(insts)
+            if self.output_format == "elf":
+                outputs.append("params.txt")
+            cached = compile_cache.entry_for(
+                module_str,
+                aircc_options,
+                aircc_exe,
+                peano_package_dir,
+                outputs,
+                optional_dirs=[os.path.join("air_project", "cdo_seg")],
+                cacheable=self.output_format in ("xclbin", "elf", "pdi")
+                and peano_package_dir != ""
+                and not self.debug_ir
+                and self.trace_size == 0,
             )
-            if result.returncode != 0:
-                error_msg = result.stderr if result.stderr else result.stdout
-                raise AirBackendError(f"aircc compilation failed:\n{error_msg}")
+            if cached is None or not cached.restore():
+                result = subprocess.run(
+                    [str(aircc_exe)] + aircc_options,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    error_msg = result.stderr if result.stderr else result.stdout
+                    raise AirBackendError(f"aircc compilation failed:\n{error_msg}")
+                if cached is not None:
+                    cached.store()
 
         # For ELF mode, the kernel identifier is "main:instance_name"
         # This is used when loading the ELF via xrt.ext.kernel()

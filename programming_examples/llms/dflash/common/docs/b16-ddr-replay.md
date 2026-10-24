@@ -51,49 +51,35 @@ from the block size; B8 retains its two-slot pipeline.
 
 ## AIR source and compiler responsibilities
 
-Earlier experimental builds continued from generated MLIR-AIE checkpoints:
-they edited DMA wait placement and merged phase-exclusive projection inputs,
-and some variants repaired physical packet routes. Those repairs depended on
-specific emitted task, channel and routing identities. This implementation
-expresses its ownership, placement, packet endpoints and phase dependencies in
-AIR source, then runs the normal AIR/MLIR-AIE/Peano flow.
-
-The source mapping and the compiler fixes solve different parts of the problem:
+The mapping is written entirely in AIR source and built by the normal
+AIR/MLIR-AIE/Peano flow; no generated MLIR-AIE is edited afterwards.
 
 | Part | Responsibility |
 |---|---|
 | `b8_graph.py`, `b16_owners.py` | Common projection receiver, scratch capture/replay, complete-layer weight selection, FIFO order and owner placement |
-| `AIRRtToNpuPass.cpp` | Coordinate synthesized tail waits for ordinary and coalesced shim feeds in the same phase |
-| `AIRToAIESchedulingUtils.cpp` | Preserve on-device packet producer allocations and allocate an L3 shim endpoint when the flow also has a DDR producer |
-| `AIRToAIEPass.cpp` cleanup | Canonicalize unused index-switch results before AIR wait legalization |
+| AIRRtToNpu shim-feed pacing | Starts a paced feed and the coalesced phase it belongs to before awaiting either |
+| AIRToAIE DMA allocation | Gives the DDR replay a shim allocation on a packet channel that also has MemTile and core producers |
 
-For mixed DMA feeds, waiting for activation replay before starting weights can
-deadlock: the projection core needs those weights to drain the activation
-stream. Both feeds must start before their synthesized completion waits. The
-fix extends the existing block/wave and phase-major scheduling rules, preserving
-same-channel fragment boundaries. It does not infer arbitrary cross-region
-dependencies; the source keeps capture/replay and consuming feeds together.
+The replay is a paced feed (strided, so never coalesced), issued in the same
+region just before the coalesced weights of the projection it feeds. The
+compiler takes a paced feed to belong to the first coalesced phase that ends
+after it, so keep that order: a replay issued after its weights, in any phase
+but the last, would see the weights awaited before it starts, and the
+projection core would stall waiting for it.
 
-For mixed packet producers, a single aggregate memory-space field cannot
-describe L3, L2 and L1 sources. Allocation examines actual source memory spaces,
-retains existing L1/L2 allocations, and appends a shim endpoint for L3 sources.
-These compiler rules depend on IR structure, not model names or block size.
+The `xnorm` receiver has three producers: the DDR replay, the MemTile attention
+output and the compute-core GLU output. It must stay a packet channel; the
+compiler rejects a stream channel that mixes host and on-device producers.
 
-The switch cleanup uses existing SCF canonicalization and is independently
-reviewable. It fixed an intermediate source organization; the final Qwen target
-produced identical AIRToAIE IR with and without that cleanup. The tested compiler
-included it, so this stage comparison does not qualify a different installation.
+The compiler regressions for both are `paced_coalesced_sibling_drains.mlir`
+under `mlir/test/Conversion/AIRRtToNpu` and
+`packet_producers_mixed_memspace_shim.mlir` under
+`mlir/test/Conversion/AIRToAIE`. They need no checkpoints or NPU hardware.
 
-Compiler regressions are `mixed_coalesced_paced_siblings.mlir` under
-`mlir/test/Conversion/AIRRtToNpu`, and `packet_producers_with_shim.mlir` /
-`packet_switch_dead_token.mlir` under `mlir/test/Conversion/AIRToAIE`.
-They run without model checkpoints or NPU hardware. Other programs matching
-these structures also use the fixes; the changes are not isolated behind B16.
-
-Build and install AIR with these fixes before compiling this mapping. External
-MLIR-AIE/Peano requirements follow the repository's normal setup. The build
-fingerprints the package-resolved `aircc`, which runs passes in-process;
-replacing only `air-opt` on PATH does not replace that compilation driver.
+Build and install AIR before compiling this mapping. External MLIR-AIE/Peano
+requirements follow the repository's normal setup. The build fingerprints the
+package-resolved `aircc`, which runs passes in-process; replacing only
+`air-opt` on PATH does not replace that compilation driver.
 
 ## Code map and checks
 

@@ -370,6 +370,55 @@ void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK, bfloat16 *__restrict pY,
 
 #elif ATTN_IMPL == ATTN_IMPL_1x8x1
 
+#ifdef HAS_QKV_BIAS
+// q/k projection biases (Qwen2.5) can put raw scores in the tens of thousands,
+// where a bf16 step is coarser than the score differences the softmax depends
+// on. So the scores are not rounded before the running max comes off: each raw
+// block accumulator is split into hi (rounded to bf16) and lo (the rest), both
+// go through the same shuffles into heads, and update_split() takes the offset
+// from the max as (hi - max) + lo. hi - max is exact for every key within a
+// factor of two of the max, which are the keys that carry weight. m is the
+// running max in raw score units here; it only has to be the same value in a
+// block's exponentials and in its correction c.
+ATTN_HOT aie::vector<bf16, 16> update_split(bf16 *m, float *c,
+                                            aie::vector<bf16, 16> &hi,
+                                            aie::vector<bf16, 16> &lo,
+                                            aie::mask<16> &mask) {
+  aie::vector<bf16, 16> masked_vm = aie::select((bf16)(-0x1.FEp127f), hi, mask);
+  bf16 vm = aie::reduce_max(masked_vm);
+  bf16 vmax = aie::max(vm, *m);
+  aie::vector<bf16, 16> Vecsub = aie::add(aie::sub(hi, vmax), lo);
+  Vecsub = aie::mul(Vecsub, (bf16)ATTN_SCALE).template to_vector<bf16>();
+
+  constexpr int min_clamp = -87.0f;
+  constexpr int max_clamp = 88.0f;
+  aie::vector<bf16, 16> min_value = aie::broadcast<bf16, 16>(min_clamp);
+  aie::vector<bf16, 16> max_value = aie::broadcast<bf16, 16>(max_clamp);
+
+  aie::vector<bf16, 16> Vec = aie::clamp(Vecsub, min_value, max_value);
+  aie::accum<accfloat, 16> Outvec = getExpBf16(Vec);
+  Vec = Outvec.template to_vector<bf16>(0);
+  Vec = aie::select((bf16)0, Vec, mask);
+
+  // Most blocks leave the max where it was; their correction is exactly 1,
+  // which also lets attn_kv's lazy rescale skip them.
+  float cf = 1.0f;
+  if (__builtin_bit_cast(uint16_t, vmax) != __builtin_bit_cast(uint16_t, *m)) {
+    bf16 correct = aie::sub(*m, vmax);
+    aie::vector<bf16, 16> correct_vec =
+        aie::mul(aie::broadcast<bf16, 16>(correct), (bf16)ATTN_SCALE)
+            .template to_vector<bf16>();
+    correct_vec = aie::clamp(correct_vec, min_value, max_value);
+    aie::accum<accfloat, 16> e = getExpBf16(correct_vec);
+    cf = e.to_vector<float>().get(0);
+  }
+
+  *m = vmax;
+  *c = cf;
+  return Vec;
+}
+#endif
+
 template <unsigned colQ, unsigned r, unsigned s, unsigned t>
 ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
                        bfloat16 *__restrict pY, bf16 *__restrict m,
@@ -417,6 +466,26 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
       C00.mac(A0, B0);
       C01.mac(A0, B1);
     }
+#ifdef HAS_QKV_BIAS
+    auto a00 = C00.to_accum(), a01 = C01.to_accum();
+    aie::vector<bf16, MMUL::size_C> h00 = a00.template to_vector<bf16>();
+    aie::vector<bf16, MMUL::size_C> h01 = a01.template to_vector<bf16>();
+    aie::vector<bf16, MMUL::size_C> l00 =
+        aie::sub(a00, h00).template to_vector<bf16>();
+    aie::vector<bf16, MMUL::size_C> l01 =
+        aie::sub(a01, h01).template to_vector<bf16>();
+    auto hz = aie::interleave_zip(h00, h01, 8);
+    auto lz = aie::interleave_zip(l00, l01, 8);
+
+    aie::vector<bf16, 16> hi[8], lo[8];
+    for (int i = 0; i < 4; i++) {
+      hi[i] = hz.first.template extract<16>(i);
+      hi[4 + i] = hz.second.template extract<16>(i);
+      lo[i] = lz.first.template extract<16>(i);
+      lo[4 + i] = lz.second.template extract<16>(i);
+    }
+
+#else
     auto mout0 = aie::interleave_zip(C00.template to_vector<bf16>(),
                                      C01.template to_vector<bf16>(), 8);
 
@@ -435,9 +504,15 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
     out[5] = mout3.extract<16>(1);
     out[6] = mout3.extract<16>(2);
     out[7] = mout3.extract<16>(3);
+#endif
 
     for (int h = 0; h < Q_HEADS_PER_CU; h++) {
+#ifdef HAS_QKV_BIAS
+      aie::vector<bf16, 16> vec =
+          update_split(m + h, c + h, hi[h], lo[h], mask);
+#else
       aie::vector<bf16, 16> vec = update(m + h, c + h, out[h], mask, is_first);
+#endif
       aie::store_v(pY1, vec);
       pY1 += 16;
     }

@@ -11,12 +11,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import subprocess
 import shutil
 
 COMMON = Path(__file__).resolve().parent
 from .build_identity import build_identity, check_existing
 
+from air.backend.compile_cache import run_compiler
 from air.ir import MemRefType, F32Type, BF16Type, IntegerAttr, StringAttr
 from air.dialects.air import (
     module_builder,
@@ -315,7 +315,7 @@ def main(model_dir, hidden_size):
 
     save()
     try:
-        subprocess.run(command, check=True)
+        run_compiler(command, check=True)
         module = build_module(
             args.projection_k, args.projection_n, args.cores, hidden_size
         )

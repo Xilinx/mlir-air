@@ -98,7 +98,8 @@ export HF_TOKEN=...                    # checkpoint + tokenizer download
 ## Quick Start
 
 ```bash
-# Build 1 — Prefill ELFs (7 of them; no weights/NPU needed) — ~2 min
+# Build 1 — The fused prefill (no weights/NPU needed). `make compile-prefill`
+#   builds the 7 per-op prefill ELFs instead.
 make compile
 
 # Build 2 — Fused hybrid decode templates (decode_L2048 + decode_L2047 slope ref)

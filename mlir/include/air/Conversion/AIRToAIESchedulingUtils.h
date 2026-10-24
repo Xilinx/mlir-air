@@ -233,10 +233,10 @@ struct MemcpyBundleAsFlow {
   // MM2S holds one entry per put op, so several MM2S ops from the same producer
   // tile map to one MM2S_alloc entry (the index spaces do NOT align). Grouping
   // of puts to producer-tile indices happens in simpleDMAChannelAllocation.
+  // All L3 (shim) puts share one entry, placed after the on-device producers.
   // Single-producer flows keep numMM2SAllocs == 1.
   std::vector<allocation_info_t> MM2S_alloc;
   std::vector<Operation *> MM2S; // air::ChannelPuts (one entry per put op)
-  air::MemorySpace MM2S_memspace;
   air::MemorySpace S2MM_memspace;
   int numMM2SAllocs = 0;
   int numS2MMAllocs = 0;

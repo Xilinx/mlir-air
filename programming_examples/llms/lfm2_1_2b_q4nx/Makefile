@@ -18,7 +18,8 @@
 # simpler and strictly more accurate.
 #
 # Quick start:
-#   make compile        — Build/cache the prefill ELFs (no weights needed)
+#   make compile        — Build the fused prefill (one build for any prompt up to its max_len)
+#   make compile-prefill — Build the per-op prefill ELFs instead (no weights needed)
 #   make compile-decode — Build the fused decode templates (~15 min; no weights)
 #   make run            — Run inference: NPU prefill + fused NPU decode
 #   make verify         — Top-k token-set inclusion gate: NPU q4_0 vs the Q4_0 HF reference
@@ -146,7 +147,7 @@ DECODE_FLAGS_STAMP := $(srcdir)/.decode_flags
 MODEL_CFG = $(or $(shell $(DECODE_ENV) FUSED_DECODE_PRINT_CONST=MODEL_CONFIG_STAMP $(PYTHON) $(DECODE_DRIVER)),$(error cannot query MODEL_CONFIG_STAMP from $(DECODE_DRIVER); the stamp would be empty and a stale template silently reused -- run that command by hand to see why))
 DECODE_FLAGS       = $(MODEL_CFG) LBUILD=$(LBUILD) SC_WAVES=$(SC_WAVES)
 
-.PHONY: help compile compile-decode _compile_decode_build run profile chat \
+.PHONY: help compile compile-prefill compile-decode _compile_decode_build run profile chat \
         verify verify-full diagnosis verify-paris decode-gate weights \
         profile-prefill ask gen clean
 
@@ -159,7 +160,8 @@ help:
 	@echo "all of them in ONE fused decode dispatch."
 	@echo ""
 	@echo "Quick start:"
-	@echo "  make compile          Build/cache the prefill ELFs (no weights)"
+	@echo "  make compile          Build the fused prefill (one build, any prompt up to its max_len)"
+	@echo "  make compile-prefill  Build the per-op prefill ELFs instead (no weights)"
 	@echo "  make compile-decode   Build the fused decode templates (~15 min, no weights)"
 	@echo "  make run              Run inference ($(N_TOKENS) tokens): NPU prefill + decode"
 	@echo "  make chat             Interactive chat REPL (streaming output)"
@@ -183,8 +185,12 @@ help:
 	@echo "  LAYERS=               Build only the first N layers (bisect; unset = all 16)"
 	@echo "  MODEL_SOURCE=...      Weight source (default: $(MODEL_SOURCE))"
 
-## Build/cache the prefill ELFs. No weight data or NPU dispatch required.
-compile:
+## Build the fused prefill (../shared/fused_prefill). run, verify and profile
+## prefill on it when it is built, and on the per-op prefill otherwise.
+compile: compile-fused-prefill
+
+## Build/cache the per-op prefill ELFs. No weight data or NPU dispatch required.
+compile-prefill:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) --compile-only
 

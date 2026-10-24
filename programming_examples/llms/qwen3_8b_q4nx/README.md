@@ -74,7 +74,7 @@ cost, not part of TTFT; the driver reports the two separately.
 ## Quick Start
 
 ```bash
-# Build everything, weight-free: the prefill ELFs + the decode templates.
+# Build everything, weight-free: the fused prefill + the decode templates.
 # Production decode templates are ATTN_MAXL=2048.
 make compile
 

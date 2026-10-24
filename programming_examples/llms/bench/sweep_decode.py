@@ -217,7 +217,7 @@ def main():
     p.add_argument(
         "--contexts",
         required=True,
-        help="comma-separated, e.g. 1024,2048,4096,8192,16384,32768,65536,131072",
+        help="comma-separated, e.g. 2048,8192,32768,131072",
     )
     p.add_argument(
         "--expect-fail",

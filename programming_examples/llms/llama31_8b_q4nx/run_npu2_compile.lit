@@ -1,7 +1,7 @@
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
-// Llama-3.1-8B Q4NX PREFILL compile-only smoke test: builds every prefill
+// Llama-3.1-8B Q4NX PREFILL compile-only smoke test: builds every per-op prefill
 // kernel ELF through the AIR -> AIE -> aiecc -> Peano pipeline. No NPU dispatch,
 // no weight download (the kernels are weight-free; Q4NX only changes the host
 // weight source).
@@ -17,5 +17,5 @@
 // RUN: mkdir -p test_peano_compile
 // RUN: cd test_peano_compile
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// RUN: make -f %S/Makefile compile-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: Compilation passed.
