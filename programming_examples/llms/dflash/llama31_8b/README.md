@@ -1,14 +1,17 @@
 # Llama-3.1-8B-Instruct DFlash on NPU2
 
 This example runs the Llama-3.1-8B-Instruct target and its official Z-Lab
-DFlash drafter with block size 8. NPU programs perform prompt prefill,
+DFlash drafter with block size 8 by default. NPU programs perform prompt prefill,
 context preparation, drafting and verification. The host accepts the matching
 draft prefix, commits KV state and streams the resulting tokens.
 
 The target uses the FastFlowLM Q4NX checkpoint. The drafter body is quantized
 from the pinned official BF16 checkpoint to group32 Q4NX; its learned context
 projections use BF16 weights and BFP matrix arithmetic. The drafter checkpoint
-was trained with block size 10; this example executes B8.
+was trained with block size 10. B8 and B16 are execution configurations;
+B16 does not imply a checkpoint trained for sixteen positions. See the
+[B16 mapping](docs/b16-megakernel.md) for its shared AIR graph and compiler
+requirements.
 
 ## Run
 
@@ -28,14 +31,17 @@ make chat
 `make download` seeds the pinned target, drafter, tokenizer and HF BF16
 verification reference. Subsequent runs can use `OFFLINE=1`. Model snapshots
 use the normal Hugging Face cache. Converted weights are cached under
-`~/.cache/mlir-air/dflash/llama31_8b`; compiled programs use `build/`.
+`~/.cache/mlir-air/dflash/llama31_8b`; compiled programs use `build/` (B8) or `build_b16/` (B16).
 `DFLASH_CACHE_DIR` and `BUILD_DIR` select other locations. No research checkout
 or retained experiment artifact is required.
 
 `make run` streams a response. `make chat` prepares the model once, then
 accepts independent prompts; it does not retain conversation history.
 Both use NPU prefill, with a default padded capacity of 2048. Decode capacity
-is 4096, and the runner checks that the prompt, output and final B8 block fit.
+is 4096, and the runner checks that the prompt, output and final candidate block fit.
+
+Pass `BLOCK_SIZE=16` to the compile/run/chat and verification/benchmark commands
+to select B16. Both configurations use the same pinned resources and caches.
 
 ## Verify and benchmark
 
@@ -48,7 +54,7 @@ make full80                  # optional: 16 prompts from each dataset
 ```
 
 The paired study uses the existing native `llama31_8b_q4nx` B1 decoder and
-this B8 DFlash loop. Both receive identical saved NPU-prefill states.
+the selected DFlash loop. Both receive identical saved NPU-prefill states.
 The shared frozen prompt texts are in
 [`common/benchmark/prompts.json`](../common/benchmark/prompts.json): GSM8K,
 MATH500, HumanEval, MBPP and the first turn of MT-Bench. Full80 means all

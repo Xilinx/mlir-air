@@ -4,7 +4,12 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 PYTHON ?= python3
 export OMP_NUM_THREADS ?= 8
 export OPENBLAS_NUM_THREADS ?= 8
-BUILD_DIR ?= $(srcdir)/build
+BLOCK_SIZE ?= 8
+ifeq ($(filter $(BLOCK_SIZE),8 16),)
+$(error BLOCK_SIZE must be 8 or 16)
+endif
+BUILD_DIR ?= $(srcdir)/build$(if $(filter 16,$(BLOCK_SIZE)),_b16,)
+LAST_PREFIX = $(if $(filter 16,$(BLOCK_SIZE)),4080,4088)
 override BUILD_DIR := $(abspath $(BUILD_DIR))
 N_TOKENS ?= 128
 PROMPT ?= Explain how speculative decoding speeds up language models.
@@ -16,9 +21,9 @@ PER_DATASET ?= 16
 ifndef VERIFY_DIR
 VERIFY_DIR := $(BUILD_DIR)/verification/$(shell date +%Y%m%d-%H%M%S)
 endif
-PROFILE_OUTPUT ?= $(BUILD_DIR)/llama31_8b_dflash_b8.perf.json
-FULL20_OUTPUT ?= $(BUILD_DIR)/llama31_8b_dflash_b8.full20.json
-FULL80_OUTPUT ?= $(BUILD_DIR)/llama31_8b_dflash_b8.full80.json
+PROFILE_OUTPUT ?= $(BUILD_DIR)/llama31_8b_dflash_b$(BLOCK_SIZE).perf.json
+FULL20_OUTPUT ?= $(BUILD_DIR)/llama31_8b_dflash_b$(BLOCK_SIZE).full20.json
+FULL80_OUTPUT ?= $(BUILD_DIR)/llama31_8b_dflash_b$(BLOCK_SIZE).full80.json
 OFFLINE ?= 0
 OFFLINE_ARG = $(if $(filter 1,$(OFFLINE)),--offline,)
 export DFLASH_PROMPT := $(PROMPT)
@@ -33,7 +38,7 @@ MODEL_PAIR = --target $(BUILD_DIR)/target --draft $(BUILD_DIR)/draft --prepass $
 .NOTPARALLEL:
 .PHONY: help download weights compile compile-target compile-draft compile-prepass compile-prefill compile-baseline run chat verify verify-host verify-state verify-model profile full20 full80 benchmark-data benchmark clean
 help:
-	@echo 'Llama-3.1-8B DFlash B8 on NPU2 (use the normal AIR environment)'
+	@echo 'Llama-3.1-8B DFlash B$(BLOCK_SIZE) on NPU2 (use the normal AIR environment)'
 	@echo 'make weights          Download pinned checkpoints and pack weights'
 	@echo 'make download         Seed pinned HF checkpoints; prompt texts are included for offline runs'
 	@echo 'make compile          Compile target, drafter, NPU prepass and prefill'
@@ -56,10 +61,10 @@ weights:
 
 compile: compile-target compile-draft compile-prepass compile-prefill
 compile-target:
-	$(PYTHON) $(srcdir)/build_target.py --output $(BUILD_DIR)/target --role target --check-existing
+	$(PYTHON) $(srcdir)/build_target.py --output $(BUILD_DIR)/target --role target --block-size $(BLOCK_SIZE) --check-existing
 
 compile-draft: compile-target
-	$(PYTHON) $(srcdir)/build_target.py --output $(BUILD_DIR)/draft --role drafter --reuse-objects $(BUILD_DIR)/target --check-existing
+	$(PYTHON) $(srcdir)/build_target.py --output $(BUILD_DIR)/draft --role drafter --block-size $(BLOCK_SIZE) --reuse-objects $(BUILD_DIR)/target --check-existing
 
 compile-prepass:
 	$(PYTHON) $(srcdir)/build_bfp_prepass.py --output $(BUILD_DIR)/prepass --check-existing
@@ -81,8 +86,8 @@ verify-host:
 	$(MAKE) -f $(srcdir)/../qwen3_4b/Makefile verify-host
 
 verify-state:
-	$(NPU_RUN) $(srcdir)/tests/check_decoder.py --artifact $(BUILD_DIR)/target --role target --prefixes 0 7 16 64 1024 4088 --output $(VERIFY_DIR)/target.json
-	$(NPU_RUN) $(srcdir)/tests/check_decoder.py --artifact $(BUILD_DIR)/draft --role drafter --prefixes 0 7 16 64 1024 4088 --output $(VERIFY_DIR)/draft.json
+	$(NPU_RUN) $(srcdir)/tests/check_decoder.py --artifact $(BUILD_DIR)/target --role target --prefixes 0 7 16 64 1024 $(LAST_PREFIX) --output $(VERIFY_DIR)/target.json
+	$(NPU_RUN) $(srcdir)/tests/check_decoder.py --artifact $(BUILD_DIR)/draft --role drafter --prefixes 0 7 16 64 1024 $(LAST_PREFIX) --output $(VERIFY_DIR)/draft.json
 	$(NPU_RUN) $(srcdir)/verify_loop.py $(PAIR) $(PREFILL) --output $(VERIFY_DIR)/loop.json
 
 verify-model:
@@ -99,7 +104,7 @@ benchmark: benchmark-data
 	$(NPU_RUN) $(srcdir)/benchmark.py --inputs $(BENCHMARK_BUNDLE)/inputs $(MODEL_PAIR) --output $(BENCHMARK_OUTPUT) --tokens $(STUDY_TOKENS) --per-dataset $(PER_DATASET)
 
 profile:
-	$(NPU_RUN) $(srcdir)/profile_dflash.py --build $(BUILD_DIR) --output $(PROFILE_OUTPUT) --model llama31_8b_dflash_b8
+	$(NPU_RUN) $(srcdir)/profile_dflash.py --build $(BUILD_DIR) --output $(PROFILE_OUTPUT) --model llama31_8b_dflash_b$(BLOCK_SIZE)
 
 full20:
 	$(MAKE) -f $(srcdir)/Makefile benchmark-data PER_DATASET=4
