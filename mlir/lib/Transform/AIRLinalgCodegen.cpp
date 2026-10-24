@@ -5005,14 +5005,16 @@ transform::FuseTruncfLinalgOp::apply(transform::TransformRewriter &rewriter,
     return emitDefiniteFailure() << "failed to fuse the operations";
   }
 
-  // LLVM 23: specialize rejects generics with output casts (truncf→yield).
-  // If the fused op has 2D+ inputs (matmul-compatible), replace with a
-  // linalg.matmul directly, bypassing specialize. The matmul body auto-
-  // generates in the output element type (bf16), and Phase 12 adds
-  // extf/truncf pairs for f32 accumulation during vectorization.
-  auto inputType =
-      dyn_cast<RankedTensorType>(fusedOp->getDpsInputs()[0].getType());
-  if (inputType && inputType.getRank() >= 2) {
+  // Specialization does not take a generic whose output is cast (truncf before
+  // the yield). If the fused op is a matmul, build the linalg.matmul here; its
+  // body is in the output element type, and f32 accumulation is left to
+  // vectorization. Any other fused op stays a generic.
+  auto isMatmul = [&](linalg::GenericOp op) {
+    return linalg::isaContractionOpInterface(op) &&
+           op.getIndexingMapsArray() ==
+               linalg::MatmulOp::getDefaultIndexingMaps(op.getContext());
+  };
+  if (isMatmul(*fusedOp)) {
     rewriter.setInsertionPoint(*fusedOp);
     auto matmulOp = linalg::MatmulOp::create(
         rewriter, fusedOp->getLoc(), fusedOp->getResultTypes(),
