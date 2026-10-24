@@ -5102,6 +5102,60 @@ void transform::FuseTruncfLinalgOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
+// ReuseInputAsInitOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::ReuseInputAsInitOp::applyToOne(
+    transform::TransformRewriter &rewriter, linalg::LinalgOp target,
+    transform::ApplyToEachResultList &results,
+    transform::TransformState &state) {
+  if (!target.hasPureTensorSemantics() || target.getNumDpsInits() != 1)
+    return emitDefaultSilenceableFailure(target)
+           << "expected a linalg op on tensors with one output";
+  if (target.getNumParallelLoops() != target.getNumLoops())
+    return emitDefaultSilenceableFailure(target)
+           << "expected only parallel iterators";
+  OpOperand *out = target.getDpsInitOperand(0);
+  if (target.payloadUsesValueFromOperand(out))
+    return emitDefaultSilenceableFailure(target) << "the output is read";
+
+  auto fits = [&](OpOperand *in) {
+    return in->get().getType() == out->get().getType() &&
+           target.getMatchingIndexingMap(in) ==
+               target.getMatchingIndexingMap(out);
+  };
+  OpOperand *in = nullptr;
+  if (std::optional<uint64_t> i = getInput()) {
+    if (*i >= static_cast<uint64_t>(target.getNumDpsInputs()))
+      return emitDefaultSilenceableFailure(target)
+             << "input " << *i << " is out of range";
+    in = target.getDpsInputOperand(*i);
+    if (!fits(in))
+      return emitDefaultSilenceableFailure(target)
+             << "input " << *i
+             << " differs from the output in type or indexing map";
+  } else {
+    auto inputs = target.getDpsInputOperands();
+    auto it = llvm::find_if(inputs, fits);
+    if (it == inputs.end())
+      return emitDefaultSilenceableFailure(target)
+             << "no input has the output's type and indexing map";
+    in = *it;
+  }
+  // The body reads the value through the output, so that after tiling the
+  // read and the write are the same slice. The input stays: dropping it is
+  // left to the erase_unnecessary_inputs patterns, as it changes the op's
+  // operand list.
+  rewriter.modifyOpInPlace(target, [&] {
+    out->set(in->get());
+    rewriter.replaceAllUsesWith(target.getMatchingBlockArgument(in),
+                                target.getMatchingBlockArgument(out));
+  });
+  results.push_back(target);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
 // VectorTypeCastOp
 //===----------------------------------------------------------------------===//
 

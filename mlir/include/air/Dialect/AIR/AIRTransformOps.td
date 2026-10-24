@@ -773,6 +773,64 @@ def FuseTruncfLinalgOp : Op<Transform_Dialect, "air.fuse_truncf_linalg",
   let assemblyFormat = "$truncf_op `,` $producer_op attr-dict `:` functional-type(operands, results)";
 }
 
+def ReuseInputAsInitOp
+    : Op<Transform_Dialect, "air.reuse_input_as_init",
+         [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+          TransformOpInterface, TransformEachOpTrait]> {
+  let summary =
+      "Make an elementwise linalg op write its result over one of its inputs";
+  let description = [{
+    Sets the init of the target's output to one of its inputs, so that
+    bufferization writes the result into that input's buffer, and makes the
+    body read that value through the output block argument instead of the
+    input's, so that after tiling the read and the write are the same slice.
+    The input is left in place, unused; the patterns of
+    `transform.apply_patterns.linalg.erase_unnecessary_inputs` drop it. The
+    target must have one output, which its body does not read, and only
+    parallel iterators. The input is operand `input` of the op's inputs if
+    given, otherwise the first input with the output's type and indexing
+    map; either way it must have both.
+
+    A value updated in a loop, such as a running maximum, is computed from its
+    previous value into a new tensor:
+
+    ```mlir
+    %m_new = linalg.generic {...}
+        ins(%m_old, %rowmax : tensor<64x1xbf16>, tensor<64x1xbf16>)
+        outs(%empty : tensor<64x1xbf16>)
+    ```
+
+    and bufferizes to a buffer of its own in every iteration. With the
+    previous value as the init, read through the output, it is updated in
+    place:
+
+    ```mlir
+    %m_new = linalg.generic {...}
+        ins(%m_old, %rowmax : tensor<64x1xbf16>, tensor<64x1xbf16>)
+        outs(%m_old : tensor<64x1xbf16>) {
+    ^bb0(%unused: bf16, %r: bf16, %m: bf16):
+      ...
+    }
+    ```
+
+    Returns a handle to the updated op. Fails silenceably if the target does
+    not qualify.
+  }];
+  let arguments = (ins TransformHandleTypeInterface:$target,
+      OptionalAttr<I64Attr>:$input);
+  let results = (outs TransformHandleTypeInterface:$transformed);
+  let assemblyFormat = "$target (`input` `=` $input^)? attr-dict `:` "
+                       "functional-type(operands, results)";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::linalg::LinalgOp target,
+        ::mlir::transform::ApplyToEachResultList &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
 def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
