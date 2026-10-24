@@ -7670,6 +7670,15 @@ static bool areInverseLayouts(Operation *pack, Operation *unpack) {
 static std::optional<LoopCarriedPack> matchLoopCarriedPack(scf::ForOp forOp,
                                                            unsigned index) {
   BlockArgument arg = forOp.getRegionIterArgs()[index];
+  // Static shapes only: with them, equal types are equal shapes, so the value
+  // packed before the loop has the shape the loop packs each trip, and a
+  // destination made outside the loop has the carried value's shape.
+  auto isStatic = [](Value v) {
+    auto t = dyn_cast<RankedTensorType>(v.getType());
+    return t && t.hasStaticShape();
+  };
+  if (!isStatic(arg))
+    return std::nullopt;
   // The unpacked value goes straight back round the loop. An unpack writes
   // all of its destination, so the destination may be the carried value, any
   // tensor available before the loop, or a fresh tensor that can be built
@@ -7693,7 +7702,9 @@ static std::optional<LoopCarriedPack> matchLoopCarriedPack(scf::ForOp forOp,
       return std::nullopt;
     pack = user;
   }
-  if (!pack || !areInverseLayouts(pack, unpack))
+  if (!pack || !areInverseLayouts(pack, unpack) ||
+      !isStatic(pack->getResult(0)) ||
+      (unpackDest(unpack) && !isStatic(unpackDest(unpack))))
     return std::nullopt;
   Value dest = packDest(pack);
   if (dest && !forOp.isDefinedOutsideOfLoop(dest) &&

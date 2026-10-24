@@ -323,3 +323,33 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// A dynamically shaped value, its expansion's extent computed in the loop.
+// Equal types do not prove equal shapes, and the extent is not available
+// before the loop. It is not hoisted.
+
+func.func @reshape_dynamic(%init: tensor<?x16xf32>, %rows: index) -> tensor<?x16xf32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c4 = arith.constant 4 : index
+  %r = scf.for %i = %c0 to %c4 step %c1 iter_args(%acc = %init) -> tensor<?x16xf32> {
+    %h = arith.divui %rows, %c2 : index
+    %e = tensor.expand_shape %acc [[0, 1], [2]] output_shape [%h, 2, 16] : tensor<?x16xf32> into tensor<?x2x16xf32>
+    %x = math.exp %e : tensor<?x2x16xf32>
+    %c = tensor.collapse_shape %x [[0, 1], [2]] : tensor<?x2x16xf32> into tensor<?x16xf32>
+    scf.yield %c : tensor<?x16xf32>
+  }
+  return %r : tensor<?x16xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %loop = transform.structured.match ops{["scf.for"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    // expected-error @below {{no iteration argument is packed and unpacked in the loop}}
+    %new, %packs = transform.air.hoist_loop_carried_pack %loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+    transform.yield
+  }
+}
