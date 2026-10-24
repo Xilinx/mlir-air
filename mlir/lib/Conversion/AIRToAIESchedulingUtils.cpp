@@ -281,26 +281,48 @@ bool air::memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB) {
   return false; // Unknown or different air::MemcpyInterface op types.
 }
 
+// The shortest unit a chain of memcpy ops is two or more whole copies of, or
+// an empty vector. The unit may move one buffer more than once, as [k, v, v]
+// does.
+static llvm::SetVector<Operation *> wholeCopiesUnit(ArrayRef<Operation *> ops) {
+  for (size_t p = 1; 2 * p <= ops.size(); p++)
+    if (ops.size() % p == 0 &&
+        llvm::all_of(llvm::seq(p, ops.size()), [&](size_t i) {
+          return air::memcpyIMappedToEquivalentBDs(ops[i], ops[i % p]);
+        }))
+      return llvm::SetVector<Operation *>(ops.begin(), ops.begin() + p);
+  return {};
+}
+
 // Canonicalize a chain of memcpy ops as candidates to map to dma bds, by
-// removing repetitive patterns. Returns the shortest unit the chain repeats
-// (its tail may be a prefix of the unit), the whole chain when no two of its
-// ops are equivalent, or an empty vector otherwise. A unit may move one buffer
-// more than once.
+// removing repetitive patterns. Returns the unique repeating unit, the unit
+// the chain is whole copies of when that unit repeats an op, or an empty
+// vector when the chain does not repeat.
 llvm::SetVector<Operation *>
 air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
-  ArrayRef<Operation *> ops = memcpyIOps.getArrayRef();
-  for (size_t p = 1; p < ops.size(); p++) {
-    bool repeats = true;
-    for (size_t i = p; i < ops.size() && repeats; i++)
-      repeats = memcpyIMappedToEquivalentBDs(ops[i], ops[i % p]);
-    if (repeats)
-      return llvm::SetVector<Operation *>(ops.begin(), ops.begin() + p);
+  // Get a vector of unique BDs.
+  llvm::SetVector<Operation *> uniqueBDPattern;
+  auto opIt = memcpyIOps.begin();
+  while (opIt != memcpyIOps.end() &&
+         llvm::none_of(uniqueBDPattern, [opIt](Operation *op1) {
+           return memcpyIMappedToEquivalentBDs(*opIt, op1);
+         })) {
+    uniqueBDPattern.insert(*opIt);
+    opIt++;
   }
-  for (size_t i = 0; i < ops.size(); i++)
-    for (size_t j = 0; j < i; j++)
-      if (memcpyIMappedToEquivalentBDs(ops[i], ops[j]))
-        return llvm::SetVector<Operation *>();
-  return memcpyIOps;
+
+  unsigned idx = 0;
+  while (opIt != memcpyIOps.end()) {
+    // BD repetition found. Check if repeating pattern.
+    if (!memcpyIMappedToEquivalentBDs(*opIt, uniqueBDPattern[idx]))
+      return wholeCopiesUnit(memcpyIOps.getArrayRef());
+    opIt++;
+    idx++;
+    idx %= uniqueBDPattern.size();
+  }
+
+  // Repeating BD chain successfully detected.
+  return uniqueBDPattern;
 }
 
 // Given a vector of memcpy operations, split them into BD tasks paired with the
