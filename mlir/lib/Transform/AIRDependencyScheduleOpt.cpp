@@ -6676,12 +6676,12 @@ private:
   // Fuses, level by level, the scf.for nests around a and b, from the loops
   // in aRegion and bRegion down to a's and b's own loops: at each level b's
   // loop body moves into a's loop after a's body, and b's loop-carried values
-  // are carried with it. Each channel then takes, every iteration, a's transfers and
-  // then b's, in their order. The loops at each level must have the same
-  // bounds and step, and b's body may use from outside only what dominates
-  // a's loop. b may sit in loops a has no counterpart for, below the levels
-  // they share; those move with b's body. With `dryRun`, only reports whether
-  // the nests can be fused.
+  // are carried with it. Each channel then takes, every iteration, a's
+  // transfers and then b's, in their order. The loops at each level must have
+  // the same bounds and step, and b's body may use from outside only what
+  // dominates a's loop. b may sit in loops a has no counterpart for, below the
+  // levels they share; those move with b's body. With `dryRun`, only reports
+  // whether the nests can be fused.
   bool fuseLoopNestsLevelwise(RewriterBase &rewriter, Operation *a,
                               Operation *b, Region *aRegion, Region *bRegion,
                               bool dryRun) {
