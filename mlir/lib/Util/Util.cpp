@@ -2193,8 +2193,16 @@ static std::optional<int64_t> ivCoefficient(Value v, Value iv,
       llvm::all_of(c, [](std::optional<int64_t> x) { return x && *x == 0; });
   if (independent)
     return 0;
-  if (isa<CastOpInterface>(op) && op->getNumOperands() == 1)
+  if (isa<CastOpInterface>(op) && op->getNumOperands() == 1) {
+    // An integer narrower than 32 bits may wrap within a transfer's range of
+    // offsets.
+    auto narrow = [](Type t) {
+      return t.isInteger() && t.getIntOrFloatBitWidth() < 32;
+    };
+    if (narrow(op->getOperand(0).getType()) || narrow(v.getType()))
+      return std::nullopt;
     return c[0];
+  }
   if (isa<arith::AddIOp, arith::SubIOp>(op)) {
     if (!c[0] || !c[1])
       return std::nullopt;
@@ -2317,12 +2325,32 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
             << droppedTrips;
       continue;
     }
-    int trip_count = -1;
+    std::optional<int64_t> trip_count;
     if (auto afo = dyn_cast_if_present<affine::AffineForOp>(o))
-      trip_count = *getStaticAffineForTripCountAsInt(afo);
+      trip_count = getStaticAffineForTripCountAsInt(afo);
     else if (auto sfo = dyn_cast_if_present<scf::ForOp>(o))
-      trip_count = *getStaticScfForTripCountAsInt(sfo);
-    Value new_wrap = arith::ConstantIndexOp::create(builder, loc, trip_count);
+      trip_count = getStaticScfForTripCountAsInt(sfo);
+    Value new_wrap;
+    if (trip_count) {
+      new_wrap = arith::ConstantIndexOp::create(builder, loc, *trip_count);
+    } else {
+      // A trip count known only at run time becomes a dim of run-time size,
+      // which only a shim descriptor takes.
+      auto sfo = dyn_cast<scf::ForOp>(o);
+      if (skipZeroStride || !sfo)
+        return failure();
+      auto toIndex = [&](Value v) -> Value {
+        if (v.getType().isIndex())
+          return v;
+        return arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
+                                          v);
+      };
+      Value span =
+          arith::SubIOp::create(builder, loc, toIndex(sfo.getUpperBound()),
+                                toIndex(sfo.getLowerBound()));
+      new_wrap = arith::CeilDivSIOp::create(builder, loc, span,
+                                            toIndex(sfo.getStep()));
+    }
     // Skip stride modulo if memref is unranked.
     int64_t new_stride_value =
         getTensorVolume(memref.getType()) == 1
@@ -2369,7 +2397,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
           if (w && s)
             maxIndex += (*w - 1) * (*s);
         }
-        maxIndex += (trip_count - 1) * new_stride_value;
+        maxIndex += (*trip_count - 1) * new_stride_value;
         if (maxIndex >= bufferVolume)
           continue;
       }
@@ -2472,9 +2500,10 @@ bool air::isContiguousRowMajorOrRepeated(ArrayRef<OpFoldResult> sizes,
   for (; firstBodyDim < static_cast<int>(sizes.size()); ++firstBodyDim) {
     auto sz = mlir::getConstantIntValue(sizes[firstBodyDim]);
     auto st = mlir::getConstantIntValue(strides[firstBodyDim]);
-    if (!sz || !st)
+    if (!st)
       return false;
-    if (*sz == 1 || *st == 0)
+    // A stride-0 dim repeats the run, whether its size is known or not.
+    if ((sz && *sz == 1) || *st == 0)
       continue;
     break;
   }
@@ -2482,8 +2511,12 @@ bool air::isContiguousRowMajorOrRepeated(ArrayRef<OpFoldResult> sizes,
   for (int i = static_cast<int>(sizes.size()) - 1; i >= firstBodyDim; --i) {
     auto sz = mlir::getConstantIntValue(sizes[i]);
     auto st = mlir::getConstantIntValue(strides[i]);
-    if (!sz || !st)
+    if (!st)
       return false;
+    // A run-time size that continues the run, as its outermost dim, makes
+    // the run's length known only at run time.
+    if (!sz)
+      return i == firstBodyDim && static_cast<uint64_t>(*st) == stride_factor;
     if (*sz == 1)
       continue;
     if (static_cast<uint64_t>(*st) != stride_factor)

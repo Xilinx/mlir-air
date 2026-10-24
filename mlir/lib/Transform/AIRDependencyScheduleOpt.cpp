@@ -2884,8 +2884,29 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     // fold and leave the loop intact so AIRUnrollScfForIntoBDChain can unroll
     // it into a chain of constant-shape descriptors instead.
     auto isNonConst = [](Value v) { return !getConstantIntValue(v); };
-    if (llvm::any_of(wraps, isNonConst) || llvm::any_of(strides, isNonConst))
+    bool runTimeWrap = llvm::any_of(wraps, isNonConst);
+    bool runTimeTrips = !air::getStaticScfForTripCountAsInt(for_op);
+    if (llvm::any_of(strides, isNonConst))
       return failure();
+    // Two exceptions, at the shim only, where a run-time size can be the
+    // descriptor's length (with the dims below it one dense run) under a
+    // repeat count: a loop with a run-time trip count over a dense run that
+    // each trip continues becomes that length, and a static loop whose
+    // induction variable reaches neither offsets nor sizes, around such a
+    // run-time size, becomes the repeat.
+    Value iv = for_op.getInductionVar();
+    auto ivFree = [&](Value v) {
+      return air::getInductionVarCoefficient(v, iv) == 0;
+    };
+    if (runTimeWrap || runTimeTrips) {
+      if (skipZeroStride || (runTimeWrap && runTimeTrips) ||
+          !getConstantIntValue(for_op.getLowerBound()) ||
+          !getConstantIntValue(for_op.getStep()))
+        return failure();
+      if (runTimeWrap &&
+          (!llvm::all_of(offsets, ivFree) || !llvm::all_of(wraps, ivFree)))
+        return failure();
+    }
 
     // With skipZeroStride a loop whose induction variable reaches no offset is
     // folded as a dropped stride-0 dimension: one send per fill. A buffer
@@ -2933,11 +2954,42 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       populateDefaultWrapsAndStrides(b, channel_op.getMemref(), offsets, wraps,
                                      strides);
 
-    int numActualWrapDims = 0;
-    for (auto v : wraps) {
-      if (*getConstantIntValue(v) > 1)
-        numActualWrapDims++;
+    if (runTimeTrips) {
+      // Each trip must continue the dense run the trip before it read.
+      int64_t run = 1, advance = 0;
+      for (auto [o, s] : llvm::zip(offsets, strides)) {
+        auto c = air::getInductionVarCoefficient(o, iv);
+        if (!c)
+          return failure();
+        advance += *c * *getConstantIntValue(s);
+      }
+      for (auto [w, s] : llvm::reverse(llvm::zip(wraps, strides))) {
+        int64_t wrap = *getConstantIntValue(w);
+        if (wrap > 1 && *getConstantIntValue(s) != run)
+          return failure();
+        run *= wrap;
+      }
+      if (advance * *getConstantIntValue(for_op.getStep()) != run)
+        return failure();
     }
+    if (runTimeWrap) {
+      // canonicalizeWrapAndStrideList leaves a list with a run-time size as
+      // it is; drop the outer dims of size one at offset zero, as it would,
+      // so that the repeat takes the outermost dim.
+      while (wraps.size() > 1 && getConstantIntValue(wraps[0]) == 1 &&
+             getConstantIntValue(offsets[0]) == 0) {
+        offsets.erase(offsets.begin());
+        wraps.erase(wraps.begin());
+        strides.erase(strides.begin());
+      }
+    }
+
+    // A run-time size counts as a dim in use.
+    auto inUse = [](Value v) {
+      auto c = getConstantIntValue(v);
+      return !c || *c > 1;
+    };
+    int numActualWrapDims = llvm::count_if(wraps, inUse);
     // Pre-fold gate. At the maxNumDims boundary, admit only when some
     // parent IV reaches an offset that canonicalize can collapse: offset[0]
     // (outermost) or any offset whose wrap is statically 1 (size-1 dim
@@ -3001,15 +3053,8 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     // dim count back within maxNumDims. The rejection falls through to
     // AIRUnrollScfForIntoBDChain, which unrolls at the AIR level and
     // preserves per-op paired waits.
-    if (maxNumDims >= 0) {
-      int postFoldActiveDims = 0;
-      for (auto v : wraps) {
-        if (auto cv = getConstantIntValue(v); cv && *cv > 1)
-          postFoldActiveDims++;
-      }
-      if (postFoldActiveDims > maxNumDims)
-        return failure();
-    }
+    if (maxNumDims >= 0 && llvm::count_if(wraps, inUse) > maxNumDims)
+      return failure();
 
     // Outermost-dimension rebalance (shim only).
     //
@@ -3087,10 +3132,14 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       for (unsigned i = 1; i < strides.size(); i++) {
         auto constWrap = mlir::getConstantIntValue(wraps[i]);
         auto constStride = mlir::getConstantIntValue(strides[i]);
-        if (!constWrap)
-          continue;
         if (!constStride)
           continue;
+        if (!constWrap) {
+          // A run-time size is in use.
+          if (*constStride)
+            activeDimsInBetween++;
+          continue;
+        }
         if (*constWrap <= 1)
           continue; // Inactive dimension. Continue.
         if (*constStride) {
@@ -3127,6 +3176,10 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     }
     SmallVector<Value, 1> deps =
         for_op.getOperands().drop_front(for_op.getNumControlOperands());
+    // What the transfer waits for from outside the loop, it still waits for.
+    for (Value d : air::getAsyncDependenciesFromOp(channel_op))
+      if (for_op.isDefinedOutsideOfLoop(d) && !llvm::is_contained(deps, d))
+        deps.push_back(d);
 
     // Hoist any pure ops that the new channel op depends on.
     SmallVector<Value> new_opers = llvm::to_vector(
@@ -3166,6 +3219,11 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
           /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     new_chan_op->setAttrs(channel_op->getDiscardableAttrDictionary());
     air::copyPaddingAttributes(channel_op, new_chan_op);
+    if (auto put = dyn_cast<air::ChannelPutOp>(channel_op.getOperation()))
+      if (Value dest = put.getDest())
+        cast<air::ChannelPutOp>(new_chan_op.getOperation())
+            .getDestMutable()
+            .assign(air::lookupOrDefaultRange(dest, remap));
 
     // Clear all external uses of for_op before erasing it.
     for (auto res : for_op.getResults()) {
@@ -8799,6 +8857,99 @@ findLockstepCoupledChannels(func::FuncOp func) {
   return coupled;
 }
 
+static void foldChannelPutChains(Region *region, air::MemorySpace space,
+                                 const DmaBdLimits &limits);
+
+// A loop with a run-time trip count, holding one shim transfer, folds into a
+// dim of that size (AIRSpecializeChannelWrapAndStrideInScfFor), which holds
+// only for a positive count: a descriptor cannot be of length zero. So the
+// loop, with the static loops around it that do nothing else, runs only when
+// its trip count is positive; otherwise the nest yields its inits, as it
+// would with no trip. Returns the guards.
+static SmallVector<scf::IfOp> guardRunTimeLoops(Region *region) {
+  SmallVector<scf::IfOp> guards;
+  SmallVector<scf::ForOp> loops;
+  region->walk([&](scf::ForOp loop) {
+    if (loop->getParentOfType<air::SegmentOp>() ||
+        loop->getParentOfType<air::HerdOp>() ||
+        air::getStaticScfForTripCountAsInt(loop) ||
+        !getConstantIntValue(loop.getLowerBound()) ||
+        !getConstantIntValue(loop.getStep()) ||
+        *getConstantIntValue(loop.getStep()) <= 0 ||
+        !air::hasNImpureOps(loop.getBody(), 1) ||
+        llvm::range_size(loop.getBody()->getOps<air::ChannelInterface>()) != 1)
+      return;
+    loops.push_back(loop);
+  });
+  for (scf::ForOp loop : loops) {
+    scf::ForOp nest = loop;
+    while (auto parent = dyn_cast<scf::ForOp>(nest->getParentOp())) {
+      if (!air::hasNImpureOps(parent.getBody(), 1) ||
+          !parent.isDefinedOutsideOfLoop(loop.getLowerBound()) ||
+          !parent.isDefinedOutsideOfLoop(loop.getUpperBound()))
+        break;
+      nest = parent;
+    }
+    OpBuilder b(nest);
+    Location loc = loop.getLoc();
+    auto toIndex = [&](Value v) -> Value {
+      if (v.getType().isIndex())
+        return v;
+      return arith::IndexCastOp::create(b, loc, b.getIndexType(), v);
+    };
+    Value runs = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sgt,
+                                       toIndex(loop.getUpperBound()),
+                                       toIndex(loop.getLowerBound()));
+    auto ifOp = scf::IfOp::create(b, loc, nest.getResultTypes(), runs,
+                                  /*withElseRegion=*/nest.getNumResults() > 0);
+    OpBuilder thenB = ifOp.getThenBodyBuilder();
+    if (nest.getNumResults()) {
+      nest->replaceAllUsesWith(ifOp.getResults());
+      nest->moveBefore(thenB.getInsertionBlock(), thenB.getInsertionPoint());
+      scf::YieldOp::create(thenB, loc, nest.getResults());
+      OpBuilder elseB = ifOp.getElseBodyBuilder();
+      scf::YieldOp::create(elseB, loc, nest.getInitArgs());
+    } else {
+      nest->moveBefore(ifOp.thenBlock()->getTerminator());
+    }
+    guards.push_back(ifOp);
+  }
+  return guards;
+}
+
+// Removes the guards of guardRunTimeLoops around loops that did not fold: a
+// loop that stays a loop runs no trip when its count is not positive.
+static void dropGuardsOfUnfoldedLoops(ArrayRef<scf::IfOp> guards) {
+  for (scf::IfOp ifOp : guards) {
+    bool unfolded = false;
+    ifOp.getThenRegion().walk([&](scf::ForOp loop) {
+      unfolded |= !air::getStaticScfForTripCountAsInt(loop).has_value();
+    });
+    if (!unfolded)
+      continue;
+    Block *then = ifOp.thenBlock();
+    auto yield = cast<scf::YieldOp>(then->getTerminator());
+    ifOp->replaceAllUsesWith(yield.getOperands());
+    for (Operation &op : llvm::make_early_inc_range(then->without_terminator()))
+      op.moveBefore(ifOp);
+    Operation *cond = ifOp.getCondition().getDefiningOp();
+    ifOp->erase();
+    // The condition's ops, now unused.
+    SmallVector<Operation *> dead{cond};
+    llvm::SmallPtrSet<Operation *, 4> erased;
+    while (!dead.empty()) {
+      Operation *op = dead.pop_back_val();
+      if (!op || erased.contains(op) || !op->use_empty() ||
+          !isMemoryEffectFree(op))
+        continue;
+      for (Value operand : op->getOperands())
+        dead.push_back(operand.getDefiningOp());
+      erased.insert(op);
+      op->erase();
+    }
+  }
+}
+
 // A pass which performs a series of scf.for loop splitting, fusion and
 // specialization, with the goal of generating efficient shim dma block
 // descriptors (BD).
@@ -9569,14 +9720,17 @@ private:
       regionsToProcess.push_back(&func.getRegion());
 
     for (Region *region : regionsToProcess) {
+      foldChannelPutChains(region, air::MemorySpace::L3, limits);
       if (isAIE2)
         air::applyAIRIsolateAsyncDmaLoopNestsPattern(region);
+      SmallVector<scf::IfOp> guards = guardRunTimeLoops(region);
 
       air::applyAIRSpecializeChannelWrapAndStridePattern(
           region, limits,
           /*enableForLoopUnrolling=*/enableForLoopUnrolling,
           /*enableRepeatAtHighestDim=*/true,
           /*skipZeroStride=*/false);
+      dropGuardsOfUnfoldedLoops(guards);
     }
   }
 };
@@ -9619,9 +9773,9 @@ static bool isRefed(air::ChannelPutOp put) {
   return def && air::getRefeedCount(def) > 1;
 }
 
-static bool isL2Put(air::ChannelPutOp put) {
-  auto ty = dyn_cast<MemRefType>(put.getSrc().getType());
-  return ty && ty.getMemorySpaceAsInt() == (int)air::MemorySpace::L2;
+static bool readsFrom(air::ChannelPutOp put, air::MemorySpace space) {
+  auto ty = dyn_cast<BaseMemRefType>(put.getSrc().getType());
+  return ty && air::getMemorySpace(ty) == space;
 }
 
 static bool isPadded(air::ChannelPutOp put) {
@@ -9661,12 +9815,12 @@ static bool mayCross(Operation *op, air::ChannelPutOp first) {
 // Returns the put that follows `put` in the chain started by `first`, or
 // null. It must be the next put in the block on the same channel and
 // indices, with only ops that `mayCross` allows in between. It must read the
-// same buffer with the same sizes and strides, have no padding, and depend
-// only on `put` or on dependencies of `first`.
-static air::ChannelPutOp nextInChain(air::ChannelPutOp put,
-                                     air::ChannelPutOp first,
-                                     ArrayRef<int64_t> sizes,
-                                     ArrayRef<int64_t> strides) {
+// same buffer, have no padding, depend only on `put` or on dependencies of
+// `first`, and satisfy `fits(put, next)`.
+static air::ChannelPutOp
+nextInChain(air::ChannelPutOp put, air::ChannelPutOp first,
+            air::MemorySpace space,
+            function_ref<bool(air::ChannelPutOp, air::ChannelPutOp)> fits) {
   air::ChannelPutOp next = nullptr;
   for (Operation *op = put->getNextNode(); op; op = op->getNextNode()) {
     auto p = dyn_cast<air::ChannelPutOp>(op);
@@ -9679,10 +9833,8 @@ static air::ChannelPutOp nextInChain(air::ChannelPutOp put,
       return nullptr;
   }
   if (!next || !next.getAsyncToken() || next.getSrc() != first.getSrc() ||
-      next.getDest() || !isL2Put(next) || isRefed(next) || isPadded(next))
-    return nullptr;
-  SmallVector<int64_t> o, sz, st;
-  if (!getStaticPattern(next, o, sz, st) || sz != sizes || st != strides)
+      next.getDest() || !readsFrom(next, space) || isRefed(next) ||
+      isPadded(next) || !fits(put, next))
     return nullptr;
   auto firstDeps = first.getAsyncDependencies();
   for (Value d : next.getAsyncDependencies())
@@ -9740,35 +9892,46 @@ static bool isFilledWhole(Value buf) {
   return true;
 }
 
-// Folds the chain of puts starting at `first` into a single put whose outer
-// dims step through the chain's start offsets. The folded put sends the same
-// data in the same order with one BD instead of one per put.
-static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
-                             llvm::DenseSet<Operation *> &erased) {
-  if (!first.getAsyncToken() || first.getDest() || !isL2Put(first) ||
-      isRefed(first) || isPadded(first) || !isFilledWhole(first.getSrc()))
-    return;
-  SmallVector<int64_t> offsets, sizes, strides;
-  if (!getStaticPattern(first, offsets, sizes, strides))
-    return;
-  SmallVector<air::ChannelPutOp> chain{first};
-  while (auto next = nextInChain(chain.back(), first, sizes, strides))
-    chain.push_back(next);
-  if (chain.size() < 2)
-    return;
-  // The folded put's token completes with the whole chain. A token other
-  // than the last may therefore only be used by a chain member, or by an op
-  // that also waits on the last token.
-  Operation *last = chain.back();
-  Value lastToken = chain.back().getAsyncToken();
+// Returns true if every token of `chain` but the last is used only by chain
+// members, or by ops that also wait on the last token: the put the chain
+// folds into completes with the whole chain.
+static bool waitsForWholeChain(ArrayRef<air::ChannelPutOp> chain) {
+  Value lastToken = air::ChannelPutOp(chain.back()).getAsyncToken();
   llvm::SmallPtrSet<Operation *, 8> members;
   for (auto p : chain)
     members.insert(p);
-  for (size_t i = 0; i + 1 < chain.size(); i++)
-    for (Operation *user : chain[i].getAsyncToken().getUsers())
+  for (air::ChannelPutOp p : chain.drop_back())
+    for (Operation *user : p.getAsyncToken().getUsers())
       if (!members.contains(user) &&
           !llvm::is_contained(user->getOperands(), lastToken))
-        return;
+        return false;
+  return true;
+}
+
+// Replaces `chain` by `folded`, created before its last put.
+static void replaceChain(ArrayRef<air::ChannelPutOp> chain,
+                         air::ChannelPutOp folded,
+                         llvm::DenseSet<Operation *> &erased) {
+  air::ChannelPutOp first = chain.front();
+  folded->setDiscardableAttrs(first->getDiscardableAttrDictionary());
+  for (air::ChannelPutOp p : chain)
+    p.getAsyncToken().replaceAllUsesWith(folded.getAsyncToken());
+  for (air::ChannelPutOp p : llvm::reverse(chain)) {
+    erased.insert(p);
+    p->erase();
+  }
+}
+
+// Folds `chain`, puts of one static shape, into a single put whose outer dims
+// step through the chain's start offsets. Returns false, changing nothing, if
+// the starts do not form a lattice or the folded put exceeds `limits`.
+static bool foldLatticeChain(ArrayRef<air::ChannelPutOp> chain,
+                             SmallVector<int64_t> offsets,
+                             SmallVector<int64_t> sizes,
+                             SmallVector<int64_t> strides,
+                             const DmaBdLimits &limits,
+                             llvm::DenseSet<Operation *> &erased) {
+  air::ChannelPutOp first = chain.front();
   SmallVector<int64_t> lin;
   for (auto p : chain) {
     SmallVector<int64_t> o, sz, st;
@@ -9782,7 +9945,7 @@ static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
   }
   SmallVector<int64_t> dims, steps;
   if (!findLattice(lin, dims, steps))
-    return;
+    return false;
   // Drop unit dims, adding their offsets to the innermost offset, which
   // counts elements.
   {
@@ -9805,12 +9968,12 @@ static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
     strides = st;
   }
   if (limits.dims >= 0 && (int)(dims.size() + sizes.size()) > limits.dims)
-    return;
+    return false;
   for (auto [d, st] : llvm::zip(dims, steps))
     if ((limits.maxWrap >= 0 && d > limits.maxWrap) || !limits.strideFits(st))
-      return;
+      return false;
 
-  OpBuilder b(last);
+  OpBuilder b(chain.back());
   auto idx = [&](ArrayRef<int64_t> v) {
     SmallVector<OpFoldResult> r;
     for (auto x : v)
@@ -9828,23 +9991,162 @@ static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
       first.getChanName(), first.getIndices(), first.getSrc(), idx(newOffsets),
       idx(newSizes), idx(newStrides),
       /*pad_before=*/nullptr, /*pad_after=*/nullptr);
-  folded->setDiscardableAttrs(first->getDiscardableAttrDictionary());
-  for (auto p : chain)
-    p.getAsyncToken().replaceAllUsesWith(folded.getAsyncToken());
-  for (auto p : llvm::reverse(chain)) {
-    erased.insert(p);
-    p->erase();
+  replaceChain(chain, folded, erased);
+  return true;
+}
+
+// The number of elements `put` reads if they form one dense row-major run:
+// the innermost dim steps by one element, and every other dim of size above
+// one by the elements of the dims inside it.
+static std::optional<int64_t> denseRunLength(air::ChannelPutOp put) {
+  auto sizes = put.getMixedSrcSizes();
+  auto strides = put.getMixedSrcStrides();
+  if (sizes.empty() || sizes.size() != strides.size() ||
+      put.getMixedSrcOffsets().size() != sizes.size() ||
+      getConstantIntValue(strides.back()) != 1)
+    return std::nullopt;
+  int64_t run = 1;
+  for (auto [size, stride] : llvm::reverse(llvm::zip(sizes, strides))) {
+    auto sz = getConstantIntValue(size);
+    auto st = getConstantIntValue(stride);
+    if (!sz || !st || *sz < 1 || (*sz > 1 && *st != run))
+      return std::nullopt;
+    run *= *sz;
+  }
+  return run;
+}
+
+// The first element `put` reads, as a linear index: `constant` plus, for
+// each offset known only at run time, the offset times `factors`' entry for
+// it.
+static void linearStart(air::ChannelPutOp put, int64_t &constant,
+                        llvm::MapVector<Value, int64_t> &factors) {
+  for (auto [o, st] :
+       llvm::zip(put.getMixedSrcOffsets(), put.getMixedSrcStrides())) {
+    int64_t stride = *getConstantIntValue(st);
+    if (auto c = getConstantIntValue(o))
+      constant += *c * stride;
+    else
+      factors[cast<Value>(o)] += stride;
   }
 }
 
-// Folds, in program order, every chain of puts of an L2 buffer in `region`.
-static void foldL2ChannelPutChains(Region *region, const DmaBdLimits &limits) {
+// How many elements after the first element `a` reads the first element `b`
+// reads, if that is a constant.
+static std::optional<int64_t> startDelta(air::ChannelPutOp a,
+                                         air::ChannelPutOp b) {
+  int64_t constant = 0;
+  llvm::MapVector<Value, int64_t> factors;
+  linearStart(b, constant, factors);
+  constant = -constant;
+  for (auto &[v, f] : factors)
+    f = -f;
+  linearStart(a, constant, factors);
+  MLIRContext *ctx = a.getContext();
+  AffineExpr e = getAffineConstantExpr(-constant, ctx);
+  SmallVector<Value> operands;
+  for (auto [v, f] : factors) {
+    if (!f)
+      continue;
+    e = e - getAffineDimExpr(operands.size(), ctx) * f;
+    operands.push_back(v);
+  }
+  if (operands.empty())
+    return -constant;
+  using VB = ValueBoundsConstraintSet;
+  FailureOr<int64_t> d = VB::computeConstantBound(
+      presburger::BoundType::EQ,
+      VB::Variable(AffineMap::get(operands.size(), 0, e), operands));
+  if (failed(d))
+    return std::nullopt;
+  return *d;
+}
+
+// Folds `chain`, dense runs that each start where the one before ends, into
+// one put of the whole run. The puts may have different shapes and offsets
+// known only at run time.
+static void foldDenseRunChain(ArrayRef<air::ChannelPutOp> chain,
+                              llvm::DenseSet<Operation *> &erased) {
+  air::ChannelPutOp first = chain.front();
+  int64_t total = 0;
+  for (auto p : chain)
+    total += *denseRunLength(p);
+  OpBuilder b(chain.back());
+  Location loc = first.getLoc();
+  int64_t constant = 0;
+  llvm::MapVector<Value, int64_t> factors;
+  linearStart(first, constant, factors);
+  Value start;
+  auto add = [&](Value v) {
+    start = start ? arith::AddIOp::create(b, loc, start, v).getResult() : v;
+  };
+  for (auto [v, f] : factors) {
+    if (f == 0)
+      continue;
+    add(f == 1 ? v
+               : arith::MulIOp::create(
+                     b, loc, v, arith::ConstantIndexOp::create(b, loc, f))
+                     .getResult());
+  }
+  if (constant || !start)
+    add(arith::ConstantIndexOp::create(b, loc, constant));
+  SmallVector<Value> deps(first.getAsyncDependencies());
+  auto folded = air::ChannelPutOp::create(
+      b, loc, air::AsyncTokenType::get(b.getContext()), deps,
+      first.getChanName(), first.getIndices(), first.getSrc(),
+      SmallVector<OpFoldResult>{start},
+      SmallVector<OpFoldResult>{b.getIndexAttr(total)},
+      SmallVector<OpFoldResult>{b.getIndexAttr(1)},
+      /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+  replaceChain(chain, folded, erased);
+}
+
+// Folds the chain of puts from `space` starting at `first` into a single put
+// that sends the same data in the same order with one BD instead of one per
+// put. Puts of one static shape whose starts form a lattice become the outer
+// dims of that shape; dense runs that continue each other become one run.
+static void foldPutChainFrom(air::ChannelPutOp first, air::MemorySpace space,
+                             const DmaBdLimits &limits,
+                             llvm::DenseSet<Operation *> &erased) {
+  if (!first.getAsyncToken() || first.getDest() || !readsFrom(first, space) ||
+      isRefed(first) || isPadded(first) || !isFilledWhole(first.getSrc()))
+    return;
+  auto buildChain = [&](auto fits) {
+    SmallVector<air::ChannelPutOp> chain{first};
+    while (auto next = nextInChain(chain.back(), first, space, fits))
+      chain.push_back(next);
+    return chain;
+  };
+  SmallVector<int64_t> offsets, sizes, strides;
+  if (getStaticPattern(first, offsets, sizes, strides)) {
+    auto chain = buildChain([&](air::ChannelPutOp, air::ChannelPutOp next) {
+      SmallVector<int64_t> o, sz, st;
+      return getStaticPattern(next, o, sz, st) && sz == sizes && st == strides;
+    });
+    if (chain.size() > 1 && waitsForWholeChain(chain) &&
+        foldLatticeChain(chain, offsets, sizes, strides, limits, erased))
+      return;
+  }
+  if (!denseRunLength(first))
+    return;
+  auto chain = buildChain([](air::ChannelPutOp prev, air::ChannelPutOp next) {
+    // The run of `next` starts where the run of `prev` ends.
+    return denseRunLength(next) &&
+           startDelta(prev, next) == denseRunLength(prev);
+  });
+  if (chain.size() > 1 && waitsForWholeChain(chain))
+    foldDenseRunChain(chain, erased);
+}
+
+// Folds, in program order, every chain of puts from `space` in `region`.
+static void foldChannelPutChains(Region *region, air::MemorySpace space,
+                                 const DmaBdLimits &limits) {
   SmallVector<air::ChannelPutOp> puts;
   region->walk([&](air::ChannelPutOp put) { puts.push_back(put); });
   llvm::DenseSet<Operation *> erased;
   for (auto put : puts)
     if (!erased.contains(put))
-      foldPutChainFrom(put, limits, erased);
+      foldPutChainFrom(put, space, limits, erased);
 }
 
 class AIROptimizeMemtileDMABDs
@@ -9884,7 +10186,7 @@ public:
     DmaBdLimits l2Limits =
         getDmaBdLimits(AIE::getTargetModel(*device), MemorySpace::L2);
     for (auto seg : segs) {
-      foldL2ChannelPutChains(&seg.getBody(), l2Limits);
+      foldChannelPutChains(&seg.getBody(), air::MemorySpace::L2, l2Limits);
       air::applyAIRIsolateAsyncDmaLoopNestsPattern(&seg.getBody());
       air::applyAIRSpecializeChannelWrapAndStridePattern(
           &seg.getBody(), limits,

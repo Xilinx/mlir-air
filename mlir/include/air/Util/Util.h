@@ -453,9 +453,9 @@ SmallVector<Value> getOffsetsAsValues(air::ChannelInterface op);
 SmallVector<Value> getSizesAsValues(air::ChannelInterface op);
 SmallVector<Value> getStridesAsValues(air::ChannelInterface op);
 // True when the wraps/strides lower to a single linear shim BD: contiguous
-// row-major body, optionally preceded by outer size==1 dummies or outer
-// stride==0 (BD repeat) dims. Such a transfer is exempt from the per-dim
-// 10-bit wrap-size limit.
+// row-major body, whose outermost dim may have a run-time size, optionally
+// preceded by outer size==1 dummies or outer stride==0 (BD repeat) dims. Such
+// a transfer is exempt from the per-dim 10-bit wrap-size limit.
 bool isContiguousRowMajorOrRepeated(ArrayRef<OpFoldResult> sizes,
                                     ArrayRef<OpFoldResult> strides);
 // Check if the volume of sizes equals the volume of the memref.
