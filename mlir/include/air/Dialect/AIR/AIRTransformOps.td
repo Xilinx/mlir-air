@@ -914,8 +914,12 @@ def FuseElementwiseLinalgOp : Op<Transform_Dialect, "air.fuse_elementwise_linalg
     - RemoveOutsDependency: Removes unnecessary output dependencies
     - EraseUnusedOperandsAndResults: Cleans up dead operands and results
     
-    This is the transform dialect equivalent of running the `-linalg-fuse-elementwise-ops`
-    pass on the target function.
+    These are the fusion patterns of the `-linalg-fuse-elementwise-ops` pass,
+    but the op is not that pass: by default it fuses a producer into every
+    consumer, where the pass fuses only a producer with one use; it folds
+    reshapes only with `fold_reshapes`, and then only between elementwise
+    generics; and it adds none of the pass's canonicalization or constant
+    folding patterns.
     
     Example:
     ```mlir
@@ -957,13 +961,21 @@ def FuseElementwiseLinalgOp : Op<Transform_Dialect, "air.fuse_elementwise_linalg
     fuse too. Reshapes next to any other op, a contraction included, are
     left alone.
 
+    With `no_recompute`, a producer is fused only where each of its elements
+    is still computed once: into its only user, which reads it through a
+    permutation map. Like the pass, it leaves a producer with other users
+    alone; it also does not fuse through a broadcast, which would compute a
+    producer's element again for every element it is broadcast to.
+
     Returns a handle to the modified function.
   }];
-  
+
   let arguments = (ins TransformHandleTypeInterface:$target,
-                   UnitAttr:$fold_reshapes);
+      UnitAttr:$fold_reshapes, UnitAttr:$no_recompute);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target (`fold_reshapes` $fold_reshapes^)? attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target (`fold_reshapes` $fold_reshapes^)? (`no_recompute` "
+      "$no_recompute^)? attr-dict `:` functional-type(operands, results)";
 }
 
 def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",

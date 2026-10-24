@@ -4749,10 +4749,17 @@ DiagnosedSilenceableFailure transform::FuseElementwiseLinalgOp::apply(
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(ctx);
 
-    // Populate the elementwise fusion patterns using the linalg utilities
-    linalg::ControlFusionFn controlFn = [](OpOperand *fusedOperand) {
-      // Default: allow all fusions
-      return true;
+    // By default every fusion is allowed. With no_recompute, a producer is
+    // fused only where it is computed once per element: not into a consumer
+    // that reads it through a broadcast, and not when it has other users,
+    // which would keep it as well.
+    bool noRecompute = getNoRecompute();
+    linalg::ControlFusionFn controlFn = [noRecompute](OpOperand *fusedOperand) {
+      if (!noRecompute)
+        return true;
+      auto consumer = cast<linalg::LinalgOp>(fusedOperand->getOwner());
+      return fusedOperand->get().hasOneUse() &&
+             consumer.getMatchingIndexingMap(fusedOperand).isPermutation();
     };
 
     linalg::populateElementwiseOpsFusionPatterns(patterns, controlFn);
