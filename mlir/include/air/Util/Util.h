@@ -536,6 +536,18 @@ SmallVector<Value> lookupOrDefaultRange(OperandRange vec, IRMapping &remap);
 // Extend isPure method to operate on air.execute.
 bool isPure(Operation *op);
 
+// Collect the values used in `region` and defined above it: the constants
+// (arith.constant and ub.poison), or all the others.
+void getUsedConstsDefinedAbove(MutableArrayRef<Region> region,
+                               SmallVector<Value, 4> &constants);
+void getUsedArgsDefinedAbove(MutableArrayRef<Region> region,
+                             SmallVector<Value, 4> &args);
+
+// Replace the uses of `constants` in `region` with copies made at the
+// builder's insertion point.
+void replaceAllUsesOfConstsInRegionWithNew(SmallVector<Value, 4> constants,
+                                           OpBuilder builder, Region &region);
+
 // Return if the given block contains N ops which are impure and aren't async
 // wait ops (such as air.wait_all).
 bool hasNImpureOps(Block *block, unsigned N);
