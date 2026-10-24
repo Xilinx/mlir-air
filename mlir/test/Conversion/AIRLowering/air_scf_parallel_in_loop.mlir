@@ -129,9 +129,10 @@ func.func @nested_par_tokens() {
 // CHECK: scf.for {{.*}} -> (!airrt.event, !airrt.event) {
 // CHECK: affine.for
 // CHECK: func.call @work
-// CHECK: %[[D1:.*]] = airrt.wait_all : !airrt.event
-// CHECK: %[[D0:.*]] = airrt.wait_all : !airrt.event
-// CHECK: scf.yield %[[D0]], %[[D1]] : !airrt.event, !airrt.event
+// CHECK: airrt.wait_all %{{.*}} : !airrt.event
+// CHECK-NEXT: %[[D1:.*]] = airrt.wait_all : !airrt.event
+// CHECK-NEXT: %[[D0:.*]] = airrt.wait_all : !airrt.event
+// CHECK-NEXT: scf.yield %[[D0]], %[[D1]] : !airrt.event, !airrt.event
 // CHECK-NOT: scf.parallel
 
 func.func @par_token_used_twice() {
