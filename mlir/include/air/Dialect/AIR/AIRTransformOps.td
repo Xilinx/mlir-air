@@ -767,6 +767,111 @@ def FuseTruncfLinalgOp : Op<Transform_Dialect, "air.fuse_truncf_linalg",
   let assemblyFormat = "$truncf_op `,` $producer_op attr-dict `:` functional-type(operands, results)";
 }
 
+def ReuseInputAsInitOp
+    : Op<Transform_Dialect, "air.reuse_input_as_init",
+         [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+          TransformOpInterface, TransformEachOpTrait]> {
+  let summary =
+      "Make an elementwise linalg op write its result over one of its inputs";
+  let description = [{
+    Sets the init of the target linalg op's output to one of its inputs, so
+    that bufferization writes the result into that input's buffer, and makes
+    the body read that value through the output instead, so that after tiling
+    the read and the write are the same slice. The input is then unused, for
+    cleanup patterns to drop. The target must have one output, which its body
+    does not read, and only parallel iterators. The input is operand `input`
+    of the op's inputs if given, otherwise the first input with the output's
+    type and indexing map; either way it must have both.
+
+    A value updated in a loop, such as a running maximum, is computed from its
+    previous value into a new tensor:
+
+    ```mlir
+    %m_new = linalg.generic {...}
+        ins(%m_old, %rowmax : tensor<64x1xbf16>, tensor<64x1xbf16>)
+        outs(%empty : tensor<64x1xbf16>)
+    ```
+
+    and bufferizes to a buffer of its own in every iteration. With the
+    previous value as the init, read through the output, it is updated in
+    place:
+
+    ```mlir
+    %m_new = linalg.generic {...}
+        ins(%m_old, %rowmax : tensor<64x1xbf16>, tensor<64x1xbf16>)
+        outs(%m_old : tensor<64x1xbf16>) {
+    ^bb0(%unused: bf16, %r: bf16, %m: bf16):
+      ...
+    }
+    ```
+
+    Returns a handle to the updated op. Fails silenceably if the target does
+    not qualify.
+  }];
+  let arguments = (ins TransformHandleTypeInterface:$target,
+      OptionalAttr<I64Attr>:$input);
+  let results = (outs TransformHandleTypeInterface:$transformed);
+  let assemblyFormat = "$target (`input` `=` $input^)? attr-dict `:` "
+                       "functional-type(operands, results)";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::linalg::LinalgOp target,
+        ::mlir::transform::ApplyToEachResultList &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
+def ReadForallTilesFromSharedOutsOp
+    : Op<Transform_Dialect, "air.read_forall_tiles_from_shared_outs",
+         [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+          TransformOpInterface, TransformEachOpTrait]> {
+  let summary =
+      "Read a forall iteration's own output tiles from its shared_outs";
+  let description = [{
+    In the target `scf.forall`, a `tensor.extract_slice` of a shared output's
+    init value, taken inside the body, is made to read the shared output's
+    block argument instead, when it takes the very tile that the iteration
+    inserts into that output (the same offsets, sizes and strides as the
+    output's one `tensor.parallel_insert_slice`). No other iteration writes
+    that tile, so the value read is unchanged.
+
+    Fusing sibling loops leaves such reads: a loop that updates a value and
+    one that reads the value's previous tile end up in one forall, the reader
+    still slicing the value from outside. Read through the block argument,
+    duplicated reads become identical for CSE, and bufferization does not
+    need a copy of the whole output to keep the init readable while the
+    forall writes it.
+
+    ```mlir
+    %r = scf.forall (%i) in (4) shared_outs(%o = %init) -> (tensor<64x1xf32>) {
+      %old = tensor.extract_slice %init[%i, 0] [16, 1] [1, 1] ...
+      ...
+      scf.forall.in_parallel {
+        tensor.parallel_insert_slice %new into %o[%i, 0] [16, 1] [1, 1] ...
+      }
+    }
+    ```
+
+    becomes the same with `%old = tensor.extract_slice %o[%i, 0] ...`.
+
+    Returns a handle to the forall.
+  }];
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$transformed);
+  let assemblyFormat =
+      "$target attr-dict `:` functional-type(operands, results)";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::scf::ForallOp target,
+        ::mlir::transform::ApplyToEachResultList &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
 def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
@@ -957,13 +1062,19 @@ def FuseElementwiseLinalgOp : Op<Transform_Dialect, "air.fuse_elementwise_linalg
     fuse too. Reshapes next to any other op, a contraction included, are
     left alone.
 
+    With `no_recompute`, a producer is fused only where each of its elements
+    is computed once: into its only user, reading it through a permutation.
+    A producer with several users, or read through a broadcast, stays its
+    own op, and so does one feeding a contraction.
+
     Returns a handle to the modified function.
   }];
   
   let arguments = (ins TransformHandleTypeInterface:$target,
-                   UnitAttr:$fold_reshapes);
+                   UnitAttr:$fold_reshapes,
+                   UnitAttr:$no_recompute);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target (`fold_reshapes` $fold_reshapes^)? attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$target (`fold_reshapes` $fold_reshapes^)? (`no_recompute` $no_recompute^)? attr-dict `:` functional-type(operands, results)";
 }
 
 def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
@@ -1621,11 +1732,12 @@ def HoistLoopCarriedPackOp : Op<Transform_Dialect, "air.hoist_loop_carried_pack"
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
   let summary = "Carry a packed value through an scf.for instead of packing it every iteration";
   let description = [{
-    Each target is an `scf.for`. An iteration argument qualifies when its only
-    uses in the body are as the source of one `linalg.pack` and as the
-    destination of one `linalg.unpack` whose result is yielded back to it,
-    and the two use the same layout and the pack has no padding. That is the
-    shape packing a loop-carried accumulator leaves:
+    Each target is an `scf.for`. An iteration argument qualifies when it is
+    read in the body by one `linalg.pack` and the value yielded back to it is
+    a `linalg.unpack` with the same layout, used only by the yield; the pack
+    has no padding. A `tensor.expand_shape` and a `tensor.collapse_shape`
+    with the same reassociation qualify the same way. That is the shape
+    packing a loop-carried accumulator leaves:
 
     ```mlir
     %r = scf.for ... iter_args(%acc = %init) {
@@ -1648,9 +1760,12 @@ def HoistLoopCarriedPackOp : Op<Transform_Dialect, "air.hoist_loop_carried_pack"
     %u = linalg.unpack %r#1 ... into %r#0
     ```
 
-    The pack's destination must be a `tensor.empty` or defined outside the
-    loop. Iteration arguments that do not qualify are left alone; a target
-    with none is a silenceable failure.
+    The pack's destination, and the unpack's unless it is the iteration
+    argument itself, must be defined outside the loop, or be a
+    `tensor.empty` or `bufferization.alloc_tensor` (without a copy) of
+    sizes defined there, which is built again outside the loop. Iteration
+    arguments that do not qualify are left alone; a target with none is a
+    silenceable failure.
 
     Returns the new loops and the hoisted packs.
   }];

@@ -4750,8 +4750,19 @@ DiagnosedSilenceableFailure transform::FuseElementwiseLinalgOp::apply(
     RewritePatternSet patterns(ctx);
 
     // Populate the elementwise fusion patterns using the linalg utilities
-    linalg::ControlFusionFn controlFn = [](OpOperand *fusedOperand) {
-      // Default: allow all fusions
+    // With no_recompute, a producer is computed once: one read through a
+    // broadcast is left alone (fusing would recompute it for every element it
+    // is broadcast to), as is one with other users (it stays for them) and
+    // one feeding a contraction, so the contraction is still recognized as
+    // one.
+    bool noRecompute = getNoRecompute();
+    linalg::ControlFusionFn controlFn = [noRecompute](OpOperand *fusedOperand) {
+      auto consumer = dyn_cast<linalg::LinalgOp>(fusedOperand->getOwner());
+      if (noRecompute && consumer &&
+          (linalg::isaContractionOpInterface(consumer) ||
+           !consumer.getMatchingIndexingMap(fusedOperand).isPermutation() ||
+           !fusedOperand->get().hasOneUse()))
+        return false;
       return true;
     };
 
@@ -5037,6 +5048,104 @@ void transform::FuseTruncfLinalgOp::getEffects(
   consumesHandle(getProducerOpMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
   modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
+// ReuseInputAsInitOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::ReuseInputAsInitOp::applyToOne(
+    transform::TransformRewriter &rewriter, linalg::LinalgOp target,
+    transform::ApplyToEachResultList &results,
+    transform::TransformState &state) {
+  if (!target.hasPureTensorSemantics() || target.getNumDpsInits() != 1)
+    return emitDefaultSilenceableFailure(target)
+           << "expected a linalg op on tensors with one output";
+  if (target.getNumParallelLoops() != target.getNumLoops())
+    return emitDefaultSilenceableFailure(target)
+           << "expected only parallel iterators";
+  OpOperand *out = target.getDpsInitOperand(0);
+  if (target.payloadUsesValueFromOperand(out))
+    return emitDefaultSilenceableFailure(target) << "the output is read";
+
+  auto fits = [&](OpOperand *in) {
+    return in->get().getType() == out->get().getType() &&
+           target.getMatchingIndexingMap(in) ==
+               target.getMatchingIndexingMap(out);
+  };
+  OpOperand *in = nullptr;
+  if (std::optional<uint64_t> i = getInput()) {
+    if (*i >= static_cast<uint64_t>(target.getNumDpsInputs()))
+      return emitDefaultSilenceableFailure(target)
+             << "input " << *i << " is out of range";
+    in = target.getDpsInputOperand(*i);
+    if (!fits(in))
+      return emitDefaultSilenceableFailure(target)
+             << "input " << *i
+             << " differs from the output in type or indexing map";
+  } else {
+    auto inputs = target.getDpsInputOperands();
+    auto it = llvm::find_if(inputs, fits);
+    if (it == inputs.end())
+      return emitDefaultSilenceableFailure(target)
+             << "no input has the output's type and indexing map";
+    in = *it;
+  }
+  // Read the value through the output, so that after tiling the read and the
+  // write are the same slice of the same tensor. The input is left unused, for
+  // cleanup patterns to drop.
+  rewriter.modifyOpInPlace(target, [&] {
+    out->set(in->get());
+    rewriter.replaceAllUsesWith(target.getMatchingBlockArgument(in),
+                                target.getMatchingBlockArgument(out));
+  });
+  results.push_back(target);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// ReadForallTilesFromSharedOutsOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::ReadForallTilesFromSharedOutsOp::applyToOne(
+    transform::TransformRewriter &rewriter, scf::ForallOp target,
+    transform::ApplyToEachResultList &results,
+    transform::TransformState &state) {
+  // The one tile each shared output gets, by its block argument.
+  DenseMap<Value, tensor::ParallelInsertSliceOp> tile;
+  DenseSet<Value> several;
+  for (Operation &op : target.getTerminator().getYieldingOps()) {
+    auto insert = dyn_cast<tensor::ParallelInsertSliceOp>(op);
+    if (!insert)
+      continue;
+    Value dest = insert.getDest();
+    if (!tile.try_emplace(dest, insert).second)
+      several.insert(dest);
+  }
+  for (auto [init, arg] :
+       llvm::zip(target.getOutputs(), target.getRegionIterArgs())) {
+    auto it = tile.find(arg);
+    if (it == tile.end() || several.contains(arg))
+      continue;
+    tensor::ParallelInsertSliceOp insert = it->second;
+    SmallVector<tensor::ExtractSliceOp> reads;
+    target.getBody()->walk([&](tensor::ExtractSliceOp slice) {
+      if (slice.getSource() == init &&
+          isEqualConstantIntOrValueArray(slice.getMixedOffsets(),
+                                         insert.getMixedOffsets()) &&
+          isEqualConstantIntOrValueArray(slice.getMixedSizes(),
+                                         insert.getMixedSizes()) &&
+          isEqualConstantIntOrValueArray(slice.getMixedStrides(),
+                                         insert.getMixedStrides()))
+        reads.push_back(slice);
+    });
+    for (tensor::ExtractSliceOp slice : reads)
+      rewriter.modifyOpInPlace(slice,
+                               [&] { slice.getSourceMutable().assign(arg); });
+  }
+  results.push_back(target);
+  return DiagnosedSilenceableFailure::success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -7491,74 +7600,122 @@ DiagnosedSilenceableFailure transform::FoldIterArgsIntoInductionVarOp::apply(
 
 namespace {
 // An iteration argument packed once and unpacked back into itself per
-// iteration.
+// iteration: by linalg.pack and linalg.unpack, or by tensor.expand_shape and
+// tensor.collapse_shape.
 struct LoopCarriedPack {
   unsigned index;
-  linalg::PackOp pack;
-  linalg::UnPackOp unpack;
+  Operation *pack;
+  Operation *unpack;
 };
 } // namespace
+
+// Whether `v` is a fresh tensor (tensor.empty or bufferization.alloc_tensor)
+// built from values available before `forOp`, so it can be built again
+// outside the loop.
+static bool isRecreatableEmptyTensor(Value v, scf::ForOp forOp) {
+  Operation *def = v.getDefiningOp();
+  if (!isa_and_present<tensor::EmptyOp>(def)) {
+    auto alloc = dyn_cast_if_present<bufferization::AllocTensorOp>(def);
+    if (!alloc || alloc.getCopy())
+      return false;
+  }
+  return llvm::all_of(def->getOperands(), [&](Value operand) {
+    return forOp.isDefinedOutsideOfLoop(operand);
+  });
+}
+
+// The value a pack-like op reads, and the tensor it writes into (none for a
+// reshape).
+static OpOperand *packSourceOperand(Operation *op) {
+  if (auto p = dyn_cast<linalg::PackOp>(op))
+    return &p.getSourceMutable();
+  if (auto e = dyn_cast<tensor::ExpandShapeOp>(op))
+    return &e.getSrcMutable();
+  return nullptr;
+}
+static Value packDest(Operation *op) {
+  if (auto p = dyn_cast<linalg::PackOp>(op))
+    return p.getDest();
+  return {};
+}
+static Value unpackSource(Operation *op) {
+  if (auto u = dyn_cast<linalg::UnPackOp>(op))
+    return u.getSource();
+  return cast<tensor::CollapseShapeOp>(op).getSrc();
+}
+static Value unpackDest(Operation *op) {
+  if (auto u = dyn_cast<linalg::UnPackOp>(op))
+    return u.getDest();
+  return {};
+}
+
+// Whether `unpack` undoes `pack`.
+static bool areInverseLayouts(Operation *pack, Operation *unpack) {
+  if (pack->getResult(0).getType() != unpackSource(unpack).getType())
+    return false;
+  if (auto p = dyn_cast<linalg::PackOp>(pack)) {
+    auto u = dyn_cast<linalg::UnPackOp>(unpack);
+    return u && !p.getPaddingValue() &&
+           p.getInnerDimsPos() == u.getInnerDimsPos() &&
+           p.getOuterDimsPerm() == u.getOuterDimsPerm() &&
+           p.getStaticInnerTiles() == u.getStaticInnerTiles() &&
+           p.getInnerTiles().empty() && u.getInnerTiles().empty();
+  }
+  auto e = cast<tensor::ExpandShapeOp>(pack);
+  auto c = dyn_cast<tensor::CollapseShapeOp>(unpack);
+  return c && e.getReassociationIndices() == c.getReassociationIndices();
+}
 
 static std::optional<LoopCarriedPack> matchLoopCarriedPack(scf::ForOp forOp,
                                                            unsigned index) {
   BlockArgument arg = forOp.getRegionIterArgs()[index];
-  linalg::PackOp pack;
-  linalg::UnPackOp unpack;
+  // The unpacked value goes straight back round the loop. An unpack writes
+  // all of its destination, so the destination may be the carried value, any
+  // tensor available before the loop, or a fresh tensor that can be built
+  // again after it.
+  Operation *yield = forOp.getBody()->getTerminator();
+  Operation *unpack = yield->getOperand(index).getDefiningOp();
+  if (!isa_and_present<linalg::UnPackOp, tensor::CollapseShapeOp>(unpack) ||
+      !unpack->getResult(0).hasOneUse() || unpack->getParentOp() != forOp)
+    return std::nullopt;
+  Value uDest = unpackDest(unpack);
+  if (uDest && uDest != arg && !forOp.isDefinedOutsideOfLoop(uDest) &&
+      !isRecreatableEmptyTensor(uDest, forOp))
+    return std::nullopt;
+  Operation *pack = nullptr;
   for (OpOperand &use : arg.getUses()) {
     Operation *user = use.getOwner();
-    if (user->getParentOp() != forOp)
-      return std::nullopt;
-    if (auto p = dyn_cast<linalg::PackOp>(user);
-        p && &use == &p.getSourceMutable() && !pack) {
-      pack = p;
+    if (user == unpack)
       continue;
-    }
-    if (auto u = dyn_cast<linalg::UnPackOp>(user);
-        u && &use == &u.getDestMutable() && !unpack) {
-      unpack = u;
-      continue;
-    }
-    return std::nullopt;
-  }
-  if (!pack || !unpack || pack.getPaddingValue())
-    return std::nullopt;
-  // The unpacked value goes straight back round the loop.
-  Operation *yield = forOp.getBody()->getTerminator();
-  if (!unpack.getResult().hasOneUse() ||
-      yield->getOperand(index) != unpack.getResult())
-    return std::nullopt;
-  if (pack.getInnerDimsPos() != unpack.getInnerDimsPos() ||
-      pack.getOuterDimsPerm() != unpack.getOuterDimsPerm() ||
-      pack.getStaticInnerTiles() != unpack.getStaticInnerTiles() ||
-      !pack.getInnerTiles().empty() || !unpack.getInnerTiles().empty() ||
-      pack.getResult().getType() != unpack.getSource().getType())
-    return std::nullopt;
-  Value dest = pack.getDest();
-  if (!forOp.isDefinedOutsideOfLoop(dest)) {
-    auto empty = dest.getDefiningOp<tensor::EmptyOp>();
-    if (!empty || !llvm::all_of(empty->getOperands(), [&](Value v) {
-          return forOp.isDefinedOutsideOfLoop(v);
-        }))
+    OpOperand *src = packSourceOperand(user);
+    if (!src || user->getParentOp() != forOp || &use != src || pack)
       return std::nullopt;
+    pack = user;
   }
+  if (!pack || !areInverseLayouts(pack, unpack))
+    return std::nullopt;
+  Value dest = packDest(pack);
+  if (dest && !forOp.isDefinedOutsideOfLoop(dest) &&
+      !isRecreatableEmptyTensor(dest, forOp))
+    return std::nullopt;
   return LoopCarriedPack{index, pack, unpack};
 }
 
-static FailureOr<std::pair<scf::ForOp, linalg::PackOp>>
+static FailureOr<std::pair<scf::ForOp, Operation *>>
 hoistLoopCarriedPack(RewriterBase &rewriter, scf::ForOp forOp,
                      LoopCarriedPack m) {
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(forOp);
   IRMapping before;
   before.map(forOp.getRegionIterArgs()[m.index], forOp.getInitArgs()[m.index]);
-  if (!forOp.isDefinedOutsideOfLoop(m.pack.getDest()))
-    before.map(m.pack.getDest(),
-               rewriter.clone(*m.pack.getDest().getDefiningOp())->getResult(0));
-  auto packed = cast<linalg::PackOp>(rewriter.clone(*m.pack, before));
+  Value pDest = packDest(m.pack);
+  if (pDest && !forOp.isDefinedOutsideOfLoop(pDest))
+    before.map(pDest, rewriter.clone(*pDest.getDefiningOp())->getResult(0));
+  Operation *packed = rewriter.clone(*m.pack, before);
 
-  Value computed = m.unpack.getSource();
+  Value computed = unpackSource(m.unpack);
   FailureOr<LoopLikeOpInterface> replaced = forOp.replaceWithAdditionalYields(
-      rewriter, packed.getResult(), /*replaceInitOperandUsesInLoop=*/false,
+      rewriter, packed->getResult(0), /*replaceInitOperandUsesInLoop=*/false,
       [&](OpBuilder &, Location, ArrayRef<BlockArgument>) {
         return SmallVector<Value>{computed};
       });
@@ -7574,12 +7731,15 @@ hoistLoopCarriedPack(RewriterBase &rewriter, scf::ForOp forOp,
   IRMapping after;
   after.map(computed, newFor.getResults().back());
   after.map(original, newFor.getResult(m.index));
+  Value uDest = unpackDest(m.unpack);
+  if (uDest && uDest != original && !newFor.isDefinedOutsideOfLoop(uDest))
+    after.map(uDest, rewriter.clone(*uDest.getDefiningOp())->getResult(0));
   Operation *unpacked = rewriter.clone(*m.unpack, after);
   rewriter.replaceAllUsesExcept(newFor.getResult(m.index),
                                 unpacked->getResult(0), unpacked);
 
   // Inside: read the carried value, and pass the original through.
-  rewriter.replaceAllUsesWith(m.pack.getResult(), carried);
+  rewriter.replaceAllUsesWith(m.pack->getResult(0), carried);
   Operation *yield = newFor.getBody()->getTerminator();
   rewriter.modifyOpInPlace(yield,
                            [&] { yield->setOperand(m.index, original); });
