@@ -68,8 +68,13 @@ constexpr int kUnsupportedRunTimeRepeatCount = kRunTimeRepeatCount + 1;
 // the DMA runs the tasks back to back in the order returned. Grouping every
 // transfer that happens to share a trip count would hoist a later one into an
 // earlier task and emit it ahead of the transfers it must follow.
+//
+// A transfer alone in fixed loops inside a run-time loop runs several times a
+// trip, back to back; `copies`, when given, maps it to that number, and the
+// circular chain takes it that many times in a row.
 SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
-getRepeatCounts(std::vector<Operation *> memcpy_ops);
+getRepeatCounts(std::vector<Operation *> memcpy_ops,
+                llvm::DenseMap<Operation *, int64_t> *copies = nullptr);
 
 // True if the two ops lower to interchangeable BDs (same memref and matching
 // offsets/sizes/strides for channel ops; structural equivalence for dma ops).

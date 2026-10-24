@@ -7047,11 +7047,13 @@ public:
   }
 
   /// Where to release `get`'s slot when its channel's gets reuse a buffer.
-  /// The channel's BDs share one counting lock, so release k of a trip admits
-  /// BD `slots + k`, whichever buffer that fills: the release follows that
-  /// buffer's last use and release k - 1. Fails unless the core's gets on this
-  /// DMA channel are one channel, in one block or in blocks that each take the
-  /// channel's buffers whole and in order.
+  /// The channel's BDs into buffers of one type share one counting lock, so
+  /// release k of a trip admits the `slots + k`th of those BDs, whichever
+  /// buffer that fills: the release follows that buffer's last use and release
+  /// k - 1. Gets into buffers of other types count on locks of their own and
+  /// are not part of the ring. Fails unless the core's gets on this DMA
+  /// channel are one channel, in one block or in blocks that each take the
+  /// ring's buffers whole and in order.
   FailureOr<Operation *> findRingReleasePoint(air::MemcpyInterface get,
                                               ArrayRef<Operation *> ringOps,
                                               int64_t slots) {
@@ -7061,6 +7063,9 @@ public:
     Block *block = get->getBlock();
     auto core = get->getParentOfType<AIE::CoreOp>();
     auto chan = self.getChanName();
+    auto bufferType = [](air::ChannelGetOp g) {
+      return air::resolveBufferRoot(g.getMemref()).getType();
+    };
     llvm::MapVector<Block *, SmallVector<air::ChannelGetOp>> byBlock;
     for (Operation *o : ringOps) {
       if (!o || o->getParentOfType<AIE::CoreOp>() != core)
@@ -7068,6 +7073,8 @@ public:
       auto g = dyn_cast<air::ChannelGetOp>(o);
       if (!g || g.getChanName() != chan)
         return failure();
+      if (bufferType(g) != bufferType(self))
+        continue;
       byBlock[g->getBlock()].push_back(g);
     }
     for (auto &[b, gets] : byBlock)
@@ -7479,8 +7486,9 @@ public:
       // One entry per BD task, in program order: the repeat count the task runs
       // at, and the transfers it chains. A repeat count can recur -- two loops
       // with equal trip counts are two tasks, not one (see getRepeatCounts).
+      llvm::DenseMap<Operation *, int64_t> copies;
       SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeat_counts =
-          air::getRepeatCounts(memcpy_ops);
+          air::getRepeatCounts(memcpy_ops, &copies);
 
       // Note: each entry in repeat_counts is one BD task, in program order. If
       // the whole channel collapses to a single entry -- every memcpy op on it
@@ -7492,9 +7500,10 @@ public:
         if (rep == air::kUnsupportedRunTimeRepeatCount)
           return task_ops.front()->emitOpError(
               "repeats a run-time number of times, but also a fixed number of "
-              "times within it, or in run-time loops with other bounds than "
-              "those of the transfers before it on its DMA channel; one "
-              "circular BD chain cannot express that");
+              "times within it beside other transfers or from a re-fed "
+              "buffer, or in run-time loops with other bounds than those of "
+              "the transfers before it on its DMA channel; one circular BD "
+              "chain cannot express that");
       if (!infiniteBDLoopMode)
         for (auto &[rep, task_ops] : repeat_counts)
           if (rep == air::kRunTimeRepeatCount)
@@ -7550,6 +7559,12 @@ public:
                 ? air::getCircularChainBDs(memcpy_ops, task_ops.getArrayRef(),
                                            sendsPerFill)
                 : SmallVector<Operation *>(task_ops.begin(), task_ops.end());
+        if (infiniteBDLoopMode && !copies.empty()) {
+          SmallVector<Operation *> repeated;
+          for (Operation *op : bd_ops)
+            repeated.append(copies.lookup(op) ? copies.lookup(op) : 1, op);
+          bd_ops = std::move(repeated);
+        }
         // The block containing aie.dma_start
         Block *start_bb = new Block();
         mem.getBody().push_back(start_bb);
