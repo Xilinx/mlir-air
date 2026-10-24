@@ -7100,15 +7100,17 @@ public:
   }
 
   /// Where to release `get`'s slot when its channel's gets reuse a buffer.
-  /// The channel's BDs share one counting lock, so release k of a trip admits
-  /// BD `slots + k`, whichever buffer that fills: the release follows that
-  /// buffer's last use and release k - 1. Fails unless the core's gets on this
-  /// DMA channel are one channel, in one block or in blocks that each take the
-  /// channel's buffers whole and in order.
-  /// A get in fixed loops of its own (see getFixedLoopRepeats) counts as one
-  /// fill per trip of them. This function fails for that get, which then
-  /// releases inside the loops after its use, as usual; the releases of the
-  /// block's other gets are placed around those.
+  /// The BDs of one rotation of buffers on the channel share one counting
+  /// lock (see getLockForDMA), so release k of a trip admits BD `slots + k`
+  /// of the rotation, whichever buffer that fills: the release follows that
+  /// buffer's last use and release k - 1. Gets into other buffers count on
+  /// pairs of their own and are not part of the ring. Fails unless the core's
+  /// gets on this DMA channel are one channel, in one block or in blocks that
+  /// each take the channel's buffers whole and in order. A get in fixed loops
+  /// of its own (see getFixedLoopRepeats) counts as one fill per trip of them.
+  /// This function fails for that get, which then releases inside the loops
+  /// after its use, as usual; the releases of the block's other gets are placed
+  /// around those.
   FailureOr<Operation *> findRingReleasePoint(air::MemcpyInterface get,
                                               ArrayRef<Operation *> ringOps,
                                               int64_t slots) {
@@ -7132,6 +7134,12 @@ public:
       auto g = dyn_cast<air::ChannelGetOp>(o);
       if (!g || g.getChanName() != chan)
         return failure();
+      // gets into buffers of another rotation count on lock pairs of their
+      // own (see getLockForDMA)
+      if (air::resolveBufferRoot(g.getMemref()) !=
+              air::resolveBufferRoot(self.getMemref()) &&
+          !air::chansPartOfSameRotation(self, g))
+        continue;
       auto [at, times] = getFixedLoopRepeats(g);
       Value root = air::resolveBufferRoot(g.getMemref());
       if (at == g.getOperation())

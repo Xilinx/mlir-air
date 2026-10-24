@@ -775,6 +775,31 @@ air::DMAAllocator::pickChainBdLocks(const ChainLockSet &cls,
   return std::make_pair(toAcquire, toRelease);
 }
 
+// A transfer on `chan` that moves `buffer` or a view of it, or null.
+static air::ChannelInterface getChannelOpOnBuffer(air::ChannelOp chan,
+                                                  Operation *buffer) {
+  auto on = [&](air::ChannelInterface op) {
+    return air::resolveBufferRoot(op.getMemref()).getDefiningOp() == buffer;
+  };
+  for (auto get : getChannelGetOpThroughSymbol(chan))
+    if (on(get))
+      return get;
+  for (auto put : getChannelPutOpThroughSymbol(chan))
+    if (on(put))
+      return put;
+  return nullptr;
+}
+
+// Whether `op` and the transfers on `buffer` take turns in one rotation of a
+// tile's buffers, and so share its lock pair (see chansPartOfSameRotation).
+static bool sharesRotation(air::ChannelInterface op, Operation *buffer) {
+  if (air::resolveBufferRoot(op.getMemref()).getDefiningOp() == buffer)
+    return true;
+  auto other =
+      getChannelOpOnBuffer(getChannelDeclarationThroughSymbol(op), buffer);
+  return other && air::chansPartOfSameRotation(op, other);
+}
+
 std::pair<int64_t, int64_t>
 air::getLockValuePair(const AIE::AIETargetModel &targetModel,
                       Value buffer_memref, air::ChannelOp air_chan) {
@@ -788,7 +813,15 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
     return getLockValuePair(targetModel, buffer_memref);
 
   // Infer semaphore lock values using air.channel. This method enables
-  // ping-pong compute-communication overlap.
+  // ping-pong compute-communication overlap. A tile's buffers share a lock
+  // pair only with the other slots of their rotation (see getLockForDMA), so
+  // only those count.
+  auto ref = getChannelOpOnBuffer(air_chan, buffer_memref.getDefiningOp());
+  auto inRotation = [&](air::ChannelInterface op) {
+    return !ref ||
+           sharesRotation(
+               ref, air::resolveBufferRoot(op.getMemref()).getDefiningOp());
+  };
   llvm::SmallSet<Operation *, 2> unique_write_buffers;
   llvm::SmallSet<Operation *, 2> unique_read_buffers;
   for (auto get : getChannelGetOpThroughSymbol(air_chan)) {
@@ -799,7 +832,8 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
       break;
     } else if (auto core_op = get->getParentOfType<AIE::CoreOp>()) {
       if (core_op.getTileOp().getResult() ==
-          buffer_memref.getDefiningOp()->getOperand(0)) {
+              buffer_memref.getDefiningOp()->getOperand(0) &&
+          inRotation(get)) {
         unique_write_buffers.insert(get.getMemref().getDefiningOp());
       }
     }
@@ -812,7 +846,8 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
       break;
     } else if (auto core_op = put->getParentOfType<AIE::CoreOp>()) {
       if (core_op.getTileOp().getResult() ==
-          buffer_memref.getDefiningOp()->getOperand(0)) {
+              buffer_memref.getDefiningOp()->getOperand(0) &&
+          inRotation(put)) {
         unique_read_buffers.insert(put.getMemref().getDefiningOp());
       }
     }
@@ -1433,7 +1468,15 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
         } else if ((std::get<1>(lock_allocation_list[i]) == air_chan) &&
                    (std::get<0>(lock_allocation_list[i])->getOperand(0) ==
                     bufferOp->getOperand(0)) &&
-                   (std::get<2>(lock_allocation_list[i]) == channel)) {
+                   (std::get<2>(lock_allocation_list[i]) == channel) &&
+                   sharesRotation(
+                       cast<air::ChannelInterface>(memcpyOp.getOperation()),
+                       std::get<0>(lock_allocation_list[i]))) {
+          // A tile's buffers on one channel that take turns in a rotation
+          // share a counting lock pair. Other buffers keep a pair each, as on
+          // a memtile (Case 1 above), found by the same-buffer match below: a
+          // shared pair would hold one buffer's next fill until another
+          // buffer's last use.
           return std::make_pair(std::get<3>(lock_allocation_list[i]),
                                 std::get<4>(lock_allocation_list[i]));
         } else if ((std::get<0>(lock_allocation_list[i]) == bufferOp) &&
