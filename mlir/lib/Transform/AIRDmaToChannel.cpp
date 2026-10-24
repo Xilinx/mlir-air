@@ -23,6 +23,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 
 #include <map>
+#include <numeric>
 
 using namespace mlir;
 
@@ -386,11 +387,69 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
   return clonedOps;
 }
 
+// Whether the value `loop` carries in iter_arg `i` is updated by pure ops
+// alone, from the induction variable, itself and values from outside.
+template <typename T>
+static bool carriesThroughPureOps(T loop, unsigned i, const IRMapping &remap) {
+  if constexpr (!std::is_same_v<T, scf::ForOp>)
+    return false;
+  else {
+    Block *body = loop.getBody();
+    Value arg = loop.getRegionIterArgs()[i];
+    SmallVector<Value> work{body->getTerminator()->getOperand(i)};
+    DenseSet<Value> seen;
+    while (!work.empty()) {
+      Value v = work.pop_back_val();
+      if (!seen.insert(v).second || v == arg || v == loop.getInductionVar())
+        continue;
+      if (!body->getParentOp()->isAncestor(v.getParentBlock()->getParentOp())) {
+        // From outside the loop: the hoisted copy can use it if it is mapped
+        // already, or computed by pure ops from such values and constants,
+        // which are cloned.
+        if (remap.contains(v))
+          continue;
+        Operation *def = v.getDefiningOp();
+        if (!def || !air::isPure(def) || def->getNumRegions())
+          return false;
+        llvm::append_range(work, def->getOperands());
+        continue;
+      }
+      if (isa<BlockArgument>(v))
+        return false;
+      Operation *def = v.getDefiningOp();
+      if (!air::isPure(def) || def->getNumRegions())
+        return false;
+      llvm::append_range(work, def->getOperands());
+    }
+    return true;
+  }
+}
+
 template <typename T>
 SmallVector<Operation *>
 air::cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
                             air::ChannelInterface externalGetPut) {
-  SmallVector<Value> loop_init_args = air::getAsyncDependenciesFromOp(loop_op);
+  // The hoisted loop carries the loop's async tokens, and a value it updates
+  // with pure ops only, which are hoisted with it. What else the loop carries
+  // is computed by ops that are not hoisted.
+  SmallVector<Value> loop_init_args;
+  SmallVector<unsigned> token_idx;
+  for (auto [i, arg] :
+       llvm::enumerate(air::getAsyncDependenciesFromOp(loop_op))) {
+    if (!isa<air::AsyncTokenType>(arg.getType())) {
+      if (!carriesThroughPureOps(loop_op, i, remap))
+        continue;
+      if (!remap.contains(arg)) {
+        Operation *def = arg.getDefiningOp();
+        if (!def || !def->hasTrait<OpTrait::ConstantLike>())
+          continue;
+        builder.clone(*def, remap)
+            ->setAttr("hoist", StringAttr::get(loop_op->getContext(), "dep"));
+      }
+    }
+    loop_init_args.push_back(arg);
+    token_idx.push_back(i);
+  }
   T new_loop_op =
       T::create(builder, builder.getUnknownLoc(),
                 air::lookupOrDefaultRange(loop_op.getLowerBound(), remap),
@@ -401,8 +460,8 @@ air::cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
   OpBuilder::InsertionGuard guard(builder);
 
   // Remap newly created loop op
-  for (unsigned i = 0; i < loop_op->getNumResults(); i++)
-    remap.map(loop_op->getResult(i), new_loop_op->getResult(i));
+  for (auto [j, i] : llvm::enumerate(token_idx))
+    remap.map(loop_op->getResult(i), new_loop_op->getResult(j));
 
   auto remapVals = [&](std::optional<SmallVector<OpFoldResult>> oldValues,
                        std::optional<SmallVector<OpFoldResult>> newValues) {
@@ -417,9 +476,11 @@ air::cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
   remapVals(loop_op.getLoopUpperBounds(), new_loop_op.getLoopUpperBounds());
   remapVals(loop_op.getLoopSteps(), new_loop_op.getLoopSteps());
 
-  for (auto p :
-       llvm::zip(loop_op.getRegionIterArgs(), new_loop_op.getRegionIterArgs()))
-    remap.map(std::get<0>(p), std::get<1>(p));
+  // scf.parallel carries its tokens through reductions, not iter_args.
+  if (!loop_op.getRegionIterArgs().empty())
+    for (auto [j, i] : llvm::enumerate(token_idx))
+      remap.map(loop_op.getRegionIterArgs()[i],
+                new_loop_op.getRegionIterArgs()[j]);
 
   for (auto p : llvm::zip(*loop_op.getLoopInductionVars(),
                           *new_loop_op.getLoopInductionVars()))
@@ -437,6 +498,37 @@ air::cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
   if (air::getAsyncDependenciesFromOp(loop_op).size()) {
     generateYieldAndOrReduceToScfLoop(builder, loop_op->getContext(),
                                       new_loop_op);
+  }
+  // The yield built above passes only the tokens; put the carried values in
+  // their places among them.
+  if constexpr (std::is_same_v<T, scf::ForOp>) {
+    auto newYield = cast<scf::YieldOp>(new_loop_op.getBody()->getTerminator());
+    auto oldYield = cast<scf::YieldOp>(loop_op.getBody()->getTerminator());
+    SmallVector<Value> tokens(newYield.getOperands());
+    if (tokens.size() != token_idx.size()) {
+      // The pure ops updating a carried value, if not hoisted already.
+      builder.setInsertionPoint(newYield);
+      std::function<Value(Value)> materialize = [&](Value v) -> Value {
+        if (remap.contains(v))
+          return remap.lookup(v);
+        Operation *def = v.getDefiningOp();
+        if (!def)
+          return v;
+        for (Value operand : def->getOperands())
+          (void)materialize(operand);
+        builder.clone(*def, remap)
+            ->setAttr("hoist", StringAttr::get(loop_op->getContext(), "dep"));
+        return remap.lookup(v);
+      };
+      SmallVector<Value> operands;
+      unsigned t = 0;
+      for (unsigned i : token_idx)
+        operands.push_back(
+            isa<air::AsyncTokenType>(oldYield.getOperand(i).getType())
+                ? tokens[t++]
+                : materialize(oldYield.getOperand(i)));
+      newYield->setOperands(operands);
+    }
   }
 
   clonedOps.push_back(new_loop_op);
@@ -1450,6 +1542,168 @@ class AIRDemoteDmaToAIRHierarchyConversion
     return success();
   }
 };
+
+// Reorders the dims of a copy between L3 and L2 so that the L3 side walks
+// memory in order, if that makes it one contiguous run, so a shim descriptor
+// can move it as one linear run. The reordering goes to the L2 side, whose
+// descriptors take several dims. Copying the elements in another order puts
+// each in the same place.
+static void putL3SideInMemoryOrder(air::DmaMemcpyNdOp dma) {
+  auto srcTy = dyn_cast<BaseMemRefType>(dma.getSrcMemref().getType());
+  auto dstTy = dyn_cast<BaseMemRefType>(dma.getDstMemref().getType());
+  if (!srcTy || !dstTy)
+    return;
+  bool srcIsL3 = air::isL3(srcTy) && air::isL2(dstTy);
+  if (!srcIsL3 && !(air::isL3(dstTy) && air::isL2(srcTy)))
+    return;
+  auto constants =
+      [](ArrayRef<OpFoldResult> ofrs) -> std::optional<SmallVector<int64_t>> {
+    SmallVector<int64_t> out;
+    for (OpFoldResult ofr : ofrs) {
+      auto c = getConstantIntValue(ofr);
+      if (!c || *c <= 0)
+        return std::nullopt;
+      out.push_back(*c);
+    }
+    return out;
+  };
+  SmallVector<OpFoldResult> l3Offsets =
+      srcIsL3 ? dma.getMixedSrcOffsets() : dma.getMixedDstOffsets();
+  auto l3Sizes =
+      constants(srcIsL3 ? dma.getMixedSrcSizes() : dma.getMixedDstSizes());
+  auto l3Strides =
+      constants(srcIsL3 ? dma.getMixedSrcStrides() : dma.getMixedDstStrides());
+  if (!l3Sizes || !l3Strides || l3Sizes->size() < 2 ||
+      l3Strides->size() != l3Sizes->size() ||
+      l3Offsets.size() != l3Sizes->size())
+    return;
+  unsigned rank = l3Sizes->size();
+
+  // The L2 side, as explicit dims of the same sizes. A memtile descriptor
+  // has at most four dims, of at most 1023 elements each.
+  Builder b(dma.getContext());
+  auto l2Ty = dyn_cast<MemRefType>(srcIsL3 ? dstTy : srcTy);
+  SmallVector<OpFoldResult> l2Offsets =
+      srcIsL3 ? dma.getMixedDstOffsets() : dma.getMixedSrcOffsets();
+  SmallVector<OpFoldResult> l2Sizes =
+      srcIsL3 ? dma.getMixedDstSizes() : dma.getMixedSrcSizes();
+  SmallVector<int64_t> l2Strides;
+  if (l2Sizes.empty()) {
+    if (!l2Ty || !l2Ty.hasStaticShape() || !l2Ty.getLayout().isIdentity() ||
+        !llvm::equal(l2Ty.getShape(), *l3Sizes))
+      return;
+    l2Offsets.assign(rank, b.getIndexAttr(0));
+    l2Strides.assign(rank, 1);
+    for (int i = rank - 2; i >= 0; --i)
+      l2Strides[i] = l2Strides[i + 1] * (*l3Sizes)[i + 1];
+  } else {
+    auto sizes = constants(l2Sizes);
+    auto strides = constants(srcIsL3 ? dma.getMixedDstStrides()
+                                     : dma.getMixedSrcStrides());
+    if (!sizes || *sizes != *l3Sizes || !strides || l2Offsets.size() != rank)
+      return;
+    l2Strides = *strides;
+  }
+  if (rank > 4 || llvm::any_of(*l3Sizes, [](int64_t s) { return s > 1023; }))
+    return;
+
+  SmallVector<unsigned> perm(rank);
+  std::iota(perm.begin(), perm.end(), 0);
+  llvm::stable_sort(perm, [&](unsigned x, unsigned y) {
+    return (*l3Strides)[x] > (*l3Strides)[y];
+  });
+  if (llvm::is_sorted(perm))
+    return;
+  int64_t run = 1;
+  for (unsigned d : llvm::reverse(perm)) {
+    if ((*l3Strides)[d] != run)
+      return;
+    run *= (*l3Sizes)[d];
+  }
+
+  SmallVector<OpFoldResult> l3o, l3s, l3t, l2o, l2s, l2t;
+  for (unsigned d : perm) {
+    l3o.push_back(l3Offsets[d]);
+    l3s.push_back(b.getIndexAttr((*l3Sizes)[d]));
+    l3t.push_back(b.getIndexAttr((*l3Strides)[d]));
+    l2o.push_back(l2Offsets[d]);
+    l2s.push_back(b.getIndexAttr((*l3Sizes)[d]));
+    l2t.push_back(b.getIndexAttr(l2Strides[d]));
+  }
+  // Sets one of the op's index lists from `ofrs`.
+  auto set = [&](ArrayRef<OpFoldResult> ofrs, MutableOperandRange dynamic,
+                 auto setStatic) {
+    SmallVector<Value> dyn;
+    SmallVector<int64_t> stat;
+    dispatchIndexOpFoldResults(ofrs, dyn, stat);
+    dynamic.assign(dyn);
+    setStatic(stat);
+  };
+  set(srcIsL3 ? l3o : l2o, dma.getDynamicSrcOffsetsMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticSrcOffsets(v); });
+  set(srcIsL3 ? l3s : l2s, dma.getDynamicSrcSizesMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticSrcSizes(v); });
+  set(srcIsL3 ? l3t : l2t, dma.getDynamicSrcStridesMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticSrcStrides(v); });
+  set(srcIsL3 ? l2o : l3o, dma.getDynamicDstOffsetsMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticDstOffsets(v); });
+  set(srcIsL3 ? l2s : l3s, dma.getDynamicDstSizesMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticDstSizes(v); });
+  set(srcIsL3 ? l2t : l3t, dma.getDynamicDstStridesMutable(),
+      [&](ArrayRef<int64_t> v) { dma.setStaticDstStrides(v); });
+}
+
+// Loops in a segment, outside any herd, that carry only async tokens and
+// hold only waits, pure ops and other such loops. Hoisting DMAs out of herds
+// leaves them with no data movement, and they would stand between the puts
+// that channels later merge. Each is replaced by a wait on its init tokens.
+static bool onlyPassesTokens(scf::ForOp loop, Operation *root = nullptr) {
+  root = root ? root : loop.getOperation();
+  if (!llvm::all_of(loop.getResultTypes(), llvm::IsaPred<air::AsyncTokenType>))
+    return false;
+  for (Operation &op : loop.getBody()->without_terminator()) {
+    if (auto inner = dyn_cast<scf::ForOp>(op)) {
+      if (!onlyPassesTokens(inner, root))
+        return false;
+    } else if (auto wait = dyn_cast<air::WaitAllOp>(op)) {
+      // A blocking wait synchronizes; it is not just passing tokens on.
+      if (!wait.getAsyncToken())
+        return false;
+    } else if (!air::isPure(&op)) {
+      return false;
+    }
+    // A token from outside the loops is a dependency a wait on the loop's
+    // init tokens would drop.
+    for (Value v : op.getOperands())
+      if (isa<air::AsyncTokenType>(v.getType()) &&
+          !root->isAncestor(v.getParentRegion()->getParentOp()))
+        return false;
+  }
+  return true;
+}
+
+static void eraseHoistedLoopsWithoutDataMovement(func::FuncOp f) {
+  SmallVector<scf::ForOp> emptyLoops;
+  f.walk<WalkOrder::PreOrder>([&](scf::ForOp loop) {
+    if (!loop->getParentOfType<air::SegmentOp>() ||
+        loop->getParentOfType<air::HerdOp>() || !onlyPassesTokens(loop))
+      return WalkResult::advance();
+    emptyLoops.push_back(loop);
+    return WalkResult::skip();
+  });
+  for (scf::ForOp loop : emptyLoops) {
+    OpBuilder builder(loop);
+    SmallVector<Value> deps(loop.getInitArgs());
+    for (Value res : loop.getResults()) {
+      auto wa = air::WaitAllOp::create(
+          builder, loop.getLoc(), air::AsyncTokenType::get(loop.getContext()),
+          deps);
+      res.replaceAllUsesWith(wa.getAsyncToken());
+    }
+    loop.erase();
+  }
+}
+
 struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
   DmaToChannelPass() = default;
@@ -1499,6 +1753,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       OpBuilder builder(pair.first);
       (void)AIRDemoteMemrefToAIRHierarchy(pair, builder);
     }
+
+    for (auto f : funcOps)
+      f.walk([](air::DmaMemcpyNdOp dma) { putL3SideInMemoryOrder(dma); });
 
     // First pattern to demote dma ops to corresponding air hierarchy
     ConversionTarget target_0(*context);
@@ -1597,6 +1854,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     // Endpoints on one channel slot share a FIFO and must be ordered even when
     // they write unrelated buffers, which the dep tracing above cannot see.
     air::enforceChannelFifoOrder(module);
+
+    for (auto f : funcOps)
+      eraseHoistedLoopsWithoutDataMovement(f);
 
     // Clear channel attributes
     for (auto f : funcOps) {
