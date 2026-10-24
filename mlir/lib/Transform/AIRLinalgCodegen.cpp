@@ -5129,9 +5129,10 @@ transform::ReadForallTilesFromSharedOutsOp::applyToOne(
     if (it == tile.end() || several.contains(arg))
       continue;
     tensor::ParallelInsertSliceOp insert = it->second;
+    Value initValue = init, shared = arg;
     SmallVector<tensor::ExtractSliceOp> reads;
     target.getBody()->walk([&](tensor::ExtractSliceOp slice) {
-      if (slice.getSource() == init &&
+      if (slice.getSource() == initValue &&
           isEqualConstantIntOrValueArray(slice.getMixedOffsets(),
                                          insert.getMixedOffsets()) &&
           isEqualConstantIntOrValueArray(slice.getMixedSizes(),
@@ -5141,8 +5142,8 @@ transform::ReadForallTilesFromSharedOutsOp::applyToOne(
         reads.push_back(slice);
     });
     for (tensor::ExtractSliceOp slice : reads)
-      rewriter.modifyOpInPlace(slice,
-                               [&] { slice.getSourceMutable().assign(arg); });
+      rewriter.modifyOpInPlace(
+          slice, [&] { slice.getSourceMutable().assign(shared); });
   }
   results.push_back(target);
   return DiagnosedSilenceableFailure::success();
