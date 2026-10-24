@@ -1621,11 +1621,12 @@ def HoistLoopCarriedPackOp : Op<Transform_Dialect, "air.hoist_loop_carried_pack"
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
   let summary = "Carry a packed value through an scf.for instead of packing it every iteration";
   let description = [{
-    Each target is an `scf.for`. An iteration argument qualifies when its only
-    uses in the body are as the source of one `linalg.pack` and as the
-    destination of one `linalg.unpack` whose result is yielded back to it,
-    and the two use the same layout and the pack has no padding. That is the
-    shape packing a loop-carried accumulator leaves:
+    Each target is an `scf.for`. An iteration argument qualifies when it is
+    read in the body by one `linalg.pack` and the value yielded back to it is
+    a `linalg.unpack` with the same layout, used only by the yield; the pack
+    has no padding. A `tensor.expand_shape` and a `tensor.collapse_shape`
+    with the same reassociation qualify the same way. That is the shape
+    packing a loop-carried accumulator leaves:
 
     ```mlir
     %r = scf.for ... iter_args(%acc = %init) {
@@ -1648,9 +1649,12 @@ def HoistLoopCarriedPackOp : Op<Transform_Dialect, "air.hoist_loop_carried_pack"
     %u = linalg.unpack %r#1 ... into %r#0
     ```
 
-    The pack's destination must be a `tensor.empty` or defined outside the
-    loop. Iteration arguments that do not qualify are left alone; a target
-    with none is a silenceable failure.
+    The pack's destination, and the unpack's unless it is the iteration
+    argument itself, must be defined outside the loop, or be a
+    `tensor.empty` or `bufferization.alloc_tensor` (without a copy) of
+    sizes defined there, which is built again outside the loop. Iteration
+    arguments that do not qualify are left alone; a target with none is a
+    silenceable failure.
 
     Returns the new loops and the hoisted packs.
   }];
