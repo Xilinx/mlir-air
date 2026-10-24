@@ -99,5 +99,7 @@ measured context:
 | 32768 | 9.77 | |
 
 The fused prefill handles prompts
-up to 2048 tokens (two kv heads put each head's records `max_blocks` apart);
-longer ones take the per-op prefill.
+up to the length it was built for, 2048 tokens unless built with
+`make compile-fused-prefill FUSED_MAX_LEN=N` (two kv heads put each head's
+records `max_blocks` apart, so the build fixes the length); longer ones take the
+per-op prefill.

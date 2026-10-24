@@ -89,7 +89,9 @@ MAX_PROMPTS    ?= 2
 .PHONY: help compile compile-decode compile-decode-full compile-decode-elf \
         _compile_decode_build compile-prefill prefill run ask profile \
         profile-prefill verify verify-paris verify-topk verify-full \
-        diagnosis layer-gate layer-gate-shared check gen paris sublayer-ref clean
+        diagnosis layer-gate layer-gate-shared check gen paris sublayer-ref clean \
+        compile-fused-prefill fused-prefill fused-prefill-long fused-prefill-8k \
+        profile-fused-prefill
 
 help:
 	@echo "============================================================"
@@ -111,6 +113,8 @@ help:
 	@echo "  make compile-fused-prefill  Build the one-device chunked prefill (fused_prefill/)"
 	@echo "  make fused-prefill      Fused prefill, one chunk; gate the logits vs the CPU reference"
 	@echo "  make fused-prefill-long Fused prefill over three chunks of README text, same gate"
+	@echo "  make fused-prefill-8k   Fused prefill over FUSED_LONG_TOKENS tokens, same gate"
+	@echo "  make profile-fused-prefill  Fused prefill time at each of FUSED_LENGTHS"
 	@echo "  make run-fused          'run' with the fused prefill seeding the decoder"
 	@echo "  make verify             The full on-device LAYER gate (both halves below)"
 	@echo "  make layer-gate         Score own-KV layers ($(GATE_LAYERS)) vs the numpy reference"
@@ -166,8 +170,10 @@ prefill:
 	cd $(BUILD_DIR) && $(PYTHON) $(PREFILL_DRIVER) --gate --tol $(PREFILL_TOL)
 
 ## The fused prefill (../shared/fused_prefill).
+## FUSED_MAX_LEN, when set, is the longest prompt the build takes.
 compile-fused-prefill:
-	$(PYTHON) $(FUSED)/build.py $(FUSED_DIR) -j $(FUSED_JOBS)
+	$(PYTHON) $(FUSED)/build.py $(FUSED_DIR) -j $(FUSED_JOBS) \
+	  $(if $(FUSED_MAX_LEN),--max-len $(FUSED_MAX_LEN))
 
 fused-prefill:
 	$(PYTHON) $(FUSED)/verify.py $(FUSED_DIR) --tol $(PREFILL_TOL)
@@ -175,6 +181,19 @@ fused-prefill:
 fused-prefill-long:
 	$(PYTHON) $(FUSED)/verify.py $(FUSED_DIR) --tol $(PREFILL_TOL) \
 	  --text-file $(srcdir)/README.md --text-tokens 280 --repeat 1
+
+## FUSED_LONG_TOKENS tokens of README text, repeated to length, same gate. The
+## build must take the prompt (FUSED_MAX_LEN).
+FUSED_LONG_TOKENS ?= 8000
+fused-prefill-8k:
+	$(PYTHON) $(FUSED)/verify.py $(FUSED_DIR) --tol $(PREFILL_TOL) \
+	  --n-tokens $(FUSED_LONG_TOKENS) --repeat 1
+
+## Prefill time at each of FUSED_LENGTHS on synthetic prompts, no reference.
+## The build must take the longest (FUSED_MAX_LEN).
+FUSED_LENGTHS ?= 512,2048
+profile-fused-prefill:
+	$(PYTHON) $(FUSED)/bench.py $(FUSED_DIR) --lengths $(FUSED_LENGTHS)
 
 ## NPU prefill + fused decode. With no PROMPT, the Paris gate.
 run:

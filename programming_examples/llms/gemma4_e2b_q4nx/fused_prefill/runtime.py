@@ -9,6 +9,9 @@ second one. Norms, rope, residuals and the GLU and PLE
 products run on the host (hostops).
 """
 
+import json
+from pathlib import Path
+
 import numpy as np
 from ml_dtypes import bfloat16
 
@@ -20,7 +23,7 @@ from ...shared.fused_prefill import lm_gemv
 from ...shared.fused_prefill import packing as P
 from ...shared.fused_prefill.engine import TO, FROM, Ctx, Engine, view
 
-from .spec import CFG, LM_GEMM
+from .spec import CFG, LM_GEMM, config
 
 
 def _layer_q4(qm, b, L):
@@ -45,7 +48,11 @@ def _layer_q4(qm, b, L):
 
 class FusedPrefill(Engine):
     def __init__(self, build_dir, max_len=2048):
-        super().__init__(build_dir, CFG, max_len)
+        # A build that fixed its longest prompt (spec.MAX_LEN) holds exactly
+        # that, and its KV layout depends on it.
+        man = json.loads((Path(build_dir) / "manifest.json").read_text())
+        built = man.get("max_len")
+        super().__init__(build_dir, config(built) if built else CFG, built or max_len)
         self.current_context_length = 0
         self.rope_cache = {}
 
