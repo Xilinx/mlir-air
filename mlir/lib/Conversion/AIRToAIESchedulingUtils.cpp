@@ -508,10 +508,10 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops,
         return air::getRefeedCount(ci) > 1 ||
                (buf && air::getRefeedCount(buf) > 1);
       };
-      Operation *fixedBelow = n.fixedBelow;
+      Operation *fixedBelow = n.fixedBelow, *self = o;
       bool alone = fixedBelow && n.inner == tripCount && !refed(o) &&
                    llvm::none_of(memcpyIOpVec, [&](Operation *x) {
-                     return x != o && fixedBelow->isAncestor(x);
+                     return x != self && fixedBelow->isAncestor(x);
                    });
       if (sameBounds && tripCount > 1 && alone && copies)
         (*copies)[o] = tripCount;
