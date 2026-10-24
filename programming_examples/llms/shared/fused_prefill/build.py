@@ -139,10 +139,14 @@ def _peano():
     return os.path.join(os.environ["PEANO_INSTALL_DIR"], "bin", "clang++")
 
 
-def _flags():
-    inc = os.environ.get("MLIR_AIE_INSTALL_DIR") or str(
+def _aie_dir():
+    return os.environ.get("MLIR_AIE_INSTALL_DIR") or str(
         Path(shutil.which("aie-opt")).parents[1]
     )
+
+
+def _flags():
+    inc = _aie_dir()
     return [
         "-O2",
         "-std=c++20",
@@ -248,6 +252,16 @@ def build_kernels(out, cfg):
                 "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
                 "-DROUND_CONV_EVEN",
                 *ren,
+            ]
+        )
+        # only the renamed entry points stay global, so a core can link the
+        # objects of two head_dims
+        jobs.append(
+            [
+                Path(_aie_dir()) / "bin" / "llvm-objcopy",
+                "--wildcard",
+                f"--keep-global-symbol=*_d{dh}",
+                out / f"attn_d{dh}.o",
             ]
         )
     jobs.append(
