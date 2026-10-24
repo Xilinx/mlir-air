@@ -89,13 +89,17 @@ func.func @scf_if(%0 : i1) {
   return
 }
 
+// The scf.parallel becomes an affine.for nest, once; the loop around it,
+// which passed its token on, passes an event that is already complete.
 // CHECK-LABEL: func.func @scf_for_par
 // CHECK: %[[V0:.*]] = scf.for {{.*}} iter_args(%[[V1:.*]] = %{{.*}}) -> (!airrt.event) {
-// CHECK:   %[[V2:.*]] = scf.parallel {{.*}} init (%[[V1]]) -> !airrt.event {
-// CHECK:     %[[V3:.*]] = airrt.wait_all : !airrt.event
-// CHECK:     %[[V4:.*]] = airrt.wait_all %[[V1]], %[[V3]] : !airrt.event
-// CHECK:     scf.reduce(%[[V4]] : !airrt.event) {
-// CHECK:   scf.yield %[[V2]] : !airrt.event
+// CHECK:   affine.for
+// CHECK:     affine.for
+// CHECK:       %[[V3:.*]] = airrt.wait_all : !airrt.event
+// CHECK:       airrt.wait_all %[[V1]], %[[V3]] : !airrt.event
+// CHECK-NOT:   scf.parallel
+// CHECK:   %[[V4:.*]] = airrt.wait_all : !airrt.event
+// CHECK:   scf.yield %[[V4]] : !airrt.event
 #map5 = affine_map<(d0)[] -> (d0 * 32)>
 func.func @scf_for_par(%arg0: memref<1024x512xi8>, %arg1: memref<512x1024xi8>, %arg2: memref<1024x1024xi32>, %arg3: memref<1024x1024xi32>) {
   %c16 = arith.constant 16 : index
