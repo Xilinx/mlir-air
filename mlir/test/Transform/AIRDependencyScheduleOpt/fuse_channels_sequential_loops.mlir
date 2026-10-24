@@ -354,3 +354,167 @@ module {
     return
   }
 }
+
+// -----
+
+// Two loops bring buffers A and B from L3 into L2 at the same time. Neither
+// the launch's puts nor the memtile's gets wait for the other loop. A single
+// channel would have no fixed order for the two loops' transfers, so the
+// channels are not fused.
+
+// CHECK-LABEL: func.func @concurrent_loops
+// CHECK: air.channel.put {{.*}} @chan_a[]
+// CHECK: air.channel.put {{.*}} @chan_b[]
+// CHECK: air.channel.get {{.*}} @chan_a[]
+// CHECK: air.channel.get {{.*}} @chan_b[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @concurrent_loops(%in_a: memref<4x2560xi16>, %in_b: memref<4x2560xi16>, %n: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%la=%in_a, %lb=%in_b, %ln=%n) : memref<4x2560xi16>, memref<4x2560xi16>, index {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c2560 = arith.constant 2560 : index
+      %w = air.wait_all async
+      %put_a = scf.for %i = %c0 to %ln step %c1_0 iter_args(%d = %w) -> (!air.async.token) {
+        %p = air.channel.put async [%d] @chan_a[] (%la[%c0, %c0] [%c1_0, %c2560] [%c2560, %c1_0]) : (memref<4x2560xi16>)
+        scf.yield %p : !air.async.token
+      }
+      %put_b = scf.for %i = %c0 to %ln step %c1_0 iter_args(%d = %w) -> (!air.async.token) {
+        %p = air.channel.put async [%d] @chan_b[] (%lb[%c0, %c0] [%c1_0, %c2560] [%c2560, %c1_0]) : (memref<4x2560xi16>)
+        scf.yield %p : !air.async.token
+      }
+      %1 = air.segment @seg async args(%sn=%ln) : index {
+        %c0_1 = arith.constant 0 : index
+        %c1_1 = arith.constant 1 : index
+        %ta, %buf_a = air.execute -> (memref<2560xi16, 1>) {
+          %a = memref.alloc() : memref<2560xi16, 1>
+          air.execute_terminator %a : memref<2560xi16, 1>
+        }
+        %tb, %buf_b = air.execute -> (memref<2560xi16, 1>) {
+          %a = memref.alloc() : memref<2560xi16, 1>
+          air.execute_terminator %a : memref<2560xi16, 1>
+        }
+        %get_a = scf.for %i = %c0_1 to %sn step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+          %g = air.channel.get async [%d] @chan_a[] (%buf_a[] [] []) : (memref<2560xi16, 1>)
+          scf.yield %g : !air.async.token
+        }
+        %get_b = scf.for %i = %c0_1 to %sn step %c1_1 iter_args(%d = %tb) -> (!air.async.token) {
+          %g = air.channel.get async [%d] @chan_b[] (%buf_b[] [] []) : (memref<2560xi16, 1>)
+          scf.yield %g : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The same two loops, but the launch starts the puts of B only after the
+// puts of A are done. The memtile's gets still run concurrently. The fused
+// channel carries all transfers of A and then all of B, the order in which
+// the launch sends them.
+
+// CHECK-LABEL: func.func @dependent_loops
+// CHECK: air.channel.put {{.*}} @chan_a[]
+// CHECK: air.channel.put {{.*}} @chan_a[]
+// CHECK: air.channel.get {{.*}} @chan_a[]
+// CHECK: air.channel.get {{.*}} @chan_a[]
+// CHECK-NOT: @chan_b[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @dependent_loops(%in_a: memref<4x2560xi16>, %in_b: memref<4x2560xi16>, %n: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%la=%in_a, %lb=%in_b, %ln=%n) : memref<4x2560xi16>, memref<4x2560xi16>, index {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c2560 = arith.constant 2560 : index
+      %w = air.wait_all async
+      %put_a = scf.for %i = %c0 to %ln step %c1_0 iter_args(%d = %w) -> (!air.async.token) {
+        %p = air.channel.put async [%d] @chan_a[] (%la[%c0, %c0] [%c1_0, %c2560] [%c2560, %c1_0]) : (memref<4x2560xi16>)
+        scf.yield %p : !air.async.token
+      }
+      %put_b = scf.for %i = %c0 to %ln step %c1_0 iter_args(%d = %put_a) -> (!air.async.token) {
+        %p = air.channel.put async [%d] @chan_b[] (%lb[%c0, %c0] [%c1_0, %c2560] [%c2560, %c1_0]) : (memref<4x2560xi16>)
+        scf.yield %p : !air.async.token
+      }
+      %1 = air.segment @seg async args(%sn=%ln) : index {
+        %c0_1 = arith.constant 0 : index
+        %c1_1 = arith.constant 1 : index
+        %ta, %buf_a = air.execute -> (memref<2560xi16, 1>) {
+          %a = memref.alloc() : memref<2560xi16, 1>
+          air.execute_terminator %a : memref<2560xi16, 1>
+        }
+        %tb, %buf_b = air.execute -> (memref<2560xi16, 1>) {
+          %a = memref.alloc() : memref<2560xi16, 1>
+          air.execute_terminator %a : memref<2560xi16, 1>
+        }
+        %get_a = scf.for %i = %c0_1 to %sn step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+          %g = air.channel.get async [%d] @chan_a[] (%buf_a[] [] []) : (memref<2560xi16, 1>)
+          scf.yield %g : !air.async.token
+        }
+        %get_b = scf.for %i = %c0_1 to %sn step %c1_1 iter_args(%d = %tb) -> (!air.async.token) {
+          %g = air.channel.get async [%d] @chan_b[] (%buf_b[] [] []) : (memref<2560xi16, 1>)
+          scf.yield %g : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// As @concurrent_loops, but the launch has no put loop for B. With no puts
+// to order against, the order of the gets is the only one, so the channels
+// are fused.
+
+// CHECK-LABEL: func.func @loops_without_puts
+// CHECK: air.channel.put {{.*}} @chan_a[]
+// CHECK: air.channel.get {{.*}} @chan_a[]
+// CHECK: air.channel.get {{.*}} @chan_a[]
+// CHECK-NOT: @chan_b[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @loops_without_puts(%in_a: memref<4x2560xi16>, %n: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%la=%in_a, %ln=%n) : memref<4x2560xi16>, index {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c2560 = arith.constant 2560 : index
+      %w = air.wait_all async
+      %put_a = scf.for %i = %c0 to %ln step %c1_0 iter_args(%d = %w) -> (!air.async.token) {
+        %p = air.channel.put async [%d] @chan_a[] (%la[%c0, %c0] [%c1_0, %c2560] [%c2560, %c1_0]) : (memref<4x2560xi16>)
+        scf.yield %p : !air.async.token
+      }
+      %1 = air.segment @seg async args(%sn=%ln) : index {
+        %c0_1 = arith.constant 0 : index
+        %c1_1 = arith.constant 1 : index
+        %ta, %buf_a = air.execute -> (memref<2560xi16, 1>) {
+          %a = memref.alloc() : memref<2560xi16, 1>
+          air.execute_terminator %a : memref<2560xi16, 1>
+        }
+        %tb, %buf_b = air.execute -> (memref<2560xi16, 1>) {
+          %a = memref.alloc() : memref<2560xi16, 1>
+          air.execute_terminator %a : memref<2560xi16, 1>
+        }
+        %get_a = scf.for %i = %c0_1 to %sn step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+          %g = air.channel.get async [%d] @chan_a[] (%buf_a[] [] []) : (memref<2560xi16, 1>)
+          scf.yield %g : !air.async.token
+        }
+        %get_b = scf.for %i = %c0_1 to %sn step %c1_1 iter_args(%d = %tb) -> (!air.async.token) {
+          %g = air.channel.get async [%d] @chan_b[] (%buf_b[] [] []) : (memref<2560xi16, 1>)
+          scf.yield %g : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}

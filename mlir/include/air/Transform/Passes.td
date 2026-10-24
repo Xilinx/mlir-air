@@ -1034,6 +1034,12 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
     'aggressive-mode' option, when enabled, will attempt to use as few air.channels as 
     possible by time-multiplexing air.channel.puts and air.channel.gets to share the same
     air.channel symbol.
+
+    A func.func may name memory spaces of its own in an `air.channel_multiplexing`
+    array attribute (e.g. `["L2"]`): its channels are multiplexed in those spaces
+    too, on top of the ones 'aggressive-mode' names for every function. This lets
+    one module hold a function that needs its channels multiplexed in L2 and
+    others whose channels must not be.
   }];
   let options = [
     ListOption<"clAggressiveMode", "aggressive-mode", "std::string",
