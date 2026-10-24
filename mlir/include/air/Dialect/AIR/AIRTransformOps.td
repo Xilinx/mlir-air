@@ -441,6 +441,12 @@ def FoldExtractSliceOfInsertSliceOp : Op<Transform_Dialect, "air.fold_extract_sl
       disjoint becomes `insert(y at T, insert(x at S, z))`.
     - A slice of a `tensor.expand_shape` that only adds unit dims reads the
       expand's source.
+    - In an `scf.forall`, a slice of a shared output's init that is the tile
+      the iteration writes to that output (the same offsets, sizes and
+      strides as the output's only `tensor.parallel_insert_slice`) reads the
+      shared output's block argument. No other iteration writes that tile,
+      so the value is the same, and bufferization need not keep a copy of
+      the whole init for the read.
 
     The same box read back with the inserted value's type is left to the
     `tensor.extract_slice` folder. A value assembled from parts then reads

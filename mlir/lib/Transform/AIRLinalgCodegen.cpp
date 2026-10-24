@@ -3466,10 +3466,50 @@ struct FoldExtractSliceOfUnitExpand
     return success();
   }
 };
+
+// In an scf.forall, a slice of a shared output's init that is the tile the
+// iteration inserts into that output (its only tensor.parallel_insert_slice
+// there) reads the shared output's block argument instead. No other
+// iteration writes that tile, so the value is the same; read from the block
+// argument, bufferization need not keep a copy of the whole init for it.
+struct FoldExtractSliceOfForallInit
+    : public OpRewritePattern<tensor::ExtractSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(tensor::ExtractSliceOp extract,
+                                PatternRewriter &rewriter) const override {
+    for (auto forall = extract->getParentOfType<scf::ForallOp>(); forall;
+         forall = forall->getParentOfType<scf::ForallOp>()) {
+      for (auto [init, arg] :
+           llvm::zip(forall.getOutputs(), forall.getRegionIterArgs())) {
+        if (init != extract.getSource())
+          continue;
+        SmallVector<Operation *> inserts = forall.getCombiningOps(arg);
+        if (inserts.size() != 1)
+          continue;
+        auto insert = dyn_cast<tensor::ParallelInsertSliceOp>(inserts.front());
+        if (!insert ||
+            !isEqualConstantIntOrValueArray(extract.getMixedOffsets(),
+                                            insert.getMixedOffsets()) ||
+            !isEqualConstantIntOrValueArray(extract.getMixedSizes(),
+                                            insert.getMixedSizes()) ||
+            !isEqualConstantIntOrValueArray(extract.getMixedStrides(),
+                                            insert.getMixedStrides()))
+          continue;
+        rewriter.modifyOpInPlace(
+            extract, [&] { extract.getSourceMutable().assign(arg); });
+        return success();
+      }
+    }
+    return failure();
+  }
+};
 } // namespace
 
 // Applies `patterns` greedily within each payload op of `target`; the result
-// handle is the payload ops.
+// handle is the payload ops. The driver over a whole region takes only an op
+// isolated from above; within any other op, such as a loop, the patterns are
+// applied to the ops it contains, as transform.apply_patterns does.
 static DiagnosedSilenceableFailure
 applyPatternsToTargets(transform::TransformOpInterface op, Value target,
                        Value result, transform::TransformResults &results,
@@ -3480,7 +3520,18 @@ applyPatternsToTargets(transform::TransformOpInterface op, Value target,
   for (Operation *payload : targets) {
     RewritePatternSet patterns(op->getContext());
     populate(patterns);
-    if (failed(applyPatternsGreedily(payload, std::move(patterns))))
+    LogicalResult converged = failure();
+    if (payload->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+      converged = applyPatternsGreedily(payload, std::move(patterns));
+    } else {
+      SmallVector<Operation *> nested;
+      payload->walk([&](Operation *o) {
+        if (o != payload)
+          nested.push_back(o);
+      });
+      converged = applyOpPatternsGreedily(nested, std::move(patterns));
+    }
+    if (failed(converged))
       return emitDefiniteFailure(op) << "patterns did not converge";
   }
   results.set(llvm::cast<OpResult>(result), targets);
@@ -3493,9 +3544,11 @@ DiagnosedSilenceableFailure transform::FoldExtractSliceOfInsertSliceOp::apply(
   return applyPatternsToTargets(
       *this, getTarget(), getResult(), results, state,
       [](RewritePatternSet &patterns) {
-        patterns.add<FoldExtractSliceOfInsertSlice,
-                     DropInsertOverwrittenPastDisjointInsert,
-                     FoldExtractSliceOfUnitExpand>(patterns.getContext());
+        patterns
+            .add<FoldExtractSliceOfInsertSlice,
+                 DropInsertOverwrittenPastDisjointInsert,
+                 FoldExtractSliceOfUnitExpand, FoldExtractSliceOfForallInit>(
+                patterns.getContext());
       });
 }
 
