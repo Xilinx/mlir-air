@@ -2886,6 +2886,12 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     auto isNonConst = [](Value v) { return !getConstantIntValue(v); };
     if (llvm::any_of(wraps, isNonConst) || llvm::any_of(strides, isNonConst))
       return failure();
+    // Nor can a loop with a run-time trip count become one of its dims.
+    for (Operation *p = channel_op->getParentOp(); p != for_op->getParentOp();
+         p = p->getParentOp())
+      if (auto loop = dyn_cast<scf::ForOp>(p);
+          loop && !air::getStaticScfForTripCountAsInt(loop))
+        return failure();
 
     // With skipZeroStride a loop whose induction variable reaches no offset is
     // folded as a dropped stride-0 dimension: one send per fill. A buffer
@@ -8609,6 +8615,180 @@ findLockstepCoupledChannels(func::FuncOp func) {
   return coupled;
 }
 
+// (a, b) with v == a + b * iv, looking through index casts, extensions and
+// integer add, sub and mul; nothing if v depends on anything else.
+static std::optional<std::pair<int64_t, int64_t>> linearIn(Value v, Value iv) {
+  if (v == iv)
+    return std::make_pair(int64_t(0), int64_t(1));
+  if (auto c = getConstantIntValue(v))
+    return std::make_pair(*c, int64_t(0));
+  Operation *def = v.getDefiningOp();
+  if (isa_and_present<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtSIOp,
+                      arith::ExtUIOp>(def))
+    return linearIn(def->getOperand(0), iv);
+  if (!isa_and_present<arith::AddIOp, arith::SubIOp, arith::MulIOp>(def))
+    return std::nullopt;
+  auto x = linearIn(def->getOperand(0), iv);
+  auto y = linearIn(def->getOperand(1), iv);
+  if (!x || !y)
+    return std::nullopt;
+  if (isa<arith::AddIOp>(def))
+    return std::make_pair(x->first + y->first, x->second + y->second);
+  if (isa<arith::SubIOp>(def))
+    return std::make_pair(x->first - y->first, x->second - y->second);
+  if (x->second && y->second)
+    return std::nullopt;
+  return std::make_pair(x->first * y->first,
+                        x->first * y->second + x->second * y->first);
+}
+
+// If `loop`, at the shim, runs a run-time number of trips whose puts read
+// one run of an L3 buffer, returns the run's start at the first trip and its
+// length per trip. The puts are on one channel; each starts where the one
+// before it ended, and each trip where the trip before it ended.
+static std::optional<std::pair<int64_t, int64_t>>
+matchRunTimeContiguousPutLoop(scf::ForOp loop) {
+  auto lb = getConstantIntValue(loop.getLowerBound());
+  auto step = getConstantIntValue(loop.getStep());
+  if (!lb || step != 1 || air::getStaticScfForTripCountAsInt(loop) ||
+      loop.getNumRegionIterArgs() != 1 ||
+      !isa<air::AsyncTokenType>(loop.getRegionIterArgs()[0].getType()))
+    return std::nullopt;
+  Block *body = loop.getBody();
+  SmallVector<air::ChannelPutOp> puts;
+  for (Operation &op : body->without_terminator()) {
+    if (auto put = dyn_cast<air::ChannelPutOp>(op)) {
+      puts.push_back(put);
+      continue;
+    }
+    if (!isa<air::WaitAllOp>(op) && !isMemoryEffectFree(&op))
+      return std::nullopt;
+  }
+  if (puts.empty())
+    return std::nullopt;
+  air::ChannelPutOp first = puts.front();
+  auto srcTy = dyn_cast<BaseMemRefType>(first.getSrc().getType());
+  if (!srcTy || !air::isL3(srcTy))
+    return std::nullopt;
+  Value iv = loop.getInductionVar();
+  int64_t start = 0, length = 0;
+  SmallVector<int64_t> advances;
+  for (auto put : puts) {
+    if (put.getChanName() != first.getChanName() ||
+        put.getIndices() != first.getIndices() ||
+        put.getSrc() != first.getSrc() || put.getPadBefore() ||
+        put.getPadAfter())
+      return std::nullopt;
+    // Only the loop's own transfers may be waited for.
+    for (Value d : put.getAsyncDependencies())
+      if (d.getParentBlock() != body)
+        return std::nullopt;
+    auto offsets = air::getOffsetsAsValues(put);
+    auto sizes = air::getSizesAsValues(put);
+    auto strides = air::getStridesAsValues(put);
+    if (sizes.empty() || offsets.size() != sizes.size() ||
+        strides.size() != sizes.size())
+      return std::nullopt;
+    // A dense row-major run of the sizes, starting at the offsets.
+    int64_t at = 0, perTrip = 0, run = 1;
+    for (int d = sizes.size() - 1; d >= 0; --d) {
+      auto size = getConstantIntValue(sizes[d]);
+      auto stride = getConstantIntValue(strides[d]);
+      auto offset = linearIn(offsets[d], iv);
+      if (!size || !stride || !offset || (*size > 1 && *stride != run))
+        return std::nullopt;
+      at += offset->first * *stride;
+      perTrip += offset->second * *stride;
+      run *= *size;
+    }
+    if (put == first)
+      start = at;
+    else if (at != start + length)
+      return std::nullopt;
+    length += run;
+    advances.push_back(perTrip);
+  }
+  // Every put moves on by the trip's length each trip.
+  if (llvm::any_of(advances, [&](int64_t a) { return a != length; }))
+    return std::nullopt;
+  return std::make_pair(start + *lb * length, length);
+}
+
+// Folds a loop at the shim over a run-time number of trips, whose puts read
+// one run of an L3 buffer (matchRunTimeContiguousPutLoop), into one put of
+// that run, of a run-time length. A static loop around it that only repeats
+// it becomes its repeat dim. The shim then takes a fixed number of
+// descriptors, whatever the trip count, rather than one per put per trip.
+static void foldRunTimeContiguousPutLoops(Region *region) {
+  SmallVector<scf::ForOp> loops;
+  region->walk([&](scf::ForOp loop) {
+    if (!loop->getParentOfType<air::SegmentOp>() &&
+        !loop->getParentOfType<air::HerdOp>())
+      loops.push_back(loop);
+  });
+  // Inner loops come first; folding one may erase the loop around it.
+  llvm::SmallPtrSet<Operation *, 4> erased;
+  for (scf::ForOp loop : loops) {
+    if (erased.contains(loop))
+      continue;
+    auto match = matchRunTimeContiguousPutLoop(loop);
+    if (!match)
+      continue;
+    auto [start, length] = *match;
+    air::ChannelPutOp first =
+        *loop.getBody()->getOps<air::ChannelPutOp>().begin();
+
+    // The loop to replace: `loop`, or a static loop doing nothing but run it.
+    scf::ForOp outer = loop;
+    int64_t repeat = 1;
+    auto parent = dyn_cast<scf::ForOp>(loop->getParentOp());
+    if (parent && parent.getNumRegionIterArgs() == 1 &&
+        loop.getInitArgs()[0] == parent.getRegionIterArgs()[0] &&
+        parent.getBody()->getTerminator()->getOperands() ==
+            ValueRange(loop.getResults()) &&
+        parent.isDefinedOutsideOfLoop(loop.getUpperBound()) &&
+        llvm::all_of(parent.getBody()->without_terminator(),
+                     [&](Operation &op) {
+                       return &op == loop.getOperation() ||
+                              (isMemoryEffectFree(&op) && op.use_empty());
+                     })) {
+      if (auto trips = air::getStaticScfForTripCountAsInt(parent)) {
+        outer = parent;
+        repeat = *trips;
+      }
+    }
+
+    OpBuilder b(outer);
+    Location loc = loop.getLoc();
+    auto index = [&](int64_t v) -> Value {
+      return arith::ConstantIndexOp::create(b, loc, v);
+    };
+    Value ub = loop.getUpperBound();
+    if (!ub.getType().isIndex())
+      ub = arith::IndexCastOp::create(b, loc, b.getIndexType(), ub);
+    Value lb = loop.getLowerBound();
+    if (!lb.getType().isIndex())
+      lb = arith::IndexCastOp::create(b, loc, b.getIndexType(), lb);
+    Value trips = arith::SubIOp::create(b, loc, ub, lb);
+    Value total = arith::MulIOp::create(b, loc, trips, index(length));
+    SmallVector<Value> offsets{index(start)}, sizes{total}, strides{index(1)};
+    if (repeat > 1) {
+      offsets.insert(offsets.begin(), index(0));
+      sizes.insert(sizes.begin(), index(repeat));
+      strides.insert(strides.begin(), index(0));
+    }
+    auto put = air::ChannelPutOp::create(
+        b, loc, air::AsyncTokenType::get(b.getContext()),
+        SmallVector<Value>{outer.getInitArgs()[0]}, first.getChanName(),
+        first.getIndices(), first.getSrc(), offsets, sizes, strides,
+        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+    put->setAttrs(first->getDiscardableAttrDictionary());
+    outer.getResult(0).replaceAllUsesWith(put.getAsyncToken());
+    erased.insert(outer);
+    outer->erase();
+  }
+}
+
 // A pass which performs a series of scf.for loop splitting, fusion and
 // specialization, with the goal of generating efficient shim dma block
 // descriptors (BD).
@@ -9379,6 +9559,7 @@ private:
       regionsToProcess.push_back(&func.getRegion());
 
     for (Region *region : regionsToProcess) {
+      foldRunTimeContiguousPutLoops(region);
       if (isAIE2)
         air::applyAIRIsolateAsyncDmaLoopNestsPattern(region);
 
