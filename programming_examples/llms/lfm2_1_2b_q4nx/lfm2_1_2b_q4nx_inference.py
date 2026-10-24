@@ -265,7 +265,7 @@ def run_prefill(prompt, seq_len, kv_path, warm_ttft=False, fused=None):
 def _compile_only(seq_len=2048):
     """Build/cache the prefill ELFs and exit (no weights, no NPU dispatch).
 
-    This is the weight-free CI smoke signal (`make compile`). Constructing
+    This is the weight-free CI smoke signal (`make compile-prefill`). Constructing
     Lfm2Q4nxPrefill compiles the prefill engines; the fused decode templates
     are a separate ~15 min build (`make compile-decode`)."""
     sys.path.insert(0, str(_HERE))

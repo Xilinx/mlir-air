@@ -74,7 +74,7 @@ the bundle's separate quantized copy.
 ## Quick start
 
 ```bash
-make compile          # prefill ELFs (~4 min, one-time; no weights)
+make compile          # fused prefill (one-time; no weights; per-op: compile-prefill)
 make compile-decode   # fused decode templates into this dir (~15 min; no weights)
 make run              # prefill + 32 layers/LM head on-device, one dispatch per token
 make chat             # interactive chat REPL (streaming)

@@ -106,7 +106,7 @@ at the same effective shim bandwidth.
 ## Quick Start
 
 ```bash
-# Build everything, weight-free: the 8 prefill ELFs + the decode templates.
+# Build everything, weight-free: the fused prefill + the decode templates.
 # Production decode templates are ATTN_MAXL=2048 (~15 min).
 make compile
 

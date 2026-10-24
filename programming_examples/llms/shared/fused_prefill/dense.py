@@ -23,23 +23,52 @@ from .models import layer_op, spec
 
 
 def resolve(desc, model=None):
-    """model.q4nx of the desc's bundle (or of `model`, a file or directory)."""
+    """The desc's weights (or `model`'s, a file, directory or repo id): a
+    model.q4nx, or for a full-precision checkpoint its config.json, which sits
+    with the safetensors."""
     m = Path(model) if model else None
     if m and m.is_file():
         return m
     if m and (m / "model.q4nx").is_file():
         return m / "model.q4nx"
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download, snapshot_download
 
-    for f in ("config.json", "tokenizer.json", "tokenizer_config.json"):
-        hf_hub_download(model or desc.repo, f)
+    # an "hf" model reads its checkpoint unless pointed at a bundle
+    other = model and str(model) != desc.repo
+    if desc.codec == "hf" and not (other and P.is_bundle(model)):
+        if m and m.is_dir():
+            return m / "config.json"
+        d = snapshot_download(
+            model or desc.repo, allow_patterns=["*.safetensors", "*.json"]
+        )
+        return Path(d) / "config.json"
+    if not desc.base and desc.codec != "hf":
+        for f in ("config.json", "tokenizer.json", "tokenizer_config.json"):
+            hf_hub_download(model or desc.repo, f)
     return Path(hf_hub_download(model or desc.repo, "model.q4nx"))
 
 
+def meta_dir(desc, path):
+    """The directory of the config.json and tokenizer that go with the weights
+    at `path`: theirs, desc.base's when their repo ships only weights, or for a
+    bundle of an "hf" model without them, its checkpoint's."""
+    if desc.base:
+        repo = desc.base
+    elif (Path(path).parent / "config.json").is_file():
+        return Path(path).parent
+    elif desc.codec == "hf":
+        repo = desc.repo
+    else:
+        return Path(path).parent
+    from huggingface_hub import snapshot_download
+
+    return Path(snapshot_download(repo, allow_patterns=["*.json", "*.txt"]))
+
+
 def config(desc, path):
-    """(eps, {op: inv_freq}, rot, rope_scale) from the bundle's config.json,
+    """(eps, {op: inv_freq}, rot, rope_scale) from the weights' config.json,
     after checking its shape against desc."""
-    c = json.loads((Path(path).parent / "config.json").read_text())
+    c = json.loads((meta_dir(desc, path) / "config.json").read_text())
     c = c.get("text_config", c)
     got = (
         c["hidden_size"],
@@ -114,7 +143,7 @@ class DensePrefill(Engine):
                 pre_ffn="pre_feedforward_layernorm",
                 post_ffn="post_feedforward_layernorm",
             )
-        b = self.bundle = P.Bundle(path)
+        b = self.bundle = P.open_weights(P.codec(e, path), path)
         dq, dk = e.heads * e.dh, e.kv_heads * e.dh
         self.norms, self.bias = [], []
         for L in range(e.layers):
@@ -374,7 +403,7 @@ def reference(desc, model, ids):
     weights: the gate the fused prefill is checked against."""
     path = resolve(desc, model)
     eps, inv, rot, scale = config(desc, path)
-    b = P.Bundle(path)
+    b = P.open_weights(P.codec(desc, path), path)
     e, n = desc, len(ids)
     dq, dk, G = e.heads * e.dh, e.kv_heads * e.dh, e.heads // e.kv_heads
 

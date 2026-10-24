@@ -9,7 +9,8 @@
 # come from FastFlowLM's 4-bit model.q4nx bundle (dequant->bf16 on the host).
 #
 # Quick start:
-#   make compile        — Build/cache the prefill ELFs (~3 min; no weights needed)
+#   make compile        — Build the fused prefill (one build for any prompt up to its max_len)
+#   make compile-prefill — Build the per-op prefill ELFs instead (no weights needed)
 #   make compile-decode — Build the fused decode templates (~15 min; no weights)
 #   make run            — Run inference: NPU prefill + fused NPU decode
 #   make verify         — Top-k token-set inclusion gate: NPU q4nx vs HF bf16
@@ -56,7 +57,7 @@ FUSED_DECODE := $(srcdir)/../../fused_decode
 VERIFY_RUNNER = $(srcdir)/../verify/verify_runner.py
 RUNNER_ADAPTER = llama32_1b_q4nx.verify_adapter
 
-.PHONY: help compile run profile chat verify verify-full diagnosis clean \
+.PHONY: help compile compile-prefill run profile chat verify verify-full diagnosis clean \
         compile-decode profile-prefill verify-paris ask gen
 
 help:
@@ -65,7 +66,8 @@ help:
 	@echo "============================================================"
 	@echo ""
 	@echo "Quick start:"
-	@echo "  make compile          Build/cache the prefill ELFs (~3 min, no weights)"
+	@echo "  make compile          Build the fused prefill (one build, any prompt up to its max_len)"
+	@echo "  make compile-prefill  Build the per-op prefill ELFs instead (no weights)"
 	@echo "  make compile-decode   Build the fused decode templates (~15 min, no weights)"
 	@echo "  make run              Run inference ($(N_TOKENS) tokens): NPU prefill + decode"
 	@echo "  make chat             Interactive chat REPL (streaming output)"
@@ -90,9 +92,13 @@ help:
 	@echo "Data (external overrides; see README.md):"
 	@echo "  Q4NX_GOLDEN_DIR / Q4NX_DECODE_WEIGHTS_NPZ pre-supply the derived decode caches."
 
-## Build/cache the prefill ELFs (rms_gemms_rope + flash_attn + o_ffn + lm_head_gemv).
+## Build the fused prefill (../shared/fused_prefill). run, verify and profile
+## prefill on it when it is built, and on the per-op prefill otherwise.
+compile: compile-fused-prefill
+
+## Build/cache the per-op prefill ELFs (rms_gemms_rope + flash_attn + o_ffn + lm_head_gemv).
 ## No weight data or NPU dispatch required.
-compile:
+compile-prefill:
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && $(PYTHON) $(DRIVER) --compile-only
 

@@ -101,7 +101,7 @@ resident BOs (13.3 GB across 32 layers) — is a startup cost, not part of TTFT.
 ## Quick Start
 
 ```bash
-make compile          # prefill ELFs (~4 min, one-time; no weights)
+make compile          # fused prefill (one-time; no weights; per-op: compile-prefill)
 make compile-decode   # fused decode templates into this dir (~15 min; no weights)
 make run              # 32 layers + LM head on-device, one dispatch per token
 make verify           # top-k token-set gate: NPU q4nx vs HF bf16

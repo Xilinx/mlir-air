@@ -37,6 +37,7 @@ for _p in (str(_VERIFY), str(_QWEN3B), str(_THIS_DIR)):
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
+from runners import fused_prefill  # noqa: E402
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
 # The Q4NX example is a 4-bit realization of the bf16 qwen25_3b architecture (36
@@ -96,8 +97,9 @@ def build_runner(
 class NpuRunner:
     """Adapter over the Q4NX prefill + one-xclbin fused Qwen2.5-3B decode.
 
-    prefill() runs `Qwen25Q4Prefill` (full logits + per-layer roped-K / raw-V) and
-    seeds the decoder's KV cache; decode_step() dispatches one fused token (36
+    prefill() runs the fused prefill when FUSED_PREFILL_DIR holds a build, else
+    `Qwen25Q4Prefill` (full logits + per-layer roped-K / raw-V), and seeds the
+    decoder's KV cache; decode_step() dispatches one fused token (36
     layers + the tied LM head) through `FusedDecoder`. Mirrors the loop in
     `qwen25_3b_q4_inference.generate`."""
 
@@ -110,8 +112,10 @@ class NpuRunner:
         from qwen25_3b_q4_prefill import Qwen25Q4Prefill
         from qwen25_3b_q4_inference import FusedDecoder
 
-        self.prefiller = Qwen25Q4Prefill(seq_len=_SEQ_LEN, n_layers=_N_LAYERS)
-        self.prefiller.load_weights(model=QWEN_Q4_MODEL_SOURCE)
+        self.prefiller = fused_prefill.load("qwen25_3b_q4", QWEN_Q4_MODEL_SOURCE)
+        if self.prefiller is None:
+            self.prefiller = Qwen25Q4Prefill(seq_len=_SEQ_LEN, n_layers=_N_LAYERS)
+            self.prefiller.load_weights(model=QWEN_Q4_MODEL_SOURCE)
         # `make compile-decode` builds the decode_L<N> template pair into THIS
         # example's directory; anchor it here rather than depending on where the
         # runner was launched from.
@@ -143,6 +147,8 @@ class NpuRunner:
                 for l in range(_N_LAYERS)
             ]
         )
+        if hasattr(self.prefiller, "suspend"):
+            self.prefiller.suspend()  # free its hw_context for the decoder
         self._P = K.shape[1]
         self.dec.seed_kv(K, V, self._P)
 

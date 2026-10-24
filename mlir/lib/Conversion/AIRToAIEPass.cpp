@@ -2799,6 +2799,60 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+// The scf.if / scf.index_switch counterpart of LowerScfTokenPattern: drop the
+// op's air.async.token results. A dropped result becomes a dependency-free
+// air.wait_all, and each region waits on the tokens it used to yield.
+template <typename OpT>
+struct LowerScfBranchTokenPattern : public OpRewritePattern<OpT> {
+  using OpRewritePattern<OpT>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpT op,
+                                PatternRewriter &rewriter) const override {
+    auto isToken = [](Type t) { return isa<air::AsyncTokenType>(t); };
+    if (llvm::none_of(op->getResultTypes(), isToken))
+      return failure();
+
+    OperationState state(op->getLoc(), op->getName());
+    state.addOperands(op->getOperands());
+    state.addAttributes(op->getDiscardableAttrDictionary().getValue());
+    state.propertiesAttr = op->getPropertiesAsAttribute();
+    for (Type t : op->getResultTypes())
+      if (!isToken(t))
+        state.addTypes(t);
+    for (unsigned i = 0, e = op->getNumRegions(); i < e; ++i)
+      state.addRegion();
+    Operation *newOp = rewriter.create(state);
+    for (auto [from, to] :
+         llvm::zip_equal(op->getRegions(), newOp->getRegions()))
+      rewriter.inlineRegionBefore(from, to, to.end());
+
+    for (Region &region : newOp->getRegions())
+      for (Block &block : region) {
+        auto yield = cast<scf::YieldOp>(block.getTerminator());
+        SmallVector<Value> kept, tokens;
+        for (Value v : yield.getOperands())
+          (isToken(v.getType()) ? tokens : kept).push_back(v);
+        rewriter.setInsertionPoint(yield);
+        air::WaitAllOp::create(rewriter, op->getLoc(), TypeRange{}, tokens);
+        rewriter.modifyOpInPlace(yield, [&] { yield->setOperands(kept); });
+      }
+
+    rewriter.setInsertionPoint(newOp);
+    SmallVector<Value> results;
+    unsigned next = 0;
+    for (Value r : op->getResults()) {
+      if (isToken(r.getType()))
+        results.push_back(air::WaitAllOp::create(rewriter, op->getLoc(),
+                                                 r.getType(), ValueRange{})
+                              .getAsyncToken());
+      else
+        results.push_back(newOp->getResult(next++));
+    }
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
 struct AttachMustProgressPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -2842,7 +2896,8 @@ struct AttachMustProgressPattern : public OpRewritePattern<scf::ForOp> {
 void lowerScfAirTokens(AIE::DeviceOp m) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<LowerScfTokenPattern>(ctx);
+  patterns.insert<LowerScfTokenPattern, LowerScfBranchTokenPattern<scf::IfOp>,
+                  LowerScfBranchTokenPattern<scf::IndexSwitchOp>>(ctx);
   patterns.insert<AttachMustProgressPattern>(ctx);
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
@@ -4791,9 +4846,6 @@ public:
     // Complete stage: Canonicalization and op removal
     RewritePatternSet patterns(ctx);
     air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
-    // Channel lowering can leave a dead host-selection switch yielding only
-    // empty async tokens. Remove its unused results before legalizing waits.
-    scf::IndexSwitchOp::getCanonicalizationPatterns(patterns, ctx);
     (void)applyPatternsGreedily(device, std::move(patterns));
 
     RewritePatternSet removepatterns(ctx);
@@ -9164,7 +9216,9 @@ public:
     if (clTestPatterns.find("specialize-scf-if") != std::string::npos)
       patterns.insert<SpecializeScfIfPattern>(ctx);
     if (clTestPatterns.find("lower-scf-tokens") != std::string::npos)
-      patterns.insert<LowerScfTokenPattern>(ctx);
+      patterns
+          .insert<LowerScfTokenPattern, LowerScfBranchTokenPattern<scf::IfOp>,
+                  LowerScfBranchTokenPattern<scf::IndexSwitchOp>>(ctx);
 
     ShimTileAllocator shimTileAlloc(AIE::getTargetModel(*device));
     std::map<Operation *, AIE::ObjectFifoCreateOp> linksToComplete;
@@ -9492,8 +9546,6 @@ public:
 
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
-      // Discard dead host-selection results before legalizing their waits.
-      scf::IndexSwitchOp::getCanonicalizationPatterns(patterns, ctx);
       (void)applyPatternsGreedily(device, std::move(patterns));
 
       // Remove ops via rewrite patterns.

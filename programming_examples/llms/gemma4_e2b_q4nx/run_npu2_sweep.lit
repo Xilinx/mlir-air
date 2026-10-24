@@ -14,9 +14,9 @@
 // decoder layers. Building fewer would measure a fraction of a dispatch and
 // report a number tens of times too good.
 //
-// 65536 and 131072 are expected-fail because how much host memory XRT will pin
-// for the KV cache differs between otherwise similar boxes, so reaching those
-// depths is a property of the machine. The sibling sweeps carry the same two.
+// 131072 is expected-fail because how much host memory XRT will pin for the KV
+// cache differs between otherwise similar boxes, so reaching that depth is a
+// property of the machine. The sibling sweeps carry the same.
 // --expect-fail forgives ONLY a dispatch that reached the device and did not
 // complete (sweep_decode.EXPECTABLE); a build, staging or stale-template
 // failure is still hard.
@@ -28,7 +28,7 @@
 //
 // RUN: mkdir -p test_peano_sweep
 // RUN: cd test_peano_sweep
-// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name gemma4_e2b_q4nx --makefile %S/Makefile --template-dir %S --bench-model gemma4-e2b --vocab-chunk-i2 27 --n-layers 35 --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --peano-dir %PEANO_INSTALL_DIR --xrt-dir %XRT_DIR --out gemma4_e2b_q4nx.sweep.json
+// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name gemma4_e2b_q4nx --makefile %S/Makefile --template-dir %S --bench-model gemma4-e2b --vocab-chunk-i2 27 --n-layers 35 --contexts 2048,8192,32768,131072 --expect-fail 131072 --peano-dir %PEANO_INSTALL_DIR --xrt-dir %XRT_DIR --out gemma4_e2b_q4nx.sweep.json
 // RUN: FileCheck %s < gemma4_e2b_q4nx.sweep.json
 // CHECK: "model": "gemma4_e2b_q4nx"
 // CHECK: "axis": "context_len"

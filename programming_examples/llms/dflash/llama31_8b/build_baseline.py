@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
+from air.backend.compile_cache import run_compiler
 from paths import HERE, COMMON
 from common.build_identity import build_identity, check_existing, digest
 from target_config import FUSED
@@ -54,10 +55,10 @@ def main():
     def save():
         (out / "manifest.json").write_text(json.dumps(record, indent=2) + "\n")
 
-    def run(cmd, **kwargs):
+    def run(cmd, runner=subprocess.run, **kwargs):
         record["commands"].append(cmd)
         save()
-        subprocess.run(cmd, check=True, env=env, **kwargs)
+        runner(cmd, check=True, env=env, **kwargs)
 
     save()
     try:
@@ -92,7 +93,8 @@ def main():
                     if attn
                     else ["-O2", "-c"]
                 )
-                + [str(FUSED / "kernels" / (name + ".cc")), "-o", str(dest)]
+                + [str(FUSED / "kernels" / (name + ".cc")), "-o", str(dest)],
+                runner=run_compiler,
             )
         # Use upstream's retained xclbin path, as in the 4B DFlash comparator.
         # It works with XRT releases without the ELF scratchpad Python binding.

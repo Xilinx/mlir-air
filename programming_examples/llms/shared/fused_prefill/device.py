@@ -72,6 +72,10 @@ class Attn(NamedTuple):
     # "bfp16": attn_bfp16.cc, the host packing q, K and V as bfp16 and one
     # call per K block (dh <= 128, dvt == dh); "npu2": attn_npu2.cc
     kern: str = "npu2"
+    # attn_bfp16 only: take the running max off the scores before they are
+    # rounded to bf16, for models whose q/k biases put scores far above the
+    # differences between them (attn_bfp16.cc, ATTN_SPLIT_SCORES)
+    split_scores: bool = False
 
 
 # a window no prompt reaches, which makes the window mask causal
@@ -134,8 +138,14 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps):
                 .broadcast_to(rounds, ksteps * P * A_BFP),
                 indices=[ty],
             )
-        for tx in range(GNC):
-            b_in.put(B.reshape(rounds, GNC, L)[0:rounds, tx, 0:L], indices=[tx])
+        # One put per round and column, so a packet's start goes in the
+        # buffer offset: as a BD stride, GNC packets of a long K overflow
+        # the shim BD's stride field.
+        Bp = B.reshape(rounds * GNC, L)
+        for r in range(rounds):
+            for tx in range(GNC):
+                i = r * GNC + tx
+                b_in.put(Bp[i : i + 1, 0:L], indices=[tx])
         for tx in range(GNC):
             c_out.get(
                 C.reshape(P, M, rounds, GNC, TN)[
