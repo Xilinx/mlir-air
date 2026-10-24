@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Compile the B8 target or drafter and save its ABI.
+"""Compile the selected target or drafter and save its ABI.
 
 Use the standard AIR environment. Each build keeps its own
 compiler intermediates; sources and artifacts are hashed in manifest.json.

@@ -1,13 +1,14 @@
-# Qwen3-8B DFlash B8 on NPU2
+# Qwen3-8B DFlash on NPU2
 
 This example runs Qwen3-8B with the official `z-lab/Qwen3-8B-DFlash-b16`
 drafter. Target prefill, both multi-token decoder forwards, and target-feature
 preparation run on the NPU. The CPU tokenizes prompts, selects tokens, applies
 greedy acceptance, and manages the committed KV positions.
 
-The executed block has eight positions: one known token and seven draft
-candidates. The drafter checkpoint was trained for block size 16. This example
-ships the selected B8 mapping; B16 is a separate mapping and is not exposed here.
+B8 is the default: one known token and seven draft candidates. Use
+`BLOCK_SIZE=16` for one known token and fifteen candidates, matching the
+drafter checkpoint's training block size. See [the B16 mapping](docs/b16-megakernel.md)
+for its storage design and compiler requirements.
 
 ## Get started
 
@@ -38,6 +39,10 @@ prefill buffers. Every physical BO stays below the 4 GiB DMA address limit.
 Prefill streams one layer's weights through reusable device buffers; it does
 not allocate a resident device weight set for all 36 layers.
 
+Pass `BLOCK_SIZE=16` to `compile`, `run`, `chat`, `verify`, `profile`,
+`compile-baseline`, `full20`, `full80` and `benchmark` to use B16. The packed
+weight and prompt caches are shared between configurations.
+
 ## Models and caches
 
 | Resource | Revision |
@@ -47,7 +52,7 @@ not allocate a resident device weight set for all 36 layers.
 | `z-lab/Qwen3-8B-DFlash-b16` official drafter | `9b41424b7109f9c5413454f481b09a82b85333f4` |
 
 Target projections preserve the original Q4NX blocks, including their scales
-and offsets; preparation reorders these bytes for the B8 streams. Drafter
+and offsets; preparation reorders these bytes for the projection streams. Drafter
 projection weights are quantized to group-32 Q4NX for the decoder. Feature
 preparation uses the official BF16 FC and K/V weights with the standard BFP
 matrix primitive. Both decoders use the target's **untied** vocabulary head;
@@ -61,7 +66,7 @@ input embedding sharing never substitutes that head.
 | Mapped prefill weights | Same root, `prefill_bf16` | `DFLASH_PREFILL_WEIGHTS` |
 | Native B1 weights | Same root, `baseline_<identity>.npz` | Root: `DFLASH_CACHE_DIR` |
 | Model-specific prompt states | Same root, `benchmark-npu-v1` | Make: `BENCHMARK_BUNDLE` |
-| Compiled programs | This example's `build/` | Make: `BUILD_DIR` |
+| Compiled programs | `build/` (B8), `build_b16/` (B16) | Make: `BUILD_DIR` |
 
 `DFLASH_CACHE_DIR` changes the weight-cache root. `DFLASH_DRAFT_SNAPSHOT` can
 point to a local copy of the pinned drafter. After seeding, use

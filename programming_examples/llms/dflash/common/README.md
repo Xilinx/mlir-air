@@ -19,7 +19,7 @@ with its own weights and physical layout.
 | [benchmark/prompts.json](benchmark/prompts.json) | Shared messages, source indices and frozen selection order | Tokenization and KV/features are generated for each model |
 | [attention_check.py](attention_check.py) | Production-linked attention arithmetic, visibility and repeatability probe | Model configuration and compiled attention object |
 | [build_identity.py](build_identity.py) | Source/tool/artifact identity and stale-build rejection | Model build inputs |
-| [b8_graph.py](b8_graph.py), [b8_owners.py](b8_owners.py), [b8_config.py](b8_config.py) | Complete two-owner B8 AIR mapping and physical ABI for the 8B models | Model-local `model_spec.py`: role geometry, normalization, RoPE and head layout |
+| [b8_graph.py](b8_graph.py), [b8_owners.py](b8_owners.py), [b8_config.py](b8_config.py) | Shared 8B-model AIR mapping and physical ABI; B8 uses two owners, B16 uses four | Model-local `model_spec.py`: role geometry, normalization, RoPE and head layout |
 | [decoder_8b.py](decoder_8b.py) | 8B weight binding | Native model readers and model specification |
 | [prefill_weights_8b.py](prefill_weights_8b.py), [prefill_cache.py](prefill_cache.py) | Mapped BF16 prefill weights and one streamed device weight set | Native dequantizer and model tensor shapes |
 | [model.py](model.py) | `DFlashModel`, what the host code below needs from a model | Each model's `dflash_model.py` |
@@ -37,3 +37,9 @@ The model's entry scripts pass its `DFlashModel`, built in `dflash_model.py`, to
 the shared code.
 The model examples do not import another DFlash model's implementation directory.
 They continue to reuse existing upstream autoregressive and prefill utilities.
+
+The 4096-wide B16 mapping adds [b16_owners.py](b16_owners.py) and a
+DMA-managed DDR normalization cache. See [B16 dataflow and compiler requirements](docs/b16-ddr-replay.md)
+for the code map, phase protocol and direct AIR generation. Model selectors
+determine which block sizes are exposed; the shared graph does not select a
+model on its own.
