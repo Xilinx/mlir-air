@@ -281,32 +281,55 @@ bool air::memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB) {
   return false; // Unknown or different air::MemcpyInterface op types.
 }
 
-// Canonicalize a chain of memcpy ops as candidates to map to dma bds, by
-// removing repetitive patterns. Returns the shortest unit the chain repeats
-// (its tail may be a prefix of the unit), the whole chain when no two of its
-// ops are equivalent, or an empty vector otherwise. A unit may move one buffer
-// more than once.
-llvm::SetVector<Operation *>
-air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
-  ArrayRef<Operation *> ops = memcpyIOps.getArrayRef();
-  for (size_t p = 1; p < ops.size(); p++) {
-    bool repeats = true;
-    for (size_t i = p; i < ops.size() && repeats; i++)
-      repeats = memcpyIMappedToEquivalentBDs(ops[i], ops[i % p]);
-    if (repeats)
+// The shortest unit a chain of memcpy ops is two or more whole copies of, or
+// an empty vector. The unit may move one buffer more than once, as [k, v, v]
+// does.
+static llvm::SetVector<Operation *> wholeCopiesUnit(ArrayRef<Operation *> ops) {
+  for (size_t p = 1; 2 * p <= ops.size(); p++)
+    if (ops.size() % p == 0 &&
+        llvm::all_of(llvm::seq(p, ops.size()), [&](size_t i) {
+          return air::memcpyIMappedToEquivalentBDs(ops[i], ops[i % p]);
+        }))
       return llvm::SetVector<Operation *>(ops.begin(), ops.begin() + p);
-  }
-  for (size_t i = 0; i < ops.size(); i++)
-    for (size_t j = 0; j < i; j++)
-      if (memcpyIMappedToEquivalentBDs(ops[i], ops[j]))
-        return llvm::SetVector<Operation *>();
-  return memcpyIOps;
+  return {};
 }
 
-// The slot of `unit` each transfer of `ops` folds to, or -1. A unit the
-// chain repeats takes the transfers by position, since one buffer may fill
-// more than one slot of it. Otherwise (a prefix and repeated suffix) a
-// transfer takes the first slot it is equivalent to.
+// Canonicalize a chain of memcpy ops as candidates to map to dma bds, by
+// removing repetitive patterns. Returns the unique repeating unit, the unit
+// the chain is whole copies of when that unit repeats an op, or an empty
+// vector when the chain does not repeat.
+llvm::SetVector<Operation *>
+air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
+  // Get a vector of unique BDs.
+  llvm::SetVector<Operation *> uniqueBDPattern;
+  auto opIt = memcpyIOps.begin();
+  while (opIt != memcpyIOps.end() &&
+         llvm::none_of(uniqueBDPattern, [opIt](Operation *op1) {
+           return memcpyIMappedToEquivalentBDs(*opIt, op1);
+         })) {
+    uniqueBDPattern.insert(*opIt);
+    opIt++;
+  }
+
+  unsigned idx = 0;
+  while (opIt != memcpyIOps.end()) {
+    // BD repetition found. Check if repeating pattern.
+    if (!memcpyIMappedToEquivalentBDs(*opIt, uniqueBDPattern[idx]))
+      return wholeCopiesUnit(memcpyIOps.getArrayRef());
+    opIt++;
+    idx++;
+    idx %= uniqueBDPattern.size();
+  }
+
+  // Repeating BD chain successfully detected.
+  return uniqueBDPattern;
+}
+
+// The slot of `unit` each transfer of `ops` folds to, or -1. When the chain
+// repeats the unit (getUniqueBDPattern), the transfers take its slots by
+// position: a unit the chain is whole copies of may move one buffer in more
+// than one slot, which equivalence cannot tell apart. Otherwise (a prefix and
+// repeated suffix) a transfer takes the first slot it is equivalent to.
 static SmallVector<int64_t> getUnitSlots(ArrayRef<Operation *> ops,
                                          ArrayRef<Operation *> unit) {
   SmallVector<int64_t> slots;
