@@ -3529,7 +3529,14 @@ applyPatternsToTargets(transform::TransformOpInterface op, Value target,
         if (o != payload)
           nested.push_back(o);
       });
-      converged = applyOpPatternsGreedily(nested, std::move(patterns));
+      // The driver's scope is the closest region holding all of `nested`,
+      // which for an op with several regions is the region around it. Keep
+      // the rewrite to the ops inside, so an op before the target whose last
+      // use was folded away is not erased.
+      converged = applyOpPatternsGreedily(
+          nested, std::move(patterns),
+          GreedyRewriteConfig().setStrictness(
+              GreedyRewriteStrictness::ExistingAndNewOps));
     }
     if (failed(converged))
       return emitDefiniteFailure(op) << "patterns did not converge";
