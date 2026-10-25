@@ -7168,9 +7168,9 @@ public:
       // the chain: the shortest unit this block's gets repeat, which may
       // fill one buffer more than once
       int64_t p = 1;
-      while (p < n && llvm::any_of(
-                          llvm::seq(p, n),
-                          [&](int64_t i) { return root(i) != root(i % p); }))
+      while (p < n && llvm::any_of(llvm::seq(p, n), [&](int64_t i) {
+               return root(i) != root(i % p);
+             }))
         p++;
       for (auto &[b, fills] : byBlock) {
         if (fills.size() % p)
