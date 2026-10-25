@@ -5750,19 +5750,21 @@ private:
     for (air::MemorySpace ms : targetMemorySpaces)
       if (!llvm::is_contained(functionOnlySpaces, ms))
         moduleSpaces.push_back(ms);
-    if (!functionOnlySpaces.empty() &&
+    auto inFunction = [&](Operation *op) {
+      return currentFunction->isAncestor(op);
+    };
+    bool onlyInFunction =
+        llvm::all_of(a_puts, inFunction) && llvm::all_of(a_gets, inFunction) &&
+        llvm::all_of(b_puts, inFunction) && llvm::all_of(b_gets, inFunction);
+    if (!functionOnlySpaces.empty() && !onlyInFunction &&
         !(!moduleSpaces.empty() &&
           hitsMemorySpaceForAggMode(a_puts, a_gets, moduleSpaces) &&
-          hitsMemorySpaceForAggMode(b_puts, b_gets, moduleSpaces))) {
-      auto inFunction = [&](Operation *op) {
-        return currentFunction->isAncestor(op);
-      };
-      if (!llvm::all_of(a_puts, inFunction) ||
-          !llvm::all_of(a_gets, inFunction) ||
-          !llvm::all_of(b_puts, inFunction) ||
-          !llvm::all_of(b_gets, inFunction))
-        return false;
-    }
+          hitsMemorySpaceForAggMode(b_puts, b_gets, moduleSpaces)))
+      return false;
+    bool multiplexesL2 =
+        llvm::is_contained(moduleSpaces, air::MemorySpace::L2) ||
+        (llvm::is_contained(functionOnlySpaces, air::MemorySpace::L2) &&
+         onlyInFunction);
     // b's ops may sit in loops of their own inside the nest they share with
     // a's (b runs several times for each a); the merge moves those loops
     // with them. The shared loops must match.
@@ -5775,11 +5777,11 @@ private:
       // On a core, a and then b's loop run in program order inside the same
       // loops. The L2 side must then send a's data and b's through one DMA
       // channel, which needs L2 multiplexing; without it two memtile
-      // channels would feed one core channel.
+      // channels would feed one core channel. L2 multiplexing that only the
+      // function names covers channels no other function uses.
       if (extra && programOrderOnOneCore(a, b, /*bInLoops=*/true) == 1) {
         Region *herdBody = &a->getParentOfType<air::HerdOp>().getRegion();
-        return sameGuardsBelow(a, herdBody, b, herdBody) &&
-               llvm::is_contained(targetMemorySpaces, air::MemorySpace::L2);
+        return sameGuardsBelow(a, herdBody, b, herdBody) && multiplexesL2;
       }
       if (extra && !opToMergeWith(a, b))
         return false;
