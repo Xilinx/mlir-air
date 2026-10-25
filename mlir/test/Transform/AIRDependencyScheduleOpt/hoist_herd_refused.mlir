@@ -110,3 +110,109 @@ func.func @herd_in_if(%n: i32) {
   }
   return
 }
+
+// -----
+
+// As above, but the put is blocking, in an air.execute with no dependencies:
+// the herd is not hoisted.
+
+// CHECK-LABEL: func.func @channel_put_in_execute
+// CHECK: air.channel.put
+// CHECK: scf.for
+// CHECK: air.herd @herd_0
+
+air.channel @feed [1, 1]
+func.func @channel_put_in_execute(%n: i32) {
+  %c1 = arith.constant 1 : index
+  %t = air.launch async (%l) in (%ls=%c1) args(%ln=%n) : i32 {
+    %s = air.segment @seg async args(%sn=%ln) : i32 {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c4 = arith.constant 4 : index
+      %ta, %l2 = air.execute -> (memref<16xi32, 1>) {
+        %a2 = memref.alloc() : memref<16xi32, 1>
+        air.execute_terminator %a2 : memref<16xi32, 1>
+      }
+      %e = air.execute {
+        air.channel.put @feed[] (%l2[] [] []) : (memref<16xi32, 1>)
+      }
+      %w = air.wait_all async
+      %r = scf.for %i = %c0 to %c4 step %c1_0 iter_args(%d = %w) -> (!air.async.token) {
+        %x, %v = air.execute [%e] -> (i32) {
+          %iv = arith.index_cast %i : index to i32
+          %add = arith.addi %sn, %iv : i32
+          air.execute_terminator %add : i32
+        }
+        %h = air.herd @herd_0 async [%d, %x] tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%q=%v) : i32 {
+          %c0_1 = arith.constant 0 : index
+          %t0, %b = air.execute -> (memref<16xi32, 2>) {
+            %al = memref.alloc() : memref<16xi32, 2>
+            air.execute_terminator %al : memref<16xi32, 2>
+          }
+          %t1 = air.execute [%t0] {
+            memref.store %q, %b[%c0_1] : memref<16xi32, 2>
+          }
+          %t2 = air.execute [%t1] {
+            memref.dealloc %b : memref<16xi32, 2>
+          }
+        }
+        scf.yield %h : !air.async.token
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// The air.execute waits on the put's token in its body: the herd is not
+// hoisted.
+
+// CHECK-LABEL: func.func @channel_wait_in_execute
+// CHECK: air.channel.put
+// CHECK: air.wait_all [
+// CHECK: scf.for
+// CHECK: air.herd @herd_0
+
+air.channel @feed2 [1, 1]
+func.func @channel_wait_in_execute(%n: i32) {
+  %c1 = arith.constant 1 : index
+  %t = air.launch async (%l) in (%ls=%c1) args(%ln=%n) : i32 {
+    %s = air.segment @seg async args(%sn=%ln) : i32 {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c4 = arith.constant 4 : index
+      %ta, %l2 = air.execute -> (memref<16xi32, 1>) {
+        %a2 = memref.alloc() : memref<16xi32, 1>
+        air.execute_terminator %a2 : memref<16xi32, 1>
+      }
+      %p = air.channel.put async [%ta] @feed2[] (%l2[] [] []) : (memref<16xi32, 1>)
+      %e = air.execute {
+        air.wait_all [%p]
+      }
+      %w = air.wait_all async
+      %r = scf.for %i = %c0 to %c4 step %c1_0 iter_args(%d = %w) -> (!air.async.token) {
+        %x, %v = air.execute [%e] -> (i32) {
+          %iv = arith.index_cast %i : index to i32
+          %add = arith.addi %sn, %iv : i32
+          air.execute_terminator %add : i32
+        }
+        %h = air.herd @herd_0 async [%d, %x] tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%q=%v) : i32 {
+          %c0_1 = arith.constant 0 : index
+          %t0, %b = air.execute -> (memref<16xi32, 2>) {
+            %al = memref.alloc() : memref<16xi32, 2>
+            air.execute_terminator %al : memref<16xi32, 2>
+          }
+          %t1 = air.execute [%t0] {
+            memref.store %q, %b[%c0_1] : memref<16xi32, 2>
+          }
+          %t2 = air.execute [%t1] {
+            memref.dealloc %b : memref<16xi32, 2>
+          }
+        }
+        scf.yield %h : !air.async.token
+      }
+    }
+  }
+  return
+}

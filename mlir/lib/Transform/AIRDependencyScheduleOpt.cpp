@@ -730,7 +730,9 @@ static void collectControlLeaves(Value v, SmallVectorImpl<Value> &leaves,
 
 // Whether token `t` may complete only after a channel transfer: through its
 // async dependencies it reaches a channel op, or an op that is not an
-// air.execute or air.wait_all, which could hide one.
+// air.execute or air.wait_all, which could hide one. An air.execute's body
+// counts too: it may hold air ops other than air.wait_all, such as a blocking
+// channel transfer, and its air.wait_all ops may wait on tokens from outside.
 static bool mayWaitForChannel(Value t) {
   SmallVector<Value> work{t};
   DenseSet<Value> seen;
@@ -742,6 +744,20 @@ static bool mayWaitForChannel(Value t) {
     if (!def || !isa<air::ExecuteOp, air::WaitAllOp>(def))
       return true;
     llvm::append_range(work, air::getAsyncDependenciesFromOp(def));
+    auto exec = dyn_cast<air::ExecuteOp>(def);
+    if (!exec)
+      continue;
+    WalkResult result = exec.getRegion().walk([&](Operation *op) {
+      if (isa<air::airDialect>(op->getDialect()) &&
+          !isa<air::WaitAllOp, air::ExecuteTerminatorOp>(op))
+        return WalkResult::interrupt();
+      for (Value operand : op->getOperands())
+        if (isa<air::AsyncTokenType>(operand.getType()))
+          work.push_back(operand);
+      return WalkResult::advance();
+    });
+    if (result.wasInterrupted())
+      return true;
   }
   return false;
 }
