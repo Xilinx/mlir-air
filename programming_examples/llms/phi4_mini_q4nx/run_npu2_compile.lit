@@ -1,7 +1,7 @@
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
-// Phi-4-mini Q4NX prefill compile-only smoke test: builds the prefill ELFs
+// Phi-4-mini Q4NX prefill compile-only smoke test: builds the per-op prefill ELFs
 // (rms_gemms_rope with the partial-rotary rope_partial leaf, flash_attn, o_ffn,
 // and the 13-partition lm_head GEMV) through the AIR -> AIE -> aiecc -> Peano
 // pipeline. No NPU dispatch, no weight download (the kernels are weight-free;
@@ -20,5 +20,5 @@
 // RUN: mkdir -p test_peano_compile
 // RUN: cd test_peano_compile
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// RUN: make -f %S/Makefile compile-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: Compilation passed.

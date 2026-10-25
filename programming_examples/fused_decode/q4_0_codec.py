@@ -88,6 +88,18 @@ class HFModel:
         dt = {"F32": np.float32, "F16": np.float16}[e["dtype"]]
         return np.frombuffer(raw, dtype=dt).astype(np.float32).reshape(e["shape"])
 
+    def rows(self, name, ids):
+        """Rows `ids` of a 2-D BF16 tensor as float32, read without loading the
+        rest of it."""
+        mm, hdr, base = self._shards[self._where[name]]
+        e = hdr[name]
+        if e["dtype"] != "BF16":
+            return self.bf16(name)[np.asarray(ids)]
+        w = e["shape"][1] * 2
+        o0 = base + e["data_offsets"][0]
+        rows = [mm[o0 + int(t) * w : o0 + (int(t) + 1) * w] for t in ids]
+        return np.stack(rows).view(bfloat16).astype(np.float32)
+
 
 # ---------------------------------------------------------------------------
 # Q4_0 re-quant + vectorized cascade pack

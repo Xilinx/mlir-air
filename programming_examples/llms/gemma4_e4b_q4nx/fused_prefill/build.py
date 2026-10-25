@@ -3,7 +3,7 @@
 """Build the Gemma4-E4B fused prefill: kernels and every op's insts
 (shared/fused_prefill/build.py).
 
-  python3 build.py BUILD_DIR [-j N]
+  python3 build.py BUILD_DIR [-j N] [--max-len N]
 """
 
 import sys
@@ -20,7 +20,7 @@ sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path_
     str(HERE.parents[2])
 ]
 
-from air_examples.llms.shared.fused_prefill.build import main  # noqa: E402
+from air_examples.llms.gemma4_e2b_q4nx.fused_prefill.build import run  # noqa: E402
 
 if __name__ == "__main__":
-    main("air_examples.llms.gemma4_e4b_q4nx.fused_prefill.spec")
+    run("air_examples.llms.gemma4_e4b_q4nx.fused_prefill.spec")

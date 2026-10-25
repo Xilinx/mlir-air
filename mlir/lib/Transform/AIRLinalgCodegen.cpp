@@ -3466,10 +3466,51 @@ struct FoldExtractSliceOfUnitExpand
     return success();
   }
 };
+
+// In an scf.forall, a slice of a shared output's init that is the tile the
+// iteration inserts into that output (its only tensor.parallel_insert_slice
+// there) reads the shared output's block argument instead. No other
+// iteration writes that tile, so the value is the same; read from the block
+// argument, bufferization need not keep a copy of the whole init for it.
+struct FoldExtractSliceOfForallInit
+    : public OpRewritePattern<tensor::ExtractSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(tensor::ExtractSliceOp extract,
+                                PatternRewriter &rewriter) const override {
+    for (auto forall = extract->getParentOfType<scf::ForallOp>(); forall;
+         forall = forall->getParentOfType<scf::ForallOp>()) {
+      for (auto [init, arg] :
+           llvm::zip(forall.getOutputs(), forall.getRegionIterArgs())) {
+        if (init != extract.getSource())
+          continue;
+        SmallVector<Operation *> inserts = forall.getCombiningOps(arg);
+        if (inserts.size() != 1)
+          continue;
+        auto insert = dyn_cast<tensor::ParallelInsertSliceOp>(inserts.front());
+        if (!insert ||
+            !isEqualConstantIntOrValueArray(extract.getMixedOffsets(),
+                                            insert.getMixedOffsets()) ||
+            !isEqualConstantIntOrValueArray(extract.getMixedSizes(),
+                                            insert.getMixedSizes()) ||
+            !isEqualConstantIntOrValueArray(extract.getMixedStrides(),
+                                            insert.getMixedStrides()))
+          continue;
+        Value blockArg = arg;
+        rewriter.modifyOpInPlace(
+            extract, [&] { extract.getSourceMutable().assign(blockArg); });
+        return success();
+      }
+    }
+    return failure();
+  }
+};
 } // namespace
 
 // Applies `patterns` greedily within each payload op of `target`; the result
-// handle is the payload ops.
+// handle is the payload ops. The driver over a whole region takes only an op
+// isolated from above; within any other op, such as a loop, the patterns are
+// applied to the ops it contains, as transform.apply_patterns does.
 static DiagnosedSilenceableFailure
 applyPatternsToTargets(transform::TransformOpInterface op, Value target,
                        Value result, transform::TransformResults &results,
@@ -3480,7 +3521,25 @@ applyPatternsToTargets(transform::TransformOpInterface op, Value target,
   for (Operation *payload : targets) {
     RewritePatternSet patterns(op->getContext());
     populate(patterns);
-    if (failed(applyPatternsGreedily(payload, std::move(patterns))))
+    LogicalResult converged = failure();
+    if (payload->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+      converged = applyPatternsGreedily(payload, std::move(patterns));
+    } else {
+      SmallVector<Operation *> nested;
+      payload->walk([&](Operation *o) {
+        if (o != payload)
+          nested.push_back(o);
+      });
+      // The driver's scope is the closest region holding all of `nested`,
+      // which for an op with several regions is the region around it. Keep
+      // the rewrite to the ops inside, so an op before the target whose last
+      // use was folded away is not erased.
+      converged = applyOpPatternsGreedily(
+          nested, std::move(patterns),
+          GreedyRewriteConfig().setStrictness(
+              GreedyRewriteStrictness::ExistingAndNewOps));
+    }
+    if (failed(converged))
       return emitDefiniteFailure(op) << "patterns did not converge";
   }
   results.set(llvm::cast<OpResult>(result), targets);
@@ -3493,9 +3552,11 @@ DiagnosedSilenceableFailure transform::FoldExtractSliceOfInsertSliceOp::apply(
   return applyPatternsToTargets(
       *this, getTarget(), getResult(), results, state,
       [](RewritePatternSet &patterns) {
-        patterns.add<FoldExtractSliceOfInsertSlice,
-                     DropInsertOverwrittenPastDisjointInsert,
-                     FoldExtractSliceOfUnitExpand>(patterns.getContext());
+        patterns
+            .add<FoldExtractSliceOfInsertSlice,
+                 DropInsertOverwrittenPastDisjointInsert,
+                 FoldExtractSliceOfUnitExpand, FoldExtractSliceOfForallInit>(
+                patterns.getContext());
       });
 }
 
@@ -3787,7 +3848,10 @@ static bool isMultipleOf(Value v, int64_t m) {
 }
 
 // extract_slice(collapse_shape(x)) -> collapse_shape(extract_slice'(x)) when,
-// in each collapsed dim, the slice takes whole rows of the group's inner dims.
+// for each collapsed dim, the slice covers whole rows of the group's dims after
+// some dim `at` and does not cross an index boundary of the dims before `at`.
+// The new slice takes one index of each dim before `at`, a range of `at`, and
+// all of each dim after it.
 struct BubbleSliceThroughCollapse
     : public OpRewritePattern<tensor::ExtractSliceOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -3808,48 +3872,76 @@ struct BubbleSliceThroughCollapse
       return failure();
     if (srcType.getNumElements() == 0)
       return failure();
-    // Per group, the number of elements in its inner dims; checked for every
-    // group before any IR is created.
-    SmallVector<int64_t> inners;
+    // For each group: the position of dim `at` and the number of elements in
+    // the dims after it. All groups are checked before any IR is created.
+    SmallVector<std::pair<size_t, int64_t>> splits;
     for (auto [i, group] :
          llvm::enumerate(collapse.getReassociationIndices())) {
       OpFoldResult off = slice.getMixedOffsets()[i];
       if (!isConstantIntValue(slice.getMixedStrides()[i], 1))
         return failure();
-      int64_t inner = 1;
-      for (int64_t d : ArrayRef(group).drop_front())
-        inner *= srcType.getDimSize(d);
       auto s = getConstantIntValue(slice.getMixedSizes()[i]);
-      if (!s || *s % inner != 0 ||
-          *s / inner > srcType.getDimSize(group.front()))
+      if (!s)
         return failure();
+      // Find the outermost dim `at` such that the slice covers whole rows of
+      // the dims after it. For `at` > 0 the number of indices the slice takes
+      // in dim `at` must also divide its extent, so that an offset aligned to
+      // the slice size never crosses into the next index of the dims before
+      // it.
+      std::optional<std::pair<size_t, int64_t>> split;
+      for (size_t at = 0; at < group.size() && !split; ++at) {
+        int64_t inner = 1;
+        for (int64_t d : ArrayRef(group).drop_front(at + 1))
+          inner *= srcType.getDimSize(d);
+        int64_t dim = srcType.getDimSize(group[at]);
+        if (*s % inner != 0 || *s / inner > dim)
+          continue;
+        if (at > 0 && dim % (*s / inner) != 0)
+          continue;
+        split = {at, inner};
+      }
+      if (!split)
+        return failure();
+      int64_t step = split->first > 0 ? *s : split->second;
       if (auto c = getConstantIntValue(off)) {
-        if (*c % inner != 0)
+        if (*c % step != 0)
           return failure();
-      } else if (!isMultipleOf(cast<Value>(off), inner)) {
+      } else if (!isMultipleOf(cast<Value>(off), step)) {
         return failure();
       }
-      inners.push_back(inner);
+      splits.push_back(*split);
     }
     Location loc = slice.getLoc();
     SmallVector<OpFoldResult> offsets, sizes, strides;
     for (auto [i, group] :
          llvm::enumerate(collapse.getReassociationIndices())) {
       OpFoldResult off = slice.getMixedOffsets()[i];
-      int64_t inner = inners[i];
+      auto [at, inner] = splits[i];
       int64_t s = *getConstantIntValue(slice.getMixedSizes()[i]);
-      if (auto c = getConstantIntValue(off)) {
-        offsets.push_back(rewriter.getIndexAttr(*c / inner));
-      } else {
-        AffineExpr d0 = rewriter.getAffineDimExpr(0);
-        offsets.push_back(affine::makeComposedFoldedAffineApply(
-            rewriter, loc, d0.floorDiv(inner), {off}));
-      }
-      sizes.push_back(rewriter.getIndexAttr(s / inner));
-      strides.push_back(rewriter.getIndexAttr(1));
-      for (int64_t d : ArrayRef(group).drop_front()) {
-        offsets.push_back(rewriter.getIndexAttr(0));
-        sizes.push_back(rewriter.getIndexAttr(srcType.getDimSize(d)));
+      // Offset of dim k: the slice offset divided by the number of elements
+      // after dim k, modulo the size of dim k for all but the first dim.
+      for (size_t k = 0; k < group.size(); ++k) {
+        int64_t after = 1;
+        for (int64_t d : ArrayRef(group).drop_front(k + 1))
+          after *= srcType.getDimSize(d);
+        int64_t dim = srcType.getDimSize(group[k]);
+        if (k > at) {
+          offsets.push_back(rewriter.getIndexAttr(0));
+          sizes.push_back(rewriter.getIndexAttr(dim));
+        } else {
+          if (auto c = getConstantIntValue(off)) {
+            int64_t idx = *c / after;
+            offsets.push_back(rewriter.getIndexAttr(k ? idx % dim : idx));
+          } else {
+            AffineExpr d0 = rewriter.getAffineDimExpr(0);
+            AffineExpr e = d0.floorDiv(after);
+            if (k)
+              e = e % dim;
+            offsets.push_back(
+                affine::makeComposedFoldedAffineApply(rewriter, loc, e, {off}));
+          }
+          sizes.push_back(rewriter.getIndexAttr(k == at ? s / inner : 1));
+        }
         strides.push_back(rewriter.getIndexAttr(1));
       }
     }
@@ -4718,10 +4810,17 @@ DiagnosedSilenceableFailure transform::FuseElementwiseLinalgOp::apply(
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(ctx);
 
-    // Populate the elementwise fusion patterns using the linalg utilities
-    linalg::ControlFusionFn controlFn = [](OpOperand *fusedOperand) {
-      // Default: allow all fusions
-      return true;
+    // By default every fusion is allowed. With no_recompute, a producer is
+    // fused only where it is computed once per element: not into a consumer
+    // that reads it through a broadcast, and not when it has other users,
+    // which would keep it as well.
+    bool noRecompute = getNoRecompute();
+    linalg::ControlFusionFn controlFn = [noRecompute](OpOperand *fusedOperand) {
+      if (!noRecompute)
+        return true;
+      auto consumer = cast<linalg::LinalgOp>(fusedOperand->getOwner());
+      return fusedOperand->get().hasOneUse() &&
+             consumer.getMatchingIndexingMap(fusedOperand).isPermutation();
     };
 
     linalg::populateElementwiseOpsFusionPatterns(patterns, controlFn);
@@ -4974,14 +5073,16 @@ transform::FuseTruncfLinalgOp::apply(transform::TransformRewriter &rewriter,
     return emitDefiniteFailure() << "failed to fuse the operations";
   }
 
-  // LLVM 23: specialize rejects generics with output casts (truncf→yield).
-  // If the fused op has 2D+ inputs (matmul-compatible), replace with a
-  // linalg.matmul directly, bypassing specialize. The matmul body auto-
-  // generates in the output element type (bf16), and Phase 12 adds
-  // extf/truncf pairs for f32 accumulation during vectorization.
-  auto inputType =
-      dyn_cast<RankedTensorType>(fusedOp->getDpsInputs()[0].getType());
-  if (inputType && inputType.getRank() >= 2) {
+  // Specialization does not take a generic whose output is cast (truncf before
+  // the yield). If the fused op is a matmul, build the linalg.matmul here; its
+  // body is in the output element type, and f32 accumulation is left to
+  // vectorization. Any other fused op stays a generic.
+  auto isMatmul = [&](linalg::GenericOp op) {
+    return linalg::isaContractionOpInterface(op) &&
+           op.getIndexingMapsArray() ==
+               linalg::MatmulOp::getDefaultIndexingMaps(op.getContext());
+  };
+  if (isMatmul(*fusedOp)) {
     rewriter.setInsertionPoint(*fusedOp);
     auto matmulOp = linalg::MatmulOp::create(
         rewriter, fusedOp->getLoc(), fusedOp->getResultTypes(),
@@ -5006,6 +5107,60 @@ void transform::FuseTruncfLinalgOp::getEffects(
   consumesHandle(getProducerOpMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
   modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
+// ReuseInputAsInitOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::ReuseInputAsInitOp::applyToOne(
+    transform::TransformRewriter &rewriter, linalg::LinalgOp target,
+    transform::ApplyToEachResultList &results,
+    transform::TransformState &state) {
+  if (!target.hasPureTensorSemantics() || target.getNumDpsInits() != 1)
+    return emitDefaultSilenceableFailure(target)
+           << "expected a linalg op on tensors with one output";
+  if (target.getNumParallelLoops() != target.getNumLoops())
+    return emitDefaultSilenceableFailure(target)
+           << "expected only parallel iterators";
+  OpOperand *out = target.getDpsInitOperand(0);
+  if (target.payloadUsesValueFromOperand(out))
+    return emitDefaultSilenceableFailure(target) << "the output is read";
+
+  auto fits = [&](OpOperand *in) {
+    return in->get().getType() == out->get().getType() &&
+           target.getMatchingIndexingMap(in) ==
+               target.getMatchingIndexingMap(out);
+  };
+  OpOperand *in = nullptr;
+  if (std::optional<uint64_t> i = getInput()) {
+    if (*i >= static_cast<uint64_t>(target.getNumDpsInputs()))
+      return emitDefaultSilenceableFailure(target)
+             << "input " << *i << " is out of range";
+    in = target.getDpsInputOperand(*i);
+    if (!fits(in))
+      return emitDefaultSilenceableFailure(target)
+             << "input " << *i
+             << " differs from the output in type or indexing map";
+  } else {
+    auto inputs = target.getDpsInputOperands();
+    auto it = llvm::find_if(inputs, fits);
+    if (it == inputs.end())
+      return emitDefaultSilenceableFailure(target)
+             << "no input has the output's type and indexing map";
+    in = *it;
+  }
+  // The body reads the value through the output, so that after tiling the
+  // read and the write are the same slice. The input stays: dropping it is
+  // left to the erase_unnecessary_inputs patterns, as it changes the op's
+  // operand list.
+  rewriter.modifyOpInPlace(target, [&] {
+    out->set(in->get());
+    rewriter.replaceAllUsesWith(target.getMatchingBlockArgument(in),
+                                target.getMatchingBlockArgument(out));
+  });
+  results.push_back(target);
+  return DiagnosedSilenceableFailure::success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -7460,74 +7615,139 @@ DiagnosedSilenceableFailure transform::FoldIterArgsIntoInductionVarOp::apply(
 
 namespace {
 // An iteration argument packed once and unpacked back into itself per
-// iteration.
+// iteration: by linalg.pack and linalg.unpack, or by tensor.expand_shape and
+// tensor.collapse_shape.
 struct LoopCarriedPack {
   unsigned index;
-  linalg::PackOp pack;
-  linalg::UnPackOp unpack;
+  Operation *pack;
+  Operation *unpack;
 };
 } // namespace
+
+// Whether `v` is a fresh tensor (tensor.empty or bufferization.alloc_tensor)
+// built from values available before `forOp`, so it can be built again
+// outside the loop.
+static bool isRecreatableEmptyTensor(Value v, scf::ForOp forOp) {
+  Operation *def = v.getDefiningOp();
+  if (!isa_and_present<tensor::EmptyOp>(def)) {
+    auto alloc = dyn_cast_if_present<bufferization::AllocTensorOp>(def);
+    if (!alloc || alloc.getCopy())
+      return false;
+  }
+  return llvm::all_of(def->getOperands(), [&](Value operand) {
+    return forOp.isDefinedOutsideOfLoop(operand);
+  });
+}
+
+// The value a pack-like op reads, and the tensor it writes into (none for a
+// reshape).
+static OpOperand *packSourceOperand(Operation *op) {
+  if (auto p = dyn_cast<linalg::PackOp>(op))
+    return &p.getSourceMutable();
+  if (auto e = dyn_cast<tensor::ExpandShapeOp>(op))
+    return &e.getSrcMutable();
+  return nullptr;
+}
+static Value packDest(Operation *op) {
+  if (auto p = dyn_cast<linalg::PackOp>(op))
+    return p.getDest();
+  return {};
+}
+static Value unpackSource(Operation *op) {
+  if (auto u = dyn_cast<linalg::UnPackOp>(op))
+    return u.getSource();
+  return cast<tensor::CollapseShapeOp>(op).getSrc();
+}
+static Value unpackDest(Operation *op) {
+  if (auto u = dyn_cast<linalg::UnPackOp>(op))
+    return u.getDest();
+  return {};
+}
+
+// Whether `unpack` undoes `pack`.
+static bool areInverseLayouts(Operation *pack, Operation *unpack) {
+  if (pack->getResult(0).getType() != unpackSource(unpack).getType())
+    return false;
+  if (auto p = dyn_cast<linalg::PackOp>(pack)) {
+    auto u = dyn_cast<linalg::UnPackOp>(unpack);
+    return u && !p.getPaddingValue() &&
+           p.getInnerDimsPos() == u.getInnerDimsPos() &&
+           p.getOuterDimsPerm() == u.getOuterDimsPerm() &&
+           p.getStaticInnerTiles() == u.getStaticInnerTiles() &&
+           p.getInnerTiles().empty() && u.getInnerTiles().empty();
+  }
+  auto e = cast<tensor::ExpandShapeOp>(pack);
+  auto c = dyn_cast<tensor::CollapseShapeOp>(unpack);
+  return c && e.getReassociationIndices() == c.getReassociationIndices();
+}
 
 static std::optional<LoopCarriedPack> matchLoopCarriedPack(scf::ForOp forOp,
                                                            unsigned index) {
   BlockArgument arg = forOp.getRegionIterArgs()[index];
-  linalg::PackOp pack;
-  linalg::UnPackOp unpack;
+  // Static shapes only: with them, equal types are equal shapes, so the value
+  // packed before the loop has the shape the loop packs each trip, and a
+  // destination made outside the loop has the carried value's shape.
+  auto isStatic = [](Value v) {
+    auto t = dyn_cast<RankedTensorType>(v.getType());
+    return t && t.hasStaticShape();
+  };
+  if (!isStatic(arg))
+    return std::nullopt;
+  // The unpacked value goes straight back round the loop. An unpack writes
+  // all of its destination, so the destination may be the carried value, any
+  // tensor available before the loop, or a fresh tensor that can be built
+  // again after it.
+  Operation *yield = forOp.getBody()->getTerminator();
+  Operation *unpack = yield->getOperand(index).getDefiningOp();
+  if (!isa_and_present<linalg::UnPackOp, tensor::CollapseShapeOp>(unpack) ||
+      !unpack->getResult(0).hasOneUse() || unpack->getParentOp() != forOp)
+    return std::nullopt;
+  Value uDest = unpackDest(unpack);
+  if (uDest && uDest != arg && !forOp.isDefinedOutsideOfLoop(uDest) &&
+      !isRecreatableEmptyTensor(uDest, forOp))
+    return std::nullopt;
+  // The carried value may be the unpack's destination, which it overwrites,
+  // but not what it unpacks.
+  Operation *pack = nullptr;
   for (OpOperand &use : arg.getUses()) {
     Operation *user = use.getOwner();
-    if (user->getParentOp() != forOp)
-      return std::nullopt;
-    if (auto p = dyn_cast<linalg::PackOp>(user);
-        p && &use == &p.getSourceMutable() && !pack) {
-      pack = p;
+    if (user == unpack) {
+      auto u = dyn_cast<linalg::UnPackOp>(unpack);
+      if (!u || &use != &u.getDestMutable())
+        return std::nullopt;
       continue;
     }
-    if (auto u = dyn_cast<linalg::UnPackOp>(user);
-        u && &use == &u.getDestMutable() && !unpack) {
-      unpack = u;
-      continue;
-    }
-    return std::nullopt;
-  }
-  if (!pack || !unpack || pack.getPaddingValue())
-    return std::nullopt;
-  // The unpacked value goes straight back round the loop.
-  Operation *yield = forOp.getBody()->getTerminator();
-  if (!unpack.getResult().hasOneUse() ||
-      yield->getOperand(index) != unpack.getResult())
-    return std::nullopt;
-  if (pack.getInnerDimsPos() != unpack.getInnerDimsPos() ||
-      pack.getOuterDimsPerm() != unpack.getOuterDimsPerm() ||
-      pack.getStaticInnerTiles() != unpack.getStaticInnerTiles() ||
-      !pack.getInnerTiles().empty() || !unpack.getInnerTiles().empty() ||
-      pack.getResult().getType() != unpack.getSource().getType())
-    return std::nullopt;
-  Value dest = pack.getDest();
-  if (!forOp.isDefinedOutsideOfLoop(dest)) {
-    auto empty = dest.getDefiningOp<tensor::EmptyOp>();
-    if (!empty || !llvm::all_of(empty->getOperands(), [&](Value v) {
-          return forOp.isDefinedOutsideOfLoop(v);
-        }))
+    OpOperand *src = packSourceOperand(user);
+    if (!src || user->getParentOp() != forOp || &use != src || pack)
       return std::nullopt;
+    pack = user;
   }
+  if (!pack || !areInverseLayouts(pack, unpack) ||
+      !isStatic(pack->getResult(0)) ||
+      (unpackDest(unpack) && !isStatic(unpackDest(unpack))))
+    return std::nullopt;
+  Value dest = packDest(pack);
+  if (dest && !forOp.isDefinedOutsideOfLoop(dest) &&
+      !isRecreatableEmptyTensor(dest, forOp))
+    return std::nullopt;
   return LoopCarriedPack{index, pack, unpack};
 }
 
-static FailureOr<std::pair<scf::ForOp, linalg::PackOp>>
+static FailureOr<std::pair<scf::ForOp, Operation *>>
 hoistLoopCarriedPack(RewriterBase &rewriter, scf::ForOp forOp,
                      LoopCarriedPack m) {
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(forOp);
   IRMapping before;
   before.map(forOp.getRegionIterArgs()[m.index], forOp.getInitArgs()[m.index]);
-  if (!forOp.isDefinedOutsideOfLoop(m.pack.getDest()))
-    before.map(m.pack.getDest(),
-               rewriter.clone(*m.pack.getDest().getDefiningOp())->getResult(0));
-  auto packed = cast<linalg::PackOp>(rewriter.clone(*m.pack, before));
+  Value pDest = packDest(m.pack);
+  if (pDest && !forOp.isDefinedOutsideOfLoop(pDest))
+    before.map(pDest, rewriter.clone(*pDest.getDefiningOp())->getResult(0));
+  Operation *packed = rewriter.clone(*m.pack, before);
 
-  Value computed = m.unpack.getSource();
+  Value computed = unpackSource(m.unpack);
   FailureOr<LoopLikeOpInterface> replaced = forOp.replaceWithAdditionalYields(
-      rewriter, packed.getResult(), /*replaceInitOperandUsesInLoop=*/false,
+      rewriter, packed->getResult(0), /*replaceInitOperandUsesInLoop=*/false,
       [&](OpBuilder &, Location, ArrayRef<BlockArgument>) {
         return SmallVector<Value>{computed};
       });
@@ -7543,12 +7763,15 @@ hoistLoopCarriedPack(RewriterBase &rewriter, scf::ForOp forOp,
   IRMapping after;
   after.map(computed, newFor.getResults().back());
   after.map(original, newFor.getResult(m.index));
+  Value uDest = unpackDest(m.unpack);
+  if (uDest && uDest != original && !newFor.isDefinedOutsideOfLoop(uDest))
+    after.map(uDest, rewriter.clone(*uDest.getDefiningOp())->getResult(0));
   Operation *unpacked = rewriter.clone(*m.unpack, after);
   rewriter.replaceAllUsesExcept(newFor.getResult(m.index),
                                 unpacked->getResult(0), unpacked);
 
   // Inside: read the carried value, and pass the original through.
-  rewriter.replaceAllUsesWith(m.pack.getResult(), carried);
+  rewriter.replaceAllUsesWith(m.pack->getResult(0), carried);
   Operation *yield = newFor.getBody()->getTerminator();
   rewriter.modifyOpInPlace(yield,
                            [&] { yield->setOperand(m.index, original); });

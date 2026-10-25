@@ -130,6 +130,19 @@ int main(int argc, char **argv) {
     throw std::runtime_error("--w-parts sums to " + std::to_string(wTotal) +
                              ", not --w-elems " + std::to_string(W_ELEMS));
 
+  // --kv-parts: per-buffer KV element counts when the builder splits the KV
+  // cache (kv_layout in fused_decode.py). Empty => one buffer of --kv-elems.
+  // Checked against --kv-elems like --w-parts.
+  std::vector<size_t> kvParts = parseList(argStr(argc, argv, "--kv-parts", ""));
+  if (kvParts.empty())
+    kvParts.push_back(KV_ELEMS);
+  size_t kvTotal = 0;
+  for (size_t n : kvParts)
+    kvTotal += n;
+  if (kvTotal != KV_ELEMS)
+    throw std::runtime_error("--kv-parts sums to " + std::to_string(kvTotal) +
+                             ", not --kv-elems " + std::to_string(KV_ELEMS));
+
   const long L = argLong(argc, argv, "--l", 1933);
   const long iters = argLong(argc, argv, "--iters", 64);
   const long warmup = argLong(argc, argv, "--warmup", 8);
@@ -281,7 +294,6 @@ int main(int argc, char **argv) {
                       kernel.group_id(i == 0 ? 4 : 7 + static_cast<int>(i)));
   auto bo_r = xrt::bo(device, RMS_SIZE * 2, HO, kernel.group_id(5));
   auto bo_y = xrt::bo(device, NY * 2, HO, kernel.group_id(6));
-  auto bo_kv = xrt::bo(device, KV_ELEMS * 2, HO, kernel.group_id(7));
   // The PLE pair binds AFTER the weight groups (fused_decode_ple.py's
   // PLEW_ARG/PLEX0_ARG), so its group ids follow the last weight group's rather
   // than being fixed at 8/9 -- on a split-weight model that would alias a
@@ -294,6 +306,14 @@ int main(int argc, char **argv) {
     bo_ple.emplace_back(device, PX_ELEMS * 2, HO,
                         kernel.group_id(pleGroup + 1));
   }
+  // KV buffer 0 keeps the kvc arg; the rest are the last buffer args, after
+  // the weight groups and any PLE pair (both builders' KV_ARGS).
+  const int kvGroup = 7 + static_cast<int>(bo_w.size() + bo_ple.size());
+  std::vector<xrt::bo> bo_kv;
+  for (size_t i = 0; i < kvParts.size(); i++)
+    bo_kv.emplace_back(
+        device, kvParts[i] * 2, HO,
+        kernel.group_id(i == 0 ? 7 : kvGroup + static_cast<int>(i) - 1));
   auto bo_i = xrt::bo(device, insts.size() * 4, XCL_BO_FLAGS_CACHEABLE,
                       kernel.group_id(1));
 
@@ -309,7 +329,8 @@ int main(int argc, char **argv) {
   for (size_t i = 0; i < bo_w.size(); i++)
     fill(bo_w[i], wParts[i] * 2, 0x3C00);
   fill(bo_r, RMS_SIZE * 2, 0x3C00);
-  fill(bo_kv, KV_ELEMS * 2, 0x3C00);
+  for (size_t i = 0; i < bo_kv.size(); i++)
+    fill(bo_kv[i], kvParts[i] * 2, 0x3C00);
   fill(bo_x, K * 2, 0x3C00);
   if (!bo_ple.empty()) {
     fill(bo_ple[0], PW_ELEMS * 2, 0x3C00);
@@ -358,11 +379,13 @@ int main(int argc, char **argv) {
     run.set_arg(a++, bo_w[0]);
     run.set_arg(a++, bo_r);
     run.set_arg(a++, bo_y);
-    run.set_arg(a++, bo_kv);
+    run.set_arg(a++, bo_kv[0]);
     for (size_t i = 1; i < bo_w.size(); i++)
       run.set_arg(a++, bo_w[i]);
     for (auto &b : bo_ple)
       run.set_arg(a++, b);
+    for (size_t i = 1; i < bo_kv.size(); i++)
+      run.set_arg(a++, bo_kv[i]);
     run.start();
     auto st = run.wait(60000);
     if (st != ERT_CMD_STATE_COMPLETED) {

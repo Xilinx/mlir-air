@@ -50,7 +50,10 @@ config.substitutions.append(("%CLANG", "clang"))
 config.substitutions.append(("%LLC", config.llvm_tools_dir + "/llc"))
 config.substitutions.append(("%OPT", config.llvm_tools_dir + "/opt"))
 config.substitutions.append(
-    ("%airhost_inc", "-I" + air_runtime_lib + "/airhost/include")
+    (
+        "%aircpu_inc",
+        "-I" + os.path.join(config.air_src_root, "runtime_lib", "aircpu", "include"),
+    )
 )
 config.substitutions.append(
     ("%aircpu_lib", "-L" + air_runtime_lib + "/aircpu -laircpu")

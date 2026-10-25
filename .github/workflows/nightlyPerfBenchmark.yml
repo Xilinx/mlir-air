@@ -52,6 +52,12 @@ on:
           a row to supersede it.
         default: verify,profile,sweep,prefill-sweep,full20
         type: string
+      compile_cache:
+        description: >-
+          Reuse aircc builds and kernel compiles from the runner's compile
+          cache. Turn off to build everything from scratch.
+        default: true
+        type: boolean
 
 defaults:
   run:
@@ -160,7 +166,7 @@ jobs:
           # upstream. The earlier 21.x pin worked around what turned out to be
           # AIR's own core stack size, not a compiler bug -- see
           # AIRToAIEPass.cpp's stack_size default.
-          python3 -m pip install --upgrade --force-reinstall "llvm-aie==22.0.0.2026101201+83ba9ea9" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          python3 -m pip install --upgrade --force-reinstall "llvm-aie==22.0.0.2026101901+4f5df13d" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
       # The fused-decode inline-attn merge (programming_examples/fused_decode, used
       # by llama32_1b_q4nx) shells out to an `llvm-link` resolved from PATH, and it
@@ -360,6 +366,21 @@ jobs:
           # unrelated load competing for DRAM bandwidth.
           echo "platform profile: $(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo n/a) |$(uptime | sed 's/.*load average/ load average/')"
 
+          # Reuse aircc builds and kernel compiles across nights
+          # (python/air/backend/compile_cache.py): each is reused only when
+          # everything it was made from matches. Sundays empty the cache first,
+          # so a reuse that an incomplete key let through lasts at most a week.
+          if [ "${{ github.event.inputs.compile_cache || 'true' }}" = "true" ]; then
+            export AIR_COMPILE_CACHE="$HOME/.cache/mlir-air/compile-cache"
+            if [ "$(date -u +%u)" = 7 ]; then
+              rm -rf "$AIR_COMPILE_CACHE"
+              echo "compile cache: emptied, building from scratch"
+            fi
+            echo "compile cache: $AIR_COMPILE_CACHE"
+          else
+            echo "compile cache: off, building from scratch"
+          fi
+
           rc=0
           pushd build_assert
           # A scheduled run has no `inputs`, and workflow_dispatch defaults are
@@ -388,7 +409,7 @@ jobs:
           # <model>.sweep.json alongside. The profile capture above measures one
           # point at the profile prompt's ~6 tokens of context, which is the
           # flattering end of a ~12x range and cannot see a KV-path regression.
-          # Each sweep is ~4-5 min (a template build per context).
+          # Each context of a fused-decode sweep is a template build.
           if want sweep; then
             # Build the shared bench binary BEFORE any timed work. Every model's
             # `make clean` recurses into fused_decode's, which deletes it, so
@@ -407,37 +428,37 @@ jobs:
             LIT_OPTS="--timeout 3600" \
               ninja check-programming-examples-llms-sweep || rc=1
           fi
-          # Prefill TTFT vs PADDED prefill length: writes <model>.prefill_sweep.json
+          # Prefill TTFT vs prefill length: writes <model>.prefill_sweep.json
           # alongside. The other axis from the decode sweep above -- that one walks
-          # KV depth, this walks the length the prefill ELFs are built for, which is
-          # what TTFT scales with. Deliberately not the prompt length: the prompt is
-          # padded to the built length, so at a fixed engine TTFT is flat (measured
-          # on llama32_1b_q4nx: 959 ms at 128 tokens vs 983 ms at 2048). Each point
-          # is a fresh build, ~2 min for the small models and ~8 min for the 7B/8B.
+          # KV depth, this walks how many token rows the prefill computes, which is
+          # what TTFT scales with.
           #
-          # 4096 is the dearest column: a build scales with the padded length, so
-          # those eight points cost roughly what 512+1024+2048 cost together, and
-          # the suite goes ~1.7h -> ~2.7h. That is what took timeout-minutes to 480.
-          # It needs the M=4096 GEMM registry rows to configure an engine at that
-          # length, and the shim-BD / FlashAttention work to compile one; without
-          # either, every model reports no_registry_shape or bd_exhaustion at 4096
-          # and the column is a wall of red rather than a missing column.
+          # The models with a fused prefill time it on a prompt of each length:
+          # one build, for the longest length, serves every point. The others
+          # time their per-op prefill, which pads the prompt to the length its
+          # ELFs were built for, so each of their points is a fresh build whose
+          # cost grows with the length; their longest points need GEMM registry
+          # rows and shim-BD / FlashAttention support at that length, and report
+          # no_registry_shape or bd_exhaustion without them.
           if want prefill-sweep; then
             LIT_OPTS="--timeout 3600" \
               ninja check-programming-examples-llms-prefill-sweep || rc=1
           fi
+          # Full20 and Full80 take their per-test timeouts from their CMake
+          # targets. Don't set --timeout in LIT_OPTS here: lit lets LIT_OPTS
+          # override the target's own arguments.
           if want full20; then
             # Four fixed prompts per dataset, both B1 and DFlash.
-            LIT_OPTS="--timeout 1800" \
-              ninja check-programming-examples-llms-full20 || rc=1
+            ninja check-programming-examples-llms-full20 || rc=1
           fi
           if want full80; then
-            # Optional paired study: measured 54 minutes with cached builds on
-            # HX370. Budget 90 minutes including its current-revision builds.
-            LIT_OPTS="--timeout 5400" \
-              ninja check-programming-examples-llms-full80 || rc=1
+            # Optional paired study over all sixteen prompts per dataset.
+            ninja check-programming-examples-llms-full80 || rc=1
           fi
           popd
+          if [ -n "${AIR_COMPILE_CACHE:-}" ]; then
+            python3 python/air/backend/compile_cache.py prune --max-gb 30 || true
+          fi
           exit $rc
 
       - name: Combine perf JSON
@@ -543,6 +564,14 @@ jobs:
                   d["toolchain"] = dict(mlir_air_sha=air_sha, mlir_aie_hash=aie_hash,
                                         llvm_aie_version=peano_ver)
                   d["verify_status"] = vstatus.get(d["model"], "")
+                  # Prompt lengths live only in the per-request log; the docs
+                  # page states the range the study covered.
+                  log = os.path.join(os.path.dirname(f), (d.get("records") or {}).get("dflash", ""))
+                  try:
+                      lens = [json.loads(l)["input_tokens"] for l in open(log) if l.strip()]
+                      d["prompt_tokens"] = {"min": min(lens), "max": max(lens)}
+                  except (OSError, ValueError, KeyError) as e:
+                      print(f"WARNING: no prompt lengths from {log}: {e}", file=sys.stderr)
                   studies.append(d)
               json.dump(studies, open(f"{kind}.json", "w"), indent=2)
 
@@ -650,11 +679,19 @@ jobs:
               --history "$workdir/prefill_sweep_history.ndjson" \
               --run-id "${{ github.run_id }}"
           fi
+          # Speculative decoding: the paired Full20 study, one row per dataset.
+          if [ -f full20.json ]; then
+            python3 programming_examples/llms/bench/append_history.py \
+              --spec-decode full20.json \
+              --history "$workdir/spec_decode_history.ndjson" \
+              --run-id "${{ github.run_id }}"
+          fi
           pushd "$workdir"
           if [ -n "$(git status --porcelain)" ]; then
             git add history.ndjson
             [ -f sweep_history.ndjson ] && git add sweep_history.ndjson
             [ -f prefill_sweep_history.ndjson ] && git add prefill_sweep_history.ndjson
+            [ -f spec_decode_history.ndjson ] && git add spec_decode_history.ndjson
             git commit -m "perf-history: nightly ${{ github.sha }} run ${{ github.run_id }}"
             git push origin HEAD:perf-history
           else

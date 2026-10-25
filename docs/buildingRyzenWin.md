@@ -303,9 +303,8 @@ Three configure lines are worth checking before building:
 -- Skipping e2e tests on Windows (runtime libraries not built)
 ```
 
-The third is expected: the `airhost` / `aircpu` host runtimes need POSIX APIs
-(`dlopen`, `mmap`, `ioctl`) and the Linux `amdair` kernel driver, so CMake skips
-them, and with them the `test/` tree. Reports that Vitis, `xchesscc`, AIETools,
+The third is expected: the `aircpu` host runtime needs POSIX APIs, so CMake
+skips it, and with it the `test/` tree. Reports that Vitis, `xchesscc`, AIETools,
 and LibXAIE were not found are also expected and harmless: Windows uses Peano
 exclusively, and Chess-gated tests report *unsupported* rather than failing.
 

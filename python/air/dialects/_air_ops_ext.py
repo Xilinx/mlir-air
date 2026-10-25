@@ -5,13 +5,14 @@
 # SPDX-License-Identifier: MIT
 
 import functools
+import inspect
 from typing import Optional, Sequence, Union
 
 from ..ir import *
 from ._air_ops_gen import *
 from . import arith
 from ._ods_common import get_default_loc_context as _ods_get_default_loc_context
-from ..extras.meta import region_op
+from ..extras.meta import op_region_builder, region_op
 
 from ..extras import types as T
 from .func import FuncOp, CallOp
@@ -403,9 +404,42 @@ def module_builder(module_function):
     return module_builder_wrapper
 
 
-herd = region_op(Herd, terminator=lambda *_args: HerdTerminatorOp())
-launch = region_op(Launch, terminator=lambda *_args: LaunchTerminatorOp())
-segment = region_op(Segment, terminator=lambda *_args: SegmentTerminatorOp())
+def _hierarchy_region_op(op_class, terminator):
+    """region_op whose body may leave out the ids and sizes: a body taking one
+    positional parameter per operand is passed only the operands."""
+
+    def decorator(*args, **kwargs):
+        op = op_class(*args, **kwargs)
+        build = op_region_builder(op, op.regions[0], terminator)
+        num_ids = 2 * len(op.sizes)
+        num_args = len(op.regions[0].blocks[0].arguments)
+
+        def wrap(body):
+            P = inspect.Parameter
+            kinds = [p.kind for p in inspect.signature(body).parameters.values()]
+            if P.VAR_POSITIONAL in kinds:
+                return build(body)
+            num_params = sum(
+                k in (P.POSITIONAL_ONLY, P.POSITIONAL_OR_KEYWORD) for k in kinds
+            )
+            if num_ids and num_params == num_args - num_ids:
+                return build(lambda *block_args: body(*block_args[num_ids:]))
+            return build(body)
+
+        return wrap
+
+    @functools.wraps(decorator)
+    def maybe_no_args(*args, **kwargs):
+        if len(args) == 1 and not kwargs and callable(args[0]):
+            return decorator()(args[0])
+        return decorator(*args, **kwargs)
+
+    return maybe_no_args
+
+
+herd = _hierarchy_region_op(Herd, terminator=lambda *_args: HerdTerminatorOp())
+launch = _hierarchy_region_op(Launch, terminator=lambda *_args: LaunchTerminatorOp())
+segment = _hierarchy_region_op(Segment, terminator=lambda *_args: SegmentTerminatorOp())
 rank = region_op(Rank, terminator=lambda *_args: RankTerminatorOp())
 
 

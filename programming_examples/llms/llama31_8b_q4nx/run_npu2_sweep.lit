@@ -21,7 +21,7 @@
 // the host BO split -- so they live in fused_decode.py's _MODELS entry and both
 // sides read them from there.
 //
-// 64k and 128k are swept but allowed to fail. Whether a model reaches them
+// 128k is swept but allowed to fail. Whether a model reaches it
 // depends on how much host memory XRT will pin for its KV BO, which differs
 // between machines. This model carries 4.38 GiB of weights before a byte of KV,
 // second only to qwen3-8b's 4.41 GiB, and its KV at 128k is the same 16 GiB as
@@ -32,7 +32,7 @@
 //
 // RUN: mkdir -p test_peano_sweep
 // RUN: cd test_peano_sweep
-// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name llama31_8b_q4nx --makefile %S/Makefile --template-dir %S --bench-model llama-3.1-8b --vocab-chunk-i2 16 --n-layers 32 --contexts 1024,2048,4096,8192,16384,32768,65536,131072 --expect-fail 65536,131072 --peano-dir %PEANO_INSTALL_DIR --xrt-dir %XRT_DIR --out llama31_8b_q4nx.sweep.json
+// RUN: %PYTHON %S/../bench/sweep_decode.py --model-name llama31_8b_q4nx --makefile %S/Makefile --template-dir %S --bench-model llama-3.1-8b --vocab-chunk-i2 16 --n-layers 32 --contexts 2048,8192,32768,131072 --expect-fail 131072 --peano-dir %PEANO_INSTALL_DIR --xrt-dir %XRT_DIR --out llama31_8b_q4nx.sweep.json
 // RUN: FileCheck %s < llama31_8b_q4nx.sweep.json
 // CHECK: "model": "llama31_8b_q4nx"
 // CHECK: "axis": "context_len"

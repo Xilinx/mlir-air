@@ -9,7 +9,7 @@
 // RUN: air-translate --mlir-to-llvmir %t.producer_consumer.async.llvm.mlir -o %t.producer_consumer.async.ll
 // RUN: %OPT -O3 -o %t.producer_consumer.async.opt.bc < %t.producer_consumer.async.ll
 // RUN: %LLC %t.producer_consumer.async.opt.bc --relocation-model=pic -filetype=obj -o %t.producer_consumer.async.o
-// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_inc -c -o %t.main.o
+// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %aircpu_inc -c -o %t.main.o
 // RUN: %CLANG %aircpu_lib %mlir_async_lib -o %t.test.exe %t.main.o %t.producer_consumer.async.o
 // RUN: %ld_lib_path %t.test.exe
 

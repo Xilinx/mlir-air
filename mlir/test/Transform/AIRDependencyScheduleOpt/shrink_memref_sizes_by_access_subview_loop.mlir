@@ -267,3 +267,193 @@ module {
   }
 }
 
+
+// -----
+
+// Both herd offsets are replaced with 0. Dims 0 and 1 keep their size, dim 2
+// shrinks, and dim 3 has a static offset.
+
+// CHECK-LABEL: func.func @herd_offsets_around_static
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<1x1x4x8x8xbf16, 2>
+// CHECK: memref.subview %{{.*}}[%c0{{.*}}, %c0{{.*}}, %{{.*}}, 4, 0] [1, 1, 1, 4, 8]
+module {
+  func.func @herd_offsets_around_static() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<2x2x4x8x8xbf16, 2>) {
+          %a = memref.alloc() : memref<2x2x4x8x8xbf16, 2>
+          air.execute_terminator %a : memref<2x2x4x8x8xbf16, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<2x2x4x8x8xbf16, 2> {
+          %c0 = arith.constant 0 : index
+          %f0 = arith.constant 0.000000e+00 : bf16
+          %step = arith.constant 1 : index
+          %ub = arith.constant 4 : index
+          scf.for %i = %c0 to %ub step %step {
+            %sv = memref.subview %buf[%tx, %ty, %i, 0, 0] [1, 1, 1, 4, 8] [1, 1, 1, 1, 1] : memref<2x2x4x8x8xbf16, 2> to memref<1x1x1x4x8xbf16, strided<[512, 256, 64, 8, 1], offset: ?>, 2>
+            linalg.fill ins(%f0 : bf16) outs(%sv : memref<1x1x1x4x8xbf16, strided<[512, 256, 64, 8, 1], offset: ?>, 2>)
+            %sv2 = memref.subview %buf[%tx, %ty, %i, 4, 0] [1, 1, 1, 4, 8] [1, 1, 1, 1, 1] : memref<2x2x4x8x8xbf16, 2> to memref<1x1x1x4x8xbf16, strided<[512, 256, 64, 8, 1], offset: ?>, 2>
+            linalg.fill ins(%f0 : bf16) outs(%sv2 : memref<1x1x1x4x8xbf16, strided<[512, 256, 64, 8, 1], offset: ?>, 2>)
+          }
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<2x2x4x8x8xbf16, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A rank-reducing subview whose offsets become all zero is kept, since its
+// user indexes it with the reduced rank.
+
+// CHECK-LABEL: func.func @rank_reducing_view_kept
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<1x1x4x4xf32, 2>
+// CHECK: %[[V:.*]] = memref.subview %{{.*}}[%c0{{.*}}, %c0{{.*}}, 0, 0] [1, 1, 4, 4] [1, 1, 1, 1] : memref<1x1x4x4xf32, 2> to memref<4x4xf32
+// CHECK: memref.store %{{.*}}, %[[V]][%{{.*}}, %{{.*}}] : memref<4x4xf32
+module {
+  func.func @rank_reducing_view_kept() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<2x2x4x4xf32, 2>) {
+          %a = memref.alloc() : memref<2x2x4x4xf32, 2>
+          air.execute_terminator %a : memref<2x2x4x4xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<2x2x4x4xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %f0 = arith.constant 0.000000e+00 : f32
+          %sv = memref.subview %buf[%tx, %ty, 0, 0] [1, 1, 4, 4] [1, 1, 1, 1] : memref<2x2x4x4xf32, 2> to memref<4x4xf32, strided<[4, 1], offset: ?>, 2>
+          memref.store %f0, %sv[%c0, %c0] : memref<4x4xf32, strided<[4, 1], offset: ?>, 2>
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<2x2x4x4xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The only herd offset is in dim 1, after a static offset in dim 0: it is
+// replaced with 0.
+
+// CHECK-LABEL: func.func @static_leading_offset
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<2x1x4x8xf32, 2>
+// CHECK: memref.subview %{{.*}}[0, %c0{{.*}}, %{{.*}}, 0] [2, 1, 1, 8]
+module {
+  func.func @static_leading_offset() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c1_s = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<2x2x4x8xf32, 2>) {
+          %a = memref.alloc() : memref<2x2x4x8xf32, 2>
+          air.execute_terminator %a : memref<2x2x4x8xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c1_s, %sy=%c2) args(%buf=%alloc) : memref<2x2x4x8xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %c1_h = arith.constant 1 : index
+          %c8 = arith.constant 8 : index
+          %f0 = arith.constant 0.000000e+00 : f32
+          %ub = arith.constant 4 : index
+          scf.for %i = %c0 to %ub step %c1_h {
+            %sv = memref.subview %buf[0, %ty, %i, 0] [2, 1, 1, 8] [1, 1, 1, 1] : memref<2x2x4x8xf32, 2> to memref<2x1x1x8xf32, strided<[64, 32, 8, 1], offset: ?>, 2>
+            linalg.fill ins(%f0 : f32) outs(%sv : memref<2x1x1x8xf32, strided<[64, 32, 8, 1], offset: ?>, 2>)
+          }
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<2x2x4x8xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Sizes given as SSA constants: both herd offsets are replaced with 0.
+
+// CHECK-LABEL: func.func @dynamic_sizes
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<1x1x4x8xf32, 2>
+// CHECK: memref.subview %{{.*}}[%c0{{.*}}, %c0{{.*}}, %{{.*}}, 0]
+module {
+  func.func @dynamic_sizes() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<2x2x4x8xf32, 2>) {
+          %a = memref.alloc() : memref<2x2x4x8xf32, 2>
+          air.execute_terminator %a : memref<2x2x4x8xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<2x2x4x8xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %c1_h = arith.constant 1 : index
+          %c8 = arith.constant 8 : index
+          %f0 = arith.constant 0.000000e+00 : f32
+          %ub = arith.constant 4 : index
+          scf.for %i = %c0 to %ub step %c1_h {
+            %sv = memref.subview %buf[%tx, %ty, %i, 0] [%c1_h, %c1_h, %c1_h, %c8] [1, 1, 1, 1] : memref<2x2x4x8xf32, 2> to memref<?x?x?x?xf32, strided<[64, 32, 8, 1], offset: ?>, 2>
+            linalg.fill ins(%f0 : f32) outs(%sv : memref<?x?x?x?xf32, strided<[64, 32, 8, 1], offset: ?>, 2>)
+          }
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<2x2x4x8xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Views of a subview take its new layout: after the buffer shrinks, the
+// expand_shape and collapse_shape result types follow the subview's strides.
+
+// CHECK-LABEL: func.func @views_of_subview
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<1x1x64xf32, 2>
+// CHECK: %[[S:.*]] = memref.subview {{.*}} : memref<1x1x64xf32, 2> to memref<1x1x32xf32, strided<[64, 64, 1], offset: ?>, 2>
+// CHECK: %[[E:.*]] = memref.expand_shape %[[S]] {{.*}} into memref<1x1x4x8xf32, strided<[64, 64, 8, 1], offset: ?>, 2>
+// CHECK: memref.collapse_shape %[[E]] {{.*}} into memref<4x8xf32, strided<[8, 1], offset: ?>, 2>
+module {
+  func.func @views_of_subview() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c2 = arith.constant 2 : index
+        %t0, %alloc = air.execute -> (memref<2x2x64xf32, 2>) {
+          %a = memref.alloc() : memref<2x2x64xf32, 2>
+          air.execute_terminator %a : memref<2x2x64xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c2, %sy=%c2) args(%buf=%alloc) : memref<2x2x64xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %c32 = arith.constant 32 : index
+          %c64 = arith.constant 64 : index
+          %f0 = arith.constant 0.000000e+00 : f32
+          scf.for %i = %c0 to %c64 step %c32 {
+            %sv = memref.subview %buf[%tx, %ty, %i] [1, 1, 32] [1, 1, 1] : memref<2x2x64xf32, 2> to memref<1x1x32xf32, strided<[128, 64, 1], offset: ?>, 2>
+            %e = memref.expand_shape %sv [[0], [1], [2, 3]] output_shape [1, 1, 4, 8] : memref<1x1x32xf32, strided<[128, 64, 1], offset: ?>, 2> into memref<1x1x4x8xf32, strided<[128, 64, 8, 1], offset: ?>, 2>
+            %c = memref.collapse_shape %e [[0, 1, 2], [3]] : memref<1x1x4x8xf32, strided<[128, 64, 8, 1], offset: ?>, 2> into memref<4x8xf32, strided<[8, 1], offset: ?>, 2>
+            linalg.fill ins(%f0 : f32) outs(%c : memref<4x8xf32, strided<[8, 1], offset: ?>, 2>)
+          }
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<2x2x64xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}

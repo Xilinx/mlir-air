@@ -256,8 +256,13 @@ __attribute__((always_inline)) v16accfloat getExpBf16(v16bfloat16 x) {
   aie::vector<int16, 32> input0 = v32int16(bfloat16_to_int(input_bf16, 8));
   aie::vector<int16, 16> input = aie::filter_even(input0);
 
+  // fetch() shifts its index by the core's rounding mode, and the tables
+  // are laid out for floor.
+  aie::rounding_mode saved_rnd = aie::tile::current().get_rounding();
+  aie::tile::current().set_rounding(aie::rounding_mode::floor);
   I_val_vec = lookup_i.fetch(input.cast_to<uint16>());
   F_val_vec = lookup_f.fetch(input.cast_to<uint16>());
+  aie::tile::current().set_rounding(saved_rnd);
   exp_val = aie::mul(I_val_vec, F_val_vec);
   return v16accfloat(exp_val);
 }

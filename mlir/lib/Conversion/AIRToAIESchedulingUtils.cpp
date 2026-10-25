@@ -19,6 +19,7 @@
 
 #include <limits>
 #include <mutex>
+#include <numeric>
 #include <set>
 
 #define DEBUG_TYPE "air-to-aie-scheduling-utils"
@@ -280,8 +281,22 @@ bool air::memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB) {
   return false; // Unknown or different air::MemcpyInterface op types.
 }
 
+// The shortest unit a chain of memcpy ops is two or more whole copies of, or
+// an empty vector. The unit may move one buffer more than once, as [k, v, v]
+// does.
+static llvm::SetVector<Operation *> wholeCopiesUnit(ArrayRef<Operation *> ops) {
+  for (size_t p = 1; 2 * p <= ops.size(); p++)
+    if (ops.size() % p == 0 &&
+        llvm::all_of(llvm::seq(p, ops.size()), [&](size_t i) {
+          return air::memcpyIMappedToEquivalentBDs(ops[i], ops[i % p]);
+        }))
+      return llvm::SetVector<Operation *>(ops.begin(), ops.begin() + p);
+  return {};
+}
+
 // Canonicalize a chain of memcpy ops as candidates to map to dma bds, by
-// removing repetitive patterns. Returns the unique repeating unit, or an empty
+// removing repetitive patterns. Returns the unique repeating unit, the unit
+// the chain is whole copies of when that unit repeats an op, or an empty
 // vector when the chain does not repeat.
 llvm::SetVector<Operation *>
 air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
@@ -300,8 +315,7 @@ air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
   while (opIt != memcpyIOps.end()) {
     // BD repetition found. Check if repeating pattern.
     if (!memcpyIMappedToEquivalentBDs(*opIt, uniqueBDPattern[idx]))
-      return llvm::SetVector<Operation *>(); // Chain isn't repeating. Return
-                                             // an empty vector.
+      return wholeCopiesUnit(memcpyIOps.getArrayRef());
     opIt++;
     idx++;
     idx %= uniqueBDPattern.size();
@@ -936,6 +950,98 @@ bool xilinx::air::allocation_info_t::foundSameLogicalFlowInTile(
       return true;
   }
   return false;
+}
+
+// Do two endpoints feed one FIFO? Beyond isSameLogicalFlowEndpoint, a channel
+// declared with a single slot has one FIFO however its ops spell the index:
+// `@c[]` and `@c[0]` address the same slot.
+static bool isSameChannelFifo(air::MemcpyInterface a, air::MemcpyInterface b) {
+  if (isSameLogicalFlowEndpoint(a, b))
+    return true;
+  auto chanA = dyn_cast<air::ChannelInterface>(a.getOperation());
+  auto chanB = dyn_cast<air::ChannelInterface>(b.getOperation());
+  if (!chanA || !chanB)
+    return false;
+  auto decl = air::getChannelDeclarationThroughSymbol(chanA);
+  if (!decl || decl != air::getChannelDeclarationThroughSymbol(chanB))
+    return false;
+  return llvm::all_of(decl.getSize(), [](Attribute s) {
+    auto n = dyn_cast<IntegerAttr>(s);
+    return n && n.getInt() == 1;
+  });
+}
+
+SmallVector<Operation *> air::getCircularChainBDs(
+    ArrayRef<Operation *> ops, ArrayRef<Operation *> unit,
+    llvm::function_ref<std::optional<int64_t>(Operation *)> sendsPerFill) {
+  SmallVector<Operation *> bds(unit.begin(), unit.end());
+  SmallVector<int64_t> sends;
+  for (auto *o : unit) {
+    auto n = sendsPerFill(o);
+    if (!n)
+      return bds;
+    sends.push_back(*n);
+  }
+  if (llvm::all_of(sends, [](int64_t n) { return n == 1; }))
+    return bds;
+
+  // A BD of the unit stands for every transfer in `ops` it is equivalent to.
+  // Folding a repeated unit keeps these counts in proportion, but folding a
+  // prefix and repeated suffix does not: [x, y, y, y, y] becomes [x, y], with
+  // y standing for four transfers. Scale each transfer's sends by its copies,
+  // relative to the copies a whole repetition of the unit accounts for.
+  SmallVector<int64_t> copies(unit.size(), 0);
+  // whole copies of a unit that repeats an op (getUniqueBDPattern): equivalence
+  // cannot tell the unit's slots apart, so count by position
+  size_t n = unit.size();
+  bool byPosition =
+      ops.size() % n == 0 &&
+      llvm::all_of(llvm::seq<size_t>(0, ops.size()), [&](size_t i) {
+        return memcpyIMappedToEquivalentBDs(ops[i], unit[i % n]);
+      });
+  for (size_t i = 0; i < ops.size(); i++) {
+    if (byPosition) {
+      copies[i % n]++;
+      continue;
+    }
+    Operation *o = ops[i];
+    const auto *it = llvm::find(unit, o);
+    if (it == unit.end())
+      it = llvm::find_if(unit, [&](Operation *u) {
+        return memcpyIMappedToEquivalentBDs(o, u);
+      });
+    if (it != unit.end())
+      copies[it - unit.begin()]++;
+  }
+  int64_t repetitions = 0;
+  for (int64_t c : copies)
+    repetitions = std::gcd(repetitions, c);
+  if (repetitions == 0)
+    return bds;
+  for (size_t i = 0; i < unit.size(); i++)
+    sends[i] = sends[i] * copies[i] / repetitions;
+
+  // Each logical flow is a FIFO, and per fill it must see each of its
+  // transfers sent as many times as that transfer is re-fed, back to back in
+  // program order. A flow with one transfer x re-fed n times wants x^n, which
+  // any number of passes dividing n can deliver. A flow with transfers x, y
+  // wants x^n y^m, which only a single pass can deliver. Every flow on the
+  // chain advances once per pass, so the number of passes per fill is the gcd
+  // of what each flow allows.
+  int64_t passes = 0;
+  for (size_t i = 0; i < unit.size(); i++) {
+    auto mc = cast<air::MemcpyInterface>(unit[i]);
+    bool sharesFlow = false;
+    for (size_t j = 0; j < unit.size() && !sharesFlow; j++)
+      sharesFlow =
+          j != i && isSameChannelFifo(mc, cast<air::MemcpyInterface>(unit[j]));
+    passes = std::gcd(passes, sharesFlow ? int64_t(1) : sends[i]);
+  }
+
+  bds.clear();
+  for (auto [o, n] : llvm::zip_equal(unit, sends))
+    bds.append(n / passes, o);
+  return bds;
 }
 
 // DMAAllocator impl.
@@ -3481,7 +3587,6 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp) {
     return memcpyOp->emitOpError("unrecognized memory space on memref");
   S2MM_memspace = *dstMS;
   MM2S.push_back(memcpyOp.getOperation());
-  MM2S_memspace = *srcMS;
   memcpyResourceType = "npu_dma_stream";
   return success();
 }
@@ -3543,11 +3648,9 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp) {
   auto chan = air::getChannelDeclarationThroughSymbol(memcpyOp);
   air_flow_op = chan.getOperation();
   MM2S.push_back(memcpyOp.getOperation());
-  auto putMS = air::getMemorySpace(
-      llvm::cast<BaseMemRefType>(memcpyOp.getMemref().getType()));
-  if (!putMS)
+  if (!air::getMemorySpace(
+          llvm::cast<BaseMemRefType>(memcpyOp.getMemref().getType())))
     return memcpyOp->emitOpError("unrecognized memory space on memref");
-  MM2S_memspace = *putMS;
   memcpyResourceType = chan.getChannelType().str();
   // numMM2SAllocs (number of DISTINCT producer tiles) is computed during DMA
   // channel allocation, where each put's tile is resolved -- a single producer
@@ -3606,11 +3709,6 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
 } // namespace xilinx
 
 namespace xilinx {
-
-bool air::isPacketShimFlow(const air::MemcpyBundleAsFlow &f) {
-  return f.memcpyResourceType == "npu_dma_packet" &&
-         f.MM2S_memspace == air::MemorySpace::L3;
-}
 
 // Identify the unique parent core (== receiver tile) of a flow's S2MM
 // receivers. Returns null if there isn't exactly one. Reordering across
@@ -3773,12 +3871,24 @@ getS2MMReceiverMemorySpace(Operation *o) {
 
 // Resolve the memory space of a single MM2S producer op (the source of the data
 // movement). A convergent flow may have producers in DIFFERENT memory spaces
-// (e.g. an L1 compute core + an L2 memtile both feeding one S2MM), so MM2S
-// allocation must dispatch per-producer rather than
-// on the flow's aggregate MM2S_memspace.
+// (e.g. an L3 host buffer, an L2 memtile and an L1 compute core all feeding
+// one S2MM), so MM2S allocation dispatches per producer.
 static std::optional<air::MemorySpace>
 getMM2SProducerMemorySpace(Operation *o) {
   return getMemcpyEndpointMemorySpace(o, /*isSource=*/true);
+}
+
+static bool hasMM2SProducerIn(const air::MemcpyBundleAsFlow &f,
+                              ArrayRef<air::MemorySpace> spaces) {
+  return llvm::any_of(f.MM2S, [&](Operation *o) {
+    auto ms = getMM2SProducerMemorySpace(o);
+    return ms && llvm::is_contained(spaces, *ms);
+  });
+}
+
+bool air::isPacketShimFlow(const air::MemcpyBundleAsFlow &f) {
+  return f.memcpyResourceType == "npu_dma_packet" &&
+         hasMM2SProducerIn(f, air::MemorySpace::L3);
 }
 
 // The producer tile of an MM2S op, used as the grouping key that collapses
@@ -3968,7 +4078,7 @@ LogicalResult air::simpleDMAChannelAllocation(
   // so they can land on any shim col with free MM2S. Other L3 flows are
   // column-rigid (paired to a specific memtile LTO or a placed core).
   auto isBroadcastL3MM2S = [](const MemcpyBundleAsFlow &f) {
-    if (f.MM2S_memspace != air::MemorySpace::L3)
+    if (!hasMM2SProducerIn(f, air::MemorySpace::L3))
       return false;
     for (auto o : f.MM2S) {
       auto chanIf = dyn_cast_if_present<air::ChannelInterface>(o);
@@ -3994,10 +4104,23 @@ LogicalResult air::simpleDMAChannelAllocation(
   auto allocateL3 = [&](MemcpyBundleAsFlow &f) -> LogicalResult {
     if (f.memcpyResourceType == "npu_mmio")
       return success();
-    if (f.MM2S_memspace == air::MemorySpace::L3) {
-      // L3 (shim/host) producers stay single-producer (numMM2SAllocs==1).
+    if (hasMM2SProducerIn(f, air::MemorySpace::L3)) {
+      // L3 (shim/host) puts share one shim MM2S allocation. A packet flow may
+      // also converge on-device producers onto the same destination; those
+      // already hold the first numMM2SAllocs allocations, so the shim one is
+      // appended after them.
+      int shimIdx = 0;
+      if (hasMM2SProducerIn(f, {air::MemorySpace::L1, air::MemorySpace::L2})) {
+        if (f.memcpyResourceType != "npu_dma_packet")
+          return f.air_flow_op->emitOpError(
+              "only a packet channel can mix L3 and on-device producers");
+        shimIdx = f.numMM2SAllocs++;
+        f.MM2S_alloc.resize(f.numMM2SAllocs);
+      }
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.MM2S) {
+          if (getMM2SProducerMemorySpace(o) != air::MemorySpace::L3)
+            continue;
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           if (f.memcpyResourceType != "npu_dma_stream" &&
               f.memcpyResourceType != "npu_dma_packet")
@@ -4013,7 +4136,7 @@ LogicalResult air::simpleDMAChannelAllocation(
               s2mmTile.tryGetRow().value_or(-1), f.S2MM[i]);
           if (failed(alloc_res) || !alloc_res->valid())
             return failure();
-          f.MM2S_alloc[0] = alloc_res.value();
+          f.MM2S_alloc[shimIdx] = alloc_res.value();
         }
       }
     }

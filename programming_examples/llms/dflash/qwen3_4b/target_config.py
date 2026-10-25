@@ -1,12 +1,13 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Explicit configuration and buffer ABI for the standalone NPU target.
+"""Configuration and buffer ABI for the standalone NPU target.
 
-Importing the upstream builder is confined to a save/restore environment adapter.
+Importing fused_decode.py is confined to a save/restore environment adapter.
 The runtime consumes the saved manifest rather than ambient DECODE_* settings.
 """
 
 from __future__ import annotations
+from paths import HERE, COMMON, EXAMPLES, REPO, FUSED
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import importlib.util
@@ -15,10 +16,6 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
-HERE = Path(__file__).resolve().parent
-EXAMPLES = HERE.parents[2]
-REPO = HERE.parents[3]
-FUSED = EXAMPLES / "fused_decode"
 ABI_VERSION = 1
 
 
@@ -54,16 +51,27 @@ class TargetConfig:
 
     def __post_init__(self):
         # Mapping choices are recorded in each artifact, but are not tuning
-        # options: this example ships one B8 floorplan and arithmetic path.
+        # options: this example ships explicit B8 and B16 floorplans.
         from dataclasses import fields
 
-        variable = {"role", "capacity", "layers", "causal"}
+        variable = {
+            "role",
+            "capacity",
+            "layers",
+            "causal",
+            "batch",
+            "projection_schedule",
+        }
+        if self.batch not in (8, 16):
+            raise ValueError("Block size must be 8 or 16")
+        if self.projection_schedule != ("2x2" if self.batch == 16 else "groups"):
+            raise ValueError("Projection schedule must match the selected block size")
         for field in fields(self):
             if (
                 field.name not in variable
                 and getattr(self, field.name) != field.default
             ):
-                raise ValueError(f"Unsupported B8 mapping option: {field.name}")
+                raise ValueError(f"Unsupported mapping option: {field.name}")
         if self.role not in ("target", "drafter"):
             raise ValueError("role must be target or drafter")
         if self.causal != (self.role == "target"):
@@ -243,17 +251,20 @@ def load_layout(config, length=None):
         "PAYLOAD_B": fd.PAYLOAD * b,
         "L1_VEC_BF16": 32,
         "STG_W": max(2 * fd.COL_BLOCK, fd.PAYLOAD),
-        "XCHUNK": 2 * fd.COL_BLOCK,
-        "XCHUNK_MUL": 2,
+        "XCHUNK": (1 if b == 16 else 2) * fd.COL_BLOCK,
+        "XCHUNK_MUL": 1 if b == 16 else 2,
         "VOCAB_DEST": fd.GLU_DEST,
         "VOC_SLICE_RNDS": fd.GLU_SLICE // fd.PAYLOAD,
         "VOC_ROTATIONS": fd.VOCAB_RNDS // (2 * (fd.GLU_SLICE // fd.PAYLOAD)),
         "_ATTN_COLS": {col for col, _, _ in fd.ATTN_CU_LOC},
-        "_XFEED_BD": ([fd.COL_BLOCK // 8, b, 8], [8, 2 * fd.COL_BLOCK, 1]),
+        "_XFEED_BD": (
+            [fd.COL_BLOCK // 8, b, 8],
+            [8, (1 if b == 16 else 2) * fd.COL_BLOCK, 1],
+        ),
         "outy_tokmajor": outy_tokmajor,
         "contextlib": __import__("contextlib"),
     }
-    from fused_attention_graph import ParallelAttentionGraph
+    from common.fused_attention_graph import ParallelAttentionGraph
 
     ns = vars(fd).copy()
     ns.update(extra)

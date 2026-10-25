@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Pinned official DFlash weights and an explicit adapter for the NPU decoder."""
+"""Pinned DFlash drafter weights and their adapter for the NPU decoder."""
 
 from pathlib import Path
 import json
@@ -70,8 +70,8 @@ class DraftWeights:
 
     def embed_norm_lmhead(self):
         if self.shared_embedding is not None:
-            # Qwen3-4B ties its head to this same embedding. Reuse the already
-            # loaded target array; re-reading the bundle duplicates ~742 MiB.
+            # Qwen3-4B ties its head to this same embedding. Reuse the loaded
+            # target array; re-reading the bundle would hold a second copy.
             return (
                 self.shared_embedding,
                 self.tensor("norm.weight"),

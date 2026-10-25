@@ -37,6 +37,12 @@ A_BFP, B_BFP = TM * TK * 9 // 8, TN * TK * 9 // 8
 MAX_N = 32 * NR  # widest GEMM op: more rounds no longer fit one shim BD
 
 
+def k_pad(k):
+    """A GEMM's depth on the device: whole groups of 4 K steps, which the
+    cores take per loop trip (_gemm)."""
+    return -(-k // (4 * TK)) * 4 * TK
+
+
 def n_split(n):
     """[n0, n1) column ranges of a GEMM n wide, each at most MAX_N."""
     return [(n0, min(n, n0 + MAX_N)) for n0 in range(0, n, MAX_N)]
@@ -66,6 +72,10 @@ class Attn(NamedTuple):
     # "bfp16": attn_bfp16.cc, the host packing q, K and V as bfp16 and one
     # call per K block (dh <= 128, dvt == dh); "npu2": attn_npu2.cc
     kern: str = "npu2"
+    # attn_bfp16 only: take the running max off the scores before they are
+    # rounded to bf16, for models whose q/k biases put scores far above the
+    # differences between them (attn_bfp16.cc, ATTN_SPLIT_SCORES)
+    split_scores: bool = False
 
 
 # a window no prompt reaches, which makes the window mask causal
@@ -107,8 +117,9 @@ def q_tile(g):
     return g.lkp * g.dh * 9 // 16
 
 
-def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts, rtps):
+def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps):
     ksteps = k // TK
+    P = 1 + pair
     zero, mmul, mmul_pkt, cast, cast_act, dq = kern
     npk = 1 if wq else 2  # B packets per K step: int4, or bfp16 in K halves
     a_in = air.channel("gAIn", size=[HR])
@@ -122,29 +133,39 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts, rtps):
         L = ksteps * QB * npk
         for ty in range(HR):
             a_in.put(
-                A[ty : ty + 1, 0:ksteps, 0:A_BFP]
-                .reshape(ksteps * A_BFP)
-                .broadcast_to(rounds, ksteps * A_BFP),
+                A[ty : ty + 1, 0:ksteps, 0:P, 0:A_BFP]
+                .reshape(ksteps * P * A_BFP)
+                .broadcast_to(rounds, ksteps * P * A_BFP),
                 indices=[ty],
             )
-        for tx in range(GNC):
-            b_in.put(B.reshape(rounds, GNC, L)[0:rounds, tx, 0:L], indices=[tx])
+        # One put per round and column, so a packet's start goes in the
+        # buffer offset: as a BD stride, GNC packets of a long K overflow
+        # the shim BD's stride field.
+        Bp = B.reshape(rounds * GNC, L)
+        for r in range(rounds):
+            for tx in range(GNC):
+                i = r * GNC + tx
+                b_in.put(Bp[i : i + 1, 0:L], indices=[tx])
         for tx in range(GNC):
             c_out.get(
-                C.reshape(M, rounds, GNC, TN)[0:M, 0:rounds, tx, 0:TN].transpose(
-                    1, 0, 2, 3
-                ),
+                C.reshape(P, M, rounds, GNC, TN)[
+                    0:P, 0:M, 0:rounds, tx, 0:TN
+                ].transpose(2, 0, 1, 3, 4),
                 indices=[tx],
             )
 
     puts.append(shim)
     # computed in the launch, so the segment body does not depend on the shape
-    kq = air.rtp(wave * 0 + (ksteps // 2) * wq)
-    kb = air.rtp(wave * 0 + (ksteps // 2) * (1 - wq))
+    kq = air.rtp(wave * 0 + (ksteps // 4) * wq * (1 - pair))
+    kp = air.rtp(wave * 0 + (ksteps // 2) * wq * pair)
+    kb = air.rtp(wave * 0 + (ksteps // 4) * (1 - wq) * (1 - pair))
+    kbp = air.rtp(wave * 0 + (ksteps // 2) * (1 - wq) * pair)
     nr = air.rtp(wave * 0 + rounds)
     actp = air.rtp(wave * 0 + act)
     plain = air.rtp(wave * 0 + (1 - act))
-    rtps += [kq, kb, nr, actp, plain]
+    actp2 = air.rtp(wave * 0 + act * pair)
+    plain2 = air.rtp(wave * 0 + (1 - act) * pair)
+    rtps += [kq, kp, kb, kbp, nr, actp, plain, actp2, plain2]
 
     def body(seg):
         a_l2 = [
@@ -184,41 +205,66 @@ def _gemm(wave, A, B, C, k, act, wq, rounds, kern, puts, rtps):
             shape=(GNC, HR),
             link_with=MM_OBJ,
             at=(GCOL0, 2),
-            params=[kq, kb, nr, actp, plain],
+            params=[kq, kp, kb, kbp, nr, actp, plain, actp2, plain2],
         ) as hd:
 
             @hd.body
             def _(tx, ty):
-                a_l1 = [air.alloc([A_BFP], i8, scope=hd.private()) for _ in range(2)]
+                a_l1 = [air.alloc([A_BFP], i8, scope=hd.private()) for _ in range(4)]
                 b_l1 = [air.alloc([QB], i8, scope=hd.private()) for _ in range(2)]
                 bdq = air.alloc([B_BFP], i8, scope=hd.private())
                 acc = air.alloc([TN // MM, TM // MM, MM, MM], f32, scope=hd.private())
+                acc2 = air.alloc([TN // MM, TM // MM, MM, MM], f32, scope=hd.private())
                 out = air.alloc([TN // MM, TM // MM, MM, MM], bf16, scope=hd.private())
                 for _r in air.sequential(nr):
                     zero(acc)
+                    zero(acc2)
                     # int4 packets are dequantized; bf16 weights come as bfp16
-                    # in two packets per K step. Two loops, one of them
-                    # zero-trip, so the gets alternate the two buffers in
-                    # program order, which is the BD chain air-to-aie builds
-                    # (#2040).
+                    # in two packets per K step. With pair, each K step takes
+                    # two chunks' A tiles against one B. Of the four loops all
+                    # but one are zero-trip, and each trip gets the four A
+                    # buffers in the same order, which is the BD chain
+                    # air-to-aie builds (#2040).
                     for _k in air.sequential(kq):
+                        for i in range(4):
+                            a2l1.get(a_l1[i], indices=[tx, ty])
+                            b2l1.get(b_l1[i % 2], indices=[tx, ty])
+                            dq(b_l1[i % 2], bdq)
+                            mmul(a_l1[i], bdq, acc)
+                    for _k in air.sequential(kp):
                         for pp in range(2):
-                            a2l1.get(a_l1[pp], indices=[tx, ty])
                             b2l1.get(b_l1[pp], indices=[tx, ty])
                             dq(b_l1[pp], bdq)
-                            mmul(a_l1[pp], bdq, acc)
+                            a2l1.get(a_l1[2 * pp], indices=[tx, ty])
+                            mmul(a_l1[2 * pp], bdq, acc)
+                            a2l1.get(a_l1[2 * pp + 1], indices=[tx, ty])
+                            mmul(a_l1[2 * pp + 1], bdq, acc2)
                     for _k in air.sequential(kb):
-                        for pp in range(2):
-                            a2l1.get(a_l1[pp], indices=[tx, ty])
+                        for i in range(4):
+                            a2l1.get(a_l1[i], indices=[tx, ty])
                             for h in range(2):
                                 b2l1.get(b_l1[h], indices=[tx, ty])
-                                mmul_pkt(a_l1[pp], b_l1[h], acc, h)
+                                mmul_pkt(a_l1[i], b_l1[h], acc, h)
+                    for _k in air.sequential(kbp):
+                        for pp in range(2):
+                            a2l1.get(a_l1[2 * pp], indices=[tx, ty])
+                            a2l1.get(a_l1[2 * pp + 1], indices=[tx, ty])
+                            for h in range(2):
+                                b2l1.get(b_l1[h], indices=[tx, ty])
+                                mmul_pkt(a_l1[2 * pp], b_l1[h], acc, h)
+                                mmul_pkt(a_l1[2 * pp + 1], b_l1[h], acc2, h)
                     # the activation in the drain when act is set
                     for _a in air.sequential(actp):
                         cast_act(acc, out)
                     for _p in air.sequential(plain):
                         cast(acc, out)
                     c2l2.put(out.transpose(1, 2, 0, 3), indices=[tx, ty])
+                    for _a in air.sequential(actp2):
+                        cast_act(acc2, out)
+                        c2l2.put(out.transpose(1, 2, 0, 3), indices=[tx, ty])
+                    for _p in air.sequential(plain2):
+                        cast(acc2, out)
+                        c2l2.put(out.transpose(1, 2, 0, 3), indices=[tx, ty])
 
         for tx in range(GNC):
             for ty in range(HR):
@@ -535,8 +581,9 @@ def _kv_tensor(g, nkv):
 def build(cfg, op, *shape, name="fused_prefill", own=False):
     """The module for one op; the other groups get minimal shapes.
 
-    op 'g': (k, n, act, wq), C[128, n] = A[128, k] @ W, with the activation
-            drain if act and int4 weight packets if wq (bf16 otherwise)
+    op 'g': (k, n, act, wq, pair), C[128 p, n] = A[128 p, k] @ W for p chunks
+            (2 with pair, else 1), with the activation drain if act and int4
+            weight packets if wq (bf16 otherwise)
     op <attention op>: (heads, nkv, q0, k0), attention for one chunk
 
     With own, the segment holds only the op's own groups: the device is then
@@ -546,7 +593,7 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
     drive = ({"g"} if op == "g" else set(attn_ops(cfg)[op])) if own else None
     # with own, an attention op takes (nkv, q0, k0) at run time
     runtime = own and op != "g"
-    g = dict(k=2 * TK, n=NR, act=0, wq=1, rounds=1)
+    g = dict(k=4 * TK, n=NR, act=0, wq=1, pair=0, rounds=1)
     at = {
         a: dict(
             nkv=2 if ga.kern == "bfp16" else 1,
@@ -558,9 +605,9 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
         for a, ga in cfg.attn.items()
     }
     if op == "g":
-        k, n, act, wq = shape
-        assert k % (2 * TK) == 0 and n % NR == 0, (k, n)
-        g.update(k=k, n=n, act=act, wq=wq, rounds=n // NR)
+        k, n, act, wq, pair = shape
+        assert n % NR == 0, n
+        g.update(k=k_pad(k), n=n, act=act, wq=wq, pair=pair, rounds=n // NR)
     else:
         heads, nkv, q0, k0 = shape
         groups = attn_ops(cfg)[op]
@@ -584,9 +631,9 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
         air.extern("dq4_bfp16", link_with=GEMM_OBJ),
     )
     gt = (
-        air.tensor([HR, g["k"] // TK, A_BFP], i8),
+        air.tensor([HR, g["k"] // TK, 1 + g["pair"], A_BFP], i8),
         air.tensor([g["n"] // TN, g["k"] // TK * (1 if g["wq"] else 2), QB], i8),
-        air.tensor([M, g["n"]], bf16),
+        air.tensor([(1 + g["pair"]) * M, g["n"]], bf16),
     )
     att = {
         a: (
@@ -619,6 +666,7 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
                         g["k"],
                         g["act"],
                         g["wq"],
+                        g["pair"],
                         g["rounds"],
                         kern,
                         puts,

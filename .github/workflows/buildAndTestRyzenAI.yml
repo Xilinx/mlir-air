@@ -88,7 +88,7 @@ jobs:
           # upstream. The earlier 21.x pin worked around what turned out to be
           # AIR's own core stack size, not a compiler bug -- see
           # AIRToAIEPass.cpp's stack_size default.
-          python3 -m pip install --upgrade --force-reinstall "llvm-aie==22.0.0.2026101201+83ba9ea9" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          python3 -m pip install --upgrade --force-reinstall "llvm-aie==22.0.0.2026101901+4f5df13d" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
       - name: Build and test mlir-air
         run: |
@@ -170,6 +170,8 @@ jobs:
           # Leaving it to the nightly cost two consecutive red runs over a
           # constant one PR had deleted and another file still read.
           ninja check-programming-examples-llms-geometry
+          # Same reasoning: host-side LLM unit tests, pure Python, seconds.
+          ninja check-programming-examples-llms-host
 
           # Chess tests disabled to reduce CI time. Uncomment to re-enable:
           # ninja check-programming-examples-chess

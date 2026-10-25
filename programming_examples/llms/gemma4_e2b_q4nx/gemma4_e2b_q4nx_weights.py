@@ -575,16 +575,18 @@ def forward_prompt(model, ids, want_logits=True, lm_chunk=16384):
             kv[L] = (ke, v)
         ke, v = kv[src]
 
-        # GQA: kv head g serves q heads [g*grp, (g+1)*grp).
+        # GQA: kv head g serves q heads [g*grp, (g+1)*grp). One head at a
+        # time, as matrix products: the scores of every head at once are
+        # heads x T x T, and einsum does not hand these to BLAS.
         grp = N_Q_HEADS // N_KV_HEADS
-        kh = np.repeat(ke, grp, axis=1)  # (S, N_Q_HEADS, dh)
-        vh = np.repeat(v, grp, axis=1)
-        mask = _sliding_mask(T, kh.shape[0], SLIDING_WINDOW if sliding else 0)
-        s = np.einsum("thd,shd->hts", qe, kh) * ATTN_SCALE
-        s = s + mask[None]
-        s = np.exp(s - s.max(-1, keepdims=True))
-        s = s / s.sum(-1, keepdims=True)
-        o = np.einsum("hts,shd->thd", s, vh).reshape(T, N_Q_HEADS * dh)
+        mask = _sliding_mask(T, ke.shape[0], SLIDING_WINDOW if sliding else 0)
+        o = np.empty((T, N_Q_HEADS, dh), dtype=qe.dtype)
+        for hd in range(N_Q_HEADS):
+            s = qe[:, hd] @ ke[:, hd // grp].T * ATTN_SCALE + mask
+            s = np.exp(s - s.max(-1, keepdims=True))
+            s /= s.sum(-1, keepdims=True)
+            o[:, hd] = s @ v[:, hd // grp]
+        o = o.reshape(T, N_Q_HEADS * dh)
         o1 = r + _rmsnorm(o @ w["o"].T, nm["post_attn"])
 
         # ---- FFN (GELU-tanh gated) ----

@@ -265,7 +265,7 @@ def run_prefill(prompt, seq_len, kv_path, warm_ttft=False, fused=None):
 def _compile_only(seq_len=2048):
     """Build/cache the prefill ELFs and exit (no weights, no NPU dispatch).
 
-    This is the weight-free CI smoke signal (`make compile`). Constructing
+    This is the weight-free CI smoke signal (`make compile-prefill`). Constructing
     Lfm2Q4nxPrefill compiles the prefill engines; the fused decode templates
     are a separate ~15 min build (`make compile-decode`)."""
     sys.path.insert(0, str(_HERE))
@@ -453,6 +453,8 @@ class FusedDecoder:
         self._rope_base = int(self.rms_slabs.size)
 
         # ONE xclbin + ONE self-contained BO set (weight BO uploaded once)
+        from kv_bos import KVBuffers
+
         self.dev = xrt.device(0)
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.cur_maxl = self.ATTN_MAXL
@@ -465,8 +467,13 @@ class FusedDecoder:
             self.w_bo = xrt.ext.bo(self.dev, W.size * 2)
             self.r_bo = xrt.ext.bo(self.dev, self._RMS_SIZE * 2)
             self.y_bo = xrt.ext.bo(self.dev, self.ny * 2)
-            self.kvc = xrt.ext.bo(self.dev, self.NKV_TOTAL * 2)
-            self._elfdec.bind((self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc))
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.ext.bo(self.dev, n)
+            )
+            self.kvc = self.kvb.kvc
+            self._elfdec.bind(
+                (self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc) + self.kvb.extra
+            )
             self._geom = _stair.KVGeometry(
                 16, self.KVSZ_TOK, self.REGION_W, self.NGRP, self.LREG
             )
@@ -499,7 +506,10 @@ class FusedDecoder:
             self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
             self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
             self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
-            self.kvc = xrt.bo(self.dev, self.NKV_TOTAL * 2, HO, g(7))
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.bo(self.dev, n, HO, g(3 + a))
+            )
+            self.kvc = self.kvb.kvc
             self._ist = _stair.make_insts_states(
                 self.gen, xrt, self.dev, g(1), self.windows
             )
@@ -543,6 +553,14 @@ class FusedDecoder:
         self.kern = self._kern[m][1]
         self.ib = self._st["ib"]
 
+    def _upload_state(self, to_dev):
+        """Upload the host mirror (KV slabs, then ShortConv state). On the
+        device the state follows group 0's KV slabs."""
+        np = self.np
+        self.kvb.write_layers(
+            self.KV.view(np.int16), to_dev, conv=self.CST.view(np.int16)
+        )
+
     def seed_state(self, fk, fv, fs, P):
         """Seed BOTH prefill-fed regions of arg4 and prefetch them.
 
@@ -583,8 +601,7 @@ class FusedDecoder:
         # the four KV regions and then the state region, so a per-region sync
         # would be many small transfers for the same bytes.
         TO = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
-        self.kvc.write(np.ascontiguousarray(self.KVC).view(np.int16), 0)
-        self.kvc.sync(TO)
+        self._upload_state(TO)
         self._kv_dirty = False  # already uploaded; dispatch skips it
 
     # Kept under the pure-transformer name the shared driver contract uses, so
@@ -624,9 +641,7 @@ class FusedDecoder:
         # host copy dominated the per-token time, capping the chatbot at ~24 tok/s vs the
         # ~43 tok/s device rate). the reference likewise appends incrementally.
         if getattr(self, "_kv_dirty", True):
-            packed = np.ascontiguousarray(self.KVC).reshape(-1)
-            self.kvc.write(packed.view(np.int16), 0)
-            self.kvc.sync(TO)
+            self._upload_state(TO)
             self._kv_dirty = False
         _t_kv = _tk() - _a
         _a = _tk()
@@ -674,6 +689,7 @@ class FusedDecoder:
                 self.r_bo,
                 self.y_bo,
                 self.kvc,
+                *self.kvb.extra,
             ).wait(60000)
         _t_dev = _tk() - _a
         _a = _tk()
@@ -705,6 +721,7 @@ class FusedDecoder:
         "_st",
         "_ist",
         "_elfdec",
+        "kvb",
         "kvc",
         "y_bo",
         "r_bo",

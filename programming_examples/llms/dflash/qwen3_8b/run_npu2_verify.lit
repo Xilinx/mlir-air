@@ -1,0 +1,8 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+// PERF_MODEL: qwen3_8b_dflash_b8
+// NPU prefill/prepass/draft/verify, fixed-length state oracle and the
+// shared AIR two-prompt x 32-token mutual top-5 model check.
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hfweights_fastflowlm_qwen3_8b_npu2, hfweights_qwen_qwen3_8b, hfweights_z_lab_qwen3_8b_dflash_b16
+// RUN: make -f %S/Makefile weights compile BUILD_DIR=dflash-build OFFLINE=1
+// RUN: make -f %S/Makefile verify BUILD_DIR=dflash-build OFFLINE=1

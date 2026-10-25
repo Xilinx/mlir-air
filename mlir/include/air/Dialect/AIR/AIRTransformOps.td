@@ -441,6 +441,12 @@ def FoldExtractSliceOfInsertSliceOp : Op<Transform_Dialect, "air.fold_extract_sl
       disjoint becomes `insert(y at T, insert(x at S, z))`.
     - A slice of a `tensor.expand_shape` that only adds unit dims reads the
       expand's source.
+    - In an `scf.forall`, a slice of a shared output's init that is the tile
+      the iteration writes to that output (the same offsets, sizes and
+      strides as the output's only `tensor.parallel_insert_slice`) reads the
+      shared output's block argument. No other iteration writes that tile,
+      so the value is the same, and bufferization need not keep a copy of
+      the whole init for the read.
 
     The same box read back with the inserted value's type is left to the
     `tensor.extract_slice` folder. A value assembled from parts then reads
@@ -484,10 +490,17 @@ def BubbleSliceThroughCollapseOp : Op<Transform_Dialect, "air.bubble_slice_throu
     one for a `tensor.extract_slice` of a `tensor.collapse_shape` whose
     offsets are not all constants. The upstream patterns handle constant
     offsets only. The added pattern moves the slice above the collapse when,
-    in each collapsed dim, the slice takes whole rows of the group's inner
-    dims: its size is a multiple of their product and its offset provably is
-    one (a constant, an `scf.for` induction variable whose lower bound and
-    step are, or sums and products of such).
+    in each collapsed dim, there is a dim `at` of the group such that the
+    slice covers whole rows of the group's dims after `at`. If `at` is the
+    group's first dim, the offset must provably be a multiple of the row
+    size. Otherwise the number of indices the slice takes in dim `at` (its
+    size divided by the row size) must divide the extent of dim `at`, and
+    the offset must provably be a multiple of the slice size, so the slice
+    never crosses into the next index of the dims before `at`. An offset is
+    provably a multiple if it is a constant, an `scf.for` induction variable
+    whose lower bound and step are, or sums and products of such. The new
+    slice takes one index of each dim before `at`, a range of `at`, and all
+    of each dim after it.
 
     A loop over the packets of a collapsed dim then slices the tensor before
     the collapse, so the slice can be fused into the loop with its producer.
@@ -760,6 +773,64 @@ def FuseTruncfLinalgOp : Op<Transform_Dialect, "air.fuse_truncf_linalg",
   let assemblyFormat = "$truncf_op `,` $producer_op attr-dict `:` functional-type(operands, results)";
 }
 
+def ReuseInputAsInitOp
+    : Op<Transform_Dialect, "air.reuse_input_as_init",
+         [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+          TransformOpInterface, TransformEachOpTrait]> {
+  let summary =
+      "Make an elementwise linalg op write its result over one of its inputs";
+  let description = [{
+    Sets the init of the target's output to one of its inputs, so that
+    bufferization writes the result into that input's buffer, and makes the
+    body read that value through the output block argument instead of the
+    input's, so that after tiling the read and the write are the same slice.
+    The input is left in place, unused; the patterns of
+    `transform.apply_patterns.linalg.erase_unnecessary_inputs` drop it. The
+    target must have one output, which its body does not read, and only
+    parallel iterators. The input is operand `input` of the op's inputs if
+    given, otherwise the first input with the output's type and indexing
+    map; either way it must have both.
+
+    A value updated in a loop, such as a running maximum, is computed from its
+    previous value into a new tensor:
+
+    ```mlir
+    %m_new = linalg.generic {...}
+        ins(%m_old, %rowmax : tensor<64x1xbf16>, tensor<64x1xbf16>)
+        outs(%empty : tensor<64x1xbf16>)
+    ```
+
+    and bufferizes to a buffer of its own in every iteration. With the
+    previous value as the init, read through the output, it is updated in
+    place:
+
+    ```mlir
+    %m_new = linalg.generic {...}
+        ins(%m_old, %rowmax : tensor<64x1xbf16>, tensor<64x1xbf16>)
+        outs(%m_old : tensor<64x1xbf16>) {
+    ^bb0(%unused: bf16, %r: bf16, %m: bf16):
+      ...
+    }
+    ```
+
+    Returns a handle to the updated op. Fails silenceably if the target does
+    not qualify.
+  }];
+  let arguments = (ins TransformHandleTypeInterface:$target,
+      OptionalAttr<I64Attr>:$input);
+  let results = (outs TransformHandleTypeInterface:$transformed);
+  let assemblyFormat = "$target (`input` `=` $input^)? attr-dict `:` "
+                       "functional-type(operands, results)";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::linalg::LinalgOp target,
+        ::mlir::transform::ApplyToEachResultList &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
 def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
@@ -907,8 +978,12 @@ def FuseElementwiseLinalgOp : Op<Transform_Dialect, "air.fuse_elementwise_linalg
     - RemoveOutsDependency: Removes unnecessary output dependencies
     - EraseUnusedOperandsAndResults: Cleans up dead operands and results
     
-    This is the transform dialect equivalent of running the `-linalg-fuse-elementwise-ops`
-    pass on the target function.
+    These are the fusion patterns of the `-linalg-fuse-elementwise-ops` pass,
+    but the op is not that pass: by default it fuses a producer into every
+    consumer, where the pass fuses only a producer with one use; it folds
+    reshapes only with `fold_reshapes`, and then only between elementwise
+    generics; and it adds none of the pass's canonicalization or constant
+    folding patterns.
     
     Example:
     ```mlir
@@ -950,13 +1025,21 @@ def FuseElementwiseLinalgOp : Op<Transform_Dialect, "air.fuse_elementwise_linalg
     fuse too. Reshapes next to any other op, a contraction included, are
     left alone.
 
+    With `no_recompute`, a producer is fused only where each of its elements
+    is still computed once: into its only user, which reads it through a
+    permutation map. Like the pass, it leaves a producer with other users
+    alone; it also does not fuse through a broadcast, which would compute a
+    producer's element again for every element it is broadcast to.
+
     Returns a handle to the modified function.
   }];
-  
+
   let arguments = (ins TransformHandleTypeInterface:$target,
-                   UnitAttr:$fold_reshapes);
+      UnitAttr:$fold_reshapes, UnitAttr:$no_recompute);
   let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target (`fold_reshapes` $fold_reshapes^)? attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target (`fold_reshapes` $fold_reshapes^)? (`no_recompute` "
+      "$no_recompute^)? attr-dict `:` functional-type(operands, results)";
 }
 
 def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
@@ -1614,11 +1697,12 @@ def HoistLoopCarriedPackOp : Op<Transform_Dialect, "air.hoist_loop_carried_pack"
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
   let summary = "Carry a packed value through an scf.for instead of packing it every iteration";
   let description = [{
-    Each target is an `scf.for`. An iteration argument qualifies when its only
-    uses in the body are as the source of one `linalg.pack` and as the
-    destination of one `linalg.unpack` whose result is yielded back to it,
-    and the two use the same layout and the pack has no padding. That is the
-    shape packing a loop-carried accumulator leaves:
+    Each target is an `scf.for`. An iteration argument qualifies when it is
+    read in the body by one `linalg.pack` and the value yielded back to it is
+    a `linalg.unpack` with the same layout, used only by the yield; the pack
+    has no padding. A `tensor.expand_shape` and a `tensor.collapse_shape`
+    with the same reassociation qualify the same way. That is the shape
+    packing a loop-carried accumulator leaves:
 
     ```mlir
     %r = scf.for ... iter_args(%acc = %init) {
@@ -1641,9 +1725,12 @@ def HoistLoopCarriedPackOp : Op<Transform_Dialect, "air.hoist_loop_carried_pack"
     %u = linalg.unpack %r#1 ... into %r#0
     ```
 
-    The pack's destination must be a `tensor.empty` or defined outside the
-    loop. Iteration arguments that do not qualify are left alone; a target
-    with none is a silenceable failure.
+    The pack's destination, and the unpack's unless it is the iteration
+    argument itself, must be defined outside the loop, or be a
+    `tensor.empty` or `bufferization.alloc_tensor` (without a copy) of
+    sizes defined there, which is built again outside the loop. Iteration
+    arguments that do not qualify are left alone; a target with none is a
+    silenceable failure.
 
     Returns the new loops and the hoisted packs.
   }];

@@ -92,7 +92,6 @@ air_runtime_lib = os.path.join(
 
 config.substitutions.append(("%PYTHON", config.python_executable))
 config.substitutions.append(("%CLANG", "clang++ -fuse-ld=lld -DLIBXAIENGINEV2"))
-config.substitutions.append(("%LIBXAIE_DIR%", config.libxaie_dir))
 config.substitutions.append(
     (
         "%AIE_RUNTIME_DIR%",
@@ -187,6 +186,10 @@ config.substitutions.append(("%run_on_npu1%", run_on_npu1))
 config.substitutions.append(("%run_on_npu2%", run_on_npu2))
 config.substitutions.append(("%xrt_flags", xrt_flags))
 config.substitutions.append(("%XRT_DIR", config.xrt_dir))
+
+# Pass the compile cache through so builds and kernel compiles can reuse it.
+if os.environ.get("AIR_COMPILE_CACHE"):
+    llvm_config.with_environment("AIR_COMPILE_CACHE", os.environ["AIR_COMPILE_CACHE"])
 
 # Tests that download Hugging Face Hub gated models (e.g. meta-llama/*) need
 # HF_TOKEN to be set. Mark `hf_token` as available only when the env var is

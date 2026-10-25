@@ -5,15 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Test that multiple air.launch ops are NOT merged by serializeAsyncControlFlows
-// for NPU targets. The function is a VCK190-only workaround and should be skipped
-// for NPU devices which use XRT.
+// Test that multiple air.launch ops on an NPU device lower to separate control
+// programs (they are not merged).
 
 // RUN: air-opt %s -air-to-std -canonicalize -cse --split-input-file | FileCheck %s
 
 // CHECK-LABEL: func.func @multi_launch_npu
 // Both launches should generate their own airrt.dma_memcpy_nd operations
-// with separate segment_load calls - verifying serializeAsyncControlFlows is skipped for NPU.
+// with separate segment_load calls.
 // Each launch's device->host drain (S2MM: Id2 / Id4) is hoisted ahead of its
 // own input DMA (MM2S: Id1 / Id3) -- arm the drain S2MM early (issue-early /
 // wait-late) -- and the hoist is scoped per-launch (the second launch's drain
@@ -27,7 +26,7 @@
 // CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @airMemcpyId3
 
 module {
-  // NPU2 device - should skip serializeAsyncControlFlows
+  // NPU2 device
   aie.device(npu2) @segment_a {
     %shim_noc_tile_0_0 = aie.tile(0, 0)
     aie.shim_dma_allocation @airMemcpyId1(%shim_noc_tile_0_0, MM2S, 0)

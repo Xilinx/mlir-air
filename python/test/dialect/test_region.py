@@ -82,3 +82,49 @@ def test_attributes_kwarg():
             )
             def herd_body(x, y, sx, sy):
                 AddIOp(x, y)
+
+
+# A body may leave out the ids and sizes. Taking one parameter per operand, it is
+# passed only the operands; the explicit form above is unchanged.
+# CHECK-LABEL: TEST: test_body_without_ids
+# CHECK: air.launch (%{{.*}}) in (%{{.*}}=%{{.*}}) args(%[[LA:.*]]=%{{.*}}) : i32
+# CHECK: air.segment @seg  unroll(%{{.*}}) in (%{{.*}}=%{{.*}}) args(%[[SA:.*]]=%[[LA]]) : i32
+# CHECK: arith.addi %[[SA]], %[[SA]] : i32
+# CHECK: air.herd @hrd  tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%{{.*}}, %{{.*}}=%{{.*}}) args(%[[A:.*]]=%[[SA]], %[[B:.*]]=%[[SA]]) : i32, i32
+# CHECK: arith.addi %[[A]], %[[B]] : i32
+# CHECK: air.herd @one  tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%c1{{.*}}, %{{.*}}=%c1{{.*}})
+@constructAndPrintInFunc
+@module_builder
+def test_body_without_ids():
+    i32 = IntegerType.get_signless(32)
+    c = arith.ConstantOp(i32, IntegerAttr.get(i32, 7))
+
+    @launch(sizes=[2], operands=[c])
+    def launch_body(a):
+        @segment(name="seg", sizes=[2], operands=[a])
+        def segment_body(a):
+            AddIOp(a, a)
+
+            @herd(name="hrd", sizes=[2, 2], operands=[a, a])
+            def herd_body(x, y):
+                AddIOp(x, y)
+
+            @herd(name="one")
+            def one_body():
+                pass
+
+
+# A body taking *args still gets every block argument.
+# CHECK-LABEL: TEST: test_body_varargs
+# CHECK: air.herd @hrd  tile (%[[X:.*]], %[[Y:.*]]) in
+# CHECK: arith.addi %[[X]], %[[Y]] : index
+@constructAndPrintInFunc
+@module_builder
+def test_body_varargs():
+    @launch
+    def launch_body():
+        @segment(name="seg")
+        def segment_body():
+            @herd(name="hrd", sizes=[2, 2])
+            def herd_body(*args):
+                AddIOp(args[0], args[1])

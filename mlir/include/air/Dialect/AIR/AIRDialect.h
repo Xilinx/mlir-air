@@ -38,7 +38,6 @@ namespace air {
 // Centralized so producers and consumers agree (a mistyped literal silently
 // no-ops). See the AIRRtToNpu / AIRToAIE passes for their semantics.
 namespace attrs {
-constexpr StringLiteral RuntimeHoist = "air.runtime_hoist";
 constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 // Marker on a shim MM2S configure task produced by the coalesce-shim-dma merge:
 // its BD covers a whole contiguous run merged from several smaller feeds, so
@@ -121,6 +120,16 @@ constexpr StringLiteral NoSplit = "air.no_split";
 // pin this buffer to that memtile column. Read by AIRToAIE's memtile bucketing,
 // and by air-split-l2-memref, which leaves an explicitly-placed buffer intact.
 constexpr StringLiteral MemtileCol = "air.memtile_col";
+// Memory spaces (array of "L1", "L2", "L3") on a func.func: air-fuse-channels
+// time-multiplexes the channels of that function in these spaces too, besides
+// those its aggressive-mode option names for every function.
+constexpr StringLiteral ChannelMultiplexing = "air.channel_multiplexing";
+// Opt-out (unit attr) on a memref.alloc (or one inside its enclosing
+// air.execute): air-fuse-alloc-dealloc leaves the alloc/dealloc pair where it
+// is instead of sinking it into the scf.for/scf.parallel that uses it. Keeps
+// a buffer allocated across the loop, e.g. a kernel's scratch, whose sunk
+// alloc would otherwise stop air-ping-pong-transform from rewriting the loop.
+constexpr StringLiteral DisableAllocSink = "air.disable_alloc_sink";
 } // namespace attrs
 
 // Largest routing id a packet header can carry. Mirrors the AIE target hook
@@ -130,7 +139,7 @@ constexpr StringLiteral MemtileCol = "air.memtile_col";
 constexpr int kMaxPacketID = 31;
 
 // Copy the DMA-steering / runtime-ordering markers
-// (attrs::RuntimeHoist, RefeedCount, PacketIDs, KeepPktHeader) that must
+// (RefeedCount, PacketIDs, KeepPktHeader) that must
 // survive channel-op re-instantiation from src to dst. Single source of truth
 // for the marker set, so copy sites (Util::copyPaddingAttributes,
 // ComposeMemrefOpOnChannelOp, SpecializeChannelBundlePattern) cannot diverge.

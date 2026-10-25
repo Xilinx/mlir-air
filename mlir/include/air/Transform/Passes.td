@@ -1034,6 +1034,12 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
     'aggressive-mode' option, when enabled, will attempt to use as few air.channels as 
     possible by time-multiplexing air.channel.puts and air.channel.gets to share the same
     air.channel symbol.
+
+    A func.func may name memory spaces of its own in an `air.channel_multiplexing`
+    array attribute (e.g. `["L2"]`): its channels are multiplexed in those spaces
+    too, on top of the ones 'aggressive-mode' names for every function. This lets
+    one module hold a function that needs its channels multiplexed in L2 and
+    others whose channels must not be.
   }];
   let options = [
     ListOption<"clAggressiveMode", "aggressive-mode", "std::string",
@@ -1331,6 +1337,20 @@ def AIROptimizeMemtileDMABDs: Pass<"air-opt-memtile-dma-bds", "func::FuncOp"> {
   let constructor = "xilinx::air::createAIROptimizeMemtileDMABDs()";
   let description = [{
     Optimize the logical data movement by transforming them, represented as air.channel.put/get operations, into explicit representation of physical data movement block descriptors (BDs), also represented as air.channel.put/get operations.
+
+    Before that, the pass folds chains of puts that read one L2 buffer into
+    single puts. The puts in a chain are consecutive on the same channel and
+    indices, have the same static sizes and strides, and depend on nothing
+    the first put does not. If their start offsets form a 1-D or 2-D lattice
+    with positive steps, the lattice becomes the outer dims of one put, which
+    sends the same data in the same order with one BD. Buffers that are
+    filled slot by slot are not folded, so that each slot can be refilled as
+    soon as it is drained, nor are re-fed buffers and puts
+    (`air.refeed_count`), whose count is tied to their drain ops.
+
+    Example: puts of 5120 elements at offsets 0, 40960, 81920, 20480, 61440
+    and 102400 become one put with sizes [2, 3, 5120] and strides
+    [20480, 40960, 1].
   }];
   let options = [
     Option<"clDevice", "device", "std::string",
@@ -1344,6 +1364,10 @@ def AIRFuseAllocDealloc: Pass<"air-fuse-alloc-dealloc", "func::FuncOp"> {
   let constructor = "xilinx::air::createAIRFuseAllocDealloc()";
   let description = [{
     Fuse pairs of memref.alloc/dealloc into the inner-most region, which contains all uses of the memref.
+
+    An alloc tagged `air.disable_alloc_sink` (on the alloc, or on an alloc
+    inside its enclosing `air.execute`) is not sunk into an `scf.for` or
+    `scf.parallel`; it stays allocated across the loop.
   }];
 }
 

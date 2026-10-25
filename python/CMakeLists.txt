@@ -14,8 +14,6 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
   # The AIR copy of the MLIR bindings is in the `air.` namespace.
   add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=air.")
 
-  add_definitions(-DLIBXAIENGINEV2)
-
   ################################################################################
   # Sources
   ################################################################################
@@ -101,22 +99,6 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
       LLVMSupport
   )
 
-  # Only building this if we are building the hsa runtime, as it requires hsa.h
-  if(hsa-runtime64_FOUND)
-    message(STATUS "Building python bindings because we are building the runtime")
-    declare_mlir_python_extension(AirPythonExtensions.AIRRt
-      MODULE_NAME _airRt
-      ADD_TO_PARENT AirPythonExtensions
-      ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}
-      SOURCES
-        AirHostModule.cpp
-      EMBED_CAPI_LINK_LIBS
-        AIRCAPI
-      PRIVATE_LINK_LIBS
-        LLVMSupport
-    )
-  endif()
-
   add_mlir_python_common_capi_library(AirAggregateCAPI
     INSTALL_COMPONENT AirPythonModules
     INSTALL_DESTINATION python/air/_mlir_libs
@@ -160,18 +142,6 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
     COMMON_CAPI_LINK_LIBS
       AirAggregateCAPI
   )
-
-  include_directories(
-    ${AIE_INCLUDE_DIRS}/../runtime_lib
-    ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include
-  )
-
-  # Only include this if we are building the hsa runtime
-  if(hsa-runtime64_FOUND)
-    include_directories(
-      ${hsa-runtime64_DIR}/../../../include
-    )
-  endif()
 
   # Copy the runtime libs into the _mlir_libs directory for convenience.
   set(_runtime_deps
