@@ -8,8 +8,8 @@
 // RUN: air-opt %s -air-specialize-channel-wrap-and-stride=scope=func -split-input-file | FileCheck %s
 
 // A loop of run-time trip count over a dense run folds into a dim of that
-// size only where the count is known to be positive: a transfer of length
-// zero or less is no transfer of nothing. With no such guard the loop stays.
+// size only where the count is known to be positive, since a descriptor
+// cannot have a length of zero or less. With no such guard the loop stays.
 
 // CHECK-LABEL: func.func @unguarded
 // CHECK: scf.for %{{.*}} = %c0{{.*}} to %arg1 step %c1
