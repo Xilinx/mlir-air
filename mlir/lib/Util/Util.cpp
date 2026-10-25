@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
@@ -34,6 +35,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -3076,6 +3078,35 @@ bool air::isPure(Operation *op) {
       return mlir::isPure(&childOp);
     });
   return result;
+}
+
+void air::getUsedConstsDefinedAbove(MutableArrayRef<Region> region,
+                                    SmallVector<Value, 4> &constants) {
+  llvm::SetVector<Value> region_args;
+  getUsedValuesDefinedAbove(region, region_args);
+  for (Value v : region_args) {
+    if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
+      constants.push_back(v);
+  }
+}
+
+void air::getUsedArgsDefinedAbove(MutableArrayRef<Region> region,
+                                  SmallVector<Value, 4> &args) {
+  llvm::SetVector<Value> region_args;
+  getUsedValuesDefinedAbove(region, region_args);
+  for (Value v : region_args) {
+    if (!isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
+      args.push_back(v);
+  }
+}
+
+void air::replaceAllUsesOfConstsInRegionWithNew(SmallVector<Value, 4> constants,
+                                                OpBuilder builder,
+                                                Region &region) {
+  for (auto c : constants) {
+    replaceAllUsesInRegionWith(
+        c, builder.clone(*c.getDefiningOp())->getResult(0), region);
+  }
 }
 
 // Return if the given block contains N ops which are impure and aren't async

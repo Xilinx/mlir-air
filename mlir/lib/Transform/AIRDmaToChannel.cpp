@@ -97,21 +97,191 @@ generateWaitAllToDanglingTokens(OpBuilder &builder, MLIRContext *ctx,
                                 dep_list.takeVector());
 }
 
+// Yields, for each token the loop carries, a wait on the dangling tokens in
+// the loop body, and `values` in order for the other iter_args. A token that
+// no op in the body waits on is waited on itself, so that the loop passes it
+// on.
 static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder &builder,
                                                       MLIRContext *ctx,
-                                                      scf::ForOp scf_loop) {
+                                                      scf::ForOp scf_loop,
+                                                      ValueRange values = {}) {
   OpBuilder::InsertionGuard guard(builder);
-  SmallVector<Value, 1> yield_token;
   // Collect dangling leaves into yield
   SmallVector<Value> inputTokens;
-  inputTokens.push_back(
-      air::getLoopCarriedTokenFromScfOp(scf_loop, "argument"));
-  auto wa_op = generateWaitAllToDanglingTokens(builder, ctx, inputTokens);
-  yield_token.push_back(wa_op.getAsyncToken());
-  wa_op->setAttr("hoist", StringAttr::get(ctx, "dep"));
-  scf::YieldOp output =
-      scf::YieldOp::create(builder, builder.getUnknownLoc(), yield_token);
-  return output;
+  for (Value arg : scf_loop.getRegionIterArgs())
+    if (isa<air::AsyncTokenType>(arg.getType()))
+      inputTokens.push_back(arg);
+  Value token;
+  if (!inputTokens.empty()) {
+    auto wa_op = generateWaitAllToDanglingTokens(builder, ctx, inputTokens);
+    for (Value t : inputTokens) {
+      SetVector<Value> leaves;
+      getLeavesInDepGraph(t, leaves);
+      if (leaves.empty())
+        wa_op.getAsyncDependenciesMutable().append(t);
+    }
+    wa_op->setAttr("hoist", StringAttr::get(ctx, "dep"));
+    token = wa_op.getAsyncToken();
+  }
+  SmallVector<Value> yielded;
+  auto value = values.begin();
+  for (Value arg : scf_loop.getRegionIterArgs())
+    yielded.push_back(isa<air::AsyncTokenType>(arg.getType()) ? token
+                                                              : *value++);
+  return scf::YieldOp::create(builder, builder.getUnknownLoc(), yielded);
+}
+
+// The scf.for loop that carries `v`, as iter_arg or result `index`, unless
+// `v` is an async token.
+static scf::ForOp getLoopCarryingValue(Value v, unsigned &index) {
+  if (isa<air::AsyncTokenType>(v.getType()))
+    return nullptr;
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    auto loop = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp());
+    if (!loop || arg.getArgNumber() < loop.getNumInductionVars())
+      return nullptr;
+    index = arg.getArgNumber() - loop.getNumInductionVars();
+    return loop;
+  }
+  auto loop = v.getDefiningOp<scf::ForOp>();
+  if (loop)
+    index = cast<OpResult>(v).getResultNumber();
+  return loop;
+}
+
+// The value a flattened scf.if or affine.if gives its non-token result `v`:
+// the one its then branch yields.
+static Value getThenYieldedValue(OpResult v) {
+  Operation *ifOp = v.getOwner();
+  Block *then = nullptr;
+  if (auto scfIf = dyn_cast<scf::IfOp>(ifOp))
+    then = scfIf.thenBlock();
+  else if (auto affineIf = dyn_cast<affine::AffineIfOp>(ifOp))
+    then = affineIf.getThenBlock();
+  if (!then || isa<air::AsyncTokenType>(v.getType()))
+    return nullptr;
+  return then->getTerminator()->getOperand(v.getResultNumber());
+}
+
+// Whether hoisting `loop` carries its iter_arg `index`: an op marked "hoist"
+// reads the iter_arg or the loop's result, or passes it on to such an op as a
+// loop's yielded or initial value, or as a value an if yields. An op in an
+// air.execute counts if the execute is marked and cloned whole, being pure.
+static bool isCarriedForHoistedOps(scf::ForOp loop, unsigned index) {
+  SmallVector<Value> work{loop.getRegionIterArgs()[index],
+                          loop.getResult(index)};
+  DenseSet<Value> seen;
+  while (!work.empty()) {
+    Value v = work.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    for (OpOperand &use : v.getUses()) {
+      Operation *user = use.getOwner();
+      unsigned i = use.getOperandNumber();
+      if (isa<scf::YieldOp, affine::AffineYieldOp>(user)) {
+        Operation *parent = user->getParentOp();
+        if (auto next = dyn_cast<scf::ForOp>(parent)) {
+          work.push_back(next.getRegionIterArgs()[i]);
+          work.push_back(next.getResult(i));
+        } else if (isa<scf::IfOp, affine::AffineIfOp>(parent) &&
+                   user->getBlock() == &parent->getRegion(0).front()) {
+          work.push_back(parent->getResult(i));
+        }
+      } else if (auto next = dyn_cast<scf::ForOp>(user);
+                 next && i >= next.getNumControlOperands()) {
+        i -= next.getNumControlOperands();
+        work.push_back(next.getRegionIterArgs()[i]);
+        work.push_back(next.getResult(i));
+      } else if (auto exec = user->getParentOfType<air::ExecuteOp>()) {
+        if (exec->hasAttr("hoist") && air::isPure(exec))
+          return true;
+      } else if (user->hasAttr("hoist")) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Keeps in `slice` the pure ops whose values the hoisted code uses, and adds
+// what computes the values that scf.for loops carry for it, with the loops and
+// the bodies of the air.execute ops it adds. The other ops in the slice are
+// cloned, or become waits, with their operands, and so is a pure op whose
+// result such an op reads. A loop carries a value one of them reads, as
+// iter_arg or result, so its yielded and initial values are needed too. Pure
+// ops nothing cloned reads are dropped: their clones would be dead, and could
+// read a value no clone defines.
+static void keepUsedOpsAndCarriedValues(SetVector<Operation *> &slice,
+                                        const BackwardSliceOptions &options) {
+  // Ops in an air.execute are cloned with it, keeping their marks.
+  auto droppable = [](Operation *op) {
+    return air::isPure(op) &&
+           (op->getNumRegions() == 0 || isa<air::ExecuteOp>(op)) &&
+           !op->getParentOfType<air::ExecuteOp>();
+  };
+  DenseSet<Operation *> used;
+  DenseSet<Value> carried;
+  SmallVector<Operation *> ops;
+  SmallVector<Value> values;
+  auto useValue = [&](Value v) {
+    unsigned i = 0;
+    if (scf::ForOp loop = getLoopCarryingValue(v, i)) {
+      slice.insert(loop);
+      if (used.insert(loop).second)
+        ops.push_back(loop);
+      if (carried.insert(loop.getRegionIterArgs()[i]).second) {
+        values.push_back(loop.getBody()->getTerminator()->getOperand(i));
+        values.push_back(loop.getInitArgs()[i]);
+      }
+      return;
+    }
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return;
+    if (!slice.contains(def)) {
+      if (options.filter && !options.filter(def))
+        return;
+      (void)getBackwardSlice(def, &slice, options);
+      slice.insert(def);
+    }
+    if (used.insert(def).second)
+      ops.push_back(def);
+    if (Value yielded = getThenYieldedValue(cast<OpResult>(v)))
+      values.push_back(yielded);
+  };
+  auto useOperands = [&](Operation *op) {
+    if (auto exec = dyn_cast<air::ExecuteOp>(op); exec && air::isPure(exec))
+      visitUsedValuesDefinedAbove(exec->getRegions(), [&](OpOperand *use) {
+        values.push_back(use->get());
+      });
+    auto loop = dyn_cast<scf::ForOp>(op);
+    for (OpOperand &use : op->getOpOperands())
+      if (!loop || use.getOperandNumber() < loop.getNumControlOperands() ||
+          isa<air::AsyncTokenType>(use.get().getType()))
+        values.push_back(use.get());
+  };
+  // The slice grows while it is walked; indexing reaches the added ops too.
+  for (unsigned n = 0;;) {
+    if (!values.empty()) {
+      useValue(values.pop_back_val());
+    } else if (!ops.empty()) {
+      useOperands(ops.pop_back_val());
+    } else if (n < slice.size()) {
+      Operation *op = slice[n++];
+      if (auto exec = dyn_cast<air::ExecuteOp>(op))
+        exec.getRegion().walk([&](Operation *child) {
+          if (!child->hasTrait<OpTrait::IsTerminator>())
+            slice.insert(child);
+        });
+      if (!droppable(op) && !op->getParentOfType<air::ExecuteOp>() &&
+          used.insert(op).second)
+        ops.push_back(op);
+    } else {
+      break;
+    }
+  }
+  slice.remove_if(
+      [&](Operation *op) { return droppable(op) && !used.contains(op); });
 }
 
 // Clone ops in a block.
@@ -390,7 +560,20 @@ template <typename T>
 SmallVector<Operation *>
 air::cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
                             air::ChannelInterface externalGetPut) {
-  SmallVector<Value> loop_init_args = air::getAsyncDependenciesFromOp(loop_op);
+  // An scf.for's hoisted copy carries the loop's tokens, and the values that
+  // the ops hoisted with it use. The other values stay with the ops computing
+  // them.
+  SmallVector<unsigned> carried;
+  SmallVector<Value> loop_init_args;
+  for (auto [i, v] :
+       llvm::enumerate(air::getAsyncDependenciesFromOp(loop_op))) {
+    if constexpr (std::is_same_v<T, scf::ForOp>)
+      if (!isa<air::AsyncTokenType>(v.getType()) &&
+          !isCarriedForHoistedOps(loop_op, i))
+        continue;
+    carried.push_back(i);
+    loop_init_args.push_back(v);
+  }
   T new_loop_op =
       T::create(builder, builder.getUnknownLoc(),
                 air::lookupOrDefaultRange(loop_op.getLowerBound(), remap),
@@ -401,8 +584,8 @@ air::cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
   OpBuilder::InsertionGuard guard(builder);
 
   // Remap newly created loop op
-  for (unsigned i = 0; i < loop_op->getNumResults(); i++)
-    remap.map(loop_op->getResult(i), new_loop_op->getResult(i));
+  for (auto [j, i] : llvm::enumerate(carried))
+    remap.map(loop_op->getResult(i), new_loop_op->getResult(j));
 
   auto remapVals = [&](std::optional<SmallVector<OpFoldResult>> oldValues,
                        std::optional<SmallVector<OpFoldResult>> newValues) {
@@ -417,9 +600,11 @@ air::cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
   remapVals(loop_op.getLoopUpperBounds(), new_loop_op.getLoopUpperBounds());
   remapVals(loop_op.getLoopSteps(), new_loop_op.getLoopSteps());
 
-  for (auto p :
-       llvm::zip(loop_op.getRegionIterArgs(), new_loop_op.getRegionIterArgs()))
-    remap.map(std::get<0>(p), std::get<1>(p));
+  // scf.parallel has no iter_args; it carries its tokens in reductions.
+  if (!loop_op.getRegionIterArgs().empty())
+    for (auto [j, i] : llvm::enumerate(carried))
+      remap.map(loop_op.getRegionIterArgs()[i],
+                new_loop_op.getRegionIterArgs()[j]);
 
   for (auto p : llvm::zip(*loop_op.getLoopInductionVars(),
                           *new_loop_op.getLoopInductionVars()))
@@ -434,9 +619,19 @@ air::cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
                        StringAttr::get(loop_op->getContext(), "hoistedLoop"));
 
   // Generate yield op and/or reduce op if async
-  if (air::getAsyncDependenciesFromOp(loop_op).size()) {
-    generateYieldAndOrReduceToScfLoop(builder, loop_op->getContext(),
-                                      new_loop_op);
+  if (!loop_init_args.empty()) {
+    if constexpr (std::is_same_v<T, scf::ForOp>) {
+      SmallVector<Value> values;
+      Operation *yield = loop_op.getBody()->getTerminator();
+      for (unsigned i : carried)
+        if (!isa<air::AsyncTokenType>(yield->getOperand(i).getType()))
+          values.push_back(remap.lookupOrDefault(yield->getOperand(i)));
+      generateYieldAndOrReduceToScfLoop(builder, loop_op->getContext(),
+                                        new_loop_op, values);
+    } else {
+      generateYieldAndOrReduceToScfLoop(builder, loop_op->getContext(),
+                                        new_loop_op);
+    }
   }
 
   clonedOps.push_back(new_loop_op);
@@ -891,6 +1086,7 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
     // "loop-carried-dep" to distinguish them from DMA-derived channel ops and
     // replaces them with wait_all instead of cloning to segment level.
     backwardSlice.insert(externalGetPuts.begin(), externalGetPuts.end());
+    keepUsedOpsAndCarriedValues(backwardSlice, bsOptions);
     for (auto b : backwardSlice) {
       b->setAttr("hoist", StringAttr::get(ctx, "dep"));
     }
@@ -1353,6 +1549,8 @@ class AIRDemoteDmaToAIRHierarchyConversion
           backwardSlice.insert(&childOp);
         }
       }
+      backwardSlice.insert(op.getOperation());
+      keepUsedOpsAndCarriedValues(backwardSlice, bsOptions);
       // Get constant values used by backward slices, and add to backward
       // slices.
       for (auto o : backwardSlice) {

@@ -728,6 +728,40 @@ static void collectControlLeaves(Value v, SmallVectorImpl<Value> &leaves,
   ops.insert(def);
 }
 
+// Whether token `t` may complete only after a channel transfer: through its
+// async dependencies it reaches a channel op, or an op that is not an
+// air.execute or air.wait_all, which could hide one. An air.execute's body
+// counts too: it may hold air ops other than air.wait_all, such as a blocking
+// channel transfer, and its air.wait_all ops may wait on tokens from outside.
+static bool mayWaitForChannel(Value t) {
+  SmallVector<Value> work{t};
+  DenseSet<Value> seen;
+  while (!work.empty()) {
+    Value v = work.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    Operation *def = v.getDefiningOp();
+    if (!def || !isa<air::ExecuteOp, air::WaitAllOp>(def))
+      return true;
+    llvm::append_range(work, air::getAsyncDependenciesFromOp(def));
+    auto exec = dyn_cast<air::ExecuteOp>(def);
+    if (!exec)
+      continue;
+    WalkResult result = exec.getRegion().walk([&](Operation *op) {
+      if (isa<air::airDialect>(op->getDialect()) &&
+          !isa<air::WaitAllOp, air::ExecuteTerminatorOp>(op))
+        return WalkResult::interrupt();
+      for (Value operand : op->getOperands())
+        if (isa<air::AsyncTokenType>(operand.getType()))
+          work.push_back(operand);
+      return WalkResult::advance();
+    });
+    if (result.wasInterrupted())
+      return true;
+  }
+  return false;
+}
+
 // Hoist the herd out of a parent scf.for loop.
 FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
                                              Region *destRegion,
@@ -751,8 +785,29 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
 
   if (for_loop_nest.empty())
     return failure();
+  // The herd's body is spliced where the herd is, which must be the innermost
+  // loop's body (not, say, an scf.if in it).
+  if (herdOp->getBlock() != for_loop_nest.front().getBody())
+    return failure();
 
   scf::ForOp outerMostLoop = for_loop_nest.back();
+
+  // Tokens that ops in the loop nest, other than the herd, wait for from
+  // outside the nest become dependencies of the hoisted herd, which waits for
+  // them before it starts. A channel transfer behind such a token may need
+  // the herd to make progress, so do not hoist then.
+  auto usedBesidesHerd = [&](Value v, Operation *scope) {
+    return llvm::any_of(v.getUsers(), [&](Operation *user) {
+      return user != herdOp && scope->isAncestor(user);
+    });
+  };
+  SetVector<Value> usedAbove;
+  getUsedValuesDefinedAbove(outerMostLoop.getRegion(), usedAbove);
+  if (llvm::any_of(usedAbove, [&](Value v) {
+        return isa<air::AsyncTokenType>(v.getType()) &&
+               usedBesidesHerd(v, outerMostLoop) && mayWaitForChannel(v);
+      }))
+    return failure();
 
   // Create new herd op as parent to the scf.for loop nest.
   builder.setInsertionPoint(outerMostLoop);
@@ -814,11 +869,12 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   for (Operation *op : controlOps)
     builder.clone(*op, remap);
 
-  // Splice herd block into inner-most for loop.
+  // Splice herd block into inner-most for loop, where the herd was: after the
+  // ops computing its operands.
   scf::ForOp innerMostLoop = for_loop_nest.front();
   auto &bb = innerMostLoop.getBody()->getOperations();
   auto &body = herdOp.getBody().front().getOperations();
-  bb.splice(bb.begin(), body, body.begin(), --body.end());
+  bb.splice(herdOp->getIterator(), body, body.begin(), --body.end());
 
   // Connect spliced body ops with the inner-most loop's loop-carried token, to
   // synchronize the herd body operations with the inner-most loop's
@@ -851,6 +907,37 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   }
   for (auto [key, val] : remap.getValueMap())
     replaceAllUsesInRegionWith(key, val, newHerdOp.getBody());
+
+  // The loop nest may use other values from outside it. Copy the constants
+  // in, pass the other values as herd operands, and make the herd wait for
+  // the tokens. The original herd's own operands go away with it.
+  builder.setInsertionPointToStart(&newHerdOp.getBody().front());
+  SmallVector<Value, 4> constants, liveIns, operands;
+  air::getUsedConstsDefinedAbove(newHerdOp.getRegion(), constants);
+  air::replaceAllUsesOfConstsInRegionWithNew(constants, builder,
+                                             newHerdOp.getRegion());
+  air::getUsedArgsDefinedAbove(newHerdOp.getRegion(), liveIns);
+  for (Value v : liveIns) {
+    if (!usedBesidesHerd(v, newHerdOp))
+      continue;
+    if (!isa<air::AsyncTokenType>(v.getType())) {
+      if (!newHerdOp.getTiedKernelArgument(v))
+        operands.push_back(v);
+    } else {
+      air::addAsyncDependencyIfNew(newHerdOp, v);
+      replaceAllUsesInRegionWith(
+          v,
+          air::WaitAllOp::create(builder, loc, air::AsyncTokenType::get(ctx),
+                                 SmallVector<Value>{})
+              .getAsyncToken(),
+          newHerdOp.getRegion());
+    }
+  }
+  newHerdOp.appendKernelOperands(operands);
+  for (Value v : liveIns)
+    if (BlockArgument arg = newHerdOp.getTiedKernelArgument(v))
+      replaceAllUsesInRegionWith(v, arg, newHerdOp.getRegion());
+
   for (auto res : outerMostLoop->getResults())
     res.replaceAllUsesWith(newHerdOp.getAsyncToken());
 
