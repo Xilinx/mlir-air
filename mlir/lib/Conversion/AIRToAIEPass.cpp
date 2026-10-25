@@ -7086,19 +7086,34 @@ public:
         for (Block *o : llvm::make_first_range(byBlock))
           if (b != o && b->findAncestorOpInBlock(*o->getParentOp()))
             return failure();
-      SmallVector<Value> chain;
-      for (auto g : ring) {
-        Value r = air::resolveBufferRoot(g.getMemref());
+      SmallVector<Value> roots, chain;
+      for (auto g : ring)
+        roots.push_back(air::resolveBufferRoot(g.getMemref()));
+      for (Value r : roots) {
         if (llvm::is_contained(chain, r))
           break;
         chain.push_back(r);
       }
-      for (auto &[b, gets] : byBlock) {
-        if (gets.size() % chain.size())
+      auto takesWhole = [&](ArrayRef<Value> unit) {
+        return llvm::all_of(byBlock, [&](auto &entry) {
+          auto &gets = entry.second;
+          return gets.size() % unit.size() == 0 &&
+                 llvm::all_of(llvm::enumerate(gets), [&](auto ig) {
+                   return air::resolveBufferRoot(ig.value().getMemref()) ==
+                          unit[ig.index() % unit.size()];
+                 });
+        });
+      };
+      if (!takesWhole(chain)) {
+        // a chain that fills one buffer more than once, as [k, v, v] does:
+        // the unit this block's gets are whole copies of
+        size_t p = 1;
+        while (roots.size() % p ||
+               llvm::any_of(llvm::seq(p, roots.size()),
+                            [&](size_t i) { return roots[i] != roots[i % p]; }))
+          p++;
+        if (!takesWhole(ArrayRef<Value>(roots).take_front(p)))
           return failure();
-        for (auto [i, g] : llvm::enumerate(gets))
-          if (air::resolveBufferRoot(g.getMemref()) != chain[i % chain.size()])
-            return failure();
       }
     }
     auto *it = llvm::find(ring, self);
