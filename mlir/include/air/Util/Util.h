@@ -453,9 +453,9 @@ SmallVector<Value> getOffsetsAsValues(air::ChannelInterface op);
 SmallVector<Value> getSizesAsValues(air::ChannelInterface op);
 SmallVector<Value> getStridesAsValues(air::ChannelInterface op);
 // True when the wraps/strides lower to a single linear shim BD: contiguous
-// row-major body, optionally preceded by outer size==1 dummies or outer
-// stride==0 (BD repeat) dims. Such a transfer is exempt from the per-dim
-// 10-bit wrap-size limit.
+// row-major body, whose outermost dim may have a run-time size, optionally
+// preceded by outer size==1 dummies or outer stride==0 (BD repeat) dims. Such
+// a transfer is exempt from the per-dim 10-bit wrap-size limit.
 bool isContiguousRowMajorOrRepeated(ArrayRef<OpFoldResult> sizes,
                                     ArrayRef<OpFoldResult> strides);
 // Check if the volume of sizes equals the volume of the memref.
@@ -535,6 +535,18 @@ SmallVector<Value> lookupOrDefaultRange(OperandRange vec, IRMapping &remap);
 
 // Extend isPure method to operate on air.execute.
 bool isPure(Operation *op);
+
+// Collect the values used in `region` and defined above it: the constants
+// (arith.constant and ub.poison), or all the others.
+void getUsedConstsDefinedAbove(MutableArrayRef<Region> region,
+                               SmallVector<Value, 4> &constants);
+void getUsedArgsDefinedAbove(MutableArrayRef<Region> region,
+                             SmallVector<Value, 4> &args);
+
+// Replace the uses of `constants` in `region` with copies made at the
+// builder's insertion point.
+void replaceAllUsesOfConstsInRegionWithNew(SmallVector<Value, 4> constants,
+                                           OpBuilder builder, Region &region);
 
 // Return if the given block contains N ops which are impure and aren't async
 // wait ops (such as air.wait_all).

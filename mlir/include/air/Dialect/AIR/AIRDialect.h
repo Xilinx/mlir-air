@@ -127,6 +127,10 @@ constexpr StringLiteral NoSplit = "air.no_split";
 // pin this buffer to that memtile column. Read by AIRToAIE's memtile bucketing,
 // and by air-split-l2-memref, which leaves an explicitly-placed buffer intact.
 constexpr StringLiteral MemtileCol = "air.memtile_col";
+// Memory spaces (array of "L1", "L2", "L3") on a func.func: air-fuse-channels
+// time-multiplexes the channels of that function in these spaces too, besides
+// those its aggressive-mode option names for every function.
+constexpr StringLiteral ChannelMultiplexing = "air.channel_multiplexing";
 // Opt-out (unit attr) on a memref.alloc (or one inside its enclosing
 // air.execute): air-fuse-alloc-dealloc leaves the alloc/dealloc pair where it
 // is instead of sinking it into the scf.for/scf.parallel that uses it. Keeps
