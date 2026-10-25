@@ -991,7 +991,20 @@ SmallVector<Operation *> air::getCircularChainBDs(
   // y standing for four transfers. Scale each transfer's sends by its copies,
   // relative to the copies a whole repetition of the unit accounts for.
   SmallVector<int64_t> copies(unit.size(), 0);
-  for (auto *o : ops) {
+  // whole copies of a unit that repeats an op (getUniqueBDPattern): equivalence
+  // cannot tell the unit's slots apart, so count by position
+  size_t n = unit.size();
+  bool byPosition =
+      ops.size() % n == 0 &&
+      llvm::all_of(llvm::seq<size_t>(0, ops.size()), [&](size_t i) {
+        return memcpyIMappedToEquivalentBDs(ops[i], unit[i % n]);
+      });
+  for (size_t i = 0; i < ops.size(); i++) {
+    if (byPosition) {
+      copies[i % n]++;
+      continue;
+    }
+    Operation *o = ops[i];
     const auto *it = llvm::find(unit, o);
     if (it == unit.end())
       it = llvm::find_if(unit, [&](Operation *u) {
