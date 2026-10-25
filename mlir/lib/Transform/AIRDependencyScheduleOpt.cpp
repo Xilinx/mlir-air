@@ -2774,6 +2774,37 @@ private:
 
 static bool isFilledOncePerLaunchIteration(scf::ForOp for_op);
 
+// Whether `forOp` runs at least one trip wherever it runs: it sits, under
+// loops of static trip count only, in the then region of an scf.if on its
+// upper bound being greater than its lower bound, as guardRunTimeLoops makes.
+static bool hasPositiveTripGuard(scf::ForOp forOp) {
+  auto step = getConstantIntValue(forOp.getStep());
+  if (!step || *step <= 0 || forOp.getUnsignedCmp())
+    return false;
+  Operation *op = forOp;
+  while (auto parent = dyn_cast<scf::ForOp>(op->getParentOp())) {
+    if (!air::getStaticScfForTripCountAsInt(parent))
+      return false;
+    op = parent;
+  }
+  auto ifOp = dyn_cast<scf::IfOp>(op->getParentOp());
+  if (!ifOp || op->getParentRegion() != &ifOp.getThenRegion())
+    return false;
+  auto cmp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+  if (!cmp || cmp.getPredicate() != arith::CmpIPredicate::sgt)
+    return false;
+  auto same = [](Value a, Value b) {
+    if (auto cast = a.getDefiningOp<arith::IndexCastOp>())
+      a = cast.getIn();
+    if (a == b)
+      return true;
+    auto ca = getConstantIntValue(a), cb = getConstantIntValue(b);
+    return ca && cb && *ca == *cb;
+  };
+  return same(cmp.getLhs(), forOp.getUpperBound()) &&
+         same(cmp.getRhs(), forOp.getLowerBound());
+}
+
 struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
@@ -2872,6 +2903,30 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         fillsSlotPerTrip(for_op, channel_op))
       return failure();
 
+    // A packet destination that changes from trip to trip is no dim of the
+    // transfer; one computed in the loop the same way each trip is computed
+    // before the folded put, with its offsets.
+    Value dest;
+    if (auto put = dyn_cast<air::ChannelPutOp>(channel_op.getOperation()))
+      dest = put.getDest();
+    if (dest && !for_op.isDefinedOutsideOfLoop(dest)) {
+      auto isLoopArg = [&](Value v) {
+        auto arg = dyn_cast<BlockArgument>(v);
+        return arg && arg.getOwner() == for_op.getBody();
+      };
+      SmallVector<Value> destVals{dest};
+      llvm::SetVector<Operation *> destSlice;
+      air::getBackwardSliceInRegion(rewriter, &for_op.getRegion(), destVals,
+                                    destSlice);
+      bool varies = isLoopArg(dest);
+      for (Operation *o : destSlice)
+        o->walk([&](Operation *nested) {
+          varies |= llvm::any_of(nested->getOperands(), isLoopArg);
+        });
+      if (varies)
+        return failure();
+    }
+
     // Fold for loops into channel op's wrap and stride fields
     SmallVector<Value> offsets = air::getOffsetsAsValues(channel_op);
     SmallVector<Value> wraps = air::getSizesAsValues(channel_op);
@@ -2888,20 +2943,25 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     bool runTimeTrips = !air::getStaticScfForTripCountAsInt(for_op);
     if (llvm::any_of(strides, isNonConst))
       return failure();
-    // Two exceptions, at the shim only, where a run-time size can be the
-    // descriptor's length (with the dims below it one dense run) under a
-    // repeat count: a loop with a run-time trip count over a dense run that
+    // Two exceptions, for an L3 buffer only, where a run-time size can be the
+    // shim descriptor's length (with the dims below it one dense run) under
+    // a repeat count: a loop with a run-time trip count over a dense run that
     // each trip continues becomes that length, and a static loop whose
     // induction variable reaches neither offsets nor sizes, around such a
-    // run-time size, becomes the repeat.
+    // run-time size, becomes the repeat. A descriptor cannot be of length
+    // zero, so the first needs a guard that the loop runs at least once.
     Value iv = for_op.getInductionVar();
     auto ivFree = [&](Value v) {
       return air::getInductionVarCoefficient(v, iv) == 0;
     };
     if (runTimeWrap || runTimeTrips) {
-      if (skipZeroStride || (runTimeWrap && runTimeTrips) ||
+      auto memTy = dyn_cast<BaseMemRefType>(channel_op.getMemref().getType());
+      if (skipZeroStride || !memTy || !air::isL3(memTy) ||
+          (runTimeWrap && runTimeTrips) ||
           !getConstantIntValue(for_op.getLowerBound()) ||
           !getConstantIntValue(for_op.getStep()))
+        return failure();
+      if (runTimeTrips && !hasPositiveTripGuard(for_op))
         return failure();
       if (runTimeWrap &&
           (!llvm::all_of(offsets, ivFree) || !llvm::all_of(wraps, ivFree)))
@@ -3185,6 +3245,8 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     SmallVector<Value> new_opers = llvm::to_vector(
         llvm::concat<Value>(SmallVector<Value>{channel_op.getMemref()},
                             channel_op.getIndices(), offsets, wraps, strides));
+    if (dest)
+      new_opers.push_back(dest);
     IRMapping remap;
     llvm::SetVector<Operation *> backwardSlices;
     air::getBackwardSliceInRegion(rewriter, &for_op.getRegion(), new_opers,
@@ -3219,11 +3281,10 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
           /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     new_chan_op->setAttrs(channel_op->getDiscardableAttrDictionary());
     air::copyPaddingAttributes(channel_op, new_chan_op);
-    if (auto put = dyn_cast<air::ChannelPutOp>(channel_op.getOperation()))
-      if (Value dest = put.getDest())
-        cast<air::ChannelPutOp>(new_chan_op.getOperation())
-            .getDestMutable()
-            .assign(air::lookupOrDefaultRange(dest, remap));
+    if (dest)
+      cast<air::ChannelPutOp>(new_chan_op.getOperation())
+          .getDestMutable()
+          .assign(remap.lookupOrDefault(dest));
 
     // Clear all external uses of for_op before erasing it.
     for (auto res : for_op.getResults()) {
@@ -3713,6 +3774,9 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
         offsets, sizes, strides,
         /*pad_before=*/padBefore, /*pad_after=*/padAfter);
     new_op->setAttrs(attrs);
+    if constexpr (std::is_same_v<OpT, air::ChannelPutOp>)
+      if (Value dest = op.getDest())
+        new_op.getDestMutable().assign(dest);
 
     return success();
   }
@@ -8862,12 +8926,13 @@ findLockstepCoupledChannels(func::FuncOp func) {
 static void foldChannelPutChains(Region *region, air::MemorySpace space,
                                  const DmaBdLimits &limits);
 
-// A loop with a run-time trip count, holding one shim transfer, folds into a
-// dim of that size (AIRSpecializeChannelWrapAndStrideInScfFor), which holds
-// only for a positive count: a descriptor cannot be of length zero. So the
-// loop, with the static loops around it that do nothing else, runs only when
-// its trip count is positive; otherwise the nest yields its inits, as it
-// would with no trip. Returns the guards.
+// A loop with a run-time trip count, holding one transfer of an L3 buffer,
+// folds into a dim of that size (AIRSpecializeChannelWrapAndStrideInScfFor),
+// which holds only for a positive count: a descriptor cannot be of length
+// zero. So the loop, with the static loops around it that do nothing else,
+// runs only when its trip count is positive; otherwise the nest yields its
+// inits, as it would with no trip. The pattern folds such a loop only under
+// this guard. Returns the guards.
 static SmallVector<scf::IfOp> guardRunTimeLoops(Region *region) {
   SmallVector<scf::IfOp> guards;
   SmallVector<scf::ForOp> loops;
@@ -8877,16 +8942,23 @@ static SmallVector<scf::IfOp> guardRunTimeLoops(Region *region) {
         air::getStaticScfForTripCountAsInt(loop) ||
         !getConstantIntValue(loop.getLowerBound()) ||
         !getConstantIntValue(loop.getStep()) ||
-        *getConstantIntValue(loop.getStep()) <= 0 ||
+        *getConstantIntValue(loop.getStep()) <= 0 || loop.getUnsignedCmp() ||
         !air::hasNImpureOps(loop.getBody(), 1) ||
         llvm::range_size(loop.getBody()->getOps<air::ChannelInterface>()) != 1)
+      return;
+    auto chan = *loop.getBody()->getOps<air::ChannelInterface>().begin();
+    auto memTy = dyn_cast<BaseMemRefType>(chan.getMemref().getType());
+    if (!memTy || !air::isL3(memTy))
       return;
     loops.push_back(loop);
   });
   for (scf::ForOp loop : loops) {
     scf::ForOp nest = loop;
+    // Not above a loop of run-time trip count: that loop may run while this
+    // one runs no trip, and stays a loop that the guard would be dropped for.
     while (auto parent = dyn_cast<scf::ForOp>(nest->getParentOp())) {
-      if (!air::hasNImpureOps(parent.getBody(), 1) ||
+      if (!air::getStaticScfForTripCountAsInt(parent) ||
+          !air::hasNImpureOps(parent.getBody(), 1) ||
           !parent.isDefinedOutsideOfLoop(loop.getLowerBound()) ||
           !parent.isDefinedOutsideOfLoop(loop.getUpperBound()))
         break;

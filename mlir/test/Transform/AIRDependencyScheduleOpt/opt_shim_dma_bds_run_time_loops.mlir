@@ -461,3 +461,62 @@ module {
     return
   }
 }
+
+// -----
+
+// The packet destination is computed in the loop but is the same on every
+// trip: it is computed before the folded put.
+
+// CHECK-LABEL: func.func @loop_local_dest
+// CHECK: scf.if
+// CHECK-NEXT: %[[D:.*]] = arith.addi %arg2, %c1{{.*}} : index
+// CHECK-NEXT: air.channel.put {{.*}} @ab[] (%arg0[{{.*}}] [%c1{{.*}}, %c1{{.*}}, %arg1, %c8192{{.*}}] [{{.*}}]) dest(%[[D]])
+// CHECK-NOT: scf.for
+
+module {
+  air.channel @ab [1, 1]
+  func.func @loop_local_dest(%src: memref<*xbf16>, %n: index, %j: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8192 = arith.constant 8192 : index
+    %0 = air.wait_all async
+    %1 = scf.for %b = %c0 to %n step %c1 iter_args(%u = %0) -> (!air.async.token) {
+      %o = arith.muli %b, %c8192 : index
+      %d = arith.addi %j, %c1 : index
+      %k = air.channel.put async [%u] @ab[] (%src[%o] [%c8192] [%c1]) dest(%d) {metadata = @airMemcpyId1} : (memref<*xbf16>)
+      scf.yield %k : !air.async.token
+    }
+    return
+  }
+}
+
+// -----
+
+// A loop of run-time trip count around the run-time loop: the guard stays
+// inside it, so a round of no trip of the inner loop sends nothing even when
+// the outer loop runs.
+
+// CHECK-LABEL: func.func @run_time_rounds
+// CHECK: scf.for %{{.*}} = %c0{{.*}} to %arg2
+// CHECK: %[[ANY:.*]] = arith.cmpi sgt, %arg1, %c0{{.*}} : index
+// CHECK-NEXT: scf.if %[[ANY]]
+// CHECK-NEXT: air.channel.put {{.*}} @ab[] (%arg0[{{.*}}] [%c1{{.*}}, %c1{{.*}}, %arg1, %c8192{{.*}}]
+
+module {
+  air.channel @ab [1, 1]
+  func.func @run_time_rounds(%src: memref<*xbf16>, %n: index, %m: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8192 = arith.constant 8192 : index
+    %0 = air.wait_all async
+    %r = scf.for %z = %c0 to %m step %c1 iter_args(%t = %0) -> (!air.async.token) {
+      %1 = scf.for %b = %c0 to %n step %c1 iter_args(%u = %t) -> (!air.async.token) {
+        %o = arith.muli %b, %c8192 : index
+        %k = air.channel.put async [%u] @ab[] (%src[%o] [%c8192] [%c1]) {metadata = @airMemcpyId1} : (memref<*xbf16>)
+        scf.yield %k : !air.async.token
+      }
+      scf.yield %1 : !air.async.token
+    }
+    return
+  }
+}
