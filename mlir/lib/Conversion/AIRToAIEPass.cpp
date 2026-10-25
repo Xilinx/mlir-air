@@ -7046,117 +7046,49 @@ public:
     return lastAccessOp ? lastAccessOp : lastFreeOp;
   }
 
-  /// The fixed loops `get` runs in alone among the core's gets on its
-  /// channel: the outermost of them (or `get` when there are none) and the
-  /// product of their trip counts, the number of fills the get makes in a row
-  /// where the channel's other gets run once.
-  static std::pair<Operation *, int64_t>
-  getFixedLoopRepeats(air::ChannelGetOp get) {
-    Operation *at = get;
-    int64_t times = 1;
-    auto holdsOtherGet = [&](Operation *scope) {
-      bool found = false;
-      scope->walk([&](air::ChannelGetOp g) {
-        if (g != get && g.getChanName() == get.getChanName())
-          found = true;
-      });
-      return found;
-    };
-    Operation *root = get->getParentWithTrait<OpTrait::IsIsolatedFromAbove>();
-    if (!root || !holdsOtherGet(root))
-      return {at, times};
-    while (Operation *parent = at->getParentOp()) {
-      std::optional<int64_t> trips;
-      if (auto scfFor = dyn_cast<scf::ForOp>(parent))
-        trips = air::getStaticScfForTripCountAsInt(scfFor);
-      else if (auto affineFor = dyn_cast<affine::AffineForOp>(parent);
-               affineFor && affineFor.hasConstantBounds())
-        trips = air::getStaticAffineForTripCountAsInt(affineFor);
-      if (!trips || holdsOtherGet(parent))
-        break;
-      times *= *trips;
-      at = parent;
-    }
-    return {at, times};
-  }
-
-  /// Whether a get on `op`'s channel in the same core sits in fixed loops of
-  /// its own (see getFixedLoopRepeats), so that it fills its buffer several
-  /// times in a row.
-  static bool getsRepeatInFixedLoops(Operation *op) {
-    auto get = dyn_cast<air::ChannelGetOp>(op);
-    if (!get)
-      return false;
-    Operation *root = op->getParentWithTrait<OpTrait::IsIsolatedFromAbove>();
-    if (!root)
-      return false;
-    bool repeats = false;
-    root->walk([&](air::ChannelGetOp g) {
-      if (g.getChanName() == get.getChanName() &&
-          getFixedLoopRepeats(g).first != g)
-        repeats = true;
-    });
-    return repeats;
-  }
-
   /// Where to release `get`'s slot when its channel's gets reuse a buffer.
   /// The BDs of one rotation of buffers on the channel share one counting
   /// lock (see getLockForDMA), so release k of a trip admits BD `slots + k`
   /// of the rotation, whichever buffer that fills: the release follows that
   /// buffer's last use and release k - 1. Gets into other buffers count on
-  /// pairs of their own and are not part of the ring. Fails unless the core's
-  /// gets on this DMA channel are one channel, in one block or in blocks that
-  /// each take the channel's buffers whole and in order. A get in fixed loops
-  /// of its own (see getFixedLoopRepeats) counts as one fill per trip of them.
-  /// This function fails for that get, which then releases inside the loops
-  /// after its use, as usual; the releases of the block's other gets are placed
-  /// around those.
+  /// pairs of their own and are not part of the ring. Returns null, for the
+  /// usual release after the get's last use, unless the core's gets on this
+  /// DMA channel are one channel, in one block or in blocks that each take the
+  /// channel's buffers whole and in order. Fails, with an error, when the
+  /// lock's credits let the DMA refill a buffer before its last use.
   FailureOr<Operation *> findRingReleasePoint(air::MemcpyInterface get,
                                               ArrayRef<Operation *> ringOps,
                                               int64_t slots) {
     auto self = dyn_cast<air::ChannelGetOp>(get.getOperation());
-    if (!self || getFixedLoopRepeats(self).first != self)
-      return failure();
+    if (!self)
+      return nullptr;
     Block *block = get->getBlock();
     auto core = get->getParentOfType<AIE::CoreOp>();
     auto chan = self.getChanName();
-    // One fill of the ring: the op in its block it happens in, which fill of
-    // that op it is when the op is a loop (-1 for a get), and its buffer.
-    struct Fill {
-      Operation *at;
-      int64_t copy;
-      Value root;
-    };
-    llvm::MapVector<Block *, SmallVector<Fill>> byBlock;
+    llvm::MapVector<Block *, SmallVector<air::ChannelGetOp>> byBlock;
     for (Operation *o : ringOps) {
       if (!o || o->getParentOfType<AIE::CoreOp>() != core)
         continue;
       auto g = dyn_cast<air::ChannelGetOp>(o);
       if (!g || g.getChanName() != chan)
-        return failure();
+        return nullptr;
       // gets into buffers of another rotation count on lock pairs of their
       // own (see getLockForDMA)
-      if (air::resolveBufferRoot(g.getMemref()) !=
-              air::resolveBufferRoot(self.getMemref()) &&
-          !air::chansPartOfSameRotation(self, g))
+      if (!air::buffersShareRotation(
+              air::getChannelDeclarationThroughSymbol(self),
+              air::resolveBufferRoot(self.getMemref()),
+              air::resolveBufferRoot(g.getMemref())))
         continue;
-      auto [at, times] = getFixedLoopRepeats(g);
-      Value root = air::resolveBufferRoot(g.getMemref());
-      if (at == g.getOperation())
-        byBlock[at->getBlock()].push_back({at, -1, root});
-      else
-        for (int64_t c = 0; c < times; c++)
-          byBlock[at->getBlock()].push_back({at, c, root});
+      byBlock[g->getBlock()].push_back(g);
     }
-    for (auto &[b, fills] : byBlock)
-      llvm::stable_sort(fills, [](const Fill &a, const Fill &b) {
-        return a.at == b.at ? a.copy < b.copy : a.at->isBeforeInBlock(b.at);
+    for (auto &[b, gets] : byBlock)
+      llvm::sort(gets, [](air::ChannelGetOp a, air::ChannelGetOp b) {
+        return a->isBeforeInBlock(b);
       });
-    SmallVector<Fill> ring = byBlock.lookup(block);
+    SmallVector<air::ChannelGetOp> ring = byBlock.lookup(block);
     int64_t n = ring.size();
     if (n < 2 || slots < 1)
-      return failure();
-    auto root = [&](int64_t i) { return ring[i % n].root; };
+      return nullptr;
     // Gets in several blocks: each block must take the BD chain whole, in
     // order, so the DMA is at the chain's start whenever a block begins, and
     // no block may hold another, whose gets would run in the middle of it.
@@ -7164,30 +7096,51 @@ public:
       for (Block *b : llvm::make_first_range(byBlock))
         for (Block *o : llvm::make_first_range(byBlock))
           if (b != o && b->findAncestorOpInBlock(*o->getParentOp()))
-            return failure();
+            return nullptr;
       // the chain: the shortest unit this block's gets repeat, which may
       // fill one buffer more than once
-      int64_t p = 1;
-      while (p < n && llvm::any_of(llvm::seq(p, n), [&](int64_t i) {
-               return root(i) != root(i % p);
-             }))
+      SmallVector<Value> roots;
+      for (auto g : ring)
+        roots.push_back(air::resolveBufferRoot(g.getMemref()));
+      size_t p = 1;
+      while (p < roots.size() &&
+             llvm::any_of(llvm::seq(p, roots.size()),
+                          [&](size_t i) { return roots[i] != roots[i % p]; }))
         p++;
-      for (auto &[b, fills] : byBlock) {
-        if (fills.size() % p)
-          return failure();
-        for (auto [i, f] : llvm::enumerate(fills))
-          if (f.root != root(i % p))
-            return failure();
+      ArrayRef<Value> chain = ArrayRef<Value>(roots).take_front(p);
+      for (auto &[b, gets] : byBlock) {
+        if (gets.size() % chain.size())
+          return nullptr;
+        for (auto [i, g] : llvm::enumerate(gets))
+          if (air::resolveBufferRoot(g.getMemref()) != chain[i % chain.size()])
+            return nullptr;
       }
     }
+    auto *it = llvm::find(ring, self);
+    if (it == ring.end())
+      return nullptr;
+    int64_t idx = it - ring.begin();
+    auto root = [&](int64_t i) {
+      return air::resolveBufferRoot(ring[i % n].getMemref());
+    };
+    auto unsafe = [&]() -> FailureOr<Operation *> {
+      get->emitOpError("shares a counting lock with the other buffers of its "
+                       "rotation, but the lock's credits let the DMA refill a "
+                       "buffer before the core's last use of it");
+      return failure();
+    };
+    // The lock's initial credits admit the first `slots` fills before the
+    // core releases anything, so those must fill distinct buffers.
+    for (int64_t i = 0; i < std::min(slots, n); i++)
+      for (int64_t j = 0; j < i; j++)
+        if (root(i) == root(j))
+          return unsafe();
 
     // last op after `from` and before `to` (or the block end) touching any
     // view of `buf`; deallocs do not count
     auto lastUse = [&](Operation *from, Operation *to,
                        Value buf) -> Operation * {
       Operation *last = nullptr;
-      if (to && !from->isBeforeInBlock(to))
-        return last;
       for (Operation *op = from->getNextNode(); op && op != to;
            op = op->getNextNode())
         op->walk([&](Operation *o) {
@@ -7202,93 +7155,23 @@ public:
       return last;
     };
 
-    // A point in one trip of the block: an op of it, and within a loop of
-    // fills, the acquire (2c) or the use and release (2c + 1) of fill c.
-    // kEnd is after the op, kStart before it.
-    constexpr int64_t kStart = std::numeric_limits<int64_t>::min();
-    constexpr int64_t kEnd = std::numeric_limits<int64_t>::max();
-    using Time = std::pair<Operation *, int64_t>;
-    auto before = [](Time a, Time b) {
-      return a.first == b.first ? a.second < b.second
-                                : a.first->isBeforeInBlock(b.first);
-    };
-    auto later = [&](Time a, Time b) { return before(a, b) ? b : a; };
-    auto acquire = [&](int64_t i) {
-      return ring[i].copy < 0 ? Time{ring[i].at, kStart}
-                              : Time{ring[i].at, 2 * ring[i].copy};
-    };
-    // when the fill that release r admits may start: after the last use of
-    // the buffer it overwrites
-    auto admits = [&](int64_t r) -> FailureOr<std::optional<Time>> {
-      int64_t m = slots + r;
+    Operation *pos = ring.front();
+    for (int64_t k = 0; k <= idx; k++) {
+      int64_t m = slots + k;
       Value buf = root(m);
       for (int64_t q = m - 1; q > m - 1 - n && q >= 0; q--) {
         if (root(q) != buf)
           continue;
         if (q >= n)
-          return failure(); // more credits than buffers in the ring
-        Operation *next = m < n ? ring[m].at : nullptr;
-        Operation *use = nullptr;
-        if (ring[q].copy < 0 || q + 1 == n || ring[q + 1].at != ring[q].at)
-          use = lastUse(ring[q].at, next, buf);
-        if (use)
-          return std::optional<Time>(Time{use, kEnd});
-        return std::optional<Time>(
-            ring[q].copy < 0 ? Time{ring[q].at, kEnd}
-                             : Time{ring[q].at, 2 * ring[q].copy + 1});
+          return unsafe(); // more credits than buffers in the ring
+        Operation *next = m < n ? ring[m].getOperation() : nullptr;
+        Operation *use = lastUse(ring[q], next, buf);
+        Operation *bound = use ? use : ring[q].getOperation();
+        if (pos->isBeforeInBlock(bound))
+          pos = bound;
+        break;
       }
-      return std::optional<Time>();
-    };
-
-    // Release r of a trip is the r-th in time. A fill in a loop releases at
-    // its own point; the gets of the block take the others, each as early as
-    // release r - 1 and the fill r admits allow. Without loops of fills
-    // release r is the r-th get's, and only the releases up to `self` are
-    // placed.
-    bool hasLoops =
-        llvm::any_of(ring, [](const Fill &f) { return f.copy >= 0; });
-    Time prev{ring.front().at, kEnd};
-    std::optional<Time> need;
-    int64_t nextGet = 0, nextLoopFill = 0;
-    Operation *pos = nullptr;
-    for (int64_t r = 0; r < n && (hasLoops || !pos); r++) {
-      auto bound = admits(r);
-      if (failed(bound))
-        return failure();
-      if (*bound)
-        need = need ? later(*need, **bound) : **bound;
-      while (nextGet < n && ring[nextGet].copy >= 0)
-        nextGet++;
-      while (nextLoopFill < n && ring[nextLoopFill].copy < 0)
-        nextLoopFill++;
-      std::optional<Time> getTime, loopTime;
-      if (nextGet < n) {
-        Time t = need ? later(prev, *need) : prev;
-        getTime = Time{t.first, kEnd};
-      }
-      if (nextLoopFill < n)
-        loopTime = Time{ring[nextLoopFill].at, 2 * ring[nextLoopFill].copy + 1};
-      Time t;
-      if (loopTime && (!getTime || before(*loopTime, *getTime))) {
-        if (need && before(*loopTime, *need))
-          return failure();
-        t = *loopTime;
-        nextLoopFill++;
-      } else if (getTime) {
-        t = *getTime;
-        if (ring[nextGet].at == self.getOperation())
-          pos = t.first;
-        nextGet++;
-      } else {
-        return failure();
-      }
-      // the release must come before the acquire of the fill it admits
-      if (slots + r < n && !before(t, acquire(slots + r)))
-        return failure();
-      prev = t;
     }
-    if (!pos)
-      return failure();
     return pos;
   }
 
@@ -7459,13 +7342,14 @@ public:
     } else if (FailureOr<Operation *> ringPos =
                    tileInbound.value() && UsesSemaphoreLocks &&
                            relLockOp.getInit() &&
-                           (!getsFillDistinctBuffers(memcpyOpIf) ||
-                            getsRepeatInFixedLoops(memcpyOpIf))
+                           !getsFillDistinctBuffers(memcpyOpIf)
                        ? findRingReleasePoint(memcpyOpIf,
                                               dma_alloc.value().memcpyOps,
                                               *relLockOp.getInit())
-                       : FailureOr<Operation *>(failure());
-               succeeded(ringPos)) {
+                       : FailureOr<Operation *>(nullptr);
+               failed(ringPos)) {
+      return failure();
+    } else if (*ringPos) {
       // the channel's gets reuse a buffer: release as the DMA refills
       builder.setInsertionPointAfter(*ringPos);
       AIE::UseLockOp::create(builder, (*ringPos)->getLoc(), relLockOp,
@@ -7639,13 +7523,14 @@ public:
           return task_ops.front()->emitOpError(
               "repeats a run-time number of times, but also a fixed number of "
               "times within it beside other transfers or from a re-fed "
-              "buffer, or in run-time loops with other bounds than those of "
-              "the transfers before it on its DMA channel; one circular BD "
-              "chain cannot express that");
-      // A core's buffers on one channel share a counting lock pair, which the
-      // core's releases must feed in BD order. A put sent several times in a
-      // row per trip releases each send inside its loop, ahead of an earlier
-      // put released after the loop.
+              "buffer, or other times in a row than the transfers its BD "
+              "also stands for, or in run-time loops with other bounds than "
+              "those of the transfers before it on its DMA channel; one "
+              "circular BD chain cannot express that");
+      // The chain sends in BD order, so a core must release its puts in that
+      // order. A put sent several times in a row per trip waits inside its
+      // loop for the DMA to send its previous fill, while the DMA may wait for
+      // an earlier put whose release comes after the loop.
       if constexpr (std::is_same_v<dmaAllocatorTy, air::TileDMAAllocator>) {
         if (dir == AIE::DMAChannelDir::MM2S && repeat_counts.size() == 1 &&
             repeat_counts.front().second.size() > 1)

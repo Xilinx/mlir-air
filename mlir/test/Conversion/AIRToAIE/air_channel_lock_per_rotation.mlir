@@ -284,3 +284,141 @@ func.func @two_a_views_then_b() {
   }
   return
 }
+
+// -----
+
+// The channel fills A twice from a fixed loop of its own, then B of the same
+// type. A shared pair would start with two credits, and the DMA could fill A
+// twice before the core reads the first fill. A buffer filled several times
+// in a row keeps a pair of its own, and so does B.
+
+// CHECK: aie.device
+// CHECK-NOT: init = 2
+// CHECK: aie.mem(%tile_2_3)
+// CHECK: aie.use_lock(%[[AE:.*]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: aie.dma_bd(%[[A:.*]] : memref<8xbf16, 2>
+// CHECK: aie.use_lock(%[[BE:.*]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: aie.dma_bd(%[[B:.*]] : memref<8xbf16, 2>
+// CHECK: aie.core(%tile_2_3)
+// CHECK: scf.for
+// CHECK-NEXT: aie.use_lock(%[[AF:.*]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: func.call @use(%[[A]])
+// CHECK-NEXT: aie.use_lock(%[[AE]], Release, %{{.*}})
+// CHECK: aie.use_lock(%[[BF:.*]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: func.call @use(%[[B]])
+// CHECK-NEXT: aie.use_lock(%[[BE]], Release, %{{.*}})
+
+air.channel @c [1, 1]
+func.func private @use(memref<8xbf16, 2>)
+func.func @a_twice_in_row_then_b() {
+  %c1 = arith.constant 1 : index
+  air.launch (%x, %y) in (%sx=%c1, %sy=%c1) {
+    air.segment @seg {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %t0, %a2 = air.execute -> (memref<8xbf16, 1>) {
+        %alloc = memref.alloc() : memref<8xbf16, 1>
+        air.execute_terminator %alloc : memref<8xbf16, 1>
+      }
+      %t1, %b2 = air.execute -> (memref<8xbf16, 1>) {
+        %alloc = memref.alloc() : memref<8xbf16, 1>
+        air.execute_terminator %alloc : memref<8xbf16, 1>
+      }
+      scf.for %j = %c0 to %c2 step %c1_0 {
+        air.channel.put @c[] (%a2[] [] []) : (memref<8xbf16, 1>)
+      }
+      air.channel.put @c[] (%b2[] [] []) : (memref<8xbf16, 1>)
+      %d2 = air.execute {memref.dealloc %a2 : memref<8xbf16, 1>}
+      %d3 = air.execute {memref.dealloc %b2 : memref<8xbf16, 1>}
+      air.herd @h tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) attributes {link_with = "use.o", x_loc = 2 : i64, y_loc = 3 : i64} {
+        %c0_h = arith.constant 0 : index
+        %c1_h = arith.constant 1 : index
+        %c2_h = arith.constant 2 : index
+        %t2, %a = air.execute -> (memref<8xbf16, 2>) {
+          %alloc = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %alloc : memref<8xbf16, 2>
+        }
+        %t3, %b = air.execute -> (memref<8xbf16, 2>) {
+          %alloc = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %alloc : memref<8xbf16, 2>
+        }
+        scf.for %j = %c0_h to %c2_h step %c1_h {
+          air.channel.get @c[] (%a[] [] []) : (memref<8xbf16, 2>)
+          func.call @use(%a) : (memref<8xbf16, 2>) -> ()
+        }
+        air.channel.get @c[] (%b[] [] []) : (memref<8xbf16, 2>)
+        func.call @use(%b) : (memref<8xbf16, 2>) -> ()
+        %d0 = air.execute {memref.dealloc %a : memref<8xbf16, 2>}
+        %d1 = air.execute {memref.dealloc %b : memref<8xbf16, 2>}
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// The channel fills A and B whole, then the first half of B. A and the
+// whole fill of B alone would be slots of one rotation, but B is also moved
+// with another access pattern, so it rotates with no other buffer: A and B
+// keep a pair each, and both fills of B take B's pair.
+
+// CHECK: aie.device
+// CHECK-NOT: init = 2
+// CHECK: aie.mem(%tile_2_3)
+// CHECK: aie.use_lock(%[[AE:.*]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: aie.dma_bd(%[[A:.*]] : memref<16xbf16, 2> offset = 0 len = 16)
+// CHECK: aie.use_lock(%[[BE:.*]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: aie.dma_bd(%[[B:.*]] : memref<16xbf16, 2> offset = 0 len = 16)
+// CHECK: aie.use_lock(%[[BE]], AcquireGreaterEqual, %{{.*}})
+// CHECK-NEXT: aie.dma_bd(%[[B]] : memref<16xbf16, 2> offset = 0 len = 8)
+// CHECK: aie.core(%tile_2_3)
+
+air.channel @c [1, 1]
+func.func private @use(memref<16xbf16, 2>)
+func.func @b_whole_then_half() {
+  %c1 = arith.constant 1 : index
+  air.launch (%x, %y) in (%sx=%c1, %sy=%c1) {
+    air.segment @seg {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c8 = arith.constant 8 : index
+      %t0, %a2 = air.execute -> (memref<16xbf16, 1>) {
+        %alloc = memref.alloc() : memref<16xbf16, 1>
+        air.execute_terminator %alloc : memref<16xbf16, 1>
+      }
+      %t1, %b2 = air.execute -> (memref<16xbf16, 1>) {
+        %alloc = memref.alloc() : memref<16xbf16, 1>
+        air.execute_terminator %alloc : memref<16xbf16, 1>
+      }
+      air.channel.put @c[] (%a2[] [] []) : (memref<16xbf16, 1>)
+      air.channel.put @c[] (%b2[] [] []) : (memref<16xbf16, 1>)
+      air.channel.put @c[] (%b2[%c0] [%c8] [%c1_0]) : (memref<16xbf16, 1>)
+      %d2 = air.execute {memref.dealloc %a2 : memref<16xbf16, 1>}
+      %d3 = air.execute {memref.dealloc %b2 : memref<16xbf16, 1>}
+      air.herd @h tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) attributes {link_with = "use.o", x_loc = 2 : i64, y_loc = 3 : i64} {
+        %c0_h = arith.constant 0 : index
+        %c1_h = arith.constant 1 : index
+        %c8_h = arith.constant 8 : index
+        %t2, %a = air.execute -> (memref<16xbf16, 2>) {
+          %alloc = memref.alloc() : memref<16xbf16, 2>
+          air.execute_terminator %alloc : memref<16xbf16, 2>
+        }
+        %t3, %b = air.execute -> (memref<16xbf16, 2>) {
+          %alloc = memref.alloc() : memref<16xbf16, 2>
+          air.execute_terminator %alloc : memref<16xbf16, 2>
+        }
+        air.channel.get @c[] (%a[] [] []) : (memref<16xbf16, 2>)
+        func.call @use(%a) : (memref<16xbf16, 2>) -> ()
+        air.channel.get @c[] (%b[] [] []) : (memref<16xbf16, 2>)
+        func.call @use(%b) : (memref<16xbf16, 2>) -> ()
+        air.channel.get @c[] (%b[%c0_h] [%c8_h] [%c1_h]) : (memref<16xbf16, 2>)
+        func.call @use(%b) : (memref<16xbf16, 2>) -> ()
+        %d0 = air.execute {memref.dealloc %a : memref<16xbf16, 2>}
+        %d1 = air.execute {memref.dealloc %b : memref<16xbf16, 2>}
+      }
+    }
+  }
+  return
+}

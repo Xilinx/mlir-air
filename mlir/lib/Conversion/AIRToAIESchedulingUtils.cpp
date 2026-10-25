@@ -303,6 +303,36 @@ air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
   return memcpyIOps;
 }
 
+// The slot of `unit` each transfer of `ops` folds to, or -1. A unit the
+// chain repeats takes the transfers by position, since one buffer may fill
+// more than one slot of it. Otherwise (a prefix and repeated suffix) a
+// transfer takes the first slot it is equivalent to.
+static SmallVector<int64_t> getUnitSlots(ArrayRef<Operation *> ops,
+                                         ArrayRef<Operation *> unit) {
+  SmallVector<int64_t> slots;
+  if (unit.empty())
+    return SmallVector<int64_t>(ops.size(), -1);
+  auto inSlot = [&](size_t i, size_t slot) {
+    return ops[i] == unit[slot] ||
+           air::memcpyIMappedToEquivalentBDs(ops[i], unit[slot]);
+  };
+  if (llvm::all_of(llvm::seq(ops.size()),
+                   [&](size_t i) { return inSlot(i, i % unit.size()); })) {
+    for (size_t i = 0; i < ops.size(); i++)
+      slots.push_back(i % unit.size());
+    return slots;
+  }
+  for (size_t i = 0; i < ops.size(); i++) {
+    const auto *it = llvm::find(unit, ops[i]);
+    if (it == unit.end())
+      it = llvm::find_if(unit, [&](Operation *u) {
+        return air::memcpyIMappedToEquivalentBDs(ops[i], u);
+      });
+    slots.push_back(it == unit.end() ? -1 : it - unit.begin());
+  }
+  return slots;
+}
+
 // Given a vector of memcpy operations, split them into BD tasks paired with the
 // repeat count each task runs at, relative to a common ancestor region. See the
 // header for why adjacency in program order gates the merge.
@@ -438,11 +468,10 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops,
     // The outermost fixed loop below the run-time one.
     Operation *fixedBelow = nullptr;
   };
-  SmallVector<Nest> nests;
-  for (auto o : memcpyIOpVec) {
+  auto getNest = [](Operation *o, Region *region) {
     Nest n;
     Region *currRegion = o->getParentRegion();
-    while (commonRegion->isAncestor(currRegion)) {
+    while (region->isAncestor(currRegion)) {
       Operation *parent = currRegion->getParentOp();
       currRegion = currRegion->getParentRegion();
       auto affineFor = dyn_cast_if_present<affine::AffineForOp>(parent);
@@ -463,8 +492,54 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops,
         n.runTime = scfFor;
       }
     }
-    nests.push_back(n);
+    return n;
+  };
+  // A transfer alone in its fixed loops is sent that many times in a row
+  // each trip. A re-fed buffer is not: its locks count the sends of one fill,
+  // and the copies would be sends past them.
+  auto refed = [](Operation *x) {
+    auto ci = dyn_cast<air::ChannelInterface>(x);
+    if (!ci)
+      return false;
+    Operation *buf = air::resolveBufferRoot(ci.getMemref()).getDefiningOp();
+    return air::getRefeedCount(ci) > 1 || (buf && air::getRefeedCount(buf) > 1);
+  };
+  auto alone = [&](Operation *o, const Nest &n) {
+    Operation *fixedBelow = n.fixedBelow;
+    return fixedBelow && !refed(o) && llvm::none_of(allOps, [&](Operation *x) {
+             return x != o && fixedBelow->isAncestor(x);
+           });
+  };
+  SmallVector<Nest> nests;
+  for (auto o : memcpyIOpVec)
+    nests.push_back(getNest(o, commonRegion));
+
+  // A BD stands for every transfer folded onto it, so those must run as
+  // many times in a row per trip as the one that was kept. Compare all of
+  // them, before folding: 0 outside run-time loops, the times in a row inside
+  // one, or -1 for repeats in fixed loops shared with other transfers.
+  SmallVector<bool> foldsAlike(memcpyIOpVec.size(), true);
+  if (Region *allRegion = air::findCommonRegionContainingAllAncestors(
+          SmallVector<Operation *>(allOps.begin(), allOps.end()))) {
+    auto perTrip = [&](Operation *o) -> int64_t {
+      Nest n = getNest(o, allRegion);
+      if (!n.runTime)
+        return 0;
+      return n.inner == 1 || alone(o, n) ? n.inner : -1;
+    };
+    SmallVector<SmallVector<int64_t>> slotTimes(memcpyIOpVec.size());
+    for (auto [o, slot] :
+         llvm::zip_equal(allOps, getUnitSlots(allOps, memcpyIOpVec))) {
+      int64_t t = perTrip(o);
+      if (slot >= 0 && !llvm::is_contained(slotTimes[slot], t))
+        slotTimes[slot].push_back(t);
+    }
+    // Transfers that run at most once a trip fold as before.
+    for (auto [same, times] : llvm::zip_equal(foldsAlike, slotTimes))
+      same = times.size() < 2 ||
+             llvm::all_of(times, [](int64_t t) { return t == 0 || t == 1; });
   }
+
   // Fixed loops around the run-time ones that repeat every transfer of the
   // chain alike only repeat the whole chain, which a circular chain does
   // anyway. Otherwise they count, and the chain cannot express it.
@@ -478,7 +553,7 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops,
     }
 
   std::optional<SmallVector<Value>> chainBounds;
-  for (auto [o, n] : llvm::zip_equal(memcpyIOpVec, nests)) {
+  for (auto [o, n, same] : llvm::zip_equal(memcpyIOpVec, nests, foldsAlike)) {
     int tripCount = n.inner * (n.runTime && sameOuter ? 1 : n.outer);
     // In English, repeat count is trip count minus one.
     int rep = tripCount - 1;
@@ -490,28 +565,15 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops,
             auto ca = getConstantIntValue(a);
             return a == b || (ca && ca == getConstantIntValue(b));
           });
-      // A transfer alone in its fixed loops is sent that many times in a row
-      // each trip. A re-fed buffer is not: its locks count the sends of one
-      // fill, and the copies would be sends past them.
-      auto refed = [](Operation *x) {
-        auto ci = dyn_cast<air::ChannelInterface>(x);
-        if (!ci)
-          return false;
-        Operation *buf = air::resolveBufferRoot(ci.getMemref()).getDefiningOp();
-        return air::getRefeedCount(ci) > 1 ||
-               (buf && air::getRefeedCount(buf) > 1);
-      };
-      Operation *fixedBelow = n.fixedBelow, *self = o;
-      bool alone = fixedBelow && n.inner == tripCount && !refed(o) &&
-                   llvm::none_of(allOps, [&](Operation *x) {
-                     return x != self && fixedBelow->isAncestor(x);
-                   });
-      if (sameBounds && tripCount > 1 && alone && timesPerTrip)
+      bool once = tripCount == 1;
+      bool inRow = n.inner == tripCount && alone(o, n) && timesPerTrip;
+      if (sameBounds && !once && inRow)
         (*timesPerTrip)[o] = tripCount;
-      rep = sameBounds && (tripCount == 1 || (alone && timesPerTrip))
-                ? air::kRunTimeRepeatCount
-                : air::kUnsupportedRunTimeRepeatCount;
+      rep = sameBounds && (once || inRow) ? air::kRunTimeRepeatCount
+                                          : air::kUnsupportedRunTimeRepeatCount;
     }
+    if (!same)
+      rep = air::kUnsupportedRunTimeRepeatCount;
     if (repeatCounts.empty() || repeatCounts.back().first != rep)
       repeatCounts.emplace_back(rep, llvm::SetVector<Operation *>());
     repeatCounts.back().second.insert(o);
@@ -775,29 +837,63 @@ air::DMAAllocator::pickChainBdLocks(const ChainLockSet &cls,
   return std::make_pair(toAcquire, toRelease);
 }
 
-// A transfer on `chan` that moves `buffer` or a view of it, or null.
-static air::ChannelInterface getChannelOpOnBuffer(air::ChannelOp chan,
-                                                  Operation *buffer) {
-  auto on = [&](air::ChannelInterface op) {
-    return air::resolveBufferRoot(op.getMemref()).getDefiningOp() == buffer;
+// Whether `op` moves its buffer several times in a row: it sits in fixed
+// loops, up to the first one that holds another transfer of its channel in
+// the same direction.
+static bool movesBufferInRow(air::ChannelInterface op) {
+  bool isGet = isa<air::ChannelGetOp>(op);
+  auto holdsOther = [&](Operation *scope) {
+    bool found = false;
+    scope->walk([&](air::ChannelInterface o) {
+      if (o != op && o.getChanName() == op.getChanName() &&
+          isa<air::ChannelGetOp>(o) == isGet)
+        found = true;
+    });
+    return found;
   };
-  for (auto get : getChannelGetOpThroughSymbol(chan))
-    if (on(get))
-      return get;
-  for (auto put : getChannelPutOpThroughSymbol(chan))
-    if (on(put))
-      return put;
-  return nullptr;
+  int64_t times = 1;
+  for (Operation *parent = op->getParentOp();
+       parent && !parent->hasTrait<OpTrait::IsIsolatedFromAbove>();
+       parent = parent->getParentOp()) {
+    if (!isa<scf::ForOp, affine::AffineForOp>(parent))
+      continue;
+    std::optional<int64_t> trips;
+    if (auto scfFor = dyn_cast<scf::ForOp>(parent))
+      trips = air::getStaticScfForTripCountAsInt(scfFor);
+    else if (auto affineFor = cast<affine::AffineForOp>(parent);
+             affineFor.hasConstantBounds())
+      trips = air::getStaticAffineForTripCountAsInt(affineFor);
+    if (!trips || holdsOther(parent))
+      break;
+    times *= *trips;
+  }
+  return times > 1;
 }
 
-// Whether `op` and the transfers on `buffer` take turns in one rotation of a
-// tile's buffers, and so share its lock pair (see chansPartOfSameRotation).
-static bool sharesRotation(air::ChannelInterface op, Operation *buffer) {
-  if (air::resolveBufferRoot(op.getMemref()).getDefiningOp() == buffer)
+bool air::buffersShareRotation(air::ChannelOp chan, Value a, Value b) {
+  if (a == b)
     return true;
-  auto other =
-      getChannelOpOnBuffer(getChannelDeclarationThroughSymbol(op), buffer);
-  return other && air::chansPartOfSameRotation(op, other);
+  air::ChannelInterface first;
+  bool onA = false, onB = false, rotate = true;
+  auto visit = [&](air::ChannelInterface op) {
+    Value root = air::resolveBufferRoot(op.getMemref());
+    if (root != a && root != b)
+      return;
+    (root == a ? onA : onB) = true;
+    if (!first)
+      first = op;
+    else if (!air::chansPartOfSameRotation(first, op))
+      rotate = false;
+    // a buffer moved twice in a row could take two of the shared credits,
+    // and be refilled before its first fill is read
+    if (movesBufferInRow(op))
+      rotate = false;
+  };
+  for (auto get : getChannelGetOpThroughSymbol(chan))
+    visit(get);
+  for (auto put : getChannelPutOpThroughSymbol(chan))
+    visit(put);
+  return onA && onB && rotate;
 }
 
 std::pair<int64_t, int64_t>
@@ -816,11 +912,9 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
   // ping-pong compute-communication overlap. A tile's buffers share a lock
   // pair only with the other slots of their rotation (see getLockForDMA), so
   // only those count.
-  auto ref = getChannelOpOnBuffer(air_chan, buffer_memref.getDefiningOp());
   auto inRotation = [&](air::ChannelInterface op) {
-    return !ref ||
-           sharesRotation(
-               ref, air::resolveBufferRoot(op.getMemref()).getDefiningOp());
+    return buffersShareRotation(air_chan, buffer_memref,
+                                air::resolveBufferRoot(op.getMemref()));
   };
   llvm::SmallSet<Operation *, 2> unique_write_buffers;
   llvm::SmallSet<Operation *, 2> unique_read_buffers;
@@ -1069,15 +1163,9 @@ SmallVector<Operation *> air::getCircularChainBDs(
   // relative to the copies a whole repetition of the unit accounts for.
   if (refed) {
     SmallVector<int64_t> copies(unit.size(), 0);
-    for (auto *o : ops) {
-      const auto *it = llvm::find(unit, o);
-      if (it == unit.end())
-        it = llvm::find_if(unit, [&](Operation *u) {
-          return memcpyIMappedToEquivalentBDs(o, u);
-        });
-      if (it != unit.end())
-        copies[it - unit.begin()]++;
-    }
+    for (int64_t slot : getUnitSlots(ops, unit))
+      if (slot >= 0)
+        copies[slot]++;
     int64_t repetitions = 0;
     for (int64_t c : copies)
       repetitions = std::gcd(repetitions, c);
@@ -1469,14 +1557,14 @@ FailureOr<std::pair<AIE::LockOp, AIE::LockOp>> air::DMAAllocator::getLockForDMA(
                    (std::get<0>(lock_allocation_list[i])->getOperand(0) ==
                     bufferOp->getOperand(0)) &&
                    (std::get<2>(lock_allocation_list[i]) == channel) &&
-                   sharesRotation(
-                       cast<air::ChannelInterface>(memcpyOp.getOperation()),
-                       std::get<0>(lock_allocation_list[i]))) {
+                   buffersShareRotation(
+                       air_chan, bufferOp->getResult(0),
+                       std::get<0>(lock_allocation_list[i])->getResult(0))) {
           // A tile's buffers on one channel that take turns in a rotation
-          // share a counting lock pair. Other buffers keep a pair each, as on
-          // a memtile (Case 1 above), found by the same-buffer match below: a
-          // shared pair would hold one buffer's next fill until another
-          // buffer's last use.
+          // share a counting lock pair, and a buffer keeps one pair for all
+          // its transfers. Other buffers keep a pair each, as on a memtile
+          // (Case 1 above): a shared pair would hold one buffer's next fill
+          // until another buffer's last use.
           return std::make_pair(std::get<3>(lock_allocation_list[i]),
                                 std::get<4>(lock_allocation_list[i]));
         } else if ((std::get<0>(lock_allocation_list[i]) == bufferOp) &&

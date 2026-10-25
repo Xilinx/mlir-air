@@ -8,9 +8,9 @@
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" -verify-diagnostics
 
 // A core sends [a, b, b] per trip of a run-time loop, b from a fixed loop of
-// two of its own. The core's buffers on the channel share one counting lock
-// pair, and b's sends would release it inside the fixed loop ahead of a's
-// release after it, out of the chain's order. It is rejected.
+// two of its own. b's second send waits inside the fixed loop for the DMA to
+// send the first, while the DMA waits for a, which the core releases after
+// the loop, out of the chain's order. It is rejected.
 
 air.channel @c [1, 1]
 func.func @core_put_in_fixed_loop(%n: i32) {

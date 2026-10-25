@@ -72,6 +72,7 @@ constexpr int kUnsupportedRunTimeRepeatCount = kRunTimeRepeatCount + 1;
 // A transfer alone in fixed loops inside a run-time loop runs several times a
 // trip, back to back. Such a transfer is accepted only when `timesPerTrip` is
 // given; it then maps the transfer to that number, for getCircularChainBDs.
+// The transfers folded onto one BD must all run that number of times.
 SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
 getRepeatCounts(std::vector<Operation *> memcpy_ops,
                 llvm::DenseMap<Operation *, int64_t> *timesPerTrip = nullptr);
@@ -85,6 +86,13 @@ bool memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB);
 // buffer values.
 bool chansPartOfSameRotation(air::ChannelInterface chanA,
                              air::ChannelInterface chanB);
+
+// True if a tile's buffers `a` and `b` (buffer roots, see resolveBufferRoot)
+// share one lock pair on `chan`: they are one buffer, or every transfer of
+// `chan` on either is a slot of one rotation with the others and none moves
+// its buffer several times in a row (in fixed loops of its own). Otherwise
+// each buffer keeps a pair of its own, which all its transfers use.
+bool buffersShareRotation(air::ChannelOp chan, Value a, Value b);
 
 // The shortest unit a chain of memcpy ops repeats, the whole chain when no two
 // of its ops are equivalent, or an empty vector otherwise. This is the oracle
