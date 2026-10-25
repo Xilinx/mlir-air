@@ -284,35 +284,6 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   return dma;
 }
 
-static void
-replaceAllUsesOfConstsInRegionWithNew(SmallVector<Value, 4> constants,
-                                      OpBuilder builder, Region &region) {
-  for (auto c : constants) {
-    replaceAllUsesInRegionWith(
-        c, builder.clone(*c.getDefiningOp())->getResult(0), region);
-  }
-}
-
-void getUsedConstsDefinedAbove(MutableArrayRef<Region> region,
-                               SmallVector<Value, 4> &constants) {
-  llvm::SetVector<Value> region_args;
-  getUsedValuesDefinedAbove(region, region_args);
-  for (Value v : region_args) {
-    if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
-      constants.push_back(v);
-  }
-}
-
-void getUsedArgsDefinedAbove(MutableArrayRef<Region> region,
-                             SmallVector<Value, 4> &args) {
-  llvm::SetVector<Value> region_args;
-  getUsedValuesDefinedAbove(region, region_args);
-  for (Value v : region_args) {
-    if (!isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
-      args.push_back(v);
-  }
-}
-
 void getUsedConstsAndArgsDefinedAbove(MutableArrayRef<Region> region,
                                       SmallVector<Value, 4> &constants,
                                       SmallVector<Value, 4> &args) {

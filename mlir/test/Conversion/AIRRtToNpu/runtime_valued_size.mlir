@@ -131,3 +131,62 @@ module {
     return
   }
 }
+
+// -----
+
+// A runtime count of 16384-element runs, each continuing the one before, sent
+// 16 times. The runs exceed a descriptor dimension, but the transfer is one
+// linear run: it is not tiled, and its length is the count times 16384.
+
+// CHECK-LABEL: aie.runtime_sequence @func5
+// CHECK-SAME:    %{{.*}}: memref<1048576xbf16>, %[[N:[a-zA-Z0-9_]+]]: i64
+// CHECK:         %[[M:.*]] = arith.muli %[[N]], %{{.*}} : i64
+// CHECK:         %[[L:.*]] = arith.trunci %[[M]]
+// CHECK:         aiex.dma_configure_task_for @airMemcpyId2 {
+// CHECK-NEXT:      aie.dma_bd(%{{.*}} offset = 0 len = %[[L]])
+// CHECK:         } {repeat_count = 15 : i32}
+// CHECK-NOT:     aie.dma_bd
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "segment5"}
+  func.func @func5(%arg0: memref<1048576xbf16>, %n: i64) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c16_i64 = arith.constant 16 : i64
+    %c16384_i64 = arith.constant 16384 : i64
+    %p = airrt.segment_load "segment5" : i64
+    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c16_i64, %c1_i64, %n, %c16384_i64], [%c0_i64, %c0_i64, %c16384_i64, %c1_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<1048576xbf16>)
+    return
+  }
+}
+
+// -----
+
+// A runtime repeat of a 2048-element run: the run exceeds a descriptor
+// dimension but is one linear run, so it is not tiled.
+
+// CHECK-LABEL: aie.runtime_sequence @func6
+// CHECK-SAME:    %{{.*}}: memref<1048576xbf16>, %[[N:[a-zA-Z0-9_]+]]: i64
+// CHECK:         %[[T:.*]] = arith.trunci %[[N]]
+// CHECK:         %[[R:.*]] = arith.subi %[[T]]
+// CHECK:         aiex.dma_configure_task_for @airMemcpyId2 repeat %[[R]] : i32 {
+// CHECK-NEXT:      aie.dma_bd(%{{.*}} offset = 0 len = 2048 sizes = [2048] strides = [1])
+// CHECK-NOT:     aie.dma_bd
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "segment6"}
+  func.func @func6(%arg0: memref<1048576xbf16>, %n: i64) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c2048_i64 = arith.constant 2048 : i64
+    %p = airrt.segment_load "segment6" : i64
+    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%n, %c1_i64, %c1_i64, %c2048_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<1048576xbf16>)
+    return
+  }
+}

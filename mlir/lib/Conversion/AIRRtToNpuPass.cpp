@@ -2347,6 +2347,14 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   air::DmaBdLimits limits =
       air::getDmaBdLimits(memcpy_op, air::MemorySpace::L3);
 
+  // Tiling needs every size; a runtime one is only taken as the length of a
+  // linear run (isContiguousRowMajorOrRepeated), which is never tiled.
+  if (llvm::any_of(wraps,
+                   [](OpFoldResult w) { return !getConstantIntValue(w); }))
+    return memcpy_op.emitOpError(
+        "runtime-valued DMA size requires a contiguous transfer or a zero "
+        "outer stride");
+
   for (int i = wraps.size() - 1; i >= 0; i--) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
     auto const_stride = *getConstantIntValue(strides[i]);
