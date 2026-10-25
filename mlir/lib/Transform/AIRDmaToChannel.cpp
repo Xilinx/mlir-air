@@ -98,9 +98,9 @@ generateWaitAllToDanglingTokens(OpBuilder &builder, MLIRContext *ctx,
 }
 
 // Yields, for each token the loop carries, a wait on the dangling tokens in
-// the loop body, and `values` in order for the other iter_args. If no op in
-// the body waits on the loop's tokens, the wait is on the tokens themselves,
-// so that the loop passes them on.
+// the loop body, and `values` in order for the other iter_args. A token that
+// no op in the body waits on is waited on itself, so that the loop passes it
+// on.
 static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder &builder,
                                                       MLIRContext *ctx,
                                                       scf::ForOp scf_loop,
@@ -114,8 +114,12 @@ static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder &builder,
   Value token;
   if (!inputTokens.empty()) {
     auto wa_op = generateWaitAllToDanglingTokens(builder, ctx, inputTokens);
-    if (wa_op.getAsyncDependencies().empty())
-      wa_op.getAsyncDependenciesMutable().assign(inputTokens);
+    for (Value t : inputTokens) {
+      SetVector<Value> leaves;
+      getLeavesInDepGraph(t, leaves);
+      if (leaves.empty())
+        wa_op.getAsyncDependenciesMutable().append(t);
+    }
     wa_op->setAttr("hoist", StringAttr::get(ctx, "dep"));
     token = wa_op.getAsyncToken();
   }
@@ -200,12 +204,13 @@ static bool isCarriedForHoistedOps(scf::ForOp loop, unsigned index) {
 }
 
 // Keeps in `slice` the pure ops whose values the hoisted code uses, and adds
-// what computes the values that scf.for loops carry for it. The other ops in
-// the slice are cloned, or become waits, with their operands, and so is a
-// pure op whose result such an op reads. A loop carries a value one of them
-// reads, as iter_arg or result, so its yielded and initial values are needed
-// too. Pure ops nothing cloned reads are dropped: their clones would be
-// dead, and could read a value no clone defines.
+// what computes the values that scf.for loops carry for it, with the loops and
+// the bodies of the air.execute ops it adds. The other ops in the slice are
+// cloned, or become waits, with their operands, and so is a pure op whose
+// result such an op reads. A loop carries a value one of them reads, as
+// iter_arg or result, so its yielded and initial values are needed too. Pure
+// ops nothing cloned reads are dropped: their clones would be dead, and could
+// read a value no clone defines.
 static void keepUsedOpsAndCarriedValues(SetVector<Operation *> &slice,
                                         const BackwardSliceOptions &options) {
   // Ops in an air.execute are cloned with it, keeping their marks.
@@ -221,6 +226,7 @@ static void keepUsedOpsAndCarriedValues(SetVector<Operation *> &slice,
   auto useValue = [&](Value v) {
     unsigned i = 0;
     if (scf::ForOp loop = getLoopCarryingValue(v, i)) {
+      slice.insert(loop);
       if (used.insert(loop).second)
         ops.push_back(loop);
       if (carried.insert(loop.getRegionIterArgs()[i]).second) {
@@ -262,6 +268,11 @@ static void keepUsedOpsAndCarriedValues(SetVector<Operation *> &slice,
       useOperands(ops.pop_back_val());
     } else if (n < slice.size()) {
       Operation *op = slice[n++];
+      if (auto exec = dyn_cast<air::ExecuteOp>(op))
+        exec.getRegion().walk([&](Operation *child) {
+          if (!child->hasTrait<OpTrait::IsTerminator>())
+            slice.insert(child);
+        });
       if (!droppable(op) && !op->getParentOfType<air::ExecuteOp>() &&
           used.insert(op).second)
         ops.push_back(op);

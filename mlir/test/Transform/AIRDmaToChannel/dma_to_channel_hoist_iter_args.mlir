@@ -369,3 +369,49 @@ module {
     return
   }
 }
+
+// -----
+
+// The loop's update of the DMA's offset is the result of an inner loop that
+// the DMA does not read. The inner loop is hoisted too, for the outer loop's
+// yield.
+
+// CHECK-LABEL: func.func @inner_loop_update
+// CHECK: air.segment @seg
+// CHECK: scf.for {{.*}} iter_args(%[[BASE:.*]] = %c0{{.*}}, %{{.*}} = %{{.*}}) -> (index, !air.async.token)
+// CHECK-NEXT: %[[OFF:.*]] = affine.apply #{{.*}}(%{{.*}})[%[[BASE]]]
+// CHECK-NEXT: air.channel.put {{.*}}@channel_1{{.*}}[%[[OFF]]] [16] [1]
+// CHECK-NEXT: scf.yield %c32{{.*}}, %{{.*}} : index, !air.async.token
+// CHECK: air.herd @h
+#map = affine_map<(d0)[s0] -> (d0 * 16 + s0)>
+module {
+  func.func @inner_loop_update(%a: memref<256xf32>) {
+    air.launch () in () args(%la=%a) : memref<256xf32> {
+      air.segment @seg args(%sa=%la) : memref<256xf32> {
+        %c1_s = arith.constant 1 : index
+        %c2_s = arith.constant 2 : index
+        %l2 = memref.alloc() : memref<256xf32, 1>
+        air.dma_memcpy_nd (%l2[] [] [], %sa[] [] []) : (memref<256xf32, 1>, memref<256xf32>)
+        air.herd @h tile (%tx, %ty) in (%sx=%c2_s, %sy=%c1_s) args(%in=%l2) : memref<256xf32, 1> {
+          %c0 = arith.constant 0 : index
+          %c1 = arith.constant 1 : index
+          %c2 = arith.constant 2 : index
+          %c4 = arith.constant 4 : index
+          %c16 = arith.constant 16 : index
+          %buf = memref.alloc() : memref<16xf32, 2>
+          %end = scf.for %i = %c0 to %c4 step %c1 iter_args(%base = %c0) -> (index) {
+            %off = affine.apply #map(%tx)[%base]
+            air.dma_memcpy_nd (%buf[] [] [], %in[%off] [%c16] [%c1]) : (memref<16xf32, 2>, memref<256xf32, 1>)
+            %nb = scf.for %j = %c0 to %c2 step %c1 iter_args(%x = %base) -> (index) {
+              %c32 = arith.constant 32 : index
+              scf.yield %c32 : index
+            }
+            scf.yield %nb : index
+          }
+          memref.dealloc %buf : memref<16xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}
