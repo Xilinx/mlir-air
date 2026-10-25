@@ -3496,8 +3496,9 @@ struct FoldExtractSliceOfForallInit
             !isEqualConstantIntOrValueArray(extract.getMixedStrides(),
                                             insert.getMixedStrides()))
           continue;
+        Value blockArg = arg;
         rewriter.modifyOpInPlace(
-            extract, [&] { extract.getSourceMutable().assign(arg); });
+            extract, [&] { extract.getSourceMutable().assign(blockArg); });
         return success();
       }
     }
