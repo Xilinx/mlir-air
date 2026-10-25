@@ -41,6 +41,18 @@ module attributes {transform.with_named_sequence} {
   %producer5 = transform.structured.match ops{["linalg.matmul"]} in %func5 : (!transform.any_op) -> !transform.any_op
   %truncf5 = transform.structured.match ops{["linalg.generic"]} attributes{truncf_bufferized} in %func5 : (!transform.any_op) -> !transform.any_op
   %fused5 = transform.air.fuse_truncf_linalg %truncf5, %producer5 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+
+  // Test case 6: Fuse truncf into an elementwise producer on 2-D tensors
+  %func6 = transform.structured.match ops{["func.func"]} attributes{sym_name = "fuse_truncf_into_2d_elementwise"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %producer6 = transform.structured.match ops{["linalg.generic"]} attributes{producer_2d} in %func6 : (!transform.any_op) -> !transform.any_op
+  %truncf6 = transform.structured.match ops{["linalg.generic"]} attributes{truncf_2d} in %func6 : (!transform.any_op) -> !transform.any_op
+  %fused6 = transform.air.fuse_truncf_linalg %truncf6, %producer6 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+
+  // Test case 7: Fuse truncf into a contraction reading B as [n, k]
+  %func7 = transform.structured.match ops{["func.func"]} attributes{sym_name = "fuse_truncf_into_transposed_b"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %producer7 = transform.structured.match ops{["linalg.generic"]} attributes{producer_tb} in %func7 : (!transform.any_op) -> !transform.any_op
+  %truncf7 = transform.structured.match ops{["linalg.generic"]} attributes{truncf_tb} in %func7 : (!transform.any_op) -> !transform.any_op
+  %fused7 = transform.air.fuse_truncf_linalg %truncf7, %producer7 : (!transform.any_op, !transform.any_op) -> !transform.any_op
     transform.yield
   }
 }

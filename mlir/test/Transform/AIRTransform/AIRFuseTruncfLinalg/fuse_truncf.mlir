@@ -80,8 +80,7 @@ func.func @fuse_truncf_into_matmul(%a: tensor<8x16xf32>, %b: tensor<16x8xf32>, %
 }
 
 // CHECK-NOT: linalg.generic {{.*}} attributes {truncf_matmul}
-// For 2D+ inputs, fuse_truncf_linalg directly produces a linalg.matmul
-// with bf16 output type (LLVM 23 compatibility — bypass specialize).
+// A matmul producer gives a linalg.matmul with a bf16 result.
 // CHECK: %[[EMPTY:.*]] = tensor.empty() : tensor<8x8xbf16>
 // CHECK: %[[RESULT:.*]] = linalg.matmul
 // CHECK-SAME: ins(%arg0, %arg1 : tensor<8x16xf32>, tensor<16x8xf32>)
@@ -214,3 +213,79 @@ func.func @fuse_truncf_bufferized(%a: tensor<256x256xbf16>, %b: tensor<256x256xb
 // CHECK-SAME: ins(%arg0, %arg1 : tensor<256x256xbf16>, tensor<256x256xbf16>)
 // CHECK-SAME: outs(%[[FILL]] : tensor<256x256xbf16>)
 // CHECK: return %[[RESULT]] : tensor<256x256xbf16>
+
+// Test 6: An elementwise producer on 2-D tensors stays a generic: the fused
+// op multiplies and adds elementwise and truncates, with no reduction.
+// CHECK-LABEL: @fuse_truncf_into_2d_elementwise
+// CHECK-NOT: linalg.matmul
+// CHECK: linalg.generic
+// CHECK-SAME: iterator_types = ["parallel", "parallel"]
+// CHECK: %[[M:.*]] = arith.mulf
+// CHECK: %[[A:.*]] = arith.addf %[[M]]
+// CHECK: %[[T:.*]] = arith.truncf %[[A]] : f32 to bf16
+// CHECK: linalg.yield %[[T]] : bf16
+// CHECK-NOT: linalg.matmul
+// CHECK: return
+func.func @fuse_truncf_into_2d_elementwise(%a: tensor<64x512xf32>, %b: tensor<64x512xf32>, %c: tensor<64x512xf32>, %out: tensor<64x512xbf16>) -> tensor<64x512xbf16> {
+  %empty = tensor.empty() : tensor<64x512xf32>
+  %fma = linalg.generic {producer_2d,
+    indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                     affine_map<(d0, d1) -> (d0, d1)>,
+                     affine_map<(d0, d1) -> (d0, d1)>,
+                     affine_map<(d0, d1) -> (d0, d1)>],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%a, %b, %c : tensor<64x512xf32>, tensor<64x512xf32>, tensor<64x512xf32>)
+    outs(%empty : tensor<64x512xf32>) {
+  ^bb0(%x: f32, %y: f32, %z: f32, %o: f32):
+    %m = arith.mulf %x, %y : f32
+    %s = arith.addf %m, %z : f32
+    linalg.yield %s : f32
+  } -> tensor<64x512xf32>
+  %truncf = linalg.generic {truncf_2d,
+    indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                     affine_map<(d0, d1) -> (d0, d1)>],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%fma : tensor<64x512xf32>) outs(%out : tensor<64x512xbf16>) {
+  ^bb0(%in: f32, %o: bf16):
+    %t = arith.truncf %in : f32 to bf16
+    linalg.yield %t : bf16
+  } -> tensor<64x512xbf16>
+  return %truncf : tensor<64x512xbf16>
+}
+
+// Test 7: Fuse truncf into a contraction that reads B as [n, k]. Its maps are
+// not a matmul's, so the fused op stays a generic with those maps.
+// CHECK-LABEL: @fuse_truncf_into_transposed_b
+// CHECK-NOT: linalg.matmul
+// CHECK: linalg.generic {indexing_maps = [#{{.*}}, #{{.*}}, #{{.*}}], iterator_types = ["parallel", "parallel", "reduction"]}
+// CHECK-SAME: ins(%arg0, %arg1 : tensor<8x16xbf16>, tensor<8x16xbf16>)
+// CHECK-SAME: outs(%{{.*}} : tensor<8x8xbf16>)
+// CHECK-NOT: linalg.matmul
+func.func @fuse_truncf_into_transposed_b(%a: tensor<8x16xbf16>, %b: tensor<8x16xbf16>, %c: tensor<8x8xbf16>) -> tensor<8x8xbf16> {
+  %cst = arith.constant 0.000000e+00 : f32
+  %empty = tensor.empty() : tensor<8x8xf32>
+  %fill = linalg.fill ins(%cst : f32) outs(%empty : tensor<8x8xf32>) -> tensor<8x8xf32>
+  %mm = linalg.generic {producer_tb,
+    indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2)>,
+                     affine_map<(d0, d1, d2) -> (d1, d2)>,
+                     affine_map<(d0, d1, d2) -> (d0, d1)>],
+    iterator_types = ["parallel", "parallel", "reduction"]
+  } ins(%a, %b : tensor<8x16xbf16>, tensor<8x16xbf16>) outs(%fill : tensor<8x8xf32>) {
+  ^bb0(%x: bf16, %y: bf16, %acc: f32):
+    %xe = arith.extf %x : bf16 to f32
+    %ye = arith.extf %y : bf16 to f32
+    %m = arith.mulf %xe, %ye : f32
+    %s = arith.addf %acc, %m : f32
+    linalg.yield %s : f32
+  } -> tensor<8x8xf32>
+  %truncf = linalg.generic {truncf_tb,
+    indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                     affine_map<(d0, d1) -> (d0, d1)>],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%mm : tensor<8x8xf32>) outs(%c : tensor<8x8xbf16>) {
+  ^bb0(%in: f32, %out_elem: bf16):
+    %t = arith.truncf %in : f32 to bf16
+    linalg.yield %t : bf16
+  } -> tensor<8x8xbf16>
+  return %truncf : tensor<8x8xbf16>
+}
