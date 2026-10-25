@@ -47,6 +47,13 @@ EOS_IDS = (151643, 151645)  # <|endoftext|>, <|im_end|>
 _Q4NX_CACHE = os.path.expanduser("~/.cache/q4nx_qwen25_3b")
 
 
+def _fused_build():
+    """$FUSED_PREFILL_DIR (the Makefile sets it) if it holds a fused prefill
+    build, else None: the per-op prefill."""
+    d = os.environ.get("FUSED_PREFILL_DIR")
+    return d if d and os.path.isfile(os.path.join(d, "manifest.json")) else None
+
+
 def _ensure_requant_cache(fd, model):
     """Return the decode q4k-cascade cache path, building it from the weight source on
     first use (one-time pack of 36 layers + the tied lm-head).
@@ -224,6 +231,8 @@ class FusedDecoder:
 
         # ONE xclbin + ONE self-contained BO set (weight BO uploaded once). 36 layers of
         # Q4NX weights plus the tied lm-head fit one buffer, so no DECODE_WGROUP split.
+        from kv_bos import KVBuffers
+
         self.dev = xrt.device(0)
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.cur_maxl = self.ATTN_MAXL
@@ -236,8 +245,13 @@ class FusedDecoder:
             self.w_bo = xrt.ext.bo(self.dev, W.size * 2)
             self.r_bo = xrt.ext.bo(self.dev, self._RMS_SIZE * 2)
             self.y_bo = xrt.ext.bo(self.dev, self.ny * 2)
-            self.kvc = xrt.ext.bo(self.dev, self.UNI_DEC * self.LREG * 2)
-            self._elfdec.bind((self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc))
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.ext.bo(self.dev, n)
+            )
+            self.kvc = self.kvb.kvc
+            self._elfdec.bind(
+                (self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc) + self.kvb.extra
+            )
             self._geom = _stair.KVGeometry(
                 self.UNI_DEC, self.KVSZ_TOK, self.REGION_W, self.NGRP, self.LREG
             )
@@ -250,7 +264,10 @@ class FusedDecoder:
             self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
             self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
             self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
-            self.kvc = xrt.bo(self.dev, self.UNI_DEC * self.LREG * 2, HO, g(7))
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.bo(self.dev, n, HO, g(3 + a))
+            )
+            self.kvc = self.kvb.kvc
             self._ist = _stair.make_insts_states(
                 self.gen, xrt, self.dev, g(1), self.windows
             )
@@ -292,9 +309,7 @@ class FusedDecoder:
         TO = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         _lreg = self._geom.lreg(self.cur_maxl)
         for Lyr in range(self.UNI_DEC):
-            boff = Lyr * _lreg * 2
-            self.kvc.write(self.KV[Lyr, :_lreg].view(np.int16), boff)
-            self.kvc.sync(TO, _lreg * 2, boff)
+            self.kvb.write_layer(Lyr, self.KV[Lyr, :_lreg].view(np.int16), TO)
         self._kv_dirty = False
 
     def _rope_slab(self, p):
@@ -322,9 +337,7 @@ class FusedDecoder:
             insts_size = _stair.patch_insts(self._st, L, xrt, TO)
         # KV uploaded once (seed), then device-resident (kernel appends in place).
         if getattr(self, "_kv_dirty", True):
-            packed = np.ascontiguousarray(self.KV).reshape(-1)
-            self.kvc.write(packed.view(np.int16), 0)
-            self.kvc.sync(TO)
+            self.kvb.write_layers(np.ascontiguousarray(self.KV).view(np.int16), TO)
             self._kv_dirty = False
         x0 = np.asarray(self.embed[tok], self.bf16)  # Qwen2.5 has no embedding scale
         # RMS BO: norm slabs + final_norm constant; write once, then patch the per-layer
@@ -358,6 +371,7 @@ class FusedDecoder:
                 self.r_bo,
                 self.y_bo,
                 self.kvc,
+                *self.kvb.extra,
             ).wait(60000)
         _voc_n = self.UNI_LM * self.VP
         self.y_bo.sync(FROM, _voc_n * 2, self.decode_y * 2)
@@ -372,22 +386,38 @@ class FusedDecoder:
         return yv[: self.VOCAB_SIZE]
 
 
-def _build_prefiller(model, seq_len=None):
-    """Construct the AIR prefill engine and load its resident weight BOs.
+def _build_prefiller(model, seq_len=None, fused=None):
+    """Construct the AIR prefill engine and load its resident weight BOs: the
+    fused prefill when `fused` names a build that reads `model`, else the
+    per-op one.
 
     This is the model-load cost -- the ELF cache plus the Q4NX host dequant and the
     one-time write of every weight into its BO. Split out from the per-turn prefill
     so an interactive session pays it once."""
     import time
+    import types
 
-    from qwen25_3b_q4_prefill import Qwen25Q4Prefill
-
-    seq_len = seq_len or int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
     t_load = time.perf_counter()
-    pf = Qwen25Q4Prefill(
-        seq_len=seq_len, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
-    )
-    pf.load_weights(model=model)
+    pf = None
+    if fused:
+        sys.modules.setdefault(
+            "air_examples", types.ModuleType("air_examples")
+        ).__path__ = [str(_PE)]
+        from air_examples.llms.shared.fused_prefill import dense, packing
+        from air_examples.llms.shared.fused_prefill.models import MODELS
+
+        # a weight source the fused prefill does not read as the decode does
+        # takes the per-op prefill
+        if packing.reads(MODELS["qwen25_3b_q4"], model):
+            pf = dense.load("qwen25_3b_q4", fused, model)
+    if pf is None:
+        from qwen25_3b_q4_prefill import Qwen25Q4Prefill
+
+        seq_len = seq_len or int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
+        pf = Qwen25Q4Prefill(
+            seq_len=seq_len, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
+        )
+        pf.load_weights(model=model)
     print(
         f"[inference] model load (dequant + resident BOs): "
         f"{time.perf_counter() - t_load:.1f}s",
@@ -417,12 +447,15 @@ def _prefill_turn(pf, prompt):
     logits = pf.prefill(prompt)
     ttft = time.perf_counter() - t0
     Kc, Vc = _kv_stack(pf, gw.NUM_LAYERS)
+    # release the prefill's hw_context for the decoder; prefill() resumes it
+    if hasattr(pf, "suspend"):
+        pf.suspend()
     return Kc, Vc, int(logits.argmax()), ttft
 
 
-def _prefill_npu(prompt, model, seq_len=None):
+def _prefill_npu(prompt, model, seq_len=None, fused=None):
     """Load the prefill engine and run one prompt through it (the one-shot path)."""
-    return _prefill_turn(_build_prefiller(model, seq_len), prompt)
+    return _prefill_turn(_build_prefiller(model, seq_len, fused), prompt)
 
 
 def _decode_loop(dec, prompt, first, n_tokens, Kc, Vc, on_token=None, stop_on_eos=True):
@@ -459,6 +492,7 @@ def generate(
     greedy=True,
     numpy_prefill=False,
     stop_on_eos=True,
+    fused_prefill=None,
 ):
     import numpy as np, time
     import qwen25_3b_q4_weights as gw
@@ -476,7 +510,7 @@ def generate(
         first = int(logits[-1].argmax())
         ttft = time.perf_counter() - t0  # the numpy path fuses load and compute
     else:
-        Kc, Vc, first, ttft = _prefill_npu(prompt, model)
+        Kc, Vc, first, ttft = _prefill_npu(prompt, model, fused=fused_prefill)
     P = Kc.shape[1]
     print(
         f"[inference] prefill first token = {first} (Paris={PARIS_FIRST})", flush=True
@@ -580,13 +614,13 @@ def _format_prompt(tokenizer, text):
     return [int(t) for t in ids]
 
 
-def repl(model=MODEL_DEFAULT, n_tokens=64):
+def repl(model=MODEL_DEFAULT, n_tokens=64, fused_prefill=None):
     """Interactive chat. The prefill engine and the decode templates are built once
     and held across turns, so only the first turn pays the model load."""
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_REPO)
-    pf = _build_prefiller(model)
+    pf = _build_prefiller(model, fused=fused_prefill)
     dec = FusedDecoder(model=model)
     print(
         f"\nInteractive chat (Ctrl-D or 'exit' to quit). "
@@ -649,12 +683,19 @@ def main():
         action="store_true",
         help="chat REPL: build the engine once and hold it across turns",
     )
+    ap.add_argument(
+        "--fused-prefill",
+        default=_fused_build(),
+        metavar="BUILD_DIR",
+        help="prefill on this `make compile-fused-prefill` build (default: "
+        "$FUSED_PREFILL_DIR if it holds one; '' selects the per-op prefill)",
+    )
     args = ap.parse_args()
 
     if args.interactive:
         if args.numpy_prefill:
             ap.error("--interactive cannot be combined with --numpy-prefill")
-        repl(model=args.model, n_tokens=args.n_tokens)
+        repl(model=args.model, n_tokens=args.n_tokens, fused_prefill=args.fused_prefill)
         return
 
     if args.prompt_ids:
@@ -677,6 +718,7 @@ def main():
         model=args.model,
         numpy_prefill=args.numpy_prefill,
         stop_on_eos=not args.no_eos_stop,
+        fused_prefill=args.fused_prefill,
     )
     print("=" * 60)
     print(f"[inference] gen ids: {gen_ids}")

@@ -95,7 +95,8 @@ builds its own into THIS directory rather than the shared `fused_decode` one
 ## Quick Start
 
 ```bash
-# One-time: compile the prefill ELFs (~4 min; no weights needed)
+# One-time: build the fused prefill (no weights needed; `make compile-prefill`
+# builds the per-op prefill ELFs instead)
 make compile
 
 # One-time: build the fused decode templates for the 3B geometry (~15 min).

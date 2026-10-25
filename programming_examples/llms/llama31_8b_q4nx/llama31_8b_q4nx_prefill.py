@@ -97,11 +97,21 @@ def _bf(a):
 class LlamaQ4nxPrefill:
     """AIR realization of the Q4NX causal-LM prefill interface (Llama-3.1-8B)."""
 
-    def __init__(self, seq_len=2048, n_layers=32, cache_dir=None, verbose=False):
+    def __init__(
+        self,
+        seq_len=2048,
+        n_layers=32,
+        cache_dir=None,
+        verbose=False,
+        *,
+        cache=None,
+        cache_host_args=True,
+    ):
         self.seq = seq_len
         self.n_layers = n_layers
         self.MAX_L = seq_len
         self.current_context_length = 0
+        self.cache_host_args = cache_host_args
         from llama31_8b_q4nx_weights import llama31_8b_config, generate_rope_lut
         from llama32_3b_prefill import compile_all_kernels, use_temporal_fa
         from air_examples.llms.shared.infra.backend_presets import LM_GEMV_BACKEND
@@ -125,7 +135,11 @@ class LlamaQ4nxPrefill:
             else "hfa"
         )
         cache_dir = cache_dir or str(_HERE / f"_q4nx_cache_seq{seq_len}_{_fa}")
-        self.cache = KernelCache(cache_dir=cache_dir, verbose=verbose)
+        self.cache = (
+            cache
+            if cache is not None
+            else KernelCache(cache_dir=cache_dir, verbose=verbose)
+        )
 
         self.D = self.config.emb_dim
         self.KV_DIM = self.config.n_kv_heads * self.config.head_dim
@@ -183,11 +197,11 @@ class LlamaQ4nxPrefill:
         self._dev_t = 0.0  # accumulated NPU dispatch time (s)
         self._op_t = {}  # per-op NPU dispatch time (s)
 
-    def _dev(self, fn, *a, tag="?"):
+    def _dev(self, fn, *a, tag="?", **kwargs):
         import time
 
         t = time.time()
-        r = fn(*a)
+        r = fn(*a, **kwargs)
         dt = time.time() - t
         self._dev_t += dt
         self._op_t[tag] = self._op_t.get(tag, 0.0) + dt
@@ -258,6 +272,7 @@ class LlamaQ4nxPrefill:
             False,
             False,
             tag="layer",
+            cache_host_args=self.cache_host_args,
         )
         self.kv_k[k][:N] = np.asarray(inter["k_roped"], bfloat16)[:N]
         self.kv_v[k][:N] = np.asarray(inter["v"], bfloat16)[:N]

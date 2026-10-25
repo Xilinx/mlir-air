@@ -81,11 +81,27 @@ bool memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB);
 bool chansPartOfSameRotation(air::ChannelInterface chanA,
                              air::ChannelInterface chanB);
 
-// The unique repeating unit of a chain of memcpy ops, or an empty vector when
-// the chain does not repeat. This is the oracle the BD emitter itself uses to
+// The unique repeating unit of a chain of memcpy ops, the unit the chain is
+// whole copies of when that unit repeats an op, or an empty vector when the
+// chain does not repeat. This is the oracle the BD emitter itself uses to
 // decide whether a chain folds into a circular ring.
 llvm::SetVector<Operation *>
 getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps);
+
+// The BDs, in order, of one circular chain whose repeating unit is `unit`.
+// A transfer re-fed n times (air.refeed_count) is one op but n sends per fill,
+// and a chain with one BD per op serves the ops round-robin. That is the wrong
+// order once two transfers of one logical flow share the chain: the flow is a
+// FIFO and wants x^n y^m, not (x y)^n. It is also a deadlock when transfers of
+// different flows are re-fed at different rates. Each op is repeated so that
+// a whole number of passes sends what every flow needs per fill, using the
+// fewest BDs that do so.
+// `ops` are the chain's transfers in program order, which the emitter folded
+// to `unit`. `sendsPerFill` gives an op's sends per fill, or nullopt when that
+// is not known, in which case `unit` is returned unchanged.
+SmallVector<Operation *> getCircularChainBDs(
+    ArrayRef<Operation *> ops, ArrayRef<Operation *> unit,
+    llvm::function_ref<std::optional<int64_t>(Operation *)> sendsPerFill);
 
 std::vector<AIE::BDDimLayoutAttr>
 getWrapsAndStrides(ArrayRef<OpFoldResult> memcpy_sizes,
@@ -218,10 +234,10 @@ struct MemcpyBundleAsFlow {
   // MM2S holds one entry per put op, so several MM2S ops from the same producer
   // tile map to one MM2S_alloc entry (the index spaces do NOT align). Grouping
   // of puts to producer-tile indices happens in simpleDMAChannelAllocation.
+  // All L3 (shim) puts share one entry, placed after the on-device producers.
   // Single-producer flows keep numMM2SAllocs == 1.
   std::vector<allocation_info_t> MM2S_alloc;
   std::vector<Operation *> MM2S; // air::ChannelPuts (one entry per put op)
-  air::MemorySpace MM2S_memspace;
   air::MemorySpace S2MM_memspace;
   int numMM2SAllocs = 0;
   int numS2MMAllocs = 0;

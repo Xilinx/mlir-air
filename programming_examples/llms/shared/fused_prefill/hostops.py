@@ -20,7 +20,8 @@ def load(build_dir):
     os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
     _lib = ctypes.CDLL(os.path.join(build_dir, "libhostops.so"))
     _lib.tile_a.argtypes = [_p, _i, _i, _i, _i, _p]
-    _lib.tiles_bfp.argtypes = [_p, _i, _i, _i, _i, _i, _i, _p]
+    _l = ctypes.c_long
+    _lib.tiles_bfp.argtypes = [_p, _i, _i, _i, _i, _i, _i, _p, _l, _l]
     _lib.bfp_rows.argtypes = [_p, ctypes.c_long, _p]
     _lib.bf16_to_f32.argtypes = [_p, _i, _i, _i, _p]
     _lib.rms.argtypes = [_p, _i, _i, _p, _f, _p]
@@ -45,7 +46,7 @@ _tiles = {}
 
 def _bf16_tiles(dst, tm, tk):
     """The bf16 tiles [M/tm, K/tk, tm, tk] the tilers fill for dst, the GEMM's
-    A as bfp16 bytes [M/tm, K/tk, tile]; reused per K."""
+    A; reused per K."""
     key = (dst.shape[0], dst.shape[1], tm, tk)
     if key not in _tiles:
         _tiles[key] = np.zeros(key, np.uint16)
@@ -53,10 +54,28 @@ def _bf16_tiles(dst, tm, tk):
 
 
 def _to_bfp(tiles, t, dst, k0=0, k1=None):
-    """Rows [0, t), columns [k0, k1) of tiles into dst."""
+    """Rows [0, t), columns [k0, k1) of tiles into dst: bfp16 bytes
+    [M/tm, K/tk, tile], or bf16 tiles [M/tm, K/tk, tm, tk] for a GEMM that
+    reads bf16 (packing.a_layout). Either may be a strided view
+    (Engine.a_chunk)."""
     _, ks, tm, tk = tiles.shape
     k1 = ks * tk if k1 is None else k1
-    _lib.tiles_bfp(tiles.ctypes.data, t, ks * tk, tm, tk, k0, k1, dst.ctypes.data)
+    if dst.ndim == 4:
+        nb = -(-t // tm)  # row blocks with rows below t
+        src = tiles[:nb].view(dst.dtype)
+        # whole K steps in one copy, a partial step at either end on its own
+        s0, s1 = -(-k0 // tk), k1 // tk
+        dst[:nb, s0:s1] = src[:, s0:s1]
+        for s in {k0 // tk, s1} - set(range(s0, s1)):
+            c0, c1 = max(k0 - s * tk, 0), min(k1 - s * tk, tk)
+            if c0 < c1:
+                dst[:nb, s, :, c0:c1] = src[:, s, :, c0:c1]
+        return
+    assert dst.strides[2] == 1, dst.strides
+    dr, dk = (v // dst.shape[2] for v in dst.strides[:2])
+    _lib.tiles_bfp(
+        tiles.ctypes.data, t, ks * tk, tm, tk, k0, k1, dst.ctypes.data, dr, dk
+    )
 
 
 def tile_a(x, dst, tm, tk):

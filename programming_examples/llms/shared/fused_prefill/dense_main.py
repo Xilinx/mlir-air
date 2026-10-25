@@ -5,6 +5,7 @@
   python3 dense_main.py build MODEL BUILD_DIR [-j N] [--max-len N]
   python3 dense_main.py verify MODEL BUILD_DIR [--prompt TEXT |
       --text-file F --text-tokens N] [--repeat R] [--tol T]
+  python3 dense_main.py bench MODEL BUILD_DIR --lengths N,N,... [--repeat R]
 
 --max-len sets the longest prompt the build takes (models.py's max_len by
 default), a multiple of the model's lkp. verify and dense.load read it from the
@@ -13,6 +14,11 @@ build.
 verify prints the logit cosine and first token against the fp32 numpy
 reference on the same 4-bit weights, and per-run prefill times. GATE PASS needs logit
 cosine >= --tol and the same first token.
+
+bench times the prefill of a synthetic prompt of each length, after one
+untimed run at that length, and prints one line per length:
+  [bench] prefill L=<n> median <ms> ms min <ms> ms
+It has no reference, so it is as cheap at a long prompt as the prefill itself.
 """
 
 import argparse
@@ -61,10 +67,13 @@ def verify(name, argv):
     else:
         fam = dense
     path = fam.resolve(desc, a.model)
-    tok = AutoTokenizer.from_pretrained(path.parent)
+    meta = path.parent if desc.family == "lfm2" else dense.meta_dir(desc, path)
+    tok = AutoTokenizer.from_pretrained(meta)
     prompt = a.prompt
     if a.text_file:
-        body = tok(Path(a.text_file).read_text())["input_ids"][: a.text_tokens]
+        body = tok(Path(a.text_file).read_text())["input_ids"]
+        # repeated when shorter, so a prompt of any length comes from one file
+        body = (body * -(-a.text_tokens // len(body)))[: a.text_tokens]
         prompt = "Summarize this:\n" + tok.decode(body)
     ids = tok.apply_chat_template(
         [{"role": "user", "content": prompt}],
@@ -117,8 +126,35 @@ def verify(name, argv):
     print("GATE PASS")
 
 
+def bench(name, argv):
+    from air_examples.llms.shared.fused_prefill import dense
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("build_dir")
+    ap.add_argument("--lengths", required=True, help="comma-separated prompt lengths")
+    ap.add_argument("--repeat", type=int, default=1)
+    ap.add_argument("--model", default=None, help="bundle file or directory")
+    a = ap.parse_args(argv)
+
+    vocab = MODELS[name].vocab
+    pf = dense.load(name, a.build_dir, a.model)
+    for n in (int(x) for x in a.lengths.split(",") if x.strip()):
+        ids = [(7 + 13 * i) % vocab for i in range(n)]
+        pf.prefill(ids)
+        ts = []
+        for _ in range(a.repeat):
+            t0 = time.perf_counter()
+            pf.prefill(ids)
+            ts.append((time.perf_counter() - t0) * 1e3)
+        ts.sort()
+        print(
+            f"[bench] prefill L={n} median {ts[len(ts) // 2]:.1f} ms min {ts[0]:.1f} ms",
+            flush=True,
+        )
+
+
 def main():
-    if len(sys.argv) < 3 or sys.argv[1] not in ("build", "verify"):
+    if len(sys.argv) < 3 or sys.argv[1] not in ("build", "verify", "bench"):
         sys.exit(__doc__)
     cmd, name, rest = sys.argv[1], sys.argv[2], sys.argv[3:]
     if name not in MODELS:
@@ -134,6 +170,8 @@ def main():
                 sys.exit(f"--max-len must be a positive multiple of {lkp}")
             ref += f":{a.max_len}"
         build(ref, rest)
+    elif cmd == "bench":
+        bench(name, rest)
     else:
         verify(name, rest)
 

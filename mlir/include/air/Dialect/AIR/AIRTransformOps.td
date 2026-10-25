@@ -484,10 +484,17 @@ def BubbleSliceThroughCollapseOp : Op<Transform_Dialect, "air.bubble_slice_throu
     one for a `tensor.extract_slice` of a `tensor.collapse_shape` whose
     offsets are not all constants. The upstream patterns handle constant
     offsets only. The added pattern moves the slice above the collapse when,
-    in each collapsed dim, the slice takes whole rows of the group's inner
-    dims: its size is a multiple of their product and its offset provably is
-    one (a constant, an `scf.for` induction variable whose lower bound and
-    step are, or sums and products of such).
+    in each collapsed dim, there is a dim `at` of the group such that the
+    slice covers whole rows of the group's dims after `at`. If `at` is the
+    group's first dim, the offset must provably be a multiple of the row
+    size. Otherwise the number of indices the slice takes in dim `at` (its
+    size divided by the row size) must divide the extent of dim `at`, and
+    the offset must provably be a multiple of the slice size, so the slice
+    never crosses into the next index of the dims before `at`. An offset is
+    provably a multiple if it is a constant, an `scf.for` induction variable
+    whose lower bound and step are, or sums and products of such. The new
+    slice takes one index of each dim before `at`, a range of `at`, and all
+    of each dim after it.
 
     A loop over the packets of a collapsed dim then slices the tensor before
     the collapse, so the slice can be fused into the loop with its producer.

@@ -10,7 +10,7 @@
 // RUN: air-translate --mlir-to-llvmir %t.channel.async.llvm.mlir -o %t.channel.async.ll
 // RUN: %OPT -O3 -o %t.channel.async.opt.bc < %t.channel.async.ll
 // RUN: %LLC %t.channel.async.opt.bc --relocation-model=pic -filetype=obj -o %t.channel.async.o
-// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_inc -c -o %t.main.o
+// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %aircpu_inc -c -o %t.main.o
 // RUN: %CLANG %aircpu_lib %mlir_async_lib -o %t.test.exe %t.main.o %t.channel.async.o
 // RUN: %ld_lib_path %t.test.exe
 

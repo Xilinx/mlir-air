@@ -24,7 +24,6 @@ from q4_0_codec import HFModel, requant_q4_0  # noqa: E402
 
 from . import device as D  # noqa: E402
 from . import hostops as H  # noqa: E402
-from . import packing as P  # noqa: E402
 from .engine import TO  # noqa: E402
 from .dense import DensePrefill  # noqa: E402
 
@@ -77,16 +76,16 @@ class Lfm2Prefill(DensePrefill):
             if L in self.attn_layers:
                 raw = [q4(hf, p + f"self_attn.{w}_proj.weight") for w in "qkv"]
                 qkv = [np.concatenate(a) for a in zip(*raw)]
-                self.gemm_site(f"{L}.qkv", e.d, dq + 2 * dk, P.pack_q4(*qkv), 1)
+                self.gemm_site(f"{L}.qkv", e.d, dq + 2 * dk, self.pack_q4(*qkv), 1)
                 o = q4(hf, p + "self_attn.out_proj.weight")
-                self.gemm_site(f"{L}.o", dq, e.d, P.pack_q4(*o), 1)
+                self.gemm_site(f"{L}.o", dq, e.d, self.pack_q4(*o), 1)
                 nm["q_norm"] = hf.bf16(p + "self_attn.q_layernorm.weight")
                 nm["k_norm"] = hf.bf16(p + "self_attn.k_layernorm.weight")
             else:
                 w = q4(hf, p + "conv.in_proj.weight")
-                self.gemm_site(f"{L}.in", e.d, 3 * e.d, P.pack_q4(*w), 1)
+                self.gemm_site(f"{L}.in", e.d, 3 * e.d, self.pack_q4(*w), 1)
                 w = q4(hf, p + "conv.out_proj.weight")
-                self.gemm_site(f"{L}.out", e.d, e.d, P.pack_q4(*w), 1)
+                self.gemm_site(f"{L}.out", e.d, e.d, self.pack_q4(*w), 1)
                 self.taps[L] = hf.bf16(p + "conv.conv.weight").reshape(e.d, -1).T
             for name, w, rows, k in (
                 ("gate", "w1", e.inter, e.d),
@@ -94,13 +93,15 @@ class Lfm2Prefill(DensePrefill):
                 ("down", "w2", e.d, e.inter),
             ):
                 raw = q4(hf, p + f"feed_forward.{w}.weight")
-                self.gemm_site(f"{L}.{name}", k, rows, P.pack_q4(*raw), 1)
+                self.gemm_site(f"{L}.{name}", k, rows, self.pack_q4(*raw), 1)
             self.norms.append(nm)
         self.final_norm = hf.bf16("model.embedding_norm.weight")
         self.embed = hf.bf16("model.embed_tokens.weight")
         self.lm = D.n_split(e.vocab)
         for i, (n0, n1) in enumerate(self.lm):
-            self.gemm_site(f"lm.{i}", e.d, n1 - n0, P.pack_bf16(self.embed[n0:n1]), 0)
+            self.gemm_site(
+                f"lm.{i}", e.d, n1 - n0, self.pack_bf16(self.embed[n0:n1]), 0
+            )
         self.attn_setup()
         self.kvb = {L: self.kv_bo("a") for L in self.attn_layers}
         self.warm("0.up")

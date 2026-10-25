@@ -21,6 +21,11 @@ were actually built at the requested length -- three models' Makefiles wire CTX
 only to the bench length and not to the engine's seq_len, which silently
 produces the flat curve above rather than an error.
 
+With --fused the sweep times the model's fused prefill instead. It is chunked
+and takes any prompt up to the length it was built for, so it is built once,
+for the longest length, and every length is timed in one process on a prompt
+of exactly that many tokens.
+
 Latency only, never a correctness gate -- `make verify` is the correctness gate.
 The per-length Paris first-token check the prefill drivers already print is
 recorded alongside each point, because a borrowed-tile or wrong-length build
@@ -157,6 +162,15 @@ EXPECTABLE = frozenset(
 # guard.
 
 
+def _timeout_output(e):
+    """What a timed-out command printed. TimeoutExpired holds each stream as
+    bytes, or None for one that printed nothing, even with text=True."""
+    return "".join(
+        b.decode("utf-8", "replace") if isinstance(b, bytes) else (b or "")
+        for b in (e.stdout, e.stderr)
+    )
+
+
 def run_point(args, length, logdir):
     """Build + time one padded prefill length. Returns (point, raw output)."""
     env = dict(os.environ)
@@ -183,10 +197,7 @@ def run_point(args, length, logdir):
         out = r.stdout + r.stderr
         rc = r.returncode
     except subprocess.TimeoutExpired as e:
-        out = (e.stdout or "") + (e.stderr or "")
-        if isinstance(out, bytes):
-            out = out.decode("utf-8", "replace")
-        rc, timed_out = -1, True
+        out, rc, timed_out = _timeout_output(e), -1, True
 
     # Write the log before any early return: a timeout is the failure mode most
     # in need of its output, and it used to be the one mode that discarded it.
@@ -226,6 +237,72 @@ def run_point(args, length, logdir):
     return pt, out
 
 
+# "[bench] prefill L=2048 median 1557.4 ms min 1551.7 ms" -- one line per
+# length from the fused prefill's bench (dense_main.py bench).
+FUSED_RE = re.compile(
+    r"^\[bench\] prefill L=(\d+) median ([\d.]+) ms min ([\d.]+) ms", re.M
+)
+
+
+def _make(args, target, *assigns):
+    """Run one make target of the model's Makefile; returns (rc, output), rc None
+    on a timeout."""
+    env = dict(os.environ)
+    for kv in args.env or ():
+        k, _, v = kv.partition("=")
+        env[k] = v
+    cmd = ["make", "-f", str(args.makefile), target, *assigns]
+    if args.peano_dir:
+        cmd.append(f"PEANO_INSTALL_DIR={args.peano_dir}")
+    cmd += list(args.make_var or ())
+    try:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=args.timeout, env=env
+        )
+        return r.returncode, r.stdout + r.stderr
+    except subprocess.TimeoutExpired as e:
+        return None, _timeout_output(e)
+
+
+def run_fused(args, lengths, logdir):
+    """The fused prefill takes any prompt up to the length it was built for, so
+    it is built once, for the longest length, and every length is timed in one
+    process. Returns one point per length."""
+    fdir = f"FUSED_DIR={(logdir / '_fused_prefill').resolve()}"
+    rc, out = _make(
+        args, "compile-fused-prefill", fdir, f"FUSED_MAX_LEN={max(lengths)}"
+    )
+    (logdir / "fused_build.log").write_text(out)
+    if rc != 0:
+        status = "timeout" if rc is None else _classify(out, rc)
+        return [{"prefill_len": n, "status": status} for n in lengths]
+
+    rc, out = _make(
+        args,
+        "profile-fused-prefill",
+        fdir,
+        f"FUSED_LENGTHS={','.join(map(str, lengths))}",
+    )
+    (logdir / "fused_bench.log").write_text(out)
+    timed = {int(m.group(1)): m for m in FUSED_RE.finditer(out)}
+    points = []
+    for n in lengths:
+        pt = {"prefill_len": n}
+        m = timed.get(n)
+        if m:
+            med = float(m.group(2))
+            pt["ttft_ms"] = round(med, 2)
+            pt["min_ttft_ms"] = round(float(m.group(3)), 2)
+            pt["prefill_tokens_per_sec"] = round(n / med * 1000.0, 1)
+            pt["status"] = "ok"
+        else:
+            # The bench stops at the first length that fails, so this and every
+            # later length carry its cause.
+            pt["status"] = "timeout" if rc is None else _classify(out, rc)
+        points.append(pt)
+    return points
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model-name", required=True, help="example dir name")
@@ -246,7 +323,18 @@ def main():
     p.add_argument("--peano-dir", default="")
     p.add_argument("--env", action="append", help="extra KEY=VALUE for the build/run")
     p.add_argument("--make-var", action="append", help="extra VAR=VALUE for make")
-    p.add_argument("--timeout", type=int, default=3600, help="per-point seconds")
+    p.add_argument(
+        "--fused",
+        action="store_true",
+        help="time the fused prefill (one build for every length) instead of "
+        "rebuilding the per-op prefill at each length",
+    )
+    p.add_argument(
+        "--timeout",
+        type=int,
+        default=3600,
+        help="per-point seconds; with --fused, per build and per bench run",
+    )
     p.add_argument("--out", required=True, type=Path)
     args = p.parse_args()
 
@@ -255,10 +343,17 @@ def main():
     logdir = args.out.parent
     logdir.mkdir(parents=True, exist_ok=True)
 
+    if args.fused:
+        print(f"[sweep_prefill] {args.model_name} fused, L={lengths} ...", flush=True)
+        measured = run_fused(args, lengths, logdir)
+
     points, hard_fail = [], False
-    for length in lengths:
-        print(f"[sweep_prefill] {args.model_name} L={length} ...", flush=True)
-        pt, _ = run_point(args, length, logdir)
+    for i, length in enumerate(lengths):
+        if args.fused:
+            pt = measured[i]
+        else:
+            print(f"[sweep_prefill] {args.model_name} L={length} ...", flush=True)
+            pt, _ = run_point(args, length, logdir)
         if pt["status"] != "ok":
             # A wrong_seq_len status carries the built length in its text, so
             # match on the prefix rather than the whole string.

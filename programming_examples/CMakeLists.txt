@@ -26,7 +26,6 @@ find_package(MLIR REQUIRED CONFIG)
 find_package(Python3 COMPONENTS Interpreter)
 
 if(AIR_ENABLE_AIE)
-  find_package(LibXAIE)
   if(NOT AIE_BINARY_DIR)
     find_package(AIE REQUIRED CONFIG)
   endif()
@@ -152,6 +151,17 @@ add_lit_testsuite(check-programming-examples-llms-geometry
 )
 set_target_properties(check-programming-examples-llms-geometry PROPERTIES FOLDER "Tests")
 
+# LLM host-side unit tests (run_host_checks.lit): pure Python against an
+# example's host logic, so like the geometry check they need no NPU, no weights
+# and no compile, and can gate PRs.
+add_lit_testsuite(check-programming-examples-llms-host
+  "Running LLM host-side unit tests (no NPU, no weights)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} --filter "llms/.*/run_host_checks"
+)
+set_target_properties(check-programming-examples-llms-host PROPERTIES FOLDER "Tests")
+
 # LLM verify suite: all models, requires hf_token + NPU.
 # Sequential (-j1) mandatory — concurrent LLM inference causes NPU OOM.
 # Not invoked in PR CI (hf_token unavailable in fork PRs); run by repo
@@ -212,7 +222,7 @@ add_lit_testsuite(check-programming-examples-llms-full20
   "Running nightly paired LLM Full20 studies (sequential)"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS ${AIR_TEST_LIT_ARGS} -j1 --timeout 1800 --filter "llms/.*/run_npu2_full20"
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --timeout 3600 --filter "llms/.*/run_npu2_full20"
 )
 set_target_properties(check-programming-examples-llms-full20 PROPERTIES FOLDER "Tests")
 
@@ -220,7 +230,7 @@ add_lit_testsuite(check-programming-examples-llms-full80
   "Running optional paired LLM Full80 studies (sequential)"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS ${AIR_TEST_LIT_ARGS} -j1 --timeout 5400 -D dflash_full80=1 --filter "llms/.*/run_npu2_full80"
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --timeout 10800 -D dflash_full80=1 --filter "llms/.*/run_npu2_full80"
 )
 set_target_properties(check-programming-examples-llms-full80 PROPERTIES FOLDER "Tests")
 

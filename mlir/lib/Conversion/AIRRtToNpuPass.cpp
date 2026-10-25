@@ -1266,11 +1266,6 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     if (paced)
       configTaskOp->setAttr(air::attrs::PreserveShimDmaOrder,
                             rewriter.getUnitAttr());
-    // Carry the runtime-sequence hoist marker onto the task so the
-    // post-lowering reordering step can move this input feed ahead of the
-    // weight stream.
-    if (op->hasAttr(air::attrs::RuntimeHoist))
-      configTaskOp->setAttr(air::attrs::RuntimeHoist, rewriter.getUnitAttr());
     // Carry the coalesced-feed marker so the double-buffered await synthesis
     // paces this merged channel at depth 1 (no cross-run overlap).
     if (op->hasAttr(air::attrs::CoalescedShimFeed))
@@ -1899,7 +1894,7 @@ public:
     auto seq = AIE::RuntimeSequenceOp::create(
         rewriter, op->getLoc(), op.getSymNameAttr(),
         /*emit_parameter_sync_preamble=*/nullptr, /*trace_buffer=*/nullptr,
-        /*trace_slices=*/nullptr);
+        /*trace_slices=*/nullptr, /*scratchpad_parameters=*/nullptr);
     seq.getBody().push_back(new Block);
 
     // Add and remap the arguments
@@ -2090,7 +2085,7 @@ AIE::DeviceOp createMainDeviceWrapper(
   auto mainSeq = AIE::RuntimeSequenceOp::create(
       builder, loc, builder.getStringAttr(mainSeqName.str()),
       /*emit_parameter_sync_preamble=*/nullptr, /*trace_buffer=*/nullptr,
-      /*trace_slices=*/nullptr);
+      /*trace_slices=*/nullptr, /*scratchpad_parameters=*/nullptr);
   mainSeq.getBody().push_back(new Block);
 
   // Add arguments to runtime_sequence based on first device's signature
@@ -3461,7 +3456,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             g.syncs.push_back(o);
           else if (isa<AIEX::SetLockOp>(o))
             g.locks.push_back(o);
-          else if (!o->hasAttr(air::attrs::RuntimeHoist) && !g.anchor)
+          else if (!g.anchor)
             g.anchor = o;
         }
         // Each move inserts immediately before the anchor, so the order these
@@ -3572,62 +3567,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           for (auto *u : cfg.getResult().getUsers())
             if (isa<AIEX::DMAStartTaskOp>(u) && !u->isBeforeInBlock(anchor))
               u->moveBefore(anchor);
-        }
-      }
-    });
-
-    // Hoist input DMA feeds (air.runtime_hoist). This opt-in ordering targets
-    // a single configuration region, so anchor it at the front of the block.
-    module.walk([&](AIE::RuntimeSequenceOp seq) {
-      if (seq.getBody().empty())
-        return;
-      // Rolled, the hoisted feeds live in a loop body or a select arm, so
-      // every block is visited, not just the entry block.
-      SmallVector<Block *> blocks;
-      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
-      for (Block *blkPtr : blocks) {
-        Block &blk = *blkPtr;
-        Operation *anchor = nullptr;
-        for (auto &o : blk) {
-          if (isa<AIEX::NpuLoadPdiOp, AIEX::NpuWriteRTPOp, AIEX::SetLockOp>(&o))
-            continue;
-          if (o.hasAttr(air::attrs::RuntimeHoist))
-            continue;
-          anchor = &o;
-          break;
-        }
-        if (!anchor)
-          return; // nothing to order before.
-        // Hoist input DMA feeds marked `air.runtime_hoist` ahead of the bulk
-        // input-feed DMAs. Otherwise the control program can block on a later
-        // input's dma_await -- whose consumer is stalled in a feedback loop
-        // waiting on the compute that the hoisted feed drives -- BEFORE it ever
-        // issues the hoisted feed, so that compute never receives its input,
-        // produces no output, and the sequence deadlocks. Each configure task
-        // and its single start task are moved together, preserving relative
-        // order.
-        SmallVector<AIEX::DMAConfigureTaskForOp> hoistCfgs;
-        for (auto &o : blk)
-          if (auto c = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o))
-            if (c->hasAttr(air::attrs::RuntimeHoist))
-              hoistCfgs.push_back(c);
-        for (auto c : hoistCfgs) {
-          Operation *startOp = nullptr;
-          for (auto *u : c.getResult().getUsers())
-            if (isa<AIEX::DMAStartTaskOp>(u)) {
-              startOp = u;
-              break;
-            }
-          c->moveBefore(anchor);
-          if (startOp)
-            startOp->moveBefore(anchor);
-          else
-            // A present marker that cannot be honored is a silent-deadlock
-            // hazard; surface it rather than dropping the requested ordering
-            // quietly.
-            c->emitWarning("air.runtime_hoist: no matching dma_start_task; the "
-                           "feed was hoisted but its start was not, so the "
-                           "requested ordering may not take effect");
         }
       }
     });
@@ -3804,14 +3743,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         return;
 
       // A feed whose position is already load-bearing is left alone, and fences
-      // the burst it sits in: `air.runtime_hoist` was deliberately moved to the
-      // front, and the paced/coalesced feeds are bounded by
+      // the burst it sits in: the paced/coalesced feeds are bounded by
       // synthesizeDoubleBufferedAwaits.
       auto channelDir = [&](AIEX::DMAConfigureTaskForOp cfg)
           -> std::optional<AIE::DMAChannelDir> {
         for (StringRef a :
-             {air::attrs::RuntimeHoist, air::attrs::PreserveShimDmaOrder,
-              air::attrs::CoalescedShimFeed})
+             {air::attrs::PreserveShimDmaOrder, air::attrs::CoalescedShimFeed})
           if (cfg->hasAttr(a))
             return std::nullopt;
         auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(
@@ -4828,30 +4765,98 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         return a.getInt();
       return -1;
     };
-    // The last start among ALL paced channels in each segment. The tail drain
-    // anchors here rather than after the individual channel's own last start:
-    // both honour the fence (everything drained before the next segment
-    // begins), but the per-channel anchor also serializes channels that have to
-    // be in flight TOGETHER, and a one-task channel then awaits itself
-    // immediately after its own start -- a synchronous feed, which deadlocks
-    // when the transfer can only complete if its consumer runs and the consumer
-    // is waiting on a sibling channel that has not been issued yet. See the
-    // drain site below for the measured case.
-    llvm::DenseMap<std::pair<Block *, int64_t>, AIEX::DMAStartTaskOp>
-        segLastStart;
+    using SegmentKey = std::pair<Block *, int64_t>;
+    auto segmentOf = [&](AIEX::DMAStartTaskOp st,
+                         AIEX::DMAConfigureTaskForOp ct) -> SegmentKey {
+      return {st->getBlock(), waveOf(ct)};
+    };
+    auto keepLater = [](llvm::DenseMap<SegmentKey, AIEX::DMAStartTaskOp> &m,
+                        SegmentKey key, AIEX::DMAStartTaskOp st) {
+      auto &cur = m[key];
+      if (!cur || cur->isBeforeInBlock(st))
+        cur = st;
+    };
+
+    // Cross-channel phase barrier for coalesced feeds. After coalescing, each
+    // channel contributes one task per phase, emitted phase-major across
+    // channels (all channels' phase p, then all channels' phase p+1, ...). Each
+    // phase feeds a distinct downstream consumer, so overlapping two phases
+    // deadlocks (a per-channel double-buffer would keep phase p of one channel
+    // in flight while a sibling channel is still on phase p-1). Instead drain
+    // every channel's phase-p transfer before any phase-(p+1) transfer starts:
+    // fire all of a phase in parallel, then await the whole phase. A new phase
+    // group begins whenever a channel repeats in program order (robust to
+    // varying per-phase channel counts and to fused multi-iteration launches,
+    // whose waves just append more phase groups).
+    SmallVector<SmallVector<AIEX::DMAConfigureTaskForOp>> phaseGroups;
+    {
+      SmallVector<AIEX::DMAConfigureTaskForOp> cur;
+      llvm::DenseSet<StringRef> seen;
+      // A phase group is a run within one block: the awaits go after the
+      // group's last start, which only has a meaning among siblings.
+      Block *curBlock = nullptr;
+      f->walk([&](AIEX::DMAConfigureTaskForOp ct) {
+        if (!ct->hasAttr(air::attrs::CoalescedShimFeed))
+          return;
+        StringRef c = ct.getAlloc().getLeafReference().getValue();
+        auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, c);
+        if (!allocOp || allocOp.getChannelDir() != AIE::DMAChannelDir::MM2S)
+          return;
+        if (seen.contains(c) || (curBlock && ct->getBlock() != curBlock)) {
+          phaseGroups.push_back(cur);
+          cur.clear();
+          seen.clear();
+        }
+        curBlock = ct->getBlock();
+        cur.push_back(ct);
+        seen.insert(c);
+      });
+      if (!cur.empty())
+        phaseGroups.push_back(cur);
+    }
+    // Each phase's last start (program order), and the segment it ends in.
+    SmallVector<std::pair<AIEX::DMAStartTaskOp, SegmentKey>> phaseEnds;
+    for (auto &grp : phaseGroups) {
+      std::pair<AIEX::DMAStartTaskOp, SegmentKey> end = {nullptr, {}};
+      for (auto ct : grp)
+        if (auto st = startOf.lookup(ct.getOperation()))
+          if (!end.first || end.first->isBeforeInBlock(st))
+            end = {st, segmentOf(st, ct)};
+      phaseEnds.push_back(end);
+    }
+
+    // Paced feeds on a channel with no coalesced run in the segment are
+    // siblings of the segment's phases. A consumer may need a sibling and a
+    // phase together to make progress, so neither is awaited before the other
+    // has started. A sibling belongs to the first phase that ends after it, or
+    // to the last phase if it is issued after all of them. The paced tail
+    // therefore drains no earlier than the end of that phase, and the last
+    // phase no earlier than the last sibling start. A paced task on a channel
+    // that also carries a coalesced run is a leftover piece of that run, which
+    // the channel orders by itself; it is not a sibling.
+    llvm::DenseSet<std::pair<SegmentKey, StringRef>> coalescedIn;
+    for (auto &grp : phaseGroups)
+      for (auto ct : grp)
+        if (auto st = startOf.lookup(ct.getOperation()))
+          coalescedIn.insert(
+              {segmentOf(st, ct), ct.getAlloc().getLeafReference().getValue()});
+    llvm::DenseMap<SegmentKey, AIEX::DMAStartTaskOp> pacedDrainAt, siblingEnd;
     for (auto &kv : groups)
       for (auto ct : kv.second) {
-        if (ct->hasAttr(air::attrs::CoalescedShimFeed))
-          continue;
         auto st = startOf.lookup(ct.getOperation());
-        if (!st)
+        if (!st || ct->hasAttr(air::attrs::CoalescedShimFeed))
           continue;
-        auto key = std::make_pair(st->getBlock(), waveOf(ct));
-        auto it = segLastStart.find(key);
-        if (it == segLastStart.end() ||
-            it->second->isBeforeInBlock(st.getOperation()))
-          segLastStart[key] = st;
+        SegmentKey seg = segmentOf(st, ct);
+        keepLater(pacedDrainAt, seg, st);
+        if (!coalescedIn.contains({seg, kv.first}))
+          keepLater(siblingEnd, seg, st);
       }
+    for (auto &[seg, sibling] : siblingEnd)
+      for (auto &[end, phaseSeg] : phaseEnds)
+        if (end && phaseSeg == seg && sibling->isBeforeInBlock(end)) {
+          keepLater(pacedDrainAt, seg, end);
+          break;
+        }
     // `fenceEnd` forces the segment's in-flight tail to be fully drained after
     // its last start (a per-iteration fence) even when the segment fits in
     // flight; used for the per-iteration segments of a fused multi-iteration
@@ -4917,13 +4922,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       //
       // The SEGMENT, not the block: a flattened multi-wave body is several
       // segments in ONE block, and draining at the block end there would let an
-      // earlier wave's in-flight set straddle the next wave.
+      // earlier wave's in-flight set straddle the next wave. If the paced feeds
+      // belong to a coalesced phase, the drain also waits for that phase to
+      // start.
       AIEX::DMAStartTaskOp anchor = lastStart;
-      auto segIt = segLastStart.find(
-          std::make_pair(lastStart->getBlock(), waveOf(tasks[0])));
-      if (segIt != segLastStart.end() &&
-          anchor->isBeforeInBlock(segIt->second.getOperation()))
-        anchor = segIt->second;
+      auto drainAt = pacedDrainAt.lookup(segmentOf(lastStart, tasks[0]));
+      if (drainAt && anchor->isBeforeInBlock(drainAt))
+        anchor = drainAt;
       OpBuilder b(anchor);
       b.setInsertionPointAfter(anchor);
       unsigned drainStart = (n > depth) ? n - depth : 0;
@@ -4933,66 +4938,24 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     };
 
-    // Cross-channel phase barrier for coalesced feeds. After coalescing, each
-    // channel contributes one task per phase, emitted phase-major across
-    // channels (all channels' phase p, then all channels' phase p+1, ...). Each
-    // phase feeds a distinct downstream consumer, so overlapping two phases
-    // deadlocks (a per-channel double-buffer would keep phase p of one channel
-    // in flight while a sibling channel is still on phase p-1). Instead drain
-    // every channel's phase-p transfer before any phase-(p+1) transfer starts:
-    // fire all of a phase in parallel, then await the whole phase. A new phase
-    // group begins whenever a channel repeats in program order (robust to
-    // varying per-phase channel counts and to fused multi-iteration launches,
-    // whose waves just append more phase groups).
-    {
-      SmallVector<AIEX::DMAConfigureTaskForOp> coalTasks;
-      f->walk([&](AIEX::DMAConfigureTaskForOp ct) {
-        if (!ct->hasAttr(air::attrs::CoalescedShimFeed))
-          return;
-        StringRef md = ct.getAlloc().getLeafReference().getValue();
-        auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, md);
-        if (allocOp && allocOp.getChannelDir() == AIE::DMAChannelDir::MM2S)
-          coalTasks.push_back(ct);
-      });
-      if (!coalTasks.empty()) {
-        SmallVector<SmallVector<AIEX::DMAConfigureTaskForOp>> phaseGroups;
-        SmallVector<AIEX::DMAConfigureTaskForOp> cur;
-        llvm::DenseSet<StringRef> seen;
-        // A phase group is a run within one block: the awaits go after the
-        // group's last start, which only has a meaning among siblings.
-        Block *curBlock = nullptr;
-        for (auto ct : coalTasks) {
-          StringRef c = ct.getAlloc().getLeafReference().getValue();
-          if (seen.contains(c) || (curBlock && ct->getBlock() != curBlock)) {
-            phaseGroups.push_back(cur);
-            cur.clear();
-            seen.clear();
-          }
-          curBlock = ct->getBlock();
-          cur.push_back(ct);
-          seen.insert(c);
-        }
-        if (!cur.empty())
-          phaseGroups.push_back(cur);
-        for (auto &grp : phaseGroups) {
-          // Insert the phase's awaits after its last start (program order), so
-          // the whole phase drains before the next phase's first start.
-          AIEX::DMAStartTaskOp lastStart = nullptr;
-          for (auto ct : grp) {
-            auto st = startOf.lookup(ct.getOperation());
-            if (!st)
-              continue;
-            if (!lastStart || lastStart->isBeforeInBlock(st))
-              lastStart = st;
-          }
-          if (!lastStart)
-            continue;
-          OpBuilder b(lastStart);
-          b.setInsertionPointAfter(lastStart);
-          for (auto ct : grp)
-            AIEX::DMAAwaitTaskOp::create(b, lastStart.getLoc(), ct.getResult());
-        }
-      }
+    // Insert each phase's awaits after its last start, so the whole phase
+    // drains before the next phase's first start; the segment's last phase
+    // drains after its paced siblings have started.
+    for (auto [p, grp] : llvm::enumerate(phaseGroups)) {
+      AIEX::DMAStartTaskOp lastStart = phaseEnds[p].first;
+      SegmentKey seg = phaseEnds[p].second;
+      if (!lastStart)
+        continue;
+      bool lastInSegment = llvm::none_of(
+          ArrayRef(phaseEnds).drop_front(p + 1),
+          [&](auto &later) { return later.first && later.second == seg; });
+      auto end = siblingEnd.lookup(seg);
+      if (lastInSegment && end && lastStart->isBeforeInBlock(end))
+        lastStart = end;
+      OpBuilder b(lastStart);
+      b.setInsertionPointAfter(lastStart);
+      for (auto ct : grp)
+        AIEX::DMAAwaitTaskOp::create(b, lastStart.getLoc(), ct.getResult());
     }
 
     for (auto &kv : groups) {

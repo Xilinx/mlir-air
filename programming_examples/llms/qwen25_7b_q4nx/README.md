@@ -112,13 +112,14 @@ startup cost, not part of TTFT; the driver reports the two separately.
 ## Quick Start
 
 ```bash
-# Build everything, weight-free: the prefill ELFs + the decode templates.
+# Build everything, weight-free: the fused prefill + the decode templates.
 # Production decode templates are ATTN_MAXL=2048.
 make compile
 
 # ...or just one half:
-make compile-prefill            # the prefill ELFs (CTX=2048)
+make compile-fused-prefill      # the fused prefill (any prompt up to its max_len)
 make compile-decode LBUILD=64   # small decode templates (much faster)
+make compile-prefill            # the per-op prefill ELFs instead (CTX=2048)
 
 # Correctness gate: top-k token-set inclusion vs HF bf16 (k=5, 32 tokens).
 make verify       # 2-prompt CI slice;  make verify-full  sweeps every prompt

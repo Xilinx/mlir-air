@@ -11,7 +11,7 @@ design notes apply; below is what differs.
 
 ```bash
 export PEANO_INSTALL_DIR=/path/to/llvm-aie   # >= 22.0.0
-make compile-decode-full compile-fused-prefill
+make compile-decode-elf compile-fused-prefill
 make run-fused             # generate on device; gated on the Paris continuation
 make profile               # TTFT + decode tok/s
 make verify                # the on-device decode gate, one layer per class
@@ -74,7 +74,7 @@ oracle (`forward_prompt` on the growing prompt) token for token.
 ## Performance
 
 `make profile` (fused prefill, 64 tokens from a 16-token chat prompt): TTFT
-0.33 s, decode 15.1 tok/s; 15.0 with `DECODE_ELF=1`.
+0.33 s, decode 15.0 tok/s; 15.1 with the xclbin templates (`DECODE_ELF=0`).
 
 Against FastFlowLM v1.0.7 (`gemma4-it:e4b`) on the same machine:
 
@@ -97,8 +97,9 @@ measured context:
 | 8192 | 13.05 | |
 | 16384 | 11.74 | |
 | 32768 | 9.77 | |
-| 65536 | 5.93 | |
 
 The fused prefill handles prompts
-up to 2048 tokens (two kv heads put each head's records `max_blocks` apart);
-longer ones take the per-op prefill.
+up to the length it was built for, 2048 tokens unless built with
+`make compile-fused-prefill FUSED_MAX_LEN=N` (two kv heads put each head's
+records `max_blocks` apart, so the build fixes the length); longer ones take the
+per-op prefill.

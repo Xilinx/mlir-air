@@ -1,0 +1,9 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+"""Fixed-prompt profile of NPU prefill and the DFlash decode loop."""
+
+from dflash_model import MODEL
+from common.profile import main
+
+if __name__ == "__main__":
+    main(MODEL, "llama31_8b_dflash")

@@ -10,15 +10,15 @@
 ##===----------------------------------------------------------------------===##
 #
 # This script builds mlir-air given the <llvm dir>, <cmakeModules dir>,
-# <mlir-aie dir> <libxaie dir> and <xrt dir>. Assuming they are all in the same 
+# <mlir-aie dir>, <peano dir> and <xrt dir>. Assuming they are all in the same
 # subfolder, it would look like:
 #
 # build-mlir-air-xrt.sh <llvm dir> <cmakeModules dir> <mlir-aie dir>
-#     <xrt dir> <build dir> <install dir>
+#     <peano dir> <xrt dir> <build dir> <install dir>
 #
 # e.g. build-mlir-air-xrt.sh /scratch/llvm 
 #          /scratch/cmakeModules/cmakeModulesXilinx /scratch/mlir-aie 
-#          /scratch/libxaie/install /scratch/xrt
+#          /scratch/llvm-aie /scratch/xrt
 #
 # <llvm dir>         - llvm
 # <cmakeModules dir> - cmakeModules

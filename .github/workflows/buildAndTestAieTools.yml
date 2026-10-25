@@ -74,18 +74,8 @@ jobs:
             # the -w ("wrap after 1000000 cols") is so that there are no spaces in the XILINX_LIC env var
             echo -n "${{ secrets.XILINX_LIC }}" | base64 --decode > ~/.Xilinx/Xilinx.lic
 
-            # add the ROCm repos
-            mkdir --parents --mode=0755 /etc/apt/keyrings
-            wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
-              gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null
-            for ver in 5.3.3 5.4.3 5.5.1 5.6; do
-              echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/$ver focal main" \
-                | tee --append /etc/apt/sources.list.d/rocm.list
-              done
-              echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
-                | tee /etc/apt/preferences.d/rocm-pin-600
             apt update
-            apt install -y rocm-hip-runtime-dev5.6.0 python3.10-venv \
+            apt install -y python3.10-venv \
                            libboost-all-dev pkg-config libelf-dev elfutils \
                            libdwarf-dev libsysfs-dev clang libssl-dev uuid-dev
             apt-get clean
@@ -161,11 +151,7 @@ jobs:
 
             export LIT_OPTS="-sv --timeout 300 -j1 --time-tests --order=random"
 
-            utils/clone-rocm-air-platforms.sh
             utils/github-clone-build-libxaie.sh
-
-            ROCm-air-platforms/utils/clone-build-roct.sh
-            ROCm-air-platforms/utils/clone-build-rocr.sh
 
             mkdir build_assert
             pushd build_assert
@@ -177,9 +163,6 @@ jobs:
               -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
               -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
               -DAIE_DIR=/install/lib/cmake/aie \
-              -DLibXAIE_ROOT=/install/aie-rt \
-              -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
-              -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
               -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
               -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
               -DLLVM_EXTERNAL_LIT=$(which lit) \
@@ -189,5 +172,4 @@ jobs:
             ninja check-air-cpp
             ninja check-air-mlir
             ninja check-air-python
-            ninja check-air-e2e -j1
             popd

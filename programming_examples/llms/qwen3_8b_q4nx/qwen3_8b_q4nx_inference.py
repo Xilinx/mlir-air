@@ -210,9 +210,14 @@ class FusedDecoder:
 
         # host weights: embed (x0 gather), final_norm (RMS BO), per-layer qk-norm (rope_w).
         self.qm = gw.Q4nxModel(model)
-        embed, final_norm, _lm = self.qm.embed_norm_lmhead()
-        self.embed = np.asarray(embed, bfloat16).reshape(-1, self.K)
-        self.final_norm = np.asarray(final_norm, bfloat16)
+        # Decode gathers embeddings and uses the packed untied head below.
+        # Keep the BF16 embedding bits; avoid materializing an unused FP32 head.
+        self.embed = (
+            self.qm._raw_i16("model.embed_tokens.weight")
+            .view(bfloat16)
+            .reshape(-1, self.K)
+        )
+        self.final_norm = np.asarray(self.qm.bf16("model.norm.weight"), bfloat16)
         self.qk = [
             self.qm.layer_qk_norm(L) for L in range(self.UNI_DEC)
         ]  # (qn,kn) [DH]
@@ -220,7 +225,6 @@ class FusedDecoder:
         # decode weights (q4k-cascade) + the 2 RMS norm stacks from the requant cache.
         _z = np.load(os.environ["Q4NX_QWEN3_8B_DECODE_NPZ"])
         W = _z["W"].view(bfloat16)
-        self.Wv16 = W.view(np.int16) if W.dtype != np.int16 else W
         _rms = {n: list(_z[n].view(bfloat16)) for n in ("RMS_in", "RMS_post")}
         self.rms_slabs = np.concatenate(
             [
@@ -240,6 +244,8 @@ class FusedDecoder:
         )
 
         # ONE xclbin + ONE self-contained BO set (weight BO uploaded once)
+        from kv_bos import KVBuffers
+
         self.dev = xrt.device(0)
         TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.cur_maxl = self.ATTN_MAXL
@@ -272,10 +278,14 @@ class FusedDecoder:
                 self.w_bo = xrt.ext.bo(self.dev, W.size * 2)
             self.r_bo = xrt.ext.bo(self.dev, self._RMS_SIZE * 2)
             self.y_bo = xrt.ext.bo(self.dev, self.ny * 2)
-            self.kvc = xrt.ext.bo(self.dev, self.UNI_DEC * self.LREG * 2)
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.ext.bo(self.dev, n)
+            )
+            self.kvc = self.kvb.kvc
             self._elfdec.bind(
                 (self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc)
                 + tuple(self.w_bos[1:] if self._wsplit else ())
+                + self.kvb.extra
             )
             self._geom = _stair.KVGeometry(
                 self.UNI_DEC, self.KVSZ_TOK, self.REGION_W, self.NGRP, self.LREG
@@ -321,7 +331,10 @@ class FusedDecoder:
                 self.w_bo = xrt.bo(self.dev, W.size * 2, HO, g(4))
             self.r_bo = xrt.bo(self.dev, self._RMS_SIZE * 2, HO, g(5))
             self.y_bo = xrt.bo(self.dev, self.ny * 2, HO, g(6))
-            self.kvc = xrt.bo(self.dev, self.UNI_DEC * self.LREG * 2, HO, g(7))
+            self.kvb = KVBuffers(
+                fd, self.ATTN_MAXL, lambda n, a: xrt.bo(self.dev, n, HO, g(3 + a))
+            )
+            self.kvc = self.kvb.kvc
             self._ist = _stair.make_insts_states(
                 self.gen, xrt, self.dev, g(1), self.windows
             )
@@ -330,7 +343,7 @@ class FusedDecoder:
             )
             self._use_window(self.cur_maxl)
         if not self._wsplit:
-            self.w_bo.write(self.Wv16, 0)
+            self.w_bo.write(W.view(np.int16), 0)
             self.w_bo.sync(TO)
         self.KV = np.zeros((self.UNI_DEC, self.LREG), dtype=bfloat16)
 
@@ -359,9 +372,7 @@ class FusedDecoder:
         TO = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         _lreg = self._geom.lreg(self.cur_maxl)
         for Lyr in range(self.UNI_DEC):
-            boff = Lyr * _lreg * 2
-            self.kvc.write(self.KV[Lyr, :_lreg].view(np.int16), boff)
-            self.kvc.sync(TO, _lreg * 2, boff)
+            self.kvb.write_layer(Lyr, self.KV[Lyr, :_lreg].view(np.int16), TO)
         self._kv_dirty = False
 
     def _rope_slab(self, p):
@@ -391,9 +402,7 @@ class FusedDecoder:
             insts_size = _stair.patch_insts(self._st, L, xrt, TO)
         # KV uploaded once (seed), then device-resident (kernel appends in place).
         if getattr(self, "_kv_dirty", True):
-            packed = np.ascontiguousarray(self.KV).reshape(-1)
-            self.kvc.write(packed.view(np.int16), 0)
-            self.kvc.sync(TO)
+            self.kvb.write_layers(np.ascontiguousarray(self.KV).view(np.int16), TO)
             self._kv_dirty = False
         x0 = np.asarray(self.embed[tok], self.bf16)  # Qwen3 has no embedding scale
         # RMS BO: norm slabs + final_norm constant; write once, then patch the per-layer
@@ -428,6 +437,7 @@ class FusedDecoder:
                 self.y_bo,
                 self.kvc,
                 *(self.w_bos[1:] if self._wsplit else ()),
+                *self.kvb.extra,
             ).wait(60000)
         _voc_n = self.UNI_LM * self.VP
         self.y_bo.sync(FROM, _voc_n * 2, self.decode_y * 2)

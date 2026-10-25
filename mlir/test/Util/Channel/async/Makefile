@@ -4,7 +4,7 @@
 AIR_ROOT = $(dir $(shell which air-opt))/..
 CC = clang++-12
 CFLAGS = -O2 -std=c++17 \
-	-I$(AIR_ROOT)/runtime_lib/airhost/include \
+	-I$(AIR_ROOT)/runtime_lib/aircpu/include \
 	-I$(AIR_ROOT)/include
 LDFLAGS = -L$(AIR_ROOT)/lib -lmlir_async_runtime
 LDFLAGS += -L$(AIR_ROOT)/runtime_lib/aircpu -laircpu

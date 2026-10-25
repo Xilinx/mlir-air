@@ -90,6 +90,17 @@ static inline VB exp2_scaled(VB x, VB m) {
       aie::mul(aie::sub(x, m), bfloat16(SCALE)).template to_vector<float>());
 }
 
+#ifdef ATTN_SPLIT_SCORES
+// The same, with the score given as hi + lo (see attn_blk). hi - m is exact
+// for every key within a factor of two of the max, which are the keys that
+// carry weight.
+static inline VB exp2_scaled(VB hi, VB lo, VB m) {
+  return aie::exp2<bfloat16>(
+      aie::mul(aie::add(aie::sub(hi, m), lo), bfloat16(SCALE))
+          .template to_vector<float>());
+}
+#endif
+
 extern "C" {
 
 // ml: per row block, the running max (bf16 [LQ]) then the running sum as
@@ -143,6 +154,17 @@ void attn_blk(bfloat16 *qb16, bfloat16 *k, bfloat16 *v, bfloat16 *o, float *ml,
     VB s1 = c1.template to_vector<bfloat16>();
     VB s2 = c2.template to_vector<bfloat16>();
     VB s3 = c3.template to_vector<bfloat16>();
+#ifdef ATTN_SPLIT_SCORES
+    // q/k projection biases (Qwen2.5) can put raw scores in the tens of
+    // thousands, where a bf16 step is coarser than the score differences the
+    // softmax depends on. So lo keeps what s rounded off, and the max comes
+    // off s before lo is added back. The max itself only has to be the same
+    // value here and in the correction c.
+    VB r0 = aie::sub(c0, s0).template to_vector<bfloat16>();
+    VB r1 = aie::sub(c1, s1).template to_vector<bfloat16>();
+    VB r2 = aie::sub(c2, s2).template to_vector<bfloat16>();
+    VB r3 = aie::sub(c3, s3).template to_vector<bfloat16>();
+#endif
     if (edge) {
       s0 = aie::select(lowest, s0, keep_mask(edge, 0, mq, d));
       s1 = aie::select(lowest, s1, keep_mask(edge, 1, mq, d));
@@ -161,8 +183,13 @@ void attn_blk(bfloat16 *qb16, bfloat16 *k, bfloat16 *v, bfloat16 *o, float *ml,
     aie::store_v(mrow + mq * 8, m_new);
     VB mp = rows8(m_new);
     VB cp = rows8(c);
+#ifdef ATTN_SPLIT_SCORES
+    VB p0 = exp2_scaled(s0, r0, mp), p1 = exp2_scaled(s1, r1, mp);
+    VB p2 = exp2_scaled(s2, r2, mp), p3 = exp2_scaled(s3, r3, mp);
+#else
     VB p0 = exp2_scaled(s0, mp), p1 = exp2_scaled(s1, mp);
     VB p2 = exp2_scaled(s2, mp), p3 = exp2_scaled(s3, mp);
+#endif
     if (edge) {
       const VB z = aie::zeros<bfloat16, 64>();
       p0 = aie::select(z, p0, keep_mask(edge, 0, mq, d));

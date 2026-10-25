@@ -1,0 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+// Weight-free build of the target, drafter, prepass and NPU prefill.
+// The model execution directory is shared by its serial, identity-checked builds.
+// REQUIRES: peano, llvm_link_pre23
+// RUN: make -f %S/Makefile compile BUILD_DIR=dflash-b16-build BLOCK_SIZE=16

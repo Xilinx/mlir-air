@@ -18,12 +18,11 @@ Qwen3 diverges from LLAMA-3.2 in two ways that break the llama
         q_proj : 2048 -> 2048   (16 heads x 128)
         k/v    : 2048 -> 1024   (8 heads x 128)
         o_proj : 2048 -> 2048   (SQUARE — q_dim == emb_dim)
-     Because q_dim == emb_dim the O GEMM is square (2048x2048x2048); the
-     generic `build_o_ffn_qwen_module` (written with q_dim separate from
-     emb_dim) handles this directly — it simply emits a square O GEMM. All
-     dims (2048/1024/6144) are 1024-aligned, so every GEMM uses the stock
-     fused-cast TILE_N=128 HERD_N=4 config (sym `_m64`); no low-precision
-     tier or padding is needed.
+     Because q_dim == emb_dim the O GEMM is square (2048x2048x2048), so the
+     O-proj + FFN stage is the shared `build_o_ffn_module`. Each GEMM's
+     method and tiles come from the kernel registry per shape, and they need
+     not agree: at 512 and 1024 the O GEMM is drain while Gate/Up/Down are
+     fused-cast.
 
 Attention runs NPU FlashAttention by default (cpu_attn=False builds the
 flash_attn ELF); CPU attention is an optional fallback (cpu_attn=True).
@@ -85,272 +84,30 @@ def build_rms_qkv_qknorm_rope_module(seq_len, config):
 
 
 # ---------------------------------------------------------------------------
-# Builder 2: O proj (wo: q_dim->emb_dim) + Residual + FFN.
-#   Generic O GEMM is K=q_dim, N=emb_dim, attn_out (seq, q_dim), wo (q_dim, emb_dim).
-#   For Qwen3-1.7B q_dim==emb_dim==2048 so this O GEMM is SQUARE (2048x2048x2048)
-#   — the same generic builder, no special-casing. Tail (residual/RMSNorm/FFN)
-#   is emb_dim throughout.
+# Builder 2: O proj + Residual + FFN, the shared builder. It takes the O GEMM
+#   as square (emb_dim x emb_dim), which holds here since q_dim == emb_dim.
 # ---------------------------------------------------------------------------
 
 
-def _o_ffn_gemm_specs(seq_len, emb_dim, q_dim, hidden_dim):
-    """O, Gate/Up, Down GEMM specs, as build_o_ffn_qwen_module builds them."""
-    from air_examples.llms.shared.builders.gemm_builder import gemm_registry_config
+def _o_ffn_scratch(seq_len, emb_dim, hidden_dim):
+    """The f32 C-scratch the o_ffn ELF declares after its 15 base args: one
+    (rows, cols) shape per fused-cast GEMM, in builder order (O, Gate, Up,
+    Down), and their arg indices. Mirrors build_o_ffn_module's own
+    alloc_gemm_scratch call, so the host passes exactly the args the ELF has."""
+    from air_examples.llms.shared.builders.o_ffn_multi import o_ffn_gemm_specs
 
-    return [
-        gemm_registry_config(seq_len, k, n, "bf16", "high")
-        for k, n in ((q_dim, emb_dim), (emb_dim, hidden_dim), (hidden_dim, emb_dim))
-    ]
-
-
-def build_o_ffn_qwen_module(
-    seq_len,
-    emb_dim,
-    q_dim,
-    hidden_dim,
-    o_herd_m=8,
-    o_herd_n=4,
-    gate_herd_m=8,
-    gate_herd_n=4,
-    down_herd_m=8,
-    down_herd_n=4,
-    swiglu_tile_n=4096,
-    swiglu_herd_x=8,
-    swiglu_herd_y=1,
-):
-    """O-proj(q_dim->emb_dim) + Residual + FFN, 8 launches.
-
-    Func args:
-      %arg0  attn_out  (seq, q_dim)         <- DECOUPLED (q_dim, not emb_dim)
-      %arg1  wo        (q_dim, emb_dim)      <- DECOUPLED
-      %arg2  proj      (seq, emb_dim)
-      %arg3  x_resid   (seq, emb_dim)
-      %arg4  res1      (seq, emb_dim)
-      %arg5  ffn_norm  (emb_dim,)
-      %arg6  normed2   (seq, emb_dim)
-      %arg7  w_gate    (emb_dim, hidden)
-      %arg8  gate      (seq, hidden)
-      %arg9  w_up      (emb_dim, hidden)
-      %arg10 up        (seq, hidden)
-      %arg11 swiglu    (seq, hidden)
-      %arg12 w_down    (hidden, emb_dim)
-      %arg13 down      (seq, emb_dim)
-      %arg14 output    (seq*emb_dim,)
-      %arg15..18  f32 C-scratch (proj[seq,emb], gate[seq,hid], up[seq,hid], down[seq,emb])
-    """
-    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
-    from air_examples.llms.shared.builders.o_ffn_multi import (
-        _build_add_2d_to_1d,
-        _build_add_2d_to_2d,
-    )
-    from air_examples.llms.shared.infra.stitching import (
-        _wrap_ir_in_launch,
-        stitch_elf,
-        KernelSlice,
-        FuncArg,
-    )
-    from air_examples.weighted_rms_norm.weighted_rms_norm import (
-        build_module as build_rms,
-    )
-    from air_examples.silu_and_mul.silu_and_mul import build_module_2d as build_swiglu
-    from air.ir import MemRefType, IntegerAttr, AffineMap, AffineExpr
-    from air.ir import AffineSymbolExpr, AffineConstantExpr, AffineMapAttr, VectorType
-    from air.dialects.air import module_builder, launch, segment, herd, dma_memcpy_nd
-    from air.dialects.air import MemorySpace, T
-    from air.dialects.affine import apply as affine_apply
-    from air.dialects import arith
-    from air.dialects.memref import AllocOp, DeallocOp, subview
-    from air.dialects.vector import transfer_read, transfer_write
-    from air.dialects.func import FuncOp
-    from air.dialects.scf import for_ as range_, yield_
-    from air.backend.xrt_runner import type_mapper
-
-    n_total = seq_len * emb_dim
-
-    # O GEMM is decoupled: M=seq, K=q_dim, N=emb_dim.
-    o_spec, g_spec, d_spec = _o_ffn_gemm_specs(seq_len, emb_dim, q_dim, hidden_dim)
-
-    def _tiles(spec):
-        return (
-            dict(spec["build_kwargs"]),
-            spec["tile_m"],
-            spec["tile_k_l2"],
-            spec["tile_k_l1"],
-            spec["tile_n"],
-        )
-
-    _o_kw, _o_m, _o_k2, _o_k1, _o_n = _tiles(o_spec)
-    _g_kw, _g_m, _g_k2, _g_k1, _g_n = _tiles(g_spec)
-    _d_kw, _d_m, _d_k2, _d_k1, _d_n = _tiles(d_spec)
-
-    print(f"  [1/8] O GEMM ({o_spec['method']})  {seq_len}x{q_dim}x{emb_dim}...")
-    o_ir = str(
-        _build_gemm_module(
-            seq_len,
-            q_dim,
-            emb_dim,
-            _o_m,
-            _o_k2,
-            _o_k1,
-            _o_n,
-            o_herd_m,
-            o_herd_n,
-            **_o_kw,
-        )
-    )
-    print("  [2/8] Residual Add...")
-    res_add_ir = str(_build_add_2d_to_2d(seq_len, emb_dim, bfloat16))
-    print("  [3/8] FFN RMSNorm...")
-    rms_ir = _wrap_ir_in_launch(
-        str(build_rms(seq_len, emb_dim, bfloat16, 16, herd_x=8))
-    )
-    print(
-        f"  [4/8] Gate GEMM ({g_spec['method']})  {seq_len}x{emb_dim}x{hidden_dim}..."
-    )
-    gate_ir = str(
-        _build_gemm_module(
-            seq_len,
-            emb_dim,
-            hidden_dim,
-            _g_m,
-            _g_k2,
-            _g_k1,
-            _g_n,
-            gate_herd_m,
-            gate_herd_n,
-            **_g_kw,
-        )
-    )
-    print(f"  [5/8] Up GEMM ({g_spec['method']})...")
-    up_ir = str(
-        _build_gemm_module(
-            seq_len,
-            emb_dim,
-            hidden_dim,
-            _g_m,
-            _g_k2,
-            _g_k1,
-            _g_n,
-            gate_herd_m,
-            gate_herd_n,
-            **_g_kw,
-        )
-    )
-    print("  [6/8] SwiGLU...")
-    swiglu_ir = _wrap_ir_in_launch(
-        str(
-            build_swiglu(
-                seq_len,
-                hidden_dim,
-                swiglu_tile_n,
-                bfloat16,
-                swiglu_herd_x,
-                swiglu_herd_y,
-            )
-        )
-    )
-    print(
-        f"  [7/8] Down GEMM ({d_spec['method']})  {seq_len}x{hidden_dim}x{emb_dim}..."
-    )
-    down_ir = str(
-        _build_gemm_module(
-            seq_len,
-            hidden_dim,
-            emb_dim,
-            _d_m,
-            _d_k2,
-            _d_k1,
-            _d_n,
-            down_herd_m,
-            down_herd_n,
-            **_d_kw,
-        )
-    )
-
-    print("  [8/8] FFN Add (2D -> 1D)...")
-
-    # The FFN add is the shared builder, imported above with its 2D->2D
-    # sibling. This used to be a nested near-copy that closed over
-    # seq_len/emb_dim; same kernel, same @eltwise_add symbol.
-
-    ffn_add_ir = str(_build_add_2d_to_1d(seq_len, emb_dim, bfloat16))
-
-    # All GEMMs here resolve to fused-cast (large shapes). One mm.o suffix.
-    _gemm_sym = o_spec["sym_suffix"]
-    _gemm_externs = {
-        "@op_has_no_registered_library_name" + _gemm_sym,
-        "@zero_f32_mn" + _gemm_sym,
-        "@f32_to_bf16_mn" + _gemm_sym,
-    }
-    assert g_spec["sym_suffix"] == _gemm_sym and d_spec["sym_suffix"] == _gemm_sym, (
-        "Qwen o_ffn assumes all 4 GEMMs share the fused-cast mm_m64.o suffix; "
-        f"got O={o_spec['method']} G={g_spec['method']} D={d_spec['method']}"
-    )
-
-    base_args = [
-        FuncArg("%arg0", f"memref<{seq_len}x{q_dim}xbf16>"),  # attn_out (DECOUPLED)
-        FuncArg("%arg1", f"memref<{q_dim}x{emb_dim}xbf16>"),  # wo       (DECOUPLED)
-        FuncArg("%arg2", f"memref<{seq_len}x{emb_dim}xbf16>"),  # proj
-        FuncArg("%arg3", f"memref<{seq_len}x{emb_dim}xbf16>"),  # x_resid
-        FuncArg("%arg4", f"memref<{seq_len}x{emb_dim}xbf16>"),  # res1
-        FuncArg("%arg5", f"memref<{emb_dim}xbf16>"),  # ffn_norm
-        FuncArg("%arg6", f"memref<{seq_len}x{emb_dim}xbf16>"),  # normed2
-        FuncArg("%arg7", f"memref<{emb_dim}x{hidden_dim}xbf16>"),  # w_gate
-        FuncArg("%arg8", f"memref<{seq_len}x{hidden_dim}xbf16>"),  # gate
-        FuncArg("%arg9", f"memref<{emb_dim}x{hidden_dim}xbf16>"),  # w_up
-        FuncArg("%arg10", f"memref<{seq_len}x{hidden_dim}xbf16>"),  # up
-        FuncArg("%arg11", f"memref<{seq_len}x{hidden_dim}xbf16>"),  # swiglu
-        FuncArg("%arg12", f"memref<{hidden_dim}x{emb_dim}xbf16>"),  # w_down
-        FuncArg("%arg13", f"memref<{seq_len}x{emb_dim}xbf16>"),  # down
-        FuncArg("%arg14", f"memref<{n_total}xbf16>"),  # output
-    ]
-    scratch_args = [
-        FuncArg("%arg15", f"memref<{seq_len}x{emb_dim}xf32>"),
-        FuncArg("%arg16", f"memref<{seq_len}x{hidden_dim}xf32>"),
-        FuncArg("%arg17", f"memref<{seq_len}x{hidden_dim}xf32>"),
-        FuncArg("%arg18", f"memref<{seq_len}x{emb_dim}xf32>"),
-    ]
-
-    slices = [
-        KernelSlice(o_ir, "og", {0: 0, 1: 1, 2: 15, 3: 2}, extern_syms=_gemm_externs),
-        KernelSlice(res_add_ir, "ra", {0: 2, 1: 3, 2: 4}, private_from=False),
-        KernelSlice(rms_ir, "rm", {0: 4, 1: 5, 2: 6}, private_from=False),
-        KernelSlice(
-            gate_ir,
-            "gg",
-            {0: 6, 1: 7, 2: 16, 3: 8},
-            extern_syms=_gemm_externs,
-            private_from=False,
-        ),
-        KernelSlice(
-            up_ir,
-            "ug",
-            {0: 6, 1: 9, 2: 17, 3: 10},
-            extern_syms=_gemm_externs,
-            private_from=False,
-        ),
-        KernelSlice(
-            swiglu_ir, "sw", {0: 8, 1: 10, 2: 11}, extern_syms={"@silu_and_mul_bf16"}
-        ),
-        KernelSlice(
-            down_ir,
-            "dg",
-            {0: 11, 1: 12, 2: 18, 3: 13},
-            extern_syms=_gemm_externs,
-            private_from=False,
-        ),
-        KernelSlice(ffn_add_ir, "fa", {0: 13, 1: 4, 2: 14}, private_from=False),
-    ]
-
-    module = stitch_elf(
-        "o_ffn_qwen",
-        base_args,
-        slices,
-        scratch_args=scratch_args,
-        debug_dump_path="/tmp/debug_o_ffn_qwen.mlir",
-    )
-    print(f"  o_ffn_qwen module: {len(str(module).splitlines())} lines, parsed OK")
-    return module
+    o_spec, g_spec, d_spec = o_ffn_gemm_specs(seq_len, emb_dim, hidden_dim)
+    shapes, idx = [], set()
+    for spec, cols in (
+        (o_spec, emb_dim),
+        (g_spec, hidden_dim),
+        (g_spec, hidden_dim),
+        (d_spec, emb_dim),
+    ):
+        if spec["needs_f32_scratch"]:
+            idx.add(15 + len(shapes))
+            shapes.append((seq_len, cols))
+    return shapes, idx
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +130,7 @@ def _o_ffn_backend(verbose=False):
         "verbose": verbose,
         "omit_while_true_loop": False,
         "output_format": "elf",
-        "instance_name": "o_ffn_qwen",
+        "instance_name": "o_ffn",
         "runtime_loop_tiling_sizes": [2, 2],
     }
 
@@ -407,11 +164,20 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
     from air_examples.llms.shared.builders.rms_qkv_qknorm_rope_multi import (
         rms_qkv_qknorm_rope_gemm_specs,
     )
+    from air_examples.llms.shared.builders.o_ffn_multi import (
+        build_o_ffn_module,
+        o_ffn_gemm_specs,
+    )
+
+    assert q_dim == emb_dim, (
+        f"the shared o_ffn builder takes a square O GEMM; q_dim={q_dim}, "
+        f"emb_dim={emb_dim}"
+    )
 
     # One mm.o per GEMM spec for co-linking; rope.o (head_dim=128) for the rope ELFs.
     compile_gemm_objects(
         rms_qkv_qknorm_rope_gemm_specs(seq_len, emb_dim, q_dim, kv_dim)
-        + _o_ffn_gemm_specs(seq_len, emb_dim, q_dim, hidden_dim)
+        + o_ffn_gemm_specs(seq_len, emb_dim, hidden_dim)
     )
     compile_rope()
 
@@ -422,10 +188,10 @@ def compile_all_kernels(cache, config, seq_len, verbose=False, cpu_attn=False):
         "rms_qkv_qknorm_rope", fused_mod, _rms_qkv_qknorm_rope_backend(verbose)
     )
 
-    print("\n--- o_ffn_qwen (O proj decoupled + Residual + FFN) ---")
+    print("\n--- o_ffn (O proj + Residual + FFN) ---")
     cache.compile_and_cache(
-        "o_ffn_qwen",
-        build_o_ffn_qwen_module(seq_len, emb_dim, q_dim, hidden_dim),
+        "o_ffn",
+        build_o_ffn_module(seq_len, emb_dim, hidden_dim),
         _o_ffn_backend(verbose),
     )
 
@@ -502,6 +268,52 @@ def _fused_qknorm_rope_call(
     )
 
 
+def _o_ffn_call(
+    cache, lw, config, seq_len, layer_idx, attn_out, x_resid, verbose=False
+):
+    """Issue one o_ffn ELF call (O proj + Residual + FFN).
+
+    Used by both preload_prefill_weights (warmup, activations zeroed) and the
+    block runner, so the warmup BO set lines up with the real call. Returns the
+    cache.load_and_run result tuple; arg 14 is the block output.
+    """
+    emb_dim = config.emb_dim
+    hidden_dim = config.hidden_dim
+
+    def act(cols):
+        return np.zeros((seq_len, cols), dtype=bfloat16)
+
+    args = [
+        np.asarray(attn_out, dtype=bfloat16).reshape(seq_len, emb_dim),  # 0
+        np.asarray(lw.wo, dtype=bfloat16).reshape(emb_dim, emb_dim),  # 1 wo
+        act(emb_dim),  # 2 proj
+        np.asarray(x_resid, dtype=bfloat16).reshape(seq_len, emb_dim),  # 3
+        act(emb_dim),  # 4 res1
+        np.asarray(lw.ffn_norm, dtype=bfloat16).reshape(emb_dim),  # 5 ffn_norm
+        act(emb_dim),  # 6 normed2
+        np.asarray(lw.w_gate, dtype=bfloat16).reshape(emb_dim, hidden_dim),  # 7
+        act(hidden_dim),  # 8 gate
+        np.asarray(lw.w_up, dtype=bfloat16).reshape(emb_dim, hidden_dim),  # 9
+        act(hidden_dim),  # 10 up
+        act(hidden_dim),  # 11 swiglu
+        np.asarray(lw.w_down, dtype=bfloat16).reshape(hidden_dim, emb_dim),  # 12
+        act(emb_dim),  # 13 down
+        np.zeros(seq_len * emb_dim, dtype=bfloat16),  # 14 output
+    ]
+    shapes, scratch = _o_ffn_scratch(seq_len, emb_dim, hidden_dim)
+    args += [np.zeros(shape, dtype=np.float32) for shape in shapes]
+    return cache.load_and_run(
+        "o_ffn",
+        _o_ffn_backend(verbose),
+        *args,
+        output_indices=[14],
+        static_input_indices={1, 5, 7, 9, 12},
+        intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14} | scratch,
+        bo_key=f"o_ffn_L{layer_idx}",
+        shared_nonstatic=True,
+    )
+
+
 def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
     """Pre-load all prefill block weights into per-layer BOs once.
 
@@ -512,7 +324,7 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
     unchanged), so only the small dynamic activation inputs are re-written.
 
     Without this, the first (and only) prefill pass writes every weight inside
-    the timed region: o_ffn_qwen alone moves 154 MB/layer of BO data on call 1.
+    the timed region, o_ffn's weights included.
 
     The warmup call layout MUST match ``run_transformer_block_qwen3`` exactly
     (same arg count, same static_input_indices / intermediate_indices, same
@@ -524,11 +336,6 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
     emb_dim = config.emb_dim
     n_heads = config.n_heads
     n_kv_heads = config.n_kv_heads
-    head_dim = config.head_dim
-    hidden_dim = config.hidden_dim
-    q_dim = n_heads * head_dim
-    kv_dim = n_kv_heads * head_dim
-    n_total = seq_len * emb_dim
 
     print("Pre-loading prefill block weights (per-layer BOs)...")
     profiler_enabled = cache.profiler.enabled
@@ -553,46 +360,9 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
             np.zeros((seq_len, emb_dim), dtype=bfloat16),
         )
 
-        # o_ffn_qwen: allocate + write wo/ffn_norm/w_gate/w_up/w_down ({1,5,7,9,12}).
-        offn_args = [
-            np.zeros((seq_len, q_dim), dtype=bfloat16),  # 0 attn_out (dynamic)
-            np.asarray(lw.wo, dtype=bfloat16).reshape(q_dim, emb_dim),  # 1 wo (static)
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 2 proj (inter)
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 3 x_resid (dynamic)
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 4 res1 (inter)
-            np.asarray(lw.ffn_norm, dtype=bfloat16).reshape(
-                emb_dim
-            ),  # 5 ffn_norm (static)
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 6 normed2 (inter)
-            np.asarray(lw.w_gate, dtype=bfloat16).reshape(
-                emb_dim, hidden_dim
-            ),  # 7 w_gate (static)
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # 8 gate (inter)
-            np.asarray(lw.w_up, dtype=bfloat16).reshape(
-                emb_dim, hidden_dim
-            ),  # 9 w_up (static)
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # 10 up (inter)
-            np.zeros((seq_len, hidden_dim), dtype=bfloat16),  # 11 swiglu (inter)
-            np.asarray(lw.w_down, dtype=bfloat16).reshape(
-                hidden_dim, emb_dim
-            ),  # 12 w_down (static)
-            np.zeros((seq_len, emb_dim), dtype=bfloat16),  # 13 down (inter)
-            np.zeros(n_total, dtype=bfloat16),  # 14 output (inter)
-            np.zeros((seq_len, emb_dim), dtype=np.float32),  # 15 scratch (inter)
-            np.zeros((seq_len, hidden_dim), dtype=np.float32),  # 16 scratch (inter)
-            np.zeros((seq_len, hidden_dim), dtype=np.float32),  # 17 scratch (inter)
-            np.zeros((seq_len, emb_dim), dtype=np.float32),  # 18 scratch (inter)
-        ]
-        cache.load_and_run(
-            "o_ffn_qwen",
-            _o_ffn_backend(),
-            *offn_args,
-            output_indices=[14],
-            static_input_indices={1, 5, 7, 9, 12},
-            intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14, 15, 16, 17, 18},
-            bo_key=f"o_ffn_qwen_L{layer_idx}",
-            shared_nonstatic=True,
-        )
+        # o_ffn: allocate + write wo/ffn_norm/w_gate/w_up/w_down ({1,5,7,9,12}).
+        zeros = np.zeros((seq_len, emb_dim), dtype=bfloat16)
+        _o_ffn_call(cache, lw, config, seq_len, layer_idx, zeros, zeros)
 
     cache.profiler.enabled = profiler_enabled
     weights._prefill_weights_preloaded = True
@@ -620,10 +390,8 @@ def run_transformer_block_qwen3(
     n_heads = config.n_heads
     n_kv_heads = config.n_kv_heads
     head_dim = config.head_dim
-    hidden_dim = config.hidden_dim
     q_dim = n_heads * head_dim
     kv_dim = n_kv_heads * head_dim
-    n_total = seq_len * emb_dim
 
     inter = {}
 
@@ -680,36 +448,8 @@ def run_transformer_block_qwen3(
     inter["attn_out"] = attn_out
 
     # ---- Stage E: O proj + Residual + FFN ----
-    offn_args = [
-        np.asarray(attn_out, dtype=bfloat16).reshape(seq_len, q_dim),
-        np.asarray(layer_weights.wo, dtype=bfloat16).reshape(q_dim, emb_dim),
-        np.zeros((seq_len, emb_dim), dtype=bfloat16),
-        np.asarray(x_bf16, dtype=bfloat16).reshape(seq_len, emb_dim),
-        np.zeros((seq_len, emb_dim), dtype=bfloat16),
-        np.asarray(layer_weights.ffn_norm, dtype=bfloat16).reshape(emb_dim),
-        np.zeros((seq_len, emb_dim), dtype=bfloat16),
-        np.asarray(layer_weights.w_gate, dtype=bfloat16).reshape(emb_dim, hidden_dim),
-        np.zeros((seq_len, hidden_dim), dtype=bfloat16),
-        np.asarray(layer_weights.w_up, dtype=bfloat16).reshape(emb_dim, hidden_dim),
-        np.zeros((seq_len, hidden_dim), dtype=bfloat16),
-        np.zeros((seq_len, hidden_dim), dtype=bfloat16),
-        np.asarray(layer_weights.w_down, dtype=bfloat16).reshape(hidden_dim, emb_dim),
-        np.zeros((seq_len, emb_dim), dtype=bfloat16),
-        np.zeros(n_total, dtype=bfloat16),
-        np.zeros((seq_len, emb_dim), dtype=np.float32),
-        np.zeros((seq_len, hidden_dim), dtype=np.float32),
-        np.zeros((seq_len, hidden_dim), dtype=np.float32),
-        np.zeros((seq_len, emb_dim), dtype=np.float32),
-    ]
-    results = cache.load_and_run(
-        "o_ffn_qwen",
-        _o_ffn_backend(verbose),
-        *offn_args,
-        output_indices=[14],
-        static_input_indices={1, 5, 7, 9, 12},
-        intermediate_indices={2, 4, 6, 8, 10, 11, 13, 14, 15, 16, 17, 18},
-        bo_key=f"o_ffn_qwen_L{layer_idx}",
-        shared_nonstatic=True,
+    results = _o_ffn_call(
+        cache, layer_weights, config, seq_len, layer_idx, attn_out, x_bf16, verbose
     )
     output_bf16 = results[14].reshape(seq_len, emb_dim)
     inter["ffn_out"] = output_bf16

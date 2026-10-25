@@ -9,6 +9,9 @@ second one. Norms, rope, residuals and the GLU and PLE
 products run on the host (hostops).
 """
 
+import json
+from pathlib import Path
+
 import numpy as np
 from ml_dtypes import bfloat16
 
@@ -20,7 +23,7 @@ from ...shared.fused_prefill import lm_gemv
 from ...shared.fused_prefill import packing as P
 from ...shared.fused_prefill.engine import TO, FROM, Ctx, Engine, view
 
-from .spec import CFG, LM_GEMM
+from .spec import CFG, LM_GEMM, config
 
 
 def _layer_q4(qm, b, L):
@@ -45,7 +48,11 @@ def _layer_q4(qm, b, L):
 
 class FusedPrefill(Engine):
     def __init__(self, build_dir, max_len=2048):
-        super().__init__(build_dir, CFG, max_len)
+        # A build that fixed its longest prompt (spec.MAX_LEN) holds exactly
+        # that, and its KV layout depends on it.
+        man = json.loads((Path(build_dir) / "manifest.json").read_text())
+        built = man.get("max_len")
+        super().__init__(build_dir, config(built) if built else CFG, built or max_len)
         self.current_context_length = 0
         self.rope_cache = {}
 
@@ -63,18 +70,24 @@ class FusedPrefill(Engine):
         for L in range(gw.NUM_LAYERS):
             for name, raw in _layer_q4(qm, self.bundle, L).items():
                 self.gemm_site(
-                    f"{L}.{name}", raw[0].shape[1], raw[0].shape[0], P.pack_q4(*raw), 1
+                    f"{L}.{name}",
+                    raw[0].shape[1],
+                    raw[0].shape[0],
+                    self.pack_q4(*raw),
+                    1,
                 )
             pw = qm.layer_ple(L)
             for name, w in (
                 ("ple_gate", pw["inp_gate"]),
                 ("ple_proj", pw["per_layer_projection"]),
             ):
-                self.gemm_site(f"{L}.{name}", w.shape[1], w.shape[0], P.pack_bf16(w), 0)
+                self.gemm_site(
+                    f"{L}.{name}", w.shape[1], w.shape[0], self.pack_bf16(w), 0
+                )
         mp = np.concatenate(
             [qm.layer_ple(L)["model_proj"] for L in range(gw.NUM_LAYERS)]
         )
-        self.gemm_site("mp", mp.shape[1], mp.shape[0], P.pack_bf16(mp), 0)
+        self.gemm_site("mp", mp.shape[1], mp.shape[0], self.pack_bf16(mp), 0)
         self.norms = [
             {
                 k: (np.asarray(v, np.float32) if isinstance(v, np.ndarray) else v)
@@ -104,7 +117,7 @@ class FusedPrefill(Engine):
             self.lm = D.n_split(gw.VOCAB)
             for i, (n0, n1) in enumerate(self.lm):
                 self.gemm_site(
-                    f"lm.{i}", gw.D, n1 - n0, P.pack_q4(*(a[n0:n1] for a in raw)), 1
+                    f"lm.{i}", gw.D, n1 - n0, self.pack_q4(*(a[n0:n1] for a in raw)), 1
                 )
             return
         ctx = Ctx(self.dev, self.dir / "lm.xclbin")
@@ -172,7 +185,7 @@ class FusedPrefill(Engine):
         tbl = tbl.reshape(n, gw.NUM_LAYERS, gw.PLI_D) * gw.PLE_EMBED_SCALE
         self.kv = {}
         x = np.array(emb, np.float32, order="C")
-        chunks = [(r0, min(D.M, n - r0)) for r0 in range(0, n, D.M)]
+        chunks = self.chunk_rows(n)
         pend = []
         for c, (r0, t) in enumerate(chunks):
             self._tile(x[r0 : r0 + t], gw.D, c)

@@ -5324,6 +5324,8 @@ public:
           chan_merge_map[channelOps[j]] = channelOps[i];
         }
       }
+      lastMergedAfter.clear();
+      mergedClones.clear();
     }
     renameSymbols(channelOps, chan_merge_map);
     // Walk the region and mutate scf.for loop bounds based on "setLB" and
@@ -6416,6 +6418,10 @@ private:
     return aAnchor->isBeforeInBlock(bAnchor) ? 1 : -1;
   }
 
+  // For each merge destination, the last op cloned after it by a merge.
+  llvm::DenseMap<Operation *, Operation *> lastMergedAfter;
+  // Ops cloned next to a merge destination.
+  llvm::DenseSet<Operation *> mergedClones;
   // With `dryRun`, only reports whether the merge is possible.
   bool mergeChannelOps(RewriterBase &rewriter, air::ChannelInterface a,
                        air::ChannelInterface b, bool dryRun = false) {
@@ -6437,8 +6443,13 @@ private:
     IRMapping remap;
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointAfter(a);
+    // Insert b after a and after any op that earlier merges into a placed
+    // after it, so that channels merged into a keep their merge order.
+    Operation *anchor = lastMergedAfter.lookup(a);
+    rewriter.setInsertionPointAfter(anchor ? anchor : a.getOperation());
     auto new_b = air::cloneOpAndOperands(rewriter, remap, b);
+    lastMergedAfter[a] = new_b;
+    mergedClones.insert(new_b);
     if (air::isAsyncOp(a) && air::isAsyncOp(new_b)) {
       auto newWaitAll = air::WaitAllOp::create(
           rewriter, a->getLoc(), air::AsyncTokenType::get(a->getContext()),
@@ -6482,11 +6493,15 @@ private:
         a->getParentRegion()))
       bRegion = bRegion->getParentOp()->getParentRegion();
     SmallVector<air::ChannelInterface> aChanOps, bChanOps;
-    aRegion->walk([&aChanOps](air::ChannelInterface chanOp) {
-      aChanOps.push_back(chanOp);
+    // Skip ops that earlier merges cloned into either nest. They belong to
+    // other channels, so pairing them would misalign the ops of a and b.
+    aRegion->walk([&](air::ChannelInterface chanOp) {
+      if (!mergedClones.contains(chanOp))
+        aChanOps.push_back(chanOp);
     });
-    bRegion->walk([&bChanOps](air::ChannelInterface chanOp) {
-      bChanOps.push_back(chanOp);
+    bRegion->walk([&](air::ChannelInterface chanOp) {
+      if (!mergedClones.contains(chanOp))
+        bChanOps.push_back(chanOp);
     });
     if (aChanOps.size() != bChanOps.size())
       return true;
@@ -7152,6 +7167,46 @@ struct UpdateSubViewOutputTypeAfterMemrefShrinkage
   }
 };
 
+// Recomputes the result type of a memref.expand_shape or
+// memref.collapse_shape from its source, whose type may have changed when a
+// memref it views was shrunk.
+struct UpdateExpandShapeTypeAfterMemrefShrinkage
+    : public OpRewritePattern<memref::ExpandShapeOp> {
+  using OpRewritePattern<memref::ExpandShapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::ExpandShapeOp op,
+                                PatternRewriter &rewriter) const override {
+    FailureOr<MemRefType> newResultType =
+        memref::ExpandShapeOp::computeExpandedType(
+            op.getSrcType(), op.getResultType().getShape(),
+            op.getReassociationIndices());
+    if (failed(newResultType) || *newResultType == op.getResultType())
+      return failure();
+    rewriter.modifyOpInPlace(op,
+                             [&]() { op.getResult().setType(*newResultType); });
+    return success();
+  }
+};
+
+struct UpdateCollapseShapeTypeAfterMemrefShrinkage
+    : public OpRewritePattern<memref::CollapseShapeOp> {
+  using OpRewritePattern<memref::CollapseShapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::CollapseShapeOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!memref::CollapseShapeOp::isGuaranteedCollapsible(
+            op.getSrcType(), op.getReassociationIndices()))
+      return failure();
+    MemRefType newResultType = memref::CollapseShapeOp::computeCollapsedType(
+        op.getSrcType(), op.getReassociationIndices());
+    if (newResultType == op.getResultType())
+      return failure();
+    rewriter.modifyOpInPlace(op,
+                             [&]() { op.getResult().setType(newResultType); });
+    return success();
+  }
+};
+
 // A pattern which attempts to shrink the memref sizes, based on the access
 // patterns of all its uses.
 struct ShrinkMemrefSizesByAccessPattern
@@ -7421,10 +7476,25 @@ private:
     rewriter.setInsertionPoint(subViewOp);
     auto subview_sizes = subViewOp.getSizes().begin();
     auto subview_strides = subViewOp.getStrides().begin();
-    auto subview_offsets = subViewOp.getOffsets().begin();
     auto static_sizes = subViewOp.getStaticSizes();
     auto static_strides = subViewOp.getStaticStrides();
     auto static_offsets = subViewOp.getStaticOffsets();
+    // Returns the dynamic offset operand of dim `i`, or null if the offset of
+    // dim `i` is static.
+    auto offsetOf = [&](unsigned i) -> Value {
+      if (!ShapedType::isDynamic(static_offsets[i]))
+        return nullptr;
+      unsigned k = llvm::count_if(static_offsets.take_front(i), [](int64_t o) {
+        return ShapedType::isDynamic(o);
+      });
+      return subViewOp.getOffsets()[k];
+    };
+    // Replaces the herd induction variables in dim `i`'s offset with 0.
+    auto rebaseOffset = [&](unsigned i) {
+      Value offset = offsetOf(i);
+      if (auto updatedOffset = getUpdatedOffsetAfterShrinkage(offset, rewriter))
+        subViewOp->replaceUsesOfWith(offset, updatedOffset);
+    };
     // Get MemRefType after shrinkage.
     Type elemType = llvm::cast<BaseMemRefType>(subViewOp.getSource().getType())
                         .getElementType();
@@ -7440,55 +7510,26 @@ private:
             subViewOp.getStaticStrides()));
     // Case 1: static size mismatches the shrunk shape.
     for (unsigned i = 0; i < static_sizes.size(); i++) {
-      if (static_sizes[i] < 0) {
-        if (*getConstantIntValue(*subview_sizes++) !=
-            overall_access_bounds[i]) {
-          subViewOp.getResult().setType(inferredSubViewOutputTy);
-          if (static_offsets[i] >= 0)
-            continue;
-          if (auto updatedOffset =
-                  getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
-            subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
-        }
-      } else {
-        if (static_sizes[i] != overall_access_bounds[i]) {
-          subViewOp.getResult().setType(inferredSubViewOutputTy);
-          if (static_offsets[i] >= 0)
-            continue;
-          if (auto updatedOffset =
-                  getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
-            subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
-        }
+      int64_t size = static_sizes[i] < 0
+                         ? *getConstantIntValue(*subview_sizes++)
+                         : static_sizes[i];
+      if (size != overall_access_bounds[i]) {
+        subViewOp.getResult().setType(inferredSubViewOutputTy);
+        rebaseOffset(i);
       }
     }
     // Case 2: static strides aren't ones.
-    subview_offsets = subViewOp.getOffsets().begin();
-    static_offsets = subViewOp.getStaticOffsets();
     for (unsigned i = 0; i < static_strides.size(); i++) {
-      if (static_strides[i] < 0) {
-        if (*getConstantIntValue(*subview_strides++) != 1) {
-          subViewOp.getResult().setType(inferredSubViewOutputTy);
-          if (static_offsets[i] >= 0)
-            continue;
-          if (auto updatedOffset =
-                  getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
-            subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
-        }
-      } else {
-        if (static_strides[i] != 1) {
-          subViewOp.getResult().setType(inferredSubViewOutputTy);
-          if (static_offsets[i] >= 0)
-            continue;
-          if (auto updatedOffset =
-                  getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
-            subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
-        }
+      int64_t stride = static_strides[i] < 0
+                           ? *getConstantIntValue(*subview_strides++)
+                           : static_strides[i];
+      if (stride != 1) {
+        subViewOp.getResult().setType(inferredSubViewOutputTy);
+        rebaseOffset(i);
       }
     }
     // Case 3: offset at dimension where output stride accesses beyond memref
     // volume.
-    subview_offsets = subViewOp.getOffsets().begin();
-    static_offsets = subViewOp.getStaticOffsets();
     auto outputStrides =
         llvm::cast<StridedLayoutAttr>(inferredSubViewOutputTy.getLayout())
             .getStrides();
@@ -7499,37 +7540,26 @@ private:
       if (outputStrides[i] < (int)memrefVolume)
         continue;
       subViewOp.getResult().setType(inferredSubViewOutputTy);
-      if (static_offsets[i] >= 0)
-        continue;
-      if (auto updatedOffset =
-              getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
-        subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
+      rebaseOffset(i);
     }
 
     // Case 4: offset are directly or indirectly herd induction variables.
-    subview_offsets = subViewOp.getOffsets().begin();
     for (unsigned i = 0; i < static_offsets.size(); i++) {
-      if (static_offsets[i] >= 0)
+      Value offset = offsetOf(i);
+      if (!offset || getConstantIntValue(offset))
         continue;
-      if (getConstantIntValue(*subview_offsets))
-        continue;
-      // SSA offset.
-      bool offsetIsHerdIndVar = false;
-      if (getHerdArgOwner(*subview_offsets))
-        offsetIsHerdIndVar = true;
-      auto defOp = (*subview_offsets).getDefiningOp();
-      if (!defOp)
-        continue;
-      SetVector<Value> opers = getOperandsToOpOrExecute(defOp);
-      if (llvm::any_of(opers, [](Value oper) { return getHerdArgOwner(oper); }))
-        offsetIsHerdIndVar = true;
+      bool offsetIsHerdIndVar = static_cast<bool>(getHerdArgOwner(offset));
+      if (auto defOp = offset.getDefiningOp()) {
+        SetVector<Value> opers = getOperandsToOpOrExecute(defOp);
+        if (llvm::any_of(opers,
+                         [](Value oper) { return getHerdArgOwner(oper); }))
+          offsetIsHerdIndVar = true;
+      }
       if (offsetIsHerdIndVar)
-        if (auto updatedOffset =
-                getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
-          subViewOp->replaceUsesOfWith(*subview_offsets, updatedOffset);
-      subview_offsets++;
+        rebaseOffset(i);
     }
 
+    auto subview_offsets = subViewOp.getOffsets().begin();
     // Drop memref.subview, if it isn't doing anything useful.
     auto allOffsetsAreZeros = [&]() {
       subview_offsets = subViewOp.getOffsets().begin();
@@ -7579,7 +7609,9 @@ private:
              (int)air::getTensorVolume(subViewOp.getResult().getType());
     };
 
-    if (allOffsetsAreZeros() && allStridesAreOnes() &&
+    // Keep rank-reducing subviews; their users expect the reduced rank.
+    if (subViewOp.getSourceType().getRank() == subViewOp.getType().getRank() &&
+        allOffsetsAreZeros() && allStridesAreOnes() &&
         memrefVolumeUnchanged()) {
       subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
       rewriter.eraseOp(subViewOp);
@@ -8253,7 +8285,9 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<ShrinkMemrefSizesByAccessPattern,
-                    UpdateSubViewOutputTypeAfterMemrefShrinkage>(ctx);
+                    UpdateSubViewOutputTypeAfterMemrefShrinkage,
+                    UpdateExpandShapeTypeAfterMemrefShrinkage,
+                    UpdateCollapseShapeTypeAfterMemrefShrinkage>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
     // Update func.call declaration post memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
@@ -9360,6 +9394,269 @@ private:
 // A pass which performs a series of scf.for loop splitting, fusion and
 // specialization, with the goal of generating efficient memtile dma block
 // descriptors (BD).
+// Returns the static offsets, sizes and strides of `put`. Fails if any of
+// them is dynamic or if the put has no explicit access pattern.
+static bool getStaticPattern(air::ChannelPutOp put,
+                             SmallVector<int64_t> &offsets,
+                             SmallVector<int64_t> &sizes,
+                             SmallVector<int64_t> &strides) {
+  auto get = [](ArrayRef<OpFoldResult> ofrs, SmallVector<int64_t> &out) {
+    for (auto ofr : ofrs) {
+      auto c = getConstantIntValue(ofr);
+      if (!c)
+        return false;
+      out.push_back(*c);
+    }
+    return true;
+  };
+  if (!get(put.getMixedSrcOffsets(), offsets) ||
+      !get(put.getMixedSrcSizes(), sizes) ||
+      !get(put.getMixedSrcStrides(), strides))
+    return false;
+  return !offsets.empty() && offsets.size() == sizes.size() &&
+         sizes.size() == strides.size();
+}
+
+// Returns true if `put`, or the L2 buffer it reads, is re-fed: a count-free
+// chain sends it several times per fill, and the count is tied to the number
+// of drain ops on the buffer.
+static bool isRefed(air::ChannelPutOp put) {
+  if (air::getRefeedCount(cast<air::ChannelInterface>(put.getOperation())) > 1)
+    return true;
+  Operation *def = put.getSrc().getDefiningOp();
+  if (auto exec = dyn_cast_if_present<air::ExecuteOp>(def))
+    def = exec.getChildOps().empty() ? nullptr : &exec.getChildOps().front();
+  return def && air::getRefeedCount(def) > 1;
+}
+
+static bool isL2Put(air::ChannelPutOp put) {
+  auto ty = dyn_cast<MemRefType>(put.getSrc().getType());
+  return ty && ty.getMemorySpaceAsInt() == (int)air::MemorySpace::L2;
+}
+
+static bool isPadded(air::ChannelPutOp put) {
+  return put.getPadBefore().has_value() || put.getPadAfter().has_value();
+}
+
+// Returns the constant values of `indices`, or nothing if any is not
+// constant.
+static std::optional<SmallVector<int64_t>> constantIndices(ValueRange indices) {
+  SmallVector<int64_t> out;
+  for (Value v : indices) {
+    auto c = getConstantIntValue(v);
+    if (!c)
+      return std::nullopt;
+    out.push_back(*c);
+  }
+  return out;
+}
+
+// Returns true if `op` can stay between two puts of a chain while their
+// sends move to the last one: it has no memory effects, or it is a put on a
+// different channel, or on the same channel at constant indices that differ
+// from `first`'s.
+static bool mayCross(Operation *op, air::ChannelPutOp first) {
+  if (isMemoryEffectFree(op))
+    return true;
+  auto put = dyn_cast<air::ChannelPutOp>(op);
+  if (!put)
+    return false;
+  if (put.getChanName() != first.getChanName())
+    return true;
+  auto a = constantIndices(first.getIndices());
+  auto b = constantIndices(put.getIndices());
+  return a && b && *a != *b;
+}
+
+// Returns the put that follows `put` in the chain started by `first`, or
+// null. It must be the next put in the block on the same channel and
+// indices, with only ops that `mayCross` allows in between. It must read the
+// same buffer with the same sizes and strides, have no padding, and depend
+// only on `put` or on dependencies of `first`.
+static air::ChannelPutOp nextInChain(air::ChannelPutOp put,
+                                     air::ChannelPutOp first,
+                                     ArrayRef<int64_t> sizes,
+                                     ArrayRef<int64_t> strides) {
+  air::ChannelPutOp next = nullptr;
+  for (Operation *op = put->getNextNode(); op; op = op->getNextNode()) {
+    auto p = dyn_cast<air::ChannelPutOp>(op);
+    if (p && p.getChanName() == first.getChanName() &&
+        p.getIndices() == first.getIndices()) {
+      next = p;
+      break;
+    }
+    if (!mayCross(op, first))
+      return nullptr;
+  }
+  if (!next || !next.getAsyncToken() || next.getSrc() != first.getSrc() ||
+      next.getDest() || !isL2Put(next) || isRefed(next) || isPadded(next))
+    return nullptr;
+  SmallVector<int64_t> o, sz, st;
+  if (!getStaticPattern(next, o, sz, st) || sz != sizes || st != strides)
+    return nullptr;
+  auto firstDeps = first.getAsyncDependencies();
+  for (Value d : next.getAsyncDependencies())
+    if (d != put.getAsyncToken() && !llvm::is_contained(firstDeps, d))
+      return nullptr;
+  return next;
+}
+
+// Writes `lin` as lin[0] + a * steps[0] + b * steps[1] with
+// i = a * dims[1] + b, or as lin[0] + i * steps[0] if the step is uniform.
+// Steps must be positive.
+static bool findLattice(ArrayRef<int64_t> lin, SmallVector<int64_t> &dims,
+                        SmallVector<int64_t> &steps) {
+  int64_t n = lin.size();
+  auto fits = [&](int64_t n2, int64_t s1, int64_t s2) {
+    for (int64_t i = 0; i < n; i++)
+      if (lin[i] != lin[0] + (i / n2) * s1 + (i % n2) * s2)
+        return false;
+    return true;
+  };
+  int64_t s2 = lin[1] - lin[0];
+  if (s2 <= 0)
+    return false;
+  if (fits(n, 0, s2)) {
+    dims = {n};
+    steps = {s2};
+    return true;
+  }
+  for (int64_t n2 = 2; n2 < n; n2++) {
+    if (n % n2)
+      continue;
+    int64_t s1 = lin[n2] - lin[0];
+    if (s1 > 0 && fits(n2, s1, s2)) {
+      dims = {n / n2, n2};
+      steps = {s1, s2};
+      return true;
+    }
+  }
+  return false;
+}
+
+// Returns true if `buf` is only used by channel puts, channel gets that
+// write the whole buffer, and its dealloc. A buffer filled slot by slot keeps
+// one put per slot so that each slot can be refilled as soon as it is
+// drained; any other use, such as a view, may hide such a fill.
+static bool isFilledWhole(Value buf) {
+  for (Operation *user : buf.getUsers()) {
+    if (isa<air::ChannelPutOp, memref::DeallocOp>(user))
+      continue;
+    auto get = dyn_cast<air::ChannelGetOp>(user);
+    if (!get || !get.getMixedDstOffsets().empty() ||
+        !get.getMixedDstSizes().empty())
+      return false;
+  }
+  return true;
+}
+
+// Folds the chain of puts starting at `first` into a single put whose outer
+// dims step through the chain's start offsets. The folded put sends the same
+// data in the same order with one BD instead of one per put.
+static void foldPutChainFrom(air::ChannelPutOp first, const DmaBdLimits &limits,
+                             llvm::DenseSet<Operation *> &erased) {
+  if (!first.getAsyncToken() || first.getDest() || !isL2Put(first) ||
+      isRefed(first) || isPadded(first) || !isFilledWhole(first.getSrc()))
+    return;
+  SmallVector<int64_t> offsets, sizes, strides;
+  if (!getStaticPattern(first, offsets, sizes, strides))
+    return;
+  SmallVector<air::ChannelPutOp> chain{first};
+  while (auto next = nextInChain(chain.back(), first, sizes, strides))
+    chain.push_back(next);
+  if (chain.size() < 2)
+    return;
+  // The folded put's token completes with the whole chain. A token other
+  // than the last may therefore only be used by a chain member, or by an op
+  // that also waits on the last token.
+  Operation *last = chain.back();
+  Value lastToken = chain.back().getAsyncToken();
+  llvm::SmallPtrSet<Operation *, 8> members;
+  for (auto p : chain)
+    members.insert(p);
+  for (size_t i = 0; i + 1 < chain.size(); i++)
+    for (Operation *user : chain[i].getAsyncToken().getUsers())
+      if (!members.contains(user) &&
+          !llvm::is_contained(user->getOperands(), lastToken))
+        return;
+  SmallVector<int64_t> lin;
+  for (auto p : chain) {
+    SmallVector<int64_t> o, sz, st;
+    getStaticPattern(p, o, sz, st);
+    // As the lowering reads it: the innermost offset counts elements, the
+    // others count strides.
+    int64_t l = o.back();
+    for (size_t d = 0; d + 1 < o.size(); d++)
+      l += o[d] * st[d];
+    lin.push_back(l);
+  }
+  SmallVector<int64_t> dims, steps;
+  if (!findLattice(lin, dims, steps))
+    return;
+  // Drop unit dims, adding their offsets to the innermost offset, which
+  // counts elements.
+  {
+    SmallVector<int64_t> o, sz, st;
+    int64_t extra = 0;
+    for (size_t i = 0; i + 1 < sizes.size(); i++) {
+      if (sizes[i] == 1) {
+        extra += offsets[i] * strides[i];
+        continue;
+      }
+      o.push_back(offsets[i]);
+      sz.push_back(sizes[i]);
+      st.push_back(strides[i]);
+    }
+    o.push_back(offsets.back() + extra);
+    sz.push_back(sizes.back());
+    st.push_back(strides.back());
+    offsets = o;
+    sizes = sz;
+    strides = st;
+  }
+  if (limits.dims >= 0 && (int)(dims.size() + sizes.size()) > limits.dims)
+    return;
+  for (auto [d, st] : llvm::zip(dims, steps))
+    if ((limits.maxWrap >= 0 && d > limits.maxWrap) || !limits.strideFits(st))
+      return;
+
+  OpBuilder b(last);
+  auto idx = [&](ArrayRef<int64_t> v) {
+    SmallVector<OpFoldResult> r;
+    for (auto x : v)
+      r.push_back(b.getIndexAttr(x));
+    return r;
+  };
+  SmallVector<int64_t> newOffsets(dims.size(), 0), newSizes(dims),
+      newStrides(steps);
+  newOffsets.append(offsets);
+  newSizes.append(sizes);
+  newStrides.append(strides);
+  SmallVector<Value> deps(first.getAsyncDependencies());
+  auto folded = air::ChannelPutOp::create(
+      b, first.getLoc(), air::AsyncTokenType::get(b.getContext()), deps,
+      first.getChanName(), first.getIndices(), first.getSrc(), idx(newOffsets),
+      idx(newSizes), idx(newStrides),
+      /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+  folded->setDiscardableAttrs(first->getDiscardableAttrDictionary());
+  for (auto p : chain)
+    p.getAsyncToken().replaceAllUsesWith(folded.getAsyncToken());
+  for (auto p : llvm::reverse(chain)) {
+    erased.insert(p);
+    p->erase();
+  }
+}
+
+// Folds, in program order, every chain of puts of an L2 buffer in `region`.
+static void foldL2ChannelPutChains(Region *region, const DmaBdLimits &limits) {
+  SmallVector<air::ChannelPutOp> puts;
+  region->walk([&](air::ChannelPutOp put) { puts.push_back(put); });
+  llvm::DenseSet<Operation *> erased;
+  for (auto put : puts)
+    if (!erased.contains(put))
+      foldPutChainFrom(put, limits, erased);
+}
+
 class AIROptimizeMemtileDMABDs
     : public xilinx::air::impl::AIROptimizeMemtileDMABDsBase<
           AIROptimizeMemtileDMABDs> {
@@ -9394,7 +9691,10 @@ public:
     // specialization patterns.
     llvm::SetVector<air::SegmentOp> segs;
     func.walk([&](air::SegmentOp seg) { segs.insert(seg); });
+    DmaBdLimits l2Limits =
+        getDmaBdLimits(AIE::getTargetModel(*device), MemorySpace::L2);
     for (auto seg : segs) {
+      foldL2ChannelPutChains(&seg.getBody(), l2Limits);
       air::applyAIRIsolateAsyncDmaLoopNestsPattern(&seg.getBody());
       air::applyAIRSpecializeChannelWrapAndStridePattern(
           &seg.getBody(), limits,
@@ -9459,12 +9759,12 @@ struct AIRFuseAllocDeallocToLoopLike : public OpRewritePattern<OpTy> {
       Operation *defOp = memref.getDefiningOp();
       if (!defOp)
         return false;
-      if (defOp->hasAttr("air.disable_alloc_sink"))
+      if (defOp->hasAttr(air::attrs::DisableAllocSink))
         return true;
       // air-dependency wraps the allocation but keeps its attributes inside.
       if (auto exec = dyn_cast<air::ExecuteOp>(defOp))
         for (auto alloc : exec.template getOps<memref::AllocOp>())
-          if (alloc->hasAttr("air.disable_alloc_sink"))
+          if (alloc->hasAttr(air::attrs::DisableAllocSink))
             return true;
       return false;
     };
@@ -9594,7 +9894,10 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
         memref = alloc->getResult(1);
       else
         memref = dyn_cast_if_present<memref::AllocOp>(alloc).getMemref();
-      rewriter.replaceAllUsesWith(op.getTiedKernelArgument(memref), memref);
+      // By position: one value may feed several kernel operands.
+      for (unsigned i = 0; i < op.getNumKernelOperands(); i++)
+        if (op.getKernelOperand(i) == memref)
+          rewriter.replaceAllUsesWith(op.getKernelArgument(i), memref);
       // Remove alloc and dealloc results from the new herd's arg list.
       llvm::erase(kernelOpers, memref);
       if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc))
@@ -9724,9 +10027,13 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
       rewriter.replaceAllUsesWith(op.getIds()[i], newHerd.getIds()[i]);
       rewriter.replaceAllUsesWith(op.getSize()[i], newHerd.getSize()[i]);
     }
-    for (auto oper : kernelOpers)
-      rewriter.replaceAllUsesWith(op.getTiedKernelArgument(oper),
-                                  newHerd.getTiedKernelArgument(oper));
+    // Every occurrence of a sunk memref was dropped, so the remaining operands
+    // map to the new op in order.
+    unsigned newIdx = 0;
+    for (unsigned i = 0; i < op.getNumKernelOperands(); i++)
+      if (llvm::is_contained(kernelOpers, op.getKernelOperand(i)))
+        rewriter.replaceAllUsesWith(op.getKernelArgument(i),
+                                    newHerd.getKernelArgument(newIdx++));
     auto &bb = newHerd.getBody().front().getOperations();
     auto &body = op.getBody().front().getOperations();
     bb.splice(bb.begin(), body, body.begin(), --body.end());
@@ -9781,7 +10088,9 @@ public:
     auto funcOp = getOperation();
     RewritePatternSet patterns(&getContext());
     patterns.insert<ShrinkMemrefSizesByAccessPattern,
-                    UpdateSubViewOutputTypeAfterMemrefShrinkage>(ctx);
+                    UpdateSubViewOutputTypeAfterMemrefShrinkage,
+                    UpdateExpandShapeTypeAfterMemrefShrinkage,
+                    UpdateCollapseShapeTypeAfterMemrefShrinkage>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
     // Update func.call declaration after memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;

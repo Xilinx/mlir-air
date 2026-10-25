@@ -10,7 +10,7 @@
 // RUN: air-translate --mlir-to-llvmir %t.broadcast.llvm.mlir -o %t.broadcast.ll
 // RUN: %OPT -O3 -o %t.broadcast.opt.bc < %t.broadcast.ll
 // RUN: %LLC %t.broadcast.opt.bc --relocation-model=pic -filetype=obj -o %t.broadcast.o
-// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_inc -c -o %t.main.o
+// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %aircpu_inc -c -o %t.main.o
 // RUN: %CLANG %aircpu_lib %mlir_async_lib -o %t.test.exe %t.main.o %t.broadcast.o
 // RUN: %ld_lib_path %t.test.exe
 

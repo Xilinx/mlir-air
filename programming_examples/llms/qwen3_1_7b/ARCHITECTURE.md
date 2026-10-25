@@ -25,7 +25,7 @@ x ─[NPU elf:rms_qkv_qknorm_rope]   FUSED, 8 launches, 1 ELF
       → q_roped[seq,2048], k_roped[seq,1024], v[seq,1024]
   ─[NPU elf:flash_attn]   npu_fa_headfirst (head-first, hd=128)
       (HOST) seq→head transpose → NPU FA → (HOST) head→seq transpose → attn_out[seq,2048]
-  ─[NPU elf:o_ffn_qwen]   FUSED, 1 ELF
+  ─[NPU elf:o_ffn]   FUSED, 1 ELF
       { O GEMM (square 2048→2048) + Add + RMSNorm + Gate + Up + SwiGLU + Down + Add } → layer_out[seq,2048]
 once: (HOST) final RMSNorm → [NPU elf:lm_head_gemv] (19 partitions ×8192, vocab 151936)
 ```
@@ -49,7 +49,7 @@ this lean form (see NPU vs CPU below).
 
 **On NPU (all heavy compute):** every GEMM / GEMV (Q/K/V, O, Gate, Up, Down,
 LM-head), RMSNorm, **per-head QK-norm**, RoPE, prefill FlashAttention, SwiGLU
-(fused inside `o_ffn_qwen` / `o_gemv_ffn`). Prefill folds Q/K/V + QK-norm + RoPE
+(fused inside `o_ffn` / `o_gemv_ffn`). Prefill folds Q/K/V + QK-norm + RoPE
 into ONE ELF, and the whole O+FFN into a second; attention is the third.
 
 **On CPU (cheap glue + one transpose, evidence-backed):**

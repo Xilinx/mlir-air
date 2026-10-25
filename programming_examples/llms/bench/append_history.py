@@ -22,6 +22,8 @@ Usage:
   python3 append_history.py --sweep sweep.json --history sweep_history.ndjson --run-id 123
   python3 append_history.py --prefill-sweep prefill_sweep.json \
                             --history prefill_sweep_history.ndjson --run-id 123
+  python3 append_history.py --spec-decode full20.json \
+                            --history spec_decode_history.ndjson --run-id 123
 """
 
 import argparse
@@ -125,6 +127,45 @@ def _flat_prefill_sweep_rows(recs, run_id):
             }
 
 
+def _flat_spec_decode_rows(recs, run_id):
+    """Yield one flat history row per (model, dataset) of a paired
+    target-only vs speculative-decoding study, plus one for all requests.
+
+    The two engines' throughputs are only comparable within one study, so a
+    row carries both rather than splitting them across series.
+    """
+    for d in recs:
+        tc = d.get("toolchain", {}) or {}
+        ts = d.get("timestamp_utc", "") or ""
+        pt = d.get("prompt_tokens", {}) or {}
+        sets = dict(d.get("per_dataset", {}) or {})
+        sets["all"] = d.get("overall", {}) or {}
+        for dataset, m in sets.items():
+            yield {
+                "date": ts[:10],
+                "timestamp_utc": ts,
+                "run_id": run_id,
+                "air_sha": tc.get("mlir_air_sha", ""),
+                "aie_hash": tc.get("mlir_aie_hash", ""),
+                "peano": tc.get("llvm_aie_version", ""),
+                "model": d.get("model", ""),
+                "runner": d.get("runner", ""),
+                "protocol": d.get("protocol", ""),
+                "requests_per_engine": d.get("requests_per_engine"),
+                "samples_per_dataset": d.get("samples_per_dataset"),
+                "max_new_tokens": d.get("max_new_tokens"),
+                "prompt_tokens_min": pt.get("min"),
+                "prompt_tokens_max": pt.get("max"),
+                "dataset": dataset,
+                "target_tokens_per_sec": m.get("b1_tokens_per_second"),
+                "spec_tokens_per_sec": m.get("dflash_tokens_per_second"),
+                "speedup": m.get("speedup"),
+                "emitted_per_round": m.get("emitted_per_round"),
+                "acceptance_rate": m.get("acceptance_rate"),
+                "verify_status": d.get("verify_status", ""),
+            }
+
+
 def _existing_run_ids(history_path):
     """Return the set of run_ids already recorded in history.ndjson.
 
@@ -154,6 +195,10 @@ def main():
     src.add_argument(
         "--prefill-sweep", help="Path to the nightly prefill_sweep.json (TTFT curves)"
     )
+    src.add_argument(
+        "--spec-decode",
+        help="Path to the nightly full20.json (speculative decoding study)",
+    )
     ap.add_argument(
         "--history", required=True, help="Path to history.ndjson (created if absent)"
     )
@@ -169,12 +214,15 @@ def main():
     except ValueError:
         run_id = args.run_id
 
-    src_path = Path(args.perf or args.sweep or args.prefill_sweep)
-    flatten = (
-        _flat_rows
-        if args.perf
-        else _flat_sweep_rows if args.sweep else _flat_prefill_sweep_rows
-    )
+    src_path = Path(args.perf or args.sweep or args.prefill_sweep or args.spec_decode)
+    if args.perf:
+        flatten = _flat_rows
+    elif args.sweep:
+        flatten = _flat_sweep_rows
+    elif args.prefill_sweep:
+        flatten = _flat_prefill_sweep_rows
+    else:
+        flatten = _flat_spec_decode_rows
     if not src_path.is_file():
         print(f"no {src_path.name}; nothing to append")
         return 0

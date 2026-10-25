@@ -1,4 +1,4 @@
-//===- air_channel_to_locks_shared_buffer.mlir -----------------*- MLIR -*-===//
+//===- air_channel_to_locks_opaque_producers.mlir --------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT

@@ -2799,6 +2799,60 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+// The scf.if / scf.index_switch counterpart of LowerScfTokenPattern: drop the
+// op's air.async.token results. A dropped result becomes a dependency-free
+// air.wait_all, and each region waits on the tokens it used to yield.
+template <typename OpT>
+struct LowerScfBranchTokenPattern : public OpRewritePattern<OpT> {
+  using OpRewritePattern<OpT>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpT op,
+                                PatternRewriter &rewriter) const override {
+    auto isToken = [](Type t) { return isa<air::AsyncTokenType>(t); };
+    if (llvm::none_of(op->getResultTypes(), isToken))
+      return failure();
+
+    OperationState state(op->getLoc(), op->getName());
+    state.addOperands(op->getOperands());
+    state.addAttributes(op->getDiscardableAttrDictionary().getValue());
+    state.propertiesAttr = op->getPropertiesAsAttribute();
+    for (Type t : op->getResultTypes())
+      if (!isToken(t))
+        state.addTypes(t);
+    for (unsigned i = 0, e = op->getNumRegions(); i < e; ++i)
+      state.addRegion();
+    Operation *newOp = rewriter.create(state);
+    for (auto [from, to] :
+         llvm::zip_equal(op->getRegions(), newOp->getRegions()))
+      rewriter.inlineRegionBefore(from, to, to.end());
+
+    for (Region &region : newOp->getRegions())
+      for (Block &block : region) {
+        auto yield = cast<scf::YieldOp>(block.getTerminator());
+        SmallVector<Value> kept, tokens;
+        for (Value v : yield.getOperands())
+          (isToken(v.getType()) ? tokens : kept).push_back(v);
+        rewriter.setInsertionPoint(yield);
+        air::WaitAllOp::create(rewriter, op->getLoc(), TypeRange{}, tokens);
+        rewriter.modifyOpInPlace(yield, [&] { yield->setOperands(kept); });
+      }
+
+    rewriter.setInsertionPoint(newOp);
+    SmallVector<Value> results;
+    unsigned next = 0;
+    for (Value r : op->getResults()) {
+      if (isToken(r.getType()))
+        results.push_back(air::WaitAllOp::create(rewriter, op->getLoc(),
+                                                 r.getType(), ValueRange{})
+                              .getAsyncToken());
+      else
+        results.push_back(newOp->getResult(next++));
+    }
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
 struct AttachMustProgressPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -2842,7 +2896,8 @@ struct AttachMustProgressPattern : public OpRewritePattern<scf::ForOp> {
 void lowerScfAirTokens(AIE::DeviceOp m) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<LowerScfTokenPattern>(ctx);
+  patterns.insert<LowerScfTokenPattern, LowerScfBranchTokenPattern<scf::IfOp>,
+                  LowerScfBranchTokenPattern<scf::IndexSwitchOp>>(ctx);
   patterns.insert<AttachMustProgressPattern>(ctx);
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
@@ -6995,7 +7050,8 @@ public:
   /// The channel's BDs share one counting lock, so release k of a trip admits
   /// BD `slots + k`, whichever buffer that fills: the release follows that
   /// buffer's last use and release k - 1. Fails unless the core's gets on this
-  /// DMA channel are one channel in one block.
+  /// DMA channel are one channel, in one block or in blocks that each take the
+  /// channel's buffers whole and in order.
   FailureOr<Operation *> findRingReleasePoint(air::MemcpyInterface get,
                                               ArrayRef<Operation *> ringOps,
                                               int64_t slots) {
@@ -7005,21 +7061,61 @@ public:
     Block *block = get->getBlock();
     auto core = get->getParentOfType<AIE::CoreOp>();
     auto chan = self.getChanName();
-    SmallVector<air::ChannelGetOp> ring;
+    llvm::MapVector<Block *, SmallVector<air::ChannelGetOp>> byBlock;
     for (Operation *o : ringOps) {
       if (!o || o->getParentOfType<AIE::CoreOp>() != core)
         continue;
       auto g = dyn_cast<air::ChannelGetOp>(o);
-      if (!g || g->getBlock() != block || g.getChanName() != chan)
+      if (!g || g.getChanName() != chan)
         return failure();
-      ring.push_back(g);
+      byBlock[g->getBlock()].push_back(g);
     }
+    for (auto &[b, gets] : byBlock)
+      llvm::sort(gets, [](air::ChannelGetOp a, air::ChannelGetOp b) {
+        return a->isBeforeInBlock(b);
+      });
+    SmallVector<air::ChannelGetOp> ring = byBlock.lookup(block);
     int64_t n = ring.size();
     if (n < 2 || slots < 1)
       return failure();
-    llvm::sort(ring, [](air::ChannelGetOp a, air::ChannelGetOp b) {
-      return a->isBeforeInBlock(b);
-    });
+    // Gets in several blocks: each block must take the BD chain whole, in
+    // order, so the DMA is at the chain's start whenever a block begins, and
+    // no block may hold another, whose gets would run in the middle of it.
+    if (byBlock.size() > 1) {
+      for (Block *b : llvm::make_first_range(byBlock))
+        for (Block *o : llvm::make_first_range(byBlock))
+          if (b != o && b->findAncestorOpInBlock(*o->getParentOp()))
+            return failure();
+      SmallVector<Value> roots, chain;
+      for (auto g : ring)
+        roots.push_back(air::resolveBufferRoot(g.getMemref()));
+      for (Value r : roots) {
+        if (llvm::is_contained(chain, r))
+          break;
+        chain.push_back(r);
+      }
+      auto takesWhole = [&](ArrayRef<Value> unit) {
+        return llvm::all_of(byBlock, [&](auto &entry) {
+          auto &gets = entry.second;
+          return gets.size() % unit.size() == 0 &&
+                 llvm::all_of(llvm::enumerate(gets), [&](auto ig) {
+                   return air::resolveBufferRoot(ig.value().getMemref()) ==
+                          unit[ig.index() % unit.size()];
+                 });
+        });
+      };
+      if (!takesWhole(chain)) {
+        // a chain that fills one buffer more than once, as [k, v, v] does:
+        // the unit this block's gets are whole copies of
+        size_t p = 1;
+        while (roots.size() % p ||
+               llvm::any_of(llvm::seq(p, roots.size()),
+                            [&](size_t i) { return roots[i] != roots[i % p]; }))
+          p++;
+        if (!takesWhole(ArrayRef<Value>(roots).take_front(p)))
+          return failure();
+      }
+    }
     auto *it = llvm::find(ring, self);
     if (it == ring.end())
       return failure();
@@ -7422,9 +7518,53 @@ public:
                 "other tasks; its BD repeat count would be fixed in the "
                 "configuration");
 
+      // Sends per fill of a re-fed producer (air.refeed_count), read off the
+      // same carrier the lock allocation reads: the put for a core producer,
+      // the buffer for a memtile one. A memtile buffer drained by several ops
+      // carries their summed count, so each op's share is unknown. Such a
+      // buffer, and a transfer holding another side's locks, keep the chain as
+      // built.
+      auto sendsPerFill = [&](Operation *op) -> std::optional<int64_t> {
+        if (dir != AIE::DMAChannelDir::MM2S)
+          return 1;
+        if constexpr (std::is_same_v<dmaAllocatorTy, air::TileDMAAllocator>) {
+          if (auto chanIf = dyn_cast<air::ChannelInterface>(op))
+            return air::getRefeedCount(chanIf);
+          return 1;
+        } else if constexpr (std::is_same_v<dmaAllocatorTy,
+                                            air::MemTileDMAAllocator>) {
+          auto memcpyOp = cast<air::MemcpyInterface>(op);
+          auto buf = dmaAlloc.getBuffer(BufferId, nullptr, memcpyOp);
+          if (failed(buf))
+            return std::nullopt;
+          int64_t n = air::getRefeedCount(buf.value().getOperation());
+          if (n == 1)
+            return 1;
+          if (holdsLocks(dir, op))
+            return std::nullopt;
+          for (auto *user : buf.value().getResult().getUsers()) {
+            auto other = dyn_cast<air::MemcpyInterface>(user);
+            if (other && user != op &&
+                other.getSrcMemref() == buf.value().getResult())
+              return std::nullopt;
+          }
+          return n;
+        } else {
+          return 1;
+        }
+      };
+
       unsigned taskId = 0;
       // For every BD task
       for (auto &[rep, task_ops] : repeat_counts) {
+        // A circular chain sends each re-fed transfer as many times per fill
+        // as its flow needs (see getCircularChainBDs); a finite task runs its
+        // BDs once per repeat.
+        SmallVector<Operation *> bd_ops =
+            infiniteBDLoopMode
+                ? air::getCircularChainBDs(memcpy_ops, task_ops.getArrayRef(),
+                                           sendsPerFill)
+                : SmallVector<Operation *>(task_ops.begin(), task_ops.end());
         // The block containing aie.dma_start
         Block *start_bb = new Block();
         mem.getBody().push_back(start_bb);
@@ -7440,15 +7580,15 @@ public:
         Block *first_bd = new Block();
         first_bd->insertBefore(end_bb);
         Block *next_bd = nullptr;
-        for (size_t i = 0; i < task_ops.size(); i++) {
-          auto memcpyOp = cast<air::MemcpyInterface>(task_ops[i]);
+        for (size_t i = 0; i < bd_ops.size(); i++) {
+          auto memcpyOp = cast<air::MemcpyInterface>(bd_ops[i]);
           Block *bd;
           if (i == 0)
             bd = first_bd;
           else
             bd = next_bd;
           auto b = OpBuilder::atBlockEnd(bd);
-          if (i == task_ops.size() - 1) {
+          if (i == bd_ops.size() - 1) {
             if (infiniteBDLoopMode)
               AIE::NextBDOp::create(b, loc, first_bd);
             else
@@ -9091,7 +9231,9 @@ public:
     if (clTestPatterns.find("specialize-scf-if") != std::string::npos)
       patterns.insert<SpecializeScfIfPattern>(ctx);
     if (clTestPatterns.find("lower-scf-tokens") != std::string::npos)
-      patterns.insert<LowerScfTokenPattern>(ctx);
+      patterns
+          .insert<LowerScfTokenPattern, LowerScfBranchTokenPattern<scf::IfOp>,
+                  LowerScfBranchTokenPattern<scf::IndexSwitchOp>>(ctx);
 
     ShimTileAllocator shimTileAlloc(AIE::getTargetModel(*device));
     std::map<Operation *, AIE::ObjectFifoCreateOp> linksToComplete;

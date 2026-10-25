@@ -79,7 +79,7 @@ class NpuPrefill(Qwen3Q4nxPrefill):
             self.share_embedding(shared_embedding)
 
     def _preload_lm_head_gemv(self):
-        # The upstream loader calls this after uploading all block weights.
+        # The shared prefill loader calls this after uploading all block weights.
         # Release duplicate host MLP storage before allocating LM-head buffers,
         # while keeping the same per-layer resident BOs and exact weight values.
         self._reuse_resident_mlp_weights()

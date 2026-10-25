@@ -14,7 +14,8 @@ it, mirroring the driver's own sizing:
     r   UNI_DEC*RMS_LAYER + rope region + K, LUT at UNI_DEC*RMS_LAYER
         (the rope region is UNI_DEC slabs when ROPE_W_PER_LAYER, else one)
     y   (HOST_ROUNDS+LAYER_RNDS)*PAYLOAD + UNI_LM*VOCAB_SIZE_PADDED
-    kv  UNI_DEC*ATTN_MAXL*KVSZ_TOK
+    kv  KV slabs*ATTN_MAXL*KVSZ_TOK plus any ShortConv state (fewer slabs for a
+        KV-sharing model); `kv_parts` when the builder splits it
 
 Models whose weights exceed a shim BD's 4 GiB reach (qwen3-8b) build with
 DECODE_WGROUP set and take several weight buffers instead of one; `w_parts` then
@@ -98,6 +99,16 @@ _CHECK_ROPE_PER_LAYER = (
     None,
     dict(rms_size=336896, rms_lut_off=200704),
 )
+# KV splits: a plain model, both PLE-fork variants (slabs compacted to the
+# KV-owning layers), the hybrid (ShortConv state in the first buffer), and a
+# depth that must not split.
+_CHECK_KV_SPLITS = [
+    ("qwen3-4b", "30", 36, 32768, [1207959552, 1207959552]),
+    ("qwen3-4b", "30", 36, 16384, None),
+    ("gemma4-e2b", "27", 35, 131072, [2147483648, 2147483648]),
+    ("gemma4-e4b", "5", 42, 65536, [1744830464, 1610612736]),
+    ("lfm2-1.2b", "16", 16, 131072, [1073807360, 1073741824]),
+]
 _CHECK_WANT = dict(
     k=2048,
     w_elems=386662400,
@@ -257,13 +268,21 @@ def geometry(model, vocab_chunk_i2, ctx, w_elems=None, n_layers=None, env_extra=
         )
 
     decode_y = (fd.HOST_ROUNDS + fd.LAYER_RNDS) * fd.PAYLOAD
+    # The PLE-fork Makefiles always build with the model's full KV-sharing map,
+    # which this import does not set, so pass it to kv_layout explicitly.
+    if hasattr(fd, "model_kv_src"):
+        kv_parts = fd.kv_layout(fd.ATTN_MAXL, fd.model_kv_src(fd.UNI_DEC))[2]
+    else:
+        kv_parts = fd.KV_BO_ELEMS
+    kv_elems = sum(kv_parts)
     return dict(
         k=fd.K,
         w_elems=w_elems,
         **({"w_parts": w_parts} if w_parts else {}),
         rms_size=fd.UNI_DEC * fd.RMS_LAYER + _rope_w_elems(fd) + fd.K,
         ny=decode_y + fd.UNI_LM * fd.VOCAB_SIZE_PADDED,
-        kv_elems=fd.UNI_DEC * fd.ATTN_MAXL * fd.KVSZ_TOK,
+        kv_elems=kv_elems,
+        **({"kv_parts": list(kv_parts)} if len(kv_parts) > 1 else {}),
         decode_y=decode_y,
         voc_n=fd.UNI_LM * fd.VOCAB_SIZE_PADDED,
         rms_lut_off=fd.UNI_DEC * fd.RMS_LAYER,
@@ -319,6 +338,16 @@ def main():
             got = geometry(model, i2, 2048, n_layers=nl, env_extra=extra).get("w_parts")
             if got != want:
                 bad[f"w_parts[{model}]"] = (want, got)
+        for model, i2, nl, ctx, want in _CHECK_KV_SPLITS:
+            got = geometry(model, i2, ctx, n_layers=nl).get("kv_parts")
+            if got != want:
+                bad[f"kv_parts[{model}@{ctx}]"] = (want, got)
+        # At 128k every KV buffer of every model must fit in 4 GiB.
+        for model, i2, nl, *_ in _CHECK_W_ELEMS + _CHECK_SPLITS:
+            g3 = geometry(model, i2, 131072, n_layers=nl)
+            for n in g3.get("kv_parts", [g3["kv_elems"]]):
+                if n * 2 > 1 << 32:
+                    bad[f"kv_parts[{model}@131072]"] = ("<= 4 GiB each", n * 2)
         model, i2, nl, extra, want = _CHECK_ROPE_PER_LAYER
         g2 = geometry(model, i2, 2048, n_layers=nl, env_extra=extra)
         for k, v in want.items():

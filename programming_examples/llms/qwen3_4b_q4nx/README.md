@@ -63,7 +63,7 @@ correct, recorded as `PARIS_GREEDY`.
 ## Quick Start
 
 ```bash
-# Build everything, weight-free: the prefill ELFs + the decode templates.
+# Build everything, weight-free: the fused prefill + the decode templates.
 make compile
 
 # ...or just one half:

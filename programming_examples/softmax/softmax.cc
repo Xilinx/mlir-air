@@ -78,6 +78,11 @@ float exp_bf16(int num_elems, VecIteratorIn &in, VecIteratorOut &out) {
   max_value = aie::reduce_max(max_vec);
   max_bfloat16 = aie::broadcast<bfloat16, VecLen>(max_value);
 
+  // fetch() shifts its index by the core's rounding mode, and the tables
+  // are laid out for floor. Set once around the loop, which keeps it
+  // pipelined.
+  aie::rounding_mode saved_rnd = aie::tile::current().get_rounding();
+  aie::tile::current().set_rounding(aie::rounding_mode::floor);
   for (int i = 0; i < elem_iters; i++)
     chess_prepare_for_pipelining chess_loop_range(4, ) {
       aie::vector<bfloat16, VecLen> input_org = aie::load_v<VecLen>(in);
@@ -100,6 +105,7 @@ float exp_bf16(int num_elems, VecIteratorIn &in, VecIteratorOut &out) {
       aie::store_v(out, exp_val.template to_vector<bfloat16>());
       out += VecLen;
     }
+  aie::tile::current().set_rounding(saved_rnd);
   // Variant not using emulated FP32 for the mul reduce, off by +/- 1 in final
   // result and 10 cycles slower
   aie::vector<float, VecLen> reduce = exp_val_accum.template to_vector<float>();

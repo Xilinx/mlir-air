@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Build the upstream single-token Qwen3-4B megakernel in an isolated directory."""
+"""Build the single-token (B1) Qwen3-4B megakernel in an isolated directory."""
 
 import argparse
 import json
@@ -9,7 +9,9 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from build_identity import build_identity, check_existing, digest
+from air.backend.compile_cache import run_compiler
+from paths import HERE, COMMON
+from common.build_identity import build_identity, check_existing, digest
 from target_config import FUSED
 
 
@@ -18,7 +20,7 @@ def main():
     p.add_argument("--output", required=True, type=Path)
     a = p.parse_args()
     out = a.output.resolve()
-    identity = build_identity("baseline")
+    identity = build_identity("baseline", HERE)
     if out.exists():
         check_existing(out, identity)
         return
@@ -51,10 +53,10 @@ def main():
     def save():
         (out / "manifest.json").write_text(json.dumps(record, indent=2) + "\n")
 
-    def run(cmd, **kwargs):
+    def run(cmd, runner=subprocess.run, **kwargs):
         record["commands"].append(cmd)
         save()
-        subprocess.run(cmd, check=True, env=env, **kwargs)
+        runner(cmd, check=True, env=env, **kwargs)
 
     save()
     try:
@@ -89,7 +91,8 @@ def main():
                     if attn
                     else ["-O2", "-c"]
                 )
-                + [str(FUSED / "kernels" / (name + ".cc")), "-o", str(dest)]
+                + [str(FUSED / "kernels" / (name + ".cc")), "-o", str(dest)],
+                runner=run_compiler,
             )
         for length in (4096, 4095):
             work = out / f"compile_L{length}"

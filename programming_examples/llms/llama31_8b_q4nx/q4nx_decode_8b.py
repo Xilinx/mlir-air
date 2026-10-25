@@ -10,6 +10,7 @@
 import importlib.util
 import os
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -132,6 +133,39 @@ def ensure_requant_cache(model_source, fd, n_layers, wcache_dir=None, verbose=Tr
 EOS_IDS = (128001, 128009)  # <|end_of_text|>, <|eot_id|>
 
 
+def upload_packed_weights(path, buffers, word_counts):
+    """Upload the unchanged NPZ stream without a full-model host copy.
+
+    Buffer order is the native layer-group order followed by the LM head.
+    Check every uploaded word and the archive CRC before the caller syncs.
+    """
+    with zipfile.ZipFile(path) as archive, archive.open("W.npy") as stream:
+        version = np.lib.format.read_magic(stream)
+        reader = {
+            (1, 0): np.lib.format.read_array_header_1_0,
+            (2, 0): np.lib.format.read_array_header_2_0,
+        }.get(version)
+        if reader is None:
+            raise ValueError(f"Unsupported packed NPY version: {version}")
+        shape, fortran, dtype = reader(stream)
+        if fortran or dtype != np.dtype(np.int16) or shape != (sum(word_counts),):
+            raise ValueError(f"Packed weight shape/dtype mismatch: {shape}, {dtype}")
+        for bo, count in zip(buffers, word_counts, strict=True):
+            mapped = np.frombuffer(bo.map(), np.int16, count=count)
+            offset = 0
+            while offset < count:
+                raw = stream.read(min(16 << 20, count - offset) * 2)
+                if not raw or len(raw) % 2:
+                    raise ValueError("Truncated packed weight cache")
+                words = np.frombuffer(raw, np.int16)
+                bo.write(words, offset * 2)
+                if not np.array_equal(mapped[offset : offset + words.size], words):
+                    raise ValueError(f"Weight upload mismatch at word {offset}")
+                offset += words.size
+        if stream.read(1):
+            raise ValueError("Unexpected trailing packed weight data")
+
+
 def generate(dec, prompt_ids, n_tokens, greedy=True, sampler=None, stop_on_eos=True):
     """Option (c) autoregressive generation: decode the prompt token-by-token through the
     on-device fused decode (warming the on-device KV cache), then continue. dispatch(tok, p)
@@ -188,6 +222,8 @@ class FusedDecode8B:
         templates,
         model_type="LLAMA_3_1_8B",
         max_L=None,
+        *,
+        wcache_dir=None,
     ):
         import pyxrt as xrt
 
@@ -213,12 +249,13 @@ class FusedDecode8B:
         # decode weights (q4k-cascade requant) + embed/final-norm from the same model.q4nx
         from llama32_1b_q4nx_weights import Q4nxModel
 
-        cache = ensure_requant_cache(model_source, fd, self.N_LAYERS)
-        z = np.load(cache)
-        W = z["W"].view(bfloat16)
-        Wv16 = W.view(np.int16)
-        RMS_in = list(z["RMS_in"].view(bfloat16))
-        RMS_post = list(z["RMS_post"].view(bfloat16))
+        cache = ensure_requant_cache(
+            model_source, fd, self.N_LAYERS, wcache_dir=wcache_dir
+        )
+        self.weight_cache = cache
+        with np.load(cache) as z:
+            RMS_in = list(z["RMS_in"].view(bfloat16))
+            RMS_post = list(z["RMS_post"].view(bfloat16))
         qm = Q4nxModel(model_source)
         # Only the input embedding + final norm are read here; the LM head lives in
         # the requant cache above (untied, from the bundle's own lm_head tensor), so
@@ -259,6 +296,8 @@ class FusedDecode8B:
         # Host-only BOs are host memory registered with the device, not bound to a
         # hw_context slot, so the same set is valid on every window's kernel -- which is
         # what makes a window switch cheap (no 2 GB weight re-upload).
+        from kv_bos import KVBuffers
+
         self.dev = xrt.device(0)
         self.TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.FROM = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
@@ -283,7 +322,8 @@ class FusedDecode8B:
         self.x_bo = mkbo(self.K * 2, 3)
         self.r_bo = mkbo(RMS_SIZE * 2, 5)
         self.y_bo = mkbo(self.ny * 2, 6)
-        self.kvc = mkbo(self.N_LAYERS * self.LREG * 2, 7)
+        self.kvb = KVBuffers(fd, self.ATTN_MAXL, lambda n, a: mkbo(n, 3 + a))
+        self.kvc = self.kvb.kvc
         # DECODE_WGROUP: the engine splits the weights over ceil(UNI_DEC/G) layer
         # buffers plus a dedicated lm-head buffer, because one BO is addressable
         # only over a 4 GiB span. Group 0 stays on the original arg (g(4)); the
@@ -292,35 +332,36 @@ class FusedDecode8B:
         # Read off the engine, not the environment, so the host slicing cannot
         # disagree with what the template was built for.
         _G, self._wsplit, _ng = fd.W_GROUP, fd.W_SPLIT, fd.N_WGRP
+        head_words = fd.UNI_LM * fd.VOCAB_W_BLOCKS * fd.BLOCK_BF16
         if self._wsplit:
             _WL = fd.W_LAYER
             parts = [
-                W[gi * _G * _WL : min((gi + 1) * _G, self.N_LAYERS) * _WL]
-                for gi in range(_ng)
+                (min((gi + 1) * _G, self.N_LAYERS) - gi * _G) * _WL for gi in range(_ng)
             ]
-            parts.append(W[self.N_LAYERS * _WL :])  # lm-head slabs
-            assert sum(p.size for p in parts) == W.size, "weight split lost data"
+            parts.append(head_words)
             self.w_bos = [
-                mkbo(p.size * 2, 4 if i == 0 else 7 + i) for i, p in enumerate(parts)
+                mkbo(count * 2, 4 if i == 0 else 7 + i) for i, count in enumerate(parts)
             ]
-            for bo, p in zip(self.w_bos, parts):
-                bo.write(np.ascontiguousarray(p).view(np.int16), 0)
+            upload_packed_weights(cache, self.w_bos, parts)
+            for bo in self.w_bos:
                 bo.sync(self.TO)
             print(
                 f"[decode] weight split G={_G}: "
-                + ", ".join(f"{p.size*2/2**30:.2f}GiB" for p in parts),
+                + ", ".join(f"{count*2/2**30:.2f}GiB" for count in parts),
                 flush=True,
             )
             self.w_bo = self.w_bos[0]
         else:
             self.w_bos = None
-            self.w_bo = mkbo(W.size * 2, 4)
-            self.w_bo.write(Wv16, 0)
+            count = self.N_LAYERS * fd.W_LAYER + head_words
+            self.w_bo = mkbo(count * 2, 4)
+            upload_packed_weights(cache, [self.w_bo], [count])
             self.w_bo.sync(self.TO)
         if self.elf_mode:
             self._elfdec.bind(
                 (self.x_bo, self.w_bo, self.r_bo, self.y_bo, self.kvc)
                 + tuple(self.w_bos[1:] if self._wsplit else ())
+                + self.kvb.extra
             )
         # KV cache seeded empty; the kernel appends each token in-place at slot `pos`.
         self.reset_kv()
@@ -350,9 +391,10 @@ class FusedDecode8B:
 
     def reset_kv(self):
         """Zero the device-resident KV cache (start a fresh sequence)."""
-        KV = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
-        self.kvc.write(KV.view(np.int16), 0)
-        self.kvc.sync(self.TO)
+        # One layer at a time, to avoid a host copy of the whole cache.
+        zero = np.zeros(self.LREG, dtype=np.int16)
+        for L in range(self.N_LAYERS):
+            self.kvb.write_layer(L, zero, self.TO)
         # A fresh sequence starts at L=1, so drop back to the cheapest window.
         if getattr(self, "_ist", None):
             self._use_window(self.windows[0])
@@ -376,19 +418,19 @@ class FusedDecode8B:
             )
         region_stride = self.cur_maxl * fd.REGION_W
         lreg = self._geom.lreg(self.cur_maxl)
-        buf = np.zeros(self.N_LAYERS * self.LREG, dtype=bfloat16)
+        # One layer at a time, as in reset_kv.
+        buf = np.zeros(lreg, dtype=bfloat16)
         for L in range(self.N_LAYERS):
             kL = np.asarray(k_layers[L], bfloat16).reshape(ctx, -1)
             vL = np.asarray(v_layers[L], bfloat16).reshape(ctx, -1)
-            base = L * lreg
+            buf[:] = 0
             for gi in range(fd.NGRP):
                 cols = slice(gi * fd.REGION_W, (gi + 1) * fd.REGION_W)
-                kreg = base + gi * region_stride
-                vreg = base + (fd.NGRP + gi) * region_stride
+                kreg = gi * region_stride
+                vreg = (fd.NGRP + gi) * region_stride
                 buf[kreg : kreg + ctx * fd.REGION_W] = kL[:, cols].reshape(-1)
                 buf[vreg : vreg + ctx * fd.REGION_W] = vL[:, cols].reshape(-1)
-        self.kvc.write(buf.view(np.int16), 0)
-        self.kvc.sync(self.TO)
+            self.kvb.write_layer(L, buf.view(np.int16), self.TO)
         return ctx
 
     def dispatch(self, tok, p):
@@ -419,6 +461,7 @@ class FusedDecode8B:
                 self.y_bo,
                 self.kvc,
                 *(self.w_bos[1:] if self._wsplit else ()),
+                *self.kvb.extra,
             ).wait(60000)
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decode dispatch pos{p} state={st}")
