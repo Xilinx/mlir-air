@@ -281,8 +281,22 @@ bool air::memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB) {
   return false; // Unknown or different air::MemcpyInterface op types.
 }
 
+// The shortest unit a chain of memcpy ops is two or more whole copies of, or
+// an empty vector. The unit may move one buffer more than once, as [k, v, v]
+// does.
+static llvm::SetVector<Operation *> wholeCopiesUnit(ArrayRef<Operation *> ops) {
+  for (size_t p = 1; 2 * p <= ops.size(); p++)
+    if (ops.size() % p == 0 &&
+        llvm::all_of(llvm::seq(p, ops.size()), [&](size_t i) {
+          return air::memcpyIMappedToEquivalentBDs(ops[i], ops[i % p]);
+        }))
+      return llvm::SetVector<Operation *>(ops.begin(), ops.begin() + p);
+  return {};
+}
+
 // Canonicalize a chain of memcpy ops as candidates to map to dma bds, by
-// removing repetitive patterns. Returns the unique repeating unit, or an empty
+// removing repetitive patterns. Returns the unique repeating unit, the unit
+// the chain is whole copies of when that unit repeats an op, or an empty
 // vector when the chain does not repeat.
 llvm::SetVector<Operation *>
 air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
@@ -301,8 +315,7 @@ air::getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps) {
   while (opIt != memcpyIOps.end()) {
     // BD repetition found. Check if repeating pattern.
     if (!memcpyIMappedToEquivalentBDs(*opIt, uniqueBDPattern[idx]))
-      return llvm::SetVector<Operation *>(); // Chain isn't repeating. Return
-                                             // an empty vector.
+      return wholeCopiesUnit(memcpyIOps.getArrayRef());
     opIt++;
     idx++;
     idx %= uniqueBDPattern.size();
@@ -978,7 +991,20 @@ SmallVector<Operation *> air::getCircularChainBDs(
   // y standing for four transfers. Scale each transfer's sends by its copies,
   // relative to the copies a whole repetition of the unit accounts for.
   SmallVector<int64_t> copies(unit.size(), 0);
-  for (auto *o : ops) {
+  // whole copies of a unit that repeats an op (getUniqueBDPattern): equivalence
+  // cannot tell the unit's slots apart, so count by position
+  size_t n = unit.size();
+  bool byPosition =
+      ops.size() % n == 0 &&
+      llvm::all_of(llvm::seq<size_t>(0, ops.size()), [&](size_t i) {
+        return memcpyIMappedToEquivalentBDs(ops[i], unit[i % n]);
+      });
+  for (size_t i = 0; i < ops.size(); i++) {
+    if (byPosition) {
+      copies[i % n]++;
+      continue;
+    }
+    Operation *o = ops[i];
     const auto *it = llvm::find(unit, o);
     if (it == unit.end())
       it = llvm::find_if(unit, [&](Operation *u) {

@@ -158,3 +158,114 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// An expand_shape and a collapse_shape with the same reassociation undo each
+// other like a pack and an unpack: the loop carries the expanded value.
+
+// CHECK-LABEL: func.func @reshape
+// CHECK-SAME: (%[[INIT:.*]]: tensor<16x16xf32>
+// CHECK: %[[E0:.*]] = tensor.expand_shape %[[INIT]] {{\[\[}}0, 1], [2]]
+// CHECK: %[[R:.*]]:2 = scf.for {{.*}} iter_args(%[[ACC:.*]] = %[[INIT]], %[[E:.*]] = %[[E0]])
+// CHECK-NOT: tensor.expand_shape
+// CHECK: %[[X:.*]] = math.exp %[[E]]
+// CHECK-NOT: tensor.collapse_shape
+// CHECK: scf.yield %[[ACC]], %[[X]]
+// CHECK: %[[C:.*]] = tensor.collapse_shape %[[R]]#1 {{\[\[}}0, 1], [2]]
+// CHECK: return %[[C]]
+func.func @reshape(%init: tensor<16x16xf32>) -> tensor<16x16xf32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %r = scf.for %i = %c0 to %c4 step %c1 iter_args(%acc = %init) -> tensor<16x16xf32> {
+    %e = tensor.expand_shape %acc [[0, 1], [2]] output_shape [2, 8, 16] : tensor<16x16xf32> into tensor<2x8x16xf32>
+    %x = math.exp %e : tensor<2x8x16xf32>
+    %c = tensor.collapse_shape %x [[0, 1], [2]] : tensor<2x8x16xf32> into tensor<16x16xf32>
+    scf.yield %c : tensor<16x16xf32>
+  }
+  return %r : tensor<16x16xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %loop = transform.structured.match ops{["scf.for"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %new, %packs = transform.air.hoist_loop_carried_pack %loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+    transform.yield
+  }
+}
+
+// -----
+
+// The pack writes into a bufferization.alloc_tensor and the unpack into a
+// tensor.empty, both made in the loop. An unpack writes all of its
+// destination, so it need not be the carried value: each destination is made
+// again outside the loop for the copy there.
+
+// CHECK-LABEL: func.func @fresh_dests
+// CHECK: %[[A:.*]] = bufferization.alloc_tensor() : tensor<2x2x8x8xf32>
+// CHECK: %[[P0:.*]] = linalg.pack %{{.*}} into %[[A]]
+// CHECK: %[[R:.*]]:2 = scf.for {{.*}} iter_args(%{{.*}} = %{{.*}}, %[[PACKED:.*]] = %[[P0]])
+// CHECK-NOT: linalg.pack
+// CHECK: math.exp %[[PACKED]]
+// CHECK-NOT: linalg.unpack
+// CHECK: scf.yield
+// CHECK: %[[D:.*]] = tensor.empty() : tensor<16x16xf32>
+// CHECK: %[[U:.*]] = linalg.unpack %[[R]]#1 {{.*}} into %[[D]]
+// CHECK: return %[[U]]
+func.func @fresh_dests(%init: tensor<16x16xf32>) -> tensor<16x16xf32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %r = scf.for %i = %c0 to %c4 step %c1 iter_args(%acc = %init) -> tensor<16x16xf32> {
+    %e = bufferization.alloc_tensor() : tensor<2x2x8x8xf32>
+    %p = linalg.pack %acc inner_dims_pos = [0, 1] inner_tiles = [8, 8] into %e : tensor<16x16xf32> -> tensor<2x2x8x8xf32>
+    %x = math.exp %p : tensor<2x2x8x8xf32>
+    %d = tensor.empty() : tensor<16x16xf32>
+    %u = linalg.unpack %x inner_dims_pos = [0, 1] inner_tiles = [8, 8] into %d : tensor<2x2x8x8xf32> -> tensor<16x16xf32>
+    scf.yield %u : tensor<16x16xf32>
+  }
+  return %r : tensor<16x16xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %loop = transform.structured.match ops{["scf.for"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %new, %packs = transform.air.hoist_loop_carried_pack %loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+    transform.yield
+  }
+}
+
+// -----
+
+// The unpack writes into a tensor defined before the loop: the unpack after
+// the loop writes into it too.
+
+// CHECK-LABEL: func.func @unpack_dest_outside
+// CHECK-SAME: (%[[INIT:.*]]: tensor<16x16xf32>, %[[DEST:.*]]: tensor<16x16xf32>)
+// CHECK: %[[R:.*]]:2 = scf.for
+// CHECK-NOT: linalg.unpack
+// CHECK: scf.yield
+// CHECK: %[[U:.*]] = linalg.unpack %[[R]]#1 {{.*}} into %[[DEST]]
+// CHECK: return %[[U]]
+func.func @unpack_dest_outside(%init: tensor<16x16xf32>, %dest: tensor<16x16xf32>) -> tensor<16x16xf32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %r = scf.for %i = %c0 to %c4 step %c1 iter_args(%acc = %init) -> tensor<16x16xf32> {
+    %e = tensor.empty() : tensor<2x2x8x8xf32>
+    %p = linalg.pack %acc inner_dims_pos = [0, 1] inner_tiles = [8, 8] into %e : tensor<16x16xf32> -> tensor<2x2x8x8xf32>
+    %x = math.exp %p : tensor<2x2x8x8xf32>
+    %u = linalg.unpack %x inner_dims_pos = [0, 1] inner_tiles = [8, 8] into %dest : tensor<2x2x8x8xf32> -> tensor<16x16xf32>
+    scf.yield %u : tensor<16x16xf32>
+  }
+  return %r : tensor<16x16xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %loop = transform.structured.match ops{["scf.for"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %new, %packs = transform.air.hoist_loop_carried_pack %loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+    transform.yield
+  }
+}

@@ -81,8 +81,9 @@ bool memcpyIMappedToEquivalentBDs(Operation *opA, Operation *opB);
 bool chansPartOfSameRotation(air::ChannelInterface chanA,
                              air::ChannelInterface chanB);
 
-// The unique repeating unit of a chain of memcpy ops, or an empty vector when
-// the chain does not repeat. This is the oracle the BD emitter itself uses to
+// The unique repeating unit of a chain of memcpy ops, the unit the chain is
+// whole copies of when that unit repeats an op, or an empty vector when the
+// chain does not repeat. This is the oracle the BD emitter itself uses to
 // decide whether a chain folds into a circular ring.
 llvm::SetVector<Operation *>
 getUniqueBDPattern(llvm::SetVector<Operation *> memcpyIOps);
