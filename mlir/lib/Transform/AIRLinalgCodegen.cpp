@@ -7705,11 +7705,17 @@ static std::optional<LoopCarriedPack> matchLoopCarriedPack(scf::ForOp forOp,
   if (uDest && uDest != arg && !forOp.isDefinedOutsideOfLoop(uDest) &&
       !isRecreatableEmptyTensor(uDest, forOp))
     return std::nullopt;
+  // The carried value may be the unpack's destination, which it overwrites,
+  // but not what it unpacks.
   Operation *pack = nullptr;
   for (OpOperand &use : arg.getUses()) {
     Operation *user = use.getOwner();
-    if (user == unpack)
+    if (user == unpack) {
+      auto u = dyn_cast<linalg::UnPackOp>(unpack);
+      if (!u || &use != &u.getDestMutable())
+        return std::nullopt;
       continue;
+    }
     OpOperand *src = packSourceOperand(user);
     if (!src || user->getParentOp() != forOp || &use != src || pack)
       return std::nullopt;

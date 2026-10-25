@@ -120,3 +120,32 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// The carried value is what the unpack reads, not its destination: each trip
+// transposes it again, so the trips do not cancel into one transpose after
+// the loop.
+
+func.func @carried_is_unpack_source(%init: tensor<4x4xf32>) -> tensor<4x4xf32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %r = scf.for %i = %c0 to %c2 step %c1 iter_args(%acc = %init) -> tensor<4x4xf32> {
+    %e = tensor.empty() : tensor<4x4xf32>
+    %p = linalg.pack %acc outer_dims_perm = [1, 0] inner_dims_pos = [] inner_tiles = [] into %e : tensor<4x4xf32> -> tensor<4x4xf32>
+    %d = tensor.empty() : tensor<4x4xf32>
+    %u = linalg.unpack %acc outer_dims_perm = [1, 0] inner_dims_pos = [] inner_tiles = [] into %d : tensor<4x4xf32> -> tensor<4x4xf32>
+    scf.yield %u : tensor<4x4xf32>
+  }
+  return %r : tensor<4x4xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %loop = transform.structured.match ops{["scf.for"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    // expected-error @below {{no iteration argument is packed and unpacked in the loop}}
+    %new, %packs = transform.air.hoist_loop_carried_pack %loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+    transform.yield
+  }
+}
