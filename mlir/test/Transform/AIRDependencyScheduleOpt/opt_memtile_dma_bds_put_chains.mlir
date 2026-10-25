@@ -550,3 +550,84 @@ module {
     return
   }
 }
+
+// -----
+
+// Dense runs of different shapes, each starting where the one before ends:
+// one run.
+// CHECK-LABEL: func.func @dense_runs
+// CHECK: air.channel.put async {{.*}}@chan[{{.*}}] (%{{.*}}[%c0{{.*}}] [192] [1])
+// CHECK-NOT: air.channel.put
+module {
+  air.channel @chan [1, 4]
+  func.func @dense_runs() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0, 0] [2, 64] [64, 1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0, %p0] @chan[%c0, %c1] (%buf[0, 128] [2, 32] [32, 1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p1]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The same with a start known only at run time: the second run starts 64
+// elements after it, where the first ends.
+// CHECK-LABEL: func.func @dense_runs_run_time_start
+// CHECK: air.channel.put async {{.*}}@chan[{{.*}}] (%{{.*}}[%arg{{.*}}] [128] [1])
+// CHECK-NOT: air.channel.put
+module {
+  air.channel @chan [1, 4]
+  func.func @dense_runs_run_time_start(%dyn: index) {
+    %0 = air.launch async () in () args(%d0=%dyn) : index {
+      %1 = air.segment @seg async args(%d=%d0) : index {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c64 = arith.constant 64 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %e = arith.addi %d, %c64 : index
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[%d] [64] [1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0, %p0] @chan[%c0, %c1] (%buf[0, %e] [2, 32] [32, 1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p1]
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The second run starts 8 elements after the first ends: the puts stay.
+// CHECK-LABEL: func.func @dense_runs_gap
+// CHECK-COUNT-2: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @dense_runs_gap() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %t0, %buf = air.execute -> (memref<4x64xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<4x64xbf16, 1 : i32>
+          air.execute_terminator %a : memref<4x64xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0, 0] [2, 64] [64, 1]) : (memref<4x64xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0, %p0] @chan[%c0, %c1] (%buf[0, 136] [2, 32] [32, 1]) : (memref<4x64xbf16, 1 : i32>)
+        %w = air.wait_all async [%p1]
+      }
+    }
+    return
+  }
+}
