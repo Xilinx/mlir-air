@@ -214,7 +214,7 @@ llama32_1b/
 │   ├── o_gemv_ffn_multi.py         ← Decode: O+FFN (8 launches)
 │   └── lm_head_gemv_multi.py       ← Decode: LM Head (8 launches)
 │
-│   (one level up: ../llama_kernel_builder/ — shared with llama32_1b_int4/)
+│   (one level up: ../llama_kernel_builder/)
 │   ├── stitching.py                ← MLIR text stitching for multi-launch ELFs
 │   ├── cache.py                    ← KernelCache, Profiler, prepare_air_project
 │   ├── external_kernels.py         ← C++ kernel compilation (rope, silu, attn, gemv)

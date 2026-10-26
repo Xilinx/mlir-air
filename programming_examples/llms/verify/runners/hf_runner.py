@@ -47,8 +47,8 @@ class HfRunner:
         If `model` is provided (any `torch.nn.Module` returning
         `(logits, hidden_states, past_key_values)`-shaped output), use it
         as-is. Otherwise load via `AutoModelForCausalLM.from_pretrained`.
-        Adapters wanting a non-trivial weight setup (e.g. patching AWQ-
-        dequant weights into the meta-llama architecture so the verify
+        Adapters wanting a non-trivial weight setup (e.g. patching
+        round-tripped quantized weights into the bf16 model so the verify
         gate isolates NPU drift from quantization error) build the model
         themselves and inject it here.
         """

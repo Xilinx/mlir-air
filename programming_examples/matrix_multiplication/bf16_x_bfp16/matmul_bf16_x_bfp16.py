@@ -58,9 +58,8 @@ could not see -- that unrolling by two would put 74 KiB of L1 buffers on a 64
 KiB tile. ``air-label-scf-for-to-ping-pong`` now does that arithmetic itself
 (#1928), so there is nothing left for the kernel to declare.
 
-``build_module`` returns the module rather than the launch, because the bfp16
-prefill stitchers under ``llms/llama32_1b_int4/`` call it for one and match its
-signature positionally.
+``build_module`` returns the module rather than the launch, so a caller can
+stitch it into a multi-launch ELF directly.
 """
 
 import argparse

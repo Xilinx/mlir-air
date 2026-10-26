@@ -22,6 +22,12 @@ if(AIR_ENABLE_AIE)
   target_link_libraries(circular_chain_bds PRIVATE AIRConversionPasses
     AIRUtil AIRDialect AIE MLIRParser ${dialect_libs})
   list(APPEND AIR_CPP_UNIT_TESTS circular_chain_bds)
+
+  add_executable(repeat_counts repeat_counts.cpp)
+  add_test(NAME RepeatCounts COMMAND repeat_counts)
+  target_link_libraries(repeat_counts PRIVATE AIRConversionPasses
+    AIRUtil AIRDialect AIE MLIRParser ${dialect_libs})
+  list(APPEND AIR_CPP_UNIT_TESTS repeat_counts)
 endif()
 
 add_custom_target(check-air-cpp COMMAND ${CMAKE_CTEST_COMMAND} DEPENDS ${AIR_CPP_UNIT_TESTS})
