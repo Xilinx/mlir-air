@@ -72,7 +72,8 @@ constexpr int kUnsupportedRunTimeRepeatCount = kRunTimeRepeatCount + 1;
 // A transfer alone in fixed loops inside a run-time loop runs several times a
 // trip, back to back. Such a transfer is accepted only when `timesPerTrip` is
 // given; it then maps the transfer to that number, for getCircularChainBDs.
-// The transfers folded onto one BD must all run that number of times.
+// The transfers folded onto one BD must all run that number of times, unless
+// the chain has only that BD.
 SmallVector<std::pair<int, llvm::SetVector<Operation *>>>
 getRepeatCounts(std::vector<Operation *> memcpy_ops,
                 llvm::DenseMap<Operation *, int64_t> *timesPerTrip = nullptr);
