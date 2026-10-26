@@ -859,23 +859,23 @@
       "divergence_step": 19,
       "test_chosen_rank_in_ref": 4,
       "ref_chosen_rank_in_test": 3,
-      "candidate_sha256": "0797132564e68a9f60d32afa962caf8d941ccc95916720c20b5364ddfc50ff82",
+      "candidate_sha256": "90e78a908045f6d51b1399b2d68ca49344aa4196a58c0eed7a6006c6e4c53eb3",
       "reference_sha256": "822df9d98ec521f52d2fa591fc8a118e2a8674096fd6cad7c63f7f7e009750d4",
       "reset": "PASS",
-      "median_ttft_seconds": 0.8094066437333822,
-      "mean_request_seconds": 4.5875729353477555,
-      "decode_tokens_per_second": 33.62537210282293,
-      "prefill_tokens_per_second": 632.5621416182153,
-      "mean_decode_seconds": 3.776909876614809,
+      "median_ttft_seconds": 0.8369234520941973,
+      "mean_request_seconds": 4.626317294935386,
+      "decode_tokens_per_second": 33.51069830137186,
+      "prefill_tokens_per_second": 611.7644316440704,
+      "mean_decode_seconds": 3.789834483837088,
       "warmup_requests": 1,
-      "warmup_seconds": 5.4999497421085835,
+      "warmup_seconds": 5.698059629648924,
       "measured_requests": 3,
-      "measured_seconds": 13.762718806043267,
+      "measured_seconds": 13.878951884806156,
       "ttft_range_seconds": [
-        0.80522720515728,
-        0.817355327308178
+        0.8187743108719587,
+        0.8537506703287363
       ],
-      "timing_sha256": "fc0ccaffc71f6f0d2afd45ea100ca8cdf798d6d0b7e4a2128b1a31840f5150fa",
+      "timing_sha256": "c7d33a41c397a6307bf0a0edc3f2a51d4fde4bae5e34d667507c1e59f40e2379",
       "checkpoint": "apple/OpenELM-1_1B-Instruct",
       "revision": "effd796da2a77361d7360e45e54c7cc14bc5df2a",
       "input_ids_sha256": "e0132a40bb7af05a94eee652e41c8000063624ab793eeb05368fbf5c273d2aa0",
@@ -883,41 +883,44 @@
       "batches": [
         {
           "summary": {
-            "median_ttft_seconds": 0.8094066437333822,
-            "mean_request_seconds": 4.5875729353477555,
-            "decode_tokens_per_second": 33.62537210282293,
-            "prefill_tokens_per_second": 632.5621416182153
+            "median_ttft_seconds": 0.8369234520941973,
+            "prefill_tokens_per_second": 611.7644316440704,
+            "decode_tokens_per_second": 33.51069830137186,
+            "mean_request_seconds": 4.626317294935386
           },
           "warmups": [
             {
-              "ttft_seconds": 1.7275603618472815,
-              "decode_seconds": 3.772389380261302,
-              "request_seconds": 5.4999497421085835,
-              "handoff_seconds": 0.01070065051317215
+              "ttft_seconds": 1.8187821600586176,
+              "decode_seconds": 3.8792774695903063,
+              "request_seconds": 5.698059629648924,
+              "handoff_seconds": 0.06697953306138515
             }
           ],
           "measured": [
             {
-              "ttft_seconds": 0.8094066437333822,
-              "decode_seconds": 3.769576085731387,
-              "request_seconds": 4.578982729464769,
-              "handoff_seconds": 0.009396148845553398
+              "ttft_seconds": 0.8369234520941973,
+              "decode_seconds": 3.7863974757492542,
+              "request_seconds": 4.6233209278434515,
+              "handoff_seconds": 0.009743528440594673
             },
             {
-              "ttft_seconds": 0.80522720515728,
-              "decode_seconds": 3.782959444448352,
-              "request_seconds": 4.588186649605632,
-              "handoff_seconds": 0.00906396470963955
+              "ttft_seconds": 0.8187743108719587,
+              "decode_seconds": 3.7921036314219236,
+              "request_seconds": 4.610877942293882,
+              "handoff_seconds": 0.009336309507489204
             },
             {
-              "ttft_seconds": 0.817355327308178,
-              "decode_seconds": 3.778194099664688,
-              "request_seconds": 4.595549426972866,
-              "handoff_seconds": 0.008885208517313004
+              "ttft_seconds": 0.8537506703287363,
+              "decode_seconds": 3.791002344340086,
+              "request_seconds": 4.644753014668822,
+              "handoff_seconds": 0.009680267423391342
             }
           ]
         }
-      ]
+      ],
+      "measurement_source_commit": "4bb3c89f4c6d642427e01baea85caba1dde925f4",
+      "compiler_source": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+      "normalization": "Model-local rope.cc/rms_residual.cc: FP32 normalization, BF16 rounding, then learned BF16 weight multiplication."
     },
     {
       "model": "OpenELM-1.1B",
@@ -929,22 +932,22 @@
       "divergence_step": 27,
       "test_chosen_rank_in_ref": 2,
       "ref_chosen_rank_in_test": 2,
-      "candidate_sha256": "fd39771ac081980dcd37095c0591ecb7578b3836533198a152346559f5bc9e9f",
+      "candidate_sha256": "d01d08af6958ee885fc3c546207fc3ea470585a4a5934b6e22a6e840567c1338",
       "reference_sha256": "6415c0590784bd889ca67662a2715067a3dfff36a329976ff6dc47040789063a",
-      "median_ttft_seconds": 1.4022611156105995,
-      "mean_request_seconds": 5.417171537876129,
-      "decode_tokens_per_second": 31.624786568910423,
-      "prefill_tokens_per_second": 730.2491587339711,
-      "mean_decode_seconds": 4.015837378799915,
+      "median_ttft_seconds": 1.4019690565764904,
+      "mean_request_seconds": 5.44621020493408,
+      "decode_tokens_per_second": 31.557040485295534,
+      "prefill_tokens_per_second": 730.4012846763792,
+      "mean_decode_seconds": 4.024458505834143,
       "warmup_requests": 1,
-      "warmup_seconds": 6.391608215868473,
+      "warmup_seconds": 6.453031603246927,
       "measured_requests": 3,
-      "measured_seconds": 16.251514613628387,
+      "measured_seconds": 16.33863061480224,
       "ttft_range_seconds": [
-        1.3941928073763847,
-        1.4075485542416573
+        1.3999551814049482,
+        1.4633308593183756
       ],
-      "timing_sha256": "7d0046a4da95af9195fe0020515c8b4154977e2fd685c69b92bf8045a46f1b18",
+      "timing_sha256": "8b3b6e67f86dbe28708a0a81759d55ad6f1f90d42a3da6a82e78d48e69eec375",
       "checkpoint": "apple/OpenELM-1_1B-Instruct",
       "revision": "effd796da2a77361d7360e45e54c7cc14bc5df2a",
       "input_ids_sha256": "0303ab3e1144e9dd7b3ac7f337d082f0efb8cf2ab566149070fe7c98c494e3c0",
@@ -952,41 +955,45 @@
       "batches": [
         {
           "summary": {
-            "median_ttft_seconds": 1.4022611156105995,
-            "mean_request_seconds": 5.417171537876129,
-            "decode_tokens_per_second": 31.624786568910423,
-            "prefill_tokens_per_second": 730.2491587339711
+            "median_ttft_seconds": 1.4019690565764904,
+            "prefill_tokens_per_second": 730.4012846763792,
+            "decode_tokens_per_second": 31.557040485295534,
+            "mean_request_seconds": 5.44621020493408
           },
           "warmups": [
             {
-              "ttft_seconds": 2.383775757625699,
-              "decode_seconds": 4.007832458242774,
-              "request_seconds": 6.391608215868473,
-              "handoff_seconds": 0.020134171470999718
+              "ttft_seconds": 2.402190987020731,
+              "decode_seconds": 4.050840616226196,
+              "request_seconds": 6.453031603246927,
+              "handoff_seconds": 0.04714837297797203
             }
           ],
           "measured": [
             {
-              "ttft_seconds": 1.4022611156105995,
-              "decode_seconds": 4.015191592276096,
-              "request_seconds": 5.417452707886696,
-              "handoff_seconds": 0.018651168793439865
+              "ttft_seconds": 1.4633308593183756,
+              "decode_seconds": 4.024662233889103,
+              "request_seconds": 5.4879930932074785,
+              "handoff_seconds": 0.018968867138028145
             },
             {
-              "ttft_seconds": 1.3941928073763847,
-              "decode_seconds": 4.025975668802857,
-              "request_seconds": 5.420168476179242,
-              "handoff_seconds": 0.018021371215581894
+              "ttft_seconds": 1.3999551814049482,
+              "decode_seconds": 4.0136589538306,
+              "request_seconds": 5.413614135235548,
+              "handoff_seconds": 0.01752776838839054
             },
             {
-              "ttft_seconds": 1.4075485542416573,
-              "decode_seconds": 4.006344875320792,
-              "request_seconds": 5.4138934295624495,
-              "handoff_seconds": 0.018858328461647034
+              "ttft_seconds": 1.4019690565764904,
+              "decode_seconds": 4.035054329782724,
+              "request_seconds": 5.437023386359215,
+              "handoff_seconds": 0.03874541446566582
             }
           ]
         }
-      ]
+      ],
+      "reset": "PASS",
+      "measurement_source_commit": "4bb3c89f4c6d642427e01baea85caba1dde925f4",
+      "compiler_source": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+      "normalization": "Model-local rope.cc/rms_residual.cc: FP32 normalization, BF16 rounding, then learned BF16 weight multiplication."
     },
     {
       "model": "Phi-2",
@@ -1558,5 +1565,188 @@
         }
       }
     ]
+  },
+  "superseded_configurations": [
+    {
+      "model": "OpenELM-1.1B",
+      "module": "openelm_1b_q4nx",
+      "p": 512,
+      "c": 1024,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": 19,
+      "test_chosen_rank_in_ref": 4,
+      "ref_chosen_rank_in_test": 3,
+      "candidate_sha256": "90e78a908045f6d51b1399b2d68ca49344aa4196a58c0eed7a6006c6e4c53eb3",
+      "reference_sha256": "822df9d98ec521f52d2fa591fc8a118e2a8674096fd6cad7c63f7f7e009750d4",
+      "reset": "PASS",
+      "median_ttft_seconds": 0.8369234520941973,
+      "mean_request_seconds": 4.626317294935386,
+      "decode_tokens_per_second": 33.51069830137186,
+      "prefill_tokens_per_second": 611.7644316440704,
+      "mean_decode_seconds": 3.789834483837088,
+      "warmup_requests": 1,
+      "warmup_seconds": 5.698059629648924,
+      "measured_requests": 3,
+      "measured_seconds": 13.878951884806156,
+      "ttft_range_seconds": [
+        0.8187743108719587,
+        0.8537506703287363
+      ],
+      "timing_sha256": "c7d33a41c397a6307bf0a0edc3f2a51d4fde4bae5e34d667507c1e59f40e2379",
+      "checkpoint": "apple/OpenELM-1_1B-Instruct",
+      "revision": "effd796da2a77361d7360e45e54c7cc14bc5df2a",
+      "input_ids_sha256": "e0132a40bb7af05a94eee652e41c8000063624ab793eeb05368fbf5c273d2aa0",
+      "reference_original_logits_sha256": "c0ffe071a0c713aa675f7477b6d43963a2e6134f945a75ddf037843a22849a0d",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 0.8369234520941973,
+            "prefill_tokens_per_second": 611.7644316440704,
+            "decode_tokens_per_second": 33.51069830137186,
+            "mean_request_seconds": 4.626317294935386
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 1.8187821600586176,
+              "decode_seconds": 3.8792774695903063,
+              "request_seconds": 5.698059629648924,
+              "handoff_seconds": 0.06697953306138515
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 0.8369234520941973,
+              "decode_seconds": 3.7863974757492542,
+              "request_seconds": 4.6233209278434515,
+              "handoff_seconds": 0.009743528440594673
+            },
+            {
+              "ttft_seconds": 0.8187743108719587,
+              "decode_seconds": 3.7921036314219236,
+              "request_seconds": 4.610877942293882,
+              "handoff_seconds": 0.009336309507489204
+            },
+            {
+              "ttft_seconds": 0.8537506703287363,
+              "decode_seconds": 3.791002344340086,
+              "request_seconds": 4.644753014668822,
+              "handoff_seconds": 0.009680267423391342
+            }
+          ]
+        }
+      ],
+      "measurement_source_commit": "4bb3c89f4c6d642427e01baea85caba1dde925f4",
+      "compiler_source": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+      "normalization": "Model-local rope.cc/rms_residual.cc: FP32 normalization, BF16 rounding, then learned BF16 weight multiplication."
+    },
+    {
+      "model": "OpenELM-1.1B",
+      "module": "openelm_1b_q4nx",
+      "p": 1024,
+      "c": 2048,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": 27,
+      "test_chosen_rank_in_ref": 2,
+      "ref_chosen_rank_in_test": 2,
+      "candidate_sha256": "d01d08af6958ee885fc3c546207fc3ea470585a4a5934b6e22a6e840567c1338",
+      "reference_sha256": "6415c0590784bd889ca67662a2715067a3dfff36a329976ff6dc47040789063a",
+      "median_ttft_seconds": 1.4019690565764904,
+      "mean_request_seconds": 5.44621020493408,
+      "decode_tokens_per_second": 31.557040485295534,
+      "prefill_tokens_per_second": 730.4012846763792,
+      "mean_decode_seconds": 4.024458505834143,
+      "warmup_requests": 1,
+      "warmup_seconds": 6.453031603246927,
+      "measured_requests": 3,
+      "measured_seconds": 16.33863061480224,
+      "ttft_range_seconds": [
+        1.3999551814049482,
+        1.4633308593183756
+      ],
+      "timing_sha256": "8b3b6e67f86dbe28708a0a81759d55ad6f1f90d42a3da6a82e78d48e69eec375",
+      "checkpoint": "apple/OpenELM-1_1B-Instruct",
+      "revision": "effd796da2a77361d7360e45e54c7cc14bc5df2a",
+      "input_ids_sha256": "0303ab3e1144e9dd7b3ac7f337d082f0efb8cf2ab566149070fe7c98c494e3c0",
+      "reference_original_logits_sha256": "4c64b1962a0f6e082669e0ad039cd15a4cf61afc04c47495ed34f1b8ebf9d9c0",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 1.4019690565764904,
+            "prefill_tokens_per_second": 730.4012846763792,
+            "decode_tokens_per_second": 31.557040485295534,
+            "mean_request_seconds": 5.44621020493408
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 2.402190987020731,
+              "decode_seconds": 4.050840616226196,
+              "request_seconds": 6.453031603246927,
+              "handoff_seconds": 0.04714837297797203
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 1.4633308593183756,
+              "decode_seconds": 4.024662233889103,
+              "request_seconds": 5.4879930932074785,
+              "handoff_seconds": 0.018968867138028145
+            },
+            {
+              "ttft_seconds": 1.3999551814049482,
+              "decode_seconds": 4.0136589538306,
+              "request_seconds": 5.413614135235548,
+              "handoff_seconds": 0.01752776838839054
+            },
+            {
+              "ttft_seconds": 1.4019690565764904,
+              "decode_seconds": 4.035054329782724,
+              "request_seconds": 5.437023386359215,
+              "handoff_seconds": 0.03874541446566582
+            }
+          ]
+        }
+      ],
+      "reset": "PASS",
+      "measurement_source_commit": "4bb3c89f4c6d642427e01baea85caba1dde925f4",
+      "compiler_source": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+      "normalization": "Model-local rope.cc/rms_residual.cc: FP32 normalization, BF16 rounding, then learned BF16 weight multiplication."
+    }
+  ],
+  "review_fixes": {
+    "source_commit": "4bb3c89f4c6d642427e01baea85caba1dde925f4",
+    "model_configurations_remeasured": [
+      "OpenELM P512/C1024",
+      "OpenELM P1024/C2048"
+    ],
+    "compiler": "Locally built AIR compiler dddd696 on upstream 5559460; AIE/Peano unchanged.",
+    "attention_regression": {
+      "status": "PASS",
+      "cases": [
+        "ordinary QK accumulation",
+        "pretransposed QK",
+        "zero_c with NaN destination",
+        "scale_c row factors"
+      ],
+      "precision_modes": [
+        "native BF16",
+        "BFP16"
+      ],
+      "exact_values": 8192,
+      "original_kernel_negative_control": "FAIL"
+    },
+    "production_attention_compatibility": {
+      "status": "PASS",
+      "functions": [
+        "matmul_a_b_bf16",
+        "matmul_g_b_bf16",
+        "matmul_a_b_bf16_chunk",
+        "matmul_g_b_bf16_chunk"
+      ],
+      "scope": "SmolLM3/Mistral P4096 ordinary and chunked QK/GV functions; optimized LLVM IR comparison canonicalizes SSA/basic-block names and excludes alias metadata."
+    },
+    "host_tests": 14,
+    "original_ci_samples": "ci_integration retains the pre-review-fix samples; OpenELM configuration rows above contain the corrected-build measurements."
   }
 }

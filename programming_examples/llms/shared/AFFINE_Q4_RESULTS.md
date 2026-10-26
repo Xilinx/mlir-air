@@ -2,7 +2,7 @@
 
 All **19 native configurations** passed the fixed original-HF BF16 model gate on the migrated implementation. Every model also passed a P512 A/B/A reset-and-repeatability check. Five longer configurations outside native context are excluded.
 
-Measured on an AMD Ryzen AI 9 HX 370, Ubuntu 24.04.3, XRT 2.21.0 / firmware 1.1.2.64. Source commit `9130011`, upstream base `6356cb2`; AIR `0.0.1.2026102604+2f080d3`, MLIR-AIE `1.4.5.dev64+g843e9c3`, Peano `22.0.0.2026101901+4f5df13d`, LLVM 18 linker. After measurement, upstream `5559460` was merged as `dddd696`; all six model sources, the fused-decode engine and the shared request/runtime helpers remain byte-identical. That upstream update removes the AWQ example and includes compiler fix `4f6ec18`. The measurements use the latest published wheel named above; they do not claim execution with a locally rebuilt compiler containing that newer fix.
+Measured on an AMD Ryzen AI 9 HX 370, Ubuntu 24.04.3, XRT 2.21.0 / firmware 1.1.2.64. The initial 19-point campaign used source `9130011`, AIR `0.0.1.2026102604+2f080d3`, MLIR-AIE `1.4.5.dev64+g843e9c3`, Peano `22.0.0.2026101901+4f5df13d` and LLVM 18 linker. The table retains 17 of those measurements. OpenELM's two rows were remeasured after review fix `4bb3c89`, using the locally built AIR compiler `dddd696` based on upstream `5559460`, with the same AIE/Peano versions. The original OpenELM rows remain in `superseded_configurations` in the JSON record.
 
 | Model | P / C | Median TTFT (s) | Prefill (input tok/s) | Decode (tok/s) | Mean request (s) | First divergence (zero-based) |
 |---|---|---:|---:|---:|---:|---|
@@ -17,8 +17,8 @@ Measured on an AMD Ryzen AI 9 HX 370, Ubuntu 24.04.3, XRT 2.21.0 / firmware 1.1.
 | OLMo2-1B | 512 / 1024 | 0.5171 | 990.18 | 39.68 | 3.7172 | None; 32/32 agree |
 | OLMo2-1B | 1024 / 2048 | 0.8842 | 1158.11 | 30.43 | 5.0577 | 31; mutual ranks 3 / 3 |
 | OLMo2-1B | 2048 / 4096 | 1.7482 | 1171.52 | 20.78 | 7.8640 | None; 32/32 agree |
-| OpenELM-1.1B | 512 / 1024 | 0.8094 | 632.56 | 33.63 | 4.5876 | 19; mutual ranks 4 / 3 |
-| OpenELM-1.1B | 1024 / 2048 | 1.4023 | 730.25 | 31.62 | 5.4172 | 27; mutual ranks 2 / 2 |
+| OpenELM-1.1B | 512 / 1024 | 0.8369 | 611.76 | 33.51 | 4.6263 | 19; mutual ranks 4 / 3 |
+| OpenELM-1.1B | 1024 / 2048 | 1.4020 | 730.40 | 31.56 | 5.4462 | 27; mutual ranks 2 / 2 |
 | Phi-2 | 512 / 1024 | 1.9878 | 257.57 | 9.84 | 14.8922 | None; 32/32 agree |
 | Phi-2 | 1024 / 2048 | 3.8244 | 267.75 | 7.57 | 20.6317 | None; 32/32 agree |
 | Mistral-7B-Instruct-v0.3 | 512 / 1024 | 1.3572 | 377.26 | 11.79 | 12.1332 | 4; mutual ranks 2 / 2 |
@@ -77,3 +77,11 @@ the blob layout and rejects incorrect shard hashes. Kernel arithmetic is unchang
 
 Hosted GitHub CI remains pending approval of fork workflows by an upstream
 administrator. Local lit results and hosted CI status are reported separately.
+
+## Review corrections
+
+Review fix `4bb3c89` makes single-accumulator attention honor pretransposed blocks, output overwrite, and row scaling; rejects Granite attention reuse across sequence lengths; and selects OpenELM's local normalization kernels for decode.
+
+The new `run_npu2_single_accumulator.lit` exercises four cases in native BF16 and BFP16 with exact CPU comparisons (8,192 values). It passes; the original kernel fails the same native test. The ordinary/chunked QK and GV functions used by SmolLM3/Mistral P4096 preserve normalized optimized LLVM IR. Fourteen host tests pass, including rejection before any mismatched Granite build is created.
+
+Both corrected OpenELM configurations passed the original-HF BF16 gate, A/B/A reset, and complete-request profiling after fresh compilation. Their compiler dependency files select the local `rope.cc` and `rms_residual.cc`. Earlier CI-integration samples above describe the pre-correction implementation; the main table reports the corrected build.
