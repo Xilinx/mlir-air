@@ -1,0 +1,7 @@
+# Fixed tokenizer-output fixtures; GitHub can collapse these generated lists.
+granite33_2b_q4nx/inputs.json linguist-generated=true
+smollm3_3b_q4nx/inputs.json linguist-generated=true
+olmo2_1b_q4nx/inputs.json linguist-generated=true
+openelm_1b_q4nx/inputs.json linguist-generated=true
+phi2_2_7b_q4nx/inputs.json linguist-generated=true
+mistral7b_v03_q4nx/inputs.json linguist-generated=true

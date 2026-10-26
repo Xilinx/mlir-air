@@ -1,0 +1,39 @@
+{
+  "name": "Phi-2",
+  "module": "phi2_2_7b_q4nx",
+  "checkpoint": "microsoft/phi-2",
+  "revision": "810d367871c1d460086d9f82db8696f2e0a0fcd0",
+  "config_sha256": "fbd955b298fdbd35fb81b3350a0d68d12616da7b7e9d81397ef632038ccc1111",
+  "vocab_size": 51200,
+  "configurations": [
+    [
+      512,
+      1024
+    ],
+    [
+      1024,
+      2048
+    ]
+  ],
+  "q4_aliases": {},
+  "bf16_matrices": [
+    "model.embed_tokens.weight"
+  ],
+  "source_shards": [
+    {
+      "file": "model-00001-of-00002.safetensors",
+      "bytes": 4995584424,
+      "sha256": "7fbcdefa72edf7527bf5da40535b57d9f5bd3d16829b94a9d25d2b457df62e84"
+    },
+    {
+      "file": "model-00002-of-00002.safetensors",
+      "bytes": 563832976,
+      "sha256": "17b98759e4b7953cbcf63ec49be7edbc9b863b57c207d84a52f5d2f5bcfcf6b4"
+    }
+  ],
+  "reference_attention": "sdpa",
+  "prefill_rms": {
+    "p512": "decode",
+    "p1024": "decode"
+  }
+}

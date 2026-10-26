@@ -12,18 +12,19 @@
 ///@param x: input
 ///@param w: weight
 ///@param overwrite_x_buf: if true, overwrite x_buf with x
+template <int N = DH>
 void qk_norm(const bf16 *restrict x, const bf16 *restrict w) {
   bf16 *it_x = const_cast<bf16 *>(x);
   bf16 *it_w = const_cast<bf16 *>(w);
   const float epsilon = 1e-6;
 
   constexpr int vector_size = 16;
-  constexpr float one_over_D = 1.0f / (float)DH;
+  constexpr float one_over_D = 1.0f / (float)N;
 
   aie::accum<accfloat, vector_size> sum_squares = aie::zeros<accfloat>();
   aie::vector<float, vector_size> mx_vec;
 
-  const int F = DH / vector_size;
+  const int F = N / vector_size;
   AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(16) for (int i = 0; i < F; i++) {
     auto x_vec = aie::load_v<vector_size>(it_x);
     sum_squares = aie::mac_square(sum_squares, x_vec);
@@ -169,7 +170,10 @@ void pseduo_rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
   bf16 *it_v = v;
   bf16 *it_qkv = qkv;
   bf16 *it_rope = rope_w;
-#ifdef HAS_QK_NORM
+#ifdef FULL_QK_NORM
+  qk_norm<DQ>(qkv, rope_w + DH);
+  qk_norm<DK>(qkv + DQ, rope_w + DH + DQ);
+#elif defined(HAS_QK_NORM)
   bf16 *q_norm_weight = rope_w + DH;
   bf16 *k_norm_weight = rope_w + DH + DH;
 #endif
@@ -183,7 +187,7 @@ void pseduo_rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
 
   for (int h = 0; h < NUM_KV_HEADS; h++) {
     for (int g = 0; g < Q_HEADS_PER_GROUP; g++) {
-#ifdef HAS_QK_NORM
+#if defined(HAS_QK_NORM) && !defined(FULL_QK_NORM)
       qk_norm(it_qkv, q_norm_weight);
 #endif
       apply_rope(it_q, it_qkv, cos_val, sin_val);
@@ -200,7 +204,7 @@ void pseduo_rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
   }
 
   for (int h = 0; h < NUM_KV_HEADS; h++) {
-#ifdef HAS_QK_NORM
+#if defined(HAS_QK_NORM) && !defined(FULL_QK_NORM)
     qk_norm(it_qkv, k_norm_weight);
 #endif
     apply_rope(it_k, it_qkv, cos_val, sin_val);

@@ -214,6 +214,7 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
             n_kv_heads,
             head_dim,
             herd_m=gemm_herd_m,
+            rms_builder=getattr(config, "rms_builder", None),
         ),
         {"verbose": cache.verbose, **_rms_gemms_rope_run_backend()},
     )
@@ -228,12 +229,19 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
         "instance_name": "o_ffn",
         "runtime_loop_tiling_sizes": [2, 2],
     }
-    _o_ffn_mod = build_o_ffn_module(seq_len, emb_dim, hidden_dim, herd_m=gemm_herd_m)
+    _o_ffn_mod = build_o_ffn_module(
+        seq_len,
+        emb_dim,
+        hidden_dim,
+        herd_m=gemm_herd_m,
+        residual_multiplier=getattr(config, "residual_multiplier", 1.0),
+        rms_builder=getattr(config, "rms_builder", None),
+    )
     cache.compile_and_cache("o_ffn", _o_ffn_mod, o_ffn_backend)
 
     # 8. Flash Attention GQA (skip if using CPU attention fallback)
     if not cpu_attn:
-        lkp = head_dim  # 64
+        lkp = getattr(config, "attn_lkp", head_dim)
         enable_shared_buffers = lkp == head_dim
         # TEMPORAL_CAUSAL_SKIP=1 (opt-in, gated): use the reference-faithful
         # single-dispatch-per-kv-head temporal FlashAttention (column-block
@@ -294,9 +302,11 @@ def compile_all_kernels(cache, config, seq_len, cpu_attn=True):
             _attn_mod,
             {
                 "verbose": cache.verbose,
-                "omit_while_true_loop": not enable_shared_buffers,
+                "omit_while_true_loop": getattr(
+                    config, "attn_omit_while_true_loop", not enable_shared_buffers
+                ),
                 "omit_pingpong": "all",
-                "runtime_loop_tiling_sizes": [1, 1],
+                "runtime_loop_tiling_sizes": [1, 1, 1] if head_dim > lkp else [1, 1],
                 "output_format": "elf",
                 "instance_name": "attention_bf16",
             },
@@ -370,8 +380,8 @@ def run_transformer_block(
 
     # Cache key for pre-built input arrays (avoids reconstructing weight/buffer
     # arrays on every call — the BO data is already pre-loaded via static_input_indices)
-    _arg_cache = getattr(run_transformer_block, "_arg_cache", {})
-    run_transformer_block._arg_cache = _arg_cache
+    _arg_cache = getattr(cache, "_prefill_args", {})
+    cache._prefill_args = _arg_cache
 
     if verbose:
         print(f"  Layer {layer_idx}: Running transformer block...")
@@ -561,17 +571,27 @@ def preload_prefill_weights(weights, config, cache, seq_len, rope_lut_bf16):
     profiler_enabled = cache.profiler.enabled
     cache.profiler.enabled = False
 
-    # Pre-compute LUTs (same for all layers)
-    rope_lut_q = np.repeat(rope_lut_bf16[:seq_len], n_heads, axis=0).flatten()
-    rope_lut_k = np.repeat(rope_lut_bf16[:seq_len], n_kv_heads, axis=0).flatten()
+    # Accept either one shared table or explicitly layer-indexed tables.
+    # SmolLM3 uses identity tables in the layers that omit rotary embedding.
+    per_layer_rope = rope_lut_bf16.ndim == 3
+    if per_layer_rope:
+        assert rope_lut_bf16.shape == (config.n_layers, seq_len, head_dim)
+    else:
+        rope_lut_q = np.repeat(rope_lut_bf16[:seq_len], n_heads, axis=0).flatten()
+        rope_lut_k = np.repeat(rope_lut_bf16[:seq_len], n_kv_heads, axis=0).flatten()
 
     # Also populate run_transformer_block's arg cache so the inference pass
     # can reuse these arrays instead of reconstructing them (~500ms saved).
-    _arg_cache = getattr(run_transformer_block, "_arg_cache", {})
-    run_transformer_block._arg_cache = _arg_cache
+    _arg_cache = getattr(cache, "_prefill_args", {})
+    cache._prefill_args = _arg_cache
 
     for layer_idx in range(config.n_layers):
         lw = weights.layers[layer_idx]
+        if per_layer_rope:
+            rope_lut_q = np.repeat(rope_lut_bf16[layer_idx], n_heads, axis=0).flatten()
+            rope_lut_k = np.repeat(
+                rope_lut_bf16[layer_idx], n_kv_heads, axis=0
+            ).flatten()
 
         # rms_gemms_rope: warmup to allocate + write weights
         rms_args = [

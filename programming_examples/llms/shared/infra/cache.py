@@ -74,6 +74,7 @@ def prepare_air_project(quant: str = "bf16"):
         "mm.o",
         "mm_m32.o",
         "mm_m64.o",
+        "scaled_residual.o",
     ]
     if quant == "awq":
         obj_names.append("mv_int4_bf16.o")
@@ -387,6 +388,15 @@ class KernelCache:
     def _log(self, msg):
         if self.verbose:
             print(f"  [KernelCache] {msg}")
+
+    def close(self):
+        """Release this cache's buffers and contexts, retaining compiled artifacts."""
+        self._cached_bos.clear()
+        self._shared_bos.clear()
+        for name, backend in list(self._loaded.items()):
+            backend.unload()
+            KernelCache._contexts.pop((self._uid, name), None)
+        self._loaded.clear()
 
     def _toolchain_id(self):
         """Identity of the toolchain that produced the cached ELFs.

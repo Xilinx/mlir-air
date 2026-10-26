@@ -1,0 +1,51 @@
+{
+  "name": "Granite-3.3-2B",
+  "module": "granite33_2b_q4nx",
+  "checkpoint": "ibm-granite/granite-3.3-2b-instruct",
+  "revision": "707f574c62054322f6b5b04b6d075f0a8f05e0f0",
+  "config_sha256": "9202d328d8368958aab7dad89a8e6aa35c250b3a2eedd2d8850ee0bcceca65f6",
+  "vocab_size": 49159,
+  "configurations": [
+    [
+      512,
+      1024
+    ],
+    [
+      1024,
+      2048
+    ],
+    [
+      2048,
+      4096
+    ],
+    [
+      4096,
+      8192
+    ]
+  ],
+  "q4_aliases": {
+    "lm_head.weight": "model.embed_tokens.weight"
+  },
+  "bf16_matrices": [
+    "model.embed_tokens.weight"
+  ],
+  "source_shards": [
+    {
+      "file": "model-00001-of-00002.safetensors",
+      "bytes": 4999999840,
+      "sha256": "12880d33c0ad4726af5cf8c07406905f9b496253c58ee46f52be8bde8ccf2254"
+    },
+    {
+      "file": "model-00002-of-00002.safetensors",
+      "bytes": 67121712,
+      "sha256": "a8757c5bf7627933e7fddbd9bab0533491b4dc0962820e0617f356ca1a379ffa"
+    }
+  ],
+  "reference_attention": "sdpa",
+  "prefill_rms": {
+    "p512": "seed",
+    "p1024": "decode",
+    "p2048": "decode",
+    "p4096": "decode"
+  }
+}
