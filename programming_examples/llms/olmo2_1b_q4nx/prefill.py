@@ -57,20 +57,20 @@ def row_module(m, object_path, rope=False):
 
 
 def gemm_spec(p, k, n):
-    from air_examples.llms.shared.builders.gemm_builder import gemm_registry_config
+    from ..shared.builders.gemm_builder import gemm_registry_config
 
     return gemm_registry_config(p, k, n, "bf16", "high")
 
 
 def compile_prefill(out, p, reuse_non_gemm_from=None):
     from .build import run
-    from air_examples.llms.shared.infra.cache import KernelCache
-    from air_examples.llms.shared.infra.external_kernels import (
+    from ..shared.infra.cache import KernelCache
+    from ..shared.infra.external_kernels import (
         compile_gemm_mm,
         compile_attn_npu2,
     )
-    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
-    from air_examples.llms.shared.builders.o_ffn_multi import _build_add_2d_to_2d
+    from ..shared.builders.gemm_builder import _build_gemm_module
+    from ..shared.builders.o_ffn_multi import _build_add_2d_to_2d
     from air_examples.silu_and_mul.silu_and_mul import build_module_2d
     from air_examples.flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
         build_module as attention,

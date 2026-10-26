@@ -2,14 +2,12 @@
 # SPDX-License-Identifier: MIT
 """Reproducible isolated build, with raw subprocess logs and artifact hashes."""
 
-import argparse
 import os
 from pathlib import Path
-import subprocess
-import sys
 import time
 
-from .common import ROOT, HERE, save_json, file_hash
+from .common import ROOT, save_json, file_hash
+from ..shared.decode_build import run, build_templates
 
 DECODE_ENV = dict(
     AIR_TARGET_DEVICE="npu2",
@@ -39,26 +37,10 @@ def decode_module():
     return fused_decode
 
 
-def run(argv, cwd, log, env=None):
-    print("RUN", " ".join(map(str, argv)), flush=True)
-    start = time.perf_counter()
-    with open(log, "w") as out:
-        out.write("COMMAND " + repr(list(map(str, argv))) + "\n")
-        out.flush()
-        result = subprocess.run(
-            list(map(str, argv)), cwd=cwd, env=env, stdout=out, stderr=subprocess.STDOUT
-        )
-    rec = {
-        "argv": list(map(str, argv)),
-        "cwd": str(cwd),
-        "log": str(log),
-        "seconds": time.perf_counter() - start,
-        "returncode": result.returncode,
-    }
-    save_json(str(log) + ".json", rec)
-    if result.returncode:
-        raise RuntimeError(f"build failed: see {log}")
-    return rec
+def build_decode(out, capacity=1024):
+    return build_templates(
+        out, capacity, build_decode_kernels, ROOT / "programming_examples/fused_decode"
+    )
 
 
 def build_decode_kernels(out, capacity=1024):
@@ -95,56 +77,21 @@ def build_decode_kernels(out, capacity=1024):
         src / "models",
         "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
     ]
-    from air_examples.llms.shared.decode_build import compile_kernels
+    from ..shared.decode_build import compile_kernels
 
     records.append(compile_kernels(out, src, base[1:], [src / "kernels"], run, env))
     return settings, env, records
-
-
-def build_decode(out, capacity=1024):
-    settings, env, records = build_decode_kernels(out, capacity)
-    src = ROOT / "programming_examples/fused_decode"
-    for length in (capacity, capacity - 1):
-        env["DECODE_GOLDEN_L"] = str(length)
-        records.append(
-            run(
-                [sys.executable, src / "fused_decode.py"],
-                out,
-                out / f"decode_L{length}.log",
-                env,
-            )
-        )
-        for ext in ("xclbin", "insts.bin"):
-            (out / f"decode.{ext}").replace(out / f"decode_L{length}.{ext}")
-        # Retain candidate-bound compiler IR for each calibration template.
-        import shutil
-
-        shutil.copytree(out / "air_project", out / f"ir_L{length}", dirs_exist_ok=True)
-    (out / ".decode_windows").write_text(f"{capacity}\n")
-    save_json(
-        out / "build.json",
-        {
-            "environment": settings,
-            "capacity": capacity,
-            "commands": records,
-            "artifacts": {
-                p.name: file_hash(p)
-                for p in out.glob("decode_L*.*")
-                if p.suffix != ".log"
-            },
-        },
-    )
 
 
 def build_prefill(out, sequence_length=512, rms_impl="seed", reuse_prefill=None):
     out.mkdir(parents=True, exist_ok=True)
     os.chdir(out)
     from .common import Config
-    from air_examples.llms.shared.infra.external_kernels import (
+    from ..shared.infra.external_kernels import (
         compile_attn_npu2,
         _compile_kernel,
     )
-    from air_examples.llms.shared.infra.cache import KernelCache
+    from ..shared.infra.cache import KernelCache
     from llama32_1b_prefill import compile_all_kernels
 
     os.environ["TEMPORAL_CAUSAL_SKIP"] = "0"
@@ -235,9 +182,9 @@ def build_head(out):
     out.mkdir(parents=True, exist_ok=True)
     os.chdir(out)
     os.environ["AIR_TARGET_DEVICE"] = "npu2"
-    from air_examples.llms.shared.infra.cache import KernelCache
-    from air_examples.llms.shared.infra.backend_presets import LM_GEMV_BACKEND
-    from air_examples.llms.shared.builders.lm_head_gemv_multi import (
+    from ..shared.infra.cache import KernelCache
+    from ..shared.infra.backend_presets import LM_GEMV_BACKEND
+    from ..shared.builders.lm_head_gemv_multi import (
         build_lm_head_gemv_module,
     )
 
@@ -258,38 +205,3 @@ def build_head(out):
             },
         },
     )
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["decode", "prefill", "head"])
-    ap.add_argument("--out", type=Path, default=HERE / "build/p512")
-    ap.add_argument(
-        "--sequence-length", type=int, choices=(512, 1024, 2048, 4096), default=512
-    )
-    ap.add_argument(
-        "--capacity", type=int, choices=(1024, 2048, 4096, 8192), default=1024
-    )
-    ap.add_argument("--rms-impl", choices=("seed", "decode"), default="seed")
-    ap.add_argument(
-        "--reuse-prefill",
-        type=Path,
-        help="reuse accepted attention ELF and non-GEMM objects",
-    )
-    args = ap.parse_args()
-    out = args.out.resolve() / args.mode
-    if args.mode == "decode":
-        build_decode(out, args.capacity)
-    elif args.mode == "prefill":
-        build_prefill(
-            out,
-            args.sequence_length,
-            args.rms_impl,
-            args.reuse_prefill.resolve() if args.reuse_prefill else None,
-        )
-    else:
-        build_head(out)
-
-
-if __name__ == "__main__":
-    main()

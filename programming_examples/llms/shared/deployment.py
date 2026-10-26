@@ -112,3 +112,11 @@ def runtime(model, selected, work):
         resident_prefill=True,
         build_root=str(base),
     )
+
+
+def save_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(value, indent=2) + "\n")
+    tmp.replace(path)

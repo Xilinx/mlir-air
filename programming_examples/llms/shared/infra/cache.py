@@ -288,9 +288,7 @@ class Profiler:
             print(
                 f"  {'Kernel':20s} {'BO Write':>10s} {'NPU Run':>10s} {'BO Read':>10s} {'Total':>10s}  {'Written':>8s} {'Read':>6s}"
             )
-            print(
-                f"  {'\u2500'*20} {'\u2500'*10} {'\u2500'*10} {'\u2500'*10} {'\u2500'*10}  {'\u2500'*8} {'\u2500'*6}"
-            )
+            print(f"  {'─'*20} {'─'*10} {'─'*10} {'─'*10} {'─'*10}  {'─'*8} {'─'*6}")
             total_write = total_kernel = total_read = 0
             for name in sorted(self.kernel_breakdowns.keys()):
                 entries = self.kernel_breakdowns[name]
@@ -311,9 +309,7 @@ class Profiler:
                     f"  {mb:6.1f}MB {avg_nr:4.0f}bo  (x{n})"
                 )
             grand_total = total_write + total_kernel + total_read
-            print(
-                f"  {'\u2500'*20} {'\u2500'*10} {'\u2500'*10} {'\u2500'*10} {'\u2500'*10}"
-            )
+            print(f"  {'─'*20} {'─'*10} {'─'*10} {'─'*10} {'─'*10}")
             print(
                 f"  {'TOTAL':20s} {total_write:8.1f}ms {total_kernel:8.1f}ms {total_read:8.1f}ms {grand_total:8.1f}ms"
             )

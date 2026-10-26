@@ -60,7 +60,7 @@ def row_module(m, object_path, width=2048, qk=False):
 
 
 def gemm_spec(p, k, n):
-    from air_examples.llms.shared.builders.gemm_builder import gemm_registry_config
+    from ..shared.builders.gemm_builder import gemm_registry_config
 
     return gemm_registry_config(p, k, n, "bf16", "high")
 
@@ -108,13 +108,13 @@ def compile_one(cache, out, name, module, **kw):
 
 
 def compile_prefill(out, p):
-    from air_examples.llms.shared.infra.cache import KernelCache
-    from air_examples.llms.shared.infra.external_kernels import (
+    from ..shared.infra.cache import KernelCache
+    from ..shared.infra.external_kernels import (
         compile_gemm_mm,
         compile_attn_npu2,
     )
-    from air_examples.llms.shared.builders.gemm_builder import _build_gemm_module
-    from air_examples.llms.shared.builders.o_ffn_multi import _build_add_2d_to_2d
+    from ..shared.builders.gemm_builder import _build_gemm_module
+    from ..shared.builders.o_ffn_multi import _build_add_2d_to_2d
     from air_examples.silu_and_mul.silu_and_mul import build_module_2d
     from air_examples.flash_attention.kernel_fusion_based.attn_npu2_seqfirst import (
         build_module as attention,
@@ -203,13 +203,13 @@ def compile_prefill(out, p):
 
 
 def compile_head(out):
-    from air_examples.llms.shared.infra.cache import KernelCache
-    from air_examples.llms.shared.infra.stitching import (
+    from ..shared.infra.cache import KernelCache
+    from ..shared.infra.stitching import (
         stitch_elf,
         KernelSlice,
         FuncArg,
     )
-    from air_examples.llms.shared.builders.lm_head_gemv_multi import (
+    from ..shared.builders.lm_head_gemv_multi import (
         build_lm_head_gemv_module,
     )
 

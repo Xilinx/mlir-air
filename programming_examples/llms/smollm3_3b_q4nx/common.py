@@ -6,21 +6,13 @@
 from dataclasses import dataclass
 from pathlib import Path
 import os
-import hashlib
-import json
-import sys
-import time
 
-import numpy as np
 from ml_dtypes import bfloat16
 
 ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
-for path in (HERE.parent / "llama32_1b", HERE.parent / "verify"):
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
 
-from air_examples.llms.verify.comparators import topk_token_ids
+from ..shared.deployment import file_hash, save_json
 
 
 @dataclass
@@ -48,22 +40,6 @@ REVISION = "a07cc9a04f16550a088caea529712d1d335b0ac1"
 
 
 def read_task():
-    from air_examples.llms.shared.deployment import read_task
+    from ..shared.deployment import read_task
 
     return read_task("smollm3_3b_q4nx")
-
-
-def file_hash(path):
-    h = hashlib.sha256()
-    with Path(path).open("rb") as f:
-        while chunk := f.read(4 * 1024 * 1024):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def save_json(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(value, indent=2) + "\n")
-    tmp.replace(path)

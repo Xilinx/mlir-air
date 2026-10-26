@@ -4,8 +4,7 @@
 
 from pathlib import Path
 import os
-import hashlib
-import json
+from ..shared.deployment import file_hash, save_json
 
 ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
@@ -25,22 +24,6 @@ H, HP, F, FP, D, DP, HEADS, BLOCKS, VOCAB = (
 
 
 def read_task():
-    from air_examples.llms.shared.deployment import read_task
+    from ..shared.deployment import read_task
 
     return read_task("phi2_2_7b_q4nx")
-
-
-def file_hash(path):
-    h = hashlib.sha256()
-    with Path(path).open("rb") as f:
-        while chunk := f.read(4 * 1024 * 1024):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def save_json(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(value, indent=2) + "\n")
-    tmp.replace(path)

@@ -1,10 +1,9 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-# Adapted from the declared Granite Q4NX deployment example.
-"""Lossless repacking of the fixed affine group-32 Q4 assets.
+"""Lossless group-32 affine Q4 mapping to AIR's 4x4 dual-channel cascade.
 
-Device block/cascade layout follows fused_decode/proj_qmm_pack.py (AMD, MIT).
-No extrema, code selection, or requantization occurs here.
+The inverse check preserves every code and BF16 scale/min bit. Arithmetic,
+padding and tensor selection belong to the individual model packers.
 """
 
 import numpy as np

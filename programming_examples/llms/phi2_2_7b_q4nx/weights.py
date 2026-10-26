@@ -2,26 +2,12 @@
 # SPDX-License-Identifier: MIT
 """Preserve fixed Q4 codes/minima/scales; map logical axes into Phi device pads."""
 
-import argparse
-from pathlib import Path
 import time
 import numpy as np
 from ml_dtypes import bfloat16
-from air_examples.llms.shared.affine_q4 import CanonicalWeights
-from .common import (
-    ROOT,
-    RUN,
-    H,
-    HP,
-    F,
-    FP,
-    HEADS,
-    VOCAB,
-    read_task,
-    save_json,
-    file_hash,
-)
-from .packing import pack_cascade, check_seed_packer, dequant
+from ..shared.affine_q4 import CanonicalWeights
+from .common import H, HP, F, FP, save_json, file_hash
+from ..shared.q4_cascade import pack_cascade, check_seed_packer, dequant
 from .build import decode_module, DECODE_ENV
 
 
@@ -183,14 +169,3 @@ def prepare(out, task):
     record["preparation_including_hash_seconds"] = time.perf_counter() - start
     save_json(out / "manifest.json", record)
     return record
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out", type=Path, default=ROOT / RUN / "weights")
-    args = ap.parse_args()
-    prepare(args.out.resolve(), read_task())
-
-
-if __name__ == "__main__":
-    main()

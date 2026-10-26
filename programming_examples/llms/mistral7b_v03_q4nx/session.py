@@ -15,68 +15,16 @@ import time
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air_examples.llms.shared.deployment import require_bfp16
-from .common import Config, ROOT, RUN, REVISION, save_json, file_hash
+from ..shared.deployment import require_bfp16
+from .common import Config, RUN, REVISION, save_json, file_hash
 from .build import decode_module
+from ..shared.deployment_runtime import read_bf16, load_cache
 
 
 def rope_lut(capacity=1024):
     inv = 1.0 / (np.float32(1e6) ** (np.arange(0, 128, 2, dtype=np.float32) / 128))
     angles = np.arange(capacity, dtype=np.float32)[:, None] * inv[None, :]
     return np.concatenate([np.cos(angles), np.sin(angles)], axis=1).astype(bfloat16)
-
-
-def read_bf16(path):
-    return np.load(path, mmap_mode="r", allow_pickle=False).view(bfloat16)
-
-
-def load_cache(path, *, resident=False):
-    from air_examples.llms.shared.infra.cache import KernelCache
-    from air.backend.xrt import XRTCompileArtifact
-
-    class PrefillCache(KernelCache):
-        def load_and_run(self, name, backend_kwargs, *inputs, **kwargs):
-            if resident:
-                aliases = {
-                    "rms_gemms_rope": {0: "hidden", 8: "v", 11: "q", 12: "k"},
-                    "flash_attn": {0: "q", 1: "k", 2: "v", 3: "attention"},
-                    "o_ffn": {0: "attention", 3: "hidden", 14: "hidden"},
-                }
-                if name in aliases:
-                    inter = set(kwargs.get("intermediate_indices") or ())
-                    if name == "rms_gemms_rope":
-                        # Only layer zero receives new request embeddings from
-                        # the host. Every later input is the preceding FFN output.
-                        if kwargs.get("bo_key") != "rms_gemms_rope_L0":
-                            inter.add(0)
-                    elif name == "flash_attn":
-                        inter.update((0, 1, 2, 3))
-                    else:
-                        inter.update((0, 3, 14))
-                    kwargs.update(
-                        shared_alias=aliases[name],
-                        intermediate_indices=inter,
-                        shared_nonstatic=True,
-                    )
-            return super().load_and_run(name, backend_kwargs, *inputs, **kwargs)
-
-    cache = PrefillCache(cache_dir=str(path))
-    info = json.loads((path / cache.MANIFEST_FILE).read_text())
-    if info["_toolchain"] != cache._toolchain_id():
-        raise RuntimeError(f"build toolchain changed: {path}")
-    for name, entry in info["entries"].items():
-        binary = path / Path(entry["output_binary"]).name
-        insts = path / Path(entry["insts"]).name if entry["insts"] else None
-        if not binary.is_file():
-            raise FileNotFoundError(binary)
-        cache.artifacts[name] = XRTCompileArtifact(
-            str(binary), entry["kernel"], str(insts) if insts else None
-        )
-    return cache
-
-
-def close_cache(cache):
-    cache.close()
 
 
 class FusedDecode:
@@ -306,7 +254,7 @@ class MistralSession:
         save_json(self.work / "session.json", self.describe_execution())
 
     def head(self, hidden):
-        from air_examples.llms.shared.infra.backend_presets import LM_GEMV_BACKEND
+        from ..shared.infra.backend_presets import LM_GEMV_BACKEND
 
         args = [np.ascontiguousarray(hidden, dtype=bfloat16)]
         for part in self.head_parts:
@@ -429,8 +377,8 @@ class MistralSession:
     def close(self):
         if not self.closed:
             save_json(self.work / "session_close.json", self.describe_execution())
-            close_cache(self.cache)
-            close_cache(self.head_cache)
+            self.cache.close()
+            self.head_cache.close()
             self.decode.close()
             self.closed = True
 

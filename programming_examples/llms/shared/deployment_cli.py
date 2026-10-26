@@ -244,6 +244,11 @@ def main(model):
     )
     parser.add_argument("--threads", type=int, default=8, help="CPU reference threads")
     parser.add_argument("--lock", default="/tmp/mlir-air-npu.lock")
+    parser.add_argument(
+        "--check-reset",
+        action="store_true",
+        help="verify: repeat the capture after an intervening changed request",
+    )
     args = parser.parse_args()
     if args.command == "info":
         print(json.dumps(s, indent=2))
@@ -324,12 +329,18 @@ def main(model):
                 warmups, measured = [], []
                 while sum(r["request_seconds"] for r in warmups) < 5:
                     warmups.append(request(session, selected, s["vocab_size"], outputs))
+                    write_json(
+                        out / "samples.json", dict(warmups=warmups, requests=measured)
+                    )
                 while (
                     len(measured) < 3
                     or sum(r["request_seconds"] for r in measured) < 10
                 ):
                     measured.append(
                         request(session, selected, s["vocab_size"], outputs)
+                    )
+                    write_json(
+                        out / "samples.json", dict(warmups=warmups, requests=measured)
                     )
                 summary = dict(
                     median_ttft_seconds=float(
@@ -373,5 +384,27 @@ def main(model):
                     print(json.dumps(gate, indent=2))
                     if gate["status"] != "OK":
                         raise SystemExit(1)
+                    if args.check_reset:
+                        changed = dict(selected, token_ids=list(selected["token_ids"]))
+                        changed["token_ids"][0] = (changed["token_ids"][0] + 1) % s[
+                            "vocab_size"
+                        ]
+                        request(session, changed, s["vocab_size"], 2)
+                        repeated = request(
+                            session, selected, s["vocab_size"], outputs, capture=True
+                        )
+                        save_capture(out / "repeat.npz", selected, repeated, model)
+                        same = np.array_equal(result["logits"], repeated["logits"])
+                        write_json(
+                            out / "reset.json",
+                            dict(
+                                bitwise_logits_equal=bool(same),
+                                protocol="A(32 outputs), changed first input B(2 outputs), A(32 outputs)",
+                            ),
+                        )
+                        if not same:
+                            raise ValueError(
+                                "capture differs after an intervening changed request"
+                            )
         finally:
             session.close()

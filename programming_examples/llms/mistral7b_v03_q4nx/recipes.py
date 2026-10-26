@@ -4,7 +4,7 @@
 
 
 def install():
-    from air_examples.llms.shared.builders import gemm_builder
+    from ..shared.builders import gemm_builder
 
     original = gemm_builder.gemm_registry_config
     if getattr(original, "_mistral", False):

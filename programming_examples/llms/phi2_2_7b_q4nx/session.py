@@ -4,57 +4,20 @@
 """Phi-2 production adapter shared by generation and fixed evaluation."""
 
 import json
-import os
 from pathlib import Path
 import time
 import numpy as np
 from ml_dtypes import bfloat16
-from air_examples.llms.shared.deployment import require_bfp16
-from .common import ROOT, RUN, REVISION, save_json, file_hash
+from ..shared.deployment import require_bfp16
+from .common import RUN, REVISION, save_json, file_hash
 from .build import decode_module
+from ..shared.deployment_runtime import read_bf16, load_cache
 
 
 def rope_lut(capacity):
     inv = 1.0 / (np.float32(10000.0) ** (np.arange(0, 32, 2, dtype=np.float32) / 32))
     angles = np.arange(capacity, dtype=np.float32)[:, None] * inv[None, :]
     return np.concatenate([np.cos(angles), np.sin(angles)], axis=1).astype(bfloat16)
-
-
-def read_bf16(path):
-    return np.load(path, mmap_mode="r", allow_pickle=False).view(bfloat16)
-
-
-def load_cache(path):
-    from air_examples.llms.shared.infra.cache import KernelCache
-    from air.backend.xrt import XRTCompileArtifact
-
-    cache = KernelCache(cache_dir=str(path))
-    info = json.loads((path / cache.MANIFEST_FILE).read_text())
-    if info["_toolchain"] != cache._toolchain_id():
-        raise RuntimeError(f"build toolchain changed: {path}")
-    for name, entry in info["entries"].items():
-        binary = path / Path(entry["output_binary"]).name
-        insts = path / Path(entry["insts"]).name if entry["insts"] else None
-        if not binary.is_file():
-            raise FileNotFoundError(binary)
-        kernel = entry["kernel"]
-        if kernel == "MLIR_AIE" and binary.suffix == ".elf":
-            # Early builds retained the XRT default in metadata. Bind to the
-            # outer runtime-sequence symbol, recorded in candidate-bound IR.
-            import re
-
-            (symbol,) = re.findall(
-                r"func\.func @(\w+)\(", (path.parent / f"{name}.mlir").read_text()
-            )
-            kernel = "main:" + symbol
-        cache.artifacts[name] = XRTCompileArtifact(
-            str(binary), kernel, str(insts) if insts else None
-        )
-    return cache
-
-
-def close_cache(cache):
-    cache.close()
 
 
 class FusedDecode:
@@ -316,8 +279,8 @@ class PhiSession:
     def close(self):
         if not self.closed:
             save_json(self.work / "session-final.json", self.describe_execution())
-            close_cache(self.cache)
-            close_cache(self.head_cache)
+            self.cache.close()
+            self.head_cache.close()
             self.decode.close()
             self.closed = True
 
