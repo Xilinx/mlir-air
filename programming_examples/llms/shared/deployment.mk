@@ -46,3 +46,13 @@ profile:
 	$(DRIVER) profile $(OPTIONS)
 compile-all verify-all profile-all:
 	@set -e; for p in $(NATIVE_LENGTHS); do $(MAKE) -f $(srcdir)/Makefile $(@:-all=) P=$$p; done
+
+# CI uses a source-bound shared build and unique evidence directories.
+# The profile target performs its own correctness gate before measuring.
+CI_DIR ?= $(abspath $(BUILD_DIR))/ci
+.PHONY: ci-verify ci-profile
+ci-verify ci-profile:
+	cd $(srcdir)/.. && $(PYTHON) -m shared.deployment_ci $(@:ci-%=%) \
+	  --model $(MODEL_MODULE) --prefill $(P) --work-dir "$(abspath $(CI_DIR))" \
+	  $(if $(CHECKPOINT),--checkpoint "$(CHECKPOINT)") \
+	  $(if $(Q4_DIR),--q4-dir "$(Q4_DIR)")

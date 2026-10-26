@@ -126,6 +126,7 @@ def checkpoint(model, requested):
     if requested:
         return Path(requested).resolve()
     from huggingface_hub import snapshot_download
+    from huggingface_hub.constants import HF_HUB_OFFLINE
 
     s = spec(model)
     return Path(
@@ -133,6 +134,7 @@ def checkpoint(model, requested):
             s["checkpoint"],
             revision=s["revision"],
             allow_patterns=["*.safetensors", "*.json", "*.py"],
+            local_files_only=HF_HUB_OFFLINE,
         )
     )
 
@@ -149,9 +151,13 @@ def reference(model, selected, source, out, threads):
     for shard in s["source_shards"]:
         if file_hash(source / shard["file"]) != shard["sha256"]:
             raise ValueError("reference checkpoint shard differs: " + shard["file"])
-    if model == "openelm_1b_q4nx" and transformers.__version__ != "4.39.3":
+    for entry in s.get("reference_code", []):
+        if file_hash(source / entry["file"]) != entry["sha256"]:
+            raise ValueError("reference HF implementation differs: " + entry["file"])
+    expected = "4.39.3" if model == "openelm_1b_q4nx" else "5.3.0"
+    if transformers.__version__ != expected:
         raise ValueError(
-            "OpenELM's original HF code requires transformers==4.39.3; use a separate reference environment"
+            f"{model} reference requires transformers=={expected}; use a separate reference environment"
         )
     torch.set_num_threads(threads)
     torch.manual_seed(0)

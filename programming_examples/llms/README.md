@@ -41,7 +41,9 @@ The following examples prepare group-32 affine Q4 directly from pinned HF
 checkpoints. Their prefill GEMMs use the shared BFP16 compute path; decode
 fuses all transformer blocks into one native submission. OpenELM and Phi-2
 use a separate full-head submission. See the [common commands](shared/AFFINE_Q4_DEPLOYMENTS.md)
-for weight preparation, native-configuration sweeps and full-logit verification.
+for weight preparation, native-configuration sweeps and full-logit verification. The
+[implementation guide](shared/AFFINE_Q4_IMPLEMENTATION.md) explains the architecture
+mapping; [measured results](shared/AFFINE_Q4_RESULTS.md) cover all 19 native points.
 
 | Example | Layers | Architecture details | Native input lengths / KV capacity |
 | --- | --- | --- | --- |

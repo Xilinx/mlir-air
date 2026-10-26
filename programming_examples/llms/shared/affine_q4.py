@@ -67,8 +67,15 @@ def file_hash(path, tick=lambda: None):
     return h.hexdigest()
 
 
-def safe_child(root, rel):
+def safe_child(root, rel, *, allow_hf_blob=False):
     root = Path(root).resolve()
+    if allow_hf_blob:
+        # HF snapshot files link to ../../blobs. Shard *names* must stay local;
+        # prepare_affine_q4 separately checks the resolved bytes against the
+        # pinned source-shard hashes before quantization.
+        if Path(rel).is_absolute() or ".." in Path(rel).parts:
+            raise ValueError("checkpoint shard name escapes snapshot directory")
+        return root / rel
     path = (root / rel).resolve()
     if not path.is_relative_to(root):
         raise ValueError("manifest path escapes artifact directory")
@@ -157,7 +164,7 @@ class SafetensorRows:
         self.files = {}
         self.tensors = {}
         for rel in sorted(set(self.weight_map.values())):
-            path = safe_child(self.root, rel)
+            path = safe_child(self.root, rel, allow_hf_blob=True)
             size = path.stat().st_size
             with path.open("rb") as f:
                 raw = f.read(8)

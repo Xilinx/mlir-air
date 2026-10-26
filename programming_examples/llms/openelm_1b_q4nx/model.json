@@ -30,5 +30,15 @@
   "prefill_rms": {
     "p512": "decode",
     "p1024": "decode"
-  }
+  },
+  "reference_code": [
+    {
+      "file": "modeling_openelm.py",
+      "sha256": "ffb56f297ccb48ba689bc15b352c971eb1337a3604449662303a2d4919aa77c4"
+    },
+    {
+      "file": "configuration_openelm.py",
+      "sha256": "d0da88fc5fafdfef155052ec4e5483db8d6be2917cb68bdee9e7ead1cb7e6f15"
+    }
+  ]
 }

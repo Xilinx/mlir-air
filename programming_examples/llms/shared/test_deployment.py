@@ -78,6 +78,22 @@ class AffineDeploymentTests(unittest.TestCase):
                 for array in entry["arrays"].values():
                     self.assertEqual(file_hash(out / array["path"]), array["sha256"])
 
+            # Real HF cache snapshots link each file to an external blobs dir.
+            snapshot = Path(tmp) / "cache/snapshots/revision"
+            snapshot.mkdir(parents=True)
+            for name in ("config.json", shard.name):
+                (snapshot / name).symlink_to(source / name)
+            cached_out = Path(tmp) / "cached-q4"
+            prepare(snapshot, cached_out, model, chunk_rows=3)
+            np.testing.assert_array_equal(
+                CanonicalWeights(cached_out).dequant("projection.weight"), matrix
+            )
+            bad_model = dict(
+                model, source_shards=[dict(model["source_shards"][0], sha256="0" * 64)]
+            )
+            with self.assertRaisesRegex(ValueError, "checkpoint shard differs"):
+                prepare(snapshot, Path(tmp) / "bad-q4", bad_model)
+
     def test_cache_close_releases_only_its_contexts(self):
         import weakref
         from .infra.cache import KernelCache

@@ -2,6 +2,6 @@
 // SPDX-License-Identifier: MIT
 // Weight-free P512 BFP16 prefill + fused decode + full-head compilation.
 // No device execution. Use make compile-all for the native-length matrix.
-// REQUIRES: ryzen_ai_npu2, peano
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23
 // RUN: make -f %S/Makefile compile P=512 BUILD_DIR=%t PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: Compilation passed.

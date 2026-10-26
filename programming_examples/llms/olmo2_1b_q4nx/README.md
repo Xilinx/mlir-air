@@ -19,3 +19,7 @@ Only these native-context configurations are exposed. Both execution and compila
 See [build, run, verification and profiling commands](../shared/AFFINE_Q4_DEPLOYMENTS.md).
 `make help` lists the common interface. `make compile-all`, `make verify-all` and
 `make profile-all` visit this model's native configurations sequentially.
+
+## Implementation and measured results
+
+See the [architecture and source guide](../shared/AFFINE_Q4_IMPLEMENTATION.md) for the model-specific mapping and common infrastructure. [Fresh upstream verification and profiling](../shared/AFFINE_Q4_RESULTS.md) lists all native configurations; the accompanying JSON retains gate hashes and individual request samples.

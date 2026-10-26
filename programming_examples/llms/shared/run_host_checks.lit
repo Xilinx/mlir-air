@@ -1,0 +1,5 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+// No model downloads, compiler or NPU required; included in the per-PR host suite.
+// RUN: cd %S/..
+// RUN: %PYTHON -m unittest shared.test_deployment shared.test_deployment_ci
