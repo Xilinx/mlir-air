@@ -21,4 +21,8 @@ See [build, run, verification and profiling commands](../shared/AFFINE_Q4_DEPLOY
 
 ## Implementation and measured results
 
+Prefill and decode both use OpenELM's local normalization kernels: normalize
+in FP32, round to BF16, then multiply by the learned BF16 weight. Decode source
+lookup gives the model's `kernels/` directory precedence over the shared kernels.
+
 See the [architecture and source guide](../shared/AFFINE_Q4_IMPLEMENTATION.md) for the model-specific mapping and common infrastructure. [Fresh upstream verification and profiling](../shared/AFFINE_Q4_RESULTS.md) lists all native configurations; the accompanying JSON retains gate hashes and individual request samples.

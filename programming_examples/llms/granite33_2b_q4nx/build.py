@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Reproducible isolated build, with raw subprocess logs and artifact hashes."""
 
+import json
 import os
 from pathlib import Path
 import time
@@ -83,7 +84,21 @@ def build_decode_kernels(out, capacity=1024):
     return settings, env, records
 
 
+def validate_prefill_reuse(source, sequence_length):
+    """Reject an attention ELF compiled for a different full input length."""
+    source = Path(source).resolve()
+    metadata = json.loads((source / "build.json").read_text())
+    if metadata.get("sequence_length") != sequence_length:
+        raise ValueError(
+            f"reused prefill sequence_length {metadata.get('sequence_length')} "
+            f"does not match requested {sequence_length}: {source}"
+        )
+    return source
+
+
 def build_prefill(out, sequence_length=512, rms_impl="seed", reuse_prefill=None):
+    if reuse_prefill is not None:
+        reuse_prefill = validate_prefill_reuse(reuse_prefill, sequence_length)
     out.mkdir(parents=True, exist_ok=True)
     os.chdir(out)
     from .common import Config
@@ -140,8 +155,6 @@ def build_prefill(out, sequence_length=512, rms_impl="seed", reuse_prefill=None)
         cache, config, sequence_length, cpu_attn=reuse_prefill is not None
     )
     if reuse_prefill is not None:
-        import json
-
         manifest = out / "cache/manifest.json"
         current = json.loads(manifest.read_text())
         accepted = json.loads((reuse_prefill / "cache/manifest.json").read_text())

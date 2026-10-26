@@ -29,6 +29,22 @@ from .prepare_affine_q4 import prepare, quantize
 
 
 class AffineDeploymentTests(unittest.TestCase):
+    def test_prefill_reuse_rejects_wrong_sequence_before_build(self):
+        from ..granite33_2b_q4nx.build import build_prefill, validate_prefill_reuse
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source, destination = Path(tmp) / "source", Path(tmp) / "new"
+            source.mkdir()
+            metadata = source / "build.json"
+            metadata.write_text(json.dumps({"sequence_length": 512}))
+            self.assertEqual(validate_prefill_reuse(source, 512), source.resolve())
+            with self.assertRaisesRegex(ValueError, "does not match requested 1024"):
+                build_prefill(destination, 1024, reuse_prefill=source)
+            self.assertFalse(destination.exists())
+            metadata.write_text("{}")
+            with self.assertRaisesRegex(ValueError, "sequence_length None"):
+                validate_prefill_reuse(source, 512)
+
     def test_checkpoint_to_canonical_q4(self):
         from ml_dtypes import bfloat16
 

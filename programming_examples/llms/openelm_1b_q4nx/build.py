@@ -79,7 +79,11 @@ def build_decode_kernels(out, capacity=1024):
     ]
     from ..shared.decode_build import compile_kernels
 
-    records.append(compile_kernels(out, src, base[1:], [src / "kernels"], run, env))
+    # Match the original OpenELM BF16 rounding order in both inference phases.
+    local = Path(__file__).resolve().parent / "kernels"
+    records.append(
+        compile_kernels(out, src, base[1:], [local, src / "kernels"], run, env)
+    )
     return settings, env, records
 
 

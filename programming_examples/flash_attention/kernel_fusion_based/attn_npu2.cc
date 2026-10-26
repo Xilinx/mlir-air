@@ -69,17 +69,29 @@ matmul_vectorized_2x2_mmul(const T_in *__restrict pA, const T_in *__restrict pB,
       for (unsigned i = 0; i < colA; ++i) {
         auto A = aie::load_v<MMUL::size_A>(pA + (i * rowA + z) * MMUL::size_A);
         aie::vector<T_in, MMUL::size_B> B;
-        if constexpr (transpose_b)
-          B = aie::transpose(
-              aie::load_v<MMUL::size_B>(pB + (i * colB + j) * MMUL::size_B), t,
-              s);
-        else
+        if constexpr (transpose_b) {
+          B = aie::load_v<MMUL::size_B>(pB + (i * colB + j) * MMUL::size_B);
+          if constexpr (!b_pretransposed)
+            B = aie::transpose(B, t, s);
+        } else
           B = aie::load_v<MMUL::size_B>(pB + (j * colA + i) * MMUL::size_B);
         C.mac(A, B);
       }
       T_out *dst = pC + (j * rowA + z) * MMUL::size_C;
-      aie::accum<accfloat, MMUL::size_C> previous;
-      previous.from_vector(aie::load_v<MMUL::size_C>(dst));
+      aie::vector<T_out, MMUL::size_C> carried;
+      if constexpr (zero_c)
+        carried = aie::zeros<T_out, MMUL::size_C>();
+      else
+        carried = aie::load_v<MMUL::size_C>(dst);
+      if constexpr (scale_c) {
+        static_assert(r == 8 && t == 8);
+        auto row8 = aie::load_v<8>(rows + z * r);
+        auto row16 = aie::concat(row8, row8);
+        auto row32 = aie::concat(row16, row16);
+        auto factors = aie::transpose(aie::concat(row32, row32), 8, 8);
+        carried = aie::mul(carried, factors).template to_vector<T_out>();
+      }
+      aie::accum<accfloat, MMUL::size_C> previous(carried);
       aie::accum<accfloat, MMUL::size_C> result;
       result.from_vector(aie::add(C.template to_vector<float>(),
                                   previous.template to_vector<float>()));
