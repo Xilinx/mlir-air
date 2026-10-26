@@ -1622,7 +1622,7 @@ def _build_launch_q_bcast(
 def build_module(**kwargs):
     """The MLIR module. Return type is the llms/ builders' contract.
 
-    llama32_1b, llama32_1b_int4, qwen25_0_5b, lfm2_1_2b_q4nx and smolvla import this name and hand the result straight to
+    llms/ examples import this name and hand the result straight to
     KernelCache.compile_and_cache, which stringifies it into air.mlir -- so it
     must be a module, not the LaunchContext that build_launch returns.
     """

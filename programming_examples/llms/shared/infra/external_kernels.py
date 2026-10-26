@@ -340,30 +340,6 @@ def compile_mv(tile_m=8):
     _compile_kernel(src, "mv.o", extra_flags=[f"-DDIM_M_OUTPUT={tile_m}"])
 
 
-def compile_mv_int4_bf16(m_tile=8, k_chunk=2048, gs=128):
-    """Compile mv_int4_bf16.o (int4-AWQ GEMV micro-kernel) from source.
-
-    Produces `mv_int4_bf16_gemv.o` (config-tagged) and stages it as the
-    canonical `mv_int4_bf16.o` (the name link_with attributes expect).
-    The int4 GEMM prefill compiles the same .cc with DIM_M=16 to a
-    different config-tagged name (`mv_int4_bf16_matmul.o`), so the two
-    variants don't clobber each other in CWD across sessions; the
-    last-staged canonical .o is whichever variant the current compile
-    needs.
-    """
-    src = _PROJ_ROOT / "matrix_vector_multiplication" / "int4_awq" / "mv_int4_bf16.cc"
-    _compile_kernel(
-        src,
-        "mv_int4_bf16_gemv.o",
-        extra_flags=[
-            f"-DDIM_M={m_tile}",
-            f"-DDIM_K={k_chunk}",
-            f"-DDIM_GS={gs}",
-        ],
-    )
-    shutil.copy2("mv_int4_bf16_gemv.o", "mv_int4_bf16.o")
-
-
 def compile_mv_bf16():
     """Compile mv_bf16.o for the 2-tile matvec+add primitive used by
     o_gemv_ffn stages 1 and 3."""
@@ -385,7 +361,7 @@ def compile_attn_decode_npu2(head_dim=64):
     )
 
 
-def compile_all_external_kernels(head_dim=64, quant="bf16"):
+def compile_all_external_kernels(head_dim=64):
     """Compile all external C++ kernels from source.
 
     Call this before kernel compilation to ensure all .o files are fresh.
@@ -394,10 +370,6 @@ def compile_all_external_kernels(head_dim=64, quant="bf16"):
 
     Args:
         head_dim: attention head dimension (RoPE / attn kernel macros).
-        quant: "bf16" (default) or "awq". When "awq" the int4-AWQ GEMV
-            micro-kernel (`mv_int4_bf16.o`) is also built so the int4
-            decode ELFs can link it. bf16 GEMV objects are still built
-            so mixed paths (e.g. bf16 prefill + int4 decode) keep working.
     """
     compile_silu_and_mul()
     compile_rope()
@@ -405,5 +377,3 @@ def compile_all_external_kernels(head_dim=64, quant="bf16"):
     compile_attn_decode_npu2(head_dim=head_dim)
     compile_mv()
     compile_mv_bf16()
-    if quant == "awq":
-        compile_mv_int4_bf16()

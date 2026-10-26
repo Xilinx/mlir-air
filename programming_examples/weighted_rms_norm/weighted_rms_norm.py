@@ -26,8 +26,8 @@ of the scalar `rstd` (a [1, 1] buffer against a [1, N] row is numpy
 broadcasting, which the DSL lowers to `memref.load` + `vector.broadcast`).
 
 `build_module` returns the **module**, not the launch, unlike most converted
-examples: `llms/llama32_1b_int4/multi_launch_builder/rms_gemms_rope_bfp16_multi`
-imports it and stitches the result, so the signature and the return type are a
+examples: the `llms/shared/builders/` stitchers import it and stitch the
+result, so the signature and the return type are a
 contract.
 """
 

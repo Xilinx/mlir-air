@@ -14,7 +14,7 @@ import json
 import re
 import sys
 
-# TTFT: qwen/llama3b/int4/smollm print "Time to first token (TTFT): X.XXs";
+# TTFT: qwen/llama3b/smollm print "Time to first token (TTFT): X.XXs";
 # llama32_1b prints "End-to-end (prefill, per query)  N ms".
 # A driver may additionally print a warm (weights already resident) TTFT; that
 # is the steady-state prefill latency and is preferred when present, since the
@@ -29,7 +29,7 @@ ACTION_CHUNK_MS_RE = re.compile(r"Action chunk \([^)]*\):\s*([\d.]+)\s*ms")
 
 # Decode throughput: qwen family + llama3b print "(X.XX tok/s)";
 # llama32_1b prints "End-to-end (per token)  N ms" (throughput = 1000/ms);
-# the int4 inference driver prints "Tokens/second: X.XX".
+# other drivers print "Tokens/second: X.XX".
 TOKS_RE = re.compile(r"\(([\d.]+)\s*tok/s\)")
 DECODE_MS_RE = re.compile(r"End-to-end \(per token\)\s+([\d.]+)\s*ms")
 TOKS_LABEL_RE = re.compile(r"Tokens/second:\s*([\d.]+)")

@@ -160,8 +160,8 @@ jobs:
           # end to end (compile + verify + perf, all models) by the dedicated
           # nightly benchmark (nightlyPerfBenchmark.yml) on the Krackan runner,
           # which serves weights from a warm offline HF cache. Running them in
-          # the per-PR matrix duplicated that work, was slow (int4's compile
-          # alone exceeds the 600s per-test timeout), and needed HF secrets.
+          # the per-PR matrix duplicated that work, was slow, and needed HF
+          # secrets.
           #
           # The exception, and the reason the pip install above is not dead
           # weight: the decode-geometry self-check. It imports the decode
