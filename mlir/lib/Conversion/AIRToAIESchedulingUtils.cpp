@@ -541,9 +541,15 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops,
   // many times in a row per trip as the one that was kept. Compare all of
   // them, before folding: 0 outside run-time loops, the times in a row inside
   // one, or -1 for repeats in fixed loops shared with other transfers.
+  // A unit of one BD needs no such match: its chain sends that BD once per
+  // transfer, however the transfers are spread over loops.
   SmallVector<bool> foldsAlike(memcpyIOpVec.size(), true);
-  if (Region *allRegion = air::findCommonRegionContainingAllAncestors(
-          SmallVector<Operation *>(allOps.begin(), allOps.end()))) {
+  Region *allRegion =
+      memcpyIOpVec.size() > 1
+          ? air::findCommonRegionContainingAllAncestors(
+                SmallVector<Operation *>(allOps.begin(), allOps.end()))
+          : nullptr;
+  if (allRegion) {
     auto perTrip = [&](Operation *o) -> int64_t {
       Nest n = getNest(o, allRegion);
       if (!n.runTime)
