@@ -3,7 +3,9 @@
 """Host checks for logical Q4 and the fixed-input model gate; no device imports."""
 
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import types
@@ -82,7 +84,14 @@ class AffineDeploymentTests(unittest.TestCase):
             snapshot = Path(tmp) / "cache/snapshots/revision"
             snapshot.mkdir(parents=True)
             for name in ("config.json", shard.name):
-                (snapshot / name).symlink_to(source / name)
+                try:
+                    (snapshot / name).symlink_to(source / name)
+                except OSError as exc:
+                    if os.name != "nt" or getattr(exc, "winerror", None) != 1314:
+                        raise
+                    # HF uses ordinary files when Windows denies symlink
+                    # creation. Still exercise conversion and hash rejection.
+                    shutil.copyfile(source / name, snapshot / name)
             cached_out = Path(tmp) / "cached-q4"
             prepare(snapshot, cached_out, model, chunk_rows=3)
             np.testing.assert_array_equal(
