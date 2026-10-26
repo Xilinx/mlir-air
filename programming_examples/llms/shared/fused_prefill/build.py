@@ -31,30 +31,17 @@ from . import device as D
 HERE = Path(__file__).resolve().parent
 EX = HERE.parents[2]  # programming_examples
 
-ATTN_FNS = (
-    "zero_fill_g_bf16 zero_fill_gp_bf16 zero_fill_sp_bf16 neg_inf_fill_up_bf16 matmul_a_b_bf16 "
-    "matmul_g_b_bf16 matmul_g_b_r_bf16 fused_softmax mul_r_gp accum_sp_r_s vector_copy_32elems div_gp_sp "
-    "apply_causal_mask apply_window_mask"
-).split()
 
-
-def attn_points(heads, even=False):
+def attn_points(heads):
     """Calibration points (heads, nkv, q0, k0): a base, one per parameter,
-    and a check point that moves all three; nkv even if `even`."""
-    if even:
-        return {
-            "base": (heads, 2, 0, 0),
-            "nkv": (heads, 4, 0, 0),
-            "q0": (heads, 2, 1, 0),
-            "k0": (heads, 2, 0, 1),
-            "check": (heads, 6, 3, 2),
-        }
+    and a check point that moves all three; nkv even, as the cores read K
+    blocks in pairs."""
     return {
-        "base": (heads, 1, 0, 0),
-        "nkv": (heads, 2, 0, 0),
-        "q0": (heads, 1, 1, 0),
-        "k0": (heads, 1, 0, 1),
-        "check": (heads, 5, 3, 2),
+        "base": (heads, 2, 0, 0),
+        "nkv": (heads, 4, 0, 0),
+        "q0": (heads, 2, 1, 0),
+        "k0": (heads, 2, 0, 1),
+        "check": (heads, 6, 3, 2),
     }
 
 
@@ -139,14 +126,10 @@ def _peano():
     return os.path.join(os.environ["PEANO_INSTALL_DIR"], "bin", "clang++")
 
 
-def _aie_dir():
-    return os.environ.get("MLIR_AIE_INSTALL_DIR") or str(
+def _flags():
+    inc = os.environ.get("MLIR_AIE_INSTALL_DIR") or str(
         Path(shutil.which("aie-opt")).parents[1]
     )
-
-
-def _flags():
-    inc = _aie_dir()
     return [
         "-O2",
         "-std=c++20",
@@ -166,7 +149,6 @@ def build_kernels(out, cfg):
     cc, f = _peano(), _flags()
     kern = HERE / "kernels"
     mm = EX / "matrix_multiplication/bf16_in_fp32_out/mm_aie2p.cc"
-    attn = EX / "flash_attention/kernel_fusion_based/attn_npu2.cc"
     m, n, k = D.TM, D.TN, D.TK
     jobs = [
         [
@@ -200,24 +182,16 @@ def build_kernels(out, cfg):
         ],
         [cc, *f, "-c", kern / "gemv_q4.cc", "-o", out / "gemv_q4.o"],
     ]
-    # one attention object per head_dim; groups sharing one must agree on it
-    seen = {}
+    # one attention object per head_dim; groups sharing one must agree on how
+    # it is built
+    built = {}
     for g in cfg.attn.values():
-        if g.kern == "bfp16":
-            continue
-        key = (g.lkp, g.dvt)
-        if seen.setdefault(g.dh, key) != key:
-            raise ValueError(f"attention groups with head_dim {g.dh} differ in tiling")
-    split = {}
-    for g in cfg.attn.values():
-        if (
-            g.kern == "bfp16"
-            and split.setdefault(g.dh, g.split_scores) != g.split_scores
-        ):
+        key = (g.lkp, g.split_scores)
+        if built.setdefault(g.dh, key) != key:
             raise ValueError(
-                f"attention groups with head_dim {g.dh} differ in split_scores"
+                f"attention groups with head_dim {g.dh} differ in lkp or split_scores"
             )
-    for dh, sp in split.items():
+    for dh, (lkp, sp) in built.items():
         jobs.append(
             [
                 cc,
@@ -227,41 +201,10 @@ def build_kernels(out, cfg):
                 "-o",
                 out / f"attn_bfp16_d{dh}.o",
                 f"-DDH={dh}",
+                f"-DLK={lkp}",
+                f"-DSUM_LANES={D.sum_lanes(dh)}",
                 *(["-DATTN_SPLIT_SCORES"] if sp else []),
                 *[f"-D{fn}={fn}_d{dh}" for fn in ("attn_init", "attn_blk", "attn_fin")],
-            ]
-        )
-    for dh, (lkp, dvt) in seen.items():
-        ren = [f"-D{fn}={fn}_d{dh}" for fn in ATTN_FNS]
-        jobs.append(
-            [
-                cc,
-                *f,
-                "-DBIT_WIDTH=8",
-                f"-I{attn.parent}",
-                "-c",
-                attn,
-                "-o",
-                out / f"attn_d{dh}.o",
-                f"-Dlqp={lkp}",
-                f"-Dlkp={lkp}",
-                f"-Ddk={dh}",
-                f"-Ddk_full={dh}",
-                f"-Ddv={dvt}",
-                f"-Ddv_full={dh}",
-                "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
-                "-DROUND_CONV_EVEN",
-                *ren,
-            ]
-        )
-        # only the renamed entry points stay global, so a core can link the
-        # objects of two head_dims
-        jobs.append(
-            [
-                Path(_aie_dir()) / "bin" / "llvm-objcopy",
-                "--wildcard",
-                f"--keep-global-symbol=*_d{dh}",
-                out / f"attn_d{dh}.o",
             ]
         )
     jobs.append(

@@ -154,27 +154,18 @@ void mul_tile(const uint16_t *g, int ldg, const float *p, int t, int n, int TM,
   }
 }
 
-// offset of (i, j) in a tile of rows x cols in the attention cores' operand
-// order, [cols / 8][rows / 8][8][8]
-static inline long t8(int i, int j, int rows) {
-  return ((long)(j >> 3) * (rows >> 3) + (i >> 3)) * 64 + (i & 7) * 8 + (j & 7);
-}
-
-// dst [H][M / tq] tiles of tq x dh = q [T, H, dh] * scale, rows T.. zeroed
-void q_pack(const float *q, int T, int H, int dh, int M, float scale, int tq,
+// q [T, H, dh] f32 -> dst [H, M, dh] bf16 = bf16(q * scale), rows T..M zeroed
+void q_pack(const float *q, int T, int H, int dh, int M, float scale,
             uint16_t *dst) {
 #pragma omp parallel for num_threads(NT) schedule(static)
   for (int k = 0; k < H; k++) {
     uint16_t *d = dst + (long)k * M * dh;
-    for (int t = 0; t < M; t++) {
-      uint16_t *b = d + (long)(t / tq) * tq * dh;
+    for (int t = 0; t < T; t++) {
       const float *s = q + ((long)t * H + k) * dh;
-      for (int i = 0; i < dh; i += 8) {
-        uint16_t *o = b + t8(t % tq, i, tq);
-        for (int j = 0; j < 8; j++)
-          o[j] = t < T ? f2bf(s[i + j] * scale) : 0;
-      }
+      for (int i = 0; i < dh; i++)
+        d[(long)t * dh + i] = f2bf(s[i] * scale);
     }
+    memset(d + (long)T * dh, 0, (size_t)(M - T) * dh * 2);
   }
 }
 
@@ -239,11 +230,11 @@ void add_rms_tile(float *x, const uint16_t *c, int ldc, const float *post,
 
 // nh heads of dh at column col0 of src bf16 [t, ld]: + bias, rms with norm
 // (if given), half-split rotary on the first rot dims, * scale, to bf16
-// dst[h * hs + r * rs + i], or with tq each head in tiles as q_pack writes
+// dst[h * hs + r * rs + i]
 void head_post(const uint16_t *src, int ld, int t, int col0, int nh, int dh,
                const float *bias, const float *norm, float eps, const float *cs,
                const float *sn, int rot, float scale, uint16_t *dst, long hs,
-               long rs, int tq) {
+               long rs) {
   int hr = rot / 2;
 #pragma omp parallel for num_threads(NT) schedule(static)
   for (int r = 0; r < t; r++) {
@@ -265,51 +256,23 @@ void head_post(const uint16_t *src, int ld, int t, int col0, int nh, int dh,
           v[i + hr] = b * c[i] + a * sv[i];
         }
       }
-      if (tq) {
-        uint16_t *b = dst + h * hs + (long)(r / tq) * tq * dh;
-        for (int i = 0; i < dh; i += 8) {
-          uint16_t *o = b + t8(r % tq, i, tq);
-          for (int j = 0; j < 8; j++)
-            o[j] = f2bf(v[i + j] * scale);
-        }
-      } else {
-        uint16_t *d = dst + h * hs + r * rs;
-        for (int i = 0; i < dh; i++)
-          d[i] = f2bf(v[i] * scale);
-      }
+      uint16_t *d = dst + h * hs + r * rs;
+      for (int i = 0; i < dh; i++)
+        d[i] = f2bf(v[i] * scale);
     }
   }
 }
 
-// KV records of one head for rows [0, t): k / v bf16 [t, ld] at column c0;
-// per lkp-row block, the K tile then dh/dvt V tiles, each in t8 order; rows
-// past t are zero
-void kv_rec(const uint16_t *k, const uint16_t *v, int ld, int c0, int t, int dh,
-            int lkp, int dvt, uint16_t *dst) {
-  int nb = (t + lkp - 1) / lkp, rec = 2 * lkp * dh;
-  for (int b = 0; b < nb; b++) {
-    uint16_t *kd = dst + (long)b * rec, *vd = kd + lkp * dh;
-    for (int i = 0; i < lkp; i++) {
-      int r = b * lkp + i;
-      for (int j = 0; j < dh; j += 8) {
-        uint16_t *kt = kd + t8(i, j, lkp);
-        uint16_t *vt = vd + (long)(j / dvt) * lkp * dvt + t8(i, j % dvt, lkp);
-        if (r < t) {
-          memcpy(kt, k + (long)r * ld + c0 + j, 16);
-          memcpy(vt, v + (long)r * ld + c0 + j, 16);
-        } else {
-          memset(kt, 0, 16);
-          memset(vt, 0, 16);
-        }
-      }
-    }
-  }
+// offset of (i, j) in a tile of rows x cols as the attention cores write
+// it, [cols / 8][rows / 8][8][8]
+static inline long t8(int i, int j, int rows) {
+  return ((long)(j >> 3) * (rows >> 3) + (i >> 3)) * 64 + (i & 7) * 8 + (j & 7);
 }
 
-// o [nh][M / tq] tiles of tq x dh, each dh / dvt tiles of tq x dvt, into
+// o [nh][M / tq] tiles of tq x dh, as the attention cores write them, into
 // heads [h0, h0 + nh) of dst (tiled A, K)
-void o_tile(const uint16_t *o, int t, int nh, int dh, int M, int tq, int dvt,
-            int h0, int K, int TM, int TK, uint16_t *dst) {
+void o_tile(const uint16_t *o, int t, int nh, int dh, int M, int tq, int h0,
+            int K, int TM, int TK, uint16_t *dst) {
   int ks = K / TK;
 #pragma omp parallel for num_threads(NT) schedule(static)
   for (int r = 0; r < t; r++)
@@ -319,8 +282,7 @@ void o_tile(const uint16_t *o, int t, int nh, int dh, int M, int tq, int dvt,
         int col = (h0 + h) * dh + i0, n = TK < dh ? TK : dh;
         uint16_t *d = a_row(dst, r, col / TK, ks, TM, TK) + col % TK;
         for (int i = i0; i < i0 + n; i += 8)
-          memcpy(d + i - i0,
-                 b + (long)(i / dvt) * tq * dvt + t8(r % tq, i % dvt, tq), 16);
+          memcpy(d + i - i0, b + t8(r % tq, i, tq), 16);
       }
     }
 }

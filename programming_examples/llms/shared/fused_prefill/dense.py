@@ -244,7 +244,7 @@ class DensePrefill(Engine):
             h0 = 0
             for p in self.attn_wait(att[c]):
                 g = p["g"]
-                H.o_tile(p["om"], t, h0, dq, a[1], TM, TK, g.lkp, g.dvt)
+                H.o_tile(p["om"], t, h0, dq, a[1], TM, TK, g.lkp)
                 h0 += p["hg"]
             a[0].sync(TO)
             pend.append(self.gemm_start(f"{L}.o", c))
@@ -291,10 +291,7 @@ class DensePrefill(Engine):
         h0 = 0
         for a, p in zip(self.attn[kvb["op"]]["groups"], ch["parts"]):
             g, hg = self.cfg.attn[a], p["hg"]
-            bfp = g.kern == "bfp16"
-            qm = self._q16(hg) if bfp else p["qm"]
-            if t < D.M:
-                qm[:] = 0
+            qm = self._q16(hg)
             H.head_post(
                 qkv,
                 t,
@@ -309,10 +306,10 @@ class DensePrefill(Engine):
                 qm,
                 D.M * dh,
                 dh,
-                0 if bfp else g.lkp,
             )
-            if bfp:
-                H.q_bfp(qm, g.lkp, p["qm"])
+            if t < D.M:
+                qm[:, t:] = 0
+            H.q_bfp(qm, g.lkp, p["qm"])
             h0 += hg
         kb = np.empty((t, dk), bfloat16)
         vb = np.empty((t, dk), bfloat16)
@@ -342,10 +339,8 @@ class DensePrefill(Engine):
             b0, rec = r0 // g.lkp, D.kv_rec(g)
             nblk = p["m"].shape[1]
             nb = -(-t // g.lkp)
-            rec_fn = H.kv_rec_bfp if g.kern == "bfp16" else H.kv_rec
-            args = (g.lkp,) if g.kern == "bfp16" else (g.lkp, g.dvt)
             for h in range(g.kv_heads):
-                rec_fn(kb, vb, (h0 + h) * dh, t, dh, *args, p["m"][h, b0])
+                H.kv_rec_bfp(kb, vb, (h0 + h) * dh, t, dh, g.lkp, p["m"][h, b0])
                 p["bo"].sync(TO, nb * rec * 2, (h * nblk + b0) * rec * 2)
             h0 += g.kv_heads
 
