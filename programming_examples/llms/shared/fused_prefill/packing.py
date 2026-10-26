@@ -236,19 +236,3 @@ def a_layout(gemm_format, k, chunks=1):
         return bfloat16, (D.HR, steps, chunks, D.TM, D.TK)
     assert gemm_format == "bfp16", gemm_format
     return np.uint8, (D.HR, steps, chunks, D.A_BFP)
-
-
-def kv_records(g, k, v):
-    """k, v [T, dh] -> attention group g's KV records [ceil(T/lkp), rec] bf16
-    (K tile, then the V tiles of each block), the tail block zero-padded."""
-    dh, lkp, dvt = g.dh, g.lkp, g.dvt
-    nkv = -(-k.shape[0] // lkp)
-    kp = np.zeros((nkv * lkp, dh), bfloat16)
-    vp = np.zeros((nkv * lkp, dh), bfloat16)
-    kp[: k.shape[0]], vp[: v.shape[0]] = k, v
-    recs = [kp.reshape(nkv, lkp * dh)]
-    recs += [
-        vp.reshape(nkv, lkp, dh // dvt, dvt)[:, :, z].reshape(nkv, -1)
-        for z in range(dh // dvt)
-    ]
-    return np.concatenate(recs, axis=1)

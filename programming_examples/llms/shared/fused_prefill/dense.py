@@ -240,12 +240,12 @@ class DensePrefill(Engine):
             att.append(self.attn_start(kvb, c, r0, t))
         pend = []
         for c, (r0, t) in enumerate(chunks):
-            o = self.attn_wait(att[c])
             a = self.a_chunk(dq, c)
             h0 = 0
-            for om in o:
-                H.o_tile(om, t, h0, dq, a[1], TM, TK)
-                h0 += om.shape[0]
+            for p in self.attn_wait(att[c]):
+                g = p["g"]
+                H.o_tile(p["om"], t, h0, dq, a[1], TM, TK, g.lkp, g.dvt)
+                h0 += p["hg"]
             a[0].sync(TO)
             pend.append(self.gemm_start(f"{L}.o", c))
         return pend
@@ -291,7 +291,10 @@ class DensePrefill(Engine):
         h0 = 0
         for a, p in zip(self.attn[kvb["op"]]["groups"], ch["parts"]):
             g, hg = self.cfg.attn[a], p["hg"]
-            qm = self._q16(hg) if g.kern == "bfp16" else p["qm"]
+            bfp = g.kern == "bfp16"
+            qm = self._q16(hg) if bfp else p["qm"]
+            if t < D.M:
+                qm[:] = 0
             H.head_post(
                 qkv,
                 t,
@@ -306,10 +309,9 @@ class DensePrefill(Engine):
                 qm,
                 D.M * dh,
                 dh,
+                0 if bfp else g.lkp,
             )
-            if t < D.M:
-                qm[:, t:] = 0
-            if g.kern == "bfp16":
+            if bfp:
                 H.q_bfp(qm, g.lkp, p["qm"])
             h0 += hg
         kb = np.empty((t, dk), bfloat16)

@@ -4,7 +4,7 @@
 configured device, laid out like FastFlowLM's fused_prefill.
 
   columns 1-6  GEMM, int4 (Q4NX) or bf16 weights
-  other cols   attention, one herd group per column (Config.attn)
+  other cols   attention (Config.attn); groups on one column share its cores
 
 The herds loop forever and take their work from RTPs, and the memtile
 channels are count-free rings, so one PDI serves every op and shape and the
@@ -55,8 +55,9 @@ NQT = 4  # cores per attention column
 
 
 class Attn(NamedTuple):
-    """One attention column. lkp is both the K block and the q tile of a
-    core. kv_heads > 1 is GQA: the op's heads are kv_heads groups of
+    """One attention group, on column col. Groups on one column share its
+    cores, so their per-core tiles must be the same size (npu2 only). lkp is
+    both the K block and the q tile of a core. kv_heads > 1 is GQA: the op's heads are kv_heads groups of
     heads / kv_heads, and each KV head's records sit max_blocks blocks apart."""
 
     col: int
@@ -319,41 +320,23 @@ def _kv_put_runtime(kvin, KV, g, nkv, rounds):
     )
 
 
-def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs, rtps):
-    """Attention, one head per round, the column's cores splitting the
-    round's q rows. The cores read nkv K blocks starting at block k0; the
-    chunk's first q block is q0. Both are RTPs, in units of lkp rows."""
-    col, dh, lkp, dvt = g.col, g.dh, g.lkp, g.dvt
-    tq, R, QR = lkp, attn_rows(g), attn_qr(g)
-    dvc = dh // dvt
-    suf = f"_d{dh}"
-    obj = f"attn{suf}.o"
-
-    def ext(f, **kw):
-        # groups sharing a head_dim share the kernel symbols
-        if f + suf not in externs:
-            externs[f + suf] = air.extern(f + suf, link_with=obj, **kw)
-        return externs[f + suf]
-
-    zero_g, zero_gp, zero_sp = (
-        ext("zero_fill_g_bf16"),
-        ext("zero_fill_gp_bf16"),
-        ext("zero_fill_sp_bf16"),
-    )
-    ninf_up = ext("neg_inf_fill_up_bf16")
-    mm_ab, mm_gb_r = ext("matmul_a_b_bf16"), ext("matmul_g_b_r_bf16")
-    softmax = ext("fused_softmax")
-    accum, vcopy = ext("accum_sp_r_s"), ext("vector_copy_32elems", scalars=[i32])
-    div = ext("div_gp_sp")
-    if g.window_rtp:
-        wmask = ext("apply_window_mask", scalars=[i32, i32, i32])
-        mask = lambda s, qb, kb, w: wmask(s, qb, kb, w)  # noqa: E731
-    elif g.window:
-        wmask = ext("apply_window_mask", scalars=[i32, i32, i32])
-        mask = lambda s, qb, kb, w: wmask(s, qb, kb, g.window // lkp)  # noqa: E731
-    else:
-        causal = ext("apply_causal_mask", scalars=[i32, i32])
-        mask = lambda s, qb, kb, w: causal(s, qb, kb)  # noqa: E731
+def _attention(name, gs, wave, puts, externs, rtps):
+    """Attention on one column, one head per round, the column's cores
+    splitting the round's q rows. gs: per group on the column (g, Q, KV, O,
+    nkv, q0, k0, win, rounds); the cores run each group's rounds in turn, so
+    groups of different ops share the column. The cores read nkv K blocks
+    starting at block k0; the chunk's first q block is q0. Both are RTPs, in
+    units of lkp rows, taken from the groups that have rounds. Operands move
+    in the cores' 8x8 tile order (the host writes and reads them so), which
+    makes the column's data movement the same for every group on it."""
+    g0 = gs[0][0]
+    col, dvc = g0.col, g0.dh // g0.dvt
+    qt, vt = g0.lkp * g0.dh, g0.lkp * g0.dvt
+    for g, *_ in gs:
+        assert (g.lkp * g.dh, g.lkp * g.dvt, g.dh // g.dvt) == (qt, vt, dvc), gs
+    tqm = max(g.lkp for g, *_ in gs)
+    lead = next((a for a in gs if a[-1]), gs[0])
+    nkv, q0, k0 = lead[4:7]
 
     qin = air.channel(f"{name}QIn", size=[1])
     q2l1 = air.channel(f"{name}Q2L1", size=[NQT])
@@ -362,107 +345,130 @@ def _attention(name, g, wave, Q, KV, O, nkv, q0, k0, win, rounds, puts, externs,
     gp2l2 = air.channel(f"{name}Gp2L2", size=[NQT])
     gpout = air.channel(f"{name}GpOut", size=[1])
 
-    nk = _rtp(wave, nkv)
-
-    def shim():
-        qin.put(Q[0 : rounds * R, 0:dh])
+    def shim(g, Q, KV, O, nkv, rounds):
+        qin.put(Q[0 : rounds * NQT * qt])
         _kv_put(kvin, KV, g, nkv, rounds)
-        gpout.get(O[0 : rounds * R, 0:dh])
+        gpout.get(O[0 : rounds * NQT * qt])
 
-    puts.append(shim)
-    nr = air.rtp(wave * 0 + rounds)
+    for g, Q, KV, O, n, _, _, _, rounds in gs:
+        if rounds:
+            puts.append(lambda a=(g, Q, KV, O, n, rounds): shim(*a))
+    nk = _rtp(wave, nkv)
     qb0 = _rtp(wave, q0)
     kb0 = _rtp(wave, k0)
-    params = [nk, nr, qb0, kb0]
-    wb = None
-    if g.window_rtp:
-        wb = air.rtp(wave * 0 + win // lkp)
-        params.append(wb)
+    params = [nk, qb0, kb0]
+    loops = []
+    for g, *_, win, rounds in gs:
+        nr = air.rtp(wave * 0 + rounds)
+        wb = air.rtp(wave * 0 + win // g.lkp) if g.window_rtp else None
+        params += [nr] + ([wb] if wb is not None else [])
+        loops.append((g, nr, wb))
     rtps += params
 
+    def kernels(g):
+        suf = f"_d{g.dh}"
+        obj = f"attn{suf}.o"
+
+        def ext(f, **kw):
+            # groups sharing a head_dim share the kernel symbols
+            if f + suf not in externs:
+                externs[f + suf] = air.extern(f + suf, link_with=obj, **kw)
+            return externs[f + suf]
+
+        k = dict(
+            zero_g=ext("zero_fill_g_bf16"),
+            zero_gp=ext("zero_fill_gp_bf16"),
+            zero_sp=ext("zero_fill_sp_bf16"),
+            ninf_up=ext("neg_inf_fill_up_bf16"),
+            mm_ab=ext("matmul_a_b_bf16"),
+            mm_gb_r=ext("matmul_g_b_r_bf16"),
+            softmax=ext("fused_softmax"),
+            accum=ext("accum_sp_r_s"),
+            vcopy=ext("vector_copy_32elems", scalars=[i32]),
+            div=ext("div_gp_sp"),
+        )
+        if g.window_rtp:
+            wmask = ext("apply_window_mask", scalars=[i32, i32, i32])
+            k["mask"] = lambda s, qb, kb, w: wmask(s, qb, kb, w)  # noqa: E731
+        elif g.window:
+            wmask = ext("apply_window_mask", scalars=[i32, i32, i32])
+            k["mask"] = lambda s, qb, kb, w: wmask(  # noqa: E731
+                s, qb, kb, g.window // g.lkp
+            )
+        else:
+            causal = ext("apply_causal_mask", scalars=[i32, i32])
+            k["mask"] = lambda s, qb, kb, w: causal(s, qb, kb)  # noqa: E731
+        return k
+
+    kerns = [kernels(g) for g, _, _ in loops]
+
     def body(seg):
-        q_l2 = air.alloc([R, dh], bf16, scope=seg.private(), column=col, split=False)
-        k_l2 = air.alloc([lkp, dh], bf16, scope=seg.private(), column=col)
+        q_l2 = air.alloc([NQT * qt], bf16, scope=seg.private(), column=col, split=False)
+        k_l2 = air.alloc([qt], bf16, scope=seg.private(), column=col)
         v_l2 = [
-            air.alloc([lkp, dvt], bf16, scope=seg.private(), column=col)
-            for _ in range(dvc)
+            air.alloc([vt], bf16, scope=seg.private(), column=col) for _ in range(dvc)
         ]
-        gp_l2 = air.alloc([R, dh], bf16, scope=seg.private(), column=col, split=False)
+        gp_l2 = air.alloc(
+            [NQT * qt], bf16, scope=seg.private(), column=col, split=False
+        )
         qin.get(q_l2)
         for r in range(NQT):
-            q2l1.put(
-                q_l2[r * tq : r * tq + tq, 0:dh]
-                .reshape(tq // MM, MM, dh // MM, MM)
-                .transpose(2, 0, 1, 3),
-                indices=[r],
-            )
+            q2l1.put(q_l2[r * qt : r * qt + qt], indices=[r])
         kvin.get(k_l2)
-        kv2l1.put(
-            k_l2.reshape(lkp // MM, MM, dh // MM, MM).transpose(2, 0, 1, 3),
-            indices=[0, 0],
-        )
+        kv2l1.put(k_l2, indices=[0, 0])
         for z in range(dvc):
             kvin.get(v_l2[z])
-            kv2l1.put(
-                v_l2[z].reshape(lkp // MM, MM, dvt // MM, MM).transpose(2, 0, 1, 3),
-                indices=[0, 0],
-            )
+            kv2l1.put(v_l2[z], indices=[0, 0])
 
         with air.herd(
             [range(1), range(NQT)],
             name=f"{name}attn",
             shape=(1, NQT),
             at=(col, 2),
-            link_with=obj,
             params=params,
         ) as h:
 
             @h.body
             def _(tx, ty):
-                q_saved = air.alloc([tq, dh], bf16, scope=h.private())
-                qk = air.alloc([lkp, dh], bf16, scope=h.private())
-                v_l1 = air.alloc([lkp, dvt], bf16, scope=h.private())
-                s = air.alloc([tq, lkp], bf16, scope=h.private())
-                gp = [air.alloc([tq, dvt], bf16, scope=h.private()) for _ in range(dvc)]
-                up = air.alloc([tq, 1], bf16, scope=h.private())
-                sp = air.alloc([tq, 1], bf16, scope=h.private())
-                s_tmp = air.alloc([tq, 1], bf16, scope=h.private())
-                r_tmp = air.alloc([tq, 1], bf16, scope=h.private())
-                # q block from the round index: a per-core counter updated
-                # in this loop crashes air-fuse-alloc-dealloc (#2041)
-                for r in air.sequential(nr):
-                    for z in range(dvc):
-                        zero_gp(gp[z])
-                    zero_sp(sp)
-                    ninf_up(up)
-                    qb = qb0 + (r % QR) * NQT + ty
-                    q2l1.get(q_saved, indices=[ty])
-                    for blk in air.sequential(nk):
-                        zero_g(s.reshape(tq * lkp))
-                        kv2l1.get(qk, indices=[tx, ty])
-                        mm_ab(q_saved, qk, s.reshape(tq * lkp))
-                        mask(s, qb, kb0 + blk, wb)
-                        softmax(s.reshape(tq * lkp), up, s_tmp, r_tmp)
+                q_saved = air.alloc([qt], bf16, scope=h.private())
+                qk = air.alloc([qt], bf16, scope=h.private())
+                v_l1 = air.alloc([vt], bf16, scope=h.private())
+                s = air.alloc([tqm * tqm], bf16, scope=h.private())
+                gp = [air.alloc([vt], bf16, scope=h.private()) for _ in range(dvc)]
+                up, sp, s_tmp, r_tmp = (
+                    air.alloc([tqm, 1], bf16, scope=h.private()) for _ in range(4)
+                )
+                for (g, nr, wb), k in zip(loops, kerns):
+                    QR = attn_qr(g)
+                    # q block from the round index: a per-core counter updated
+                    # in this loop crashes air-fuse-alloc-dealloc (#2041)
+                    for r in air.sequential(nr):
                         for z in range(dvc):
-                            kv2l1.get(v_l1, indices=[tx, ty])
-                            mm_gb_r(s.reshape(tq * lkp), v_l1, gp[z], r_tmp)
-                        accum(sp, r_tmp, s_tmp)
-                        vcopy(0, s_tmp, sp)
-                    for z in range(dvc):
-                        div(sp, gp[z])
-                    for z in range(dvc):
-                        gp2l2.put(
-                            gp[z]
-                            .reshape(dvt // MM, tq // MM, MM, MM)
-                            .transpose(1, 2, 0, 3),
-                            indices=[ty],
-                        )
+                            k["zero_gp"](gp[z])
+                        k["zero_sp"](sp)
+                        k["ninf_up"](up)
+                        qb = qb0 + (r % QR) * NQT + ty
+                        q2l1.get(q_saved, indices=[ty])
+                        for blk in air.sequential(nk):
+                            k["zero_g"](s)
+                            kv2l1.get(qk, indices=[tx, ty])
+                            k["mm_ab"](q_saved, qk, s)
+                            k["mask"](s, qb, kb0 + blk, wb)
+                            k["softmax"](s, up, s_tmp, r_tmp)
+                            for z in range(dvc):
+                                kv2l1.get(v_l1, indices=[tx, ty])
+                                k["mm_gb_r"](s, v_l1, gp[z], r_tmp)
+                            k["accum"](sp, r_tmp, s_tmp)
+                            k["vcopy"](0, s_tmp, sp)
+                        for z in range(dvc):
+                            k["div"](sp, gp[z])
+                        for z in range(dvc):
+                            gp2l2.put(gp[z], indices=[ty])
 
         for r in range(NQT):
             for z in range(dvc):
-                gp2l2.get(
-                    gp_l2[r * tq : r * tq + tq, z * dvt : z * dvt + dvt], indices=[r]
-                )
+                o = (r * dvc + z) * vt
+                gp2l2.get(gp_l2[o : o + vt], indices=[r])
         gpout.put(gp_l2)
 
     return body
@@ -497,9 +503,10 @@ def _attention_bfp16(
     def shim():
         qin.put(Q[0 : rounds * NQT * q_tile(g)])
         _kv_put(kvin, KV, g, nkv, rounds)
-        gpout.get(O[0 : rounds * R, 0:dh])
+        gpout.get(O[0 : rounds * R * dh])
 
-    puts.append(shim)
+    if rounds:
+        puts.append(shim)
     if isinstance(nkv, int):
         assert nkv % 2 == 0, nkv
         nk2 = air.rtp(wave * 0 + nkv // 2)
@@ -523,7 +530,7 @@ def _attention_bfp16(
         q_l2 = air.alloc([NQT * qt], bf16, scope=seg.private(), column=col, split=False)
         k_l2 = air.alloc([kt], bf16, scope=seg.private(), column=col)
         v_l2 = air.alloc([kt], bf16, scope=seg.private(), column=col)
-        gp_l2 = air.alloc([R, dh], bf16, scope=seg.private(), column=col, split=False)
+        gp_l2 = air.alloc([R * dh], bf16, scope=seg.private(), column=col, split=False)
         qin.get(q_l2)
         for r in range(NQT):
             q2l1.put(q_l2[r * qt : r * qt + qt], indices=[r])
@@ -547,7 +554,7 @@ def _attention_bfp16(
                 # block's compute
                 k_l1 = [air.alloc([kt], bf16, scope=h.private()) for _ in "01"]
                 v_l1 = [air.alloc([kt], bf16, scope=h.private()) for _ in "01"]
-                gp = air.alloc([tq, dh], bf16, scope=h.private())
+                gp = air.alloc([tq * dh], bf16, scope=h.private())
                 ml = air.alloc([tq // 2 + tq * 8], f32, scope=h.private())
                 for r in air.sequential(nr):
                     init(gp, ml)
@@ -560,13 +567,10 @@ def _attention_bfp16(
                             kb = kb0 + blk * 2 + pp
                             blk_fn(q_bfp, k_l1[pp], v_l1[pp], gp, ml, qb, kb, wb)
                     fin(gp, ml)
-                    gp2l2.put(
-                        gp.reshape(dh // MM, tq // MM, MM, MM).transpose(1, 2, 0, 3),
-                        indices=[ty],
-                    )
+                    gp2l2.put(gp, indices=[ty])
 
         for r in range(NQT):
-            gp2l2.get(gp_l2[r * tq : r * tq + tq, 0:dh], indices=[r])
+            gp2l2.get(gp_l2[r * tq * dh : (r + 1) * tq * dh], indices=[r])
         gpout.put(gp_l2)
 
     return body
@@ -600,7 +604,7 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
             q0=0,
             k0=0,
             win=NO_WINDOW,
-            rounds=ga.kv_heads,
+            rounds=0,
         )
         for a, ga in cfg.attn.items()
     }
@@ -635,18 +639,19 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
         air.tensor([g["n"] // TN, g["k"] // TK * (1 if g["wq"] else 2), QB], i8),
         air.tensor([(1 + g["pair"]) * M, g["n"]], bf16),
     )
-    att = {
-        a: (
-            (
-                air.tensor([at[a]["rounds"] * NQT * q_tile(ga)], bf16)
-                if ga.kern == "bfp16"
-                else air.tensor([at[a]["rounds"] * attn_rows(ga), ga.dh], bf16)
-            ),
+    att = {}
+    for a, ga in cfg.attn.items():
+        nr = max(1, at[a]["rounds"])
+        o = nr * attn_rows(ga) * ga.dh
+        q = nr * NQT * q_tile(ga) if ga.kern == "bfp16" else o
+        att[a] = (
+            air.tensor([q], bf16),
             _kv_tensor(ga, KV_CAP // ga.lkp if runtime else at[a]["nkv"]),
-            air.tensor([at[a]["rounds"] * attn_rows(ga), ga.dh], bf16),
+            air.tensor([o], bf16),
         )
-        for a, ga in cfg.attn.items()
-    }
+    cols = {}
+    for a, ga in cfg.attn.items():
+        cols.setdefault(ga.col, []).append(a)
     if runtime:
         scalars = {n: air.tensor([], i32, name=n) for n in ("nkv", "q0", "k0")}
         for a in drive:
@@ -673,27 +678,25 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
                         rtps,
                     )
                 )
-            for a, ga in cfg.attn.items():
-                if drive is not None and a not in drive:
+            for names in cols.values():
+                if drive is not None and not drive & set(names):
                     continue
-                p = at[a]
-                fn = _attention_bfp16 if ga.kern == "bfp16" else _attention
-                bodies.append(
-                    fn(
-                        a,
-                        ga,
-                        wave,
-                        *att[a],
-                        p["nkv"],
-                        p["q0"],
-                        p["k0"],
-                        p["win"],
-                        p["rounds"],
-                        puts,
-                        externs,
-                        rtps,
+                gs = [
+                    (cfg.attn[a], *att[a])
+                    + tuple(at[a][k] for k in ("nkv", "q0", "k0", "win", "rounds"))
+                    for a in names
+                ]
+                if gs[0][0].kern == "bfp16":
+                    assert len(gs) == 1, names
+                    bodies.append(
+                        _attention_bfp16(
+                            names[0], gs[0][0], wave, *gs[0][1:], puts, externs, rtps
+                        )
                     )
-                )
+                else:
+                    bodies.append(
+                        _attention("".join(names), gs, wave, puts, externs, rtps)
+                    )
             for p in puts:
                 p()
             with air.segment(name="seg", params=rtps) as seg:
