@@ -602,7 +602,6 @@ LLM_HF_MODELS = {
     # reference, as in the qwen25_3b_q4 / qwen25_7b_q4nx rows.
     "lfm2_1_2b_q4nx": "LiquidAI/LFM2-1.2B",
     "llama32_1b": "meta-llama/Llama-3.2-1B",
-    "llama32_1b_int4": "amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead",
     "llama32_1b_q4nx": "FastFlowLM/Llama-3.2-1B-NPU2",
     "llama32_3b": "meta-llama/Llama-3.2-3B",
     "llama32_3b_q4nx": "FastFlowLM/Llama-3.2-3B-NPU2",
@@ -646,7 +645,6 @@ LLM_DISPLAY = {
     "lfm2_1_2b_q4nx": ("LFM2-1.2B", "Q4_0", "lfm2"),
     "llama31_8b_q4nx": ("Llama-3.1-8B-Instruct", "Q4NX", "llama3"),
     "llama32_1b": ("Llama-3.2-1B", "bf16", None),
-    "llama32_1b_int4": ("Llama-3.2-1B-Instruct", "int4 AWQ", None),
     "llama32_1b_q4nx": ("Llama-3.2-1B-Instruct", "Q4NX", "llama3"),
     "llama32_3b": ("Llama-3.2-3B", "bf16", None),
     "llama32_3b_q4nx": ("Llama-3.2-3B-Instruct", "Q4NX", "llama3"),
@@ -1545,7 +1543,7 @@ def generate_readme(
 
 # LLMs and VLAs on NPU
 
-End-to-end inference of decoder-only LLMs and vision-language-action (VLA) policies on the AMD NPU2 via MLIR-AIR, with bf16 and 4-bit (Q4NX, int4, Q4_0) weights. Models with an FLM link reimplement AMD NPU LLM designs originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team, using the higher-level abstractions of the MLIR-AIR dialect; the link points to the original FastFlowLM code. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
+End-to-end inference of decoder-only LLMs and vision-language-action (VLA) policies on the AMD NPU2 via MLIR-AIR, with bf16 and 4-bit (Q4NX, Q4_0) weights. Models with an FLM link reimplement AMD NPU LLM designs originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team, using the higher-level abstractions of the MLIR-AIR dialect; the link points to the original FastFlowLM code. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
 {llm_section}"""
 
     # section == "full" (legacy single-page dashboard)

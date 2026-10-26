@@ -1846,8 +1846,7 @@ def herd(
     the right default, but a design whose herds talk over **cascade** channels
     has no such freedom: a cascade is a physical link between neighbouring
     cores, so a W->E chain only exists if the chain's herds are actually laid
-    out W to E on one row. o_gemv_ffn_int4_fused is the worked case -- eight
-    1x1 LA herds pinned along row 4, with LGU and LD on rows 2 and 3.
+    out W to E on one row.
     """
     return HerdContext(
         iterable,

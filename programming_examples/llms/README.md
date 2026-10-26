@@ -20,7 +20,6 @@ The remaining models were developed directly in MLIR-AIR.
 | Model | HF checkpoint | Layers | emb / head_dim / hidden | Attention | Family delta | Status |
 |---|---|---|---|---|---|---|
 | **Llama-3.2-1B** | `meta-llama/Llama-3.2-1B` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | reference exemplar | prefill + decode |
-| **Llama-3.2-1B int4-AWQ** | `amd/Llama-3.2-1B-Instruct-awq-...` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | int4-AWQ (prefill) | prefill; decode follow-up |
 | **Llama-3.2-1B Q4NX** | `FastFlowLM/Llama-3.2-1B-NPU2` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | q4nx 4-bit weights, fused decode | prefill + decode |
 | **SmolLM2-1.7B** | `HuggingFaceTB/SmolLM2-1.7B` | 24 | 2048 / 64 / 8192 | MHA 32Q/32KV | pure MHA | prefill + decode |
 | **Qwen2.5-0.5B** | `Qwen/Qwen2.5-0.5B` | 24 | 896 / 64 / 4864 | GQA 14Q/2KV | QKV bias | prefill + decode |
@@ -126,7 +125,6 @@ not, so there `diagnosis` reports the token-level view instead.
 ```
 llms/
 ├── llama32_1b/         # bf16 Llama-3.2-1B (the reference exemplar)
-├── llama32_1b_int4/    # int4-AWQ variant (own quantized builders)
 ├── llama32_1b_q4nx/    # Q4NX 4-bit Llama-3.2-1B (fused decode superkernel)
 ├── llama32_3b/         # bf16 Llama-3.2-3B (pure Llama, head_dim=128)
 ├── llama32_3b_q4nx/    # Q4NX 4-bit Llama-3.2-3B (reuses the bf16 3B runner)
@@ -153,8 +151,7 @@ llms/
 
 Models compose blocks from `shared/builders/` (reused directly when the shape
 contract matches) or assemble new blocks declaratively with `stitch_elf` from
-`shared.infra.stitching`. The `int4` example keeps its own quantized builders
-since the int4/bfp16 GEMM ABIs differ from bf16.
+`shared.infra.stitching`.
 
 ## Running a model
 

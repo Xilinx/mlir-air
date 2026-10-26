@@ -1182,8 +1182,8 @@ def _():
 # The combination the cascade rule above must NOT be generalised to. A packet
 # broadcast reaches every destination over one flow where a circuit-switched
 # channel needs one per destination, which is what makes a 16-destination
-# fan-out fit at all (o_gemv_ffn_int4_fused's res1ToCons). Spelled out rather
-# than run through expect(), which only reports exceptions.
+# fan-out fit at all. Spelled out rather than run through expect(), which only
+# reports exceptions.
 print("\nTEST: packet_channel_with_broadcast")
 air.channel("C", size=[1, 1], broadcast_shape=[16, 1], channel_type="npu_dma_packet")
 # CHECK: accepted
