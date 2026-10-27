@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#official-ai-skills" class="md-skip">
+        <a href="#mlir-air-agentic-harness-v01" class="md-skip">
           Skip to content
         </a>
       
@@ -1293,18 +1293,33 @@
   
 
 
-<h1 id="official-ai-skills">Official AI Skills<a class="headerlink" href="#official-ai-skills" title="Permanent link">&para;</a></h1>
-<div class="admonition note">
-<p class="admonition-title">Placeholder</p>
-<p>This section is under construction. It will document the official MLIR-AIR
-<strong>agent skills</strong> for end-to-end LLM deployment on AMD spatial NPUs.</p>
-</div>
-<p>MLIR-AIR ships a set of AI agent skills that automate deploying a new
-decoder-only LLM onto AMD NPU2 — from CPU reference through per-kernel
-validation, single-block and full-model correctness, prefill/decode
-optimization, and independent evaluation. The methodology behind these skills
-is described in our MLArchSys 2026 paper; see
-<a href="../used_in/#how-to-cite">Used in / Cited in</a> for how to cite it.</p>
+<h1 id="mlir-air-agentic-harness-v01">MLIR-AIR agentic harness v0.1<a class="headerlink" href="#mlir-air-agentic-harness-v01" title="Permanent link">&para;</a></h1>
+<p>The v0.1 agentic harness supports the AMD XDNA2 NPU compilation flow built on
+the MLIR-AIR compilation stack. It connects Codex or Claude Code to AIR
+implementations, the measured kernel registry and 17 NPU skills. The agent iterates through kernel development
+and model composition, using source inspection, compiler feedback, fixed
+correctness checks and production profiling.</p>
+<p>Start the coding agent in the AIR repository and use
+<code>$deploy-new-llm OWNER/MODEL</code> in Codex or <code>/deploy-new-llm OWNER/MODEL</code> in Claude
+Code. Add precision, workload or acceptance requirements to the same request.
+The agent resolves a pinned task, implements the required model adaptation, then
+verifies and profiles it. Existing supported models can use reproduction mode.</p>
+<p>The <a href="https://github.com/Xilinx/mlir-air/blob/main/agentic/README.md">package quick start</a> includes
+task preparation, a runnable example, prerequisites and host tests. The
+<a href="https://github.com/Xilinx/mlir-air/blob/main/agentic/WORKFLOW.md">workflow</a> explains the two loops.
+<a href="https://github.com/Xilinx/mlir-air/blob/main/agentic/INSTALLATION.md">Client installation</a> uses
+portable repository registrations pointing to one canonical skill payload.
+Both clients use the shared <a href="https://github.com/Xilinx/mlir-air/blob/main/AGENTS.md">project instructions</a>; the installation
+guide explains the Claude Code version and loading settings for this file.</p>
+<p>Kernel reuse follows the declared arithmetic, layout and validation contract.
+The <a href="https://github.com/Xilinx/mlir-air/blob/main/agentic/references/maintenance.md">registry evidence interface</a>
+adds opt-in verified selection while preserving legacy measured configurations.
+Model checks use complete finite captures before applying mutual top-5 token
+inclusion; measured performance retains the request boundaries and raw samples.</p>
+<p>The harness extends <a href="https://arxiv.org/abs/2606.07586">From Human Guidance to Autonomy: Agent Skill System for
+End-to-End LLM Deployment on Spatial NPUs</a>,
+presented at <strong>MLArchSys'26, co-located with ISCA 2026</strong>. See
+<a href="../used_in/#how-to-cite">Used in / Cited in</a> for the citation.</p>
 
 
 
