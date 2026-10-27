@@ -33,7 +33,10 @@ def generated(package=PACKAGE):
                 + "Resolve its relative references from that canonical directory.\n"
             )
     payload = []
-    for path in sorted(package.rglob("*")):
+    # Path ordering folds case on Windows; use portable strings for the manifest.
+    for path in sorted(
+        package.rglob("*"), key=lambda path: path.relative_to(package).as_posix()
+    ):
         if (
             path.is_file()
             and path.name != "MANIFEST.json"

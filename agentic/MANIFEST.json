@@ -239,8 +239,8 @@
     },
     {
       "path": "tests/test_harness.py",
-      "bytes": 8386,
-      "sha256": "583f93d555a4447891f354e403980a0fd1638953f5732079db92342d848ea9b4"
+      "bytes": 9076,
+      "sha256": "31135c09176bf1132d550da8b25f9d67045deba818b7e37c9f93a7ed3343aeb8"
     },
     {
       "path": "tests/test_task.py",
@@ -254,8 +254,8 @@
     },
     {
       "path": "tools/sync_package.py",
-      "bytes": 3453,
-      "sha256": "1df1b6a0865c72f3ea72e5925ceb7a6c8798894e23e12b1b503351a89f732198"
+      "bytes": 3604,
+      "sha256": "dccb077a205b3444b931ac7048af174761ed5548b480a22e92bd4e6ca456a810"
     },
     {
       "path": "tools/task.py",

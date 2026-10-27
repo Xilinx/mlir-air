@@ -5,7 +5,7 @@
 import copy
 import importlib.util
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import subprocess
@@ -153,6 +153,22 @@ class HarnessTests(unittest.TestCase):
                     )
         for path, expected in sync.generated().items():
             self.assertEqual(path.read_text(encoding="utf-8"), expected, str(path))
+
+    def test_manifest_order_is_independent_of_platform_path_comparison(self):
+        class WindowsOrderedPath(type(PACKAGE)):
+            def __lt__(self, other):
+                return PureWindowsPath(self.as_posix()) < PureWindowsPath(
+                    other.as_posix()
+                )
+
+        package = WindowsOrderedPath(PACKAGE)
+        manifest = json.loads(sync.generated(package)[package / "MANIFEST.json"])
+        paths = [entry["path"] for entry in manifest["files"]]
+        self.assertEqual(paths, sorted(paths))
+        self.assertEqual(
+            manifest,
+            json.loads((PACKAGE / "MANIFEST.json").read_text(encoding="utf-8")),
+        )
 
     def test_source_inspection_and_bfp16_contract(self):
         self.assertEqual(profile.inspect(ROOT)["status"], "INTERFACES_PRESENT")
