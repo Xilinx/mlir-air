@@ -1,0 +1,52 @@
+# Temporary: report disk usage on the nightly LLM runner. Not for main.
+name: Runner disk probe
+
+on:
+  push:
+    branches: [ci/runner-disk-probe]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: amdryzenai5pro340
+    timeout-minutes: 30
+    steps:
+      # No checkout: it would git-clean the shared nightly workspace.
+      - name: Disk usage report
+        shell: bash
+        run: |
+          #!/usr/bin/env bash
+          # Read-only disk usage report for a self-hosted runner.
+          set -u
+          WS="${GITHUB_WORKSPACE:-$PWD}"
+          WORK_ROOT="$(dirname "$(dirname "$WS")")"   # actions-runner/_work
+          sec() { echo; echo "===== $* ====="; }
+          du1() { [ -e "$1" ] && du -xh --max-depth="${2:-1}" "$1" 2>/dev/null | sort -rh | head -"${3:-25}"; }
+          
+          sec "host"; echo "runner=${RUNNER_NAME:-local} host=$(hostname) user=$(id -un) home=$HOME ws=$WS"; uptime
+          sec "df"; df -hT -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null
+          sec "df inodes"; df -i "$HOME" /tmp 2>/dev/null
+          sec "\$HOME depth 1"; du1 "$HOME" 1 30
+          sec "~/.cache depth 1"; du1 "$HOME/.cache" 1 30
+          sec "~/.cache/mlir-air depth 2"; du1 "$HOME/.cache/mlir-air" 2 30
+          sec "HF hub models"; du1 "$HOME/.cache/huggingface/hub" 1 80
+          sec "runner _work depth 2"; du1 "$WORK_ROOT" 2 30
+          sec "runner _diag + _temp"; du -sh "$(dirname "$WORK_ROOT")/_diag" "$WORK_ROOT/_temp" 2>/dev/null
+          MA="$WORK_ROOT/mlir-air/mlir-air"
+          sec "mlir-air workspace depth 1"; du1 "$MA" 1 30
+          sec "build_assert/test/llms per model"; du1 "$MA/build_assert/test/llms" 1 60
+          sec "/tmp depth 1"; du1 /tmp 1 20
+          sec "largest files under \$HOME (>1G)"
+          find "$HOME" -xdev -type f -size +1G -printf '%s\t%TY-%Tm-%Td\t%p\n' 2>/dev/null | sort -rn | head -40 | awk -F'\t' '{printf "%7.1fG  %s  %s\n",$1/2^30,$2,$3}'
+          sec "HF hub entries not in hf_models.txt"
+          LIST="$MA/programming_examples/llms/hf_models.txt"; [ -f "$LIST" ] || LIST="$WS/programming_examples/llms/hf_models.txt"
+          if [ -f "$LIST" ] && [ -d "$HOME/.cache/huggingface/hub" ]; then
+            want=$(sed 's/#.*//; s/@.*//; s/[[:space:]]//g' "$LIST" | grep . | sed 's#/#--#; s#^#models--#' | sort -u)
+            for d in "$HOME"/.cache/huggingface/hub/models--*; do
+              b=$(basename "$d"); echo "$want" | grep -qxF "$b" || echo "$(du -sh "$d" 2>/dev/null | cut -f1)  $b"
+            done | sort -rh
+          fi
+          sec "ccache"; command -v ccache >/dev/null && ccache -s 2>/dev/null | head -12
+          sec "journal"; journalctl --disk-usage 2>/dev/null
+          sec "sudo"; sudo -n true 2>/dev/null && echo "passwordless sudo: yes" || echo "passwordless sudo: no"
+          exit 0
