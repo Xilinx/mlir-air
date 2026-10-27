@@ -1,0 +1,56 @@
+# Temporary: free regenerable caches on the nightly LLM runner. Not for main.
+name: Runner disk cleanup
+
+on:
+  push:
+    branches: [ci/runner-disk-probe]
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: amdryzenai5pro340
+    timeout-minutes: 30
+    env:
+      MODE: dry-run
+      STALE_DAYS: 10
+    steps:
+      # No checkout: it would git-clean the shared nightly workspace.
+      - name: Clean caches
+        shell: bash {0}
+        run: |
+          set -u +e +o pipefail
+          # MODE=dry-run lists, MODE=delete removes. Only regenerable caches are touched.
+          MODE="${MODE:-dry-run}"
+          STALE_DAYS="${STALE_DAYS:-10}"
+          HUB="$HOME/.cache/huggingface/hub"
+          total=0
+          rmit() {  # rmit <path> <reason>
+            [ -e "$1" ] || [ -L "$1" ] || return 0
+            local kb; kb=$(du -sk "$1" 2>/dev/null | cut -f1); total=$((total + kb))
+            printf '%8.1fG  %-9s %s\n' "$(echo "$kb/1048576" | bc -l)" "$2" "$1"
+            [ "$MODE" = delete ] && rm -rf -- "$1"
+          }
+          echo "mode=$MODE stale_days=$STALE_DAYS"
+          echo "mount: $(findmnt -no OPTIONS --target "$HOME")"
+          df -h "$HOME" | tail -1
+
+          echo; echo "== Mistral consolidated.safetensors (transformers and affine_q4 load the shards)"
+          for link in "$HUB"/models--mistralai--Mistral-7B-Instruct-v0.3/snapshots/*/consolidated.safetensors; do
+            [ -L "$link" ] || continue
+            rmit "$(readlink -f "$link")" dup-blob
+            [ "$MODE" = delete ] && rm -f -- "$link"
+          done
+
+          echo; echo "== HF repos dropped from hf_models.txt"
+          rmit "$HUB/models--amd--Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead" removed
+
+          echo; echo "== Derived-weight cache files not read in $STALE_DAYS days"
+          for d in "$HOME"/.cache/q4nx* "$HOME"/.cache/lfm2_* "$HOME/.cache/mlir-air/dflash"; do
+            [ -d "$d" ] || continue
+            while IFS= read -r -d '' f; do rmit "$f" stale; done \
+              < <(find "$d" -xdev -type f -size +100M -atime +"$STALE_DAYS" -print0 2>/dev/null)
+          done
+
+          echo; printf 'TOTAL %s: %.1fG\n' "$([ "$MODE" = delete ] && echo freed || echo would-free)" "$(echo "$total/1048576" | bc -l)"
+          df -h "$HOME" | tail -1
+          exit 0
