@@ -1,0 +1,266 @@
+{
+  "schema_version": 1,
+  "version": "0.1.0",
+  "skills": [
+    "build-cpu-reference",
+    "debug-bo-corruption",
+    "debug-fa-runtime-failure",
+    "debug-multi-launch-merge",
+    "deploy-new-llm",
+    "evaluate-deployment",
+    "finalize-deployment",
+    "megakernel-change-analysis",
+    "megakernel-correctness-diagnosis",
+    "megakernel-performance-diagnosis",
+    "megakernel-resource-diagnosis",
+    "npu-optimization",
+    "opt-buffer-object-reuse",
+    "opt-layout-alignment",
+    "opt-merge-multi-launch-kernels",
+    "verify-kernel",
+    "verify-model"
+  ],
+  "provenance": "Extends the MLArchSys'26 work, co-located with ISCA 2026: https://arxiv.org/abs/2606.07586",
+  "files": [
+    {
+      "path": ".gitattributes",
+      "bytes": 14,
+      "sha256": "a79691a93b46e49ce460c26ef22afcc03d6eca1e63bf2edbc20e96159510f6c9"
+    },
+    {
+      "path": "INSTALLATION.md",
+      "bytes": 3219,
+      "sha256": "ac1aeaaafb285b8de7b8cb5f944307da3497eb3d118a4e3c1e4d639557804624"
+    },
+    {
+      "path": "README.md",
+      "bytes": 5406,
+      "sha256": "50d4ac2b3576234e48da4d67a63484aa195a727a52e77b73741a61a8fec7b4c6"
+    },
+    {
+      "path": "WORKFLOW.md",
+      "bytes": 3638,
+      "sha256": "1c4ed04f3cf630e0b4cbf0b5ccd9a176943f961a021a9ff32307c1a6845d52f7"
+    },
+    {
+      "path": "examples/q4nx-supported-model.md",
+      "bytes": 2742,
+      "sha256": "cebc56a665b7ee464583078d6a831a6d97db501e84288ae8494768fd0a229019"
+    },
+    {
+      "path": "modules/megakernel/README.md",
+      "bytes": 4273,
+      "sha256": "91ac3e1f2a7c9c1a64f77cc59ffa0e55cd4716170ad568be55e92d90619b6c3a"
+    },
+    {
+      "path": "profiles/README.md",
+      "bytes": 1324,
+      "sha256": "61feca887fc1eabf2a161007ee747f35fc2af47635481a5be538318603817e61"
+    },
+    {
+      "path": "references/debugging.md",
+      "bytes": 2783,
+      "sha256": "6f57bae80bcf45e6475e5f9f3cec148482b065c0844752cc73f38d420e7d98f4"
+    },
+    {
+      "path": "references/fused-decode-compatibility.md",
+      "bytes": 7029,
+      "sha256": "31cdfe6f8806b5cb6427069f5e8b7b99f3c1ccb4c26ee8df7794f71d45a94445"
+    },
+    {
+      "path": "references/hardware/README.md",
+      "bytes": 12607,
+      "sha256": "e71ca9a01217e1fff9d35e20cd20063c986450c02b8af2759e617566cc562aab"
+    },
+    {
+      "path": "references/hardware/dma-addressing.md",
+      "bytes": 7076,
+      "sha256": "695fa1fbe7d1dc05c3a498cdcd404a5e62165e9a03f189226d7405ffd109d3e9"
+    },
+    {
+      "path": "references/hardware/sources.md",
+      "bytes": 6583,
+      "sha256": "738e13df4c0c8ca30fb789f3205f4b3b568e199eed6aadcc3ab1a4909ea3d14a"
+    },
+    {
+      "path": "references/historical-attribution.md",
+      "bytes": 2117,
+      "sha256": "e0c5d3300c9f18a5c8c0656d5a26582c01de8853dba7cff9f9d53855c07445e5"
+    },
+    {
+      "path": "references/integration-diagnostics.md",
+      "bytes": 4336,
+      "sha256": "c73635e30c35001de77826470be4cffb39fc98b14a1c73bbd38b8c401cbf06c0"
+    },
+    {
+      "path": "references/kernel-registry.md",
+      "bytes": 7755,
+      "sha256": "275991e8cf734cbe41515da881f1f3392a77820175f5d1f72ffec5dfddb94215"
+    },
+    {
+      "path": "references/maintenance.md",
+      "bytes": 3625,
+      "sha256": "335ca405461e40f29bc8e7fade701f2897a309259d5c0018a498fda585115cae"
+    },
+    {
+      "path": "references/project-integration.md",
+      "bytes": 6041,
+      "sha256": "90e75c1fe844c83ab19baaa420f82f1c3d5fbb3bfc892485c9f7aa2a5601d9af"
+    },
+    {
+      "path": "references/residency-and-supply.md",
+      "bytes": 12776,
+      "sha256": "729a0f3b8f113fd351e09bba99305cdac9b093f838a1a61a39640ca0e02f2e21"
+    },
+    {
+      "path": "references/reuse-or-recompute.md",
+      "bytes": 10670,
+      "sha256": "ec4a356dc7cf980b3b52c735963dbbe8955776e5171ef05b8e139d34a6110e0c"
+    },
+    {
+      "path": "references/review-and-handoff.md",
+      "bytes": 4280,
+      "sha256": "8be79d208fec04ab36b2663f216ad41c9f42d99a275fa752167744f62c8176a6"
+    },
+    {
+      "path": "references/staged-checks.md",
+      "bytes": 5792,
+      "sha256": "2431cd74195ce7f2817f0377e093f99737be6faa0e42f17ce80f616d06e1cca5"
+    },
+    {
+      "path": "references/task-input.md",
+      "bytes": 6023,
+      "sha256": "cd8508f7557297e3f27e02cfe63d93b10e6109763b5141f1c47d7f2600fa2905"
+    },
+    {
+      "path": "references/task-record.md",
+      "bytes": 4562,
+      "sha256": "1993e173ecbcfe2743c67250ded8beeb44b03d1cbc68a7084c139dd71460060d"
+    },
+    {
+      "path": "references/tools-and-evidence.md",
+      "bytes": 2233,
+      "sha256": "adbc12d49344b150de368d04dc963dcaf09053db2a610b82ac58512d2e9647c9"
+    },
+    {
+      "path": "references/validation-contracts.md",
+      "bytes": 9896,
+      "sha256": "62fe6aef7f98d1b2c4df80d1bc0c3a61e4c492213cfc24f629aa88f243e1dd4d"
+    },
+    {
+      "path": "skills/build-cpu-reference/SKILL.md",
+      "bytes": 3468,
+      "sha256": "10a3c7f2b6085f10be8d3c04d93eb597b9a83b5069626f57f7a05242f1bc7e98"
+    },
+    {
+      "path": "skills/debug-bo-corruption/SKILL.md",
+      "bytes": 3290,
+      "sha256": "9e9b2c35746e6fefa33f153672e5d6969e8f6b6dd2dfb9d79e7042012acc461c"
+    },
+    {
+      "path": "skills/debug-fa-runtime-failure/SKILL.md",
+      "bytes": 3376,
+      "sha256": "135eabd0815a59b278832948478b705f17f89b27c286ee96632a00dd54e787f3"
+    },
+    {
+      "path": "skills/debug-multi-launch-merge/SKILL.md",
+      "bytes": 3271,
+      "sha256": "a7bec845c5b78ce953c460477acf4da57aac94c8858b3eeee34c3041c0eadce0"
+    },
+    {
+      "path": "skills/deploy-new-llm/SKILL.md",
+      "bytes": 6841,
+      "sha256": "dbde508f9f68c3d72dc92868f99cb8e267179d1d560c31589381661616e3d2e0"
+    },
+    {
+      "path": "skills/evaluate-deployment/SKILL.md",
+      "bytes": 3716,
+      "sha256": "43cccc747ab42d4c79ceba43c4a8a980e563f0ce5862c2f471b99c8fc5f2d18a"
+    },
+    {
+      "path": "skills/finalize-deployment/SKILL.md",
+      "bytes": 3461,
+      "sha256": "fc324cf9c2a9aa1055ab522bf85c10bfa8241629cf0fab0d1127b386e3de0bcd"
+    },
+    {
+      "path": "skills/megakernel-change-analysis/SKILL.md",
+      "bytes": 4597,
+      "sha256": "fe20d939b7ffd79f0fce440795aa7cfe2365e133d009d27a3304e1264318ad58"
+    },
+    {
+      "path": "skills/megakernel-correctness-diagnosis/SKILL.md",
+      "bytes": 4385,
+      "sha256": "6e83254fb66d51137667c9664137d06d88c2ed0ceb370b48e9269f26e3fc3c89"
+    },
+    {
+      "path": "skills/megakernel-performance-diagnosis/SKILL.md",
+      "bytes": 4501,
+      "sha256": "bee948e423cce57efbb4c3ac65b688615a3ea2581652d169763b47e69d05c579"
+    },
+    {
+      "path": "skills/megakernel-resource-diagnosis/SKILL.md",
+      "bytes": 4811,
+      "sha256": "fa24924cbd4de253bb5f29b5647c19572089d554d03aae63df5b6c9ffb4c3032"
+    },
+    {
+      "path": "skills/npu-optimization/SKILL.md",
+      "bytes": 6028,
+      "sha256": "ab999ed5fc0594ad9eef8cceb3203704466cda9f8d1ce7aab7f5e1b5df9a19fd"
+    },
+    {
+      "path": "skills/opt-buffer-object-reuse/SKILL.md",
+      "bytes": 4032,
+      "sha256": "c06f8bd73c15ea4b3c7ad68d4c92add1ef04b50759fed04f89acd980345127af"
+    },
+    {
+      "path": "skills/opt-layout-alignment/SKILL.md",
+      "bytes": 2371,
+      "sha256": "df7edd49301d9e51274637d49e12114d69291f0c131c9972f8b6e774b2ab24de"
+    },
+    {
+      "path": "skills/opt-merge-multi-launch-kernels/SKILL.md",
+      "bytes": 4047,
+      "sha256": "e9323f80f6d4591a5e5e19164fb1501fa8af3a3f0d40eaf21fa8484a9de9fe4a"
+    },
+    {
+      "path": "skills/verify-kernel/SKILL.md",
+      "bytes": 4701,
+      "sha256": "f3633738170e0f02e9e5da74790d143699ddbabf2e8eeabc5e57babf55e2c71f"
+    },
+    {
+      "path": "skills/verify-model/SKILL.md",
+      "bytes": 2965,
+      "sha256": "d2adc584c2972e8f8e39d4e24a3ccdb5fe7dde9dcf6513cc336d85c57af851e0"
+    },
+    {
+      "path": "tests/test_evidence.py",
+      "bytes": 5724,
+      "sha256": "1e3b9f48314d3eaf7991248924b7ad91372576c814dc5263bb0d8051165b0901"
+    },
+    {
+      "path": "tests/test_harness.py",
+      "bytes": 8386,
+      "sha256": "583f93d555a4447891f354e403980a0fd1638953f5732079db92342d848ea9b4"
+    },
+    {
+      "path": "tests/test_task.py",
+      "bytes": 7648,
+      "sha256": "424bf5aefc5b505595a23ac2debb430637f5e6ae0934d9091b786285d1e15d8f"
+    },
+    {
+      "path": "tools/air_source_profile.py",
+      "bytes": 2573,
+      "sha256": "912add43ddbd6ca74a0aa6c352e896a2a22b658bee9437e7b8466afe2302d560"
+    },
+    {
+      "path": "tools/sync_package.py",
+      "bytes": 3453,
+      "sha256": "1df1b6a0865c72f3ea72e5925ceb7a6c8798894e23e12b1b503351a89f732198"
+    },
+    {
+      "path": "tools/task.py",
+      "bytes": 16667,
+      "sha256": "443ee73de34386b5dde34c95dba2feab5a52cea25fec369111c8c28192f960bf"
+    }
+  ]
+}
