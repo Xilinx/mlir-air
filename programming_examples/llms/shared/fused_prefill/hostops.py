@@ -29,14 +29,13 @@ def load(build_dir):
     _lib.rope.argtypes = [_p, _i, _i, _i, _i, _p, _p]
     _lib.glu_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _i, _p]
     _lib.mul_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p]
-    _lib.q_pack.argtypes = [_p, _i, _i, _i, _i, _f, _i, _p]
+    _lib.q_pack.argtypes = [_p, _i, _i, _i, _i, _f, _p]
     _lib.rms_tile.argtypes = [_p, _i, _i, _p, _f, _i, _i, _p]
     _lib.add_rms_tile.argtypes = [_p, _p, _i, _p, _f, _i, _i, _p, _i, _i, _p]
     _l = ctypes.c_long
     _lib.head_post.argtypes = [_p, _i, _i, _i, _i, _i, _p, _p, _f, _p, _p, _i, _f]
-    _lib.head_post.argtypes += [_p, _l, _l, _i]
-    _lib.kv_rec.argtypes = [_p, _p, _i, _i, _i, _i, _i, _i, _p]
-    _lib.o_tile.argtypes = [_p, _i, _i, _i, _i, _i, _i, _i, _i, _i, _i, _p]
+    _lib.head_post.argtypes += [_p, _l, _l]
+    _lib.o_tile.argtypes = [_p, _i, _i, _i, _i, _i, _i, _i, _i, _i, _p]
     _lib.kv_rec_bfp.argtypes = [_p, _p, _i, _i, _i, _i, _i, _p]
     _lib.q_bfp.argtypes = [_p, _i, _i, _i, _i, _p]
 
@@ -177,12 +176,11 @@ def mul_tile(g, p, dst, tm, tk):
     _to_bfp(a, p.shape[0], dst)
 
 
-def q_pack(q, scale, dst, tq):
-    """dst [H, M, dh] bf16 = q [T, H, dh] * scale, head-first, rows T..
-    zeroed, each tq rows in the attention cores' tile order."""
+def q_pack(q, scale, dst):
+    """dst [H, M, dh] bf16 = q [T, H, dh] * scale, head-first, rows T.. zeroed."""
     q = _c(q)
     t, h, dh = q.shape
-    _lib.q_pack(q.ctypes.data, t, h, dh, dst.shape[1], scale, tq, dst.ctypes.data)
+    _lib.q_pack(q.ctypes.data, t, h, dh, dst.shape[1], scale, dst.ctypes.data)
 
 
 def _ptr(a):
@@ -219,10 +217,10 @@ def add_rms_tile(x, c, t, post, eps, w, dst, tm, tk):
         _to_bfp(a, t, dst)
 
 
-def head_post(src, t, col0, nh, dh, bias, norm, eps, rope, scale, dst, hs, rs, tq=0):
+def head_post(src, t, col0, nh, dh, bias, norm, eps, rope, scale, dst, hs, rs):
     """Heads [col0, col0 + nh * dh) of src bf16 [R, ld]: + bias, rms * norm,
     rotary (rope = (cos, sin, rot) or None), * scale, to bf16 dst[h * hs + r *
-    rs + i] (strides in elements), or with tq each head as q_pack lays it out."""
+    rs + i] (strides in elements)."""
     cs, sn, rot = rope or (None, None, 0)
     _lib.head_post(
         src.ctypes.data,
@@ -241,23 +239,15 @@ def head_post(src, t, col0, nh, dh, bias, norm, eps, rope, scale, dst, hs, rs, t
         dst.ctypes.data,
         hs,
         rs,
-        tq,
     )
 
 
-def kv_rec(k, v, c0, t, dh, lkp, dvt, dst):
-    """KV records of the head at column c0 of k / v bf16 [t, ld] into dst."""
-    _lib.kv_rec(
-        k.ctypes.data, v.ctypes.data, k.shape[1], c0, t, dh, lkp, dvt, dst.ctypes.data
-    )
-
-
-def o_tile(o, t, h0, k, dst, tm, tk, tq, dvt):
-    """Heads of o bf16 [nh, M, dh], in the attention cores' tiles of tq x dvt,
-    into heads [h0, h0 + nh) of dst (A, K = k)."""
+def o_tile(o, t, h0, k, dst, tm, tk, tq):
+    """Heads of o bf16 [nh, M, dh], in tiles of tq rows as the attention cores
+    write them, into heads [h0, h0 + nh) of dst (A, K = k)."""
     nh, m, dh = o.shape
     a = _bf16_tiles(dst, tm, tk)
-    _lib.o_tile(o.ctypes.data, t, nh, dh, m, tq, dvt, h0, k, tm, tk, a.ctypes.data)
+    _lib.o_tile(o.ctypes.data, t, nh, dh, m, tq, h0, k, tm, tk, a.ctypes.data)
     _to_bfp(a, t, dst, h0 * dh, (h0 + nh) * dh)
 
 

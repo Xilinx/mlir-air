@@ -320,14 +320,11 @@ class Engine:
             )
 
     def _attn_part(self, g, hg, s, bos):
-        """One group's q and o buffers for hg heads; q is bfp16 for attn_bfp16."""
+        """One group's q (bfp16) and o buffers for hg heads."""
         n = hg * D.M * g.dh
-        q = self.fp.bo(n * 9 // 8 if g.kern == "bfp16" else n * 2, s)
+        q = self.fp.bo(n * 9 // 8, s)
         o = self.fp.bo(n * 2, s + 2)
-        if g.kern == "bfp16":
-            qm = view(q, np.uint8, (hg, D.M * g.dh * 9 // 8))
-        else:
-            qm = view(q, bfloat16, (hg, D.M, g.dh))
+        qm = view(q, np.uint8, (hg, D.M * g.dh * 9 // 8))
         qm[:] = 0
         bos[s : s + 3] = [q, self.dummy[s + 1], o]
         om = view(o, bfloat16, (hg, D.M, g.dh))
@@ -335,8 +332,8 @@ class Engine:
 
     @staticmethod
     def _nkv(g, n):
-        """attn_bfp16 reads K blocks in pairs; the extra one is masked."""
-        return n + n % 2 if g.kern == "bfp16" else n
+        """The cores read K blocks in pairs; the extra one is masked."""
+        return n + n % 2
 
     def attn_chunk(self, op, c):
         """Chunk c's attention dispatch state for op: per group its q and o
@@ -364,7 +361,7 @@ class Engine:
         g = self.cfg.attn[at["groups"][0]]
         q0 = r0 // g.lkp
         nend = -(-(r0 + t) // g.lkp)
-        window = (self.cfg.windows or {}).get(op, g.window)
+        window = (self.cfg.windows or {}).get(op)
         k0 = max(0, q0 - window // g.lkp) if window else 0
         rec = D.kv_rec(g) * 2
         for a, p, kp in zip(at["groups"], ch["parts"], kv["parts"]):
@@ -405,8 +402,10 @@ class Engine:
         parts, made = [], {}
         for i, a in enumerate(groups):
             g = self.cfg.attn[a]
-            nblk = g.max_blocks if g.kv_heads > 1 else -(-self.max_len // g.lkp)
-            assert nblk * g.lkp >= self.max_len, (nblk, g.lkp, self.max_len)
+            # the cores read an even number of blocks, so one past the last
+            last = -(-self.max_len // g.lkp)
+            nblk = g.max_blocks if g.kv_heads > 1 else last + 1
+            assert nblk > last, (nblk, g.lkp, self.max_len)
             shape = (g.kv_heads, nblk, D.kv_rec(g))
             h0 = i * kv_heads // len(groups) if kv_heads else None
             key = (h0, g._replace(col=0)) if kv_heads else a
@@ -436,10 +435,7 @@ class Engine:
                 kb = np.ascontiguousarray(k[:, h0 + h]).astype(bfloat16)
                 vb = np.ascontiguousarray(v[:, h0 + h]).astype(bfloat16)
                 t, dst = kb.shape[0], p["m"][h, b0]
-                if g.kern == "bfp16":
-                    H.kv_rec_bfp(kb, vb, 0, t, g.dh, g.lkp, dst)
-                else:
-                    H.kv_rec(kb, vb, 0, t, g.dh, g.lkp, g.dvt, dst)
+                H.kv_rec_bfp(kb, vb, 0, t, g.dh, g.lkp, dst)
                 p["bo"].sync(TO, nb * rec, (h * nblk + b0) * rec)
 
     # ---- context ----
