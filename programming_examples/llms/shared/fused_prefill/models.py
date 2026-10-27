@@ -61,7 +61,7 @@ def spec(desc):
         lkp=desc.lkp,
         kv_heads=desc.kv_heads // 2,
         # the cores read an even number of blocks, so one past the last
-        max_blocks=desc.max_len // desc.lkp + 1,
+        max_blocks=-(-desc.max_len // desc.lkp) + 1,
         split_scores=desc.qkv_bias,
     )
     groups = ("a0", "a1")

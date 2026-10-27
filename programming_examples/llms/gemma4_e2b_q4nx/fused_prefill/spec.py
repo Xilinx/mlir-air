@@ -40,7 +40,7 @@ def config(max_len):
         # the cores read an even number of blocks, so one past the last
         cfg = cfg._replace(
             attn={
-                k: a._replace(max_blocks=max_len // a.lkp + 1)
+                k: a._replace(max_blocks=-(-max_len // a.lkp) + 1)
                 for k, a in cfg.attn.items()
             }
         )

@@ -402,8 +402,10 @@ class Engine:
         parts, made = [], {}
         for i, a in enumerate(groups):
             g = self.cfg.attn[a]
-            nblk = g.max_blocks if g.kv_heads > 1 else -(-self.max_len // g.lkp)
-            assert nblk * g.lkp >= self.max_len, (nblk, g.lkp, self.max_len)
+            # the cores read an even number of blocks, so one past the last
+            last = -(-self.max_len // g.lkp)
+            nblk = g.max_blocks if g.kv_heads > 1 else last + 1
+            assert nblk > last, (nblk, g.lkp, self.max_len)
             shape = (g.kv_heads, nblk, D.kv_rec(g))
             h0 = i * kv_heads // len(groups) if kv_heads else None
             key = (h0, g._replace(col=0)) if kv_heads else a
