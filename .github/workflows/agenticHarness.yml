@@ -26,4 +26,6 @@ jobs:
       - name: Task, evidence and production capture contracts
         run: python -m unittest discover -s agentic/tests -v
       - name: Shared deployment host regressions
+        # The shared affine-Q4 deployment code is Linux-only (os.pread).
+        if: runner.os == 'Linux'
         run: python python/test/api/llms_affine_q4.py .
