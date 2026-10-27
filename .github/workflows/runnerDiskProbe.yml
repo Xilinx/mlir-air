@@ -13,11 +13,11 @@ jobs:
     steps:
       # No checkout: it would git-clean the shared nightly workspace.
       - name: Disk usage report
-        shell: bash
+        shell: bash {0}
         run: |
           #!/usr/bin/env bash
           # Read-only disk usage report for a self-hosted runner.
-          set -u
+          set -u +e +o pipefail
           WS="${GITHUB_WORKSPACE:-$PWD}"
           WORK_ROOT="$(dirname "$(dirname "$WS")")"   # actions-runner/_work
           sec() { echo; echo "===== $* ====="; }
@@ -28,7 +28,7 @@ jobs:
           sec "df inodes"; df -i "$HOME" /tmp 2>/dev/null
           sec "\$HOME depth 1"; du1 "$HOME" 1 30
           sec "~/.cache depth 1"; du1 "$HOME/.cache" 1 30
-          sec "~/.cache/mlir-air depth 2"; du1 "$HOME/.cache/mlir-air" 2 30
+          sec "~/.cache/mlir-air depth 3"; du1 "$HOME/.cache/mlir-air" 3 40
           sec "HF hub models"; du1 "$HOME/.cache/huggingface/hub" 1 80
           sec "runner _work depth 2"; du1 "$WORK_ROOT" 2 30
           sec "runner _diag + _temp"; du -sh "$(dirname "$WORK_ROOT")/_diag" "$WORK_ROOT/_temp" 2>/dev/null
