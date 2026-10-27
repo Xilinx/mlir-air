@@ -239,8 +239,8 @@
     },
     {
       "path": "tests/test_harness.py",
-      "bytes": 9076,
-      "sha256": "31135c09176bf1132d550da8b25f9d67045deba818b7e37c9f93a7ed3343aeb8"
+      "bytes": 9086,
+      "sha256": "697b706901ff6347493fc87c082b402aec9f6cb2e7905f8beb47a46a822856c0"
     },
     {
       "path": "tests/test_task.py",

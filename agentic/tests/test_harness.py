@@ -107,7 +107,7 @@ class HarnessTests(unittest.TestCase):
 
     def test_clients_resolve_after_relocation(self):
         with tempfile.TemporaryDirectory(prefix="air relocated ") as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             package = root / "agentic"
             shutil.copytree(
                 PACKAGE, package, ignore=shutil.ignore_patterns("__pycache__")
