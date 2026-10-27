@@ -145,7 +145,11 @@ jobs:
                   try:
                       snapshot_download(
                           repo, revision=revision if separator else None,
-                          allow_patterns=ALLOW, ignore_patterns=IGNORE,
+                          # OpenELM's pinned snapshot supplies its original HF
+                          # implementation; Transformers loads it offline.
+                          allow_patterns=ALLOW + (["configuration_openelm.py", "modeling_openelm.py"]
+                                                   if repo == "apple/OpenELM-1_1B-Instruct" else []),
+                          ignore_patterns=IGNORE,
                           max_workers=1,
                       )
                       print(f"OK  {m}", flush=True)

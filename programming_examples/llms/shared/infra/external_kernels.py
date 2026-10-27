@@ -234,6 +234,8 @@ def compile_attn_npu2(
     dv_tile=None,
     pretranspose_k=False,
     fused_merge=False,
+    attention_multiplier=None,
+    single_accumulator=False,
 ):
     """Compile attn_npu2.o (FlashAttention kernel) from source.
 
@@ -273,6 +275,8 @@ def compile_attn_npu2(
         fused_merge: -DFUSED_MERGE, the one-pass cascade merge (merge_gp,
             merge_gp_div) and the zero-init Q@K^T (matmul_a_b_bf16_z) a builder
             with fused_merge=True links. Needs pretranspose_k.
+        single_accumulator: opt in to one zero-initialized matrix accumulator
+            followed by a vector addition of carried output state.
     """
     if lkp is None:
         lkp = head_dim
@@ -308,6 +312,10 @@ def compile_attn_npu2(
     if fused_merge:
         assert pretranspose_k, "fused_merge needs pretranspose_k"
         _flags.append("-DFUSED_MERGE")
+    if attention_multiplier is not None:
+        _flags.append(f"-DATTENTION_MULTIPLIER={attention_multiplier}")
+    if single_accumulator:
+        _flags.append("-DATTENTION_SINGLE_ACCUMULATOR")
     _compile_kernel(src, "attn_npu2.o", extra_flags=_flags, force=force)
     # Also create attn.o copy (some link_with attributes use "attn.o").
     # Refresh whenever attn_npu2.o exists so a force-rebuild (different tile

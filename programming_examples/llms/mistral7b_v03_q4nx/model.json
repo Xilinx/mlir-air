@@ -1,0 +1,54 @@
+{
+  "name": "Mistral-7B-Instruct-v0.3",
+  "module": "mistral7b_v03_q4nx",
+  "checkpoint": "mistralai/Mistral-7B-Instruct-v0.3",
+  "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+  "config_sha256": "affafc6478ec0fd07a32f0ca57aa2fc57743f4d17d6730f86a96ac24d1507f99",
+  "vocab_size": 32768,
+  "configurations": [
+    [
+      512,
+      1024
+    ],
+    [
+      1024,
+      2048
+    ],
+    [
+      2048,
+      4096
+    ],
+    [
+      4096,
+      8192
+    ]
+  ],
+  "q4_aliases": {},
+  "bf16_matrices": [
+    "model.embed_tokens.weight"
+  ],
+  "source_shards": [
+    {
+      "file": "model-00001-of-00003.safetensors",
+      "bytes": 4949453792,
+      "sha256": "ce6fb6f6f4d0183f4813cbf4ece24109da629a08d4210da46f77e1d8b0bd5c19"
+    },
+    {
+      "file": "model-00002-of-00003.safetensors",
+      "bytes": 4999819336,
+      "sha256": "8c0e72f148366b6a3709e002a98706a33d31aec8515090c856c95b2044f92ae0"
+    },
+    {
+      "file": "model-00003-of-00003.safetensors",
+      "bytes": 4546807800,
+      "sha256": "905dd405363e43d95779c1c1155a2dbfd36155914ae95dbd934e12e490cfb4ca"
+    }
+  ],
+  "reference_attention": "sdpa",
+  "prefill_rms": {
+    "p512": "decode",
+    "p1024": "decode",
+    "p2048": "decode",
+    "p4096": "decode"
+  }
+}

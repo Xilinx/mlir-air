@@ -119,3 +119,12 @@ FastFlowLM/Gemma4-E4B-IT-NPU2
 FastFlowLM/Llama-3.1-8B-NPU2@527006483dca6c9d75474ff92b8a6bdd8f257914
 NousResearch/Meta-Llama-3.1-8B-Instruct@d10aef7999a2b5ba950ab3974312feeedbfe0b77
 z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat@d3af30def9601abdd10810aba220d692f0e803f0
+
+# Affine-Q4 deployments and original-BF16 references: pin the same snapshots
+# as each example's model.json, including OpenELM's Python modeling files.
+ibm-granite/granite-3.3-2b-instruct@707f574c62054322f6b5b04b6d075f0a8f05e0f0
+HuggingFaceTB/SmolLM3-3B@a07cc9a04f16550a088caea529712d1d335b0ac1
+allenai/OLMo-2-0425-1B-Instruct@48d788eca847d4d7548f375ad03d3c9312f6139e
+apple/OpenELM-1_1B-Instruct@effd796da2a77361d7360e45e54c7cc14bc5df2a
+microsoft/phi-2@810d367871c1d460086d9f82db8696f2e0a0fcd0
+mistralai/Mistral-7B-Instruct-v0.3@c170c708c41dac9275d15a8fff4eca08d52bab71

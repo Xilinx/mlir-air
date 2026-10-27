@@ -13,6 +13,7 @@
 /// @brief Attention implementation
 /// @note 1x8x1: for 4 kv heads
 #define ATTN_IMPL_1x8x1 2
+#define ATTN_IMPL_4x1x1 3
 
 /// @brief Activation function
 #define A_SILU 0
@@ -31,6 +32,10 @@
 #define QWEN3_4B 9
 #define GEMMA4_E2B 10
 #define GEMMA4_E4B 11
+#define GRANITE_3_3_2B 12
+#define SMOLLM3_3B 13
+#define OLMO2_1B 14
+#define OPENELM_1B 15
 
 #ifndef MODEL_TYPE
 #define MODEL_TYPE LLAMA_3_2_1B
@@ -39,15 +44,19 @@
 #include "../models/gemma3-4b.h"
 #include "../models/gemma4-e2b.h"
 #include "../models/gemma4-e4b.h"
+#include "../models/granite3.3-2b.h"
 #include "../models/lfm2-1.2b.h"
 #include "../models/llama3.1-8b.h"
 #include "../models/llama3.2-1b.h"
 #include "../models/llama3.2-3b.h"
+#include "../models/olmo2-1b.h"
+#include "../models/openelm-1b.h"
 #include "../models/phi4-4b.h"
 #include "../models/qwen2.5-3b.h"
 #include "../models/qwen2.5-7b.h"
 #include "../models/qwen3-4b.h"
 #include "../models/qwen3-8b.h"
+#include "../models/smollm3-3b.h"
 
 /// @brief RMSNorm epsilon, added to the MEAN square.
 /// @note Every model shipped before this was introduced was validated against

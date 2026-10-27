@@ -669,6 +669,27 @@ LLM_DISPLAY = {
 }
 
 
+# The affine-Q4 profiles measure fixed full-input requests, not the short chat
+# prompts of older profiles. Include P/C in each label and keep every config's
+# history separate. Model metadata is the same source used by the CI driver.
+for _affine_module in (
+    "granite33_2b_q4nx",
+    "smollm3_3b_q4nx",
+    "olmo2_1b_q4nx",
+    "openelm_1b_q4nx",
+    "phi2_2_7b_q4nx",
+    "mistral7b_v03_q4nx",
+):
+    _affine_spec = json.loads(
+        (Path(__file__).parent / "llms" / _affine_module / "model.json").read_text()
+    )
+    LLM_HF_MODELS[_affine_module] = _affine_spec["checkpoint"]
+    for _p, _c in _affine_spec["configurations"]:
+        _id = f"{_affine_module}_p{_p}_c{_c}"
+        _MODEL_DIRS[_id] = _affine_module
+        LLM_DISPLAY[_id] = (f"{_affine_spec['name']} (P{_p}/C{_c})", "Affine Q4", None)
+
+
 def _llm_model_cell(model, base_url):
     """Render the Model column: the model name linked to its example, then
     (FLM, HF) links to the FastFlowLM source and the HuggingFace page when

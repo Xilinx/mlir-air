@@ -91,6 +91,14 @@ void residual_add(bf16 *restrict y, const bf16 *restrict x_buf,
     aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
     aie::vector<bf16, vector_size> x_buf_vec =
         aie::load_v<vector_size>(it_x_buf);
+#ifdef RESIDUAL_MULTIPLIER
+    // HF first rounds the scaled branch to BF16, then adds the residual.
+    // Use the FP32 scalar; converting 0.22 to BF16 first changes the model.
+    aie::vector<float, vector_size> branch_f =
+        aie::mul(x_vec, (bf16)1.0f).template to_vector<float>();
+    x_vec = aie::mul(branch_f, (float)RESIDUAL_MULTIPLIER)
+                .template to_vector<bf16>();
+#endif
     auto out_vec = aie::add(x_vec, x_buf_vec);
     aie::store_v(it_y, out_vec);
     aie::store_v(it_x_buf, out_vec);

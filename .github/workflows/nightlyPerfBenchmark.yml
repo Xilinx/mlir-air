@@ -356,6 +356,12 @@ jobs:
             pip install -q -r "$req"
           done < <(find programming_examples/llms -name requirements.txt -print0)
 
+          # Pin the six affine-Q4 CPU references without changing the general
+          # runtime used by the existing LLMs. Torch is shared from air-venv.
+          python3 programming_examples/llms/shared/setup_reference_envs.py "$PWD/affine-reference-envs"
+          export AIR_AFFINE_Q4_REFERENCE_PYTHON="$PWD/affine-reference-envs/current/bin/python"
+          export AIR_OPENELM_REFERENCE_PYTHON="$PWD/affine-reference-envs/openelm/bin/python"
+
           # Run all models through the maintained lit/ninja targets (lit injects
           # the AIE tool env from the CMake build). lit runs every model even if
           # one fails, so a run reports each model's status; ninja returns
@@ -758,6 +764,9 @@ jobs:
             build_assert/test/llms/dflash/**/manifest.json
             build_assert/test/llms/dflash/**/weights.json
             build_assert/test/llms/dflash/**/verification/**/*.json
+            build_assert/test/llms/**/affine-ci/**/*.json
+            build_assert/test/llms/**/affine-ci/evidence/**/*.log
+            build_assert/test/llms/**/affine-ci/evidence/**/*.npz
             verify.xml
 
       # Same payload, name the publisher ignores: still there to download.
@@ -776,6 +785,9 @@ jobs:
             build_assert/test/llms/dflash/**/manifest.json
             build_assert/test/llms/dflash/**/weights.json
             build_assert/test/llms/dflash/**/verification/**/*.json
+            build_assert/test/llms/**/affine-ci/**/*.json
+            build_assert/test/llms/**/affine-ci/evidence/**/*.log
+            build_assert/test/llms/**/affine-ci/evidence/**/*.npz
             verify.xml
 
       # Refresh the GitHub Pages docs so the "Nightly LLM Benchmark" section

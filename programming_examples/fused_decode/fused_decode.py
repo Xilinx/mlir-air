@@ -118,7 +118,7 @@ from air.backend.xrt import XRTBackend
 # coming out byte-identical -- see ~/air_tools/decode_ir_gate.py.
 from air import api as air_api
 from air.api import types as api_types
-from air.api._index import coerce_index as _cidx
+from air.api._index import coerce_index as _cidx, materialize_index
 
 # An AIE2/AIE2P lock counter is 6 bits (AIETargetModel getMaxLockValue() == 0x3F),
 # and the refeed count below becomes a lock init that nothing range-checks -- a
@@ -588,6 +588,96 @@ _MODELS["llama-3.1-8b-dflash-drafter"] = dict(
     UNI_DEC=5,
     DECODE_WGROUP=8,
 )
+# Model-specific arithmetic is selected by the corresponding kernel header.
+_MODELS["granite-3.3-2b"] = dict(
+    _MODELS["llama-3.2-1b"],
+    VOCAB_SIZE=49159,
+    UNI_DEC=40,
+    UNI_LM=5,
+    SPLIT_KV_APPEND=True,
+    VOCAB_CHUNK_I2=10,
+)
+_MODELS["smollm3-3b"] = dict(
+    K=2048,
+    M=3072,
+    DH_A=128,
+    KV_PER_CU=1,
+    N_ATTN_CU=4,
+    NPH=4,
+    I2P=[3, 2, 22, 2],
+    J2P=[4, 4, 4, 22],
+    DEST=["rope", "rms", "glu", "rms"],
+    GQA_SEG=4,
+    PAIR_ROWS=2,
+    N_NORMS=2,
+    HAS_QK_NORM=False,
+    VOCAB_SIZE=128256,
+    UNI_DEC=36,
+    UNI_LM=7,
+    VOCAB_CHUNK_I2=18,
+    ROPE_W_PER_LAYER=True,
+    SPLIT_KV_APPEND=True,
+)
+_MODELS["olmo2-1b"] = dict(
+    K=2048,
+    M=6144,
+    DH_A=128,
+    KV_PER_CU=4,
+    N_ATTN_CU=4,
+    NPH=4,
+    I2P=[6, 2, 16, 2],
+    J2P=[4, 4, 4, 16],
+    DEST=["rope", "rms", "glu", "rms"],
+    GQA_SEG=1,
+    PAIR_ROWS=2,
+    N_NORMS=4,
+    HAS_QK_NORM=True,
+    FULL_QK_NORM=True,
+    POST_ONLY_NORM=True,
+    NATURAL_ATTN=True,
+    VOCAB_SIZE=100352,
+    UNI_DEC=16,
+    UNI_LM=7,
+    VOCAB_CHUNK_I2=14,
+)
+_MODELS["openelm-1b"] = dict(
+    _MODELS["llama-3.2-1b"],
+    HAS_QK_NORM=True,
+    VOCAB_SIZE=32000,
+    UNI_DEC=28,
+    UNI_LM=2,
+    VOCAB_CHUNK_I2=16,
+)
+_MODELS["phi2-local"] = dict(
+    K=3072,
+    M=12288,
+    DH_A=128,
+    KV_PER_CU=8,
+    N_ATTN_CU=4,
+    NPH=4,
+    I2P=[12, 3, 21, 3],
+    J2P=[6, 8, 6, 21],
+    DEST=["rope", "rms", "glu", "rms"],
+    GQA_SEG=1,
+    PAIR_ROWS=2,
+    N_NORMS=2,
+    NATURAL_ATTN=True,
+    ROPE_DIM=32,
+    VOCAB_SIZE=61440,
+    UNI_DEC=32,
+    UNI_LM=5,
+    VOCAB_CHUNK_I2=12,
+    PARALLEL_RESIDUAL=True,
+)
+_MODELS["mistral7b-v03"] = dict(
+    _MODELS["llama-3.1-8b"],
+    VOCAB_SIZE=32768,
+    UNI_DEC=32,
+    UNI_LM=2,
+    HAS_QK_NORM=False,
+    SPLIT_KV_APPEND=True,
+    VOCAB_CHUNK_I2=16,
+)
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
 MODEL = {**_MODEL_DEFAULTS, **_MODELS[MODEL_NAME]}
 # A multi-token mapping may distribute each output block to an independent
@@ -812,6 +902,8 @@ HAS_QKV_BIAS = MODEL.get("HAS_QKV_BIAS", False)
 ROPE_LUT_LEN = (
     (DH + MODEL["M"]) if HAS_QKV_BIAS else (3 * DH) if HAS_QK_NORM else ROPE_DIM
 )  # 64 / 768 / 96 / 4736
+if MODEL.get("FULL_QK_NORM"):
+    ROPE_LUT_LEN = DH + 2 * MODEL["K"]
 # The conv mixer's per-layer payload: tap-major [3][CONV_DIM] depthwise taps.
 CONV_W_LEN = CONV_IN if CONV_MIXER else 0  # 6144
 # The per-layer STRIDE in the rms BO's rope region. A hybrid layer may be either
@@ -829,7 +921,9 @@ ROPE_W_LEN = (
 # the feed has to index the current wave's. Getting this wrong DEADLOCKS: the host
 # writes UNI_DEC slabs and puts final_norm after them, so a device that sized the
 # region for one slab reads final_norm from inside the rope region.
-ROPE_W_PER_LAYER = HAS_QK_NORM or HAS_QKV_BIAS or CONV_MIXER
+ROPE_W_PER_LAYER = (
+    HAS_QK_NORM or HAS_QKV_BIAS or CONV_MIXER or MODEL.get("ROPE_W_PER_LAYER", False)
+)
 NUM_KV_HEADS = MODEL["N_ATTN_CU"] * MODEL["KV_PER_CU"]  # 8 / 4
 NUM_Q_HEADS = (MODEL["M"] - 2 * NUM_KV_HEADS * DH) // DH  # 32 / 8
 Q_HEADS_PER_CU = NUM_Q_HEADS // MODEL["N_ATTN_CU"]  # 8 / 2
@@ -1793,7 +1887,19 @@ def build_module():
         )
         # GLU: glu_aie(hid, x) = pseduo_glu<1024>: x = [hid 512 | gate 512],
         # hid(512) = silu(gate)*hid. One 1024 slice per call. Prebuilt glu.o.
-        glu_aie = _kernel("glu_aie", [glu_hid_l1, glu_x_l1, i32], "glu.o")
+        if MODEL.get("PARALLEL_RESIDUAL"):
+            phi_norm = _kernel(
+                "phi_norm", [rms_l1, rms_l1, rms_l1, rms_l1, i32], "rms_residual.o"
+            )
+            phi_merge = _kernel(
+                "phi_merge", [rms_l1, rms_l1, rms_l1, rms_l1], "rms_residual.o"
+            )
+            phi_save_attention = _kernel(
+                "phi_save_attention", [rms_l1, rms_l1], "rms_residual.o"
+            )
+            glu_aie = _kernel("glu_aie", [glu_hid_l1, glu_x_l1, i32, i32], "glu.o")
+        else:
+            glu_aie = _kernel("glu_aie", [glu_hid_l1, glu_x_l1, i32], "glu.o")
         # reference rope_compute(q,k,v, qkv, lut): rotate-half RoPE on Q,K (V copied).
         rope_compute = _kernel(
             "rope_compute",
@@ -2678,6 +2784,21 @@ def build_module():
                                 NGRP, REGION_STRIDE
                             )[:, 0:REGION_W]
 
+                        if MODEL.get("SPLIT_KV_APPEND") and REGION_STRIDE >= 2**21:
+                            # Contiguous group writes preserve large absolute offsets.
+                            appended = []
+                            for name, offset in (
+                                ("appendK", _kreg_off),
+                                ("appendV", _vreg_off),
+                            ):
+                                for group in range(NGRP):
+                                    start = _cidx(_loi_slot(_kbase, offset(group)))
+                                    appended.append(
+                                        _CH[name].get(
+                                            kv_t[start : start + REGION_W], indices=[0]
+                                        )
+                                    )
+                            return tuple(appended)
                         k = _CH["appendK"].get(
                             _slot_row(_loi_slot(_kbase, 0)), indices=[0]
                         )
@@ -3095,6 +3216,10 @@ def build_module():
                 ) + (
                     DOWN_REFEED * (GLU_OUT // (2 * COL_BLOCK)) if DOWN_PHASE >= 0 else 0
                 )
+                if MODEL.get("PARALLEL_RESIDUAL"):
+                    _xc_dec = sum(
+                        REFEED[p] * (KPH[p] // (2 * COL_BLOCK)) for p in range(NPH)
+                    )
                 _xc_voc = VOCAB_RNDS * (K // (2 * COL_BLOCK))
                 if _seg_arm_i is not None:
 
@@ -3276,9 +3401,15 @@ def build_module():
                     # get consumes one stripped packet round), just landing in
                     # L1. In vocab mode id1 never flows so this compute-tile
                     # S2MM idles harmlessly.
-                    for _rq in range(MIX_RNDS_QKV if _own_qkv else 0):
-                        _off = _rq * PAYLOAD
-                        _CH["outY"].get(a_qkv[_off : _off + PAYLOAD], indices=[0, 0])
+                    if _own_qkv and MODEL.get("PARALLEL_RESIDUAL"):
+                        # One receive for the 24-packet QKV tensor; cores have 16 BDs.
+                        _CH["outY"].get(a_qkv[0:M], indices=[0, 0])
+                    else:
+                        for _rq in range(MIX_RNDS_QKV if _own_qkv else 0):
+                            _off = _rq * PAYLOAD
+                            _CH["outY"].get(
+                                a_qkv[_off : _off + PAYLOAD], indices=[0, 0]
+                            )
                     _scope = _rope_h.private() if _own_qkv else _conv_h.private()
                     a_lut = air_api.alloc([ROPE_LUT_LEN], api_types.bf16, scope=_scope)
                     _CH["ropeLUT"].get(a_lut, indices=[0])
@@ -3643,6 +3774,12 @@ def build_module():
                         )
                         _CH["ropeQ"].get(qmtb, indices=[0])
                         for c in range(N_ATTN_CU):
+                            if MODEL.get("NATURAL_ATTN"):
+                                _CH["toAttnQ"].put(
+                                    qmtb[c * DQ_PER_CU : (c + 1) * DQ_PER_CU],
+                                    indices=[c],
+                                )
+                                continue
                             # pack_q (reference mem_5_1): natural [qh, dh] -> the
                             # kernel's [dc, qh, de] mmul layout, dh = dc*8 + de.
                             # rope emits PADDED Q (each CU's block is
@@ -3745,6 +3882,19 @@ def build_module():
                                 _CH["inKV_K"].get(_kbuf, indices=[_gi])
                                 _CH["inKV_V"].get(_vbuf, indices=[_gi])
                                 for _lc, _cc in enumerate(_cus):
+                                    if MODEL.get("NATURAL_ATTN"):
+                                        _o = _lc * KVPC_DH
+                                        for name, buf in (
+                                            ("toK", _kbuf),
+                                            ("toV", _vbuf),
+                                        ):
+                                            _CH[name].put(
+                                                buf.reshape(16, _gw)[
+                                                    :, _o : _o + KVPC_DH
+                                                ],
+                                                indices=[_cc],
+                                            )
+                                        continue
                                     # This CU's dh columns out of the
                                     # group's [16 pos, _gw] block, then
                                     # the dh axis split 8-wide and moved
@@ -3923,6 +4073,9 @@ def build_module():
                                 air_api.dealloc(a_mix)
 
                             def _put_o():
+                                if MODEL.get("NATURAL_ATTN"):
+                                    _CH["attnO"].put(a_o[0:DQ_PER_CU], indices=[_c])
+                                    return
                                 # o un-interleave: the kernel writes
                                 # [q_head, dc, de] and the gather wants
                                 # natural (q_head, dh), so the DMA reads the
@@ -4207,7 +4360,7 @@ def build_module():
                             # Two distinct allocs per iter give air-to-aie a 2-deep
                             # S2MM/MM2S ring (lock init 2), matching tile_5_2 -- a
                             # rolled 1-call loop collapses to 1-slot (no overlap).
-                            def _slice():
+                            def _slice(slice_id=None):
                                 gx = air_api.alloc(
                                     [GLU_SLICE],
                                     api_types.bf16,
@@ -4220,7 +4373,17 @@ def build_module():
                                 gh = air_api.alloc(
                                     [GLU_HID], api_types.bf16, scope=_glu_h.private()
                                 )
-                                glu_aie(gh, gx, _arm)
+                                if MODEL.get("PARALLEL_RESIDUAL"):
+                                    glu_aie(
+                                        gh,
+                                        gx,
+                                        _arm,
+                                        arith.index_cast(
+                                            i32, materialize_index(slice_id)
+                                        ),
+                                    )
+                                else:
+                                    glu_aie(gh, gx, _arm)
                                 _CH["gluOut"].put(gh[0:GLU_HID])
                                 air_api.dealloc(gx)
                                 air_api.dealloc(gh)
@@ -4234,8 +4397,12 @@ def build_module():
                                 f"(GLU_PKTS={GLU_PKTS})"
                             )
                             for _s in air_api.sequential(NGLU // 2):
-                                _slice()  # ping
-                                _slice()  # pong
+                                if MODEL.get("PARALLEL_RESIDUAL"):
+                                    _slice(_s * 2)
+                                    _slice(_s * 2 + 1)
+                                else:
+                                    _slice()  # ping
+                                    _slice()  # pong
 
                             yield_([])
 
@@ -4803,6 +4970,39 @@ def build_module():
                         _rms_lm_head()
 
                 def _rms_decode_body(_arm):
+                    if MODEL.get("PARALLEL_RESIDUAL"):
+                        # Phi-2 branches share LayerNorm(x). Retain attention before
+                        # the second receive on outY reuses its physical L1 buffer.
+                        def _pbuf():
+                            return air_api.alloc(
+                                [K], api_types.bf16, scope=_rms_h.private()
+                            )
+
+                        x, w, b, xn = (_pbuf() for _ in range(4))
+                        _CH["rmsX"].get(x, indices=[0])
+                        _CH["rmsW"].get(w, indices=[0])
+                        _CH["rmsW2"].get(b, indices=[0])
+                        phi_norm(xn, x, w, b, _arm)
+                        _xn_refeed(xn, _arm)
+                        op, saved = _pbuf(), _pbuf()
+                        _CH["outY"].get(
+                            op[0 : OPROJ_RNDS * PAYLOAD], indices=[0, RMS_DEST]
+                        )
+                        phi_save_attention(saved, op)
+                        air_api.dealloc(op)
+                        refeed(REFEED[GATEUP_PHASE], lambda: _CH["xnorm"].put(xn[0:K]))
+                        for buf in (xn, w, b):
+                            air_api.dealloc(buf)
+                        down, result = _pbuf(), _pbuf()
+                        _CH["outY"].get(
+                            down[0 : DOWN_RNDS * PAYLOAD], indices=[0, RMS_DEST]
+                        )
+                        phi_merge(result, x, saved, down)
+                        for buf in (x, saved, down):
+                            air_api.dealloc(buf)
+                        _CH["layerOut"].put(result[0 : DOWN_RNDS * PAYLOAD])
+                        air_api.dealloc(result)
+                        return
                     if N_NORMS >= 4:
                         # ===== Gemma sandwich (4 norms) =====================
                         # input / post_attn / pre_ffn / post_ffn. The two "post"
@@ -4834,7 +5034,12 @@ def build_module():
                         # step1: input_layernorm (g_wa lo) -> QKV X feed (ph0).
                         # Normalize once, then re-broadcast the resident result
                         # XN_REFEED times.
-                        rms_norm_lo_aie(g_xn, g_x, g_wa, _arm)
+                        if MODEL.get("POST_ONLY_NORM"):
+                            from air.dialects.memref import CopyOp
+
+                            CopyOp(g_x.value, g_xn.value)
+                        else:
+                            rms_norm_lo_aie(g_xn, g_x, g_wa, _arm)
                         _xn_refeed(g_xn, _arm)
                         # step2 (residual1): h = x + post_attention_norm(o_proj) [g_wa hi]
                         _CH["outY"].get(
@@ -4845,7 +5050,10 @@ def build_module():
                         air_api.dealloc(g_wa)
                         # step3: pre_feedforward_norm(h) [g_wb lo] -> GLU X feed (ph2).
                         # baked per-put refeed = GLU proj rounds that re-read X.
-                        rms_norm_lo_aie(g_xn, g_h, g_wb, _arm)
+                        if MODEL.get("POST_ONLY_NORM"):
+                            CopyOp(g_h.value, g_xn.value)
+                        else:
+                            rms_norm_lo_aie(g_xn, g_h, g_wb, _arm)
                         refeed(
                             REFEED[GATEUP_PHASE],
                             lambda: _CH["xnorm"].put(g_xn[0:K]),

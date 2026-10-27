@@ -1,0 +1,1752 @@
+{
+  "source_commit": "913001175db2a2e5a2d474a37f3e6f950bc2897a",
+  "upstream_base": "6356cb23e491438403e6d470fcc9b65bd25e5fd6",
+  "integration_source": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+  "integrated_upstream_base": "555946050dcdb1728342117946e37f3074512e0c",
+  "date_utc": "2026-10-26",
+  "hardware": {
+    "cpu": "AMD Ryzen AI 9 HX 370",
+    "target": "NPU2 / AIE2P",
+    "memory_gib": 91.94,
+    "xrt": "2.21.0",
+    "npu_firmware": "1.1.2.64",
+    "os": "Ubuntu 24.04.3 LTS"
+  },
+  "toolchain": {
+    "air": "0.0.1.2026102604+2f080d3",
+    "mlir_aie": "1.4.5.dev64+g843e9c3",
+    "peano": "22.0.0.2026101901+4f5df13d",
+    "llvm_link": "18"
+  },
+  "protocol": {
+    "batch": 1,
+    "gate_outputs": 32,
+    "reference": "Pinned original HF CPU BF16; archived complete captures with rechecked checkpoint/input/logit identities",
+    "gate": "Mutual top-5 inclusion at first divergent greedy choice; complete finite full-vocabulary capture required",
+    "profile_outputs": 128,
+    "warmup_min_seconds": 5,
+    "measured_min_requests": 3,
+    "measured_min_seconds": 10,
+    "ttft_end": "First logits checked and greedy token selected",
+    "kv_handoff": "After first-token boundary; included in decode and request time",
+    "decode_throughput": "127 * measured_request_count / summed_decode_seconds",
+    "reset": "P512 A(32), changed-first-input B(2), A(32); bitwise equal A logits",
+    "omp_num_threads": 8,
+    "openblas_num_threads": 1
+  },
+  "configurations": [
+    {
+      "model": "Granite-3.3-2B",
+      "module": "granite33_2b_q4nx",
+      "p": 512,
+      "c": 1024,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": 3,
+      "test_chosen_rank_in_ref": 4,
+      "ref_chosen_rank_in_test": 2,
+      "candidate_sha256": "a73d865e6a68664452ecbf20432b40aa6862cd7b17da0c4b1dee591bc68da012",
+      "reference_sha256": "e8f2d45b249ad3d8327936c26a4273df99c9eb957e48828088cb1d621a137456",
+      "reset": "PASS",
+      "median_ttft_seconds": 0.6349217984825373,
+      "mean_request_seconds": 4.873945816109578,
+      "decode_tokens_per_second": 29.963158037456267,
+      "prefill_tokens_per_second": 806.3985221860073,
+      "mean_decode_seconds": 4.2385385359327,
+      "warmup_requests": 2,
+      "warmup_seconds": 9.841814685612917,
+      "measured_requests": 3,
+      "measured_seconds": 14.621837448328733,
+      "ttft_range_seconds": [
+        0.6340416297316551,
+        0.6372584123164415
+      ],
+      "timing_sha256": "6f9dbe86272a7db112c3361295e9edac68eb195f636c2f36ec2f056b020d755d",
+      "checkpoint": "ibm-granite/granite-3.3-2b-instruct",
+      "revision": "707f574c62054322f6b5b04b6d075f0a8f05e0f0",
+      "input_ids_sha256": "b10666c4cab23e0ab63a3f6bc2094dc8fb47291205325d34a819af39eb79b244",
+      "reference_original_logits_sha256": "fb580324074a96f2ea671f56cc8646a5ab700fa603739ffc39244cf30f2635d2",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 0.6349217984825373,
+            "mean_request_seconds": 4.873945816109578,
+            "decode_tokens_per_second": 29.963158037456267,
+            "prefill_tokens_per_second": 806.3985221860073
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 0.6984566673636436,
+              "decode_seconds": 4.273717170581222,
+              "request_seconds": 4.972173837944865,
+              "handoff_seconds": 0.021018730476498604
+            },
+            {
+              "ttft_seconds": 0.6361362244933844,
+              "decode_seconds": 4.233504623174667,
+              "request_seconds": 4.869640847668052,
+              "handoff_seconds": 0.013036293908953667
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 0.6349217984825373,
+              "decode_seconds": 4.232742043212056,
+              "request_seconds": 4.867663841694593,
+              "handoff_seconds": 0.012254728004336357
+            },
+            {
+              "ttft_seconds": 0.6340416297316551,
+              "decode_seconds": 4.240808166563511,
+              "request_seconds": 4.874849796295166,
+              "handoff_seconds": 0.013900021091103554
+            },
+            {
+              "ttft_seconds": 0.6372584123164415,
+              "decode_seconds": 4.2420653980225325,
+              "request_seconds": 4.879323810338974,
+              "handoff_seconds": 0.014559295028448105
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "Granite-3.3-2B",
+      "module": "granite33_2b_q4nx",
+      "p": 1024,
+      "c": 2048,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "3a37a9d03098e179d5ff928ae857e78de0fb6ef5b0326b687dee6e7b8c901b8e",
+      "reference_sha256": "cf877d962f8adbef7f2e3d8bbf249465c2bb444179529d29306d55d2d2a3578b",
+      "median_ttft_seconds": 1.193442976102233,
+      "mean_request_seconds": 5.777336566398541,
+      "decode_tokens_per_second": 27.691827273431116,
+      "prefill_tokens_per_second": 858.0217241249086,
+      "mean_decode_seconds": 4.586190674453974,
+      "warmup_requests": 1,
+      "warmup_seconds": 5.91742623411119,
+      "measured_requests": 3,
+      "measured_seconds": 17.332009699195623,
+      "ttft_range_seconds": [
+        1.185656687244773,
+        1.1943380124866962
+      ],
+      "timing_sha256": "e34b94ce479d7dafe0b8283546f08a12f33289f27d72629d5041f41bdec039a6",
+      "checkpoint": "ibm-granite/granite-3.3-2b-instruct",
+      "revision": "707f574c62054322f6b5b04b6d075f0a8f05e0f0",
+      "input_ids_sha256": "6ea933f85b1e03876fa7c9331777b2df21ddce25e66a0ba918ac05619f0c11eb",
+      "reference_original_logits_sha256": "8c4fce16f4367d3ecc5ca029e57858e714c90ed5d521129a450d806015caa514",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 1.193442976102233,
+            "mean_request_seconds": 5.777336566398541,
+            "decode_tokens_per_second": 27.691827273431116,
+            "prefill_tokens_per_second": 858.0217241249086
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 1.292427945882082,
+              "decode_seconds": 4.624998288229108,
+              "request_seconds": 5.91742623411119,
+              "handoff_seconds": 0.08547328412532806
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 1.185656687244773,
+              "decode_seconds": 4.585271107032895,
+              "request_seconds": 5.770927794277668,
+              "handoff_seconds": 0.04109333083033562
+            },
+            {
+              "ttft_seconds": 1.193442976102233,
+              "decode_seconds": 4.593396687880158,
+              "request_seconds": 5.786839663982391,
+              "handoff_seconds": 0.04338906332850456
+            },
+            {
+              "ttft_seconds": 1.1943380124866962,
+              "decode_seconds": 4.579904228448868,
+              "request_seconds": 5.774242240935564,
+              "handoff_seconds": 0.029091715812683105
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "Granite-3.3-2B",
+      "module": "granite33_2b_q4nx",
+      "p": 2048,
+      "c": 4096,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "0a8080594ab1f2097206f57edfc02fd7fac8269688b916299d2f2da274655bd7",
+      "reference_sha256": "eae6150c38c2d0b4ec8931023c700fe6062e7e6de762e79ee3ed65a6acafe85e",
+      "median_ttft_seconds": 2.26268526725471,
+      "mean_request_seconds": 7.538303066045046,
+      "decode_tokens_per_second": 24.14241078419682,
+      "prefill_tokens_per_second": 905.1192534986603,
+      "mean_decode_seconds": 5.260452286029856,
+      "warmup_requests": 1,
+      "warmup_seconds": 7.600338965654373,
+      "measured_requests": 3,
+      "measured_seconds": 22.614909198135138,
+      "ttft_range_seconds": [
+        2.25365780107677,
+        2.3172092717140913
+      ],
+      "timing_sha256": "3b111448f3bd0a924434c60e3ded1529bcca4f44366f3a032df41ed76537da24",
+      "checkpoint": "ibm-granite/granite-3.3-2b-instruct",
+      "revision": "707f574c62054322f6b5b04b6d075f0a8f05e0f0",
+      "input_ids_sha256": "93420406f184011651beca28d3c38d2120617428d99e11c3611694c013701af1",
+      "reference_original_logits_sha256": "9f74b6eac073cc20ef48fadf3c8ce4b4527216ea632c6c84c4c67d036affc329",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 2.26268526725471,
+            "mean_request_seconds": 7.538303066045046,
+            "decode_tokens_per_second": 24.14241078419682,
+            "prefill_tokens_per_second": 905.1192534986603
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 2.334916749969125,
+              "decode_seconds": 5.265422215685248,
+              "request_seconds": 7.600338965654373,
+              "handoff_seconds": 0.07138076052069664
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 2.25365780107677,
+              "decode_seconds": 5.253711896017194,
+              "request_seconds": 7.507369697093964,
+              "handoff_seconds": 0.06105631962418556
+            },
+            {
+              "ttft_seconds": 2.26268526725471,
+              "decode_seconds": 5.276351967826486,
+              "request_seconds": 7.539037235081196,
+              "handoff_seconds": 0.07687721960246563
+            },
+            {
+              "ttft_seconds": 2.3172092717140913,
+              "decode_seconds": 5.251292994245887,
+              "request_seconds": 7.568502265959978,
+              "handoff_seconds": 0.060110677033662796
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "Granite-3.3-2B",
+      "module": "granite33_2b_q4nx",
+      "p": 4096,
+      "c": 8192,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "35d1b51e004508f6c6c3d923a04ed96a2680844258244d1df0012532f68b9ea2",
+      "reference_sha256": "114bdef7fd159f9ad8ab5691aa6fd0eb5c95ea8baa9a79a086b00c9bbca380e7",
+      "median_ttft_seconds": 4.680215859785676,
+      "mean_request_seconds": 11.315163156638542,
+      "decode_tokens_per_second": 19.163299340921647,
+      "prefill_tokens_per_second": 875.1733088198993,
+      "mean_decode_seconds": 6.627251275504629,
+      "warmup_requests": 1,
+      "warmup_seconds": 11.430210947990417,
+      "measured_requests": 3,
+      "measured_seconds": 33.94548946991563,
+      "ttft_range_seconds": [
+        4.675501948222518,
+        4.708017835393548
+      ],
+      "timing_sha256": "ef5d6b53445d54e95d4739701c97616414f00c1a5ad87c416fd35a3b8f8bb84d",
+      "checkpoint": "ibm-granite/granite-3.3-2b-instruct",
+      "revision": "707f574c62054322f6b5b04b6d075f0a8f05e0f0",
+      "input_ids_sha256": "7340fc440098ed91c51ce4ddaa8917ff847710bbba64449dc80730f99c2c6c59",
+      "reference_original_logits_sha256": "c9b519bc2c8f95187c122a28f552addf4e0551fde72992bb890dc70f1075c184",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 4.680215859785676,
+            "mean_request_seconds": 11.315163156638542,
+            "decode_tokens_per_second": 19.163299340921647,
+            "prefill_tokens_per_second": 875.1733088198993
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 4.777071498334408,
+              "decode_seconds": 6.65313944965601,
+              "request_seconds": 11.430210947990417,
+              "handoff_seconds": 0.14455785416066647
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 4.680215859785676,
+              "decode_seconds": 6.618229368701577,
+              "request_seconds": 11.298445228487253,
+              "handoff_seconds": 0.12112396396696568
+            },
+            {
+              "ttft_seconds": 4.708017835393548,
+              "decode_seconds": 6.633543994277716,
+              "request_seconds": 11.341561829671264,
+              "handoff_seconds": 0.11397959664463997
+            },
+            {
+              "ttft_seconds": 4.675501948222518,
+              "decode_seconds": 6.629980463534594,
+              "request_seconds": 11.305482411757112,
+              "handoff_seconds": 0.1300115343183279
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "SmolLM3-3B",
+      "module": "smollm3_3b_q4nx",
+      "p": 512,
+      "c": 1024,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "7593f99fd131743258f603254d72a588a440372fd5fc9336baa6fb3bc77ed0ba",
+      "reference_sha256": "7b4958f95276253f0380a484267becd63687c8791e578b2f6927e189c8679736",
+      "reset": "PASS",
+      "median_ttft_seconds": 0.8042095955461264,
+      "mean_request_seconds": 5.9470651013155775,
+      "decode_tokens_per_second": 24.729024225357783,
+      "prefill_tokens_per_second": 636.6499514996568,
+      "mean_decode_seconds": 5.135665638993184,
+      "warmup_requests": 1,
+      "warmup_seconds": 5.990420496091247,
+      "measured_requests": 3,
+      "measured_seconds": 17.841195303946733,
+      "ttft_range_seconds": [
+        0.8035845793783665,
+        0.8264042120426893
+      ],
+      "timing_sha256": "9685cb2ea5c8e529d652d142a690d6cf95a382f055bca056a7d938738f105530",
+      "checkpoint": "HuggingFaceTB/SmolLM3-3B",
+      "revision": "a07cc9a04f16550a088caea529712d1d335b0ac1",
+      "input_ids_sha256": "2c1384d1005e5fadd5b372598c071a165d11f5bc66095e165059a56ae2b8c4fc",
+      "reference_original_logits_sha256": "03abdec6046c96ade1bdd374ab0d2ab148657c18f7ffbc2cbdd4035c027ae5ac",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 0.8042095955461264,
+            "mean_request_seconds": 5.9470651013155775,
+            "decode_tokens_per_second": 24.729024225357783,
+            "prefill_tokens_per_second": 636.6499514996568
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 0.8691582418978214,
+              "decode_seconds": 5.121262254193425,
+              "request_seconds": 5.990420496091247,
+              "handoff_seconds": 0.012716870754957199
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 0.8035845793783665,
+              "decode_seconds": 5.120146568864584,
+              "request_seconds": 5.92373114824295,
+              "handoff_seconds": 0.01165260374546051
+            },
+            {
+              "ttft_seconds": 0.8042095955461264,
+              "decode_seconds": 5.113665133714676,
+              "request_seconds": 5.917874729260802,
+              "handoff_seconds": 0.011788662523031235
+            },
+            {
+              "ttft_seconds": 0.8264042120426893,
+              "decode_seconds": 5.173185214400291,
+              "request_seconds": 5.999589426442981,
+              "handoff_seconds": 0.01239730790257454
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "SmolLM3-3B",
+      "module": "smollm3_3b_q4nx",
+      "p": 1024,
+      "c": 2048,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "e609e662e777c1262e0e435bfa085be448c23bc65ec9cbedec7d0a3d7390db79",
+      "reference_sha256": "73375814832618725349a1da063b15b321776251828f0f20360e2a0b86441d8f",
+      "median_ttft_seconds": 1.4654207415878773,
+      "mean_request_seconds": 6.959578202416499,
+      "decode_tokens_per_second": 23.122237921161542,
+      "prefill_tokens_per_second": 698.7754239717054,
+      "mean_decode_seconds": 5.492547928666075,
+      "warmup_requests": 1,
+      "warmup_seconds": 6.998395381495357,
+      "measured_requests": 3,
+      "measured_seconds": 20.8787346072495,
+      "ttft_range_seconds": [
+        1.4642942249774933,
+        1.4713758546859026
+      ],
+      "timing_sha256": "14d939eedd6ce604f41a9c75e135b721853e2c925103334aed405892e3110be8",
+      "checkpoint": "HuggingFaceTB/SmolLM3-3B",
+      "revision": "a07cc9a04f16550a088caea529712d1d335b0ac1",
+      "input_ids_sha256": "d53455153eb99a7860e785b68d38b203edd4e69e53e810c324a3daeb88bb68eb",
+      "reference_original_logits_sha256": "b3bf3917b0593f79bc24512f9e07b6f317c37d32855de69082f17af44e956f76",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 1.4654207415878773,
+            "mean_request_seconds": 6.959578202416499,
+            "decode_tokens_per_second": 23.122237921161542,
+            "prefill_tokens_per_second": 698.7754239717054
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 1.5320407953113317,
+              "decode_seconds": 5.466354586184025,
+              "request_seconds": 6.998395381495357,
+              "handoff_seconds": 0.026658520102500916
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 1.4654207415878773,
+              "decode_seconds": 5.456926973536611,
+              "request_seconds": 6.922347715124488,
+              "handoff_seconds": 0.02347983792424202
+            },
+            {
+              "ttft_seconds": 1.4713758546859026,
+              "decode_seconds": 5.555251682177186,
+              "request_seconds": 7.026627536863089,
+              "handoff_seconds": 0.02312304452061653
+            },
+            {
+              "ttft_seconds": 1.4642942249774933,
+              "decode_seconds": 5.465465130284429,
+              "request_seconds": 6.929759355261922,
+              "handoff_seconds": 0.023066358640789986
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "SmolLM3-3B",
+      "module": "smollm3_3b_q4nx",
+      "p": 2048,
+      "c": 4096,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "aabdb728c126e708cb2a23650cb00727a007233ecc9bdb3d1a5f2edb57fcd4a5",
+      "reference_sha256": "d4c737673e3fe06ff76db94b2f1daeb283e09249b7599b8bb3b1a9649efff170",
+      "median_ttft_seconds": 2.865493243560195,
+      "mean_request_seconds": 9.062215076138576,
+      "decode_tokens_per_second": 20.509874138467314,
+      "prefill_tokens_per_second": 714.7111599731043,
+      "mean_decode_seconds": 6.192139412586887,
+      "warmup_requests": 1,
+      "warmup_seconds": 11.577890377491713,
+      "measured_requests": 3,
+      "measured_seconds": 27.186645228415728,
+      "ttft_range_seconds": [
+        2.861385880038142,
+        2.8833478670567274
+      ],
+      "timing_sha256": "2808c92b23e8241c7300e50b090cc44df7ad7be430dc193b5c833486bfbcf3b1",
+      "checkpoint": "HuggingFaceTB/SmolLM3-3B",
+      "revision": "a07cc9a04f16550a088caea529712d1d335b0ac1",
+      "input_ids_sha256": "8d2d723e9426c1e7eb3de30325150466ab31e1abe5f0746cb80727b39d77c1b8",
+      "reference_original_logits_sha256": "d29e76ad4dd7f1ade2d00939c087bc9f967082abe2ae18ab558a3ed3c34b4fb5",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 2.865493243560195,
+            "mean_request_seconds": 9.062215076138576,
+            "decode_tokens_per_second": 20.509874138467314,
+            "prefill_tokens_per_second": 714.7111599731043
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 3.031206263229251,
+              "decode_seconds": 8.546684114262462,
+              "request_seconds": 11.577890377491713,
+              "handoff_seconds": 2.455250484868884
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 2.861385880038142,
+              "decode_seconds": 6.244282864034176,
+              "request_seconds": 9.105668744072318,
+              "handoff_seconds": 0.15184414945542812
+            },
+            {
+              "ttft_seconds": 2.8833478670567274,
+              "decode_seconds": 6.191055873408914,
+              "request_seconds": 9.074403740465641,
+              "handoff_seconds": 0.07613891735672951
+            },
+            {
+              "ttft_seconds": 2.865493243560195,
+              "decode_seconds": 6.1410795003175735,
+              "request_seconds": 9.006572743877769,
+              "handoff_seconds": 0.05317329801619053
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "SmolLM3-3B",
+      "module": "smollm3_3b_q4nx",
+      "p": 4096,
+      "c": 8192,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "55d2f16eb7661c6aef91d899827a0253b2e5dc68875ea4415fe5d4da73be7773",
+      "reference_sha256": "25d3b9b9336bd7055610f80fafa2bddd8e8874778b0c233d943ca341eafb2482",
+      "median_ttft_seconds": 8.732870823703706,
+      "mean_request_seconds": 18.92706865320603,
+      "decode_tokens_per_second": 12.605602198334852,
+      "prefill_tokens_per_second": 469.0324731338281,
+      "mean_decode_seconds": 10.074885594658554,
+      "warmup_requests": 2,
+      "warmup_seconds": 57.748582530766726,
+      "measured_requests": 6,
+      "measured_seconds": 113.56241191923618,
+      "ttft_range_seconds": [
+        8.71992371417582,
+        9.437488291412592
+      ],
+      "timing_sha256": [
+        "15e9e79f8673919c59b0aefaf2cd35484641942d4938fc583755e45348546eba",
+        "e4f51b541c678e08cbd491ba28ac351a06800bff1f69fadd2b464548460053e5"
+      ],
+      "profiling_batches": 2,
+      "checkpoint": "HuggingFaceTB/SmolLM3-3B",
+      "revision": "a07cc9a04f16550a088caea529712d1d335b0ac1",
+      "input_ids_sha256": "5b525df43d751dd2d38d421ba3a9019e0ac927d8af088b0202ea52c42b268d3a",
+      "reference_original_logits_sha256": "14c217febecfad9a1f7e8ce5feb18e4a4e3294e1f1bc6e7d15f2912abdfdcdf8",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 8.766905503347516,
+            "mean_request_seconds": 21.631689184655745,
+            "decode_tokens_per_second": 10.038340888130657,
+            "prefill_tokens_per_second": 467.2116060149162
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 20.04945703037083,
+              "decode_seconds": 21.350465811789036,
+              "request_seconds": 41.39992284215987,
+              "handoff_seconds": 13.752067312598228
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 9.437488291412592,
+              "decode_seconds": 15.614155979827046,
+              "request_seconds": 25.05164427123964,
+              "handoff_seconds": 8.060734080150723
+            },
+            {
+              "ttft_seconds": 8.766905503347516,
+              "decode_seconds": 12.957598643377423,
+              "request_seconds": 21.72450414672494,
+              "handoff_seconds": 5.555091619491577
+            },
+            {
+              "ttft_seconds": 8.736194603145123,
+              "decode_seconds": 9.382724532857537,
+              "request_seconds": 18.11891913600266,
+              "handoff_seconds": 1.977079724892974
+            }
+          ]
+        },
+        {
+          "summary": {
+            "median_ttft_seconds": 8.72303919494152,
+            "mean_request_seconds": 16.222448121756315,
+            "decode_tokens_per_second": 16.937221809404743,
+            "prefill_tokens_per_second": 469.5611137887888
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 8.825462639331818,
+              "decode_seconds": 7.523197049275041,
+              "request_seconds": 16.34865968860686,
+              "handoff_seconds": 0.11016161926090717
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 8.72303919494152,
+              "decode_seconds": 7.496310420334339,
+              "request_seconds": 16.21934961527586,
+              "handoff_seconds": 0.10081043280661106
+            },
+            {
+              "ttft_seconds": 8.72954704426229,
+              "decode_seconds": 7.498376842588186,
+              "request_seconds": 16.227923886850476,
+              "handoff_seconds": 0.10208478383719921
+            },
+            {
+              "ttft_seconds": 8.71992371417582,
+              "decode_seconds": 7.500147148966789,
+              "request_seconds": 16.22007086314261,
+              "handoff_seconds": 0.10044453293085098
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "OLMo2-1B",
+      "module": "olmo2_1b_q4nx",
+      "p": 512,
+      "c": 1024,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "f3510c00b84f609043075636b881dd22b8ddbf8aa4db78493de532fe6d454328",
+      "reference_sha256": "1aa8bc1309aff64efbbf95ce184bfdcc78237a775056c7d675d0bf5e1697cb53",
+      "reset": "PASS",
+      "median_ttft_seconds": 0.5170774143189192,
+      "mean_request_seconds": 3.71721034993728,
+      "decode_tokens_per_second": 39.676199827398484,
+      "prefill_tokens_per_second": 990.1805528953396,
+      "mean_decode_seconds": 3.2009113915264606,
+      "warmup_requests": 2,
+      "warmup_seconds": 8.164526818320155,
+      "measured_requests": 3,
+      "measured_seconds": 11.15163104981184,
+      "ttft_range_seconds": [
+        0.5121832210570574,
+        0.5196362398564816
+      ],
+      "timing_sha256": "9ed79ee80d25a2ee3e9d7956c4f0dee4cf150fb2cb2b85b987bb5d00790413b2",
+      "checkpoint": "allenai/OLMo-2-0425-1B-Instruct",
+      "revision": "48d788eca847d4d7548f375ad03d3c9312f6139e",
+      "input_ids_sha256": "2c1384d1005e5fadd5b372598c071a165d11f5bc66095e165059a56ae2b8c4fc",
+      "reference_original_logits_sha256": "488dd0fc793fb9e1e94e472a5950944b48951b971bc17d00ef82ec964d522d47",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 0.5170774143189192,
+            "mean_request_seconds": 3.71721034993728,
+            "decode_tokens_per_second": 39.676199827398484,
+            "prefill_tokens_per_second": 990.1805528953396
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 1.2162781972438097,
+              "decode_seconds": 3.2350911889225245,
+              "request_seconds": 4.451369386166334,
+              "handoff_seconds": 0.02549971640110016
+            },
+            {
+              "ttft_seconds": 0.5144909527152777,
+              "decode_seconds": 3.1986664794385433,
+              "request_seconds": 3.713157432153821,
+              "handoff_seconds": 0.024190660566091537
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 0.5121832210570574,
+              "decode_seconds": 3.206757690757513,
+              "request_seconds": 3.7189409118145704,
+              "handoff_seconds": 0.026531631126999855
+            },
+            {
+              "ttft_seconds": 0.5196362398564816,
+              "decode_seconds": 3.1959959752857685,
+              "request_seconds": 3.71563221514225,
+              "handoff_seconds": 0.02481454238295555
+            },
+            {
+              "ttft_seconds": 0.5170774143189192,
+              "decode_seconds": 3.1999805085361004,
+              "request_seconds": 3.7170579228550196,
+              "handoff_seconds": 0.023860257118940353
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "OLMo2-1B",
+      "module": "olmo2_1b_q4nx",
+      "p": 1024,
+      "c": 2048,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": 31,
+      "test_chosen_rank_in_ref": 3,
+      "ref_chosen_rank_in_test": 3,
+      "candidate_sha256": "f87024f9369bd89be8bf5af98f2b8a38ea36d984f525866ac23b0fed768f501c",
+      "reference_sha256": "c684e682a4704901bfd9893ded9875b84be4447a07d27d5af9b1b9a6cba3441c",
+      "median_ttft_seconds": 0.884197011590004,
+      "mean_request_seconds": 5.057706583912174,
+      "decode_tokens_per_second": 30.428553612998197,
+      "prefill_tokens_per_second": 1158.1129392855512,
+      "mean_decode_seconds": 4.173711363847057,
+      "warmup_requests": 1,
+      "warmup_seconds": 5.780677938833833,
+      "measured_requests": 3,
+      "measured_seconds": 15.173119751736522,
+      "ttft_range_seconds": [
+        0.8815122190862894,
+        0.8862764295190573
+      ],
+      "timing_sha256": "6078eb839c96e4ccfc164f277f56b4bfe6d4c8f75bd31d711ce91b1fa06a28ed",
+      "checkpoint": "allenai/OLMo-2-0425-1B-Instruct",
+      "revision": "48d788eca847d4d7548f375ad03d3c9312f6139e",
+      "input_ids_sha256": "d53455153eb99a7860e785b68d38b203edd4e69e53e810c324a3daeb88bb68eb",
+      "reference_original_logits_sha256": "e76e8226fbcd5f5c0020a10558846781e9c5ec1239e2604234543d14030d2d34",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 0.884197011590004,
+            "mean_request_seconds": 5.057706583912174,
+            "decode_tokens_per_second": 30.428553612998197,
+            "prefill_tokens_per_second": 1158.1129392855512
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 1.6076321918517351,
+              "decode_seconds": 4.173045746982098,
+              "request_seconds": 5.780677938833833,
+              "handoff_seconds": 0.049569275230169296
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 0.8862764295190573,
+              "decode_seconds": 4.172522693872452,
+              "request_seconds": 5.058799123391509,
+              "handoff_seconds": 0.04880188964307308
+            },
+            {
+              "ttft_seconds": 0.884197011590004,
+              "decode_seconds": 4.175176104530692,
+              "request_seconds": 5.059373116120696,
+              "handoff_seconds": 0.048593295738101006
+            },
+            {
+              "ttft_seconds": 0.8815122190862894,
+              "decode_seconds": 4.173435293138027,
+              "request_seconds": 5.054947512224317,
+              "handoff_seconds": 0.047938643023371696
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "OLMo2-1B",
+      "module": "olmo2_1b_q4nx",
+      "p": 2048,
+      "c": 4096,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "036966605bfc0c17ab19cc42b73d7d2b334940d0bd850fbc2fddf3b3ce9c092a",
+      "reference_sha256": "4188ac57c5bb7f035a0673685cb7e29c86db57fed0265eb4737bac83161ac39b",
+      "median_ttft_seconds": 1.7481633350253105,
+      "mean_request_seconds": 7.863989373048146,
+      "decode_tokens_per_second": 20.784036040513914,
+      "prefill_tokens_per_second": 1171.5152462972508,
+      "mean_decode_seconds": 6.110458996146917,
+      "warmup_requests": 1,
+      "warmup_seconds": 8.693181909620762,
+      "measured_requests": 3,
+      "measured_seconds": 23.59196811914444,
+      "ttft_range_seconds": [
+        1.736540049314499,
+        1.7758877463638783
+      ],
+      "timing_sha256": "6e167231fc7421700e8465159cf88686aae7b0e4f58c491cebde780831668f6f",
+      "checkpoint": "allenai/OLMo-2-0425-1B-Instruct",
+      "revision": "48d788eca847d4d7548f375ad03d3c9312f6139e",
+      "input_ids_sha256": "8d2d723e9426c1e7eb3de30325150466ab31e1abe5f0746cb80727b39d77c1b8",
+      "reference_original_logits_sha256": "36689c7e67d31806e45e309b130013d8d4154f61b7d897ecea9962da9af22f56",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 1.7481633350253105,
+            "mean_request_seconds": 7.863989373048146,
+            "decode_tokens_per_second": 20.784036040513914,
+            "prefill_tokens_per_second": 1171.5152462972508
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 2.5665099918842316,
+              "decode_seconds": 6.12667191773653,
+              "request_seconds": 8.693181909620762,
+              "handoff_seconds": 0.09601562656462193
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 1.736540049314499,
+              "decode_seconds": 6.100512571632862,
+              "request_seconds": 7.837052620947361,
+              "handoff_seconds": 0.08785447850823402
+            },
+            {
+              "ttft_seconds": 1.7481633350253105,
+              "decode_seconds": 6.100927237421274,
+              "request_seconds": 7.849090572446585,
+              "handoff_seconds": 0.08738493733108044
+            },
+            {
+              "ttft_seconds": 1.7758877463638783,
+              "decode_seconds": 6.129937179386616,
+              "request_seconds": 7.905824925750494,
+              "handoff_seconds": 0.09243167005479336
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "OpenELM-1.1B",
+      "module": "openelm_1b_q4nx",
+      "p": 512,
+      "c": 1024,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": 19,
+      "test_chosen_rank_in_ref": 4,
+      "ref_chosen_rank_in_test": 3,
+      "candidate_sha256": "90e78a908045f6d51b1399b2d68ca49344aa4196a58c0eed7a6006c6e4c53eb3",
+      "reference_sha256": "822df9d98ec521f52d2fa591fc8a118e2a8674096fd6cad7c63f7f7e009750d4",
+      "reset": "PASS",
+      "median_ttft_seconds": 0.8369234520941973,
+      "mean_request_seconds": 4.626317294935386,
+      "decode_tokens_per_second": 33.51069830137186,
+      "prefill_tokens_per_second": 611.7644316440704,
+      "mean_decode_seconds": 3.789834483837088,
+      "warmup_requests": 1,
+      "warmup_seconds": 5.698059629648924,
+      "measured_requests": 3,
+      "measured_seconds": 13.878951884806156,
+      "ttft_range_seconds": [
+        0.8187743108719587,
+        0.8537506703287363
+      ],
+      "timing_sha256": "c7d33a41c397a6307bf0a0edc3f2a51d4fde4bae5e34d667507c1e59f40e2379",
+      "checkpoint": "apple/OpenELM-1_1B-Instruct",
+      "revision": "effd796da2a77361d7360e45e54c7cc14bc5df2a",
+      "input_ids_sha256": "e0132a40bb7af05a94eee652e41c8000063624ab793eeb05368fbf5c273d2aa0",
+      "reference_original_logits_sha256": "c0ffe071a0c713aa675f7477b6d43963a2e6134f945a75ddf037843a22849a0d",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 0.8369234520941973,
+            "prefill_tokens_per_second": 611.7644316440704,
+            "decode_tokens_per_second": 33.51069830137186,
+            "mean_request_seconds": 4.626317294935386
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 1.8187821600586176,
+              "decode_seconds": 3.8792774695903063,
+              "request_seconds": 5.698059629648924,
+              "handoff_seconds": 0.06697953306138515
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 0.8369234520941973,
+              "decode_seconds": 3.7863974757492542,
+              "request_seconds": 4.6233209278434515,
+              "handoff_seconds": 0.009743528440594673
+            },
+            {
+              "ttft_seconds": 0.8187743108719587,
+              "decode_seconds": 3.7921036314219236,
+              "request_seconds": 4.610877942293882,
+              "handoff_seconds": 0.009336309507489204
+            },
+            {
+              "ttft_seconds": 0.8537506703287363,
+              "decode_seconds": 3.791002344340086,
+              "request_seconds": 4.644753014668822,
+              "handoff_seconds": 0.009680267423391342
+            }
+          ]
+        }
+      ],
+      "measurement_source_commit": "4bb3c89f4c6d642427e01baea85caba1dde925f4",
+      "compiler_source": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+      "normalization": "Model-local rope.cc/rms_residual.cc: FP32 normalization, BF16 rounding, then learned BF16 weight multiplication."
+    },
+    {
+      "model": "OpenELM-1.1B",
+      "module": "openelm_1b_q4nx",
+      "p": 1024,
+      "c": 2048,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": 27,
+      "test_chosen_rank_in_ref": 2,
+      "ref_chosen_rank_in_test": 2,
+      "candidate_sha256": "d01d08af6958ee885fc3c546207fc3ea470585a4a5934b6e22a6e840567c1338",
+      "reference_sha256": "6415c0590784bd889ca67662a2715067a3dfff36a329976ff6dc47040789063a",
+      "median_ttft_seconds": 1.4019690565764904,
+      "mean_request_seconds": 5.44621020493408,
+      "decode_tokens_per_second": 31.557040485295534,
+      "prefill_tokens_per_second": 730.4012846763792,
+      "mean_decode_seconds": 4.024458505834143,
+      "warmup_requests": 1,
+      "warmup_seconds": 6.453031603246927,
+      "measured_requests": 3,
+      "measured_seconds": 16.33863061480224,
+      "ttft_range_seconds": [
+        1.3999551814049482,
+        1.4633308593183756
+      ],
+      "timing_sha256": "8b3b6e67f86dbe28708a0a81759d55ad6f1f90d42a3da6a82e78d48e69eec375",
+      "checkpoint": "apple/OpenELM-1_1B-Instruct",
+      "revision": "effd796da2a77361d7360e45e54c7cc14bc5df2a",
+      "input_ids_sha256": "0303ab3e1144e9dd7b3ac7f337d082f0efb8cf2ab566149070fe7c98c494e3c0",
+      "reference_original_logits_sha256": "4c64b1962a0f6e082669e0ad039cd15a4cf61afc04c47495ed34f1b8ebf9d9c0",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 1.4019690565764904,
+            "prefill_tokens_per_second": 730.4012846763792,
+            "decode_tokens_per_second": 31.557040485295534,
+            "mean_request_seconds": 5.44621020493408
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 2.402190987020731,
+              "decode_seconds": 4.050840616226196,
+              "request_seconds": 6.453031603246927,
+              "handoff_seconds": 0.04714837297797203
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 1.4633308593183756,
+              "decode_seconds": 4.024662233889103,
+              "request_seconds": 5.4879930932074785,
+              "handoff_seconds": 0.018968867138028145
+            },
+            {
+              "ttft_seconds": 1.3999551814049482,
+              "decode_seconds": 4.0136589538306,
+              "request_seconds": 5.413614135235548,
+              "handoff_seconds": 0.01752776838839054
+            },
+            {
+              "ttft_seconds": 1.4019690565764904,
+              "decode_seconds": 4.035054329782724,
+              "request_seconds": 5.437023386359215,
+              "handoff_seconds": 0.03874541446566582
+            }
+          ]
+        }
+      ],
+      "reset": "PASS",
+      "measurement_source_commit": "4bb3c89f4c6d642427e01baea85caba1dde925f4",
+      "compiler_source": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+      "normalization": "Model-local rope.cc/rms_residual.cc: FP32 normalization, BF16 rounding, then learned BF16 weight multiplication."
+    },
+    {
+      "model": "Phi-2",
+      "module": "phi2_2_7b_q4nx",
+      "p": 512,
+      "c": 1024,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "3bf5196b7e32e5b88580bfae62b904fb381ca71192f5a5e3d4cef2b99d7a4d88",
+      "reference_sha256": "d2cd88d17efd3a490a816bb01340016c9c44052cf51df611ff7adba1eef11c80",
+      "reset": "PASS",
+      "median_ttft_seconds": 1.9878000505268574,
+      "mean_request_seconds": 14.892235038802028,
+      "decode_tokens_per_second": 9.841571989659357,
+      "prefill_tokens_per_second": 257.5711776766968,
+      "mean_decode_seconds": 12.904442515224218,
+      "warmup_requests": 1,
+      "warmup_seconds": 17.14875161461532,
+      "measured_requests": 3,
+      "measured_seconds": 44.67670511640608,
+      "ttft_range_seconds": [
+        1.987606305629015,
+        1.9879712145775557
+      ],
+      "timing_sha256": "8af88180659b383cfe3bb030a32cff3a34f38110d888fdce046af3424a8da9c9",
+      "checkpoint": "microsoft/phi-2",
+      "revision": "810d367871c1d460086d9f82db8696f2e0a0fcd0",
+      "input_ids_sha256": "1b1f97512954ba9959bd31b0a8d47bbee6550bfd4affe47ffaeda68534bfb1cd",
+      "reference_original_logits_sha256": "8a76591c318b0573f98999c0cfae2faaac3f8e92d5e0e59e1610fd8cc59475bc",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 1.9878000505268574,
+            "mean_request_seconds": 14.892235038802028,
+            "decode_tokens_per_second": 9.841571989659357,
+            "prefill_tokens_per_second": 257.5711776766968
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 3.9820541590452194,
+              "decode_seconds": 13.166697455570102,
+              "request_seconds": 17.14875161461532,
+              "handoff_seconds": 0.35259560495615005
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 1.9878000505268574,
+              "decode_seconds": 12.907727440819144,
+              "request_seconds": 14.895527491346002,
+              "handoff_seconds": 0.09451243281364441
+            },
+            {
+              "ttft_seconds": 1.9879712145775557,
+              "decode_seconds": 12.901785910129547,
+              "request_seconds": 14.889757124707103,
+              "handoff_seconds": 0.09435910172760487
+            },
+            {
+              "ttft_seconds": 1.987606305629015,
+              "decode_seconds": 12.903814194723964,
+              "request_seconds": 14.891420500352979,
+              "handoff_seconds": 0.09417699091136456
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "Phi-2",
+      "module": "phi2_2_7b_q4nx",
+      "p": 1024,
+      "c": 2048,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "b2525db6a5afee188d01cb773e8fe37c28ca808dc34a705990d988d603c2a68d",
+      "reference_sha256": "8a99b044124954e9411add3e5bc00e368ab7109acbe34168449bfb9984c29e5e",
+      "median_ttft_seconds": 3.8243966829031706,
+      "mean_request_seconds": 20.631744269281626,
+      "decode_tokens_per_second": 7.568088629276103,
+      "prefill_tokens_per_second": 267.75465123107017,
+      "mean_decode_seconds": 16.780987409253914,
+      "warmup_requests": 1,
+      "warmup_seconds": 22.630422811955214,
+      "measured_requests": 3,
+      "measured_seconds": 61.89523280784488,
+      "ttft_range_seconds": [
+        3.816006176173687,
+        3.9118677210062742
+      ],
+      "timing_sha256": "20b6cfab1b205b43be8b7e0dc4e99a0deb836bd4800babd7a525d9504efb7d79",
+      "checkpoint": "microsoft/phi-2",
+      "revision": "810d367871c1d460086d9f82db8696f2e0a0fcd0",
+      "input_ids_sha256": "8edda7a2dbb73e5d6d36e6e95ae6de8d92b94aab60ef06c1a107f23b7ad660c7",
+      "reference_original_logits_sha256": "89eebfea9bb481f5541b0fe312bfb05bfb6c3ec207bccc19abc1dcfed83bac5e",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 3.8243966829031706,
+            "mean_request_seconds": 20.631744269281626,
+            "decode_tokens_per_second": 7.568088629276103,
+            "prefill_tokens_per_second": 267.75465123107017
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 5.793836044147611,
+              "decode_seconds": 16.836586767807603,
+              "request_seconds": 22.630422811955214,
+              "handoff_seconds": 0.22618439607322216
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 3.816006176173687,
+              "decode_seconds": 16.78032097965479,
+              "request_seconds": 20.596327155828476,
+              "handoff_seconds": 0.1722259484231472
+            },
+            {
+              "ttft_seconds": 3.8243966829031706,
+              "decode_seconds": 16.78312247991562,
+              "request_seconds": 20.60751916281879,
+              "handoff_seconds": 0.17211505770683289
+            },
+            {
+              "ttft_seconds": 3.9118677210062742,
+              "decode_seconds": 16.779518768191338,
+              "request_seconds": 20.691386489197612,
+              "handoff_seconds": 0.17334846407175064
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "Mistral-7B-Instruct-v0.3",
+      "module": "mistral7b_v03_q4nx",
+      "p": 512,
+      "c": 1024,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": 4,
+      "test_chosen_rank_in_ref": 2,
+      "ref_chosen_rank_in_test": 2,
+      "candidate_sha256": "68fd2a186fd538833372927f2ece0eeed900444e9d3aae4eaa93384bf9ccccb6",
+      "reference_sha256": "5b96b5e240f49a651eec0f3fd9959a080d17b171d502c81942d880e14caf0759",
+      "reset": "PASS",
+      "median_ttft_seconds": 1.3571528401225805,
+      "mean_request_seconds": 12.133208771546682,
+      "decode_tokens_per_second": 11.786432756686219,
+      "prefill_tokens_per_second": 377.260382812709,
+      "mean_decode_seconds": 10.775100712974867,
+      "warmup_requests": 1,
+      "warmup_seconds": 13.133517051115632,
+      "measured_requests": 3,
+      "measured_seconds": 36.399626314640045,
+      "ttft_range_seconds": [
+        1.3545536436140537,
+        1.3626176919788122
+      ],
+      "timing_sha256": "bb435cf40b817f5f277de43d30beafcbc0efa10d6e145edc6d88d8b3c958e5c0",
+      "checkpoint": "mistralai/Mistral-7B-Instruct-v0.3",
+      "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+      "input_ids_sha256": "41ac07f4bce34ecd3b06a90b30dcd01da5c5e176f2f7690fd0a41e6024a27eb4",
+      "reference_original_logits_sha256": "57fca4e1e2215eea111cbe0905c953f09a231b74ac9a5557ef4b7bf5de6afcf2",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 1.3571528401225805,
+            "mean_request_seconds": 12.133208771546682,
+            "decode_tokens_per_second": 11.786432756686219,
+            "prefill_tokens_per_second": 377.260382812709
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 1.5349649470299482,
+              "decode_seconds": 11.598552104085684,
+              "request_seconds": 13.133517051115632,
+              "handoff_seconds": 0.8180417697876692
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 1.3571528401225805,
+              "decode_seconds": 10.751175981014967,
+              "request_seconds": 12.108328821137547,
+              "handoff_seconds": 0.03247098810970783
+            },
+            {
+              "ttft_seconds": 1.3626176919788122,
+              "decode_seconds": 10.791796946898103,
+              "request_seconds": 12.154414638876915,
+              "handoff_seconds": 0.07416711188852787
+            },
+            {
+              "ttft_seconds": 1.3545536436140537,
+              "decode_seconds": 10.782329211011529,
+              "request_seconds": 12.136882854625583,
+              "handoff_seconds": 0.06147067993879318
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "Mistral-7B-Instruct-v0.3",
+      "module": "mistral7b_v03_q4nx",
+      "p": 1024,
+      "c": 2048,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "4b1195ca2816c3df198e9c8466ba3008edf4f038a65f13cc831e1b90f9782680",
+      "reference_sha256": "8dffb616612cce013124271e64894ba1135634d95c6d1eb3e9ed49e1931d81f3",
+      "median_ttft_seconds": 2.6116884406656027,
+      "mean_request_seconds": 13.839735925818482,
+      "decode_tokens_per_second": 11.311735628596516,
+      "prefill_tokens_per_second": 392.08352116419684,
+      "mean_decode_seconds": 11.227277950073281,
+      "warmup_requests": 1,
+      "warmup_seconds": 15.451627044007182,
+      "measured_requests": 3,
+      "measured_seconds": 41.51920777745545,
+      "ttft_range_seconds": [
+        2.6089230310171843,
+        2.6167624555528164
+      ],
+      "timing_sha256": "c7ceee5f7f2259f7408da34be3906c123d401411f6621299ce1b412f84c4db97",
+      "checkpoint": "mistralai/Mistral-7B-Instruct-v0.3",
+      "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+      "input_ids_sha256": "e739ef1e08717445849164deedc0c49767f55f5c01388aea15e2332b10326919",
+      "reference_original_logits_sha256": "7c287bf6224a9a3535d32384d823fde7ac7ceb76ab772199c04cff64e400ad21",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 2.6116884406656027,
+            "mean_request_seconds": 13.839735925818482,
+            "decode_tokens_per_second": 11.311735628596516,
+            "prefill_tokens_per_second": 392.08352116419684
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 2.978243872523308,
+              "decode_seconds": 12.473383171483874,
+              "request_seconds": 15.451627044007182,
+              "handoff_seconds": 1.3246849197894335
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 2.6167624555528164,
+              "decode_seconds": 11.26410554908216,
+              "request_seconds": 13.880868004634976,
+              "handoff_seconds": 0.1164984442293644
+            },
+            {
+              "ttft_seconds": 2.6116884406656027,
+              "decode_seconds": 11.212676677852869,
+              "request_seconds": 13.824365118518472,
+              "handoff_seconds": 0.06819332204759121
+            },
+            {
+              "ttft_seconds": 2.6089230310171843,
+              "decode_seconds": 11.205051623284817,
+              "request_seconds": 13.813974654302001,
+              "handoff_seconds": 0.060221824795007706
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "Mistral-7B-Instruct-v0.3",
+      "module": "mistral7b_v03_q4nx",
+      "p": 2048,
+      "c": 4096,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "adaaed7eae667e0feddab9f57bf139c591784082c0ed25cd98ec071fe1956e26",
+      "reference_sha256": "ead5a4ee502cddc160cda0233084224fa0de3b50369646c9171ad277227e4204",
+      "median_ttft_seconds": 5.237080963328481,
+      "mean_request_seconds": 17.382780874768894,
+      "decode_tokens_per_second": 10.455818656013998,
+      "prefill_tokens_per_second": 391.0575403245957,
+      "mean_decode_seconds": 12.146346850320697,
+      "warmup_requests": 1,
+      "warmup_seconds": 26.59209632128477,
+      "measured_requests": 3,
+      "measured_seconds": 52.14834262430668,
+      "ttft_range_seconds": [
+        5.234042698517442,
+        5.238178411498666
+      ],
+      "timing_sha256": "32e350ccd1760d509273f916c93097958fc57e706b57479c9303c724e7537de2",
+      "checkpoint": "mistralai/Mistral-7B-Instruct-v0.3",
+      "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+      "input_ids_sha256": "954b19354e419569bdeafd533ff7e54413bc0adf84341c50df4c4a8944f49fa4",
+      "reference_original_logits_sha256": "d94505aaed24ee877a1961f634e0124ec4b14bd580644130148da71c63c3e734",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 5.237080963328481,
+            "mean_request_seconds": 17.382780874768894,
+            "decode_tokens_per_second": 10.455818656013998,
+            "prefill_tokens_per_second": 391.0575403245957
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 9.849788594990969,
+              "decode_seconds": 16.742307726293802,
+              "request_seconds": 26.59209632128477,
+              "handoff_seconds": 4.721383320167661
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 5.238178411498666,
+              "decode_seconds": 12.159993376582861,
+              "request_seconds": 17.398171788081527,
+              "handoff_seconds": 0.14343501068651676
+            },
+            {
+              "ttft_seconds": 5.234042698517442,
+              "decode_seconds": 12.141713559627533,
+              "request_seconds": 17.375756258144975,
+              "handoff_seconds": 0.11913953348994255
+            },
+            {
+              "ttft_seconds": 5.237080963328481,
+              "decode_seconds": 12.137333614751697,
+              "request_seconds": 17.374414578080177,
+              "handoff_seconds": 0.11096908338367939
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "model": "Mistral-7B-Instruct-v0.3",
+      "module": "mistral7b_v03_q4nx",
+      "p": 4096,
+      "c": 8192,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": null,
+      "test_chosen_rank_in_ref": null,
+      "ref_chosen_rank_in_test": null,
+      "candidate_sha256": "aa837f235d682ab08787c7e446b8b8c20c985f8e22dc1a7a2b6426c9f700c1e3",
+      "reference_sha256": "053dfe5625a212adaef1c99ff77639140e97a9f6911af4eec1066ea514464b47",
+      "median_ttft_seconds": 16.04507585801184,
+      "mean_request_seconds": 29.994685330117743,
+      "decode_tokens_per_second": 9.106313642797483,
+      "prefill_tokens_per_second": 255.28081239670365,
+      "mean_decode_seconds": 13.9463678697745,
+      "warmup_requests": 1,
+      "warmup_seconds": 34.83419010974467,
+      "measured_requests": 3,
+      "measured_seconds": 89.98405599035323,
+      "ttft_range_seconds": [
+        16.034475404769182,
+        16.0654011182487
+      ],
+      "timing_sha256": "d43cf962253282e2f30cfb5cf2007f9ef3c58e962c9476f37248bf3eff3ffc7b",
+      "checkpoint": "mistralai/Mistral-7B-Instruct-v0.3",
+      "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+      "input_ids_sha256": "436f9c186d8c9ecb61bff6419ac01ff18122f7da9cd36c48e0fd29aa956acb1c",
+      "reference_original_logits_sha256": "eb40eda7d36597b16472e5a52e3a0a6f08126a32d2e69cc9050d9c8f51b50ef0",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 16.04507585801184,
+            "mean_request_seconds": 29.994685330117743,
+            "decode_tokens_per_second": 9.106313642797483,
+            "prefill_tokens_per_second": 255.28081239670365
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 16.55682821571827,
+              "decode_seconds": 18.2773618940264,
+              "request_seconds": 34.83419010974467,
+              "handoff_seconds": 4.518350955098867
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 16.04507585801184,
+              "decode_seconds": 13.943880749866366,
+              "request_seconds": 29.988956607878208,
+              "handoff_seconds": 0.19306189380586147
+            },
+            {
+              "ttft_seconds": 16.0654011182487,
+              "decode_seconds": 13.94908500276506,
+              "request_seconds": 30.01448612101376,
+              "handoff_seconds": 0.19092374481260777
+            },
+            {
+              "ttft_seconds": 16.034475404769182,
+              "decode_seconds": 13.946137856692076,
+              "request_seconds": 29.980613261461258,
+              "handoff_seconds": 0.1902234833687544
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "current_source_compatibility": {
+    "source_commit": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+    "upstream_commit": "555946050dcdb1728342117946e37f3074512e0c",
+    "llvm_distro": "24.0.0.2026100106+bdf04ebb",
+    "aie": "1.4.5.dev64+g843e9c3",
+    "peano": "22.0.0.2026101901+4f5df13d",
+    "cpp_repeat_counts": "PASS",
+    "one_bd_fixed_inner_filecheck": "PASS",
+    "decode_lowerings": 38,
+    "decode_lowerings_identical": 38,
+    "binaries": {
+      "air-opt": "637a50a647744b88cb5ec2e65108a431704d0bf8a0a9ccb30928fe9acfd07710",
+      "aircc": "88b1c1ecb9e07fcd889e02f67080d69b86cb364f2ce6e75e2aa3419912938c0b",
+      "air-translate": "24892db686ef23acbf0c147a4c19f0a6d8b3a86855cecbf3bf8ef6d89cdcf189"
+    }
+  },
+  "existing_regressions": {
+    "llama32_1b_default_prefill": {
+      "status": "PASS",
+      "layers": 16,
+      "p": 512,
+      "expected_first_token": 12366,
+      "bitwise_fresh_context_repeatability": true,
+      "compiler": "Published AIR wheel"
+    },
+    "dflash_qwen3_4b_target": {
+      "status": "PASS",
+      "batch": 8,
+      "capacity": 4096,
+      "prefixes": [
+        0,
+        64,
+        1024
+      ],
+      "checks_per_prefix": 14,
+      "compiler_source": "dddd69662afea9a3f9cc20abf8e780b46af97b8c"
+    }
+  },
+  "ci_integration": {
+    "status": "PASS",
+    "lit_tests": 3,
+    "device_configs": 2,
+    "host_tests": 13,
+    "compiler_base": "555946050dcdb1728342117946e37f3074512e0c",
+    "compiler_source": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+    "records": [
+      {
+        "model": "openelm_1b_q4nx_p512_c1024",
+        "source": {
+          "commit": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+          "source_sha256": "0ece05457cb09ccf64e3255fd363375d191187c9d7206dd0b37623ecf8f48555"
+        },
+        "metrics": {
+          "ttft_ms": 809.6445016562939,
+          "prefill_tokens_per_sec": 632.3763070737824,
+          "decode_tokens_per_sec": 33.670948444643294,
+          "context_len": 512,
+          "mean_request_ms": 4580.654365321
+        },
+        "gate": {
+          "prompt_idx": 0,
+          "prompt_text": "",
+          "n_steps": 32,
+          "k": 5,
+          "divergence_step": 19,
+          "test_chosen_at_div": 1223,
+          "ref_chosen_at_div": 2761,
+          "test_topk_at_div": [
+            1223,
+            24809,
+            29889,
+            2761,
+            29652
+          ],
+          "ref_topk_at_div": [
+            2761,
+            29889,
+            24809,
+            1223,
+            29652
+          ],
+          "status": "OK",
+          "fail_reason": null,
+          "test_chosen_rank_in_ref": 4,
+          "ref_chosen_rank_in_test": 4,
+          "test_chosen_text_at_div": null,
+          "ref_chosen_text_at_div": null,
+          "agreed_prefix_text": null,
+          "candidate_sha256": "0797132564e68a9f60d32afa962caf8d941ccc95916720c20b5364ddfc50ff82",
+          "reference_sha256": "4e0b01f34aae43805b921ce88fb6df5287b2b77c0fb2ff49b7dc1da6b200a13b"
+        },
+        "reference_versions": {
+          "torch": "2.14.1+cpu",
+          "transformers": "4.39.3"
+        },
+        "reset": "PASS",
+        "status": "PASS",
+        "stage_seconds": {
+          "weights": 31.667106103152037,
+          "compile": 196.51944918371737,
+          "reference": 7.459446530789137,
+          "verify": 6.39793860912323,
+          "profile": 20.212697062641382
+        }
+      },
+      {
+        "model": "phi2_2_7b_q4nx_p512_c1024",
+        "source": {
+          "commit": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+          "source_sha256": "0ece05457cb09ccf64e3255fd363375d191187c9d7206dd0b37623ecf8f48555"
+        },
+        "metrics": {
+          "ttft_ms": 1980.202078819275,
+          "prefill_tokens_per_sec": 258.559470003833,
+          "decode_tokens_per_sec": 8.623810761140364,
+          "context_len": 512,
+          "mean_request_ms": 16706.381766746443
+        },
+        "gate": {
+          "prompt_idx": 0,
+          "prompt_text": "",
+          "n_steps": 32,
+          "k": 5,
+          "divergence_step": null,
+          "test_chosen_at_div": null,
+          "ref_chosen_at_div": null,
+          "test_topk_at_div": null,
+          "ref_topk_at_div": null,
+          "status": "OK",
+          "fail_reason": null,
+          "test_chosen_rank_in_ref": null,
+          "ref_chosen_rank_in_test": null,
+          "test_chosen_text_at_div": null,
+          "ref_chosen_text_at_div": null,
+          "agreed_prefix_text": null,
+          "candidate_sha256": "3bf5196b7e32e5b88580bfae62b904fb381ca71192f5a5e3d4cef2b99d7a4d88",
+          "reference_sha256": "37a6dd76e9344e6c2a4f259c5d94362fd9026854e6e1f106eb5bd1fcb3896765"
+        },
+        "reference_versions": {
+          "torch": "2.14.1+cpu",
+          "transformers": "5.3.0"
+        },
+        "reset": "PASS",
+        "status": "PASS",
+        "stage_seconds": {
+          "weights": 148.10495531000197,
+          "compile": 185.6360746435821,
+          "reference": 16.318368893116713,
+          "verify": 29.410418700426817,
+          "profile": 70.45719450712204
+        }
+      }
+    ]
+  },
+  "superseded_configurations": [
+    {
+      "model": "OpenELM-1.1B",
+      "module": "openelm_1b_q4nx",
+      "p": 512,
+      "c": 1024,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": 19,
+      "test_chosen_rank_in_ref": 4,
+      "ref_chosen_rank_in_test": 3,
+      "candidate_sha256": "90e78a908045f6d51b1399b2d68ca49344aa4196a58c0eed7a6006c6e4c53eb3",
+      "reference_sha256": "822df9d98ec521f52d2fa591fc8a118e2a8674096fd6cad7c63f7f7e009750d4",
+      "reset": "PASS",
+      "median_ttft_seconds": 0.8369234520941973,
+      "mean_request_seconds": 4.626317294935386,
+      "decode_tokens_per_second": 33.51069830137186,
+      "prefill_tokens_per_second": 611.7644316440704,
+      "mean_decode_seconds": 3.789834483837088,
+      "warmup_requests": 1,
+      "warmup_seconds": 5.698059629648924,
+      "measured_requests": 3,
+      "measured_seconds": 13.878951884806156,
+      "ttft_range_seconds": [
+        0.8187743108719587,
+        0.8537506703287363
+      ],
+      "timing_sha256": "c7d33a41c397a6307bf0a0edc3f2a51d4fde4bae5e34d667507c1e59f40e2379",
+      "checkpoint": "apple/OpenELM-1_1B-Instruct",
+      "revision": "effd796da2a77361d7360e45e54c7cc14bc5df2a",
+      "input_ids_sha256": "e0132a40bb7af05a94eee652e41c8000063624ab793eeb05368fbf5c273d2aa0",
+      "reference_original_logits_sha256": "c0ffe071a0c713aa675f7477b6d43963a2e6134f945a75ddf037843a22849a0d",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 0.8369234520941973,
+            "prefill_tokens_per_second": 611.7644316440704,
+            "decode_tokens_per_second": 33.51069830137186,
+            "mean_request_seconds": 4.626317294935386
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 1.8187821600586176,
+              "decode_seconds": 3.8792774695903063,
+              "request_seconds": 5.698059629648924,
+              "handoff_seconds": 0.06697953306138515
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 0.8369234520941973,
+              "decode_seconds": 3.7863974757492542,
+              "request_seconds": 4.6233209278434515,
+              "handoff_seconds": 0.009743528440594673
+            },
+            {
+              "ttft_seconds": 0.8187743108719587,
+              "decode_seconds": 3.7921036314219236,
+              "request_seconds": 4.610877942293882,
+              "handoff_seconds": 0.009336309507489204
+            },
+            {
+              "ttft_seconds": 0.8537506703287363,
+              "decode_seconds": 3.791002344340086,
+              "request_seconds": 4.644753014668822,
+              "handoff_seconds": 0.009680267423391342
+            }
+          ]
+        }
+      ],
+      "measurement_source_commit": "4bb3c89f4c6d642427e01baea85caba1dde925f4",
+      "compiler_source": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+      "normalization": "Model-local rope.cc/rms_residual.cc: FP32 normalization, BF16 rounding, then learned BF16 weight multiplication."
+    },
+    {
+      "model": "OpenELM-1.1B",
+      "module": "openelm_1b_q4nx",
+      "p": 1024,
+      "c": 2048,
+      "gate": "PASS",
+      "profile": "PASS",
+      "divergence_step": 27,
+      "test_chosen_rank_in_ref": 2,
+      "ref_chosen_rank_in_test": 2,
+      "candidate_sha256": "d01d08af6958ee885fc3c546207fc3ea470585a4a5934b6e22a6e840567c1338",
+      "reference_sha256": "6415c0590784bd889ca67662a2715067a3dfff36a329976ff6dc47040789063a",
+      "median_ttft_seconds": 1.4019690565764904,
+      "mean_request_seconds": 5.44621020493408,
+      "decode_tokens_per_second": 31.557040485295534,
+      "prefill_tokens_per_second": 730.4012846763792,
+      "mean_decode_seconds": 4.024458505834143,
+      "warmup_requests": 1,
+      "warmup_seconds": 6.453031603246927,
+      "measured_requests": 3,
+      "measured_seconds": 16.33863061480224,
+      "ttft_range_seconds": [
+        1.3999551814049482,
+        1.4633308593183756
+      ],
+      "timing_sha256": "8b3b6e67f86dbe28708a0a81759d55ad6f1f90d42a3da6a82e78d48e69eec375",
+      "checkpoint": "apple/OpenELM-1_1B-Instruct",
+      "revision": "effd796da2a77361d7360e45e54c7cc14bc5df2a",
+      "input_ids_sha256": "0303ab3e1144e9dd7b3ac7f337d082f0efb8cf2ab566149070fe7c98c494e3c0",
+      "reference_original_logits_sha256": "4c64b1962a0f6e082669e0ad039cd15a4cf61afc04c47495ed34f1b8ebf9d9c0",
+      "batches": [
+        {
+          "summary": {
+            "median_ttft_seconds": 1.4019690565764904,
+            "prefill_tokens_per_second": 730.4012846763792,
+            "decode_tokens_per_second": 31.557040485295534,
+            "mean_request_seconds": 5.44621020493408
+          },
+          "warmups": [
+            {
+              "ttft_seconds": 2.402190987020731,
+              "decode_seconds": 4.050840616226196,
+              "request_seconds": 6.453031603246927,
+              "handoff_seconds": 0.04714837297797203
+            }
+          ],
+          "measured": [
+            {
+              "ttft_seconds": 1.4633308593183756,
+              "decode_seconds": 4.024662233889103,
+              "request_seconds": 5.4879930932074785,
+              "handoff_seconds": 0.018968867138028145
+            },
+            {
+              "ttft_seconds": 1.3999551814049482,
+              "decode_seconds": 4.0136589538306,
+              "request_seconds": 5.413614135235548,
+              "handoff_seconds": 0.01752776838839054
+            },
+            {
+              "ttft_seconds": 1.4019690565764904,
+              "decode_seconds": 4.035054329782724,
+              "request_seconds": 5.437023386359215,
+              "handoff_seconds": 0.03874541446566582
+            }
+          ]
+        }
+      ],
+      "reset": "PASS",
+      "measurement_source_commit": "4bb3c89f4c6d642427e01baea85caba1dde925f4",
+      "compiler_source": "dddd69662afea9a3f9cc20abf8e780b46af97b8c",
+      "normalization": "Model-local rope.cc/rms_residual.cc: FP32 normalization, BF16 rounding, then learned BF16 weight multiplication."
+    }
+  ],
+  "review_fixes": {
+    "source_commit": "4bb3c89f4c6d642427e01baea85caba1dde925f4",
+    "model_configurations_remeasured": [
+      "OpenELM P512/C1024",
+      "OpenELM P1024/C2048"
+    ],
+    "compiler": "Locally built AIR compiler dddd696 on upstream 5559460; AIE/Peano unchanged.",
+    "attention_regression": {
+      "status": "PASS",
+      "cases": [
+        "ordinary QK accumulation",
+        "pretransposed QK",
+        "zero_c with NaN destination",
+        "scale_c row factors"
+      ],
+      "precision_modes": [
+        "native BF16",
+        "BFP16"
+      ],
+      "exact_values": 8192,
+      "original_kernel_negative_control": "FAIL"
+    },
+    "production_attention_compatibility": {
+      "status": "PASS",
+      "functions": [
+        "matmul_a_b_bf16",
+        "matmul_g_b_bf16",
+        "matmul_a_b_bf16_chunk",
+        "matmul_g_b_bf16_chunk"
+      ],
+      "scope": "SmolLM3/Mistral P4096 ordinary and chunked QK/GV functions; optimized LLVM IR comparison canonicalizes SSA/basic-block names and excludes alias metadata."
+    },
+    "host_tests": 14,
+    "original_ci_samples": "ci_integration retains the pre-review-fix samples; OpenELM configuration rows above contain the corrected-build measurements."
+  }
+}

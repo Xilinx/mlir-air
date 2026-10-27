@@ -1,0 +1,51 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+# Adapted from the declared Granite Q4NX deployment example.
+"""Fixed task geometry and shared, production-independent capture utilities."""
+
+from pathlib import Path
+import os
+
+ROOT = Path(__file__).resolve().parents[3]
+HERE = Path(__file__).resolve().parent
+
+from ..shared.deployment import file_hash, save_json
+
+RUN = Path(os.environ.get("AIR_MODEL_BUILD_DIR", str(HERE / "build")))
+REVISION = "effd796da2a77361d7360e45e54c7cc14bc5df2a"
+LAYERS = [
+    (16, 4, 1024),
+    (16, 4, 1280),
+    (16, 4, 1536),
+    (20, 5, 1792),
+    (20, 5, 2048),
+    (20, 5, 2304),
+    (20, 5, 2560),
+    (20, 5, 2816),
+    (20, 5, 3072),
+    (20, 5, 3328),
+    (24, 6, 3584),
+    (24, 6, 3840),
+    (24, 6, 4096),
+    (24, 6, 4608),
+    (24, 6, 4608),
+    (24, 6, 5120),
+    (24, 6, 5376),
+    (24, 6, 5632),
+    (28, 7, 5888),
+    (28, 7, 6144),
+    (28, 7, 6400),
+    (28, 7, 6656),
+    (28, 7, 6912),
+    (28, 7, 7168),
+    (32, 8, 7424),
+    (32, 8, 7680),
+    (32, 8, 7936),
+    (32, 8, 8192),
+]
+
+
+def read_task():
+    from ..shared.deployment import read_task
+
+    return read_task("openelm_1b_q4nx")
