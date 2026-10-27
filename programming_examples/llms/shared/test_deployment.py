@@ -30,7 +30,10 @@ from .prepare_affine_q4 import prepare, quantize
 
 class AffineDeploymentTests(unittest.TestCase):
     def test_prefill_reuse_rejects_wrong_sequence_before_build(self):
-        from ..granite33_2b_q4nx.build import build_prefill, validate_prefill_reuse
+        from air_examples.llms.granite33_2b_q4nx.build import (
+            build_prefill,
+            validate_prefill_reuse,
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             source, destination = Path(tmp) / "source", Path(tmp) / "new"
