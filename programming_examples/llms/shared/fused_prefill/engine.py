@@ -109,6 +109,15 @@ class Engine:
         # (kv_rec, q_write, o_read), V in "attn_v_chunks" column chunks
         self.attn_format = self.man.get("attn_format", "bfp16")
         self.attn_v_chunks = self.man.get("attn_v_chunks", 1)
+        if self.attn_format == "bf16":
+            # every chunk whole 8-column blocks of V
+            n = self.attn_v_chunks
+            ok = isinstance(n, int) and n >= 1
+            if not ok or any(g.dh % (8 * n) for g in cfg.attn.values()):
+                raise ValueError(
+                    f"attn_v_chunks {n!r} does not split every attention "
+                    "group's dh into 8-column blocks"
+                )
         self.max_len = max_len
         # first kernel BO argument of each group: the GEMM's, then the
         # attention groups' in config order

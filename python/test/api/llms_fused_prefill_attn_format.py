@@ -92,9 +92,13 @@ g = D.Attn(col=7, dh=DH, lkp=LKP, kv_heads=KVH, max_blocks=-(-MAX_LEN // LKP) + 
 cfg = D.Config(attn={"a": g}, windows={"a": 2 * LKP})
 
 
+builds = iter(range(1 << 20))
+
+
 def engine(man):
     """An engine on build dir manifest man, up to opening the device."""
-    d = OUT / f"build_{len(man)}"
+    # a fresh directory each time: the engine loads the host library from it
+    d = OUT / f"build_{next(builds)}"
     d.mkdir(exist_ok=True)
     man = dict(man, attn={"a": "attn_a"}, heads=4)
     (d / "manifest.json").write_text(json.dumps(man))
@@ -121,6 +125,15 @@ def blocks(x):
 
 VC = 2  # V's column chunks
 bf = engine({"attn_format": "bf16", "attn_v_chunks": VC})
+# CHECK: v chunks checked
+# Each chunk must hold whole 8-column blocks of V.
+for bad in (0, 3, 16, "2"):
+    try:
+        engine({"attn_format": "bf16", "attn_v_chunks": bad})
+    except ValueError:
+        continue
+    raise AssertionError(bad)
+print("v chunks checked")
 # CHECK: default bfp16 ok
 bfp = engine({})
 assert (bf.attn_format, bfp.attn_format) == ("bf16", "bfp16")
