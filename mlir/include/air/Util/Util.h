@@ -414,8 +414,9 @@ struct LinearAccessPattern {
 };
 
 // The LinearAccessPattern of `offsets`, `sizes` and `strides` into a memref of
-// `memrefVolume` elements; empty lists mean the whole memref. std::nullopt if
-// a size or stride is not a constant or the lists differ in length.
+// `memrefVolume` elements; empty lists mean the whole memref, and offsets left
+// out in front are 0. std::nullopt if a size or stride is not a constant, or
+// the lists do not line up.
 std::optional<LinearAccessPattern>
 getLinearAccessPattern(ArrayRef<OpFoldResult> offsets,
                        ArrayRef<OpFoldResult> sizes,

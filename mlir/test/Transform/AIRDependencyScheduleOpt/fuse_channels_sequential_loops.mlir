@@ -520,6 +520,111 @@ module {
 
 // -----
 
+// Offsets left out in front are 0: the first loop's get reads elements 0-7
+// and the second's elements 4-11, of the same eight. The channels stay apart.
+
+// CHECK-LABEL: func.func @omitted_offsets_differ
+// CHECK: air.channel.get {{.*}} @chan_a[]
+// CHECK: air.channel.get {{.*}} @chan_b[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @omitted_offsets_differ(%nq: index, %nb: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%aq=%nq, %ab=%nb) : index, index {
+      %1 = air.segment @seg async args(%sq=%aq, %sb=%ab) : index, index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %tq, %p = air.execute -> (memref<16xi16, 1>) {
+          %a = memref.alloc() : memref<16xi16, 1>
+          air.execute_terminator %a : memref<16xi16, 1>
+        }
+        %2 = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %tq) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_a[] (%p[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %3 = scf.for %k = %c0 to %sb step %c1_0 iter_args(%d = %2) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_b[] (%p[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %5 = air.herd @herd async tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) args(%hq=%sq, %hb=%sb) : index, index {
+          %c0_1 = arith.constant 0 : index
+          %c1_1 = arith.constant 1 : index
+          %c2_1 = arith.constant 2 : index
+          %ta, %ba = air.execute -> (memref<16xi16, 2>) {
+            %a = memref.alloc() : memref<16xi16, 2>
+            air.execute_terminator %a : memref<16xi16, 2>
+          }
+          %6 = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_a[] (%ba[] [1, 2, 2, 2] [2, 4, 2, 1]) : (memref<16xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+          %7 = scf.for %k = %c0_1 to %hb step %c1_1 iter_args(%d = %6) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_b[] (%ba[%c1_1, %c2_1] [2, 2, 2] [4, 2, 1]) : (memref<16xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// One loop's get leaves its offsets out, the other's spells them as 0. The
+// channels merge.
+
+// CHECK-LABEL: func.func @omitted_offsets_alike
+// CHECK-NOT: @chan_b
+// CHECK: air.channel.get {{.*}} @chan_a[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @omitted_offsets_alike(%nq: index, %nb: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%aq=%nq, %ab=%nb) : index, index {
+      %1 = air.segment @seg async args(%sq=%aq, %sb=%ab) : index, index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %tq, %p = air.execute -> (memref<16xi16, 1>) {
+          %a = memref.alloc() : memref<16xi16, 1>
+          air.execute_terminator %a : memref<16xi16, 1>
+        }
+        %2 = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %tq) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_a[] (%p[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %3 = scf.for %k = %c0 to %sb step %c1_0 iter_args(%d = %2) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_b[] (%p[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %5 = air.herd @herd async tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) args(%hq=%sq, %hb=%sb) : index, index {
+          %c0_1 = arith.constant 0 : index
+          %c1_1 = arith.constant 1 : index
+          %ta, %ba = air.execute -> (memref<16xi16, 2>) {
+            %a = memref.alloc() : memref<16xi16, 2>
+            air.execute_terminator %a : memref<16xi16, 2>
+          }
+          %6 = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_a[] (%ba[] [2, 2, 2] [4, 2, 1]) : (memref<16xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+          %7 = scf.for %k = %c0_1 to %hb step %c1_1 iter_args(%d = %6) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_b[] (%ba[%c0_1, %c0_1, %c0_1] [2, 2, 2] [4, 2, 1]) : (memref<16xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
 // Each loop moves a tile of 8 and then one of 4 through one channel, into
 // the same core buffers. The channels merge.
 

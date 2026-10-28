@@ -6477,7 +6477,7 @@ private:
     Value memref;
     SmallVector<OpFoldResult> indices;
     std::optional<air::LinearAccessPattern> pattern;
-    SmallVector<OpFoldResult> spelled;
+    SmallVector<OpFoldResult> offsets, sizes, strides;
 
     bool operator==(const Transfer &o) const {
       auto sameList = [](ArrayRef<OpFoldResult> x, ArrayRef<OpFoldResult> y) {
@@ -6487,7 +6487,8 @@ private:
                });
       };
       if (memref != o.memref || !sameList(indices, o.indices) ||
-          !sameList(spelled, o.spelled) ||
+          !sameList(offsets, o.offsets) || !sameList(sizes, o.sizes) ||
+          !sameList(strides, o.strides) ||
           pattern.has_value() != o.pattern.has_value())
         return false;
       if (!pattern)
@@ -6526,9 +6527,9 @@ private:
       t.pattern = air::getLinearAccessPattern(offsets, sizes, strides,
                                               ty.getNumElements());
     if (!t.pattern) {
-      llvm::append_range(t.spelled, offsets);
-      llvm::append_range(t.spelled, sizes);
-      llvm::append_range(t.spelled, strides);
+      t.offsets = offsets;
+      t.sizes = sizes;
+      t.strides = strides;
     }
     return t;
   }

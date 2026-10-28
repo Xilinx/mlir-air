@@ -2417,14 +2417,20 @@ std::optional<air::LinearAccessPattern> air::getLinearAccessPattern(
   LinearAccessPattern p;
   if (offsets.empty() && sizes.empty() && strides.empty())
     return p;
-  if (sizes.size() != strides.size() || offsets.size() != strides.size())
+  if (sizes.size() != strides.size() || offsets.size() > strides.size())
     return std::nullopt;
-  for (auto [off, size, stride] : llvm::zip_equal(offsets, sizes, strides)) {
+  // Offsets left out in front are 0, as canonicalizeWrapAndStrideList reads
+  // them.
+  size_t omitted = strides.size() - offsets.size();
+  for (auto [i, size, stride] : llvm::enumerate(sizes, strides)) {
     auto sz = getConstantIntValue(size), st = getConstantIntValue(stride);
     if (!sz || !st)
       return std::nullopt;
     p.sizes.push_back(*sz);
     p.strides.push_back(*st);
+    if (i < omitted)
+      continue;
+    OpFoldResult off = offsets[i - omitted];
     if (auto c = getConstantIntValue(off))
       p.offset += *c * *st;
     else if (*st)
