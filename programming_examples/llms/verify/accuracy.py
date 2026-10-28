@@ -81,11 +81,20 @@ def load_wikitext() -> tuple[str, str]:
 
 
 def _revision(source: str) -> str:
-    """The cached snapshot commit of an HF repo id, or the resolved path of a
-    local source. Read from one cached file rather than snapshot_download,
-    which rejects a snapshot fetched with allow_patterns as incomplete."""
+    """An identity for a weight source that changes when its weights do: the
+    cached snapshot commit of an HF repo id, or for a local file or directory
+    the size and modification time of every file in it. Read from one cached
+    file rather than snapshot_download, which rejects a snapshot fetched with
+    allow_patterns as incomplete."""
     if os.path.exists(source):
-        return os.path.realpath(source)
+        root = Path(source).resolve()
+        files = [root] if root.is_file() else sorted(root.rglob("*"))
+        stats = [
+            f"{f.relative_to(root.parent)}:{f.stat().st_size}:{f.stat().st_mtime_ns}"
+            for f in files
+            if f.is_file()
+        ]
+        return hashlib.sha256("\n".join(stats).encode()).hexdigest()
     from huggingface_hub import try_to_load_from_cache
 
     for name in ("config.json", "model.q4nx"):
@@ -306,7 +315,9 @@ def run_npu_phase(args, adapter, model_name, base_path, meta):
         targets = toks[first + 1 :]
         chunk_stats.add(logits, base.chunk(ci), targets)
         stats.merge(chunk_stats)
-        c = chunk_stats.summary()
+        # Per-chunk numbers are diagnostics; the token minimum applies to the
+        # total, so short scored tails still combine into a valid run.
+        c = chunk_stats.summary(min_tokens=2)
         per_chunk.append(
             {
                 "chunk": ci,

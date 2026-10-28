@@ -126,7 +126,7 @@ def build_dequant_hf_model(
         weights.append(
             (
                 LM_HEAD,
-                lambda shape: host_weights.requant_q4k_dequant(
+                lambda shape: host_weights.requant_q4k_packed(
                     qm.bf16("model.embed_tokens.weight"), GROUP
                 ),
             )

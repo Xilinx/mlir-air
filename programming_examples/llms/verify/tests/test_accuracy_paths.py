@@ -66,6 +66,16 @@ class DecodePathTest(unittest.TestCase):
 
 
 class CacheTest(unittest.TestCase):
+    def test_local_revision_follows_the_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            w = Path(d, "model.q4nx")
+            w.write_bytes(b"1234")
+            first = accuracy._revision(d)
+            self.assertEqual(accuracy._revision(d), first)
+            w.write_bytes(b"12345")
+            self.assertNotEqual(accuracy._revision(d), first)
+            self.assertNotEqual(accuracy._revision(str(w)), first)
+
     def test_drop_superseded_keeps_other_references(self):
         names = [
             "m.bf16.wikitext-2-test.c2048.n4.aaaaaaaa",  # superseded

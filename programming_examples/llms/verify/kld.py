@@ -222,11 +222,12 @@ class KldStats:
             a, b = getattr(self, f.name), getattr(other, f.name)
             setattr(self, f.name, a + b)
 
-    def summary(self) -> dict:
-        """The statistics llama-perplexity prints at the end of a KLD run."""
+    def summary(self, min_tokens: int = 100) -> dict:
+        """The statistics llama-perplexity prints at the end of a KLD run.
+        Fewer than `min_tokens` scored tokens is an error, as there."""
         n = self.count
-        if n < 100:
-            raise ValueError(f"only {n} scored tokens; need at least 100")
+        if n < max(min_tokens, 2):
+            raise ValueError(f"only {n} scored tokens; need at least {min_tokens}")
         ln_ppl, ln_ppl_se = _mean_se(self.sum_nll, self.sum_nll2, n)
         ln_base, ln_base_se = _mean_se(self.sum_nll_base, self.sum_nll_base2, n)
         cov = (

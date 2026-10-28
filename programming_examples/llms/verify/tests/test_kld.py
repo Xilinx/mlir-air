@@ -160,6 +160,15 @@ class StatsTest(unittest.TestCase):
             diff = kld.compare_base_files(paths["noisy"], paths["base"])
             self.assertGreater(diff["kld_mean"], 1e-2)
 
+    def test_min_tokens_is_per_call(self):
+        rng = np.random.default_rng(8)
+        base = _logits(rng, 50)
+        s = kld.KldStats()
+        s.add(base, kld.quantize_log_probs(base), _targets(rng, base))
+        with self.assertRaises(ValueError):
+            s.summary()
+        self.assertEqual(s.summary(min_tokens=2)["n_tokens"], 50)
+
     def test_too_few_tokens(self):
         s = kld.KldStats()
         base = _logits(np.random.default_rng(6), 50)

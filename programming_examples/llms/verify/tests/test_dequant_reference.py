@@ -70,5 +70,23 @@ class DequantizedReferenceTest(unittest.TestCase):
             )
 
 
+@unittest.skipIf(torch is None, "needs torch")
+class PackedRequantTest(unittest.TestCase):
+    def test_scale_and_min_are_bf16(self):
+        import verify_runner  # noqa: F401  (publishes air_examples)
+        from air_examples.llms.shared.infra import host_weights
+        from ml_dtypes import bfloat16
+
+        w = np.random.default_rng(0).standard_normal((64, 128)).astype(np.float32)
+        q, sc, mn = host_weights.requant_q4k(w, 32)
+        bf = lambda a: a.astype(bfloat16).astype(np.float32)  # noqa: E731
+        want = host_weights.dequant_q4(q, bf(sc), bf(mn), 32)
+        got = host_weights.requant_q4k_packed(w, 32)
+        np.testing.assert_array_equal(got, want)
+        self.assertGreater(
+            np.abs(got - host_weights.requant_q4k_dequant(w, 32)).max(), 0
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

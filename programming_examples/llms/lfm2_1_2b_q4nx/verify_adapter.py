@@ -92,16 +92,44 @@ def build_hf_model(npu_model_name: str, hf_ref_model: str, config):
 def build_dequant_hf_model(
     npu_model_name: str, hf_ref_model: str, config, path: str = "decode"
 ):
-    """The `make accuracy ACC_REF=dequant` reference: build_hf_model's, plus on
-    the decode path the tied head as lfm2_requant packs it, the embedding
-    rounded to Q4_0. The prefill's head is the bf16 embedding itself."""
-    from dequant_reference import replace_head
-    from lfm2_1_2b_q4nx_weights import Lfm2Q4Model, dequant_q4_0, requant_q4_0
+    """The `make accuracy ACC_REF=dequant` reference: every Q4_0 weight as the
+    device holds it, the codes with their scale in bf16 (lfm2_requant packs it
+    so), and on the decode path the tied head the same way. The prefill's head
+    is the bf16 embedding itself. build_hf_model's round trip keeps the scale
+    in float32, which is close but not what the NPU computes with."""
+    import torch
+    from ml_dtypes import bfloat16
+    from transformers import AutoModelForCausalLM
 
-    model = build_hf_model(npu_model_name, hf_ref_model, config)
+    from dequant_reference import replace_head
+    from lfm2_1_2b_q4nx_weights import (
+        Lfm2Q4Model,
+        dequant_q4_0,
+        is_q4_weight,
+        requant_q4_0,
+    )
+
+    src = Lfm2Q4Model(hf_ref_model)
+
+    def packed(name):
+        q, scale = requant_q4_0(src.hf.bf16(name))
+        return dequant_q4_0(q, scale.astype(bfloat16).astype(np.float32))
+
+    model = AutoModelForCausalLM.from_pretrained(
+        hf_ref_model, dtype=torch.bfloat16, low_cpu_mem_usage=True
+    )
+    n = 0
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if is_q4_weight(name):
+                p.copy_(torch.from_numpy(packed(name)))
+                n += 1
+    # A renamed HF parameter would otherwise stay bf16 without any error.
+    want = 3 * config.n_layers + 4 * config.n_attn_layers + 2 * config.n_conv_layers
+    if n != want:
+        raise RuntimeError(f"Q4_0 reference patched {n} weights, expected {want}")
     if path == "decode":
-        embed = Lfm2Q4Model(hf_ref_model).hf.bf16("model.embed_tokens.weight")
-        replace_head(model, dequant_q4_0(*requant_q4_0(embed)))
+        replace_head(model, packed("model.embed_tokens.weight"))
     return model
 
 

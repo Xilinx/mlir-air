@@ -83,7 +83,7 @@ def build_dequant_hf_model(npu_model_name: str, hf_ref_model: str, config):
     """The `make accuracy ACC_REF=dequant` reference: the bf16 checkpoint with
     the values the NPU runs. qwen25_7b_q4nx_requant requantizes every
     projection and the untied head from the weight source's full-precision
-    values, so the reference holds that requantization, dequantized."""
+    values, so the reference holds that requantization as the decode packs it."""
     from dequant_reference import LM_HEAD, dequantized_reference
 
     from air_examples.llms.shared.infra import host_weights
@@ -91,7 +91,7 @@ def build_dequant_hf_model(npu_model_name: str, hf_ref_model: str, config):
     qm = _w.open_weight_source(Q4NX_MODEL_SOURCE)
 
     def requant(get):
-        return lambda shape: host_weights.requant_q4k_dequant(
+        return lambda shape: host_weights.requant_q4k_packed(
             np.asarray(get(), np.float32), _w.GROUP
         )
 

@@ -234,7 +234,7 @@ def reference_weights(model, n_layers, tie_lm_head=True, path="decode"):
     )
     if tie_lm_head:
         if path == "decode":
-            head = lambda shape: host_weights.requant_q4k_dequant(  # noqa: E731
+            head = lambda shape: host_weights.requant_q4k_packed(  # noqa: E731
                 qm.bf16("model.embed_tokens.weight"), GROUP
             )
             weights.append(("lm_head.weight", head))
