@@ -39,3 +39,23 @@ accuracy:
 		--chunks $(ACC_CHUNKS) --ref $(ACC_REF) --path $(ACC_PATH) $(ACC_EXTRA) \
 		$(if $(ACC_JSON),--json-out $(abspath $(ACC_JSON)))
 
+
+# `make tasks`: lm-evaluation-harness task scores of the model on the NPU and
+# on its HF reference over the same items, paired per item
+# (verify/lm_eval_npu.py). Needs verify/requirements.txt.
+#
+#   TASKS        comma-separated lm_eval tasks
+#   TASKS_LIMIT  items per task (per subject for mmlu)
+#   TASKS_JSON   also write the result record to this path
+
+TASKS       ?= gsm8k
+TASKS_LIMIT ?= 100
+TASKS_JSON  ?=
+
+.PHONY: tasks
+tasks:
+	@mkdir -p $(ACC_DIR)
+	cd $(ACC_DIR) && $(ACC_ENV) $(PYTHON) $(srcdir)/../verify/lm_eval_npu.py \
+		--runner=$(RUNNER_ADAPTER) $(if $(ACC_MODEL),--model $(ACC_MODEL)) \
+		--tasks $(TASKS) --limit $(TASKS_LIMIT) \
+		$(if $(TASKS_JSON),--json-out $(abspath $(TASKS_JSON)))
