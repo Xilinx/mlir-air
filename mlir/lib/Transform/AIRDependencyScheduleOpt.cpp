@@ -5895,6 +5895,8 @@ private:
       return false;
     if (!hitsMemorySpaceForAggMode(b_puts, b_gets))
       return false;
+    if (pinnedMemtilesDiffer(a_puts, a_gets, b_puts, b_gets))
+      return false;
     // A merge that only the function's own spaces allow must not reach a
     // channel other functions use too.
     SmallVector<air::MemorySpace> moduleSpaces;
@@ -6013,6 +6015,56 @@ private:
         return notMergeable;
     }
     return mergeableNoForLoop;
+  }
+  // An L2 buffer pinned to a memtile is moved by that memtile's DMA
+  // channels, so channels whose L2 buffers are pinned to different memtiles
+  // cannot share one.
+  bool pinnedMemtilesDiffer(const std::vector<air::ChannelPutOp> &aPuts,
+                            const std::vector<air::ChannelGetOp> &aGets,
+                            const std::vector<air::ChannelPutOp> &bPuts,
+                            const std::vector<air::ChannelGetOp> &bGets) {
+    std::optional<int64_t> a = pinnedMemtileCol(aPuts, aGets);
+    std::optional<int64_t> b = pinnedMemtileCol(bPuts, bGets);
+    return a && b && *a != *b;
+  }
+  // The memtile column that air.memtile_col pins the L2 buffers of `puts`
+  // and `gets` to, read where AIRToAIE reads it: on the memref.alloc. None
+  // when no buffer is pinned or the pins disagree.
+  std::optional<int64_t>
+  pinnedMemtileCol(const std::vector<air::ChannelPutOp> &puts,
+                   const std::vector<air::ChannelGetOp> &gets) {
+    std::optional<int64_t> col;
+    bool conflict = false;
+    auto visit = [&](Value memref) {
+      if (air::getMemorySpace(llvm::cast<BaseMemRefType>(memref.getType())) !=
+          air::MemorySpace::L2)
+        return;
+      while (auto arg = dyn_cast<BlockArgument>(memref)) {
+        memref = getHierOperandFromHierBlockArgument(arg);
+        if (!memref)
+          return;
+      }
+      Operation *def = memref.getDefiningOp();
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(def))
+        def =
+            exec.getChildOps().empty() ? nullptr : &exec.getChildOps().front();
+      auto alloc = dyn_cast_if_present<memref::AllocOp>(def);
+      if (!alloc)
+        return;
+      auto pin = alloc->getAttrOfType<IntegerAttr>(air::attrs::MemtileCol);
+      if (!pin)
+        return;
+      if (col && *col != pin.getInt())
+        conflict = true;
+      col = pin.getInt();
+    };
+    for (auto op : puts)
+      visit(op.getMemref());
+    for (auto op : gets)
+      visit(op.getMemref());
+    if (conflict)
+      return std::nullopt;
+    return col;
   }
   Value getHierOperandFromHierBlockArgument(BlockArgument arg) {
     if (!arg)
@@ -6513,6 +6565,8 @@ private:
         auto bGets = getChannelGetOpThroughSymbol(b);
         auto bPuts = getChannelPutOpThroughSymbol(b);
         if (!inSequentialLoops(aGets, bGets, aPuts, bPuts))
+          continue;
+        if (pinnedMemtilesDiffer(aPuts, aGets, bPuts, bGets))
           continue;
         // The two arms of an if choose between channels; those stay apart.
         if (llvm::any_of(aPuts, [&](air::ChannelPutOp p) {
