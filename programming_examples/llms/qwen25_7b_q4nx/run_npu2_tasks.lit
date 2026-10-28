@@ -1,0 +1,19 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// qwen25_7b_q4nx task scores: GSM8K and MMLU (lm-evaluation-harness) on the NPU
+// and on the HF reference, paired per item (verify/lm_eval_npu.py).
+// Informational: this checks only that the comparison ran; run_npu2_verify.lit
+// is the gate. Collected by check-programming-examples-llms-tasks.
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_qwen_qwen2_5_7b_instruct, hfweights_openai_gsm8k, hfweights_cais_mmlu
+//
+// RUN: mkdir -p test_peano_tasks
+// RUN: cd test_peano_tasks
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile tasks TASKS=gsm8k TASKS_LIMIT=100 TASKS_JSON=qwen25_7b_q4nx.gsm8k.tasks.json PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile tasks TASKS=mmlu TASKS_LIMIT=10 TASKS_JSON=qwen25_7b_q4nx.mmlu.tasks.json PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: FileCheck %s < qwen25_7b_q4nx.gsm8k.tasks.json
+// RUN: FileCheck %s < qwen25_7b_q4nx.mmlu.tasks.json
+// CHECK: "mcnemar_p"
