@@ -2687,34 +2687,65 @@ getOffsetRangeAfterShrinkage(Value v, OffsetDepth depth,
                                           exec);
     return getOffsetRangeAfterShrinkage(yielded, OffsetDepth::Deeper);
   }
-  auto operandRange = [&](Value operand) {
-    OffsetDepth next = OffsetDepth::Deeper;
+  auto nextDepth = [&](Value operand) {
     if (depth == OffsetDepth::Offset)
-      next = OffsetDepth::Operand;
-    else if (depth == OffsetDepth::InOffsetBody)
-      next = offsetExec.getRegion().isAncestor(operand.getParentRegion())
+      return OffsetDepth::Operand;
+    if (depth == OffsetDepth::InOffsetBody)
+      return offsetExec.getRegion().isAncestor(operand.getParentRegion())
                  ? OffsetDepth::InOffsetBody
                  : OffsetDepth::Operand;
-    return getOffsetRangeAfterShrinkage(operand, next, offsetExec);
+    return OffsetDepth::Deeper;
+  };
+  auto operandRange = [&](Value operand) {
+    return getOffsetRangeAfterShrinkage(operand, nextDepth(operand),
+                                        offsetExec);
+  };
+  // Whether a tile index read as `operand` is one the rewrite zeroes.
+  auto zeroedAsOperand = [&](Value operand) {
+    return nextDepth(operand) == OffsetDepth::Operand;
   };
 
   if (auto apply = dyn_cast<affine::AffineApplyOp>(def)) {
     // The map's value with every input at 0, plus each distinct operand's
-    // coefficient times that operand's range. A map that is not linear in its
-    // operands has no coefficients and is not modelled.
+    // coefficient times that operand's range.
     AffineMap map = apply.getAffineMap();
     auto constant = air::evaluateConstantsInMap(
         map, SmallVector<std::optional<int64_t>>(map.getNumSymbols(), 0),
         SmallVector<std::optional<int64_t>>(map.getNumDims(), 0),
         apply.getContext());
-    if (!constant)
-      return std::nullopt;
-    Range range{*constant, *constant};
     SetVector<Value> operands(llvm::from_range, apply.getMapOperands());
+    bool linear = constant && llvm::all_of(operands, [&](Value operand) {
+                    return air::getAffineApplyCoefficient(apply, operand);
+                  });
+    if (!linear) {
+      // Bounded as a whole by value-bounds analysis instead, with the tile
+      // indices the rewrite removes at 0.
+      SmallVector<AffineExpr> dims, syms;
+      unsigned nd = map.getNumDims();
+      for (auto [i, operand] : llvm::enumerate(apply.getMapOperands())) {
+        AffineExpr e = i < nd ? getAffineDimExpr(i, apply.getContext())
+                              : getAffineSymbolExpr(i - nd, apply.getContext());
+        if (air::getHerdArgOwner(operand) && zeroedAsOperand(operand))
+          e = getAffineConstantExpr(0, apply.getContext());
+        (i < nd ? dims : syms).push_back(e);
+      }
+      AffineMap zeroed =
+          map.replaceDimsAndSymbols(dims, syms, nd, map.getNumSymbols());
+      using VB = ValueBoundsConstraintSet;
+      VB::Variable var(zeroed, apply.getMapOperands());
+      ValueBoundsOptions closed;
+      closed.closedUB = true;
+      FailureOr<int64_t> lo =
+          VB::computeConstantBound(presburger::BoundType::LB, var);
+      FailureOr<int64_t> hi = VB::computeConstantBound(
+          presburger::BoundType::UB, var, nullptr, closed);
+      if (failed(lo) || failed(hi))
+        return std::nullopt;
+      return Range{*lo, *hi};
+    }
+    Range range{*constant, *constant};
     for (Value operand : operands) {
       auto c = air::getAffineApplyCoefficient(apply, operand);
-      if (!c)
-        return std::nullopt;
       if (*c == 0)
         continue;
       auto r = operandRange(operand);
