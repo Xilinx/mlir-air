@@ -7,6 +7,8 @@ import sys
 import types
 from pathlib import Path
 
+import numpy as np
+
 _PE = Path(__file__).resolve().parents[3]  # programming_examples
 
 
@@ -37,3 +39,18 @@ def load(name, model=None):
     if not packing.reads(MODELS[name], model):
         return None
     return dense.load(name, d, model)
+
+
+def prefill_logits(prefiller, ids, logits_from):
+    """[len(ids) - logits_from, vocab] logits of the prompt's rows from
+    `logits_from` on. Only the fused prefill can produce them; the per-op
+    prefills compute the last row alone."""
+    from air_examples.llms.shared.fused_prefill.dense import DensePrefill
+
+    if not isinstance(prefiller, DensePrefill):
+        raise NotImplementedError(
+            "the prefill path needs the fused prefill (make compile-fused-prefill)"
+        )
+    prefiller.clear_context()
+    ids = [int(t) for t in np.asarray(ids).reshape(-1)]
+    return np.asarray(prefiller.prefill(ids, logits_from=logits_from), np.float32)

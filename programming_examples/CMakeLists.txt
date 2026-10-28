@@ -217,6 +217,19 @@ add_lit_testsuite(check-programming-examples-llms-prefill-sweep
 )
 set_target_properties(check-programming-examples-llms-prefill-sweep PROPERTIES FOLDER "Tests")
 
+# LLM accuracy: teacher-forced PPL + KL divergence of each model's NPU decode
+# and prefill paths against its reference on wikitext-2 (verify/accuracy.py),
+# emitting <model>.*.accuracy.json. Informational -- the verify suite is the
+# correctness gate. Needs real weights and the wikitext-2 set in the HF cache.
+# Sequential (-j1), same NPU-OOM reason as above.
+add_lit_testsuite(check-programming-examples-llms-accuracy
+  "Running LLM accuracy (PPL / KL divergence vs reference, sequential)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --timeout 3600 --filter "llms/.*/run_npu2_accuracy"
+)
+set_target_properties(check-programming-examples-llms-accuracy PROPERTIES FOLDER "Tests")
+
 # Matched-cohort studies are kept separate from short-prompt profile history.
 add_lit_testsuite(check-programming-examples-llms-full20
   "Running nightly paired LLM Full20 studies (sequential)"

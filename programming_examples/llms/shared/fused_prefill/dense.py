@@ -199,7 +199,9 @@ class DensePrefill(Engine):
             )
         return self.rope_cache[(op, r0, t)]
 
-    def prefill(self, ids):
+    def prefill(self, ids, logits_from=None):
+        """The last token's logits, or with `logits_from` the [n - logits_from,
+        vocab] logits of every row from there on, through the same NPU head."""
         self.resume()
         ids = [int(t) for t in np.asarray(ids).reshape(-1)]
         n = len(ids)
@@ -212,9 +214,24 @@ class DensePrefill(Engine):
         for L in range(self.desc.layers):
             self._ffn_all(L, x, chunks, self._mix_all(L, x, chunks))
         self.current_context_length = n
-        last = H.rms(x[-1:], self.final_norm, self.eps)
+        if logits_from is None:
+            last = H.rms(x[-1:], self.final_norm, self.eps)
+            return np.concatenate(
+                [self.mm(f"lm.{i}", last)[0] for i in range(len(self.lm))]
+            )
+        rows = H.rms(x[logits_from:], self.final_norm, self.eps)
+        # The head takes at most one chunk (D.M rows) per dispatch.
         return np.concatenate(
-            [self.mm(f"lm.{i}", last)[0] for i in range(len(self.lm))]
+            [
+                np.concatenate(
+                    [
+                        self.mm(f"lm.{i}", rows[r : r + D.M])
+                        for i in range(len(self.lm))
+                    ],
+                    axis=1,
+                )
+                for r in range(0, len(rows), D.M)
+            ]
         )
 
     def _mix_all(self, L, x, chunks):

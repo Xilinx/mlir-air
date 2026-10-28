@@ -89,6 +89,33 @@ def hf_reference(npu_model_name: str) -> str:
     return npu_model_name
 
 
+def build_dequant_hf_model(npu_model_name: str, hf_ref_model: str, config):
+    """The `make accuracy ACC_REF=dequant` reference: the bf16 checkpoint with
+    the bundle's Q4NX projections and its separate Q4NX lm_head, dequantized,
+    which is what qwen3_8b_q4nx_requant packs for the decode."""
+    from dequant_reference import LM_HEAD, dequantized_reference
+
+    qm = _w.Q4nxModel(Q4NX_MODEL_SOURCE)
+    weights = [
+        (
+            f"model.layers.{k}.{t}.weight",
+            lambda shape, n=f"model.layers.{k}.{t}.weight": qm.dequant(n, *shape),
+        )
+        for k in range(config.n_layers)
+        for t, _, _ in qm._PROJ.values()
+    ]
+    # The NPU looks tokens up in the bundle's embedding, which differs from the
+    # checkpoint's.
+    weights.append(
+        (
+            "model.embed_tokens.weight",
+            lambda shape: qm.bf16("model.embed_tokens.weight").reshape(shape),
+        )
+    )
+    weights.append((LM_HEAD, lambda shape: qm.dequant(LM_HEAD, *shape)))
+    return dequantized_reference(hf_ref_model, weights)
+
+
 def build_runner(
     model_name: str,
     config,
@@ -163,6 +190,10 @@ class NpuRunner:
             logits_at_pred=logits,
             top1_token=first,
         )
+
+    def prefill_logits(self, prompt_tokens: np.ndarray, logits_from: int):
+        """Logits of the prompt's rows from logits_from on."""
+        return fused_prefill.prefill_logits(self.prefiller, prompt_tokens, logits_from)
 
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:
         # `current_pos` is the absolute position of `input_token` (the runner
