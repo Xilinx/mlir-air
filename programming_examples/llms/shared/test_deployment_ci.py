@@ -162,7 +162,12 @@ class DeploymentCITests(unittest.TestCase):
             self.assertFalse(list(Path(tmp).glob("*.perf.json")))
 
     def test_all_native_configs_have_matching_lit_and_preseed(self):
-        seeded = (LLMS / "hf_models.txt").read_text().splitlines()
+        # Seeded on the nightly runner, or on the offline machine for 7-8B models.
+        seeded = [
+            line
+            for name in ("hf_models.txt", "hf_models_offline.txt")
+            for line in (LLMS / name).read_text().splitlines()
+        ]
         cases = []
         names = set()
         for model in MODELS:
