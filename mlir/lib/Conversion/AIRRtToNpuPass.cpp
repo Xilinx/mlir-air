@@ -3112,9 +3112,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
 
     // The runtime sequence's loops stay rolled; aiecc's
-    // aie-unroll-runtime-sequence-loops is the one unroller in the stack. The
-    // affine.for nests are the launch/segment scaffolding, which still has to
-    // go for the airrt ops to sit directly in the sequence.
+    // aie-unroll-runtime-sequence-loops is the one unroller in the stack,
+    // except for a loop whose transfers are picked per iteration (see
+    // unrollLoopsSelectingTransfers). The affine.for nests are the
+    // launch/segment scaffolding, which still has to go for the airrt ops to
+    // sit directly in the sequence.
+    unrollLoopsSelectingTransfers(module);
     unrollAffineFors(module);
     dropAirrtEventResults(module);
     dropAirrtEventIterArgs(module);
@@ -5012,6 +5015,66 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         }
       });
     }
+  }
+
+  // Unroll each control-code scf.for whose body picks, by its induction
+  // variable through an scf.index_switch, a transfer that no wait_all inside
+  // the branch names (one without air.preserve_shim_dma_order). Rolled, the
+  // transfer is never awaited or freed: no wait_all after the branch can name
+  // it, and awaitInChannelOrder only releases older tasks in the block of the
+  // await. Unrolled, the switch folds (FoldConstIndexSwitchPattern) and the
+  // transfer sits in that block.
+  void unrollLoopsSelectingTransfers(ModuleOp module) {
+    auto dependsOn = [](Value v, Value iv) {
+      SmallVector<Value> work{v};
+      llvm::DenseSet<Value> seen;
+      while (!work.empty()) {
+        Value x = work.pop_back_val();
+        if (x == iv)
+          return true;
+        if (!seen.insert(x).second)
+          continue;
+        if (Operation *def = x.getDefiningOp())
+          llvm::append_range(work, def->getOperands());
+      }
+      return false;
+    };
+    // Whether a wait_all inside `branch` names `dma`.
+    auto freedInBranch = [](airrt::DmaMemcpyNdOp dma, Operation *branch) {
+      return llvm::any_of(dma->getUsers(), [&](Operation *user) {
+        return isa<airrt::WaitAllOp>(user) && branch->isProperAncestor(user);
+      });
+    };
+    SmallVector<scf::ForOp> loops;
+    module.walk([&](func::FuncOp f) {
+      f.walk([&](scf::ForOp loop) {
+        if (loop->getParentOfType<AIE::CoreOp>() ||
+            !getConstantIntValue(loop.getLowerBound()) ||
+            !getConstantIntValue(loop.getUpperBound()) ||
+            !getConstantIntValue(loop.getStep()))
+          return;
+        WalkResult picks = loop.getBody()->walk([&](scf::IndexSwitchOp sw) {
+          bool lost =
+              sw->walk([&](airrt::DmaMemcpyNdOp dma) {
+                  return dma->hasAttr(air::attrs::PreserveShimDmaOrder) ||
+                                 freedInBranch(dma, sw)
+                             ? WalkResult::advance()
+                             : WalkResult::interrupt();
+                }).wasInterrupted();
+          return lost && dependsOn(sw.getArg(), loop.getInductionVar())
+                     ? WalkResult::interrupt()
+                     : WalkResult::advance();
+        });
+        if (picks.wasInterrupted())
+          loops.push_back(loop);
+      });
+    });
+    for (scf::ForOp loop : loops)
+      if (failed(loopUnrollFull(loop))) {
+        loop->emitOpError("failed to fully unroll");
+        signalPassFailure();
+        return;
+      }
   }
 
   void unrollAffineFors(ModuleOp module) {
