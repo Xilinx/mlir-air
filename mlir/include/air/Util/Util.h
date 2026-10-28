@@ -388,6 +388,39 @@ LogicalResult canonicalizeWrapAndStrideList(
     SmallVector<Value> &strides, int memref_volume, const DmaBdLimits &limits,
     int innerAlignment = 1);
 
+// The size-1 dimensions canonicalizeWrapAndStrideList drops from constant
+// `sizes`, highest first: every one, except the innermost when they are all of
+// the dimensions and the access covers less than the memref's
+// `memrefVolume` elements (no dimensions at all stands for the whole memref).
+SmallVector<int> getDroppableUnitDims(ArrayRef<int64_t> sizes,
+                                      int64_t memrefVolume);
+
+// Whether a dimension of stride `outerStride` continues the dimension inside
+// it, so that canonicalizeWrapAndStrideList merges the two into one.
+inline bool continuesInnerDim(int64_t outerStride, int64_t innerSize,
+                              int64_t innerStride) {
+  return outerStride == innerSize * innerStride;
+}
+
+// An access pattern reduced by the rules canonicalizeWrapAndStrideList applies
+// when no BD limits apply, worked out without changing IR: the offsets as one
+// linear offset, a constant plus each non-constant offset times its stride,
+// and the sizes and strides with size-1 dimensions dropped and continuing
+// dimensions merged. No sizes and strides stand for the whole memref in order.
+struct LinearAccessPattern {
+  int64_t offset = 0;
+  SmallVector<std::pair<Value, int64_t>> offsetTerms;
+  SmallVector<int64_t> sizes, strides;
+};
+
+// The LinearAccessPattern of `offsets`, `sizes` and `strides` into a memref of
+// `memrefVolume` elements; empty lists mean the whole memref. std::nullopt if
+// a size or stride is not a constant or the lists differ in length.
+std::optional<LinearAccessPattern>
+getLinearAccessPattern(ArrayRef<OpFoldResult> offsets,
+                       ArrayRef<OpFoldResult> sizes,
+                       ArrayRef<OpFoldResult> strides, int64_t memrefVolume);
+
 // If wrap-and-stride lists are empty, populate them with default data access
 // layout (contiguous, row-major).
 void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,

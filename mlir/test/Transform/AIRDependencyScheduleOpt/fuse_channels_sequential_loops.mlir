@@ -354,3 +354,337 @@ module {
     return
   }
 }
+
+// -----
+
+// The core's gets move the same elements of the same buffer, spelled with a
+// unit dimension in one loop and not in the other, from offsets computed
+// alike in each loop. The channels merge.
+
+// CHECK-LABEL: func.func @same_elements_spelled_apart
+// CHECK-NOT: @chan_b
+// CHECK: air.channel.get {{.*}} @chan_a[] (%{{.*}}[%{{.*}}, %{{.*}}] [2, 8] [8, 1])
+// CHECK: air.channel.get {{.*}} @chan_a[] (%{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}] [2, 1, 8] [8, 8, 1])
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @same_elements_spelled_apart(%nq: index, %nb: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%aq=%nq, %ab=%nb) : index, index {
+      %1 = air.segment @seg async args(%sq=%aq, %sb=%ab) : index, index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %tq, %p = air.execute -> (memref<16xi16, 1>) {
+          %a = memref.alloc() : memref<16xi16, 1>
+          air.execute_terminator %a : memref<16xi16, 1>
+        }
+        %2 = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %tq) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_a[] (%p[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %3 = scf.for %k = %c0 to %sb step %c1_0 iter_args(%d = %2) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_b[] (%p[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %5 = air.herd @herd async tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) args(%hq=%sq, %hb=%sb) : index, index {
+          %c0_1 = arith.constant 0 : index
+          %c1_1 = arith.constant 1 : index
+          %ta, %ba = air.execute -> (memref<8x8xi16, 2>) {
+            %a = memref.alloc() : memref<8x8xi16, 2>
+            air.execute_terminator %a : memref<8x8xi16, 2>
+          }
+          %6 = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+            %o = affine.apply affine_map<()[s0] -> (s0 * 2)>()[%y]
+            %g0 = air.channel.get async [%d] @chan_a[] (%ba[%o, %c0_1] [2, 8] [8, 1]) : (memref<8x8xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+          %7 = scf.for %k = %c0_1 to %hb step %c1_1 iter_args(%d = %6) -> (!air.async.token) {
+            %o = affine.apply affine_map<()[s0] -> (s0 * 2)>()[%y]
+            %g0 = air.channel.get async [%d] @chan_b[] (%ba[%o, %c0_1, %c0_1] [2, 1, 8] [8, 8, 1]) : (memref<8x8xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// As above, but the second loop's gets start a row further on: other
+// elements. The channels stay apart.
+
+// CHECK-LABEL: func.func @other_elements
+// CHECK: air.channel.get {{.*}} @chan_a[]
+// CHECK: air.channel.get {{.*}} @chan_b[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @other_elements(%nq: index, %nb: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%aq=%nq, %ab=%nb) : index, index {
+      %1 = air.segment @seg async args(%sq=%aq, %sb=%ab) : index, index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %tq, %p = air.execute -> (memref<16xi16, 1>) {
+          %a = memref.alloc() : memref<16xi16, 1>
+          air.execute_terminator %a : memref<16xi16, 1>
+        }
+        %2 = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %tq) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_a[] (%p[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %3 = scf.for %k = %c0 to %sb step %c1_0 iter_args(%d = %2) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_b[] (%p[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %5 = air.herd @herd async tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) args(%hq=%sq, %hb=%sb) : index, index {
+          %c0_1 = arith.constant 0 : index
+          %c1_1 = arith.constant 1 : index
+          %ta, %ba = air.execute -> (memref<8x8xi16, 2>) {
+            %a = memref.alloc() : memref<8x8xi16, 2>
+            air.execute_terminator %a : memref<8x8xi16, 2>
+          }
+          %6 = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+            %o = affine.apply affine_map<()[s0] -> (s0 * 2)>()[%y]
+            %g0 = air.channel.get async [%d] @chan_a[] (%ba[%o, %c0_1] [2, 8] [8, 1]) : (memref<8x8xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+          %7 = scf.for %k = %c0_1 to %hb step %c1_1 iter_args(%d = %6) -> (!air.async.token) {
+            %o = affine.apply affine_map<()[s0] -> (s0 * 2 + 1)>()[%y]
+            %g0 = air.channel.get async [%d] @chan_b[] (%ba[%o, %c0_1, %c0_1] [2, 1, 8] [8, 8, 1]) : (memref<8x8xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// One loop's get fills the whole core buffer with no access pattern, the
+// other's spells it out as rows. The channels merge.
+
+// CHECK-LABEL: func.func @whole_buffer_spelled_apart
+// CHECK-NOT: @chan_b
+// CHECK: air.channel.get {{.*}} @chan_a[] (%{{.*}}[] [] [])
+// CHECK: air.channel.get {{.*}} @chan_a[] (%{{.*}}[%{{.*}}, %{{.*}}] [8, 8] [8, 1])
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @whole_buffer_spelled_apart(%nq: index, %nb: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%aq=%nq, %ab=%nb) : index, index {
+      %1 = air.segment @seg async args(%sq=%aq, %sb=%ab) : index, index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %tq, %p = air.execute -> (memref<64xi16, 1>) {
+          %a = memref.alloc() : memref<64xi16, 1>
+          air.execute_terminator %a : memref<64xi16, 1>
+        }
+        %2 = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %tq) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_a[] (%p[] [] []) : (memref<64xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %3 = scf.for %k = %c0 to %sb step %c1_0 iter_args(%d = %2) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_b[] (%p[] [] []) : (memref<64xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %5 = air.herd @herd async tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) args(%hq=%sq, %hb=%sb) : index, index {
+          %c0_1 = arith.constant 0 : index
+          %c1_1 = arith.constant 1 : index
+          %ta, %ba = air.execute -> (memref<8x8xi16, 2>) {
+            %a = memref.alloc() : memref<8x8xi16, 2>
+            air.execute_terminator %a : memref<8x8xi16, 2>
+          }
+          %6 = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_a[] (%ba[] [] []) : (memref<8x8xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+          %7 = scf.for %k = %c0_1 to %hb step %c1_1 iter_args(%d = %6) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_b[] (%ba[%c0_1, %c0_1] [8, 8] [8, 1]) : (memref<8x8xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Each loop moves a tile of 8 and then one of 4 through one channel, into
+// the same core buffers. The channels merge.
+
+// CHECK-LABEL: func.func @two_volumes
+// CHECK-NOT: @chan_b
+// CHECK: air.herd
+// CHECK-COUNT-4: air.channel.get {{.*}} @chan_a[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @two_volumes(%nq: index, %nb: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%aq=%nq, %ab=%nb) : index, index {
+      %1 = air.segment @seg async args(%sq=%aq, %sb=%ab) : index, index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %tq, %p = air.execute -> (memref<12xi16, 1>) {
+          %a = memref.alloc() : memref<12xi16, 1>
+          air.execute_terminator %a : memref<12xi16, 1>
+        }
+        %2 = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %tq) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_a[] (%p[0] [8] [1]) : (memref<12xi16, 1>)
+          %p1 = air.channel.put async [%p0] @chan_a[] (%p[8] [4] [1]) : (memref<12xi16, 1>)
+          scf.yield %p1 : !air.async.token
+        }
+        %3 = scf.for %k = %c0 to %sb step %c1_0 iter_args(%d = %2) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_b[] (%p[0] [8] [1]) : (memref<12xi16, 1>)
+          %p1 = air.channel.put async [%p0] @chan_b[] (%p[8] [4] [1]) : (memref<12xi16, 1>)
+          scf.yield %p1 : !air.async.token
+        }
+        %5 = air.herd @herd async tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) args(%hq=%sq, %hb=%sb) : index, index {
+          %c0_1 = arith.constant 0 : index
+          %c1_1 = arith.constant 1 : index
+          %ta, %bk = air.execute -> (memref<8xi16, 2>) {
+            %a = memref.alloc() : memref<8xi16, 2>
+            air.execute_terminator %a : memref<8xi16, 2>
+          }
+          %tb, %bv = air.execute -> (memref<4xi16, 2>) {
+            %a = memref.alloc() : memref<4xi16, 2>
+            air.execute_terminator %a : memref<4xi16, 2>
+          }
+          %6 = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_a[] (%bk[] [] []) : (memref<8xi16, 2>)
+            %g1 = air.channel.get async [%g0] @chan_a[] (%bv[] [] []) : (memref<4xi16, 2>)
+            scf.yield %g1 : !air.async.token
+          }
+          %7 = scf.for %k = %c0_1 to %hb step %c1_1 iter_args(%d = %6) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_b[] (%bk[] [] []) : (memref<8xi16, 2>)
+            %g1 = air.channel.get async [%g0] @chan_b[] (%bv[] [] []) : (memref<4xi16, 2>)
+            scf.yield %g1 : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// As above, but the second loop moves the tile of 4 first: the core would
+// take its data into the wrong buffers. The channels stay apart.
+
+// CHECK-LABEL: func.func @volumes_in_other_order
+// CHECK: air.herd
+// CHECK-COUNT-2: air.channel.get {{.*}} @chan_a[]
+// CHECK-COUNT-2: air.channel.get {{.*}} @chan_b[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @volumes_in_other_order(%nq: index, %nb: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%aq=%nq, %ab=%nb) : index, index {
+      %1 = air.segment @seg async args(%sq=%aq, %sb=%ab) : index, index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %tq, %p = air.execute -> (memref<12xi16, 1>) {
+          %a = memref.alloc() : memref<12xi16, 1>
+          air.execute_terminator %a : memref<12xi16, 1>
+        }
+        %2 = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %tq) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_a[] (%p[0] [8] [1]) : (memref<12xi16, 1>)
+          %p1 = air.channel.put async [%p0] @chan_a[] (%p[8] [4] [1]) : (memref<12xi16, 1>)
+          scf.yield %p1 : !air.async.token
+        }
+        %3 = scf.for %k = %c0 to %sb step %c1_0 iter_args(%d = %2) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_b[] (%p[8] [4] [1]) : (memref<12xi16, 1>)
+          %p1 = air.channel.put async [%p0] @chan_b[] (%p[0] [8] [1]) : (memref<12xi16, 1>)
+          scf.yield %p1 : !air.async.token
+        }
+        %5 = air.herd @herd async tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) args(%hq=%sq, %hb=%sb) : index, index {
+          %c0_1 = arith.constant 0 : index
+          %c1_1 = arith.constant 1 : index
+          %ta, %bk = air.execute -> (memref<8xi16, 2>) {
+            %a = memref.alloc() : memref<8xi16, 2>
+            air.execute_terminator %a : memref<8xi16, 2>
+          }
+          %tb, %bv = air.execute -> (memref<4xi16, 2>) {
+            %a = memref.alloc() : memref<4xi16, 2>
+            air.execute_terminator %a : memref<4xi16, 2>
+          }
+          %6 = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_a[] (%bk[] [] []) : (memref<8xi16, 2>)
+            %g1 = air.channel.get async [%g0] @chan_a[] (%bv[] [] []) : (memref<4xi16, 2>)
+            scf.yield %g1 : !air.async.token
+          }
+          %7 = scf.for %k = %c0_1 to %hb step %c1_1 iter_args(%d = %6) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_b[] (%bv[] [] []) : (memref<4xi16, 2>)
+            %g1 = air.channel.get async [%g0] @chan_b[] (%bk[] [] []) : (memref<8xi16, 2>)
+            scf.yield %g1 : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Results out of the memtile, one loop after the other. The first loop runs
+// no times for this function's sizes, and its launch-side get was folded
+// away: the launch side is compared on the second loop alone. The channels
+// merge.
+
+// CHECK-LABEL: func.func @launch_get_folded
+// CHECK-NOT: @chan_b
+// CHECK: air.channel.get {{.*}} @chan_a[]
+// CHECK: air.segment
+// CHECK: air.channel.put {{.*}} @chan_a[]
+// CHECK: air.channel.put {{.*}} @chan_a[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @launch_get_folded(%out: memref<64xi16>, %nb: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%lo=%out, %ab=%nb) : memref<64xi16>, index {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c0_i = arith.constant 0 : index
+      %w = air.wait_all async
+      %2 = scf.for %k = %c0 to %ab step %c1_0 iter_args(%d = %w) -> (!air.async.token) {
+        %g = air.channel.get async [%d] @chan_b[] (%lo[] [] []) : (memref<64xi16>)
+        scf.yield %g : !air.async.token
+      }
+      %1 = air.segment @seg async args(%sq=%c0_i, %sb=%ab) : index, index {
+        %c0_2 = arith.constant 0 : index
+        %c1_2 = arith.constant 1 : index
+        %tq, %p = air.execute -> (memref<64xi16, 1>) {
+          %a = memref.alloc() : memref<64xi16, 1>
+          air.execute_terminator %a : memref<64xi16, 1>
+        }
+        %3 = scf.for %k = %c0_2 to %sq step %c1_2 iter_args(%d = %tq) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_a[] (%p[] [] []) : (memref<64xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %4 = scf.for %k = %c0_2 to %sb step %c1_2 iter_args(%d = %3) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_b[] (%p[] [] []) : (memref<64xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
