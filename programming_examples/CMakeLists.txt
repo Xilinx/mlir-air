@@ -230,6 +230,18 @@ add_lit_testsuite(check-programming-examples-llms-accuracy
 )
 set_target_properties(check-programming-examples-llms-accuracy PROPERTIES FOLDER "Tests")
 
+# LLM task scores: GSM8K and MMLU (lm-evaluation-harness) of each model on the
+# NPU and on its HF reference, paired per item (verify/lm_eval_npu.py), emitting
+# <model>.*.tasks.json. Informational, like the accuracy suite. Needs the
+# datasets in the HF cache and verify/requirements.txt. Sequential (-j1).
+add_lit_testsuite(check-programming-examples-llms-tasks
+  "Running LLM task scores (GSM8K / MMLU vs reference, sequential)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} -j1 --timeout 14400 --filter "llms/.*/run_npu2_tasks"
+)
+set_target_properties(check-programming-examples-llms-tasks PROPERTIES FOLDER "Tests")
+
 # Matched-cohort studies are kept separate from short-prompt profile history.
 add_lit_testsuite(check-programming-examples-llms-full20
   "Running nightly paired LLM Full20 studies (sequential)"
