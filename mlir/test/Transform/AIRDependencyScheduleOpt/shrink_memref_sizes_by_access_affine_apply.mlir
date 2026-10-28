@@ -472,3 +472,46 @@ module {
     return
   }
 }
+
+// -----
+
+// The row is computed in the offset's air.execute from a value made outside
+// it, b = ty + 1, and one made inside, k = 2 * ty: (2 * b - k) floordiv 3 is 0
+// on every tile. The rewrite zeroes ty inside the execute but not in b, after
+// which the row reaches 2: the dimension keeps its full size.
+
+// CHECK-LABEL: func.func @apply_floordiv_in_execute
+// CHECK: memref.alloc() {air.shrinkage = true} : memref<4x1x8x8xf32, 2>
+#map = affine_map<()[s0] -> (s0 + 1)>
+#map1 = affine_map<()[s0] -> (s0 * 2)>
+#map2 = affine_map<()[s0, s1] -> ((s0 * 2 - s1) floordiv 3)>
+module {
+  func.func @apply_floordiv_in_execute() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0) in (%arg1=%c1) {
+      air.segment @segment_0 {
+        %c4 = arith.constant 4 : index
+        %c1_1 = arith.constant 1 : index
+        %t0, %alloc = air.execute -> (memref<4x2x8x8xf32, 2>) {
+          %a = memref.alloc() : memref<4x2x8x8xf32, 2>
+          air.execute_terminator %a : memref<4x2x8x8xf32, 2>
+        }
+        %t1 = air.herd @herd_0 async [%t0] tile (%tx, %ty) in (%sx=%c1_1, %sy=%c4) args(%buf=%alloc) : memref<4x2x8x8xf32, 2> {
+          %c0 = arith.constant 0 : index
+          %cst = arith.constant dense<0.000000e+00> : vector<1x1x8x8xf32>
+          %b = affine.apply #map()[%ty]
+          %tn, %n = air.execute -> (index) {
+            %k = affine.apply #map1()[%ty]
+            %r = affine.apply #map2()[%b, %k]
+            air.execute_terminator %r : index
+          }
+          vector.transfer_write %cst, %buf[%n, %c0, %c0, %c0] {in_bounds = [true, true, true, true]} : vector<1x1x8x8xf32>, memref<4x2x8x8xf32, 2>
+        }
+        %t2 = air.execute [%t1] {
+          memref.dealloc %alloc : memref<4x2x8x8xf32, 2>
+        }
+      }
+    }
+    return
+  }
+}

@@ -2719,7 +2719,12 @@ getOffsetRangeAfterShrinkage(Value v, OffsetDepth depth,
                   });
     if (!linear) {
       // Bounded as a whole by value-bounds analysis instead, with the tile
-      // indices the rewrite removes at 0.
+      // indices the rewrite removes at 0. Inside an offset's air.execute the
+      // rewrite also zeroes tile indices that the map's operands are computed
+      // from, which value-bounds would see unchanged, so such a map is not
+      // bounded.
+      if (depth == OffsetDepth::InOffsetBody)
+        return std::nullopt;
       SmallVector<AffineExpr> dims, syms;
       unsigned nd = map.getNumDims();
       for (auto [i, operand] : llvm::enumerate(apply.getMapOperands())) {
