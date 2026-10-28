@@ -4,6 +4,7 @@
 """An accuracy record through append_history's flattening, the docs loader and
 the table generate_readme.py renders."""
 
+import importlib.util
 import json
 import sys
 import tempfile
@@ -12,10 +13,19 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(HERE.parents[1]))  # programming_examples/
 
 import append_history  # noqa: E402
-import generate_readme  # noqa: E402
+
+
+def _load(path):
+    # By file path: programming_examples/ itself must stay off sys.path.
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+generate_readme = _load(HERE.parents[1] / "generate_readme.py")
 
 
 def record(day, same_top, kld, ctx=2048, scored_from=1024, kind="dequant"):
