@@ -430,7 +430,8 @@ def reference(desc, model, ids):
         op = layer_op(e, L)
         masked = pos[None] > pos[:, None]
         if op == "s":
-            masked |= pos[None] < pos[:, None] - e.window
+            # HF's sliding window: key k is visible to query q while q - k < window
+            masked |= pos[None] <= pos[:, None] - e.window
         h = rms(x, b.bf16(p + "input_layernorm.weight"))
         qkv = np.concatenate(
             [
