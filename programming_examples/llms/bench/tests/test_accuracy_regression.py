@@ -45,6 +45,13 @@ class RegressionTest(unittest.TestCase):
         rows = [row(1, 0.93, 0.030), row(2, 0.93, 0.030), row(3, 0.93, 0.036)]
         self.assertEqual(ar.regressions(rows), [])
 
+    def test_republished_measurement_is_one_run(self):
+        good = [row(1, 0.93, 0.03), row(2, 0.93, 0.03)]
+        bad = row(3, 0.80, 0.30)
+        copies = [dict(bad, run_id=i) for i in range(4)]
+        found = ar.regressions(good + copies)
+        self.assertEqual(sorted(f["metric"] for f in found), ["kld_mean", "same_top"])
+
     def test_needs_history(self):
         self.assertEqual(ar.regressions([row(1, 0.93, 0.03), row(2, 0.5, 0.5)]), [])
 

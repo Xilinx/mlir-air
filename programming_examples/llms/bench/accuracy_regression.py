@@ -55,6 +55,10 @@ def load(path):
     return rows
 
 
+def _measurement(row):
+    return (row.get("runner"), row.get("timestamp_utc"))
+
+
 def _combined_se(a, b):
     return math.sqrt((a or 0.0) ** 2 + (b or 0.0) ** 2)
 
@@ -65,10 +69,12 @@ def regressions(rows, window=WINDOW, min_prior=MIN_PRIOR, sigmas=SIGMAS):
     for r in rows:
         if r.get("kld_mean") is None or r.get("same_top") is None:
             continue
-        by_series.setdefault(series_key(r), []).append(r)
+        by_series.setdefault(series_key(r), {})[_measurement(r)] = r
     found = []
-    for key, rs in sorted(by_series.items(), key=lambda kv: str(kv[0])):
-        rs.sort(key=lambda r: r.get("timestamp_utc") or "")
+    for key, measured in sorted(by_series.items(), key=lambda kv: str(kv[0])):
+        # One row per measurement: republishing a result adds a row under a new
+        # run id but the same machine and timestamp, and is not another run.
+        rs = sorted(measured.values(), key=lambda r: r.get("timestamp_utc") or "")
         new, prior = rs[-1], rs[-1 - window : -1]
         if len(prior) < min_prior:
             continue

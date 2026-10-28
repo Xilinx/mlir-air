@@ -66,7 +66,7 @@ class AccuracyPageTest(unittest.TestCase):
         )
         self.assertIn("krackan-offline", page)
         self.assertIn("| decode |", page)
-        self.assertIn("| decode @ 8k |", page)
+        self.assertIn("| decode @ 8k, last 256 |", page)
         self.assertNotIn("&#9888;</span>", page)
 
     def test_regression_is_marked(self):
@@ -74,6 +74,17 @@ class AccuracyPageTest(unittest.TestCase):
             [record(1, 0.98, 0.001), record(2, 0.98, 0.001), record(3, 0.90, 0.01)]
         )
         self.assertIn("&#9888;</span>", page)
+
+    def test_windows_stay_apart(self):
+        page = self.render(
+            [
+                record(1, 0.98, 0.001, ctx=1024, scored_from=512),
+                record(1, 0.90, 0.010, ctx=8192, scored_from=4096),
+                record(1, 0.95, 0.005, ctx=8192, scored_from=8192 - 257),
+            ]
+        )
+        for label in ("decode @ 1k", "decode @ 8k", "decode @ 8k, last 256"):
+            self.assertIn(f"| {label} |", page)
 
     def test_no_rows_no_section(self):
         self.assertEqual(generate_readme.render_llm_accuracy([]), "")

@@ -20,7 +20,8 @@ Accuracy (verify/accuracy.py) runs only off the runner, for every model:
 
   ninja check-programming-examples-llms-accuracy
 
-and its records are published for all models; --verify-xml can be left out.
+and its records are published for all models. Left without --verify-xml, a
+run publishes accuracy only.
 """
 
 import argparse
@@ -103,7 +104,9 @@ def main():
     ap.add_argument("--machine", required=True, help="name of the machine measured on")
     ap.add_argument("--build-dir", required=True, help="the build tree lit ran in")
     ap.add_argument(
-        "--verify-xml", default=None, help="lit's xunit output of verify, if it ran"
+        "--verify-xml",
+        default=None,
+        help="lit's xunit output of verify; without it only accuracy is published",
     )
     ap.add_argument("--air-sha", default=None, help="default: this checkout's HEAD")
     ap.add_argument("--peano", default=None, help="default: installed llvm-aie")
@@ -150,6 +153,10 @@ def main():
         )
         published = set()
         for name, series, flag, offline_only in SERIES:
+            # Without verify results a perf record would publish an empty
+            # verify status over the model's last one.
+            if offline_only and not args.verify_xml:
+                continue
             recs = (
                 json.loads((work / name).read_text()) if (work / name).is_file() else []
             )

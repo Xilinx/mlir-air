@@ -1360,6 +1360,17 @@ def _acc_ppl(ln_ratio, ln_se):
     return f"{100 * (ratio - 1):+.1f} ± {100 * ratio * (ln_se or 0):.1f}"
 
 
+def _accuracy_label(path, ctx, scored_from):
+    """The Path cell: the path, then the chunk length and scored window when
+    they are not the default 2048 tokens with the second half scored."""
+    if not ctx or (ctx == 2048 and scored_from in (None, ctx // 2)):
+        return path
+    label = f"{path} @ {_ctx_label(ctx)}"
+    if scored_from is not None and scored_from != ctx // 2:
+        label += f", last {ctx - 1 - scored_from}"
+    return label
+
+
 def render_llm_accuracy(rows, base_url=""):
     """The accuracy section: teacher-forced PPL / KL divergence of each model's
     NPU paths against two references, or "" with no rows.
@@ -1373,18 +1384,22 @@ def render_llm_accuracy(rows, base_url=""):
         return ""
     by_row = {}
     for r in rows:
-        ctx = r.get("ctx") or 0
-        depth = r.get("scored_from") not in (None, ctx // 2)
-        key = (r["model"], r.get("path") or "decode", ctx if depth else 0)
+        key = (
+            r["model"],
+            r.get("path") or "decode",
+            r.get("ctx"),
+            r.get("scored_from"),
+        )
         by_row.setdefault(key, {})[r["ref_kind"]] = r
     lines = []
     # Within a model: decode before prefill (decode is what the tok/s columns
-    # above measure), then the depth rows by depth.
-    for model, path, depth in sorted(
-        by_row, key=lambda k: (k[0], k[1] != "decode", k[2])
+    # above measure), then by context.
+    for key in sorted(
+        by_row, key=lambda k: (k[0], k[1] != "decode", k[2] or 0, str(k[3]))
     ):
-        refs = by_row[(model, path, depth)]
-        label = f"{path} @ {_ctx_label(depth)}" if depth else path
+        refs = by_row[key]
+        model, path, ctx, scored_from = key
+        label = _accuracy_label(path, ctx, scored_from)
         weights = _llm_weights(model)
         bf16 = refs.get("bf16")
         same = refs.get("dequant") or (bf16 if weights == "bf16" else None)
