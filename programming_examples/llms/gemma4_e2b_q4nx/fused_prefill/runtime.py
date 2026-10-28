@@ -210,12 +210,6 @@ class FusedPrefill(Engine):
             logits = gw.FINAL_LOGIT_SOFTCAP * np.tanh(logits / gw.FINAL_LOGIT_SOFTCAP)
         return logits
 
-    def _q16(self, hg, dh):
-        """bf16 q of hg heads, staged for the bfp16 packing."""
-        if getattr(self, "q16", None) is None or self.q16.shape != (hg, D.M, dh):
-            self.q16 = np.zeros((hg, D.M, dh), bfloat16)
-        return self.q16
-
     def _tile(self, x, k, c):
         """x [t, k] float32 as chunk c's A for GEMMs of depth k."""
         a = self.a_chunk(k, c)
@@ -261,17 +255,16 @@ class FusedPrefill(Engine):
             ch = self.attn_chunk(kv["op"], c)
             hg = ch["parts"][0]["hg"]
             for i, p in enumerate(ch["parts"]):
-                q16 = self._q16(hg, p["g"].dh)
+                q16 = self.q_stage(p)
                 H.q_pack(q[:, i * hg : (i + 1) * hg], scale, q16)
-                H.q_bfp(q16, p["g"].lkp, p["qm"])
+                self.q_write(p, q16)
             att.append(self.attn_start(kv, c, r0, t))
         pend = []
         for c, (r0, t) in enumerate(chunks):
             a = self.a_chunk(dq, c)
             h0 = 0
             for p in self.attn_wait(att[c]):
-                g = p["g"]
-                H.o_tile(p["om"], t, h0, dq, a[1], D.TM, D.TK, g.lkp)
+                self.o_read(p, t, h0, dq, a[1])
                 h0 += p["hg"]
             a[0].sync(TO)
             pend.append(self.gemm_start(f"{L}.o", c))
