@@ -60,13 +60,14 @@ def _lm_class():
     from lm_eval.api.model import LM
 
     class NpuLM(LM):
-        def __init__(self, runner, tokenizer, bos, prefill_len, max_seq):
+        def __init__(self, runner, tokenizer, bos, prefill_len, max_seq, stop_ids=()):
             super().__init__()
             self.runner = runner
             self.tok = tokenizer
             self.bos = bos
             self.prefill_len = prefill_len
             self.max_seq = max_seq
+            self.stop_ids = set(stop_ids) | {tokenizer.eos_token_id}
 
         def _encode(self, text):
             return self.tok.encode(text, add_special_tokens=False)
@@ -128,7 +129,6 @@ def _lm_class():
             raise NotImplementedError("use accuracy.py for perplexity")
 
         def generate_until(self, requests):
-            eos = self.tok.eos_token_id
             out = []
             for n, r in enumerate(requests):
                 context, kw = r.args
@@ -138,17 +138,18 @@ def _lm_class():
                 ids = ([self.bos] if self.bos is not None else []) + self._encode(
                     context
                 )
-                # Leave room to generate, but never cut the prompt below half
-                # the sequence; generation then stops at the end of the KV.
-                keep = min(
-                    self.prefill_len, max(self.max_seq - max_gen, self.max_seq // 2)
-                )
-                ids = ids[-keep:]
-                max_gen = min(max_gen, self.max_seq - len(ids))
+                # As lm_eval's HF model: keep the last max_seq - max_gen
+                # prompt tokens, so the whole budget fits.
+                if max_gen >= self.max_seq:
+                    raise ValueError(
+                        f"max_gen_toks {max_gen} leaves no room for a prompt "
+                        f"in {self.max_seq} tokens"
+                    )
+                ids = ids[-min(self.prefill_len, self.max_seq - max_gen) :]
                 pf = self.runner.prefill(np.asarray(ids, np.int64))
                 gen, tok, pos = [], int(pf.top1_token), len(ids)
                 while True:
-                    if tok == eos:
+                    if tok in self.stop_ids:
                         break
                     gen.append(tok)
                     text = self.tok.decode(gen)
@@ -165,6 +166,20 @@ def _lm_class():
             return out
 
     return NpuLM
+
+
+def stop_ids(model_id):
+    """The ids HF generation stops on: the generation config's eos_token_id,
+    which for some models lists more than the tokenizer's EOS."""
+    from transformers import GenerationConfig
+
+    try:
+        eos = GenerationConfig.from_pretrained(model_id).eos_token_id
+    except OSError:
+        return set()
+    if eos is None:
+        return set()
+    return set(eos) if isinstance(eos, (list, tuple)) else {eos}
 
 
 def _logsumexp(x):
@@ -257,7 +272,9 @@ def ref_phase(args, hf_ref_model, bos, cache_path):
         device="cpu",
         batch_size=args.ref_batch,
         add_bos_token=bos is not None,
-        max_length=args.prefill_len + 1,
+        # The NPU's limit: requests longer than this are cut from the left
+        # by the same rule on both sides.
+        max_length=args.prefill_len,
     )
     samples, results, nshot = run_tasks(lm, args)
     cache_path.write_text(
@@ -300,6 +317,7 @@ def main():
         "limit": args.limit,
         "num_fewshot": args.num_fewshot,
         "prefill_len": args.prefill_len,
+        "max_length": args.prefill_len,
         "bos": bos,
         # The cached reference holds per-item scores for these metrics only.
         "metrics": {t: TASK_METRICS.get(t) for t in args.tasks},
@@ -331,7 +349,14 @@ def main():
         lite_mode=True,
     )
     t0 = time.time()
-    lm = _lm_class()(runner, tokenizer, bos, args.prefill_len, args.prefill_len)
+    lm = _lm_class()(
+        runner,
+        tokenizer,
+        bos,
+        args.prefill_len,
+        args.prefill_len,
+        stop_ids(hf_ref_model),
+    )
     samples, results, nshot = run_tasks(lm, args)
     elapsed = time.time() - t0
     table = compare(samples, ref["samples"])

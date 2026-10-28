@@ -53,6 +53,7 @@ class CountingRunner:
         return np.stack([self._logits(t) for t in toks[logits_from:]])
 
     def prefill(self, toks):
+        self.prompt = list(toks)
         return SimpleNamespace(top1_token=(int(toks[-1]) + 1) % VOCAB)
 
     def decode_step(self, tok, pos):
@@ -86,9 +87,25 @@ class NpuLMTest(unittest.TestCase):
 
     def test_generate_stops_at_until_and_eos(self):
         out = self.lm.generate_until(
-            [req("1", {"until": ["4"], "max_gen_toks": 20}), req("6", {"until": []})]
+            [
+                req("1", {"until": ["4"], "max_gen_toks": 20}),
+                req("6", {"until": [], "max_gen_toks": 20}),
+            ]
         )
         self.assertEqual(out, ["23", "78"])
+
+    def test_generate_stops_at_any_stop_id(self):
+        lm = le._lm_class()(self.runner, CharTokenizer(), None, 64, 64, {5})
+        self.assertEqual(
+            lm.generate_until([req("1", {"until": [], "max_gen_toks": 20})]), ["234"]
+        )
+
+    def test_prompt_cut_leaves_the_whole_budget(self):
+        lm = le._lm_class()(self.runner, CharTokenizer(), None, 8, 8)
+        lm.generate_until([req("12345678", {"until": [], "max_gen_toks": 3})])
+        self.assertEqual(self.runner.prompt, [4, 5, 6, 7, 8])
+        with self.assertRaises(ValueError):
+            lm.generate_until([req("1", {"until": [], "max_gen_toks": 8})])
 
 
 class StatsTest(unittest.TestCase):
