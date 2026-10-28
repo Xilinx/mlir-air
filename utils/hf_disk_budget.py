@@ -5,13 +5,15 @@
 
 The download patterns live here so the size this reports is what the
 "Download LLM Weights" workflow fetches. Exits 1 when the total is over --budget-gb.
+With --prune-cache, instead delete the local HF cache's model revisions the list
+no longer names.
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, scan_cache_dir
 from huggingface_hub.utils import filter_repo_objects
 
 # Weight/config/tokenizer files. *.q4nx: FastFlowLM bundles. *.jinja: chat
@@ -53,11 +55,56 @@ def read_models(path):
     return entries
 
 
+def prune_cache(entries, dry_run):
+    """Keep each listed pin, and the revision `main` points at for an unpinned entry."""
+    wanted = {}
+    for _, repo, revision in entries:
+        wanted.setdefault(repo, set()).add(revision)
+    doomed = []
+    for repo in sorted(scan_cache_dir().repos, key=lambda r: r.repo_id):
+        if repo.repo_type != "model":
+            continue
+        pins = wanted.get(repo.repo_id)
+        if pins is None:
+            keep = set()
+        else:
+            # A pin is a commit hash, or a branch/tag name the cache records as a ref.
+            keep = {
+                r.commit_hash
+                for r in repo.revisions
+                if r.commit_hash in pins or pins & set(r.refs)
+            }
+            if None in pins:
+                main = {r.commit_hash for r in repo.revisions if "main" in r.refs}
+                if not main:
+                    print(f"skip {repo.repo_id}: no cached revision is `main`")
+                    continue
+                keep |= main
+        for r in repo.revisions:
+            if r.commit_hash not in keep:
+                print(f"prune {repo.repo_id}@{r.commit_hash} ({r.size_on_disk_str})")
+                doomed.append(r.commit_hash)
+    if not doomed:
+        print("nothing to prune")
+        return 0
+    strategy = scan_cache_dir().delete_revisions(*doomed)
+    print(
+        f"{'would free' if dry_run else 'freeing'} {strategy.expected_freed_size_str}"
+    )
+    if not dry_run:
+        strategy.execute()
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--models", default=DEFAULT_LIST)
     ap.add_argument("--budget-gb", type=float, default=None)
+    ap.add_argument("--prune-cache", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+    if args.prune_cache:
+        return prune_cache(read_models(args.models), args.dry_run)
 
     api = HfApi(token=False)
     seen = set()  # (repo, blob id): revisions of one repo share blobs in the cache
