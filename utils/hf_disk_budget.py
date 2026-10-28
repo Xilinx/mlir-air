@@ -68,7 +68,12 @@ def prune_cache(entries, dry_run):
         if pins is None:
             keep = set()
         else:
-            keep = {r.commit_hash for r in repo.revisions if r.commit_hash in pins}
+            # A pin is a commit hash, or a branch/tag name the cache records as a ref.
+            keep = {
+                r.commit_hash
+                for r in repo.revisions
+                if r.commit_hash in pins or pins & set(r.refs)
+            }
             if None in pins:
                 main = {r.commit_hash for r in repo.revisions if "main" in r.refs}
                 if not main:
