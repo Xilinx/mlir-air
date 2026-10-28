@@ -11,7 +11,7 @@ jobs:
     runs-on: amdryzenai5pro340
     timeout-minutes: 30
     env:
-      MODE: dry-run
+      MODE: delete
     steps:
       # No checkout: it would git-clean the shared nightly workspace.
       - name: Clean derived caches of the examples #2206 moved off the runner
