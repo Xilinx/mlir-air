@@ -1,0 +1,32 @@
+# HuggingFace model repos of the 7-8B llms/ examples that run on a separate
+# Krackan machine, not the nightly runner (whose disk cannot hold them; see
+# hf_models.txt).
+# One repo id per line, optionally repo@revision; blank lines and comments are ignored.
+
+# Same Q4NX packaging of Qwen3-8B. Used by llms/qwen3_8b_q4nx (NPU weights),
+# plus the bf16 reference `make verify` compares against. The FLM card declares
+# `base_model: Qwen/Qwen3-8B`, and Qwen3 unifies base + instruct in one
+# checkpoint, so that single repo is the reference.
+FastFlowLM/Qwen3-8B-NPU2
+Qwen/Qwen3-8B
+
+# Qwen3-8B DFlash B8: pinned target, BF16 reference/tokenizer, and drafter.
+FastFlowLM/Qwen3-8B-NPU2@941c148c228496682e95c413cb90025f73200af2
+Qwen/Qwen3-8B@b968826d9c46dd6066d109eabc6255188de91218
+z-lab/Qwen3-8B-DFlash-b16@9b41424b7109f9c5413454f481b09a82b85333f4
+
+# Qwen2.5-7B-Instruct is listed ONCE, not as a pair: FastFlowLM publishes no
+# Qwen2.5-7B bundle, so llms/qwen25_7b_q4nx quantizes this checkpoint to Q4NX on
+# load and `make verify` compares against the same repo in bf16. Ungated.
+Qwen/Qwen2.5-7B-Instruct
+
+# Base variant of llms/llama31_8b_q4nx's reference (`make verify MODEL=base`).
+NousResearch/Meta-Llama-3.1-8B
+
+# Llama-3.1-8B DFlash B8: pinned target, BF16 reference/tokenizer, and drafter.
+FastFlowLM/Llama-3.1-8B-NPU2@527006483dca6c9d75474ff92b8a6bdd8f257914
+NousResearch/Meta-Llama-3.1-8B-Instruct@d10aef7999a2b5ba950ab3974312feeedbfe0b77
+z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat@d3af30def9601abdd10810aba220d692f0e803f0
+
+# Affine-Q4 deployment and original-BF16 reference, pinned like its model.json.
+mistralai/Mistral-7B-Instruct-v0.3@c170c708c41dac9275d15a8fff4eca08d52bab71
