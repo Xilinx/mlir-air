@@ -49,6 +49,8 @@ profile-fused-prefill:
 	python3 $(FUSED_MAIN) bench $(FUSED_MODEL) $(FUSED_DIR) --model $(MODEL_SOURCE) \
 	  --lengths $(FUSED_LENGTHS)
 
-FUSED_TEXT ?= $(dir $(lastword $(MAKEFILE_LIST)))../../README.md
+# Next to FUSED_MAIN: MAKEFILE_LIST's last entry is whatever the model's
+# Makefile included last by the time a recipe expands these.
+FUSED_TEXT ?= $(dir $(FUSED_MAIN))../../README.md
 # A frozen copy of README.md: editing the README would change the 8k prompt.
-FUSED_LONG_TEXT ?= $(dir $(lastword $(MAKEFILE_LIST)))gate_8k.txt
+FUSED_LONG_TEXT ?= $(dir $(FUSED_MAIN))gate_8k.txt
