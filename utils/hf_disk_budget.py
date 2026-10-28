@@ -31,9 +31,10 @@ ALLOW = [
 # the runner's flaky link, mark the snapshot incomplete: Llama's original/ dir,
 # licence blurbs, and Mistral's consolidated.safetensors (a copy of the shards).
 IGNORE = ["original/*", "LICENSE*", "USE_POLICY*", "consolidated*.safetensors"]
-# Repos whose pinned snapshot carries the HF implementation Transformers loads.
+# Repos whose pinned snapshot carries the HF implementation Transformers loads;
+# the example's offline snapshot_download asks for every *.py of it.
 EXTRA_ALLOW = {
-    "apple/OpenELM-1_1B-Instruct": ["configuration_openelm.py", "modeling_openelm.py"],
+    "apple/OpenELM-1_1B-Instruct": ["*.py"],
 }
 
 DEFAULT_LIST = (
