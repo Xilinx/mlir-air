@@ -5217,7 +5217,8 @@ public:
       if (def && def->hasAttr(air::attrs::CountedLock))
         continue;
       // use-lock-race-condition-fix-auto balances a buffer only when each
-      // many-side transfer has a channel to itself; see
+      // many-side transfer has a channel to itself, or when the other side is
+      // one transfer and the many side's transfers group by channel; see
       // air::attrs::CountedLock.
       if (lockRaceFixAuto) {
         SmallVector<air::ChannelInterface> manySide;
@@ -5243,11 +5244,22 @@ public:
         SmallVector<air::ChannelEndpointKey> endpoints;
         for (air::ChannelInterface op : manySide)
           endpoints.push_back(air::getChannelEndpointKey(op));
+        // Grouped: every two transfers are provably on different channels or
+        // provably on the same one, and not all on one. With one transfer on
+        // the other side, that transfer then holds a lock pair per channel
+        // counting the channel's transfers; see generateDmaBdProgram.
         bool channelEach = endpoints.size() > 1;
-        for (unsigned i = 0; i < endpoints.size() && channelEach; i++)
-          for (unsigned j = i + 1; j < endpoints.size() && channelEach; j++)
-            channelEach = differ(endpoints[i], endpoints[j]);
-        if (!channelEach) {
+        bool grouped = std::min(puts.size(), gets.size()) == 1;
+        bool split = false;
+        for (unsigned i = 0; i < endpoints.size(); i++)
+          for (unsigned j = i + 1; j < endpoints.size(); j++) {
+            bool d = differ(endpoints[i], endpoints[j]);
+            split |= d;
+            channelEach &= d;
+            grouped &=
+                d || air::sameChannelEndpoint(endpoints[i], endpoints[j]);
+          }
+        if (!channelEach && !(grouped && split)) {
           if (def)
             def->setAttr(air::attrs::CountedLock, builder.getUnitAttr());
           continue;
@@ -7398,12 +7410,15 @@ public:
                        bool lockRaceConditionFixV2 = false) {
 
     // Under use-lock-race-condition-fix, a memtile buffer moved by one transfer
-    // on one side and by several on the other, each with a lock pair of its
-    // own: the one transfer holds the lock pairs of all the others, so a slice
-    // cannot be refilled before it is read out, nor read before the buffer is
-    // filled. Maps each such buffer to the direction of its one transfer.
-    // Transfers on the same air.channel and DMA channel share a lock pair; if
-    // two of the several do, the buffer keeps one counted lock pair.
+    // on one side and by several on the other: the one transfer holds the lock
+    // pairs of all the others, so a slice cannot be refilled before it is read
+    // out, nor read before the buffer is filled. Maps each such buffer to the
+    // direction of its one transfer. Transfers on the same air.channel and DMA
+    // channel share a lock pair, which counts them. If all of the several
+    // share one, the buffer keeps one counted lock pair. One counted pair
+    // shared by several channels is not enough: a DMA channel acquires its
+    // next BD's lock as soon as its current BD is done, so a channel that
+    // finishes its transfers early takes slots meant for another channel.
     llvm::DenseMap<Operation *, AIE::DMAChannelDir> heldLockSide;
     if constexpr (std::is_same_v<dmaAllocatorTy, air::MemTileDMAAllocator>) {
       if (lockRaceConditionFix) {
@@ -7436,9 +7451,7 @@ public:
               air::usesChainLock(buf, lockRaceConditionFixV2))
             continue;
           auto ownPairs = [](const SmallVector<LockKey> &keys) {
-            return keys.size() > 1 &&
-                   llvm::DenseSet<LockKey>(keys.begin(), keys.end()).size() ==
-                       keys.size();
+            return llvm::DenseSet<LockKey>(keys.begin(), keys.end()).size() > 1;
           };
           const auto &reads = entry.second.first;
           const auto &writes = entry.second.second;
@@ -7664,23 +7677,40 @@ public:
               lockRaceConditionFix, lockRaceConditionFixV2);
           if (failed(locks))
             return memcpyOp->emitOpError("failed to get lock for dma.");
-          // The other side's lock pairs this transfer holds, besides its own.
+          // The other side's lock pairs this transfer holds, besides its own,
+          // with the number of the other side's transfers each counts.
           SmallVector<std::pair<AIE::LockOp, AIE::LockOp>> heldPairs;
+          SmallVector<int64_t> heldCounts;
+          int64_t ownCount = 1;
           Operation *bufOp = bufferOp.value().getOperation();
-          if (holdsLocks(dir, memcpyOp.getOperation())) {
+          bool holds = holdsLocks(dir, memcpyOp.getOperation());
+          if (holds) {
             for (auto &alloc : dmaAlloc.lock_allocation_list) {
               auto pair =
                   std::make_pair(std::get<3>(alloc), std::get<4>(alloc));
-              if (std::get<0>(alloc) == bufOp &&
-                  std::get<2>(alloc).direction != dir &&
-                  !llvm::is_contained(heldPairs, pair))
-                heldPairs.push_back(pair);
+              if (std::get<0>(alloc) != bufOp ||
+                  std::get<2>(alloc).direction == dir)
+                continue;
+              auto *it = llvm::find(heldPairs, pair);
+              if (it != heldPairs.end()) {
+                heldCounts[it - heldPairs.begin()]++;
+                continue;
+              }
+              heldPairs.push_back(pair);
+              heldCounts.push_back(1);
             }
             auto *own = llvm::find(heldPairs, locks.value());
             if (own == heldPairs.end())
               return memcpyOp->emitOpError(
                   "moves a shared buffer in one transfer, but its lock pair is "
                   "not one of the other side's");
+            // A pair counting several transfers starts with that many free
+            // slots.
+            for (auto [pair, count] : llvm::zip(heldPairs, heldCounts))
+              if (count > 1)
+                pair.second.setInit(count);
+            ownCount = heldCounts[own - heldPairs.begin()];
+            heldCounts.erase(heldCounts.begin() + (own - heldPairs.begin()));
             heldPairs.erase(own);
           }
           // A lock-only BD: an acquire with a release of 0, or a release with
@@ -7688,17 +7718,18 @@ public:
           bool isMM2S = dir == AIE::DMAChannelDir::MM2S;
           SmallVector<AIE::DMABDOp> lockOnlyBds;
           auto emitLockOnlyBd = [&](std::pair<AIE::LockOp, AIE::LockOp> pair,
-                                    bool acquire) {
+                                    int64_t count, bool acquire) {
             OpBuilder lb(bd->getTerminator());
             auto acqOp = AIE::UseLockOp::create(
                 lb, loc, isMM2S ? pair.first : pair.second,
-                AIE::LockAction::AcquireGreaterEqual, 1);
+                AIE::LockAction::AcquireGreaterEqual, acquire ? count : 1);
             if (!acquire)
               acqOp.setAcqEnAttr(lb.getBoolAttr(false));
             lockOnlyBds.push_back(AIE::DMABDOp::create(
                 lb, loc, bufferOp.value(), /*offset=*/0, /*len=*/0));
             AIE::UseLockOp::create(lb, loc, isMM2S ? pair.second : pair.first,
-                                   AIE::LockAction::Release, acquire ? 0 : 1);
+                                   AIE::LockAction::Release,
+                                   acquire ? 0 : count);
           };
           // Chain a new block after `bd` and continue in it.
           auto appendBd = [&]() {
@@ -7710,14 +7741,16 @@ public:
             next->setSuccessor(blk, 0);
             bd = blk;
           };
-          for (auto pair : heldPairs) {
-            emitLockOnlyBd(pair, /*acquire=*/true);
+          for (auto [pair, count] : llvm::zip(heldPairs, heldCounts)) {
+            emitLockOnlyBd(pair, count, /*acquire=*/true);
             appendBd();
           }
+          std::optional<int64_t> lockCount;
+          if (dmaAlloc.heldLockBuffers.contains(bufOp))
+            lockCount = holds ? ownCount : 1;
           auto newBD = generateDmaBd<bufferOpTy>(
               loc, dir, locks.value(), tile, targetModel, bd, memcpyOp,
-              bufferOp.value(), chan, lockRaceConditionFixV2,
-              dmaAlloc.heldLockBuffers.contains(bufOp));
+              bufferOp.value(), chan, lockRaceConditionFixV2, lockCount);
           // Attribute task_id is necessary to ensure that BDs do not get shared
           // across tasks, otherwise MLIR may fold BDs and cause BD sharing
           // across tasks.
@@ -7726,9 +7759,9 @@ public:
           newBD.value()->setAttr(
               "task_id",
               IntegerAttr::get(IntegerType::get(b.getContext(), 32), taskId));
-          for (auto pair : heldPairs) {
+          for (auto [pair, count] : llvm::zip(heldPairs, heldCounts)) {
             appendBd();
-            emitLockOnlyBd(pair, /*acquire=*/false);
+            emitLockOnlyBd(pair, count, /*acquire=*/false);
           }
           for (AIE::DMABDOp lockOnlyBd : lockOnlyBds)
             lockOnlyBd->setAttr("task_id", newBD.value()->getAttr("task_id"));
@@ -7819,7 +7852,7 @@ public:
                 const AIE::AIETargetModel &targetModel, Block *bd,
                 air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan,
                 bool lockRaceConditionFixV2 = false,
-                bool unitLockCounts = false) {
+                std::optional<int64_t> lockCount = std::nullopt) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
@@ -7856,8 +7889,9 @@ public:
     auto aie2LockVal =
         useSharedL1LockCounts
             ? std::pair<int64_t, int64_t>(*sharedLockCount, *sharedLockCount)
-        : useChainLockCounts || unitLockCounts
-            ? std::make_pair<int64_t, int64_t>(1, 1)
+        : useChainLockCounts ? std::make_pair<int64_t, int64_t>(1, 1)
+        : lockCount
+            ? std::make_pair(*lockCount, *lockCount)
             : air::getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.first : 0;
