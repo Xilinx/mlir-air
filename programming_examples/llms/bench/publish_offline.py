@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Publish 7-8B LLM results measured off the nightly runner to the docs page.
+"""Publish LLM results measured off the nightly runner to the docs page.
 
 The nightly runner's disk holds the models up to 4B (hf_models.txt); the 7-8B
 examples (hf_models_offline.txt) run on another Krackan machine. After running
@@ -15,6 +15,13 @@ this combines the results the way the nightly does (combine_perf.py), appends
 them to the `perf-history` branch marked source=offline, and asks the docs
 workflow to rebuild. Only models the nightly does not run are published, so an
 offline row never displaces the runner's own number.
+
+Accuracy (verify/accuracy.py) runs only off the runner, for every model:
+
+  ninja check-programming-examples-llms-accuracy
+
+and its records are published for all models. Left without --verify-xml, a
+run publishes accuracy only.
 """
 
 import argparse
@@ -29,13 +36,15 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
-# Nightly output file -> its series on the perf-history branch, and the flag
-# append_history.py reads it with.
+# Output file -> its series on the perf-history branch, the flag
+# append_history.py reads it with, and whether only models the nightly skips
+# are published (the series the nightly also measures).
 SERIES = [
-    ("perf.json", "history.ndjson", "--perf"),
-    ("sweep.json", "sweep_history.ndjson", "--sweep"),
-    ("prefill_sweep.json", "prefill_sweep_history.ndjson", "--prefill-sweep"),
-    ("full20.json", "spec_decode_history.ndjson", "--spec-decode"),
+    ("perf.json", "history.ndjson", "--perf", True),
+    ("sweep.json", "sweep_history.ndjson", "--sweep", True),
+    ("prefill_sweep.json", "prefill_sweep_history.ndjson", "--prefill-sweep", True),
+    ("full20.json", "spec_decode_history.ndjson", "--spec-decode", True),
+    ("accuracy.json", "accuracy_history.ndjson", "--accuracy", False),
 ]
 LLMS = REPO / "programming_examples/llms"
 SUITES = re.compile(r"run_npu2_(verify|profile|sweep|prefill_sweep|full20)")
@@ -94,7 +103,11 @@ def main():
     )
     ap.add_argument("--machine", required=True, help="name of the machine measured on")
     ap.add_argument("--build-dir", required=True, help="the build tree lit ran in")
-    ap.add_argument("--verify-xml", required=True, help="lit's xunit output of verify")
+    ap.add_argument(
+        "--verify-xml",
+        default=None,
+        help="lit's xunit output of verify; without it only accuracy is published",
+    )
     ap.add_argument("--air-sha", default=None, help="default: this checkout's HEAD")
     ap.add_argument("--peano", default=None, help="default: installed llvm-aie")
     ap.add_argument("--remote", default="origin")
@@ -124,8 +137,9 @@ def main():
         args.machine,
         "--build-dir",
         Path(args.build_dir).resolve(),
+        # Without one, combine_perf finds no verify results: none are published.
         "--verify-xml",
-        Path(args.verify_xml).resolve(),
+        Path(args.verify_xml).resolve() if args.verify_xml else work / "verify.xml",
         cwd=work,
     )
 
@@ -138,13 +152,19 @@ def main():
             "git", "clone", "-q", "--branch", "perf-history", "--depth", "50", url, hist
         )
         published = set()
-        for name, series, flag in SERIES:
+        for name, series, flag, offline_only in SERIES:
+            # Without verify results a perf record would publish an empty
+            # verify status over the model's last one.
+            if offline_only and not args.verify_xml:
+                continue
             recs = (
                 json.loads((work / name).read_text()) if (work / name).is_file() else []
             )
-            keep = [r for r in recs if r.get("model") in offline]
+            keep = [r for r in recs if not offline_only or r.get("model") in offline]
             published |= {r.get("model") for r in keep}
-            dropped = sorted({r.get("model") for r in recs} - offline)
+            dropped = sorted(
+                {r.get("model") for r in recs} - {r.get("model") for r in keep}
+            )
             if dropped:
                 print(
                     f"{name}: not publishing {', '.join(dropped)} (nightly runs them)"
@@ -169,6 +189,11 @@ def main():
             print("nothing to publish")
             return 0
         print(f"publishing {', '.join(sorted(published))}")
+        accuracy_history = hist / "accuracy_history.ndjson"
+        if accuracy_history.is_file():
+            from accuracy_regression import load, markdown, regressions
+
+            print(markdown(regressions(load(accuracy_history))))
         run("git", "add", "-A", cwd=hist)
         run(
             "git",
