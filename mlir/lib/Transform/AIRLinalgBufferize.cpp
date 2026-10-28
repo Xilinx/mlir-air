@@ -271,6 +271,7 @@ std::optional<Value> hoistOneStaticallyBoundAllocation(
 template <typename AllocLikeOpType>
 void hoistStaticallyBoundAllocationsInFunc(
     RewriterBase &rewriter, mlir::FunctionOpInterface funcOp,
+    std::optional<int64_t> memorySpace = std::nullopt,
     std::optional<vector::VscaleRange> vscaleRange = std::nullopt) {
   SmallVector<AllocLikeOpType> allocLikeOps;
 
@@ -279,6 +280,12 @@ void hoistStaticallyBoundAllocationsInFunc(
   funcOp.walk([&](AllocLikeOpType allocLikeOp) {
     if (allocLikeOp->getBlock() == &funcOp.getFunctionBody().front())
       return;
+    if (memorySpace) {
+      auto space = dyn_cast_if_present<IntegerAttr>(
+          allocLikeOp.getType().getMemorySpace());
+      if (!space || space.getInt() != *memorySpace)
+        return;
+    }
     if (allocLikeOp.getDynamicSizes().empty()) {
       allocLikeOps.push_back(allocLikeOp);
       return;
@@ -333,7 +340,11 @@ DiagnosedSilenceableFailure transform::AIRHoistStaticAllocOp::applyToOne(
   // Apply the hoisting pass to all memref.alloc ops in the target function.
   // If more alloc-like ops should be supported, template parameterization
   // allows calling this routine for those as well.
-  hoistStaticallyBoundAllocationsInFunc<memref::AllocOp>(rewriter, target);
+  std::optional<int64_t> memorySpace;
+  if (auto space = getMemorySpace())
+    memorySpace = *space;
+  hoistStaticallyBoundAllocationsInFunc<memref::AllocOp>(rewriter, target,
+                                                         memorySpace);
   return DiagnosedSilenceableFailure::success();
 }
 

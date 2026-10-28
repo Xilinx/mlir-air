@@ -1,0 +1,25 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// qwen3_8b_q4nx accuracy: teacher-forced PPL + KL divergence of the NPU decode
+// and prefill paths against the HF bf16 checkpoint and the same weights
+// dequantized on wikitext-2 (verify/accuracy.py). Informational: this checks
+// only that the measurement ran; run_npu2_verify.lit is the gate. The decode is
+// built at its default context, which must cover the chunk length.
+// Collected by check-programming-examples-llms-accuracy.
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hf_token, hfweights_fastflowlm_qwen3_8b_npu2, hfweights_qwen_qwen3_8b, hfweights_ggml_org_ci
+//
+// RUN: mkdir -p test_peano_accuracy
+// RUN: cd test_peano_accuracy
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile accuracy ACC_REF=bf16 ACC_PATH=decode ACC_JSON=qwen3_8b_q4nx.bf16.decode.accuracy.json PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile accuracy ACC_REF=bf16 ACC_PATH=prefill ACC_JSON=qwen3_8b_q4nx.bf16.prefill.accuracy.json PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile accuracy ACC_REF=dequant ACC_PATH=decode ACC_JSON=qwen3_8b_q4nx.dequant.decode.accuracy.json PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile accuracy ACC_REF=dequant ACC_PATH=prefill ACC_JSON=qwen3_8b_q4nx.dequant.prefill.accuracy.json PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: FileCheck %s < qwen3_8b_q4nx.bf16.decode.accuracy.json
+// RUN: FileCheck %s < qwen3_8b_q4nx.bf16.prefill.accuracy.json
+// RUN: FileCheck %s < qwen3_8b_q4nx.dequant.decode.accuracy.json
+// RUN: FileCheck %s < qwen3_8b_q4nx.dequant.prefill.accuracy.json
+// CHECK: "kld_mean"

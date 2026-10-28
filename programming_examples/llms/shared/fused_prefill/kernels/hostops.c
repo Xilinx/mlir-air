@@ -287,6 +287,22 @@ void o_tile(const uint16_t *o, int t, int nh, int dh, int M, int tq, int h0,
     }
 }
 
+// o [nh][M][dh] in 8x8 blocks, per head [M/8][dh/8] each row-major, into
+// heads [h0, h0 + nh) of dst (tiled A, K)
+void o_tiles(const uint16_t *o, int t, int nh, int dh, int M, int h0, int K,
+             int TM, int TK, uint16_t *dst) {
+  int ks = K / TK;
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int r = 0; r < t; r++)
+    for (int h = 0; h < nh; h++) {
+      const uint16_t *b = o + ((long)h * M + (r & ~7)) * dh + (r & 7) * 8;
+      for (int i = 0; i < dh; i += 8) {
+        int col = (h0 + h) * dh + i;
+        memcpy(a_row(dst, r, col / TK, ks, TM, TK) + col % TK, b + i * 8, 16);
+      }
+    }
+}
+
 // bfp16ebs8, the cores' native matmul operand: per 8 values one exponent byte
 // (127 + the largest value's exponent) and 8 int8 mantissas, value * 2^(6 -
 // exponent) rounded to even. A mantissa that rounds to 128 moves the group up
@@ -391,6 +407,45 @@ void kv_rec_bfp(const uint16_t *k, const uint16_t *v, int ld, int c0, int t,
                   vd + 72 * (x * (lkp / 8) + y));
       }
   }
+}
+
+// kv_rec in bf16 8x8 blocks, each row-major: per lkp-row block the K tile's
+// blocks [lkp/8][dh/8], then V's in column chunks dvt wide, each chunk's
+// blocks [lkp/8][dvt/8]; rows past t are zero
+void kv_rec_bf16(const uint16_t *k, const uint16_t *v, int ld, int c0, int t,
+                 int dh, int lkp, int dvt, uint16_t *dst) {
+  int nb = (t + lkp - 1) / lkp;
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int b = 0; b < nb; b++) {
+    uint16_t *kd = dst + (long)b * 2 * lkp * dh, *vd = kd + (long)lkp * dh;
+    for (int i = 0; i < lkp; i++) {
+      int r = b * lkp + i;
+      for (int c = 0; c < dh; c += 8) {
+        uint16_t *kp = kd + ((i / 8) * (dh / 8) + c / 8) * 64 + (i % 8) * 8;
+        uint16_t *vp = vd + (long)(c / dvt) * lkp * dvt +
+                       ((i / 8) * (dvt / 8) + c % dvt / 8) * 64 + (i % 8) * 8;
+        if (r < t) {
+          memcpy(kp, k + (long)r * ld + c0 + c, 16);
+          memcpy(vp, v + (long)r * ld + c0 + c, 16);
+        } else {
+          memset(kp, 0, 16);
+          memset(vp, 0, 16);
+        }
+      }
+    }
+  }
+}
+
+// q bf16 [nh][M][dh] in 8x8 blocks, per head [M/8][dh/8] each row-major
+void q_tiles(const uint16_t *q, int nh, int M, int dh, uint16_t *dst) {
+#pragma omp parallel for collapse(2) num_threads(NT) schedule(static)
+  for (int h = 0; h < nh; h++)
+    for (int r = 0; r < M; r++) {
+      const uint16_t *src = q + ((long)h * M + r) * dh;
+      uint16_t *d = dst + ((long)h * M + (r & ~7)) * dh + (r & 7) * 8;
+      for (int c = 0; c < dh; c += 8)
+        memcpy(d + c * 8, src + c, 16);
+    }
 }
 
 // q bf16 [nh][M][dh] -> bfp16, per head per tq-row tile the blocks [tq/8][dh/8]

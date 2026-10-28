@@ -24,6 +24,10 @@ Usage:
                             --history prefill_sweep_history.ndjson --run-id 123
   python3 append_history.py --spec-decode full20.json \
                             --history spec_decode_history.ndjson --run-id 123
+  python3 append_history.py --accuracy accuracy.json \
+                            --history accuracy_history.ndjson --run-id 123
+  python3 append_history.py --tasks tasks.json \
+                            --history tasks_history.ndjson --run-id 123
 """
 
 import argparse
@@ -166,6 +170,80 @@ def _flat_spec_decode_rows(recs, run_id):
             }
 
 
+def _flat_accuracy_rows(recs, run_id):
+    """Yield one flat history row per (model, reference, NPU path) of a
+    teacher-forced PPL / KL-divergence run (verify/accuracy.py).
+
+    Its own series: the reference, the path and the context are part of what
+    a number means, and none of the perf series can carry them.
+    """
+    for d in recs:
+        tc = d.get("toolchain", {}) or {}
+        ts = d.get("timestamp_utc", "") or ""
+        ref = d.get("reference", {}) or {}
+        m = d.get("metrics", {}) or {}
+        pct = m.get("kld_percentiles", {}) or {}
+        yield {
+            "date": ts[:10],
+            "timestamp_utc": ts,
+            "run_id": run_id,
+            "air_sha": tc.get("mlir_air_sha", ""),
+            "aie_hash": tc.get("mlir_aie_hash", ""),
+            "peano": tc.get("llvm_aie_version", ""),
+            "model": d.get("model", ""),
+            "runner": d.get("runner", ""),
+            "reference": ref.get("id", ""),
+            "ref_kind": ref.get("kind", ""),
+            "path": d.get("path", ""),
+            "dataset": d.get("dataset", ""),
+            "ctx": d.get("ctx"),
+            # Where scoring starts; a depth run scores only a chunk's tail.
+            "scored_from": d.get("scored_from"),
+            "n_tokens": m.get("n_tokens"),
+            "ppl": m.get("ppl"),
+            "ppl_base": m.get("ppl_base"),
+            "ln_ppl_ratio": m.get("ln_ppl_ratio"),
+            "ln_ppl_ratio_se": m.get("ln_ppl_ratio_se"),
+            "kld_mean": m.get("kld_mean"),
+            "kld_se": m.get("kld_se"),
+            "kld_p99": pct.get("p99"),
+            "same_top": m.get("same_top"),
+            "same_top_se": m.get("same_top_se"),
+            "rms_dp": m.get("rms_dp"),
+        }
+
+
+def _flat_tasks_rows(recs, run_id):
+    """Yield one flat history row per (model, task) of an lm_eval run
+    (verify/lm_eval_npu.py): the NPU's and the reference's scores over the same
+    items, and the items only one of them got right."""
+    for d in recs:
+        tc = d.get("toolchain", {}) or {}
+        ts = d.get("timestamp_utc", "") or ""
+        ref = d.get("reference", {}) or {}
+        for task, t in (d.get("tasks") or {}).items():
+            yield {
+                "date": ts[:10],
+                "timestamp_utc": ts,
+                "run_id": run_id,
+                "air_sha": tc.get("mlir_air_sha", ""),
+                "aie_hash": tc.get("mlir_aie_hash", ""),
+                "peano": tc.get("llvm_aie_version", ""),
+                "model": d.get("model", ""),
+                "runner": d.get("runner", ""),
+                "reference": ref.get("id", ""),
+                "task": task,
+                "limit": d.get("limit"),
+                "n_shot": (d.get("n_shot") or {}).get(task),
+                "n": t.get("n"),
+                "npu": t.get("npu"),
+                "ref": t.get("ref"),
+                "npu_only_right": t.get("npu_only_right"),
+                "ref_only_right": t.get("ref_only_right"),
+                "mcnemar_p": t.get("mcnemar_p"),
+            }
+
+
 def _existing_run_ids(history_path):
     """Return the set of run_ids already recorded in history.ndjson.
 
@@ -199,6 +277,14 @@ def main():
         "--spec-decode",
         help="Path to the nightly full20.json (speculative decoding study)",
     )
+    src.add_argument(
+        "--accuracy",
+        help="Path to accuracy.json (PPL / KL divergence vs reference)",
+    )
+    src.add_argument(
+        "--tasks",
+        help="Path to tasks.json (lm_eval task scores vs reference)",
+    )
     ap.add_argument(
         "--history", required=True, help="Path to history.ndjson (created if absent)"
     )
@@ -220,15 +306,26 @@ def main():
     except ValueError:
         run_id = args.run_id
 
-    src_path = Path(args.perf or args.sweep or args.prefill_sweep or args.spec_decode)
+    src_path = Path(
+        args.perf
+        or args.sweep
+        or args.prefill_sweep
+        or args.spec_decode
+        or args.accuracy
+        or args.tasks
+    )
     if args.perf:
         flatten = _flat_rows
     elif args.sweep:
         flatten = _flat_sweep_rows
     elif args.prefill_sweep:
         flatten = _flat_prefill_sweep_rows
-    else:
+    elif args.spec_decode:
         flatten = _flat_spec_decode_rows
+    elif args.accuracy:
+        flatten = _flat_accuracy_rows
+    else:
+        flatten = _flat_tasks_rows
     if not src_path.is_file():
         print(f"no {src_path.name}; nothing to append")
         return 0

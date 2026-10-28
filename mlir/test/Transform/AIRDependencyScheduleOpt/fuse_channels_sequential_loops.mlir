@@ -357,6 +357,122 @@ module {
 
 // -----
 
+// The loops stream from L2 buffers pinned to different memtiles, which move
+// them on their own DMA channels. The channels stay apart.
+
+// CHECK-LABEL: func.func @pinned_apart
+// CHECK: air.channel.put {{.*}} @chan_a[]
+// CHECK: air.channel.put {{.*}} @chan_b[]
+// CHECK: air.herd
+// CHECK: air.channel.get {{.*}} @chan_a[]
+// CHECK: air.channel.get {{.*}} @chan_b[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @pinned_apart(%nq: index, %nb: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%aq=%nq, %ab=%nb) : index, index {
+      %1 = air.segment @seg async args(%sq=%aq, %sb=%ab) : index, index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %tq, %p = air.execute -> (memref<16xi16, 1>) {
+          %a = memref.alloc() {air.memtile_col = 0 : i32} : memref<16xi16, 1>
+          air.execute_terminator %a : memref<16xi16, 1>
+        }
+        %tz, %z = air.execute -> (memref<16xi16, 1>) {
+          %a = memref.alloc() {air.memtile_col = 1 : i32} : memref<16xi16, 1>
+          air.execute_terminator %a : memref<16xi16, 1>
+        }
+        %2 = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %tq) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_a[] (%p[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %3 = scf.for %k = %c0 to %sb step %c1_0 iter_args(%d = %tz) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_b[] (%z[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %5 = air.herd @herd async tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) args(%hq=%sq, %hb=%sb) : index, index {
+          %c0_1 = arith.constant 0 : index
+          %c1_1 = arith.constant 1 : index
+          %ta, %ba = air.execute -> (memref<16xi16, 2>) {
+            %a = memref.alloc() : memref<16xi16, 2>
+            air.execute_terminator %a : memref<16xi16, 2>
+          }
+          %6 = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_a[] (%ba[] [] []) : (memref<16xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+          %7 = scf.for %k = %c0_1 to %hb step %c1_1 iter_args(%d = %6) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_b[] (%ba[] [] []) : (memref<16xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// As above, with both L2 buffers pinned to the same memtile. The channels
+// merge.
+
+// CHECK-LABEL: func.func @pinned_together
+// CHECK-NOT: @chan_b
+// CHECK: air.herd
+// CHECK-COUNT-2: air.channel.get {{.*}} @chan_a[]
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+  func.func @pinned_together(%nq: index, %nb: index) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%l) in (%ls=%c1) args(%aq=%nq, %ab=%nb) : index, index {
+      %1 = air.segment @seg async args(%sq=%aq, %sb=%ab) : index, index {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %tq, %p = air.execute -> (memref<16xi16, 1>) {
+          %a = memref.alloc() {air.memtile_col = 0 : i32} : memref<16xi16, 1>
+          air.execute_terminator %a : memref<16xi16, 1>
+        }
+        %tz, %z = air.execute -> (memref<16xi16, 1>) {
+          %a = memref.alloc() {air.memtile_col = 0 : i32} : memref<16xi16, 1>
+          air.execute_terminator %a : memref<16xi16, 1>
+        }
+        %2 = scf.for %k = %c0 to %sq step %c1_0 iter_args(%d = %tq) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_a[] (%p[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %3 = scf.for %k = %c0 to %sb step %c1_0 iter_args(%d = %tz) -> (!air.async.token) {
+          %p0 = air.channel.put async [%d] @chan_b[] (%z[] [] []) : (memref<16xi16, 1>)
+          scf.yield %p0 : !air.async.token
+        }
+        %5 = air.herd @herd async tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) args(%hq=%sq, %hb=%sb) : index, index {
+          %c0_1 = arith.constant 0 : index
+          %c1_1 = arith.constant 1 : index
+          %ta, %ba = air.execute -> (memref<16xi16, 2>) {
+            %a = memref.alloc() : memref<16xi16, 2>
+            air.execute_terminator %a : memref<16xi16, 2>
+          }
+          %6 = scf.for %k = %c0_1 to %hq step %c1_1 iter_args(%d = %ta) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_a[] (%ba[] [] []) : (memref<16xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+          %7 = scf.for %k = %c0_1 to %hb step %c1_1 iter_args(%d = %6) -> (!air.async.token) {
+            %g0 = air.channel.get async [%d] @chan_b[] (%ba[] [] []) : (memref<16xi16, 2>)
+            scf.yield %g0 : !air.async.token
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
 // The core's gets move the same elements of the same buffer, spelled with a
 // unit dimension in one loop and not in the other, from offsets computed
 // alike in each loop. The channels merge.

@@ -203,3 +203,42 @@ def build_requant_cache(
     if verbose:
         print(f"[q4nx_requant] wrote {cache_path}", flush=True)
     return cache_path
+
+
+def reference_weights(model, n_layers, tie_lm_head=True, path="decode"):
+    """(HF parameter name, fn(shape)) for each weight build_requant_cache packs,
+    giving the float values the decode computes with: the projections as the
+    bundle stores them, and the LM head as packed above. The input for the
+    accuracy reference (verify/dequant_reference.py); it has to follow the
+    packer, so it lives next to it. The input embedding is the bundle's; for
+    path="prefill" a tied head stays that bf16 embedding, which is what the
+    fused prefill computes with."""
+    from llama32_1b_q4nx_weights import GROUP, Q4nxModel
+
+    qm = Q4nxModel(model)
+    weights = [
+        (
+            f"model.layers.{k}.{t}.weight",
+            lambda shape, n=f"model.layers.{k}.{t}.weight": qm.dequant(n, *shape),
+        )
+        for k in range(n_layers)
+        for t in _PROJ.values()
+    ]
+    # The NPU looks tokens up in the bundle's embedding, which differs from the
+    # checkpoint's. On the prefill path a tied head is that embedding too.
+    weights.append(
+        (
+            "model.embed_tokens.weight",
+            lambda shape: qm.bf16("model.embed_tokens.weight").reshape(shape),
+        )
+    )
+    if tie_lm_head:
+        if path == "decode":
+            head = lambda shape: host_weights.requant_q4k_packed(  # noqa: E731
+                qm.bf16("model.embed_tokens.weight"), GROUP
+            )
+            weights.append(("lm_head.weight", head))
+    else:
+        head = lambda shape: qm.dequant("lm_head.weight", *shape)  # noqa: E731
+        weights.append(("lm_head.weight", head))
+    return weights

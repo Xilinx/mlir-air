@@ -73,6 +73,24 @@ def hf_reference(npu_model_name: str) -> str:
     return npu_model_name
 
 
+def build_dequant_hf_model(npu_model_name: str, hf_ref_model: str, config):
+    """The `make accuracy ACC_REF=dequant` reference: the bf16 checkpoint with
+    the values the NPU decode runs, from the same packer the decode uses --
+    the bundle's Q4NX projections and the bundle's own Q4NX lm_head (Llama-3.1-8B is untied).
+    """
+    from dequant_reference import dequantized_reference
+
+    # q4nx_requant lives in llama32_1b_q4nx.
+    if str(_LLMS_DIR / "llama32_1b_q4nx") not in sys.path:
+        sys.path.insert(0, str(_LLMS_DIR / "llama32_1b_q4nx"))
+    from q4nx_requant import reference_weights
+
+    return dequantized_reference(
+        hf_ref_model,
+        reference_weights(Q4NX_MODEL_SOURCE, config.n_layers, tie_lm_head=False),
+    )
+
+
 def build_config():
     return llama31_8b_config()
 
@@ -152,6 +170,12 @@ class FusedDecodeRunner:
             final_hidden_normed=np.empty(0, np.float32),
             logits_at_pred=logits,
             top1_token=int(np.argmax(logits)),
+        )
+
+    def prefill_logits(self, prompt_tokens: np.ndarray, logits_from: int):
+        """Logits of the prompt's rows from logits_from on."""
+        return fused_prefill.prefill_logits(
+            self._prefiller(), prompt_tokens, logits_from
         )
 
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:

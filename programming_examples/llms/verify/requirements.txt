@@ -1,0 +1,7 @@
+# Python packages the shared verify tools need on top of a model example's
+# requirements.txt.
+#
+# lm_eval_npu.py (`make tasks`): lm-evaluation-harness, whose HF reference
+# model needs accelerate.
+lm_eval==0.4.13
+accelerate

@@ -199,7 +199,9 @@ class DensePrefill(Engine):
             )
         return self.rope_cache[(op, r0, t)]
 
-    def prefill(self, ids):
+    def prefill(self, ids, logits_from=None):
+        """The last token's logits, or with `logits_from` the [n - logits_from,
+        vocab] logits of every row from there on, through the same NPU head."""
         self.resume()
         ids = [int(t) for t in np.asarray(ids).reshape(-1)]
         n = len(ids)
@@ -212,9 +214,24 @@ class DensePrefill(Engine):
         for L in range(self.desc.layers):
             self._ffn_all(L, x, chunks, self._mix_all(L, x, chunks))
         self.current_context_length = n
-        last = H.rms(x[-1:], self.final_norm, self.eps)
+        if logits_from is None:
+            last = H.rms(x[-1:], self.final_norm, self.eps)
+            return np.concatenate(
+                [self.mm(f"lm.{i}", last)[0] for i in range(len(self.lm))]
+            )
+        rows = H.rms(x[logits_from:], self.final_norm, self.eps)
+        # The head takes at most one chunk (D.M rows) per dispatch.
         return np.concatenate(
-            [self.mm(f"lm.{i}", last)[0] for i in range(len(self.lm))]
+            [
+                np.concatenate(
+                    [
+                        self.mm(f"lm.{i}", rows[r : r + D.M])
+                        for i in range(len(self.lm))
+                    ],
+                    axis=1,
+                )
+                for r in range(0, len(rows), D.M)
+            ]
         )
 
     def _mix_all(self, L, x, chunks):
@@ -243,8 +260,7 @@ class DensePrefill(Engine):
             a = self.a_chunk(dq, c)
             h0 = 0
             for p in self.attn_wait(att[c]):
-                g = p["g"]
-                H.o_tile(p["om"], t, h0, dq, a[1], TM, TK, g.lkp)
+                self.o_read(p, t, h0, dq, a[1])
                 h0 += p["hg"]
             a[0].sync(TO)
             pend.append(self.gemm_start(f"{L}.o", c))
@@ -289,9 +305,9 @@ class DensePrefill(Engine):
         bias = self.bias[L] if e.qkv_bias else None
         ch = self.attn_chunk(kvb["op"], c)
         h0 = 0
-        for a, p in zip(self.attn[kvb["op"]]["groups"], ch["parts"]):
-            g, hg = self.cfg.attn[a], p["hg"]
-            qm = self._q16(hg)
+        for p in ch["parts"]:
+            hg = p["hg"]
+            qm = self.q_stage(p)
             H.head_post(
                 qkv,
                 t,
@@ -309,7 +325,7 @@ class DensePrefill(Engine):
             )
             if t < D.M:
                 qm[:, t:] = 0
-            H.q_bfp(qm, g.lkp, p["qm"])
+            self.q_write(p, qm)
             h0 += hg
         kb = np.empty((t, dk), bfloat16)
         vb = np.empty((t, dk), bfloat16)
@@ -336,19 +352,13 @@ class DensePrefill(Engine):
         h0 = 0
         for p in kvb["parts"]:
             g = self.cfg.attn[p["a"]]
-            b0, rec = r0 // g.lkp, D.kv_rec(g)
+            b0, rec = r0 // g.lkp, self.kv_rec(g)
             nblk = p["m"].shape[1]
             nb = -(-t // g.lkp)
             for h in range(g.kv_heads):
-                H.kv_rec_bfp(kb, vb, (h0 + h) * dh, t, dh, g.lkp, p["m"][h, b0])
+                self.kv_write(kb, vb, (h0 + h) * dh, t, g, p["m"][h, b0])
                 p["bo"].sync(TO, nb * rec * 2, (h * nblk + b0) * rec * 2)
             h0 += g.kv_heads
-
-    def _q16(self, hg):
-        """bf16 q of hg heads, staged for the bfp16 packing."""
-        if getattr(self, "q16", None) is None or self.q16.shape[0] != hg:
-            self.q16 = np.zeros((hg, D.M, self.desc.dh), bfloat16)
-        return self.q16
 
     def _embed(self, ids):
         return self.bundle.rows("model.embed_tokens.weight", ids)
@@ -430,7 +440,8 @@ def reference(desc, model, ids):
         op = layer_op(e, L)
         masked = pos[None] > pos[:, None]
         if op == "s":
-            masked |= pos[None] < pos[:, None] - e.window
+            # HF's sliding window: key k is visible to query q while q - k < window
+            masked |= pos[None] <= pos[:, None] - e.window
         h = rms(x, b.bf16(p + "input_layernorm.weight"))
         qkv = np.concatenate(
             [

@@ -38,6 +38,9 @@ def load(build_dir):
     _lib.o_tile.argtypes = [_p, _i, _i, _i, _i, _i, _i, _i, _i, _i, _p]
     _lib.kv_rec_bfp.argtypes = [_p, _p, _i, _i, _i, _i, _i, _p]
     _lib.q_bfp.argtypes = [_p, _i, _i, _i, _i, _p]
+    _lib.o_tiles.argtypes = [_p, _i, _i, _i, _i, _i, _i, _i, _i, _p]
+    _lib.kv_rec_bf16.argtypes = [_p, _p, _i, _i, _i, _i, _i, _i, _p]
+    _lib.q_tiles.argtypes = [_p, _i, _i, _i, _p]
 
 
 _tiles = {}
@@ -251,11 +254,37 @@ def o_tile(o, t, h0, k, dst, tm, tk, tq):
     _to_bfp(a, t, dst, h0 * dh, (h0 + nh) * dh)
 
 
+def o_tiles(o, t, h0, k, dst, tm, tk):
+    """Heads of o bf16 [nh, M, dh] in 8x8 blocks (q_tiles' order) into heads
+    [h0, h0 + nh) of dst (A, K = k)."""
+    nh, m, dh = o.shape
+    a = _bf16_tiles(dst, tm, tk)
+    _lib.o_tiles(o.ctypes.data, t, nh, dh, m, h0, k, tm, tk, a.ctypes.data)
+    _to_bfp(a, t, dst, h0 * dh, (h0 + nh) * dh)
+
+
 def kv_rec_bfp(k, v, c0, t, dh, lkp, dst):
     """kv_rec, as bfp16 (attn_bfp16.cc's records)."""
     _lib.kv_rec_bfp(
         k.ctypes.data, v.ctypes.data, k.shape[1], c0, t, dh, lkp, dst.ctypes.data
     )
+
+
+def kv_rec_bf16(k, v, c0, t, dh, lkp, dvt, dst):
+    """Columns [c0, c0 + dh) of k and v bf16 [t, ld] as bf16 records into dst:
+    per lkp rows the K tile's 8x8 blocks [lkp/8, dh/8], then V's in column
+    chunks dvt wide, each [lkp/8, dvt/8]; each block row-major, rows past t
+    zero."""
+    _lib.kv_rec_bf16(
+        k.ctypes.data, v.ctypes.data, k.shape[1], c0, t, dh, lkp, dvt, dst.ctypes.data
+    )
+
+
+def q_tiles(q, dst):
+    """q bf16 [nh, M, dh] into dst as 8x8 blocks, per head [M/8, dh/8], each
+    row-major."""
+    nh, m, dh = q.shape
+    _lib.q_tiles(q.ctypes.data, nh, m, dh, dst.ctypes.data)
 
 
 def q_bfp(q, tq, dst):

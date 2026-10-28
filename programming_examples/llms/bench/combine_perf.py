@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: MIT
 """Combine one benchmark run's per-model results into the files the docs publish.
 
-Reads <build-dir>/test/llms/**/*.{perf,sweep,prefill_sweep,full20,full80}.json
-and verify.xml; writes perf.json, sweep.json, prefill_sweep.json, full20.json,
-full80.json and perf_out/ in the current directory. Used by the nightly and by
-publish_offline.py, so both publish the same shape.
+Reads <build-dir>/test/llms/**/*.{perf,sweep,prefill_sweep,full20,full80,
+accuracy,tasks}.json and verify.xml; writes perf.json, sweep.json,
+prefill_sweep.json, full20.json, full80.json, accuracy.json, tasks.json and
+perf_out/ in the current directory.
+Used by the nightly and by publish_offline.py, so both publish the same shape.
 """
 
 import argparse
@@ -192,3 +193,49 @@ print(
     f"{len(pf)} prefill sweep(s):",
     ", ".join(f"{s['model']}({len(s['points'])} pts)" for s in pf),
 )
+
+# Accuracy records (verify/accuracy.py), one per (model, reference, path,
+# context), go to their own file: they compare against a reference, which no
+# perf record does.
+acc = []
+for f in sorted(
+    glob.glob(f"{args.build_dir}/test/llms/**/*.accuracy.json", recursive=True)
+):
+    try:
+        d = json.load(open(f))
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"WARNING: {f} unreadable ({e}); skipping", file=sys.stderr)
+        continue
+    d["runner"] = args.runner
+    d["toolchain"] = {
+        "mlir_air_sha": air_sha,
+        "mlir_aie_hash": aie_hash,
+        "llvm_aie_version": peano_ver,
+    }
+    acc.append(d)
+acc.sort(
+    key=lambda r: (r["model"], r["reference"]["kind"], r["path"], r.get("ctx") or 0)
+)
+json.dump(acc, open("accuracy.json", "w"), indent=2)
+print(f"{len(acc)} accuracy record(s)")
+
+# Task score records (verify/lm_eval_npu.py), one per (model, lm_eval run).
+tasks = []
+for f in sorted(
+    glob.glob(f"{args.build_dir}/test/llms/**/*.tasks.json", recursive=True)
+):
+    try:
+        d = json.load(open(f))
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"WARNING: {f} unreadable ({e}); skipping", file=sys.stderr)
+        continue
+    d["runner"] = args.runner
+    d["toolchain"] = {
+        "mlir_air_sha": air_sha,
+        "mlir_aie_hash": aie_hash,
+        "llvm_aie_version": peano_ver,
+    }
+    tasks.append(d)
+tasks.sort(key=lambda r: (r["model"], sorted(r.get("tasks") or {})))
+json.dump(tasks, open("tasks.json", "w"), indent=2)
+print(f"{len(tasks)} task score record(s)")

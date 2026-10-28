@@ -449,6 +449,7 @@ def run_npu_prefill(
     cpu_attn=True,
     profile=False,
     quiet=False,
+    logits_from=None,
 ):
     """Run NPU prefill and extract KV cache for decode.
 
@@ -533,20 +534,37 @@ def run_npu_prefill(
         )
 
     # NPU LM Head GEMV — reuse the decode-cache 8-partition GEMV ELF
-    lm_inputs = [last_normed_bf16]
-    for p in range(_LM_N_PARTITIONS):
-        lm_inputs.append(weights._lm_weight_parts_gemv[p])
-        lm_inputs.append(np.zeros(_LM_N_PART, dtype=bfloat16))
-    results = decode_cache.load_and_run(
-        "lm_head_gemv",
-        LM_GEMV_BACKEND,
-        *lm_inputs,
-        output_indices=[2 + 2 * p for p in range(_LM_N_PARTITIONS)],
-        static_input_indices={1 + 2 * p for p in range(_LM_N_PARTITIONS)},
-        intermediate_indices={2 + 2 * p for p in range(_LM_N_PARTITIONS)},
-    )
-    logits_row = np.concatenate(results, axis=0)[:vocab_size]
+    def lm_head(normed_bf16):
+        lm_inputs = [normed_bf16]
+        for p in range(_LM_N_PARTITIONS):
+            lm_inputs.append(weights._lm_weight_parts_gemv[p])
+            lm_inputs.append(np.zeros(_LM_N_PART, dtype=bfloat16))
+        results = decode_cache.load_and_run(
+            "lm_head_gemv",
+            LM_GEMV_BACKEND,
+            *lm_inputs,
+            output_indices=[2 + 2 * p for p in range(_LM_N_PARTITIONS)],
+            static_input_indices={1 + 2 * p for p in range(_LM_N_PARTITIONS)},
+            intermediate_indices={2 + 2 * p for p in range(_LM_N_PARTITIONS)},
+        )
+        return np.concatenate(results, axis=0)[:vocab_size]
+
+    logits_row = lm_head(last_normed_bf16)
     prefill_token = int(np.argmax(logits_row))
+    if logits_from is not None:
+        # Every row from logits_from on, through the same final norm and
+        # NPU LM head as the prediction row.
+        hidden = np.asarray(x_bf16, dtype=np.float32)
+        logits_row = np.stack(
+            [
+                lm_head(
+                    rms_norm(hidden[r : r + 1], weights.final_norm)
+                    .flatten()
+                    .astype(bfloat16)
+                )
+                for r in range(logits_from, prompt_len)
+            ]
+        )
 
     t_prefill = time.time() - t_prefill_start
     # ---- TIMED SECTION END ----
