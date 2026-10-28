@@ -1,0 +1,168 @@
+# LLMs on AMD NPU2 (MLIR-AIR)
+
+End-to-end decoder-only LLM inference (prefill + autoregressive decode) mapped
+to the AMD NPU2 (AIE2P / Strix) in bf16 via MLIR-AIR. Each model is a
+self-contained example that composes registry-validated leaf kernels into fused
+multi-launch ELFs and gates correctness against a Hugging Face bf16 reference.
+
+## Acknowledgments
+
+Some of the LLM implementations in this directory reimplement AMD NPU LLM
+designs originally developed by the [FastFlowLM](https://fastflowlm.com/) team
+([github.com/ROCm/FastFlowLM](https://github.com/ROCm/FastFlowLM)), using the
+higher-level abstractions of the MLIR-AIR dialect. We thank the FastFlowLM team
+for their original work on these implementations.
+
+The remaining models were developed directly in MLIR-AIR.
+
+## Supported models
+
+| Model | HF checkpoint | Layers | emb / head_dim / hidden | Attention | Family delta | Status |
+|---|---|---|---|---|---|---|
+| **Llama-3.2-1B** | `meta-llama/Llama-3.2-1B` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | reference exemplar | prefill + decode |
+| **Llama-3.2-1B int4-AWQ** | `amd/Llama-3.2-1B-Instruct-awq-...` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | int4-AWQ (prefill) | prefill; decode follow-up |
+| **Llama-3.2-1B Q4NX** | `FastFlowLM/Llama-3.2-1B-NPU2` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | q4nx 4-bit weights, fused decode | prefill + decode |
+| **SmolLM2-1.7B** | `HuggingFaceTB/SmolLM2-1.7B` | 24 | 2048 / 64 / 8192 | MHA 32Q/32KV | pure MHA | prefill + decode |
+| **Qwen2.5-0.5B** | `Qwen/Qwen2.5-0.5B` | 24 | 896 / 64 / 4864 | GQA 14Q/2KV | QKV bias | prefill + decode |
+| **Qwen2.5-1.5B** | `Qwen/Qwen2.5-1.5B` | 28 | 1536 / 128 / 8960 | GQA 12Q/2KV | QKV bias, hd=128 | prefill + decode |
+| **Qwen2.5-3B** | `Qwen/Qwen2.5-3B` | 36 | 2048 / 128 / 11008 | GQA 16Q/2KV | QKV bias, hd=128 | prefill + decode |
+| **Qwen3-0.6B** | `Qwen/Qwen3-0.6B` | 28 | 1024 / 128 / 3072 | GQA 16Q/8KV | QK-norm, hd=128 | prefill + decode |
+| **Qwen3-1.7B** | `Qwen/Qwen3-1.7B` | 28 | 2048 / 128 / 6144 | GQA 16Q/8KV | QK-norm, hd=128 | prefill + decode |
+| **Qwen3-4B** | `Qwen/Qwen3-4B` | 36 | 2560 / 128 / 9728 | GQA 32Q/8KV | QK-norm, decoupled q_dim=4096 | prefill + decode |
+| **Llama-3.2-3B** | `meta-llama/Llama-3.2-3B` | 28 | 3072 / 128 / 8192 | GQA 24Q/8KV | pure Llama, hd=128 | prefill + decode |
+| **Llama-3.2-3B Q4NX** | `FastFlowLM/Llama-3.2-3B-NPU2` | 28 | 3072 / 128 / 8192 | GQA 24Q/8KV | q4nx 4-bit weights | prefill + decode |
+| **Gemma3-4B** | `FastFlowLM/Gemma3-4B-NPU2` | 34 | 2560 / 256 / 10240 | GQA 8Q/4KV | q4nx, QK-norm, GELU-tanh, 4 norms/layer, 1024 sliding window, dual-theta RoPE, hd=256 | prefill + decode |
+| **Phi-4-mini Q4NX** | `FastFlowLM/Phi4-mini-Instruct-NPU2` | 32 | 3072 / 128 / 8192 | GQA 24Q/8KV | q4nx, **partial rotary (96/128)**, LongRoPE, vocab 200064 | prefill + decode |
+| **Llama-3.1-8B Q4NX** | `FastFlowLM/Llama-3.1-8B-NPU2` | 32 | 4096 / 128 / 14336 | GQA 32Q/8KV | q4nx, **untied LM head**, llama3 rope factor 8.0, split weight BOs | prefill + decode |
+| **LFM2-1.2B Q4_0** | `LiquidAI/LFM2-1.2B` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | **hybrid conv-attention** — 10 of 16 layers are a gated causal depthwise conv, not attention; q4_0, QK-norm, tied head, vocab 65536 | prefill + decode |
+
+All are decoder-only with RMSNorm + SwiGLU FFN + RoPE. **LFM2-1.2B is the
+exception to "decoder-only transformer"**: only 6 of its 16 layers are
+attention, and the other 10 replace it with `Lfm2ShortConv` — in_proj to
+`[B | C | x]`, gate `h = B * x`, a causal depthwise convolution over `h` with 3
+taps, then gate `y = C * h`. That block carries no KV cache; what it carries
+across tokens is a 2-row conv state, which is the left pad its next
+convolution consumes. Both layer types run in ONE fused decode dispatch, chosen
+per wave by a runtime arm, so the schedule's irregularity costs no extra binary.
+
+The architecture axes that shape each deployment's dataflow:
+- **Attention norm/bias**: Llama (none) · Qwen2.5 (**QKV bias**, fused into the
+  attention-input ELF on host-loaded bias weights) · Qwen3 (**per-head QK-norm**, fused).
+- **head_dim**: 64 → seq-first FlashAttention (no host transpose); 128 → head-first
+  FlashAttention + a host seq↔head transpose (BF16 DMA stride limit).
+- **hidden size**: small/aligned → O+FFN fuses into one ELF; large/non-aligned
+  (8960/9728/11008) → O+FFN splits (gate/up/down separate ELFs; per-launch L1/BD
+  limit, not a launch-count limit).
+
+## Performance (NPU2, seq_len=2048, bf16)
+
+Measured end-to-end via `make run`. **Prefill (TTFT)** = time-to-first-token
+(tokenize + EOS-pad + prefill + LM head); **Decode (TPS)** = steady-state decode
+throughput in tokens/second.
+
+TTFT is wall-clock (includes the host head-first-FA seq↔head transpose on the
+head_dim=128 models); the NPU-kernel prefill time is lower. **ELF/layer** = NPU
+dispatches per transformer layer (prefill / decode); decode adds one `lm_head_gemv`
+per token.
+
+| Model | Prefill (TTFT) | Decode (TPS) | ELF/layer (prefill / decode) |
+|---|---|---|---|
+| Llama-3.2-1B (bf16) | 1.21 s | 12.2 tok/s | 3 / 2 |
+| SmolLM2-1.7B (bf16) | 2.02 s | 8.0 tok/s | 3 / 2 |
+| Qwen2.5-0.5B | 0.99 s | 11.9 tok/s | 4 / 5 |
+| Qwen3-0.6B | 1.52 s | 11.7 tok/s | 3 / 2 |
+| Qwen3-1.7B | 2.08 s | 7.4 tok/s | 3 / 2 |
+| Qwen2.5-1.5B | 2.43 s | 6.6 tok/s | 5 / 5 |
+| Llama-3.2-3B | 3.70 s | 4.7 tok/s | 3 / 5 |
+| Qwen2.5-3B | 4.24 s | 3.5 tok/s | 6 / 5 |
+| Qwen3-4B | 5.45 s | 3.5 tok/s | 7 / 5 |
+
+Measured via `make profile N_TOKENS=32` on NPU2, 2026-06. All pass `make verify`
+(top-5 token-set vs HF bf16, exit 0). The lean **3-ELF prefill / 2-ELF decode**
+form (Qwen3-0.6B/1.7B, matching Llama-3.2-1B) needs aligned dims + emb<2560 +
+hidden÷512; bigger models split the FFN and run a 5-ELF decode (the fused
+`o_gemv_ffn` cascade is capped at 4 cascade core-rows and needs hidden÷512).
+
+### What runs on NPU vs CPU
+- **NPU** (the entire compute-heavy path): all GEMM (prefill) / GEMV (decode)
+  projections, RMSNorm, RoPE, QK-norm (Qwen3) / QKV-bias (Qwen2.5), FlashAttention
+  (prefill), SwiGLU, and the LM-head GEMV.
+- **CPU** (cheap or hardware-limited, by design): decode attention (single-token +
+  KV cache — NPU launch overhead > compute), the head-first-FA seq↔head transpose
+  at head_dim=128 (BF16 DMA stride limit), the M=1 decode glue (residual add /
+  FFN RMSNorm / SwiGLU, ~0.13 ms/layer — dispatch > compute), and the final RMSNorm.
+
+See each model's `ARCHITECTURE.md` for the full per-layer NPU/CPU ELF sequence.
+
+## Correctness
+
+Every model gates on the shared `verify/` subsystem against an HF bf16 reference
+using a top-k token-set inclusion check (k=5, first-divergence over 32 tokens).
+Run `make verify` in any model directory; `make verify-full` sweeps every prompt.
+
+For the 4-bit examples the NPU side runs the quantized weights and the reference
+is the bf16 checkpoint they were derived from, so the gate measures NPU drift on
+top of quantization error:
+
+| example | NPU weights | bf16 reference |
+|---|---|---|
+| `llama32_1b_q4nx` / `llama32_3b_q4nx` | `FastFlowLM/Llama-3.2-{1,3}B-NPU2` | `meta-llama/Llama-3.2-{1,3}B-Instruct` |
+| `gemma3_4b_q4nx` | `FastFlowLM/Gemma3-4B-NPU2` | `unsloth/gemma-3-4b-it` |
+| `qwen3_8b_q4nx` | `FastFlowLM/Qwen3-8B-NPU2` | `Qwen/Qwen3-8B` |
+| `lfm2_1_2b_q4nx` | `LiquidAI/LFM2-1.2B` (Q4_0 on load) | `LiquidAI/LFM2-1.2B` |
+| `llama31_8b_q4nx` | `FastFlowLM/Llama-3.1-8B-NPU2` | `NousResearch/Meta-Llama-3.1-8B-Instruct` |
+| `qwen25_3b_q4` | Q4_0, quantized on the host from the reference | `Qwen/Qwen2.5-3B-Instruct` |
+| `qwen25_7b_q4nx` | Q4NX, quantized on load from the reference | `Qwen/Qwen2.5-7B-Instruct` |
+
+Two cheaper lenses sit beside the gate, and neither is a substitute for it:
+`make verify-paris` is a prefill-only first-token smoke that needs no decode
+build and no reference (so it runs where `verify` cannot), and `make diagnosis`
+probes one prompt through the same runner. Per-layer cosine only has data where
+the prefill exposes per-layer `ffn_out`; the fused single-dispatch decodes do
+not, so there `diagnosis` reports the token-level view instead.
+
+## Layout
+
+```
+llms/
+├── llama32_1b/         # bf16 Llama-3.2-1B (the reference exemplar)
+├── llama32_1b_int4/    # int4-AWQ variant (own quantized builders)
+├── llama32_1b_q4nx/    # Q4NX 4-bit Llama-3.2-1B (fused decode superkernel)
+├── llama32_3b/         # bf16 Llama-3.2-3B (pure Llama, head_dim=128)
+├── llama32_3b_q4nx/    # Q4NX 4-bit Llama-3.2-3B (reuses the bf16 3B runner)
+├── llama31_8b_q4nx/    # Q4NX 4-bit Llama-3.1-8B (fused decode, split weight BOs)
+├── gemma3_4b_q4nx/     # Q4NX 4-bit Gemma3-4B (fused decode + batched prefill)
+├── smollm2_1_7b/       # bf16 SmolLM2-1.7B (MHA)
+├── qwen25_0_5b/        # Qwen2.5-0.5B  (QKV bias, head_dim=64)
+├── qwen25_1_5b/        # Qwen2.5-1.5B  (QKV bias, head_dim=128)
+├── qwen25_3b/          # Qwen2.5-3B    (QKV bias, head_dim=128)
+├── qwen25_3b_q4/       # Q4_0 4-bit Qwen2.5-3B (prefill + fused NPU decode)
+├── qwen25_7b_q4nx/     # Q4NX 4-bit Qwen2.5-7B (fused decode, QKV bias)
+├── qwen3_0_6b/         # Qwen3-0.6B    (QK-norm, head_dim=128)
+├── qwen3_1_7b/         # Qwen3-1.7B    (QK-norm, head_dim=128)
+├── qwen3_4b/           # Qwen3-4B      (QK-norm, decoupled q_dim=4096)
+├── qwen3_8b_q4nx/      # Q4NX 4-bit Qwen3-8B (fused decode, split weight BOs)
+├── shared/
+│   ├── infra/          # KernelCache, profiling, external-kernel compilation,
+│   │                   #   backend presets, MLIR text-stitching (incl. stitch_elf)
+│   └── builders/       # architecture-orthogonal multi-launch block builders
+│                       #   (rms_gemms_rope, o_ffn, rms_gemv_rope, o_gemv_ffn,
+│                       #   lm_head_gemv) — composed via stitch_elf
+└── verify/             # shared HF-reference verification framework
+```
+
+Models compose blocks from `shared/builders/` (reused directly when the shape
+contract matches) or assemble new blocks declaratively with `stitch_elf` from
+`shared.infra.stitching`. The `int4` example keeps its own quantized builders
+since the int4/bfp16 GEMM ABIs differ from bf16.
+
+## Running a model
+
+```bash
+cd <model>/                 # e.g. cd smollm2_1_7b
+make run                    # compile (first time) + prefill + decode a prompt
+make verify                 # correctness gate vs HF bf16
+make profile                # timing breakdown
+```
+
+See each model's `README.md` for model-specific flags and notes.

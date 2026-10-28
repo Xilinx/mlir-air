@@ -35,12 +35,12 @@ fused-prefill-long:
 	python3 $(FUSED_MAIN) verify $(FUSED_MODEL) $(FUSED_DIR) --model $(MODEL_SOURCE) \
 	  --text-file $(FUSED_TEXT) --text-tokens 280 --repeat 1
 
-## FUSED_LONG_TOKENS tokens of the same text, repeated to length, same gate.
+## FUSED_LONG_TOKENS tokens of FUSED_LONG_TEXT, repeated to length, same gate.
 ## The build must take the prompt (FUSED_MAX_LEN).
 FUSED_LONG_TOKENS ?= 8000
 fused-prefill-8k:
 	python3 $(FUSED_MAIN) verify $(FUSED_MODEL) $(FUSED_DIR) --model $(MODEL_SOURCE) \
-	  --text-file $(FUSED_TEXT) --text-tokens $(FUSED_LONG_TOKENS) --repeat 1
+	  --text-file $(FUSED_LONG_TEXT) --text-tokens $(FUSED_LONG_TOKENS) --repeat 1
 
 ## Prefill time at each of FUSED_LENGTHS on synthetic prompts, no reference.
 ## The build must take the longest (FUSED_MAX_LEN).
@@ -50,3 +50,5 @@ profile-fused-prefill:
 	  --lengths $(FUSED_LENGTHS)
 
 FUSED_TEXT ?= $(dir $(lastword $(MAKEFILE_LIST)))../../README.md
+# A frozen copy of README.md: editing the README would change the 8k prompt.
+FUSED_LONG_TEXT ?= $(dir $(lastword $(MAKEFILE_LIST)))gate_8k.txt
