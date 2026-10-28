@@ -122,6 +122,11 @@ jobs:
         with:
           submodules: "true"
 
+      # The persistent HF/derived-weight caches and each run's build tree share
+      # one disk; fail here, not hours in, when this run would not fit.
+      - name: Check runner disk
+        run: bash utils/ci-disk-guard.sh preflight
+
       - name: Setup environment
         run: |
           python3.12 -m venv air-venv
@@ -326,6 +331,10 @@ jobs:
           # before running this. Forwarded into lit tests by lit.cfg.py.
           HF_HUB_OFFLINE: "1"
         run: |
+          # Stops the tests before the disk fills: a full disk loses the job log
+          # and takes the runner offline.
+          bash "$GITHUB_WORKSPACE/utils/ci-disk-guard.sh" watch $$ &
+
           source air-venv/bin/activate
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           source /opt/xilinx/xrt/setup.sh
@@ -399,7 +408,10 @@ jobs:
           # Neither check can see a suite that never ran.
           SUITES="${{ github.event.inputs.suites || 'verify,profile,sweep,prefill-sweep,full20' }}"
           echo "running suites: $SUITES"
-          want() { case ",$SUITES," in *",$1,"*) return 0;; *) return 1;; esac; }
+          want() {
+            bash "$GITHUB_WORKSPACE/utils/ci-disk-guard.sh" aborted && return 1
+            case ",$SUITES," in *",$1,"*) return 0;; *) return 1;; esac
+          }
 
           if want verify; then
             # Correctness gate (strict): red if any model's verify fails.
@@ -465,7 +477,13 @@ jobs:
           if [ -n "${AIR_COMPILE_CACHE:-}" ]; then
             python3 python/air/backend/compile_cache.py prune --max-gb 30 || true
           fi
+          # A disk abort between suites skips the rest without failing any.
+          bash "$GITHUB_WORKSPACE/utils/ci-disk-guard.sh" aborted && rc=1
           exit $rc
+
+      - name: Record runner disk growth
+        if: always()
+        run: bash utils/ci-disk-guard.sh record
 
       - name: Combine perf JSON
         if: always()

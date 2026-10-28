@@ -1,0 +1,32 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+#
+# The nightly LLM runner caches every model in hf_models.txt on one 468 GiB disk,
+# next to the derived-weight caches (~0.4x the HF weights) and each run's build
+# tree. Fail the PR that would outgrow it, rather than the nightly.
+
+name: Check LLM disk budget
+
+on:
+  pull_request:
+    paths:
+      - programming_examples/llms/hf_models.txt
+      - utils/hf_disk_budget.py
+      - .github/workflows/checkLLMDiskBudget.yml
+  workflow_dispatch:
+
+env:
+  HF_BUDGET_GB: 240
+
+jobs:
+  hf-weights:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install huggingface_hub
+      # File sizes are public metadata, gated repos included: no token needed.
+      - run: python utils/hf_disk_budget.py --budget-gb "$HF_BUDGET_GB"
