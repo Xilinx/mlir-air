@@ -109,20 +109,9 @@ jobs:
           import random, sys, time, traceback
           from huggingface_hub import snapshot_download
 
-          # Weight/config/tokenizer files only. (*.q4nx = the FastFlowLM Q4NX
-          # bundle used by llama32_1b_q4nx.)
-          # *.jinja: newer HF repos ship the chat template as a separate
-          # chat_template.jinja instead of a "chat_template" key in
-          # tokenizer_config.json. Without it apply_chat_template raises
-          # "tokenizer.chat_template is not set", which is what fails
-          # lfm2_1_2b_q4nx profile -- LiquidAI/LFM2-1.2B has only the file.
-          ALLOW = ["*.safetensors", "*.json", "*.txt", "*.model", "*.tiktoken",
-                   "*.q4nx", "*.jinja"]
-          # Skip files transformers/our loader never use but that otherwise make
-          # snapshot_download report the snapshot "incomplete" if they fail to
-          # fetch on the flaky link: the Llama `original/` dir (sentencepiece +
-          # consolidated.pth duplicate of the fast tokenizer) and license blurbs.
-          IGNORE = ["original/*", "LICENSE*", "USE_POLICY*"]
+          # Download patterns are shared with the PR disk-budget check.
+          sys.path.insert(0, "utils")
+          from hf_disk_budget import IGNORE, allow_patterns
 
           # Single source of truth for the model list.
           models = [s.strip()
@@ -145,10 +134,7 @@ jobs:
                   try:
                       snapshot_download(
                           repo, revision=revision if separator else None,
-                          # OpenELM's pinned snapshot supplies its original HF
-                          # implementation; Transformers loads it offline.
-                          allow_patterns=ALLOW + (["configuration_openelm.py", "modeling_openelm.py"]
-                                                   if repo == "apple/OpenELM-1_1B-Instruct" else []),
+                          allow_patterns=allow_patterns(repo),
                           ignore_patterns=IGNORE,
                           max_workers=1,
                       )
