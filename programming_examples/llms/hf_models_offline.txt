@@ -1,6 +1,7 @@
 # HuggingFace model repos of the 7-8B llms/ examples that run on a separate
 # Krackan machine, not the nightly runner (whose disk cannot hold them; see
-# hf_models.txt).
+# hf_models.txt). Their results reach the docs page through
+# programming_examples/llms/bench/publish_offline.py.
 # One repo id per line, optionally repo@revision; blank lines and comments are ignored.
 
 # Same Q4NX packaging of Qwen3-8B. Used by llms/qwen3_8b_q4nx (NPU weights),

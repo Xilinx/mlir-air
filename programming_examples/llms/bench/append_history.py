@@ -207,6 +207,12 @@ def main():
         required=True,
         help="Unique id for this nightly run (dedup key, e.g. github.run_id)",
     )
+    ap.add_argument(
+        "--source",
+        default="nightly",
+        choices=("nightly", "offline"),
+        help="offline: measured off the nightly runner (publish_offline.py)",
+    )
     args = ap.parse_args()
 
     try:
@@ -241,7 +247,7 @@ def main():
         print(f"run {run_id} already in history; no change")
         return 0
 
-    rows = list(flatten(recs, run_id))
+    rows = [{**row, "source": args.source} for row in flatten(recs, run_id)]
     hist = Path(args.history)
     hist.parent.mkdir(parents=True, exist_ok=True)
     with hist.open("a", encoding="utf-8") as f:
