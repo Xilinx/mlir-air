@@ -19,10 +19,8 @@
 #   "ryzen_ai_npu2" → matches NPU2 only
 
 import json
-import math
 import os
 import re
-import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1318,144 +1316,6 @@ A draft model proposes a block of tokens and the target model verifies the block
 """
 
 
-def load_llm_accuracy_history(path):
-    """Newest accuracy row per series -- (model, reference kind, NPU path,
-    context, scored window) -- from accuracy_history.ndjson, each marked
-    `regressed` when llms/bench/accuracy_regression.py flags it. Rows are
-    complete per model, so a run that measured only some models leaves the
-    others' last numbers in place."""
-    if not path or not Path(path).is_file():
-        return []
-    sys.path.insert(0, str(SCRIPT_DIR / "llms" / "bench"))
-    import accuracy_regression as ar
-
-    rows = [r for r in ar.load(path) if all(ar.series_key(r)[:3])]
-    flagged = {
-        (f["model"], f["ref_kind"], f["path"], f["ctx"], f["scored_from"])
-        for f in ar.regressions(rows)
-    }
-    newest = {}
-    for r in rows:
-        key = ar.series_key(r)
-        if (r.get("timestamp_utc") or "") >= (
-            newest.get(key, {}).get("timestamp_utc") or ""
-        ):
-            newest[key] = dict(r, regressed=key in flagged)
-    return [newest[k] for k in sorted(newest, key=str)]
-
-
-def _acc_pct(v, se):
-    return "—" if v is None else f"{100 * v:.1f} ± {100 * (se or 0):.1f}"
-
-
-def _acc_kld(v, se):
-    return "—" if v is None else f"{v:.4f} ± {se or 0:.4f}"
-
-
-def _acc_ppl(ln_ratio, ln_se):
-    """ln(PPL ratio) as a signed percent change in PPL."""
-    if ln_ratio is None:
-        return "—"
-    ratio = math.exp(ln_ratio)
-    return f"{100 * (ratio - 1):+.1f} ± {100 * ratio * (ln_se or 0):.1f}"
-
-
-def _accuracy_label(path, ctx, scored_from):
-    """The Path cell: the path, then the chunk length and scored window when
-    they are not the default 2048 tokens with the second half scored."""
-    if not ctx or (ctx == 2048 and scored_from in (None, ctx // 2)):
-        return path
-    label = f"{path} @ {_ctx_label(ctx)}"
-    if scored_from is not None and scored_from != ctx // 2:
-        label += f", last {ctx - 1 - scored_from}"
-    return label
-
-
-def render_llm_accuracy(rows, base_url=""):
-    """The accuracy section: teacher-forced PPL / KL divergence of each model's
-    NPU paths against two references, or "" with no rows.
-
-    For quantized weights the two references differ: the bf16 checkpoint shows
-    what the format plus the implementation cost, the same weights dequantized
-    on the CPU isolate the implementation. For bf16 weights they are the same
-    reference, so its numbers fill both column groups.
-    """
-    if not rows:
-        return ""
-    by_row = {}
-    for r in rows:
-        key = (
-            r["model"],
-            r.get("path") or "decode",
-            r.get("ctx"),
-            r.get("scored_from"),
-        )
-        by_row.setdefault(key, {})[r["ref_kind"]] = r
-    lines = []
-    # Within a model: decode before prefill (decode is what the tok/s columns
-    # above measure), then by context.
-    for key in sorted(
-        by_row, key=lambda k: (k[0], k[1] != "decode", k[2] or 0, str(k[3]))
-    ):
-        refs = by_row[key]
-        model, path, ctx, scored_from = key
-        label = _accuracy_label(path, ctx, scored_from)
-        weights = _llm_weights(model)
-        bf16 = refs.get("bf16")
-        same = refs.get("dequant") or (bf16 if weights == "bf16" else None)
-        cells = []
-        for r in (bf16, same):
-            if r is None:
-                cells += ["—", "—", "—"]
-                continue
-            cells += [
-                _acc_pct(r.get("same_top"), r.get("same_top_se")),
-                _acc_kld(r.get("kld_mean"), r.get("kld_se")),
-                _acc_ppl(r.get("ln_ppl_ratio"), r.get("ln_ppl_ratio_se")),
-            ]
-        measured = max((r.get("timestamp_utc") or "") for r in refs.values())[:10]
-        if any(r.get("regressed") for r in refs.values()):
-            measured += ' <span title="worse than its recent history">&#9888;</span>'
-        lines.append(
-            f"| {_llm_model_cell(model, base_url)} | {weights} | {label} | "
-            + " | ".join(cells)
-            + f" | {measured or '—'} |"
-        )
-    machines = ", ".join(sorted({r.get("runner") or "?" for r in rows}))
-    return f"""### Accuracy
-
-How closely each model's NPU output follows a reference, measured the way
-llama.cpp's `llama-perplexity --kl-divergence` does: wikitext-2 test in chunks of
-2048 tokens, always fed the true text, with the second half of each chunk
-scored. Measured offline on {machines} (Krackan Point, NPU2), not on the
-nightly runner; each row gives its date.
-
-- **decode** runs the first half of a chunk through the NPU prefill and then one
-  decode step per token, the path behind the decode throughput above.
-  **prefill** takes every scored row from one prefill of the chunk.
-  **decode @ 8k** and the like score the last tokens of a chunk that long,
-  reached through the decode's own KV cache.
-- **Same top-1** is how often the NPU and the reference pick the same next
-  token, **KLD** the mean KL divergence from the reference's next-token
-  distribution to the NPU's, **PPL** the change in perplexity. Values are ± one
-  standard error.
-- **vs bf16** compares against the original bf16 checkpoint, so for 4-bit
-  weights it includes what the format itself costs. **vs CPU** compares against
-  the weights the NPU runs, dequantized and run on the CPU, which leaves only
-  the implementation; for bf16 weights the two are the same reference.
-- Perplexity is only comparable within a row, as models use different
-  tokenizers. Instruct models are scored on wikitext too, which measures
-  fidelity to the reference, not chat quality.
-- &#9888; marks a row worse than its recent history beyond measurement noise.
-  `make accuracy` in each example reproduces a row.
-
-| Model | Weights | Path | Same top-1 vs bf16 (%) | KLD vs bf16 | PPL vs bf16 (%) | Same top-1 vs CPU (%) | KLD vs CPU | PPL vs CPU (%) | Measured |
-|:------|:-------:|:-----|-----------------------:|------------:|----------------:|----------------------:|-----------:|---------------:|:---------|
-{chr(10).join(lines)}
-
-"""
-
-
 def render_vla_benchmark(recs, base_url=""):
     """The VLA section, or "" when no VLA model has a row.
 
@@ -1501,7 +1361,6 @@ def render_llm_benchmark(
     prefill_sweep_recs=(),
     history_path=None,
     spec_decode_recs=(),
-    accuracy_rows=(),
 ):
     """Render the nightly LLM benchmark section.
 
@@ -1604,7 +1463,6 @@ def render_llm_benchmark(
 
     _sweep_table = render_llm_sweep(sweep_recs, base_url=base_url)
     _prefill_table = render_llm_prefill_sweep(prefill_sweep_recs, base_url=base_url)
-    _accuracy_table = render_llm_accuracy(accuracy_rows, base_url=base_url)
     _spec_table = render_spec_decode(spec_decode_recs, base_url=base_url)
     _vla_table = render_vla_benchmark(recs, base_url=base_url)
 
@@ -1636,7 +1494,7 @@ End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Poin
 
 {_offline_legend(recs, sweep_recs, prefill_sweep_recs, spec_decode_recs)}{_scalar_table}{_sweep_table}
 {_prefill_table}
-{_accuracy_table}{_spec_table}{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
+{_spec_table}{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
 _{provenance}_
 
@@ -1704,7 +1562,6 @@ def generate_readme(
     llm_prefill_sweep_history_path=None,
     llm_spec_decode_path=None,
     llm_spec_decode_history_path=None,
-    llm_accuracy_history_path=None,
 ):
     """Generate dashboard content.
 
@@ -1722,7 +1579,6 @@ def generate_readme(
     spec_decode_recs = load_spec_decode_history(
         llm_spec_decode_history_path
     ) or load_spec_decode(llm_spec_decode_path)
-    accuracy_rows = load_llm_accuracy_history(llm_accuracy_history_path)
 
     if section == "llm":
         llm_section = render_llm_benchmark(
@@ -1737,7 +1593,6 @@ def generate_readme(
             or load_llm_sweeps(llm_prefill_sweep_path),
             history_path=llm_history_path,
             spec_decode_recs=spec_decode_recs,
-            accuracy_rows=accuracy_rows,
         )
         return f"""\
 <!-- This file is auto-generated by generate_readme.py. Do not edit manually. -->
@@ -1759,7 +1614,6 @@ End-to-end inference of decoder-only LLMs and vision-language-action (VLA) polic
         or load_llm_sweeps(llm_prefill_sweep_path),
         history_path=llm_history_path,
         spec_decode_recs=spec_decode_recs,
-        accuracy_rows=accuracy_rows,
     )
     return (
         _operator_dashboard(base_url=base_url) + llm_section + _getting_started_footer()
@@ -1832,12 +1686,6 @@ if __name__ == "__main__":
         "--llm-spec-decode, same reason as --llm-history.",
     )
     parser.add_argument(
-        "--llm-accuracy-history",
-        default=None,
-        help="Path to accuracy_history.ndjson (PPL / KL divergence vs "
-        "reference, measured offline). Omitted when absent.",
-    )
-    parser.add_argument(
         "--section",
         choices=["full", "operators", "llm"],
         default="full",
@@ -1857,7 +1705,6 @@ if __name__ == "__main__":
         llm_prefill_sweep_history_path=args.llm_prefill_sweep_history,
         llm_spec_decode_path=args.llm_spec_decode,
         llm_spec_decode_history_path=args.llm_spec_decode_history,
-        llm_accuracy_history_path=args.llm_accuracy_history,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # Explicit encoding: the tables carry the verify/status emoji, and on a
