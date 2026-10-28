@@ -795,9 +795,27 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   // Tokens that ops in the loop nest, other than the herd, wait for from
   // outside the nest become dependencies of the hoisted herd, which waits for
   // them before it starts. A channel transfer behind such a token may need
-  // the herd to make progress, so do not hoist then.
+  // the herd to make progress, so do not hoist then. A token the outermost
+  // loop starts an iter_arg from is no such wait if the herd waits for it,
+  // directly or through the iter_args that carry it down: the herd waits
+  // for it before its first run either way.
+  auto herdWaitsForInit = [&](Value v) {
+    if (llvm::is_contained(herdOp.getAsyncDependencies(), v))
+      return true;
+    Value carried = v;
+    for (scf::ForOp loop : llvm::reverse(for_loop_nest)) {
+      auto inits = loop.getInitArgs();
+      auto it = llvm::find(inits, carried);
+      if (it == inits.end())
+        return false;
+      carried = loop.getRegionIterArgs()[std::distance(inits.begin(), it)];
+    }
+    return llvm::is_contained(herdOp.getAsyncDependencies(), carried);
+  };
   auto usedBesidesHerd = [&](Value v, Operation *scope) {
     return llvm::any_of(v.getUsers(), [&](Operation *user) {
+      if (user == outerMostLoop.getOperation() && herdWaitsForInit(v))
+        return false;
       return user != herdOp && scope->isAncestor(user);
     });
   };
