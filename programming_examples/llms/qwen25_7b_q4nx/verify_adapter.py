@@ -79,6 +79,34 @@ Q4NX_MODEL_SOURCE = os.environ.get("Q4NX_MODEL_SOURCE", "Qwen/Qwen2.5-7B-Instruc
 _SEQ_LEN = int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
 
 
+def build_dequant_hf_model(npu_model_name: str, hf_ref_model: str, config):
+    """The `make accuracy ACC_REF=dequant` reference: the bf16 checkpoint with
+    the values the NPU runs. qwen25_7b_q4nx_requant requantizes every
+    projection and the untied head from the weight source's full-precision
+    values, so the reference holds that requantization, dequantized."""
+    from dequant_reference import LM_HEAD, dequantized_reference
+
+    from air_examples.llms.shared.infra import host_weights
+
+    qm = _w.open_weight_source(Q4NX_MODEL_SOURCE)
+
+    def requant(get):
+        return lambda shape: host_weights.requant_q4k_dequant(
+            np.asarray(get(), np.float32), _w.GROUP
+        )
+
+    weights = [
+        (
+            f"model.layers.{k}.{t}.weight",
+            requant(lambda k=k, nm=nm: qm.proj_fp(k, nm)),
+        )
+        for k in range(config.n_layers)
+        for nm, (t, _, _) in qm._PROJ.items()
+    ]
+    weights.append((LM_HEAD, requant(qm.lm_head_fp)))
+    return dequantized_reference(hf_ref_model, weights)
+
+
 def build_config():
     return Qwen25Config()
 
@@ -168,6 +196,10 @@ class NpuRunner:
             logits_at_pred=logits,
             top1_token=first,
         )
+
+    def prefill_logits(self, prompt_tokens: np.ndarray, logits_from: int):
+        """Logits of the prompt's rows from logits_from on."""
+        return fused_prefill.prefill_logits(self.prefiller, prompt_tokens, logits_from)
 
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:
         # `current_pos` is the absolute position of `input_token` (the runner

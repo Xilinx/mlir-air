@@ -173,6 +173,7 @@ help:
 	@echo "  make diagnosis        Per-layer cosine vs the Q4_0 HF reference (single prompt, informational)"
 	@echo "  make verify-paris     Fast weight-integrity smoke: prefill first-token argmax gate"
 	@echo "  make decode-gate      Decode-ONLY numerics (no prefill); localises a failure to a layer"
+	@echo "  make accuracy         Teacher-forced PPL + KL divergence vs the HF reference on wikitext-2 (ACC_REF=bf16|dequant)"
 	@echo ""
 	@echo "Prefill latency sweep:"
 	@echo "  make profile-prefill  Warm prefill TTFT benchmark at CTX (per-ELF breakdown)"
@@ -371,3 +372,5 @@ compile-decode: compile-decode-elf
 
 FUSED_MODEL := lfm2_1_2b_q4nx
 include $(srcdir)/../shared/fused_prefill/fused_prefill.mk
+
+include $(srcdir)/../verify/accuracy.mk

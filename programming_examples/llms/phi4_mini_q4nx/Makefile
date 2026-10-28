@@ -120,6 +120,7 @@ help:
 	@echo "  make verify           Top-k token-set inclusion gate: NPU q4nx vs HF bf16 (2 prompts x 32 tokens, k=5)"
 	@echo "  make verify-replay    Same gate, prompt replayed through the decode (its 4-bit LM head)"
 	@echo "  make verify-full      Same gate over the full 8-prompt set"
+	@echo "  make accuracy         Teacher-forced PPL + KL divergence vs the HF reference on wikitext-2 (see verify/accuracy.mk)"
 	@echo "  make diagnosis        Single-prompt lens through the shared runner (informational)"
 	@echo "  make gen              Paris gate: greedy decode of \"The capital of France is\""
 	@echo "  make ask PROMPT=...   Single Q&A turn"
@@ -322,3 +323,5 @@ profile-prefill:
 
 FUSED_MODEL := phi4_mini_q4nx
 include $(srcdir)/../shared/fused_prefill/fused_prefill.mk
+
+include $(srcdir)/../verify/accuracy.mk

@@ -205,6 +205,26 @@ class NpuRunner:
             top1_token=prefill_token,
         )
 
+    def prefill_logits(self, prompt_tokens: np.ndarray, logits_from: int):
+        """Logits of the prompt's rows from logits_from on."""
+        eos = self._tokenizer.eos_token_id
+        padded = list(prompt_tokens) + [eos] * (self.max_seq - len(prompt_tokens))
+        _, logits, _, _, _ = run_npu_prefill(
+            padded,
+            self.weights,
+            self.config,
+            self.prefill_cache,
+            self.decode_cache,
+            self.rope_lut_bf16,
+            self.max_seq,
+            tokenizer=self._tokenizer,
+            cpu_attn=self.cpu_attn,
+            profile=False,
+            quiet=True,
+            logits_from=logits_from,
+        )
+        return np.asarray(logits, np.float32)
+
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:
         x = self.weights.embed_table[input_token].astype(bfloat16)
         next_token, logits = run_npu_decode_step(

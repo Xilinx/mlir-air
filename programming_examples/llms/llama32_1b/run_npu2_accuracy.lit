@@ -1,0 +1,20 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// llama32_1b accuracy: teacher-forced PPL + KL divergence of the NPU decode and
+// prefill paths against the HF bf16 reference on wikitext-2
+// (verify/accuracy.py). Informational: this checks only that the measurement
+// ran; run_npu2_verify.lit is the gate. The decode is built at its default
+// context, which must cover the chunk length.
+// Collected by check-programming-examples-llms-accuracy.
+//
+// REQUIRES: ryzen_ai_npu2, peano, hf_token, hfweights_meta_llama_llama_3_2_1b_instruct, hfweights_ggml_org_ci
+//
+// RUN: mkdir -p test_peano_accuracy
+// RUN: cd test_peano_accuracy
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile accuracy ACC_REF=bf16 ACC_PATH=decode ACC_JSON=llama32_1b.bf16.decode.accuracy.json PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile accuracy ACC_REF=bf16 ACC_PATH=prefill ACC_JSON=llama32_1b.bf16.prefill.accuracy.json PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: FileCheck %s < llama32_1b.bf16.decode.accuracy.json
+// RUN: FileCheck %s < llama32_1b.bf16.prefill.accuracy.json
+// CHECK: "kld_mean"

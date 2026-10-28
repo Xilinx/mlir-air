@@ -68,6 +68,25 @@ def hf_reference(npu_model_name: str) -> str:
     return npu_model_name
 
 
+def build_dequant_hf_model(
+    npu_model_name: str, hf_ref_model: str, config, path: str = "decode"
+):
+    """The `make accuracy ACC_REF=dequant` reference: the bf16 checkpoint with
+    the values the NPU decode runs, from the same packer the decode uses --
+    the bundle's Q4NX projections and, on the decode path, the bf16 embedding
+    requantized as the tied head (the prefill's head is the embedding itself).
+    """
+    from dequant_reference import dequantized_reference
+    from q4nx_requant import reference_weights
+
+    return dequantized_reference(
+        hf_ref_model,
+        reference_weights(
+            Q4NX_MODEL_SOURCE, config.n_layers, tie_lm_head=True, path=path
+        ),
+    )
+
+
 def build_runner(
     model_name: str,
     config,
@@ -143,6 +162,10 @@ class NpuRunner:
             logits_at_pred=logits,
             top1_token=first,
         )
+
+    def prefill_logits(self, prompt_tokens: np.ndarray, logits_from: int):
+        """Logits of the prompt's rows from logits_from on."""
+        return fused_prefill.prefill_logits(self.prefiller, prompt_tokens, logits_from)
 
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:
         logits = np.asarray(

@@ -80,6 +80,39 @@ Q4NX_MODEL_SOURCE = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma3-4B-NP
 _SEQ_LEN = int(os.environ.get("Q4NX_SEQ_LEN", "2048"))
 
 
+def build_dequant_hf_model(npu_model_name: str, hf_ref_model: str, config):
+    """The `make accuracy ACC_REF=dequant` reference: the bf16 checkpoint with
+    the bundle's Q4NX projections and its separate raw Q4NX lm_head, both packed
+    as stored by gemma3_4b_q4nx_requant, dequantized. The HF checkpoint is the
+    multimodal Gemma3ForConditionalGeneration, whose text layers sit under
+    model.language_model."""
+    from dequant_reference import LM_HEAD, dequantized_reference
+    from gemma3_4b_q4nx_weights import Q4nxModel
+    from ml_dtypes import bfloat16
+
+    qm = Q4nxModel(Q4NX_MODEL_SOURCE)
+    weights = [
+        (
+            f"model.language_model.layers.{k}.{t}.weight",
+            lambda shape, n=f"model.layers.{k}.{t}.weight": qm.dequant(n, *shape),
+        )
+        for k in range(config.n_layers)
+        for t, _, _ in qm._PROJ.values()
+    ]
+    weights.append((LM_HEAD, lambda shape: qm.dequant(LM_HEAD, *shape)))
+    # The NPU looks tokens up in the bundle's embedding, which differs from the
+    # checkpoint's and is stored pre-multiplied by the sqrt(d) input scale HF
+    # applies at lookup.
+    scale = np.float32(bfloat16(config.emb_dim**0.5))
+    weights.append(
+        (
+            "model.language_model.embed_tokens.weight",
+            lambda shape: qm.bf16("model.embed_tokens.weight").reshape(shape) / scale,
+        )
+    )
+    return dequantized_reference(hf_ref_model, weights)
+
+
 def build_config():
     return GemmaConfig()
 
@@ -168,6 +201,10 @@ class NpuRunner:
             logits_at_pred=logits,
             top1_token=first,
         )
+
+    def prefill_logits(self, prompt_tokens: np.ndarray, logits_from: int):
+        """Logits of the prompt's rows from logits_from on."""
+        return fused_prefill.prefill_logits(self.prefiller, prompt_tokens, logits_from)
 
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:
         # `current_pos` is the absolute position of `input_token` (the runner

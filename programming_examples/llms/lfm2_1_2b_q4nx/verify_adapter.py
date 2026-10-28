@@ -89,6 +89,22 @@ def build_hf_model(npu_model_name: str, hf_ref_model: str, config):
     return model
 
 
+def build_dequant_hf_model(
+    npu_model_name: str, hf_ref_model: str, config, path: str = "decode"
+):
+    """The `make accuracy ACC_REF=dequant` reference: build_hf_model's, plus on
+    the decode path the tied head as lfm2_requant packs it, the embedding
+    rounded to Q4_0. The prefill's head is the bf16 embedding itself."""
+    from dequant_reference import replace_head
+    from lfm2_1_2b_q4nx_weights import Lfm2Q4Model, dequant_q4_0, requant_q4_0
+
+    model = build_hf_model(npu_model_name, hf_ref_model, config)
+    if path == "decode":
+        embed = Lfm2Q4Model(hf_ref_model).hf.bf16("model.embed_tokens.weight")
+        replace_head(model, dequant_q4_0(*requant_q4_0(embed)))
+    return model
+
+
 def build_runner(
     model_name: str,
     config,
@@ -163,6 +179,10 @@ class NpuRunner:
             logits_at_pred=logits,
             top1_token=first,
         )
+
+    def prefill_logits(self, prompt_tokens: np.ndarray, logits_from: int):
+        """Logits of the prompt's rows from logits_from on."""
+        return fused_prefill.prefill_logits(self.prefiller, prompt_tokens, logits_from)
 
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:
         logits = np.asarray(

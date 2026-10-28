@@ -63,6 +63,7 @@ help:
 	@echo "More targets:"
 	@echo "  make verify           Top-k token-level inclusion gate vs HF bf16 (2 prompts × 32 tokens, k=5) — fast CI gate"
 	@echo "  make verify-full      Same as above but runs the full 8-prompt set (longer, exhaustive)"
+	@echo "  make accuracy         Teacher-forced PPL + KL divergence vs the HF reference on wikitext-2 (see verify/accuracy.mk)"
 	@echo "  make diagnosis        Per-layer ffn_out cosine + max_abs vs HF bf16 (single prompt, informational)"
 	@echo ""
 	@echo "Prefill latency sweep:"
@@ -168,3 +169,5 @@ clean:
 	rm -r $(BUILD_DIR) 2>/dev/null || true
 	rm -rf $(srcdir)/../verify/reports
 	@echo "Build directory and verify/reports/ removed. Run 'make compile' to rebuild."
+
+include $(srcdir)/../verify/accuracy.mk

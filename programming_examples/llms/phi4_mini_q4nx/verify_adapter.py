@@ -73,6 +73,55 @@ def hf_reference(npu_model_name: str) -> str:
     return npu_model_name
 
 
+def build_dequant_hf_model(
+    npu_model_name: str, hf_ref_model: str, config, path: str = "decode"
+):
+    """The `make accuracy ACC_REF=dequant` reference: the bf16 checkpoint with
+    the values the NPU runs, from the packer the decode uses (llama32_1b_q4nx's
+    q4nx_requant, tied head). HF's Phi3 fuses q/k/v into qkv_proj and gate/up
+    into gate_up_proj, gate first, which the bundle stores split, so those are
+    concatenated here."""
+    from dequant_reference import LM_HEAD, dequantized_reference
+
+    if str(_LLMS_DIR / "llama32_1b_q4nx") not in sys.path:
+        sys.path.insert(0, str(_LLMS_DIR / "llama32_1b_q4nx"))
+    from q4nx_requant import reference_weights
+
+    split = dict(
+        reference_weights(
+            Q4NX_MODEL_SOURCE, config.n_layers, tie_lm_head=True, path=path
+        )
+    )
+    dq = config.n_heads * config.head_dim
+    dk = config.n_kv_heads * config.head_dim
+
+    def cat(parts):
+        return lambda shape: np.concatenate(
+            [split[name]((rows, shape[1])) for name, rows in parts]
+        )
+
+    weights = []
+    for k in range(config.n_layers):
+        p = f"model.layers.{k}."
+        attn = [p + f"self_attn.{w}_proj.weight" for w in "qkv"]
+        mlp = [p + f"mlp.{w}_proj.weight" for w in ("gate", "up")]
+        weights.append(
+            (p + "self_attn.qkv_proj.weight", cat(list(zip(attn, (dq, dk, dk)))))
+        )
+        weights.append(
+            (
+                p + "mlp.gate_up_proj.weight",
+                cat(list(zip(mlp, (config.hidden_dim,) * 2))),
+            )
+        )
+        for t in ("self_attn.o_proj", "mlp.down_proj"):
+            weights.append((p + t + ".weight", split[p + t + ".weight"]))
+    weights.append(("model.embed_tokens.weight", split["model.embed_tokens.weight"]))
+    if LM_HEAD in split:
+        weights.append((LM_HEAD, split[LM_HEAD]))
+    return dequantized_reference(hf_ref_model, weights)
+
+
 def build_config():
     return phi4_mini_config()
 
@@ -151,6 +200,12 @@ class FusedDecodeRunner:
             final_hidden_normed=np.empty(0, np.float32),
             logits_at_pred=logits,
             top1_token=int(np.argmax(logits)),
+        )
+
+    def prefill_logits(self, prompt_tokens: np.ndarray, logits_from: int):
+        """Logits of the prompt's rows from logits_from on."""
+        return fused_prefill.prefill_logits(
+            self._prefiller(), prompt_tokens, logits_from
         )
 
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:
