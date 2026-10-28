@@ -1064,6 +1064,8 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
     * Uses that require exact type equality across region boundaries (e.g.,
       `scf.yield`, `func.return`) are **not** rewritten; such allocations are skipped.
     * Hoisting increases the buffer's lifetime; apply with care on large buffers.
+    * With `memory_space`, only allocations in that memory space are hoisted;
+      allocations of other spaces, or of none yet, stay where they are.
 
     ### Example
 
@@ -1102,10 +1104,12 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
     ```
   }];
 
-  let arguments = (ins TransformHandleTypeInterface:$target);
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   OptionalAttr<I32Attr>:$memory_space);
   let results = (outs);
 
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
