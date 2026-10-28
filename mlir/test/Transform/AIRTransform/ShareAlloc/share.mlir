@@ -12,8 +12,8 @@
 // CHECK-LABEL: @two_loops
 // CHECK: %[[A:.*]] = memref.alloc() : memref<4x8xf32, 2>
 // CHECK-NOT: memref.alloc
-// CHECK: %[[F:.*]] = memref.collapse_shape %[[A]] {{\[}}[0, 1]]
-// CHECK: %[[B:.*]] = memref.expand_shape %[[F]] {{\[}}[0, 1, 2]] output_shape [2, 2, 8]
+// CHECK-NOT: memref.collapse_shape
+// CHECK: %[[B:.*]] = memref.expand_shape %[[A]] {{\[}}[0, 1], [2]] output_shape [2, 2, 8]
 // CHECK: linalg.fill ins(%{{.*}}) outs(%[[A]]
 // CHECK: linalg.fill ins(%{{.*}}) outs(%[[B]]
 // CHECK: memref.dealloc %[[A]]
@@ -60,8 +60,8 @@ module attributes {transform.with_named_sequence} {
 // shape, and the earlier alloc becomes the reshape.
 // CHECK-LABEL: @keep_first_target
 // CHECK: %[[B:.*]] = memref.alloc() : memref<2x2x8xf32, 2>
-// CHECK: %[[F:.*]] = memref.collapse_shape %[[B]] {{\[}}[0, 1, 2]]
-// CHECK: %[[A:.*]] = memref.expand_shape %[[F]] {{\[}}[0, 1]] output_shape [4, 8]
+// CHECK: %[[A:.*]] = memref.collapse_shape %[[B]] {{\[}}[0, 1], [2]]
+// CHECK-NOT: memref.expand_shape
 // CHECK: linalg.fill ins(%{{.*}}) outs(%[[A]]
 // CHECK: linalg.fill ins(%{{.*}}) outs(%[[B]]
 func.func @keep_first_target(%x: f32) {
@@ -211,6 +211,57 @@ func.func @flat_replaced(%x: f32) {
   memref.store %x, %b[%c0, %c0] : memref<4x8xf32>
   %a = memref.alloc() : memref<32xf32>
   memref.store %x, %a[%c0] : memref<32xf32>
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %fs = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    transform.foreach %fs : !transform.any_op {
+    ^bb0(%fn: !transform.any_op):
+      %allocs = transform.structured.match ops{["memref.alloc"]} in %fn : (!transform.any_op) -> !transform.any_op
+      %one = transform.air.share_alloc %allocs : (!transform.any_op) -> !transform.any_op
+    }
+    transform.yield
+  }
+}
+
+// -----
+
+// Shapes that split the same elements differently: the kept buffer is split
+// into the finer shape both merge, and merged into the other's, with unit
+// dimensions joining a neighbour. Loads through the reshapes fold into the
+// kept buffer.
+// CHECK-LABEL: @refine
+// CHECK: %[[A:.*]] = memref.alloc() : memref<8x64xf32, 2>
+// CHECK: %[[E:.*]] = memref.expand_shape %[[A]] {{\[}}[0], [1, 2]] output_shape [8, 2, 32]
+// CHECK: memref.collapse_shape %[[E]] {{\[}}[0, 1], [2]] : memref<8x2x32xf32, 2> into memref<16x32xf32, 2>
+// CHECK-LABEL: @refine_units
+// CHECK: %[[Q:.*]] = memref.alloc() : memref<8x1x2x32x1xf32, 2>
+// CHECK: %[[QE:.*]] = memref.expand_shape %[[Q]] {{\[}}[0], [1], [2], [3, 4], [5]] output_shape [8, 1, 2, 1, 32, 1]
+// CHECK: memref.collapse_shape %[[QE]] {{\[}}[0], [1, 2], [3], [4], [5]] : memref<8x1x2x1x32x1xf32, 2> into memref<8x2x1x32x1xf32, 2>
+// CHECK-LABEL: @no_refinement
+// CHECK: memref.collapse_shape %{{.*}} {{\[}}[0, 1]] : memref<6x4xf32, 2> into memref<24xf32, 2>
+// CHECK: memref.expand_shape %{{.*}} {{\[}}[0, 1]] output_shape [4, 6]
+func.func @refine(%x: f32) {
+  %a = memref.alloc() : memref<8x64xf32, 2>
+  %b = memref.alloc() : memref<16x32xf32, 2>
+  linalg.fill ins(%x : f32) outs(%a : memref<8x64xf32, 2>)
+  linalg.fill ins(%x : f32) outs(%b : memref<16x32xf32, 2>)
+  return
+}
+func.func @refine_units(%x: f32) {
+  %a = memref.alloc() : memref<8x1x2x32x1xf32, 2>
+  %b = memref.alloc() : memref<8x2x1x32x1xf32, 2>
+  linalg.fill ins(%x : f32) outs(%a : memref<8x1x2x32x1xf32, 2>)
+  linalg.fill ins(%x : f32) outs(%b : memref<8x2x1x32x1xf32, 2>)
+  return
+}
+func.func @no_refinement(%x: f32) {
+  %a = memref.alloc() : memref<6x4xf32, 2>
+  %b = memref.alloc() : memref<4x6xf32, 2>
+  linalg.fill ins(%x : f32) outs(%a : memref<6x4xf32, 2>)
+  linalg.fill ins(%x : f32) outs(%b : memref<4x6xf32, 2>)
   return
 }
 
