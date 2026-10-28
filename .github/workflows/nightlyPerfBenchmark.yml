@@ -477,6 +477,8 @@ jobs:
           if [ -n "${AIR_COMPILE_CACHE:-}" ]; then
             python3 python/air/backend/compile_cache.py prune --max-gb 30 || true
           fi
+          # A disk abort between suites skips the rest without failing any.
+          bash "$GITHUB_WORKSPACE/utils/ci-disk-guard.sh" aborted && rc=1
           exit $rc
 
       - name: Record runner disk growth

@@ -18,6 +18,7 @@ MIN_FREE_GB="${MIN_FREE_GB:-60}"
 MARGIN_PCT="${MARGIN_PCT:-20}"
 ABORT_FREE_GB="${ABORT_FREE_GB:-15}"    # room left for the reporting steps
 INTERVAL="${INTERVAL:-30}"
+GRACE="${GRACE:-30}"                    # seconds between TERM and KILL
 
 used_kb() { df -Pk "$HOME" | awk 'NR==2 {print $3}'; }
 free_kb() { df -Pk "$HOME" | awk 'NR==2 {print $4}'; }
@@ -36,6 +37,10 @@ descendants() {  # descendants PID SKIP: PID's process tree, minus SKIP's subtre
     echo "$c"
     descendants "$c" "$2"
   done
+}
+
+starttime() {  # field 22 of /proc/PID/stat; the comm field may contain spaces
+  sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk '{print $20}'
 }
 
 case "${1:-}" in
@@ -69,13 +74,22 @@ watch)
     free=$(free_kb)
     [ "$used" -gt "$(cat "$RUN_DIR/max_used_kb")" ] && echo "$used" > "$RUN_DIR/max_used_kb"
     if [ "$free" -lt $((ABORT_FREE_GB * 1048576)) ]; then
-      echo "::error::Runner disk down to $(gb "$free") GiB free (abort threshold ${ABORT_FREE_GB} GiB); stopping the tests."
-      report
       touch "$RUN_DIR/aborted"
-      procs=$(descendants "$pid" "$$")
-      kill -TERM $procs 2>/dev/null
-      sleep 30
-      kill -KILL $(descendants "$pid" "$$") 2>/dev/null
+      # Pin each target by start time: a worker whose parent exits on TERM is
+      # reparented out of the tree, and its pid may be reused before the KILL.
+      targets=()
+      for p in $(descendants "$pid" "$$"); do
+        targets+=("$p:$(starttime "$p")")
+      done
+      kill -TERM "${targets[@]%%:*}" 2>/dev/null
+      echo "::error::Runner disk down to $(gb "$free") GiB free (abort threshold ${ABORT_FREE_GB} GiB); stopped the tests."
+      report
+      sleep "$GRACE"
+      for t in "${targets[@]}"; do
+        [ "$(starttime "${t%%:*}")" = "${t#*:}" ] && kill -KILL "${t%%:*}" 2>/dev/null
+      done
+      mapfile -t left < <(descendants "$pid" "$$")
+      kill -KILL "${left[@]}" 2>/dev/null
       exit 0
     fi
     if [ $((SECONDS - last_log)) -ge 600 ]; then
