@@ -28,10 +28,10 @@ def _load(path):
 generate_readme = _load(HERE.parents[1] / "generate_readme.py")
 
 
-def record(day, task, npu, p, shots=5):
+def record(day, task, npu, p, shots=5, runner="krackan-offline"):
     return {
         "model": "qwen3_4b_q4nx",
-        "runner": "krackan-offline",
+        "runner": runner,
         "timestamp_utc": f"2026-11-{day:02d}T00:00:00Z",
         "reference": {"id": "Qwen/Qwen3-4B", "revision": "abc"},
         "limit": 100,
@@ -81,6 +81,18 @@ class TasksPageTest(unittest.TestCase):
     def test_small_p(self):
         page = self.render([record(1, "gsm8k", 0.41, 1.2e-4)])
         self.assertIn("| < 0.001 |", page)
+
+    def test_machine_per_row_only_with_several(self):
+        page = self.render([record(1, "gsm8k", 0.79, 0.004)])
+        self.assertIn("| 2026-11-01 |", page)
+        page = self.render(
+            [
+                record(1, "gsm8k", 0.79, 0.004, runner="box-a"),
+                record(1, "mmlu", 0.72, 0.47, shots=0, runner="box-b"),
+            ]
+        )
+        self.assertIn("| 2026-11-01 (box-a) |", page)
+        self.assertIn("| 2026-11-01 (box-b) |", page)
 
     def test_no_rows_no_section(self):
         self.assertEqual(generate_readme.render_llm_tasks([]), "")

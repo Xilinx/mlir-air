@@ -1360,6 +1360,15 @@ def _acc_ppl(ln_ratio, ln_se):
     return f"{100 * (ratio - 1):+.1f} ± {100 * ratio * (ln_se or 0):.1f}"
 
 
+def _measured(day, rows, many_machines):
+    """A Measured cell: the date, and with results from more than one machine
+    on the page, the machine each came from."""
+    cell = day or "—"
+    if many_machines:
+        cell += f" ({', '.join(sorted({r.get('runner') or '?' for r in rows}))})"
+    return cell
+
+
 def _accuracy_label(path, ctx, scored_from):
     """The Path cell: the path, then the chunk length and scored window when
     they are not the default 2048 tokens with the second half scored."""
@@ -1391,6 +1400,7 @@ def render_llm_accuracy(rows, base_url=""):
             r.get("scored_from"),
         )
         by_row.setdefault(key, {})[r["ref_kind"]] = r
+    many = len({r.get("runner") for r in rows}) > 1
     lines = []
     # Within a model: decode before prefill (decode is what the tok/s columns
     # above measure), then by context.
@@ -1413,13 +1423,17 @@ def render_llm_accuracy(rows, base_url=""):
                 _acc_kld(r.get("kld_mean"), r.get("kld_se")),
                 _acc_ppl(r.get("ln_ppl_ratio"), r.get("ln_ppl_ratio_se")),
             ]
-        measured = max((r.get("timestamp_utc") or "") for r in refs.values())[:10]
+        measured = _measured(
+            max((r.get("timestamp_utc") or "") for r in refs.values())[:10],
+            refs.values(),
+            many,
+        )
         if any(r.get("regressed") for r in refs.values()):
             measured += ' <span title="worse than its recent history">&#9888;</span>'
         lines.append(
             f"| {_llm_model_cell(model, base_url)} | {weights} | {label} | "
             + " | ".join(cells)
-            + f" | {measured or '—'} |"
+            + f" | {measured} |"
         )
     machines = ", ".join(sorted({r.get("runner") or "?" for r in rows}))
     return f"""### Accuracy
@@ -1428,7 +1442,8 @@ How closely each model's NPU output follows a reference, measured the way
 llama.cpp's `llama-perplexity --kl-divergence` does: wikitext-2 test in chunks of
 2048 tokens, always fed the true text, with the second half of each chunk
 scored. Measured offline on {machines} (Krackan Point, NPU2), not on the
-nightly runner; each row gives its date.
+nightly runner; each row gives its date and, when there is more than one
+machine, its machine.
 
 - **decode** runs the first half of a chunk through the NPU prefill and then one
   decode step per token, the path behind the decode throughput above.
@@ -1492,6 +1507,7 @@ def render_llm_tasks(rows, base_url=""):
             return "—"
         return "< 0.001" if v < 0.001 else f"{v:.3f}"
 
+    many = len({r.get("runner") for r in rows}) > 1
     lines = []
     for r in rows:
         shots = r.get("n_shot")
@@ -1501,7 +1517,7 @@ def render_llm_tasks(rows, base_url=""):
             f"{task} | {r.get('n') or '—'} | {pct(r.get('npu'))} | {pct(r.get('ref'))} | "
             f"{r.get('npu_only_right', '—')} / {r.get('ref_only_right', '—')} | "
             f"{p_value(r.get('mcnemar_p'))} | "
-            f"{(r.get('timestamp_utc') or '')[:10] or '—'} |"
+            f"{_measured((r.get('timestamp_utc') or '')[:10], [r], many)} |"
         )
     machines = ", ".join(sorted({r.get("runner") or "?" for r in rows}))
     return f"""### Task scores
@@ -1509,7 +1525,8 @@ def render_llm_tasks(rows, base_url=""):
 GSM8K and MMLU through
 [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness),
 with its standard prompts, on the NPU and on the bf16 HF reference on the CPU,
-over the same items. Measured offline on {machines}; each row gives its date.
+over the same items. Measured offline on {machines}; each row gives its date
+and, when there is more than one machine, its machine.
 
 - MMLU is scored from the NPU prefill's next-token probabilities; GSM8K
   generates its answers through the prefill and then greedy decode steps.

@@ -28,10 +28,18 @@ def _load(path):
 generate_readme = _load(HERE.parents[1] / "generate_readme.py")
 
 
-def record(day, same_top, kld, ctx=2048, scored_from=1024, kind="dequant"):
+def record(
+    day,
+    same_top,
+    kld,
+    ctx=2048,
+    scored_from=1024,
+    kind="dequant",
+    runner="krackan-offline",
+):
     return {
         "model": "lfm2_1_2b_q4nx",
-        "runner": "krackan-offline",
+        "runner": runner,
         "timestamp_utc": f"2026-11-{day:02d}T00:00:00Z",
         "reference": {"id": "LiquidAI/LFM2-1.2B", "kind": kind},
         "dataset": "wikitext-2-test",
@@ -95,6 +103,16 @@ class AccuracyPageTest(unittest.TestCase):
         )
         for label in ("decode @ 1k", "decode @ 8k", "decode @ 8k, last 256"):
             self.assertIn(f"| {label} |", page)
+
+    def test_machine_per_row_only_with_several(self):
+        self.assertIn("| 2026-11-01 |", self.render([record(1, 0.98, 0.001)]))
+        page = self.render(
+            [
+                record(1, 0.98, 0.001, runner="box-a"),
+                record(1, 0.98, 0.001, kind="bf16", runner="box-b"),
+            ]
+        )
+        self.assertIn("| 2026-11-01 (box-a, box-b) |", page)
 
     def test_no_rows_no_section(self):
         self.assertEqual(generate_readme.render_llm_accuracy([]), "")
