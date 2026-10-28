@@ -26,6 +26,8 @@ Usage:
                             --history spec_decode_history.ndjson --run-id 123
   python3 append_history.py --accuracy accuracy.json \
                             --history accuracy_history.ndjson --run-id 123
+  python3 append_history.py --tasks tasks.json \
+                            --history tasks_history.ndjson --run-id 123
 """
 
 import argparse
@@ -211,6 +213,37 @@ def _flat_accuracy_rows(recs, run_id):
         }
 
 
+def _flat_tasks_rows(recs, run_id):
+    """Yield one flat history row per (model, task) of an lm_eval run
+    (verify/lm_eval_npu.py): the NPU's and the reference's scores over the same
+    items, and the items only one of them got right."""
+    for d in recs:
+        tc = d.get("toolchain", {}) or {}
+        ts = d.get("timestamp_utc", "") or ""
+        ref = d.get("reference", {}) or {}
+        for task, t in (d.get("tasks") or {}).items():
+            yield {
+                "date": ts[:10],
+                "timestamp_utc": ts,
+                "run_id": run_id,
+                "air_sha": tc.get("mlir_air_sha", ""),
+                "aie_hash": tc.get("mlir_aie_hash", ""),
+                "peano": tc.get("llvm_aie_version", ""),
+                "model": d.get("model", ""),
+                "runner": d.get("runner", ""),
+                "reference": ref.get("id", ""),
+                "task": task,
+                "limit": d.get("limit"),
+                "n_shot": (d.get("n_shot") or {}).get(task),
+                "n": t.get("n"),
+                "npu": t.get("npu"),
+                "ref": t.get("ref"),
+                "npu_only_right": t.get("npu_only_right"),
+                "ref_only_right": t.get("ref_only_right"),
+                "mcnemar_p": t.get("mcnemar_p"),
+            }
+
+
 def _existing_run_ids(history_path):
     """Return the set of run_ids already recorded in history.ndjson.
 
@@ -248,6 +281,10 @@ def main():
         "--accuracy",
         help="Path to accuracy.json (PPL / KL divergence vs reference)",
     )
+    src.add_argument(
+        "--tasks",
+        help="Path to tasks.json (lm_eval task scores vs reference)",
+    )
     ap.add_argument(
         "--history", required=True, help="Path to history.ndjson (created if absent)"
     )
@@ -275,6 +312,7 @@ def main():
         or args.prefill_sweep
         or args.spec_decode
         or args.accuracy
+        or args.tasks
     )
     if args.perf:
         flatten = _flat_rows
@@ -284,8 +322,10 @@ def main():
         flatten = _flat_prefill_sweep_rows
     elif args.spec_decode:
         flatten = _flat_spec_decode_rows
-    else:
+    elif args.accuracy:
         flatten = _flat_accuracy_rows
+    else:
+        flatten = _flat_tasks_rows
     if not src_path.is_file():
         print(f"no {src_path.name}; nothing to append")
         return 0

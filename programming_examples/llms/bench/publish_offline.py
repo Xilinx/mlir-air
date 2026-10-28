@@ -16,12 +16,13 @@ them to the `perf-history` branch marked source=offline, and asks the docs
 workflow to rebuild. Only models the nightly does not run are published, so an
 offline row never displaces the runner's own number.
 
-Accuracy (verify/accuracy.py) runs only off the runner, for every model:
+Accuracy (verify/accuracy.py) and task scores (verify/lm_eval_npu.py) run
+only off the runner, for every model:
 
-  ninja check-programming-examples-llms-accuracy
+  ninja check-programming-examples-llms-{accuracy,tasks}
 
-and its records are published for all models. Left without --verify-xml, a
-run publishes accuracy only.
+and their records are published for all models. Left without --verify-xml, a
+run publishes only those.
 """
 
 import argparse
@@ -45,6 +46,7 @@ SERIES = [
     ("prefill_sweep.json", "prefill_sweep_history.ndjson", "--prefill-sweep", True),
     ("full20.json", "spec_decode_history.ndjson", "--spec-decode", True),
     ("accuracy.json", "accuracy_history.ndjson", "--accuracy", False),
+    ("tasks.json", "tasks_history.ndjson", "--tasks", False),
 ]
 LLMS = REPO / "programming_examples/llms"
 SUITES = re.compile(r"run_npu2_(verify|profile|sweep|prefill_sweep|full20)")
@@ -106,7 +108,8 @@ def main():
     ap.add_argument(
         "--verify-xml",
         default=None,
-        help="lit's xunit output of verify; without it only accuracy is published",
+        help="lit's xunit output of verify; without it only accuracy and task "
+        "scores are published",
     )
     ap.add_argument("--air-sha", default=None, help="default: this checkout's HEAD")
     ap.add_argument("--peano", default=None, help="default: installed llvm-aie")
