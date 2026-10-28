@@ -1,0 +1,21 @@
+# Temporary: what hf_disk_budget.py --prune-cache would remove on the runner. Not for main.
+name: HF prune dry run
+
+on:
+  push:
+    branches: [ci/runner-disk-probe]
+
+jobs:
+  dry-run:
+    runs-on: amdryzenai5pro340
+    timeout-minutes: 20
+    steps:
+      # No checkout: it would git-clean the shared nightly workspace.
+      - name: Prune dry run
+        run: |
+          cd "$RUNNER_TEMP"
+          python3.12 -m venv hfp && source hfp/bin/activate && pip install -q huggingface_hub
+          base=https://raw.githubusercontent.com/Xilinx/mlir-air/ci-hf-cache-prune
+          curl -fsSL "$base/utils/hf_disk_budget.py" -o hf_disk_budget.py
+          curl -fsSL "$base/programming_examples/llms/hf_models.txt" -o hf_models.txt
+          python3 hf_disk_budget.py --models hf_models.txt --prune-cache --dry-run

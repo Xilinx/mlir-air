@@ -11,7 +11,7 @@ jobs:
     runs-on: amdryzenai5pro340
     timeout-minutes: 30
     env:
-      MODE: delete
+      MODE: dry-run
       STALE_DAYS: 10
     steps:
       # No checkout: it would git-clean the shared nightly workspace.
