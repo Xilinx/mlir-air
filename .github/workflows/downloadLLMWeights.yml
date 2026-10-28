@@ -160,6 +160,13 @@ jobs:
           sys.exit(rc)
           PY
 
+      # Only after every listed model is in: a failed download must not leave the
+      # cache with less than the nightly needs.
+      - name: Prune HF cache to hf_models.txt
+        run: |
+          source hf-venv/bin/activate
+          python3 utils/hf_disk_budget.py --prune-cache
+
       - name: Seed the frozen DFlash Full80 inputs
         run: |
           source hf-venv/bin/activate
