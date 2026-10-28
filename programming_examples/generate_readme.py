@@ -1360,15 +1360,6 @@ def _acc_ppl(ln_ratio, ln_se):
     return f"{100 * (ratio - 1):+.1f} ± {100 * ratio * (ln_se or 0):.1f}"
 
 
-def _measured(day, rows, many_machines):
-    """A Measured cell: the date, and with results from more than one machine
-    on the page, the machine each came from."""
-    cell = day or "—"
-    if many_machines:
-        cell += f" ({', '.join(sorted({r.get('runner') or '?' for r in rows}))})"
-    return cell
-
-
 def _accuracy_label(path, ctx, scored_from):
     """The Path cell: the path, then the chunk length and scored window when
     they are not the default 2048 tokens with the second half scored."""
@@ -1400,7 +1391,6 @@ def render_llm_accuracy(rows, base_url=""):
             r.get("scored_from"),
         )
         by_row.setdefault(key, {})[r["ref_kind"]] = r
-    many = len({r.get("runner") for r in rows}) > 1
     lines = []
     # Within a model: decode before prefill (decode is what the tok/s columns
     # above measure), then by context.
@@ -1423,17 +1413,13 @@ def render_llm_accuracy(rows, base_url=""):
                 _acc_kld(r.get("kld_mean"), r.get("kld_se")),
                 _acc_ppl(r.get("ln_ppl_ratio"), r.get("ln_ppl_ratio_se")),
             ]
-        measured = _measured(
-            max((r.get("timestamp_utc") or "") for r in refs.values())[:10],
-            refs.values(),
-            many,
-        )
+        measured = max((r.get("timestamp_utc") or "") for r in refs.values())[:10]
         if any(r.get("regressed") for r in refs.values()):
             measured += ' <span title="worse than its recent history">&#9888;</span>'
         lines.append(
             f"| {_llm_model_cell(model, base_url)} | {weights} | {label} | "
             + " | ".join(cells)
-            + f" | {measured} |"
+            + f" | {measured or '—'} |"
         )
     machines = ", ".join(sorted({r.get("runner") or "?" for r in rows}))
     return f"""### Accuracy
@@ -1442,8 +1428,7 @@ How closely each model's NPU output follows a reference, measured the way
 llama.cpp's `llama-perplexity --kl-divergence` does: wikitext-2 test in chunks of
 2048 tokens, always fed the true text, with the second half of each chunk
 scored. Measured offline on {machines} (Krackan Point, NPU2), not on the
-nightly runner; each row gives its date and, when there is more than one
-machine, its machine.
+nightly runner; each row gives its date.
 
 - **decode** runs the first half of a chunk through the NPU prefill and then one
   decode step per token, the path behind the decode throughput above.
@@ -1466,81 +1451,6 @@ machine, its machine.
 
 | Model | Weights | Path | Same top-1 vs bf16 (%) | KLD vs bf16 | PPL vs bf16 (%) | Same top-1 vs CPU (%) | KLD vs CPU | PPL vs CPU (%) | Measured |
 |:------|:-------:|:-----|-----------------------:|------------:|----------------:|----------------------:|-----------:|---------------:|:---------|
-{chr(10).join(lines)}
-
-"""
-
-
-def load_llm_tasks_history(path):
-    """Newest row per (model, task) from tasks_history.ndjson."""
-    if not path or not Path(path).is_file():
-        return []
-    newest = {}
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            r = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        key = (r.get("model"), r.get("task"))
-        if not all(key):
-            continue
-        if (r.get("timestamp_utc") or "") >= (
-            newest.get(key, {}).get("timestamp_utc") or ""
-        ):
-            newest[key] = r
-    return [newest[k] for k in sorted(newest)]
-
-
-def render_llm_tasks(rows, base_url=""):
-    """The task scores section: lm_eval tasks on the NPU and on the bf16
-    reference over the same items, or "" with no rows."""
-    if not rows:
-        return ""
-
-    def pct(v):
-        return "—" if v is None else f"{100 * v:.1f}"
-
-    def p_value(v):
-        if v is None:
-            return "—"
-        return "< 0.001" if v < 0.001 else f"{v:.3f}"
-
-    many = len({r.get("runner") for r in rows}) > 1
-    lines = []
-    for r in rows:
-        shots = r.get("n_shot")
-        task = r["task"] + (f" ({shots}-shot)" if shots is not None else "")
-        lines.append(
-            f"| {_llm_model_cell(r['model'], base_url)} | {_llm_weights(r['model'])} | "
-            f"{task} | {r.get('n') or '—'} | {pct(r.get('npu'))} | {pct(r.get('ref'))} | "
-            f"{r.get('npu_only_right', '—')} / {r.get('ref_only_right', '—')} | "
-            f"{p_value(r.get('mcnemar_p'))} | "
-            f"{_measured((r.get('timestamp_utc') or '')[:10], [r], many)} |"
-        )
-    machines = ", ".join(sorted({r.get("runner") or "?" for r in rows}))
-    return f"""### Task scores
-
-GSM8K and MMLU through
-[lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness),
-with its standard prompts, on the NPU and on the bf16 HF reference on the CPU,
-over the same items. Measured offline on {machines}; each row gives its date
-and, when there is more than one machine, its machine.
-
-- MMLU is scored from the NPU prefill's next-token probabilities; GSM8K
-  generates its answers through the prefill and then greedy decode steps.
-- Scores are % correct over n items, a subset of each task.
-- **Right only on NPU / ref** counts the items one side gets right and the
-  other gets wrong. **p** is the exact McNemar test on those counts: a small p
-  means the NPU and the reference really differ, while a gap between the two
-  scores with a large p is within noise.
-- The reference is the bf16 checkpoint, so for 4-bit weights the difference
-  includes what the format itself costs. `make tasks` in each example
-  reproduces a row.
-
-| Model | Weights | Task | n | NPU (%) | Reference (%) | Right only on NPU / ref | p | Measured |
-|:------|:-------:|:-----|--:|--------:|--------------:|------------------------:|--:|:---------|
 {chr(10).join(lines)}
 
 """
@@ -1592,7 +1502,6 @@ def render_llm_benchmark(
     history_path=None,
     spec_decode_recs=(),
     accuracy_rows=(),
-    tasks_rows=(),
 ):
     """Render the nightly LLM benchmark section.
 
@@ -1696,7 +1605,6 @@ def render_llm_benchmark(
     _sweep_table = render_llm_sweep(sweep_recs, base_url=base_url)
     _prefill_table = render_llm_prefill_sweep(prefill_sweep_recs, base_url=base_url)
     _accuracy_table = render_llm_accuracy(accuracy_rows, base_url=base_url)
-    _tasks_table = render_llm_tasks(tasks_rows, base_url=base_url)
     _spec_table = render_spec_decode(spec_decode_recs, base_url=base_url)
     _vla_table = render_vla_benchmark(recs, base_url=base_url)
 
@@ -1728,7 +1636,7 @@ End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Poin
 
 {_offline_legend(recs, sweep_recs, prefill_sweep_recs, spec_decode_recs)}{_scalar_table}{_sweep_table}
 {_prefill_table}
-{_accuracy_table}{_tasks_table}{_spec_table}{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
+{_accuracy_table}{_spec_table}{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
 _{provenance}_
 
@@ -1797,7 +1705,6 @@ def generate_readme(
     llm_spec_decode_path=None,
     llm_spec_decode_history_path=None,
     llm_accuracy_history_path=None,
-    llm_tasks_history_path=None,
 ):
     """Generate dashboard content.
 
@@ -1816,7 +1723,6 @@ def generate_readme(
         llm_spec_decode_history_path
     ) or load_spec_decode(llm_spec_decode_path)
     accuracy_rows = load_llm_accuracy_history(llm_accuracy_history_path)
-    tasks_rows = load_llm_tasks_history(llm_tasks_history_path)
 
     if section == "llm":
         llm_section = render_llm_benchmark(
@@ -1832,7 +1738,6 @@ def generate_readme(
             history_path=llm_history_path,
             spec_decode_recs=spec_decode_recs,
             accuracy_rows=accuracy_rows,
-            tasks_rows=tasks_rows,
         )
         return f"""\
 <!-- This file is auto-generated by generate_readme.py. Do not edit manually. -->
@@ -1855,7 +1760,6 @@ End-to-end inference of decoder-only LLMs and vision-language-action (VLA) polic
         history_path=llm_history_path,
         spec_decode_recs=spec_decode_recs,
         accuracy_rows=accuracy_rows,
-        tasks_rows=tasks_rows,
     )
     return (
         _operator_dashboard(base_url=base_url) + llm_section + _getting_started_footer()
@@ -1934,12 +1838,6 @@ if __name__ == "__main__":
         "reference, measured offline). Omitted when absent.",
     )
     parser.add_argument(
-        "--llm-tasks-history",
-        default=None,
-        help="Path to tasks_history.ndjson (GSM8K / MMLU vs reference, "
-        "measured offline). Omitted when absent.",
-    )
-    parser.add_argument(
         "--section",
         choices=["full", "operators", "llm"],
         default="full",
@@ -1960,7 +1858,6 @@ if __name__ == "__main__":
         llm_spec_decode_path=args.llm_spec_decode,
         llm_spec_decode_history_path=args.llm_spec_decode_history,
         llm_accuracy_history_path=args.llm_accuracy_history,
-        llm_tasks_history_path=args.llm_tasks_history,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # Explicit encoding: the tables carry the verify/status emoji, and on a
