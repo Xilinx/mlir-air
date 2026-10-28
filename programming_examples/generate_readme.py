@@ -690,6 +690,27 @@ for _affine_module in (
         LLM_DISPLAY[_id] = (f"{_affine_spec['name']} (P{_p}/C{_c})", "Affine Q4", None)
 
 
+def _source(row):
+    """Where a history row was measured: the nightly runner unless marked offline."""
+    return {"source": row.get("source", "nightly"), "runner": row.get("runner", "")}
+
+
+def _offline_mark(rec):
+    return " †" if rec.get("source") == "offline" else ""
+
+
+def _offline_legend(*rec_lists):
+    machines = sorted(
+        {r.get("runner") or "?" for recs in rec_lists for r in recs if _offline_mark(r)}
+    )
+    if not machines:
+        return ""
+    return (
+        f"† Measured offline on {', '.join(machines)} (Krackan Point, NPU2), not on "
+        "the nightly runner: 7-8B models do not fit its disk.\n\n"
+    )
+
+
 def _llm_model_cell(model, base_url):
     """Render the Model column: the model name linked to its example, then
     (FLM, HF) links to the FastFlowLM source and the HuggingFace page when
@@ -765,7 +786,7 @@ def load_llm_sweep_history(path):
         # has no per-row date to reveal the staleness. Blank until the next
         # nightly appends the field is the intended transition.
         if model not in verify or ts >= verify[model][0]:
-            verify[model] = (ts, r.get("verify_status", ""))
+            verify[model] = (ts, r.get("verify_status", ""), _source(r))
     curves = {}
     for (model, ctx), (_, _, r) in sorted(newest.items()):
         live = run_ctxs.get((model, latest[model][1])) if model in latest else None
@@ -773,7 +794,12 @@ def load_llm_sweep_history(path):
             continue
         curves.setdefault(
             model,
-            {"model": model, "points": [], "verify_status": verify[model][1]},
+            {
+                "model": model,
+                "points": [],
+                "verify_status": verify[model][1],
+                **verify[model][2],
+            },
         )["points"].append(
             {
                 "context_len": ctx,
@@ -873,7 +899,7 @@ def render_llm_sweep(recs, base_url=""):
             cells.append(cell)
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
-            f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+            f'| {_llm_model_cell(d.get("model", ""), base_url)}{_offline_mark(d)} '
             f'| {_llm_weights(d.get("model", ""))} | '
             + " | ".join(cells)
             + f" | {verify} |"
@@ -944,7 +970,7 @@ def load_llm_prefill_sweep_history(path):
         if cur is None or (better, ts) >= (cur[0], cur[1]):
             newest[(model, plen)] = (better, ts, r)
         if model not in verify or ts >= verify[model][0]:
-            verify[model] = (ts, r.get("verify_status", ""))
+            verify[model] = (ts, r.get("verify_status", ""), _source(r))
     curves = {}
     for (model, plen), (_, _, r) in sorted(newest.items()):
         live = run_lens.get((model, latest[model][1])) if model in latest else None
@@ -952,7 +978,12 @@ def load_llm_prefill_sweep_history(path):
             continue
         curves.setdefault(
             model,
-            {"model": model, "points": [], "verify_status": verify[model][1]},
+            {
+                "model": model,
+                "points": [],
+                "verify_status": verify[model][1],
+                **verify[model][2],
+            },
         )["points"].append(
             {
                 "prefill_len": plen,
@@ -1011,7 +1042,7 @@ def render_llm_prefill_sweep(recs, base_url=""):
             cells.append(cell)
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
-            f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+            f'| {_llm_model_cell(d.get("model", ""), base_url)}{_offline_mark(d)} '
             f'| {_llm_weights(d.get("model", ""))} | '
             + " | ".join(cells)
             + f" | {verify} |"
@@ -1084,6 +1115,7 @@ def load_llm_history(path):
             "model": model,
             "timestamp_utc": r.get("timestamp_utc"),
             "runner": r.get("runner", ""),
+            "source": r.get("source", "nightly"),
             "verify_status": r.get("verify_status", ""),
             "metrics": {
                 "ttft_ms": r.get("ttft_ms"),
@@ -1150,6 +1182,7 @@ def load_spec_decode_history(path):
                 "model": model,
                 "timestamp_utc": newest,
                 "verify_status": first.get("verify_status", ""),
+                **_source(first),
                 "samples_per_dataset": first.get("samples_per_dataset"),
                 "requests_per_engine": first.get("requests_per_engine"),
                 "max_new_tokens": first.get("max_new_tokens"),
@@ -1226,7 +1259,7 @@ def render_spec_decode(studies, base_url=""):
         names = list(per) + [f"<strong>all {d.get('requests_per_engine', '')}</strong>"]
         metrics = list(per.values()) + [d.get("overall") or {}]
         span = len(names)
-        model = _llm_model_cell(d.get("model", ""), base_url)
+        model = _llm_model_cell(d.get("model", ""), base_url) + _offline_mark(d)
         draft, block = _SPEC_DRAFTS.get(d.get("model"), (None, None))
         if draft:
             model += (
@@ -1298,7 +1331,7 @@ def render_vla_benchmark(recs, base_url=""):
     if not rows:
         return ""
     body = "\n".join(
-        f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+        f'| {_llm_model_cell(d.get("model", ""), base_url)}{_offline_mark(d)} '
         f'| {"—" if (m := d.get("metrics", {})).get("context_len") is None else m["context_len"]} '
         f'| {"—" if m.get("ttft_ms") is None else m["ttft_ms"]} '
         f'| {(d.get("timestamp_utc") or "")[:10] or "—"} '
@@ -1395,7 +1428,7 @@ def render_llm_benchmark(
         # never invited to compare a single near-zero-context point against that
         # model's own curve.
         rows.append(
-            f'| {_llm_model_cell(name or "", base_url)} '
+            f'| {_llm_model_cell(name or "", base_url)}{_offline_mark(d)} '
             f'| {_fmt(m.get("context_len"))} '
             f'| {"↓" if in_prefill else _fmt(m.get("ttft_ms"))} '
             f'| {"↓" if in_decode else _fmt(m.get("decode_tokens_per_sec"))} '
@@ -1403,15 +1436,17 @@ def render_llm_benchmark(
             f"| {verify} |"
         )
 
-    # Provenance describes the NEWEST row; rows carry their own Measured date
-    # because a merged table can hold models from different runs.
+    # Provenance describes the NEWEST nightly row; rows carry their own Measured
+    # date because a merged table can hold models from different runs, and
+    # offline rows are marked where they appear.
+    nightly = [r for r in recs if not _offline_mark(r)] or recs
     prov = max(
-        (r for r in recs if (r.get("toolchain") or {}).get("mlir_air_sha")),
+        (r for r in nightly if (r.get("toolchain") or {}).get("mlir_air_sha")),
         key=lambda r: r.get("timestamp_utc") or "",
-        default=recs[0],
+        default=nightly[0],
     )
     tc = prov.get("toolchain", {})
-    date = max((r.get("timestamp_utc") or "" for r in recs), default="")[:10]
+    date = max((r.get("timestamp_utc") or "" for r in nightly), default="")[:10]
     air = (tc.get("mlir_air_sha") or "")[:7]
     aie = (tc.get("mlir_aie_hash") or "")[:7]
     peano = tc.get("llvm_aie_version") or ""
@@ -1457,7 +1492,7 @@ End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Poin
 
 {_VERIFY_LEGEND}
 
-{_scalar_table}{_sweep_table}
+{_offline_legend(recs, sweep_recs, prefill_sweep_recs, spec_decode_recs)}{_scalar_table}{_sweep_table}
 {_prefill_table}
 {_spec_table}{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
