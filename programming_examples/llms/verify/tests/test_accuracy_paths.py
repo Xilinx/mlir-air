@@ -65,6 +65,47 @@ class DecodePathTest(unittest.TestCase):
         )
 
 
+try:
+    import torch
+except ImportError:
+    torch = None
+
+
+class FakeModel:
+    """Records how many positions each call runs; logits are zeros."""
+
+    def __init__(self, rope):
+        text = SimpleNamespace(rope_parameters=rope)
+        self.config = SimpleNamespace(get_text_config=lambda: text)
+        self.calls = []
+
+    def __call__(self, ids, use_cache, logits_to_keep, past_key_values=None):
+        self.calls.append(ids.shape[1])
+        return SimpleNamespace(
+            logits=torch.zeros(1, logits_to_keep, VOCAB), past_key_values=None
+        )
+
+
+@unittest.skipIf(torch is None, "needs torch")
+class ReferenceSegmentsTest(unittest.TestCase):
+    N, FIRST = 8192, 8192 - 257
+
+    def run_reference(self, rope):
+        model = FakeModel(rope)
+        rows = accuracy._reference_logits(model, list(range(self.N)), self.FIRST)
+        self.assertEqual(rows.shape, (self.N - 1 - self.FIRST, VOCAB))
+        return model.calls
+
+    def test_long_chunk_runs_in_segments(self):
+        calls = self.run_reference({"rope_type": "default"})
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(sum(calls), self.N)
+
+    def test_longrope_runs_in_one_pass(self):
+        rope = {"rope_type": "longrope", "original_max_position_embeddings": 4096}
+        self.assertEqual(self.run_reference(rope), [self.N])
+
+
 class CacheTest(unittest.TestCase):
     def test_local_revision_follows_the_files(self):
         with tempfile.TemporaryDirectory() as d:
