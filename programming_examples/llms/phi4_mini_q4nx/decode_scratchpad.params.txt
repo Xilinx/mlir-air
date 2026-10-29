@@ -1,0 +1,7 @@
+3 3
+__air_param_arglen_6 0 i32 addr 0 1048575
+__air_param_argoff_5_x512_m512 1 i32 addr -2147483648 2147483647
+__air_param_attn_blk_0 2 i32 core - -
+0
+1
+main:q4nx_decode 3 __air_param_argoff_5_x512_m512 __air_param_arglen_6 __air_param_attn_blk_0

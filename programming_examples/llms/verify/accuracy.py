@@ -222,13 +222,25 @@ def drop_superseded(base_path: Path) -> list:
 _REF_SEGMENT = 4096
 
 
+def _longrope(model):
+    """Whether the model uses LongRoPE. HF picks its RoPE table per call from
+    that call's positions, so a chunk past the original context run in segments
+    would rotate its first keys with one table and its later queries with the
+    other; such a chunk has to run in one pass."""
+    c = model.config.get_text_config()
+    rope = getattr(c, "rope_parameters", None) or getattr(c, "rope_scaling", None)
+    return (
+        isinstance(rope, dict) and rope.get("rope_type", rope.get("type")) == "longrope"
+    )
+
+
 def _reference_logits(model, toks, first):
     """[n - 1 - first, vocab] float32 reference logits for rows first..n-2."""
     import torch
 
     n = len(toks)
     ids = torch.tensor(toks).unsqueeze(0)
-    if n <= _REF_SEGMENT:
+    if n <= _REF_SEGMENT or _longrope(model):
         # Logits only for rows first..n-1; the last is not scored.
         out = model(ids, use_cache=False, logits_to_keep=n - first)
         return out.logits[0, :-1].float().numpy()
@@ -460,9 +472,13 @@ def main():
         # hook gets a new base file too.
         hook = inspect.getsource(_dequant_builder(adapter))
         meta["hook_sha256"] = hashlib.sha256(hook.encode()).hexdigest()
+    # The code that computes the reference is part of the key as well.
+    ref_code = "".join(inspect.getsource(f) for f in (_longrope, _reference_logits))
+    meta["reference_sha256"] = hashlib.sha256(ref_code.encode()).hexdigest()
     fingerprint = hashlib.sha256(
         json.dumps(
-            {k: meta.get(k) for k in ("weights", "hook_sha256")}, sort_keys=True
+            {k: meta.get(k) for k in ("weights", "hook_sha256", "reference_sha256")},
+            sort_keys=True,
         ).encode()
     ).hexdigest()[:8]
     kind = args.ref

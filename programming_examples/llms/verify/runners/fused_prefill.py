@@ -18,8 +18,9 @@ def build_dir():
     return d if d and os.path.isfile(os.path.join(d, "manifest.json")) else None
 
 
-def load(name, model=None):
-    """name's fused prefill on build_dir(), or None: the per-op prefill."""
+def load(name, model=None, context=None):
+    """name's fused prefill on build_dir(), or None: the per-op prefill.
+    `context`: the longest context the decode it feeds runs to (dense.config)."""
     d = build_dir()
     if d is None:
         return None
@@ -38,7 +39,7 @@ def load(name, model=None):
 
     if not packing.reads(MODELS[name], model):
         return None
-    return dense.load(name, d, model)
+    return dense.load(name, d, model, context)
 
 
 def prefill_logits(prefiller, ids, logits_from):

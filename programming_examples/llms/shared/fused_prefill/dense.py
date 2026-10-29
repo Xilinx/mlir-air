@@ -65,9 +65,11 @@ def meta_dir(desc, path):
     return Path(snapshot_download(repo, allow_patterns=["*.json", "*.txt"]))
 
 
-def config(desc, path):
+def config(desc, path, context=None):
     """(eps, {op: inv_freq}, rot, rope_scale) from the weights' config.json,
-    after checking its shape against desc."""
+    after checking its shape against desc. `context`, the longest context the
+    session runs to, picks a LongRoPE model's factor table; without it the
+    short table is used."""
     c = json.loads((meta_dir(desc, path) / "config.json").read_text())
     c = c.get("text_config", c)
     got = (
@@ -99,10 +101,12 @@ def config(desc, path):
         inv = np.where(wl > old / lo, inv / rs["factor"], inv)
         inv = np.where((wl <= old / lo) & (wl >= old / hi), med, inv)
     elif kind == "longrope":
-        # short factors: prompts stay within the original context; HF's
-        # cos/sin scaling applies at every length
+        # The table must match the decode's for the whole session: keys the
+        # prefill rotates are attended by the decode's queries. HF's cos/sin
+        # scaling applies at every length.
         orig = c["original_max_position_embeddings"]
-        inv = inv / np.asarray(rs["short_factor"], np.float64)
+        table = "long_factor" if (context or 0) > orig else "short_factor"
+        inv = inv / np.asarray(rs[table], np.float64)
         mp = c["max_position_embeddings"]
         if mp > orig:
             scale = float(np.sqrt(1 + np.log(mp / orig) / np.log(orig)))
@@ -126,8 +130,9 @@ class DensePrefill(Engine):
     """prefill(ids) returns the last token's logits; kv_stack() the
     [layers, P, kv_heads * dh] roped K and raw V the fused decoder seeds from."""
 
-    def __init__(self, build_dir, desc):
+    def __init__(self, build_dir, desc, context=None):
         self.desc = desc
+        self.context = context
         super().__init__(build_dir, spec(desc).CFG, desc.max_len)
         self.current_context_length = 0
         self.rope_cache = {}
@@ -136,7 +141,9 @@ class DensePrefill(Engine):
     def load_weights(self, model=None):
         e = self.desc
         path = resolve(e, model)
-        self.eps, self.inv_freq, self.rot, self.rope_scale = config(e, path)
+        self.eps, self.inv_freq, self.rot, self.rope_scale = config(
+            e, path, self.context
+        )
         norms = {"input": "input_layernorm", "post_attn": "post_attention_layernorm"}
         if e.gemma:
             norms.update(
@@ -386,10 +393,11 @@ class DensePrefill(Engine):
         self.kv = []
 
 
-def load(name, build_dir, model=None):
+def load(name, build_dir, model=None, context=None):
     """The fused prefill of model `name` (models.py) from its build, with
     weights loaded from `model` (default: its repo). The longest prompt is the
-    max_len the build was made for."""
+    max_len the build was made for. `context` is the longest context the
+    decode it feeds runs to (see config)."""
     from .models import MODELS
 
     desc = MODELS[name]
@@ -400,7 +408,7 @@ def load(name, build_dir, model=None):
         from .lfm2 import Lfm2Prefill as cls
     else:
         cls = DensePrefill
-    pf = cls(build_dir, desc)
+    pf = cls(build_dir, desc, context)
     pf.load_weights(model)
     return pf
 

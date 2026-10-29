@@ -164,12 +164,16 @@ class FusedDecodeRunner:
                 ),
                 flush=True,
             )
-            self._pf = fused_prefill.load("phi4_mini_q4nx", self._model_source)
+            self._pf = fused_prefill.load(
+                "phi4_mini_q4nx", self._model_source, context=self._dec.ATTN_MAXL
+            )
         if self._pf is None:
             from phi4_mini_q4nx_prefill import LlamaQ4nxPrefill
 
             self._pf = LlamaQ4nxPrefill(
-                seq_len=PREFILL_SEQ_LEN, n_layers=self._dec.N_LAYERS
+                seq_len=PREFILL_SEQ_LEN,
+                n_layers=self._dec.N_LAYERS,
+                context=self._dec.ATTN_MAXL,
             )
             self._pf.load_weights(model=self._model_source)
         return self._pf
