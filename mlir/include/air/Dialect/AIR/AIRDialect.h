@@ -101,9 +101,11 @@ constexpr StringLiteral ChainLock = "air.chain_lock";
 // Unit attr on a shared-L2 memref.alloc: keep the plain counted lock pair, with
 // neither use-lock-race-condition-fix's per-transfer locks nor chain locks.
 // Set by use-lock-race-condition-fix-auto on buffers whose many-side transfers
-// do not each have a channel of their own: one channel moving several of them
-// runs them in order and has no race to fix, and per-transfer locks would let
-// the single side overwrite data not yet moved. Propagated onto the lowered
+// do not each have a channel of their own, unless the single side is one
+// transfer and the many side spans several channels (that transfer then holds
+// a lock pair per channel). One channel moving several transfers runs them in
+// order and has no race to fix, and per-transfer locks would let the single
+// side overwrite data not yet moved. Propagated onto the lowered
 // AIE::BufferOp.
 constexpr StringLiteral CountedLock = "air.counted_lock";
 // Integer attr air-to-aie stamps on every L2 memref.alloc in

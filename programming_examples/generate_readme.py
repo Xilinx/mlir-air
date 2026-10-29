@@ -690,25 +690,53 @@ for _affine_module in (
         LLM_DISPLAY[_id] = (f"{_affine_spec['name']} (P{_p}/C{_c})", "Affine Q4", None)
 
 
+# The machines results are measured on, keyed as history rows store them
+# (publish_offline.py --hardware). A row without the field is the nightly
+# runner's.
+HARDWARE = json.loads(
+    (SCRIPT_DIR / "llms" / "bench" / "hardware.json").read_text(encoding="utf-8")
+)
+_NIGHTLY_HARDWARE = next(k for k, v in HARDWARE.items() if v.get("nightly"))
+
+
+def _hardware(row):
+    return row.get("hardware") or _NIGHTLY_HARDWARE
+
+
+def hardware_label(key):
+    return HARDWARE.get(key, {}).get("label", key)
+
+
 def _source(row):
-    """Where a history row was measured: the nightly runner unless marked offline."""
-    return {"source": row.get("source", "nightly"), "runner": row.get("runner", "")}
+    """Where a history row was measured: the nightly runner unless marked
+    offline, and on which hardware."""
+    return {
+        "source": row.get("source", "nightly"),
+        "runner": row.get("runner", ""),
+        "hardware": _hardware(row),
+    }
 
 
-def _offline_mark(rec):
-    return " †" if rec.get("source") == "offline" else ""
-
-
-def _offline_legend(*rec_lists):
-    machines = sorted(
-        {r.get("runner") or "?" for recs in rec_lists for r in recs if _offline_mark(r)}
+def _by_model(recs):
+    """Table order: by model, then by hardware."""
+    return sorted(
+        recs, key=lambda r: (r.get("model", ""), hardware_label(_hardware(r)))
     )
-    if not machines:
+
+
+def _hardware_legend(*rec_lists):
+    """One line per hardware on the page, the nightly runner first."""
+    keys = {_hardware(r) for recs in rec_lists for r in recs}
+    if not keys:
         return ""
-    return (
-        f"† Measured offline on {', '.join(machines)} (Krackan Point, NPU2), not on "
-        "the nightly runner: 7-8B models do not fit its disk.\n\n"
-    )
+    lines = [
+        f"- **{hardware_label(k)}**: {HARDWARE.get(k, {}).get('detail', k)}"
+        for k in sorted(
+            keys,
+            key=lambda k: (not HARDWARE.get(k, {}).get("nightly"), hardware_label(k)),
+        )
+    ]
+    return "**Hardware**\n\n" + "\n".join(lines) + "\n\n"
 
 
 def _llm_model_cell(model, base_url):
@@ -762,9 +790,10 @@ def load_llm_sweep_history(path):
             r = json.loads(line)
         except json.JSONDecodeError:
             continue
-        model, ctx = r.get("model"), r.get("context_len")
-        if not model or ctx is None:
+        name, ctx = r.get("model"), r.get("context_len")
+        if not name or ctx is None:
             continue
+        model = (name, _hardware(r))
         ts = r.get("timestamp_utc") or r.get("date") or ""
         run = r.get("run_id")
         if run is not None:
@@ -795,7 +824,7 @@ def load_llm_sweep_history(path):
         curves.setdefault(
             model,
             {
-                "model": model,
+                "model": model[0],
                 "points": [],
                 "verify_status": verify[model][1],
                 **verify[model][2],
@@ -857,7 +886,7 @@ def _swept_models(recs):
         return set()
     if not any(pt.get("context_len") for d in recs for pt in d.get("points") or ()):
         return set()
-    return {d.get("model") for d in recs}
+    return {(d.get("model"), _hardware(d)) for d in recs}
 
 
 def render_llm_sweep(recs, base_url=""):
@@ -884,12 +913,18 @@ def render_llm_sweep(recs, base_url=""):
         return ""
 
     head = (
-        "| Model | Weights | " + " | ".join(_ctx_label(c) for c in ctxs) + " | Verify |"
+        "| Model | Hardware | Weights | "
+        + " | ".join(_ctx_label(c) for c in ctxs)
+        + " | Verify |"
     )
-    sep = "|:------|:--------|" + "".join("------:|" for _ in ctxs) + ":------:|"
+    sep = (
+        "|:------|:---------|:--------|"
+        + "".join("------:|" for _ in ctxs)
+        + ":------:|"
+    )
 
     rows, markers = [], set()
-    for d in sorted(recs, key=lambda r: r.get("model", "")):
+    for d in _by_model(recs):
         by_ctx = {pt.get("context_len"): pt for pt in d.get("points", []) or []}
         cells = []
         for c in ctxs:
@@ -899,7 +934,8 @@ def render_llm_sweep(recs, base_url=""):
             cells.append(cell)
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
-            f'| {_llm_model_cell(d.get("model", ""), base_url)}{_offline_mark(d)} '
+            f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+            f"| {hardware_label(_hardware(d))} "
             f'| {_llm_weights(d.get("model", ""))} | '
             + " | ".join(cells)
             + f" | {verify} |"
@@ -956,9 +992,10 @@ def load_llm_prefill_sweep_history(path):
             r = json.loads(line)
         except json.JSONDecodeError:
             continue
-        model, plen = r.get("model"), r.get("prefill_len")
-        if not model or plen is None:
+        name, plen = r.get("model"), r.get("prefill_len")
+        if not name or plen is None:
             continue
+        model = (name, _hardware(r))
         ts = r.get("timestamp_utc") or r.get("date") or ""
         run = r.get("run_id")
         if run is not None:
@@ -979,7 +1016,7 @@ def load_llm_prefill_sweep_history(path):
         curves.setdefault(
             model,
             {
-                "model": model,
+                "model": model[0],
                 "points": [],
                 "verify_status": verify[model][1],
                 **verify[model][2],
@@ -1027,12 +1064,18 @@ def render_llm_prefill_sweep(recs, base_url=""):
         return ""
 
     head = (
-        "| Model | Weights | " + " | ".join(_ctx_label(l) for l in lens) + " | Verify |"
+        "| Model | Hardware | Weights | "
+        + " | ".join(_ctx_label(l) for l in lens)
+        + " | Verify |"
     )
-    sep = "|:------|:--------|" + "".join("------:|" for _ in lens) + ":------:|"
+    sep = (
+        "|:------|:---------|:--------|"
+        + "".join("------:|" for _ in lens)
+        + ":------:|"
+    )
 
     rows, markers = [], set()
-    for d in sorted(recs, key=lambda r: r.get("model", "")):
+    for d in _by_model(recs):
         by_len = {pt.get("prefill_len"): pt for pt in d.get("points", []) or []}
         cells = []
         for l in lens:
@@ -1042,7 +1085,8 @@ def render_llm_prefill_sweep(recs, base_url=""):
             cells.append(cell)
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
-            f'| {_llm_model_cell(d.get("model", ""), base_url)}{_offline_mark(d)} '
+            f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+            f"| {hardware_label(_hardware(d))} "
             f'| {_llm_weights(d.get("model", ""))} | '
             + " | ".join(cells)
             + f" | {verify} |"
@@ -1080,7 +1124,8 @@ than the number of real prompt tokens.
 
 
 def load_llm_history(path):
-    """Newest row per model from the append-only history, in perf.json shape.
+    """Newest row per model and hardware from the append-only history, in
+    perf.json shape.
 
     The table is a MERGE, not a snapshot. Rendering it from one run's perf.json
     made every publish destructive: a run that measured nothing replaced the
@@ -1097,9 +1142,9 @@ def load_llm_history(path):
             r = json.loads(line)
         except json.JSONDecodeError:
             continue
-        model = r.get("model")
-        if not model:
+        if not r.get("model"):
             continue
+        model = (r["model"], _hardware(r))
         ts = r.get("timestamp_utc") or r.get("date") or ""
         if model not in newest or ts >= newest[model][0]:
             newest[model] = (ts, r)
@@ -1112,10 +1157,9 @@ def load_llm_history(path):
     newest.update(measured)
     return [
         {
-            "model": model,
+            "model": model[0],
             "timestamp_utc": r.get("timestamp_utc"),
-            "runner": r.get("runner", ""),
-            "source": r.get("source", "nightly"),
+            **_source(r),
             "verify_status": r.get("verify_status", ""),
             "metrics": {
                 "ttft_ms": r.get("ttft_ms"),
@@ -1143,7 +1187,7 @@ def _prefill_swept_models(recs):
         return frozenset()
     if not any(pt.get("prefill_len") for d in recs for pt in d.get("points", []) or []):
         return frozenset()
-    return frozenset(d.get("model", "") for d in recs)
+    return frozenset((d.get("model", ""), _hardware(d)) for d in recs)
 
 
 def load_spec_decode_history(path):
@@ -1161,7 +1205,7 @@ def load_spec_decode_history(path):
         except json.JSONDecodeError:
             continue
         if r.get("model") and r.get("dataset"):
-            rows.setdefault(r["model"], []).append(r)
+            rows.setdefault((r["model"], _hardware(r)), []).append(r)
     studies = []
     for model in sorted(rows):
         newest = max(r.get("timestamp_utc") or "" for r in rows[model])
@@ -1179,7 +1223,7 @@ def load_spec_decode_history(path):
         }
         studies.append(
             {
-                "model": model,
+                "model": model[0],
                 "timestamp_utc": newest,
                 "verify_status": first.get("verify_status", ""),
                 **_source(first),
@@ -1239,6 +1283,7 @@ def render_spec_decode(studies, base_url=""):
         key=lambda d: (
             LLM_DISPLAY.get(d.get("model"), (d.get("model", ""),))[0],
             _SPEC_DRAFTS.get(d.get("model"), (None, 0))[1],
+            hardware_label(_hardware(d)),
         )
     )
     td_l, td_r = '<td style="text-align: left;">', '<td style="text-align: right;">'
@@ -1259,7 +1304,7 @@ def render_spec_decode(studies, base_url=""):
         names = list(per) + [f"<strong>all {d.get('requests_per_engine', '')}</strong>"]
         metrics = list(per.values()) + [d.get("overall") or {}]
         span = len(names)
-        model = _llm_model_cell(d.get("model", ""), base_url) + _offline_mark(d)
+        model = _llm_model_cell(d.get("model", ""), base_url)
         draft, block = _SPEC_DRAFTS.get(d.get("model"), (None, None))
         if draft:
             model += (
@@ -1273,6 +1318,8 @@ def render_spec_decode(studies, base_url=""):
                 lead = (
                     f'<td style="text-align: left; vertical-align: middle;" '
                     f'rowspan="{span}">{model}</td>'
+                    f'<td style="text-align: left; vertical-align: middle;" '
+                    f'rowspan="{span}">{hardware_label(_hardware(d))}</td>'
                 )
                 tail = (
                     f'<td style="text-align: center; vertical-align: middle;" '
@@ -1288,7 +1335,7 @@ def render_spec_decode(studies, base_url=""):
     datasets = ", ".join(d.get("per_dataset") or {})
     th = '<th style="text-align: {};">{}</th>'.format
     head = "".join(
-        [th("left", "Model"), th("left", "Dataset")]
+        [th("left", "Model"), th("left", "Hardware"), th("left", "Dataset")]
         + [
             th("right", h)
             for h in (
@@ -1331,12 +1378,13 @@ def render_vla_benchmark(recs, base_url=""):
     if not rows:
         return ""
     body = "\n".join(
-        f'| {_llm_model_cell(d.get("model", ""), base_url)}{_offline_mark(d)} '
+        f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+        f"| {hardware_label(_hardware(d))} "
         f'| {"—" if (m := d.get("metrics", {})).get("context_len") is None else m["context_len"]} '
         f'| {"—" if m.get("ttft_ms") is None else m["ttft_ms"]} '
         f'| {(d.get("timestamp_utc") or "")[:10] or "—"} '
         f'| {_VERIFY_CELL.get(d.get("verify_status", ""), "")} |'
-        for d in sorted(rows, key=lambda r: r.get("model", ""))
+        for d in _by_model(rows)
     )
     return f"""\
 ### Vision-Language-Action policies
@@ -1346,8 +1394,8 @@ token stream, so there is no decode throughput and no context to sweep.
 **Action chunk** is the latency to the model's first usable output.
 **Prefix** is the token count the backbone attends over.
 
-| Model | Prefix | Action chunk (ms) | Measured | Verify |
-|:------|-------:|------------------:|:---------|:------:|
+| Model | Hardware | Prefix | Action chunk (ms) | Measured | Verify |
+|:------|:---------|-------:|------------------:|:---------|:------:|
 {body}
 
 """
@@ -1410,16 +1458,19 @@ def render_llm_benchmark(
 
     # A speculative-decoding record's profile row is one short prompt; its own
     # section reports the paired study instead.
-    spec = {d.get("model") for d in spec_decode_recs if d.get("per_dataset")}
+    spec = {
+        (d.get("model"), _hardware(d)) for d in spec_decode_recs if d.get("per_dataset")
+    }
 
     rows = []
-    for d in sorted(recs, key=lambda r: r.get("model", "")):
+    for d in _by_model(recs):
         # A VLA model is published in its own table below; two of these three
         # columns do not apply to it. See _VLA_MODELS.
         name = d.get("model")
-        if name in _VLA_MODELS or name in spec:
+        key = (name, _hardware(d))
+        if name in _VLA_MODELS or key in spec:
             continue
-        in_decode, in_prefill = name in swept, name in prefill_swept
+        in_decode, in_prefill = key in swept, key in prefill_swept
         if in_decode and in_prefill:
             continue
         m = d.get("metrics", {})
@@ -1428,7 +1479,8 @@ def render_llm_benchmark(
         # never invited to compare a single near-zero-context point against that
         # model's own curve.
         rows.append(
-            f'| {_llm_model_cell(name or "", base_url)}{_offline_mark(d)} '
+            f'| {_llm_model_cell(name or "", base_url)} '
+            f"| {hardware_label(_hardware(d))} "
             f'| {_fmt(m.get("context_len"))} '
             f'| {"↓" if in_prefill else _fmt(m.get("ttft_ms"))} '
             f'| {"↓" if in_decode else _fmt(m.get("decode_tokens_per_sec"))} '
@@ -1438,8 +1490,8 @@ def render_llm_benchmark(
 
     # Provenance describes the NEWEST nightly row; rows carry their own Measured
     # date because a merged table can hold models from different runs, and
-    # offline rows are marked where they appear.
-    nightly = [r for r in recs if not _offline_mark(r)] or recs
+    # each row names its hardware.
+    nightly = [r for r in recs if r.get("source") != "offline"] or recs
     prov = max(
         (r for r in nightly if (r.get("toolchain") or {}).get("mlir_air_sha")),
         key=lambda r: r.get("timestamp_utc") or "",
@@ -1476,8 +1528,8 @@ def render_llm_benchmark(
 Single-point rows — metrics that do not yet have a curve below. ↓ means that
 model's number for this metric is in a curve instead.
 
-| Model | Context | TTFT (ms) | Decode (tok/s) | Measured | Verify |
-|:------|--------:|----------:|---------------:|:---------|:------:|
+| Model | Hardware | Context | TTFT (ms) | Decode (tok/s) | Measured | Verify |
+|:------|:---------|--------:|----------:|---------------:|:---------|:------:|
 {chr(10).join(rows)}
 
 """
@@ -1488,11 +1540,11 @@ model's number for this metric is in a curve instead.
 
 ## Nightly LLM Benchmark (NPU2)
 
-End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Point, NPU2) benchmark runner — 2×32 GB DDR5-5600 SODIMM — refreshed nightly. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
+End-to-end LLM inference performance on NPU2. Each row names the hardware it was measured on: the benchmark runner's rows are refreshed nightly, rows from other machines are measured offline. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
 
-{_VERIFY_LEGEND}
+{_hardware_legend(recs, sweep_recs, prefill_sweep_recs, spec_decode_recs)}{_VERIFY_LEGEND}
 
-{_offline_legend(recs, sweep_recs, prefill_sweep_recs, spec_decode_recs)}{_scalar_table}{_sweep_table}
+{_scalar_table}{_sweep_table}
 {_prefill_table}
 {_spec_table}{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
