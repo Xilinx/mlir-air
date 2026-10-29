@@ -79,6 +79,23 @@ class OfflineHardwareTest(unittest.TestCase):
         self.assertIn("kp-offline (Krackan Point, NPU2)", note)
         self.assertNotIn("xcodownstairs7", note)
 
+    def test_hardware_survives_the_history_loader(self):
+        rows = [
+            {
+                "model": "qwen25_7b_q4nx",
+                "timestamp_utc": "2026-11-01T00:00:00Z",
+                "source": "offline",
+                "runner": "halo",
+                "hardware": "Strix Halo, NPU2",
+                "decode_tokens_per_sec": 14.0,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            hist = Path(d, "history.ndjson")
+            hist.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            recs = generate_readme.load_llm_history(hist)
+        self.assertIn("halo (Strix Halo, NPU2)", generate_readme._offline_legend(recs))
+
     def test_no_offline_rows_no_footnote(self):
         self.assertEqual(generate_readme._offline_legend([{"source": "nightly"}]), "")
 

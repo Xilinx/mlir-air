@@ -1129,8 +1129,7 @@ def load_llm_history(path):
         {
             "model": model,
             "timestamp_utc": r.get("timestamp_utc"),
-            "runner": r.get("runner", ""),
-            "source": r.get("source", "nightly"),
+            **_source(r),
             "verify_status": r.get("verify_status", ""),
             "metrics": {
                 "ttft_ms": r.get("ttft_ms"),
