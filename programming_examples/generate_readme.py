@@ -729,19 +729,13 @@ def _hardware_legend(*rec_lists):
     keys = {_hardware(r) for recs in rec_lists for r in recs}
     if not keys:
         return ""
-    lines = []
-    for key in sorted(
-        keys, key=lambda k: (not HARDWARE.get(k, {}).get("nightly"), hardware_label(k))
-    ):
-        entry = HARDWARE.get(key, {})
-        role = (
-            "the nightly benchmark runner"
-            if entry.get("nightly")
-            else "measured offline"
+    lines = [
+        f"- **{hardware_label(k)}**: {HARDWARE.get(k, {}).get('detail', k)}"
+        for k in sorted(
+            keys,
+            key=lambda k: (not HARDWARE.get(k, {}).get("nightly"), hardware_label(k)),
         )
-        lines.append(
-            f"- **{hardware_label(key)}**: {entry.get('detail', key)} ({role})"
-        )
+    ]
     return "**Hardware**\n\n" + "\n".join(lines) + "\n\n"
 
 

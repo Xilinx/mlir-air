@@ -27,7 +27,7 @@ def _load(path):
 generate_readme = _load(EXAMPLES / "generate_readme.py")
 generate_perf_history = _load(EXAMPLES / "generate_perf_history.py")
 
-NIGHTLY = generate_readme.hardware_label("krackan-point-runner")
+NIGHTLY = generate_readme.hardware_label("krackan-point")
 HALO = generate_readme.hardware_label("strix-halo")
 
 
