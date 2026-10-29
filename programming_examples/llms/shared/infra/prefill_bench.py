@@ -56,6 +56,7 @@ def bench_prefill(session, prefill_fn, cpu_attn=False, iters=3, warmup=1):
             tokenizer=session.tokenizer,
             cpu_attn=cpu_attn,
             quiet=True,
+            prompt_len=len(ids),
         )
         return time.perf_counter() - t0
 

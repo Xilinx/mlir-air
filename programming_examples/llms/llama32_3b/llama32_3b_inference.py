@@ -385,6 +385,10 @@ def run_npu_prefill(
     logits_from=None,
     prompt_len=None,
 ):
+    if prompt_len is None:
+        # Counting non-EOS tokens would stop short of a prompt that holds EOS,
+        # as a chat template's turn ends do; the caller knows where it ends.
+        raise ValueError("run_npu_prefill needs prompt_len, the unpadded length")
     seq_len = len(token_ids)
     n_kv_heads = config.n_kv_heads
     head_dim = config.head_dim
@@ -709,10 +713,6 @@ def run_once(
 
 def bench_prefill(session, cpu_attn=False):
     """Warm prefill TTFT at session.seq_len, via the shared bench."""
-    if prompt_len is None:
-        # Counting non-EOS tokens would stop short of a prompt that holds EOS,
-        # as a chat template's turn ends do; the caller knows where it ends.
-        raise ValueError("run_npu_prefill needs prompt_len, the unpadded length")
     _bench_prefill(session, run_npu_prefill, cpu_attn=cpu_attn)
 
 
