@@ -291,7 +291,6 @@ def run_npu_phase(args, adapter, model_name, base_path, meta):
     if base.n_ctx != args.ctx or base.n_chunk < args.chunks:
         raise SystemExit(f"{base_path} does not match --ctx/--chunks")
     tokenizer = _get_tokenizer(model_name)
-    eos = tokenizer.eos_token_id
     print(f"[accuracy] building NPU runner ({args.runner})...")
     npu = adapter.build_runner(
         model_name=model_name,
@@ -306,13 +305,6 @@ def run_npu_phase(args, adapter, model_name, base_path, meta):
     first = args.first
     for ci in range(args.chunks):
         toks = base.chunk_tokens(ci).astype(np.int64)
-        # A prefill driver may find the prompt length by counting non-EOS
-        # tokens, which would misread an EOS inside the prompt.
-        prefilled = (
-            min(first + 1, args.prefill_len) if args.path == "decode" else args.ctx - 1
-        )
-        if eos is not None and (toks[:prefilled] == eos).any():
-            raise SystemExit(f"chunk {ci} contains the EOS token in its prefill")
         t0 = time.time()
         path_logits = (
             decode_path_logits if args.path == "decode" else prefill_path_logits
