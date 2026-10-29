@@ -127,14 +127,23 @@ o = rng.standard_normal((nh, D.M, dh)).astype(bfloat16)
 before = rng.standard_normal((T, K)).astype(np.float32)
 want = before.astype(bfloat16)
 want[:, h0 * dh : (h0 + nh) * dh] = o[:, :T].transpose(1, 0, 2).reshape(T, -1)
+# o as the attention cores write it: per tq rows, a tq x dh tile
+# [dh / 8][tq / 8][8][8]
+tq = 16
+o_cores = (
+    o.reshape(nh, D.M // tq, tq // 8, 8, dh // 8, 8)
+    .transpose(0, 1, 4, 2, 3, 5)
+    .reshape(nh, D.M, dh)
+    .copy()
+)
 for chunks, slot in ((1, 0), (2, 1)):
     bufs = a_bufs(chunks)
     a16 = view(bufs["bf16"], slot)
     H.tile_a(before, a16, D.TM, D.TK)
-    H.o_tile(o, T, h0, K, a16, D.TM, D.TK)
+    H.o_tile(o_cores, T, h0, K, a16, D.TM, D.TK, tq)
     assert same(a16, tiled(want))
     a8 = view(bufs["bfp16"], slot)
-    H.o_tile(o, T, h0, K, a8, D.TM, D.TK)
+    H.o_tile(o_cores, T, h0, K, a8, D.TM, D.TK, tq)
     assert np.array_equal(a8, converted(a16, T, h0 * dh, (h0 + nh) * dh))
     check_rest(bufs, slot)
 print("o_tile ok")

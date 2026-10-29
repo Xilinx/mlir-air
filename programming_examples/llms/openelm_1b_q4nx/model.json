@@ -1,0 +1,44 @@
+{
+  "name": "OpenELM-1.1B",
+  "module": "openelm_1b_q4nx",
+  "checkpoint": "apple/OpenELM-1_1B-Instruct",
+  "revision": "effd796da2a77361d7360e45e54c7cc14bc5df2a",
+  "config_sha256": "df957dc69695d5fbe5d94b21d7ec148f093c626c5ebac330a0bccbec043a581c",
+  "vocab_size": 32000,
+  "configurations": [
+    [
+      512,
+      1024
+    ],
+    [
+      1024,
+      2048
+    ]
+  ],
+  "q4_aliases": {},
+  "bf16_matrices": [
+    "transformer.token_embeddings.weight"
+  ],
+  "source_shards": [
+    {
+      "file": "model.safetensors",
+      "bytes": 2159808696,
+      "sha256": "9b2de324cd4a3c6a4d08d8b105d3145ef1cffdee7a4d669cae31d9bcb5c1197d"
+    }
+  ],
+  "reference_attention": "eager",
+  "prefill_rms": {
+    "p512": "decode",
+    "p1024": "decode"
+  },
+  "reference_code": [
+    {
+      "file": "modeling_openelm.py",
+      "sha256": "ffb56f297ccb48ba689bc15b352c971eb1337a3604449662303a2d4919aa77c4"
+    },
+    {
+      "file": "configuration_openelm.py",
+      "sha256": "d0da88fc5fafdfef155052ec4e5483db8d6be2917cb68bdee9e7ead1cb7e6f15"
+    }
+  ]
+}

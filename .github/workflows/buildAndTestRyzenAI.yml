@@ -88,7 +88,7 @@ jobs:
           # upstream. The earlier 21.x pin worked around what turned out to be
           # AIR's own core stack size, not a compiler bug -- see
           # AIRToAIEPass.cpp's stack_size default.
-          python3 -m pip install --upgrade --force-reinstall "llvm-aie==22.0.0.2026101901+4f5df13d" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          python3 -m pip install --upgrade --force-reinstall "llvm-aie==22.0.0.2026102001+4f5df13d" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
       - name: Build and test mlir-air
         run: |
@@ -160,8 +160,8 @@ jobs:
           # end to end (compile + verify + perf, all models) by the dedicated
           # nightly benchmark (nightlyPerfBenchmark.yml) on the Krackan runner,
           # which serves weights from a warm offline HF cache. Running them in
-          # the per-PR matrix duplicated that work, was slow (int4's compile
-          # alone exceeds the 600s per-test timeout), and needed HF secrets.
+          # the per-PR matrix duplicated that work, was slow, and needed HF
+          # secrets.
           #
           # The exception, and the reason the pip install above is not dead
           # weight: the decode-geometry self-check. It imports the decode

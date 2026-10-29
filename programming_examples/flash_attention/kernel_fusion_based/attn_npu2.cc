@@ -59,6 +59,46 @@ matmul_vectorized_2x2_mmul(const T_in *__restrict pA, const T_in *__restrict pB,
 
   event0();
 
+#ifdef ATTENTION_SINGLE_ACCUMULATOR
+  // Keep one native BF16 matrix accumulator live, and add carried output
+  // only after the matrix reduction. This avoids loaded-accumulator state
+  // and the four simultaneous accumulators of the throughput-oriented path.
+  for (unsigned j = 0; j < colB; ++j) {
+    for (unsigned z = 0; z < rowA; ++z) {
+      MMUL C(aie::zeros<T_out, MMUL::size_C>());
+      for (unsigned i = 0; i < colA; ++i) {
+        auto A = aie::load_v<MMUL::size_A>(pA + (i * rowA + z) * MMUL::size_A);
+        aie::vector<T_in, MMUL::size_B> B;
+        if constexpr (transpose_b) {
+          B = aie::load_v<MMUL::size_B>(pB + (i * colB + j) * MMUL::size_B);
+          if constexpr (!b_pretransposed)
+            B = aie::transpose(B, t, s);
+        } else
+          B = aie::load_v<MMUL::size_B>(pB + (j * colA + i) * MMUL::size_B);
+        C.mac(A, B);
+      }
+      T_out *dst = pC + (j * rowA + z) * MMUL::size_C;
+      aie::vector<T_out, MMUL::size_C> carried;
+      if constexpr (zero_c)
+        carried = aie::zeros<T_out, MMUL::size_C>();
+      else
+        carried = aie::load_v<MMUL::size_C>(dst);
+      if constexpr (scale_c) {
+        static_assert(r == 8 && t == 8);
+        auto row8 = aie::load_v<8>(rows + z * r);
+        auto row16 = aie::concat(row8, row8);
+        auto row32 = aie::concat(row16, row16);
+        auto factors = aie::transpose(aie::concat(row32, row32), 8, 8);
+        carried = aie::mul(carried, factors).template to_vector<T_out>();
+      }
+      aie::accum<accfloat, MMUL::size_C> previous(carried);
+      aie::accum<accfloat, MMUL::size_C> result;
+      result.from_vector(aie::add(C.template to_vector<float>(),
+                                  previous.template to_vector<float>()));
+      aie::store_v(dst, result.template to_vector<T_out>());
+    }
+  }
+#else
   for (unsigned z = 0; z < rowA; z += 2)
     chess_prepare_for_pipelining chess_loop_range(2, ) {
       T_out *__restrict pC1 = pC + (z)*MMUL::size_C;
@@ -164,6 +204,7 @@ matmul_vectorized_2x2_mmul(const T_in *__restrict pA, const T_in *__restrict pB,
           pC2 += MMUL::size_C * rowA;
         }
     }
+#endif
 
   event1();
 }
@@ -208,7 +249,11 @@ static_assert(dk_full == 64 || dk_full == 128 || dk_full == 256 ||
                   dk_full == 512,
               "Unsupported dk_full value: update constexpr_sqrt_dk");
 
+#ifdef ATTENTION_MULTIPLIER
+#define log2e (1.44269504089 * ATTENTION_MULTIPLIER)
+#else
 #define log2e (1.44269504089 / constexpr_sqrt_dk)
+#endif
 
 // The per-row replica tables are filled in 32-row halves but read in 4-row
 // groups, so a q tile past 32 that is not a multiple of it reads rows nothing

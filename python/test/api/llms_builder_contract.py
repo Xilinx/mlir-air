@@ -86,7 +86,7 @@ BUILDERS = [
         "flash_attention.kernel_fusion_based.attn_npu2_seqfirst",
         "build_module",
         dict(lk=512, lkp=64, lq=512, lqp=256, dk=64, dv=64, causal=True),
-        "llama32_1b, llama32_1b_int4, qwen25_0_5b, lfm2_1_2b_q4nx, smolvla",
+        "llama32_1b, qwen25_0_5b, lfm2_1_2b_q4nx, smolvla",
     ),
     (
         "flash_attention.kernel_fusion_based.attn_npu2_temporal_causal",

@@ -795,9 +795,27 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   // Tokens that ops in the loop nest, other than the herd, wait for from
   // outside the nest become dependencies of the hoisted herd, which waits for
   // them before it starts. A channel transfer behind such a token may need
-  // the herd to make progress, so do not hoist then.
+  // the herd to make progress, so do not hoist then. A token the outermost
+  // loop starts an iter_arg from is no such wait if the herd waits for it,
+  // directly or through the iter_args that carry it down: the herd waits
+  // for it before its first run either way.
+  auto herdWaitsForInit = [&](Value v) {
+    if (llvm::is_contained(herdOp.getAsyncDependencies(), v))
+      return true;
+    Value carried = v;
+    for (scf::ForOp loop : llvm::reverse(for_loop_nest)) {
+      auto inits = loop.getInitArgs();
+      auto it = llvm::find(inits, carried);
+      if (it == inits.end())
+        return false;
+      carried = loop.getRegionIterArgs()[std::distance(inits.begin(), it)];
+    }
+    return llvm::is_contained(herdOp.getAsyncDependencies(), carried);
+  };
   auto usedBesidesHerd = [&](Value v, Operation *scope) {
     return llvm::any_of(v.getUsers(), [&](Operation *user) {
+      if (user == outerMostLoop.getOperation() && herdWaitsForInit(v))
+        return false;
       return user != herdOp && scope->isAncestor(user);
     });
   };
@@ -5533,15 +5551,37 @@ public:
 
     renameSymbols(channelOps, chan_merge_map);
     if (!targetMemorySpaces.empty()) {
+      // The memtiles pinning the L2 buffers of each channel and of those this
+      // loop merges into it, which are renamed to it only after the loop.
+      auto root = [&](air::ChannelOp c) {
+        while (chan_merge_map.count(c))
+          c = chan_merge_map[c];
+        return c;
+      };
+      llvm::DenseMap<Operation *, std::set<int64_t>> pins;
+      auto pinsOf = [&](air::ChannelOp c) -> std::set<int64_t> & {
+        c = root(c);
+        auto [it, fresh] = pins.try_emplace(c.getOperation());
+        if (fresh)
+          it->second = pinnedMemtiles(getChannelPutOpThroughSymbol(c),
+                                      getChannelGetOpThroughSymbol(c));
+        return it->second;
+      };
       for (unsigned i = 0; i < channelOps.size() - 1; i++) {
         for (unsigned j = i + 1; j < channelOps.size(); j++) {
           if (!checkIfMergeable(channelOps[i], channelOps[j]))
+            continue;
+          std::set<int64_t> merged = pinsOf(channelOps[i]);
+          const std::set<int64_t> &jPins = pinsOf(channelOps[j]);
+          merged.insert(jPins.begin(), jPins.end());
+          if (merged.size() > 1)
             continue;
           // Aggressively fuse air.channels by time multiplexing.
           if (!mergeChannels(rewriter, channelOps[i], channelOps[j]))
             continue;
           invalidateChannelIndex();
           chan_merge_map[channelOps[j]] = channelOps[i];
+          pinsOf(channelOps[i]) = merged;
         }
       }
       lastMergedAfter.clear();
@@ -6014,6 +6054,52 @@ private:
     }
     return mergeableNoForLoop;
   }
+  // An L2 buffer pinned to a memtile is moved by that memtile's DMA
+  // channels, so channels whose L2 buffers are pinned to different memtiles
+  // cannot share one.
+  bool pinnedMemtilesDiffer(const std::vector<air::ChannelPutOp> &aPuts,
+                            const std::vector<air::ChannelGetOp> &aGets,
+                            const std::vector<air::ChannelPutOp> &bPuts,
+                            const std::vector<air::ChannelGetOp> &bGets) {
+    std::set<int64_t> cols = pinnedMemtiles(aPuts, aGets);
+    std::set<int64_t> bCols = pinnedMemtiles(bPuts, bGets);
+    cols.insert(bCols.begin(), bCols.end());
+    return cols.size() > 1;
+  }
+  // The memtile columns that air.memtile_col pins the L2 buffers of `puts`
+  // and `gets` to, read where AIRToAIE reads it: on the memref.alloc.
+  std::set<int64_t> pinnedMemtiles(const std::vector<air::ChannelPutOp> &puts,
+                                   const std::vector<air::ChannelGetOp> &gets) {
+    std::set<int64_t> cols;
+    auto visit = [&](Value memref) {
+      if (air::getMemorySpace(llvm::cast<BaseMemRefType>(memref.getType())) !=
+          air::MemorySpace::L2)
+        return;
+      while (auto arg = dyn_cast<BlockArgument>(memref)) {
+        memref = getHierOperandFromHierBlockArgument(arg);
+        if (!memref)
+          return;
+      }
+      // Through an air.execute, the value its terminator yields for this
+      // result; the execute's first result is its token.
+      if (auto exec = memref.getDefiningOp<air::ExecuteOp>()) {
+        unsigned n = cast<OpResult>(memref).getResultNumber();
+        if (n == 0)
+          return;
+        memref = exec.getBody().getTerminator()->getOperand(n - 1);
+      }
+      auto alloc = memref.getDefiningOp<memref::AllocOp>();
+      if (!alloc)
+        return;
+      if (auto pin = alloc->getAttrOfType<IntegerAttr>(air::attrs::MemtileCol))
+        cols.insert(pin.getInt());
+    };
+    for (auto op : puts)
+      visit(op.getMemref());
+    for (auto op : gets)
+      visit(op.getMemref());
+    return cols;
+  }
   Value getHierOperandFromHierBlockArgument(BlockArgument arg) {
     if (!arg)
       return nullptr;
@@ -6446,36 +6532,96 @@ private:
     return true;
   }
 
-  // A channel op's transfer: its memref, indices, offsets, sizes and strides,
-  // compared by SSA value or constant.
-  using Transfer = SmallVector<std::pair<const void *, int64_t>>;
+  // Whether a and b are the same value, or are computed by side-effect free
+  // ops without regions that are alike and read the same values.
+  static bool sameValue(Value a, Value b) {
+    if (a == b)
+      return true;
+    auto ra = dyn_cast<OpResult>(a), rb = dyn_cast<OpResult>(b);
+    if (!ra || !rb || ra.getResultNumber() != rb.getResultNumber())
+      return false;
+    Operation *da = ra.getOwner(), *db = rb.getOwner();
+    if (da->getNumRegions() || db->getNumRegions() || !mlir::isPure(da) ||
+        !mlir::isPure(db))
+      return false;
+    return OperationEquivalence::isEquivalentTo(
+        da, db, [](Value x, Value y) { return success(sameValue(x, y)); },
+        /*markEquivalent=*/nullptr, OperationEquivalence::IgnoreLocations);
+  }
+  static bool sameOpFoldResult(OpFoldResult a, OpFoldResult b) {
+    auto ca = getConstantIntValue(a), cb = getConstantIntValue(b);
+    if (ca || cb)
+      return ca == cb;
+    return sameValue(cast<Value>(a), cast<Value>(b));
+  }
+
+  // A channel op's transfer: its memref, indices and access pattern, the
+  // latter as getLinearAccessPattern reduces it when its sizes and strides are
+  // constant, so that one access spelled two ways compares equal, and as the
+  // op spells it otherwise.
+  struct Transfer {
+    Value memref;
+    SmallVector<OpFoldResult> indices;
+    std::optional<air::LinearAccessPattern> pattern;
+    SmallVector<OpFoldResult> offsets, sizes, strides;
+
+    bool operator==(const Transfer &o) const {
+      auto sameList = [](ArrayRef<OpFoldResult> x, ArrayRef<OpFoldResult> y) {
+        return x.size() == y.size() &&
+               llvm::all_of(llvm::zip_equal(x, y), [](auto p) {
+                 return sameOpFoldResult(std::get<0>(p), std::get<1>(p));
+               });
+      };
+      if (memref != o.memref || !sameList(indices, o.indices) ||
+          !sameList(offsets, o.offsets) || !sameList(sizes, o.sizes) ||
+          !sameList(strides, o.strides) ||
+          pattern.has_value() != o.pattern.has_value())
+        return false;
+      if (!pattern)
+        return true;
+      const air::LinearAccessPattern &x = *pattern, &y = *o.pattern;
+      if (x.offset != y.offset || x.sizes != y.sizes ||
+          x.strides != y.strides ||
+          x.offsetTerms.size() != y.offsetTerms.size())
+        return false;
+      // Each offset term matches a distinct term of the other.
+      SmallVector<bool> used(y.offsetTerms.size(), false);
+      for (auto &[v, c] : x.offsetTerms) {
+        bool found = false;
+        for (auto [i, t] : llvm::enumerate(y.offsetTerms)) {
+          if (used[i] || t.second != c || !sameValue(v, t.first))
+            continue;
+          used[i] = found = true;
+          break;
+        }
+        if (!found)
+          return false;
+      }
+      return true;
+    }
+  };
   static Transfer transferOf(air::ChannelInterface op) {
     Transfer t;
-    auto add = [&](OpFoldResult v) {
-      if (auto c = getConstantIntValue(v))
-        t.push_back({nullptr, *c});
-      else
-        t.push_back({cast<Value>(v).getAsOpaquePointer(), 0});
-    };
-    t.push_back({op.getMemref().getAsOpaquePointer(), -1});
+    t.memref = op.getMemref();
     for (Value v : op.getIndices())
-      add(v);
-    for (auto range :
-         {op.getMixedOffsets(), op.getMixedSizes(), op.getMixedStrides()}) {
-      t.push_back({nullptr, -2});
-      for (OpFoldResult v : range)
-        add(v);
+      t.indices.push_back(v);
+    auto offsets = op.getMixedOffsets();
+    auto sizes = op.getMixedSizes();
+    auto strides = op.getMixedStrides();
+    auto ty = cast<BaseMemRefType>(t.memref.getType());
+    if (ty.hasStaticShape())
+      t.pattern = air::getLinearAccessPattern(offsets, sizes, strides,
+                                              ty.getNumElements());
+    if (!t.pattern) {
+      t.offsets = offsets;
+      t.sizes = sizes;
+      t.strides = strides;
     }
     return t;
   }
-  // The transfers of `ops` in order, cut to the shortest prefix that the
-  // whole sequence repeats: the rotation of buffers the ops go through, the
-  // same however many times a loop body was unrolled.
-  template <typename OpT>
-  static SmallVector<Transfer> rotationOf(const std::vector<OpT> &ops) {
-    SmallVector<Transfer> s;
-    for (auto op : ops)
-      s.push_back(transferOf(op));
+  // The shortest prefix of s that the whole sequence repeats.
+  template <typename T, unsigned N>
+  static SmallVector<T, N> repeatingUnit(SmallVector<T, N> s) {
     for (size_t p = 1; p < s.size(); p++) {
       if (s.size() % p)
         continue;
@@ -6489,6 +6635,16 @@ private:
     }
     return s;
   }
+  // The transfers of `ops` in order, cut to the shortest prefix that the
+  // whole sequence repeats: the rotation of buffers the ops go through, the
+  // same however many times a loop body was unrolled.
+  template <typename OpT>
+  static SmallVector<Transfer, 2> rotationOf(const std::vector<OpT> &ops) {
+    SmallVector<Transfer, 2> s;
+    for (auto op : ops)
+      s.push_back(transferOf(op));
+    return repeatingUnit(s);
+  }
   // Maps each channel that inSequentialLoops pairs with an earlier one to that
   // channel. Only symbols are renamed afterwards; no op moves.
   void mergeChannelsOfSequentialLoops(
@@ -6501,9 +6657,9 @@ private:
       // The gets and puts of a and of every channel merged into it so far:
       // a further channel must be ordered against all of them.
       auto aGets = getChannelGetOpThroughSymbol(a);
-      if (aGets.empty())
-        continue;
       auto aPuts = getChannelPutOpThroughSymbol(a);
+      if (aGets.empty() && aPuts.empty())
+        continue;
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
         air::ChannelOp b = channelOps[j];
         if (merged.count(b) || a.getSize() != b.getSize() ||
@@ -6513,6 +6669,8 @@ private:
         auto bGets = getChannelGetOpThroughSymbol(b);
         auto bPuts = getChannelPutOpThroughSymbol(b);
         if (!inSequentialLoops(aGets, bGets, aPuts, bPuts))
+          continue;
+        if (pinnedMemtilesDiffer(aPuts, aGets, bPuts, bGets))
           continue;
         // The two arms of an if choose between channels; those stay apart.
         if (llvm::any_of(aPuts, [&](air::ChannelPutOp p) {
@@ -6532,16 +6690,14 @@ private:
   // other and move equal transfers between the same places. On each side,
   // every op of a is in a different loop than every op of b, a's loops come
   // first on both sides or b's do, and the ops run on the same cores and
-  // move the same volume. Gets into core memory must go through the same
-  // rotation of buffers, with the same access patterns. One channel can then
+  // move the same volumes in turn. Gets into core memory must go through the
+  // same rotation of buffers, moving the same elements. One channel can then
   // carry both loops' transfers in program order, as for two specializations of
   // a loop.
   static bool inSequentialLoops(std::vector<air::ChannelGetOp> aGets,
                                 std::vector<air::ChannelGetOp> bGets,
                                 std::vector<air::ChannelPutOp> aPuts,
                                 std::vector<air::ChannelPutOp> bPuts) {
-    if (aGets.empty() || bGets.empty())
-      return false;
     auto space = [](air::ChannelInterface op) {
       return air::getMemorySpace(
           cast<BaseMemRefType>(op.getMemref().getType()));
@@ -6601,13 +6757,18 @@ private:
     // 1 if all of xs's loops come before ys's, -1 if after, 0 if neither.
     auto sideOrder = [&](auto &xs, auto &ys) {
       auto sp = space(xs.front());
-      auto vol = volume(xs.front());
-      if (!vol)
+      auto inSpace = [&](auto op) { return space(op) == sp; };
+      if (!llvm::all_of(xs, inSpace) || !llvm::all_of(ys, inSpace))
         return 0;
-      auto alike = [&](auto op) {
-        return space(op) == sp && volume(op) == vol;
+      // The volumes the ops move in turn.
+      auto volumes = [&](auto &ops) {
+        SmallVector<std::optional<int64_t>> v;
+        for (auto op : ops)
+          v.push_back(volume(op));
+        return repeatingUnit(v);
       };
-      if (!llvm::all_of(xs, alike) || !llvm::all_of(ys, alike))
+      auto vx = volumes(xs);
+      if (llvm::is_contained(vx, std::nullopt) || vx != volumes(ys))
         return 0;
       std::set<SmallVector<const void *>> wx, wy;
       for (auto x : xs)
@@ -6626,14 +6787,27 @@ private:
         }
       return order;
     };
-    // A loop that cannot run for this function's sizes may have had its
-    // launch-side puts folded away; then only the gets are compared.
-    int getOrder = sideOrder(aGets, bGets);
-    if (!getOrder || (!aPuts.empty() && !bPuts.empty() &&
-                      sideOrder(aPuts, bPuts) != getOrder))
+    // The order of one side's loops as sideOrder gives it, or 2 if the side
+    // is missing for a channel and at the launch for the other, if it has
+    // it: a loop that cannot run for this function's sizes may have had its
+    // launch-side ops folded away, its puts or its gets. Then only the other
+    // side is compared.
+    auto sideOrFolded = [&](auto &xs, auto &ys) {
+      if (xs.empty() || ys.empty()) {
+        auto atLaunch = [&](auto op) {
+          return space(op) == air::MemorySpace::L3;
+        };
+        return llvm::all_of(xs.empty() ? ys : xs, atLaunch) ? 2 : 0;
+      }
+      return sideOrder(xs, ys);
+    };
+    int getOrder = sideOrFolded(aGets, bGets);
+    int putOrder = sideOrFolded(aPuts, bPuts);
+    if (!getOrder || !putOrder || (getOrder == 2 && putOrder == 2) ||
+        (getOrder != 2 && putOrder != 2 && getOrder != putOrder))
       return false;
     // Gets into core memory must go through the same rotation of buffers.
-    if (space(aGets.front()) == air::MemorySpace::L1)
+    if (!aGets.empty() && space(aGets.front()) == air::MemorySpace::L1)
       return rotationOf(aGets) == rotationOf(bGets);
     return true;
   }

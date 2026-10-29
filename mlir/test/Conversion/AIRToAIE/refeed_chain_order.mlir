@@ -539,3 +539,69 @@ func.func @refeed_next_to_folded_suffix(%a: memref<64xbf16>, %b: memref<64xbf16>
   }
   return
 }
+
+// -----
+
+// A unit that sends one buffer twice: the core sends [x, w, w] twice, x
+// re-fed 2 times. The chain folds to the unit [x, w, w], and each of its
+// slots stands for two transfers, one per repetition: x is sent twice per
+// pass and each w once, x^2 w w on the one flow.
+// CHECK-LABEL: aie.device
+// CHECK: aie.mem(%{{.*}}tile_0_2)
+// CHECK: aie.dma_start(MM2S, 0, ^[[B0:bb[0-9]+]],
+// CHECK: ^[[B0]]:
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.dma_bd(%[[X:buf[0-9]+]] :
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.next_bd ^[[B1:bb[0-9]+]]
+// CHECK: ^[[B1]]:
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.dma_bd(%[[X]] :
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.next_bd ^[[B2:bb[0-9]+]]
+// CHECK: ^[[B2]]:
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.dma_bd(%[[W:buf[0-9]+]] :
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.next_bd ^[[B3:bb[0-9]+]]
+// CHECK: ^[[B3]]:
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.dma_bd(%[[W]] :
+// CHECK-NEXT: aie.use_lock
+// CHECK-NEXT: aie.next_bd ^[[B0]]
+
+air.channel @c [1, 1]
+func.func @core_unit_sends_buffer_twice() {
+  %c1 = arith.constant 1 : index
+  air.launch (%a0, %a1) in (%s0=%c1, %s1=%c1) {
+    air.segment @seg {
+      %c2 = arith.constant 2 : index
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c2) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+        %c0 = arith.constant 0 : index
+        %c1_h = arith.constant 1 : index
+        %c8 = arith.constant 8 : index
+        %cmp = arith.cmpi eq, %ty, %c0 : index
+        scf.if %cmp {
+          %x = memref.alloc() : memref<32xbf16, 2>
+          %w = memref.alloc() : memref<32xbf16, 2>
+          air.channel.put @c[] (%x[] [] []) {air.refeed_count = 2 : i32} : (memref<32xbf16, 2>)
+          air.channel.put @c[] (%w[] [] []) : (memref<32xbf16, 2>)
+          air.channel.put @c[] (%w[] [] []) : (memref<32xbf16, 2>)
+          air.channel.put @c[] (%x[] [] []) {air.refeed_count = 2 : i32} : (memref<32xbf16, 2>)
+          air.channel.put @c[] (%w[] [] []) : (memref<32xbf16, 2>)
+          air.channel.put @c[] (%w[] [] []) : (memref<32xbf16, 2>)
+          memref.dealloc %x : memref<32xbf16, 2>
+          memref.dealloc %w : memref<32xbf16, 2>
+        } else {
+          %y = memref.alloc() : memref<32xbf16, 2>
+          scf.for %i = %c0 to %c8 step %c1_h {
+            air.channel.get @c[] (%y[] [] []) : (memref<32xbf16, 2>)
+          }
+          memref.dealloc %y : memref<32xbf16, 2>
+        }
+      }
+    }
+  }
+  return
+}

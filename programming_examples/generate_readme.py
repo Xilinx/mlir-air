@@ -602,7 +602,6 @@ LLM_HF_MODELS = {
     # reference, as in the qwen25_3b_q4 / qwen25_7b_q4nx rows.
     "lfm2_1_2b_q4nx": "LiquidAI/LFM2-1.2B",
     "llama32_1b": "meta-llama/Llama-3.2-1B",
-    "llama32_1b_int4": "amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead",
     "llama32_1b_q4nx": "FastFlowLM/Llama-3.2-1B-NPU2",
     "llama32_3b": "meta-llama/Llama-3.2-3B",
     "llama32_3b_q4nx": "FastFlowLM/Llama-3.2-3B-NPU2",
@@ -646,7 +645,6 @@ LLM_DISPLAY = {
     "lfm2_1_2b_q4nx": ("LFM2-1.2B", "Q4_0", "lfm2"),
     "llama31_8b_q4nx": ("Llama-3.1-8B-Instruct", "Q4NX", "llama3"),
     "llama32_1b": ("Llama-3.2-1B", "bf16", None),
-    "llama32_1b_int4": ("Llama-3.2-1B-Instruct", "int4 AWQ", None),
     "llama32_1b_q4nx": ("Llama-3.2-1B-Instruct", "Q4NX", "llama3"),
     "llama32_3b": ("Llama-3.2-3B", "bf16", None),
     "llama32_3b_q4nx": ("Llama-3.2-3B-Instruct", "Q4NX", "llama3"),
@@ -669,6 +667,48 @@ LLM_DISPLAY = {
     "smolvla": ("smolvla_base", None, None),
     "smolvla_all": ("smolvla_base, all stages on NPU", None, None),
 }
+
+
+# The affine-Q4 profiles measure fixed full-input requests, not the short chat
+# prompts of older profiles. Include P/C in each label and keep every config's
+# history separate. Model metadata is the same source used by the CI driver.
+for _affine_module in (
+    "granite33_2b_q4nx",
+    "smollm3_3b_q4nx",
+    "olmo2_1b_q4nx",
+    "openelm_1b_q4nx",
+    "phi2_2_7b_q4nx",
+    "mistral7b_v03_q4nx",
+):
+    _affine_spec = json.loads(
+        (Path(__file__).parent / "llms" / _affine_module / "model.json").read_text()
+    )
+    LLM_HF_MODELS[_affine_module] = _affine_spec["checkpoint"]
+    for _p, _c in _affine_spec["configurations"]:
+        _id = f"{_affine_module}_p{_p}_c{_c}"
+        _MODEL_DIRS[_id] = _affine_module
+        LLM_DISPLAY[_id] = (f"{_affine_spec['name']} (P{_p}/C{_c})", "Affine Q4", None)
+
+
+def _source(row):
+    """Where a history row was measured: the nightly runner unless marked offline."""
+    return {"source": row.get("source", "nightly"), "runner": row.get("runner", "")}
+
+
+def _offline_mark(rec):
+    return " †" if rec.get("source") == "offline" else ""
+
+
+def _offline_legend(*rec_lists):
+    machines = sorted(
+        {r.get("runner") or "?" for recs in rec_lists for r in recs if _offline_mark(r)}
+    )
+    if not machines:
+        return ""
+    return (
+        f"† Measured offline on {', '.join(machines)} (Krackan Point, NPU2), not on "
+        "the nightly runner: 7-8B models do not fit its disk.\n\n"
+    )
 
 
 def _llm_model_cell(model, base_url):
@@ -746,7 +786,7 @@ def load_llm_sweep_history(path):
         # has no per-row date to reveal the staleness. Blank until the next
         # nightly appends the field is the intended transition.
         if model not in verify or ts >= verify[model][0]:
-            verify[model] = (ts, r.get("verify_status", ""))
+            verify[model] = (ts, r.get("verify_status", ""), _source(r))
     curves = {}
     for (model, ctx), (_, _, r) in sorted(newest.items()):
         live = run_ctxs.get((model, latest[model][1])) if model in latest else None
@@ -754,7 +794,12 @@ def load_llm_sweep_history(path):
             continue
         curves.setdefault(
             model,
-            {"model": model, "points": [], "verify_status": verify[model][1]},
+            {
+                "model": model,
+                "points": [],
+                "verify_status": verify[model][1],
+                **verify[model][2],
+            },
         )["points"].append(
             {
                 "context_len": ctx,
@@ -854,7 +899,7 @@ def render_llm_sweep(recs, base_url=""):
             cells.append(cell)
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
-            f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+            f'| {_llm_model_cell(d.get("model", ""), base_url)}{_offline_mark(d)} '
             f'| {_llm_weights(d.get("model", ""))} | '
             + " | ".join(cells)
             + f" | {verify} |"
@@ -925,7 +970,7 @@ def load_llm_prefill_sweep_history(path):
         if cur is None or (better, ts) >= (cur[0], cur[1]):
             newest[(model, plen)] = (better, ts, r)
         if model not in verify or ts >= verify[model][0]:
-            verify[model] = (ts, r.get("verify_status", ""))
+            verify[model] = (ts, r.get("verify_status", ""), _source(r))
     curves = {}
     for (model, plen), (_, _, r) in sorted(newest.items()):
         live = run_lens.get((model, latest[model][1])) if model in latest else None
@@ -933,7 +978,12 @@ def load_llm_prefill_sweep_history(path):
             continue
         curves.setdefault(
             model,
-            {"model": model, "points": [], "verify_status": verify[model][1]},
+            {
+                "model": model,
+                "points": [],
+                "verify_status": verify[model][1],
+                **verify[model][2],
+            },
         )["points"].append(
             {
                 "prefill_len": plen,
@@ -992,7 +1042,7 @@ def render_llm_prefill_sweep(recs, base_url=""):
             cells.append(cell)
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
-            f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+            f'| {_llm_model_cell(d.get("model", ""), base_url)}{_offline_mark(d)} '
             f'| {_llm_weights(d.get("model", ""))} | '
             + " | ".join(cells)
             + f" | {verify} |"
@@ -1065,6 +1115,7 @@ def load_llm_history(path):
             "model": model,
             "timestamp_utc": r.get("timestamp_utc"),
             "runner": r.get("runner", ""),
+            "source": r.get("source", "nightly"),
             "verify_status": r.get("verify_status", ""),
             "metrics": {
                 "ttft_ms": r.get("ttft_ms"),
@@ -1131,6 +1182,7 @@ def load_spec_decode_history(path):
                 "model": model,
                 "timestamp_utc": newest,
                 "verify_status": first.get("verify_status", ""),
+                **_source(first),
                 "samples_per_dataset": first.get("samples_per_dataset"),
                 "requests_per_engine": first.get("requests_per_engine"),
                 "max_new_tokens": first.get("max_new_tokens"),
@@ -1207,7 +1259,7 @@ def render_spec_decode(studies, base_url=""):
         names = list(per) + [f"<strong>all {d.get('requests_per_engine', '')}</strong>"]
         metrics = list(per.values()) + [d.get("overall") or {}]
         span = len(names)
-        model = _llm_model_cell(d.get("model", ""), base_url)
+        model = _llm_model_cell(d.get("model", ""), base_url) + _offline_mark(d)
         draft, block = _SPEC_DRAFTS.get(d.get("model"), (None, None))
         if draft:
             model += (
@@ -1279,7 +1331,7 @@ def render_vla_benchmark(recs, base_url=""):
     if not rows:
         return ""
     body = "\n".join(
-        f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+        f'| {_llm_model_cell(d.get("model", ""), base_url)}{_offline_mark(d)} '
         f'| {"—" if (m := d.get("metrics", {})).get("context_len") is None else m["context_len"]} '
         f'| {"—" if m.get("ttft_ms") is None else m["ttft_ms"]} '
         f'| {(d.get("timestamp_utc") or "")[:10] or "—"} '
@@ -1376,7 +1428,7 @@ def render_llm_benchmark(
         # never invited to compare a single near-zero-context point against that
         # model's own curve.
         rows.append(
-            f'| {_llm_model_cell(name or "", base_url)} '
+            f'| {_llm_model_cell(name or "", base_url)}{_offline_mark(d)} '
             f'| {_fmt(m.get("context_len"))} '
             f'| {"↓" if in_prefill else _fmt(m.get("ttft_ms"))} '
             f'| {"↓" if in_decode else _fmt(m.get("decode_tokens_per_sec"))} '
@@ -1384,15 +1436,17 @@ def render_llm_benchmark(
             f"| {verify} |"
         )
 
-    # Provenance describes the NEWEST row; rows carry their own Measured date
-    # because a merged table can hold models from different runs.
+    # Provenance describes the NEWEST nightly row; rows carry their own Measured
+    # date because a merged table can hold models from different runs, and
+    # offline rows are marked where they appear.
+    nightly = [r for r in recs if not _offline_mark(r)] or recs
     prov = max(
-        (r for r in recs if (r.get("toolchain") or {}).get("mlir_air_sha")),
+        (r for r in nightly if (r.get("toolchain") or {}).get("mlir_air_sha")),
         key=lambda r: r.get("timestamp_utc") or "",
-        default=recs[0],
+        default=nightly[0],
     )
     tc = prov.get("toolchain", {})
-    date = max((r.get("timestamp_utc") or "" for r in recs), default="")[:10]
+    date = max((r.get("timestamp_utc") or "" for r in nightly), default="")[:10]
     air = (tc.get("mlir_air_sha") or "")[:7]
     aie = (tc.get("mlir_aie_hash") or "")[:7]
     peano = tc.get("llvm_aie_version") or ""
@@ -1438,7 +1492,7 @@ End-to-end LLM inference performance on the AMD Ryzen AI 5 PRO 340 (Krackan Poin
 
 {_VERIFY_LEGEND}
 
-{_scalar_table}{_sweep_table}
+{_offline_legend(recs, sweep_recs, prefill_sweep_recs, spec_decode_recs)}{_scalar_table}{_sweep_table}
 {_prefill_table}
 {_spec_table}{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
@@ -1545,7 +1599,7 @@ def generate_readme(
 
 # LLMs and VLAs on NPU
 
-End-to-end inference of decoder-only LLMs and vision-language-action (VLA) policies on the AMD NPU2 via MLIR-AIR, with bf16 and 4-bit (Q4NX, int4, Q4_0) weights. Models with an FLM link reimplement AMD NPU LLM designs originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team, using the higher-level abstractions of the MLIR-AIR dialect; the link points to the original FastFlowLM code. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
+End-to-end inference of decoder-only LLMs and vision-language-action (VLA) policies on the AMD NPU2 via MLIR-AIR, with bf16 and 4-bit (Q4NX, Q4_0) weights. Models with an FLM link reimplement AMD NPU LLM designs originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team, using the higher-level abstractions of the MLIR-AIR dialect; the link points to the original FastFlowLM code. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
 {llm_section}"""
 
     # section == "full" (legacy single-page dashboard)
