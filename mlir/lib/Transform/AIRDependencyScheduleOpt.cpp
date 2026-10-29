@@ -8759,6 +8759,34 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
     rewriter.eraseOp(fusableBandHead);
   }
 
+  // The fused loop sits after the last loop it replaces, so an op between two
+  // of the replaced loops that waits on one of them now precedes the value it
+  // uses. Sink such ops, and whatever they feed, below the fused loop.
+  {
+    Operation *fusedHead = getParentScfForNest(new_loop_op).back();
+    Block *fusedBlock = fusedHead->getBlock();
+    SetVector<Operation *> sunk;
+    SmallVector<Operation *> worklist = {fusedHead};
+    while (!worklist.empty()) {
+      Operation *def = worklist.pop_back_val();
+      for (Operation *user : def->getUsers()) {
+        Operation *ancestor = fusedBlock->findAncestorOpInBlock(*user);
+        if (ancestor && ancestor != fusedHead &&
+            ancestor->isBeforeInBlock(fusedHead) && sunk.insert(ancestor))
+          worklist.push_back(ancestor);
+      }
+    }
+    SmallVector<Operation *> ordered = sunk.takeVector();
+    llvm::sort(ordered, [](Operation *a, Operation *b) {
+      return a->isBeforeInBlock(b);
+    });
+    Operation *anchor = fusedHead;
+    for (Operation *op : ordered) {
+      op->moveAfter(anchor);
+      anchor = op;
+    }
+  }
+
   // Fuse allocs and deallocs into the created scf.for loop.
   if (fuseWithAllocDeallocs)
     (void)fuseAllocDeallocExecsIntoBlock(new_loop_op.getBody(), rewriter, remap,
