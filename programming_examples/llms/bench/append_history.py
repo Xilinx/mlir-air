@@ -299,6 +299,12 @@ def main():
         choices=("nightly", "offline"),
         help="offline: measured off the nightly runner (publish_offline.py)",
     )
+    ap.add_argument(
+        "--hardware",
+        default=None,
+        help="the machine's key in hardware.json (e.g. strix-halo), stored on "
+        "every row; rows without it are the nightly runner's",
+    )
     args = ap.parse_args()
 
     try:
@@ -344,7 +350,10 @@ def main():
         print(f"run {run_id} already in history; no change")
         return 0
 
-    rows = [{**row, "source": args.source} for row in flatten(recs, run_id)]
+    extra = {"source": args.source}
+    if args.hardware:
+        extra["hardware"] = args.hardware
+    rows = [{**row, **extra} for row in flatten(recs, run_id)]
     hist = Path(args.history)
     hist.parent.mkdir(parents=True, exist_ok=True)
     with hist.open("a", encoding="utf-8") as f:
