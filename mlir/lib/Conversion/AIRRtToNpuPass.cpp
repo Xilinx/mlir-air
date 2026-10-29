@@ -3739,8 +3739,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // cap, which a drain-only launch gets too.
   //
   // Bursts without read-backs or middle drains that already fit the queue keep
-  // their emission order and await structure unchanged. Read-backs need ordering
-  // constraints even when every channel is below the queue limit.
+  // their emission order and await structure unchanged. Read-backs need
+  // ordering constraints even when every channel is below the queue limit.
   LogicalResult boundShimFeedBursts(ModuleOp module) {
     // Tasks in flight per shim channel: the shim DMA task queue depth, which a
     // channel holds regardless of how large its tasks are.
@@ -3897,11 +3897,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             return;
           }
           // Slots 2*r and 2*r+1 are respectively before and after round r's
-          // ordinary feeds. Emit early drains, ordinary feeds, late drains, then
-          // read-back waits and their feeds. All constraints below use this same
-          // order: an ordinary feed finishes issuing at slot 2*r+1, an awaiting
-          // feed at slot 2*r+2. In particular, two awaiting feeds cannot share a
-          // round if the later one's wait must follow the earlier one's start.
+          // ordinary feeds. Emit early drains, ordinary feeds, late drains,
+          // then read-back waits and their feeds. All constraints below use
+          // this same order: an ordinary feed finishes issuing at slot 2*r+1,
+          // an awaiting feed at slot 2*r+2. In particular, two awaiting feeds
+          // cannot share a round if the later one's wait must follow the
+          // earlier one's start.
           llvm::MapVector<StringRef, SmallVector<Unit>> byChan;
           bool readsBack = llvm::any_of(
               run, [](const Unit &u) { return !u.prefix.empty(); });
@@ -3945,7 +3946,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
               run.size());
           auto key = [&](const Unit &u, unsigned channel) -> uint64_t {
             return uint64_t(2 * u.baseRound + (u.prefix.empty() ? 0 : 1)) *
-                       byChan.size() + channel;
+                       byChan.size() +
+                   channel;
           };
           if (readsBack) {
             for (auto [channel, kv] : llvm::enumerate(byChan)) {
@@ -3956,10 +3958,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                     continue;
                   uint64_t at = key(u, channel);
                   unsigned peerIndex = peerChannel;
-                  auto it = llvm::lower_bound(
-                      peer.second, at, [&](const Unit &p, uint64_t at) {
-                        return key(p, peerIndex) < at;
-                      });
+                  auto it = llvm::lower_bound(peer.second, at,
+                                              [&](const Unit &p, uint64_t at) {
+                                                return key(p, peerIndex) < at;
+                                              });
                   // A channel's tasks have increasing input positions. At most
                   // one awaiting feed can occupy its final baseline round.
                   while (it != peer.second.begin()) {
@@ -3972,7 +3974,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                     unsigned distance =
                         phase > peerPhase ||
                                 (phase == peerPhase && channel > peerChannel)
-                            ? 0 : 1;
+                            ? 0
+                            : 1;
                     capPeers[u.pos].push_back({p.pos, distance});
                     break;
                   }
@@ -4010,8 +4013,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                   changed |= r != u.round;
                   u.round = r;
                   next[u.chan] = r + 1;
-                  before = std::max(before,
-                                    2 * r + (u.prefix.empty() ? 1 : 2));
+                  before = std::max(before, 2 * r + (u.prefix.empty() ? 1 : 2));
                   rounds = std::max(rounds, r + 1);
                 }
                 if (!changed)
@@ -4056,8 +4058,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             const auto &ch = kv.second;
             for (unsigned i = burstLimit; i < ch.size(); i++) {
               unsigned pos = ch[i - burstLimit].pos + 1;
-              unsigned slot = 2 * ch[i].round +
-                              (ch[i].prefix.empty() ? 0 : 1);
+              unsigned slot = 2 * ch[i].round + (ch[i].prefix.empty() ? 0 : 1);
               capBefore[pos] = std::min(capBefore[pos], slot);
             }
           }
@@ -4068,9 +4069,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           for (auto &kv : allDrainsByChan) {
             auto &ds = kv.second;
             auto leadingIt = drainsByChan.find(kv.first);
-            unsigned leading = leadingIt == drainsByChan.end()
-                                   ? 0
-                                   : leadingIt->second.size();
+            unsigned leading =
+                leadingIt == drainsByChan.end() ? 0 : leadingIt->second.size();
             SmallVector<unsigned> upper(ds.size(), endSlot);
             SmallVector<unsigned> feedUpper(ds.size(), endSlot);
             SmallVector<unsigned> producerBefore(ds.size(), 0);
