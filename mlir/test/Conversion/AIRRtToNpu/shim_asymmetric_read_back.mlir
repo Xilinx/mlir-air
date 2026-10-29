@@ -7,24 +7,23 @@
 
 // RUN: air-opt -airrt-to-npu %s | FileCheck %s
 
-// Two herds whose channels carry very different task counts: channel A feeds
-// three tasks, with a drain armed in front of the second and third; the one
-// feed of channel FA reads the second drain back, behind a wait for it. The
-// weave numbers a feed by its index in its channel, so the FA feed landed in
-// round 0 and the second drain, held behind the first in channel order, in
-// round 1: the await used a drain armed after it ("operand #0 does not
-// dominate this use"). Capping the drain at its awaiter is not enough either:
-// the FA feed would then wait for a drain that A's later feeds fill, before
-// those feeds are issued. The FA feed goes after every feed emitted before it,
-// and the drains stay where the program armed them.
+// Two channels with very different task counts. The awaiting feed follows
+// every feed emitted before it; both output drains start before their awaits.
 // CHECK-LABEL: aie.runtime_sequence @asym_read_back
-// CHECK: aiex.dma_configure_task_for @asym_a
-// CHECK: aiex.dma_configure_task_for @asym_out
-// CHECK: aiex.dma_configure_task_for @asym_a
-// CHECK: %[[D:.*]] = aiex.dma_configure_task_for @asym_out
-// CHECK: aiex.dma_configure_task_for @asym_a
-// CHECK: aiex.dma_await_task(%[[D]])
-// CHECK: aiex.dma_configure_task_for @asym_fa
+// CHECK: %[[A0:.*]] = aiex.dma_configure_task_for @asym_a
+// CHECK: aiex.dma_start_task(%[[A0]])
+// CHECK-NEXT: %[[D0:.*]] = aiex.dma_configure_task_for @asym_out
+// CHECK: aiex.dma_start_task(%[[D0]])
+// CHECK-NEXT: %[[A1:.*]] = aiex.dma_configure_task_for @asym_a
+// CHECK: aiex.dma_start_task(%[[A1]])
+// CHECK-NEXT: %[[D1:.*]] = aiex.dma_configure_task_for @asym_out
+// CHECK: aiex.dma_start_task(%[[D1]])
+// CHECK-NEXT: %[[A2:.*]] = aiex.dma_configure_task_for @asym_a
+// CHECK: aiex.dma_start_task(%[[A2]])
+// CHECK-NEXT: aiex.dma_await_task(%[[D0]])
+// CHECK-NEXT: aiex.dma_await_task(%[[D1]])
+// CHECK-NEXT: %[[F:.*]] = aiex.dma_configure_task_for @asym_fa
+// CHECK: aiex.dma_start_task(%[[F]])
 module {
   aie.device(npu2) {
     %t0 = aie.tile(0, 0)
