@@ -5247,9 +5247,15 @@ public:
         // Grouped: every two transfers are provably on different channels or
         // provably on the same one, and not all on one. With one transfer on
         // the other side, that transfer then holds a lock pair per channel
-        // counting the channel's transfers; see generateDmaBdProgram.
+        // counting the channel's transfers; see generateDmaBdProgram. A
+        // re-fed buffer's lock counts are set by its re-feed count instead.
+        auto refed = [](air::ChannelInterface op) {
+          return air::getRefeedCount(op) > 1;
+        };
         bool channelEach = endpoints.size() > 1;
-        bool grouped = std::min(puts.size(), gets.size()) == 1;
+        bool grouped = std::min(puts.size(), gets.size()) == 1 &&
+                       !(def && air::getRefeedCount(def) > 1) &&
+                       llvm::none_of(puts, refed) && llvm::none_of(gets, refed);
         bool split = false;
         for (unsigned i = 0; i < endpoints.size(); i++)
           for (unsigned j = i + 1; j < endpoints.size(); j++) {
@@ -7420,6 +7426,10 @@ public:
     // next BD's lock as soon as its current BD is done, so a channel that
     // finishes its transfers early takes slots meant for another channel.
     llvm::DenseMap<Operation *, AIE::DMAChannelDir> heldLockSide;
+    // For a buffer in heldLockSide: the number of transfers on each
+    // (air.channel, DMA channel) of the side with several.
+    llvm::DenseMap<std::tuple<Operation *, Operation *, int>, int64_t>
+        heldTransferCounts;
     if constexpr (std::is_same_v<dmaAllocatorTy, air::MemTileDMAAllocator>) {
       if (lockRaceConditionFix) {
         // Per buffer: the (air.channel, DMA channel) of each transfer reading
@@ -7450,17 +7460,28 @@ public:
           if (buf->hasAttr(air::attrs::CountedLock) ||
               air::usesChainLock(buf, lockRaceConditionFixV2))
             continue;
-          auto ownPairs = [](const SmallVector<LockKey> &keys) {
-            return llvm::DenseSet<LockKey>(keys.begin(), keys.end()).size() > 1;
+          // A re-fed buffer's locks count re-sends, so each of its pairs must
+          // stand for one transfer.
+          bool refed = air::getRefeedCount(buf.getOperation()) > 1;
+          auto ownPairs = [&](const SmallVector<LockKey> &keys) {
+            size_t n = llvm::DenseSet<LockKey>(keys.begin(), keys.end()).size();
+            return n > 1 && (!refed || n == keys.size());
           };
           const auto &reads = entry.second.first;
           const auto &writes = entry.second.second;
-          if (reads.size() == 1 && ownPairs(writes))
+          const SmallVector<LockKey> *several = nullptr;
+          if (reads.size() == 1 && ownPairs(writes)) {
             heldLockSide[entry.first] = AIE::DMAChannelDir::MM2S;
-          else if (writes.size() == 1 && ownPairs(reads))
+            several = &writes;
+          } else if (writes.size() == 1 && ownPairs(reads)) {
             heldLockSide[entry.first] = AIE::DMAChannelDir::S2MM;
-          else if ((reads.size() == 1 && writes.size() > 1) ||
-                   (writes.size() == 1 && reads.size() > 1))
+            several = &reads;
+          }
+          if (several) {
+            for (const LockKey &key : *several)
+              heldTransferCounts[{entry.first, key.first, key.second}]++;
+          } else if ((reads.size() == 1 && writes.size() > 1) ||
+                     (writes.size() == 1 && reads.size() > 1))
             dmaAlloc.countedLockBuffers.insert(entry.first);
         }
         for (auto &entry : heldLockSide)
@@ -7689,15 +7710,14 @@ public:
               auto pair =
                   std::make_pair(std::get<3>(alloc), std::get<4>(alloc));
               if (std::get<0>(alloc) != bufOp ||
-                  std::get<2>(alloc).direction == dir)
+                  std::get<2>(alloc).direction == dir ||
+                  llvm::is_contained(heldPairs, pair))
                 continue;
-              auto *it = llvm::find(heldPairs, pair);
-              if (it != heldPairs.end()) {
-                heldCounts[it - heldPairs.begin()]++;
-                continue;
-              }
               heldPairs.push_back(pair);
-              heldCounts.push_back(1);
+              heldCounts.push_back(std::max<int64_t>(
+                  1, heldTransferCounts.lookup(
+                         {bufOp, std::get<1>(alloc).getOperation(),
+                          std::get<2>(alloc).channel})));
             }
             auto *own = llvm::find(heldPairs, locks.value());
             if (own == heldPairs.end())

@@ -386,6 +386,183 @@ func.func @fanout_several_per_channel() {
 
 // -----
 
+// The split again, but each channel reads the same slice three times. The
+// three reads fold into one BD, which runs three times per fill: each pair
+// still counts three.
+
+// CHECK-LABEL: aie.device(npu2) @seg
+// CHECK: %[[MEM:.*]] = aie.logical_tile<MemTile>
+// CHECK-DAG: %[[E1:.*]] = aie.lock(%[[MEM]], 3) {init = 3 : i32}
+// CHECK-DAG: %[[F1:.*]] = aie.lock(%[[MEM]], 2) {init = 0 : i32}
+// CHECK-DAG: %[[E0:.*]] = aie.lock(%[[MEM]], 1) {init = 3 : i32}
+// CHECK-DAG: %[[F0:.*]] = aie.lock(%[[MEM]], 0) {init = 0 : i32}
+// CHECK: %[[BUF:.*]] = aie.buffer(%[[MEM]]) {sym_name = "{{buf[0-9]+}}"} : memref<6x8xbf16, 1>
+// CHECK: aie.memtile_dma
+// CHECK: aie.dma_start(MM2S, 0
+// CHECK: aie.use_lock(%[[F0]], AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<6x8xbf16, 1> offset = 0 len = 8)
+// CHECK-NEXT: aie.use_lock(%[[E0]], Release, %c1_i32)
+// CHECK: aie.dma_start(MM2S, 1
+// CHECK: aie.use_lock(%[[F1]], AcquireGreaterEqual, %c1_i32)
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<6x8xbf16, 1> offset = 24 len = 8)
+// CHECK-NEXT: aie.use_lock(%[[E1]], Release, %c1_i32)
+// CHECK: aie.dma_start(S2MM, 0
+// CHECK: aie.use_lock(%[[E1]], AcquireGreaterEqual, %c3_i32)
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<6x8xbf16, 1> offset = 0 len = 0)
+// CHECK-NEXT: aie.use_lock(%[[F1]], Release, %c0_i32)
+// CHECK: aie.use_lock(%[[E0]], AcquireGreaterEqual, %c3_i32)
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<6x8xbf16, 1> offset = 0 len = 48)
+// CHECK-NEXT: aie.use_lock(%[[F0]], Release, %c3_i32)
+// CHECK: aie.use_lock(%[[E1]], AcquireGreaterEqual, %c1_i32) {acq_en = false}
+// CHECK-NEXT: aie.dma_bd(%[[BUF]] : memref<6x8xbf16, 1> offset = 0 len = 0)
+// CHECK-NEXT: aie.use_lock(%[[F1]], Release, %c3_i32)
+// CHECK: func.func @fanout_repeated_reads
+
+air.channel @r0 [1, 1]
+air.channel @r1 [1, 1]
+air.channel @w0 [1, 1]
+func.func @fanout_repeated_reads() {
+  %c1 = arith.constant 1 : index
+  air.launch (%a, %b) in (%c=%c1, %d=%c1) {
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %c8 = arith.constant 8 : index
+      %k0 = arith.constant 0 : index
+      %k1 = arith.constant 1 : index
+      %k2 = arith.constant 2 : index
+      %k3 = arith.constant 3 : index
+      %k4 = arith.constant 4 : index
+      %k5 = arith.constant 5 : index
+      %t, %l2 = air.execute -> (memref<6x8xbf16, 1>) {
+        %alloc = memref.alloc() {air.no_split} : memref<6x8xbf16, 1>
+        air.execute_terminator %alloc : memref<6x8xbf16, 1>
+      }
+      air.channel.put @r0[] (%l2[%k0, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.put @r0[] (%l2[%k0, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.put @r0[] (%l2[%k0, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.put @r1[] (%l2[%k3, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.put @r1[] (%l2[%k3, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.put @r1[] (%l2[%k3, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.get @w0[] (%l2[] [] []) : (memref<6x8xbf16, 1>)
+      %d_ = air.execute {
+        memref.dealloc %l2 : memref<6x8xbf16, 1>
+      }
+      air.herd @h0 tile (%tx_h0, %ty_h0) in (%sx_h0=%c1_0, %sy_h0=%c1_0)
+            attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+        %tok, %l1 = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        air.channel.get @r0[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        air.channel.get @r0[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        air.channel.get @r0[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xbf16, 2>}
+      }
+      air.herd @h1 tile (%tx_h1, %ty_h1) in (%sx_h1=%c1_0, %sy_h1=%c1_0)
+            attributes {x_loc = 1 : i64, y_loc = 2 : i64} {
+        %tok, %l1 = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        air.channel.get @r1[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        air.channel.get @r1[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        air.channel.get @r1[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xbf16, 2>}
+      }
+      air.herd @hr tile (%tx_hr, %ty_hr) in (%sx_hr=%c1_0, %sy_hr=%c1_0)
+            attributes {x_loc = 2 : i64, y_loc = 5 : i64} {
+        %tok, %l1 = air.execute -> (memref<48xbf16, 2>) {
+          %aa = memref.alloc() : memref<48xbf16, 2>
+          air.execute_terminator %aa : memref<48xbf16, 2>
+        }
+        air.channel.put @w0[] (%l1[] [] []) : (memref<48xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<48xbf16, 2>}
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// The split on a re-fed buffer: its locks count re-sends, so it keeps one
+// counted lock pair.
+
+// CHECK-LABEL: aie.device(npu2) @seg
+// CHECK: aie.lock(%{{.*}}, 1) {init = 6 : i32}
+// CHECK: aie.buffer(%{{.*}}) {air.counted_lock, air.refeed_count = 6 : i32, sym_name = "{{buf[0-9]+}}"} : memref<6x8xbf16, 1>
+// CHECK-NOT: len = 0)
+// CHECK: func.func @fanout_refed
+
+air.channel @r0 [1, 1]
+air.channel @r1 [1, 1]
+air.channel @w0 [1, 1]
+func.func @fanout_refed() {
+  %c1 = arith.constant 1 : index
+  air.launch (%a, %b) in (%c=%c1, %d=%c1) {
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %c8 = arith.constant 8 : index
+      %k0 = arith.constant 0 : index
+      %k1 = arith.constant 1 : index
+      %k2 = arith.constant 2 : index
+      %k3 = arith.constant 3 : index
+      %k4 = arith.constant 4 : index
+      %k5 = arith.constant 5 : index
+      %t, %l2 = air.execute -> (memref<6x8xbf16, 1>) {
+        %alloc = memref.alloc() {air.no_split, air.refeed_count = 6 : i32} : memref<6x8xbf16, 1>
+        air.execute_terminator %alloc : memref<6x8xbf16, 1>
+      }
+      air.channel.put @r0[] (%l2[%k0, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.put @r0[] (%l2[%k1, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.put @r0[] (%l2[%k2, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.put @r1[] (%l2[%k3, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.put @r1[] (%l2[%k4, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.put @r1[] (%l2[%k5, %c0] [%c1_0, %c8] [%c8, %c1_0]) : (memref<6x8xbf16, 1>)
+      air.channel.get @w0[] (%l2[] [] []) : (memref<6x8xbf16, 1>)
+      %d_ = air.execute {
+        memref.dealloc %l2 : memref<6x8xbf16, 1>
+      }
+      air.herd @h0 tile (%tx_h0, %ty_h0) in (%sx_h0=%c1_0, %sy_h0=%c1_0)
+            attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+        %tok, %l1 = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        air.channel.get @r0[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        air.channel.get @r0[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        air.channel.get @r0[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xbf16, 2>}
+      }
+      air.herd @h1 tile (%tx_h1, %ty_h1) in (%sx_h1=%c1_0, %sy_h1=%c1_0)
+            attributes {x_loc = 1 : i64, y_loc = 2 : i64} {
+        %tok, %l1 = air.execute -> (memref<8xbf16, 2>) {
+          %aa = memref.alloc() : memref<8xbf16, 2>
+          air.execute_terminator %aa : memref<8xbf16, 2>
+        }
+        air.channel.get @r1[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        air.channel.get @r1[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        air.channel.get @r1[] (%l1[] [] []) : (memref<8xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<8xbf16, 2>}
+      }
+      air.herd @hr tile (%tx_hr, %ty_hr) in (%sx_hr=%c1_0, %sy_hr=%c1_0)
+            attributes {x_loc = 2 : i64, y_loc = 5 : i64} {
+        %tok, %l1 = air.execute -> (memref<48xbf16, 2>) {
+          %aa = memref.alloc() : memref<48xbf16, 2>
+          air.execute_terminator %aa : memref<48xbf16, 2>
+        }
+        air.channel.put @w0[] (%l1[] [] []) : (memref<48xbf16, 2>)
+        %dl = air.execute {memref.dealloc %l1 : memref<48xbf16, 2>}
+      }
+    }
+  }
+  return
+}
+
+// -----
+
 // Three writes on one channel and one on another, one reader. Each pair counts
 // its own channel's transfers: three and one.
 
