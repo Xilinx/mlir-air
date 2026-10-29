@@ -209,6 +209,7 @@ def build_rms_gemms_rope_module(
     rope_herd_x=8,
     rope_dim=None,  # partial rotary width (Phi-4: 96); None = full head_dim
     print_kernels=False,
+    rms_builder=None,
 ):
     """Build 6-launch module: RMSNorm + Q/K/V GEMMs + RoPE Q + RoPE K.
 
@@ -232,6 +233,8 @@ def build_rms_gemms_rope_module(
     from air_examples.weighted_rms_norm.weighted_rms_norm import (
         build_module as build_rms,
     )
+
+    build_rms = rms_builder or build_rms
 
     # Per-GEMM config from the kernel_registry JSON (single source of truth): method
     # (fused-cast vs drain) AND all tiles are looked up per shape, never hardcoded.
@@ -406,7 +409,10 @@ def build_rms_gemms_rope_module(
 
     slices = [
         KernelSlice(
-            rms_ir, "r", {0: 0, 1: 1, 2: 2}, extern_syms={"@zero_vectorized_bf16"}
+            rms_ir,
+            "r",
+            {0: 0, 1: 1, 2: 2},
+            extern_syms={"@zero_vectorized_bf16", "@rms_norm_aie"},
         ),
         KernelSlice(
             q_ir,

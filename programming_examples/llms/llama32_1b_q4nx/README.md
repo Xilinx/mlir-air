@@ -21,7 +21,7 @@ interactive chatbot on NPU2 (AIE2P):
   RMSNorm, argmax / stochastic sampler, chat template, EOS, and streaming output
   run on the host between tokens.
 
-Like the sibling `llama32_1b` / `llama32_1b_int4`, it plugs into the shared driver
+Like the sibling `llama32_1b`, it plugs into the shared driver
 contract (`make run`/`profile`/`chat`/`verify`) and the `verify/` subsystem. It
 consumes external Q4NX weights, so `make verify` compares the NPU q4nx run against
 the HF **bf16** sibling checkpoint (`meta-llama/Llama-3.2-1B-Instruct`) — the same
@@ -217,7 +217,7 @@ templating, and EOS between tokens.
 The decode path (fused superkernel, host instruction patcher, decode kernels) lives in
 the standalone [`fused_decode`](../../fused_decode) example, which this e2e references.
 
-Cross-directory imports (matching `llama32_1b_int4`): the shared `llms/` infra
+Cross-directory imports: the shared `llms/` infra
 (kernel cache, GEMM/stitcher builders, `lm_head_gemv_multi`), the sibling `llama32_1b`
 prefill driver, and the `fused_decode` example (decode templates + `decode_insts_gen` +
 the `proj_qmm_pack` Q4NX block packer / dequant reference).

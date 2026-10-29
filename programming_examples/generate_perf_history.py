@@ -120,16 +120,20 @@ def _series(rows, models, labels, metric):
             val = r.get(metric)
             data.append(val)
             failed = r.get("verify_status") == "fail"
+            offline = r.get("source") == "offline"
             # Failed verify is encoded by SHAPE (a red ✕), not color alone, so
             # it is unambiguous against any line hue and colorblind-friendly.
             point_colors.append(FAIL_COLOR if failed else color)
-            point_styles.append("crossRot" if failed else "circle")
+            point_styles.append(
+                "crossRot" if failed else "triangle" if offline else "circle"
+            )
             point_radii.append(8 if failed else 4)
             hover_radii.append(10 if failed else 6)
             metas.append(
                 {
                     "sha": (r.get("air_sha") or "")[:7],
                     "verify": r.get("verify_status") or "",
+                    "offline": r.get("runner", "?") if offline else "",
                 }
             )
         datasets.append(
@@ -177,7 +181,8 @@ HTML_TEMPLATE = """\
 <h1>LLM/VLA Performance History (NPU2)</h1>
 <p class="sub">Per-nightly TTFT and decode throughput. Each point is one nightly, labeled by date;
 hover for the commit and verify status. A
-<span style="color:{fail_color}; font-weight:700;">red &#10007;</span> marks a nightly whose verify failed.</p>
+<span style="color:{fail_color}; font-weight:700;">red &#10007;</span> marks a nightly whose verify failed;
+a triangle marks a 7-8B run measured offline on another Krackan machine.</p>
 <p class="legend-note">Click a model in a legend to toggle its line.{window_note}</p>
 
 <div class="chart-box"><canvas id="ttft"></canvas></div>
@@ -206,6 +211,7 @@ function makeChart(canvasId, datasets, yLabel) {{
               if (!meta) return '';
               let s = 'commit ' + meta.sha;
               if (meta.verify) s += '  (verify: ' + meta.verify + ')';
+              if (meta.offline) s += '  offline on ' + meta.offline;
               return s;
             }}
           }}

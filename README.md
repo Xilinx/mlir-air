@@ -103,6 +103,7 @@ Prebuilt wheels are the recommended path. Each guide also covers a source build.
 
 - [Programming Examples](https://xilinx.github.io/mlir-air/dev/programming_examples/) — operators and designs, with per-target test status
 - [LLMs on NPU](https://xilinx.github.io/mlir-air/dev/llms/) — decoder-only models running end to end, with a nightly benchmark
+- [Agent-guided LLM deployment](agentic/README.md) — use Codex or Claude Code to adapt, verify and profile models from a Hugging Face ID
 - [AIR dialect and pass reference](https://xilinx.github.io/mlir-air/dev/mlir_reference/)
 - [Used in / cited in](https://xilinx.github.io/mlir-air/dev/used_in/)
 

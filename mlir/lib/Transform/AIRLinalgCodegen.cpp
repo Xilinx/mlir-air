@@ -3564,6 +3564,59 @@ DiagnosedSilenceableFailure transform::FoldExtractSliceOfInsertSliceOp::apply(
 // ShareAllocOp
 //===----------------------------------------------------------------------===//
 
+// The coarsest shape `fine` that both `a` and `b` are merges of consecutive
+// dimensions of, if there is one: each dimension of either must split into
+// whole dimensions of the other or of what is left of them. `aGroups` and
+// `bGroups` take the dimensions of `fine` that make up each dimension of `a`
+// and of `b`.
+static bool commonRefinement(ArrayRef<int64_t> a, ArrayRef<int64_t> b,
+                             SmallVector<int64_t> &fine,
+                             SmallVector<ReassociationIndices> &aGroups,
+                             SmallVector<ReassociationIndices> &bGroups) {
+  aGroups.assign(a.size(), {});
+  bGroups.assign(b.size(), {});
+  size_t i = 0, j = 0;
+  int64_t x = a.empty() ? 1 : a[0], y = b.empty() ? 1 : b[0];
+  auto push = [&](int64_t d, size_t ai, size_t bj) {
+    aGroups[ai].push_back(fine.size());
+    bGroups[bj].push_back(fine.size());
+    fine.push_back(d);
+  };
+  while (i < a.size() && j < b.size()) {
+    if (x == y) {
+      push(x, i, j);
+      if (++i < a.size())
+        x = a[i];
+      if (++j < b.size())
+        y = b[j];
+    } else if (y > 0 && x % y == 0) {
+      push(y, i, j);
+      x /= y;
+      if (++j < b.size())
+        y = b[j];
+    } else if (x > 0 && y % x == 0) {
+      push(x, i, j);
+      y /= x;
+      if (++i < a.size())
+        x = a[i];
+    } else {
+      return false;
+    }
+  }
+  // Unit dimensions left on one side join the other's last dimension.
+  for (; i < a.size(); i++) {
+    if (a[i] != 1 || b.empty())
+      return false;
+    push(1, i, b.size() - 1);
+  }
+  for (; j < b.size(); j++) {
+    if (b[j] != 1 || a.empty())
+      return false;
+    push(1, a.size() - 1, j);
+  }
+  return true;
+}
+
 DiagnosedSilenceableFailure
 transform::ShareAllocOp::apply(transform::TransformRewriter &rewriter,
                                transform::TransformResults &results,
@@ -3658,20 +3711,35 @@ transform::ShareAllocOp::apply(transform::TransformRewriter &rewriter,
     Value v = kept.getResult();
     rewriter.setInsertionPoint(a);
     if (t != keptTy) {
-      // Go through one dimension: any two shapes with the same number of
-      // elements are reshapes of it.
-      if (keptTy.getRank() > 1) {
-        SmallVector<ReassociationIndices> toFlat(1);
-        for (int64_t i = 0; i < keptTy.getRank(); i++)
-          toFlat[0].push_back(i);
-        v = memref::CollapseShapeOp::create(rewriter, a.getLoc(), v, toFlat);
-      }
-      if (t.getRank() > 1) {
-        SmallVector<ReassociationIndices> fromFlat(1);
-        for (int64_t i = 0; i < t.getRank(); i++)
-          fromFlat[0].push_back(i);
-        v = memref::ExpandShapeOp::create(rewriter, a.getLoc(), t.getShape(), v,
-                                          fromFlat);
+      SmallVector<int64_t> fine;
+      SmallVector<ReassociationIndices> fromKept, toTarget;
+      if (commonRefinement(keptTy.getShape(), t.getShape(), fine, fromKept,
+                           toTarget)) {
+        // Split the kept buffer's dimensions into the finer shape, then
+        // merge them into the target's: reshapes that accesses through them
+        // can fold into.
+        if (fine.size() != (size_t)keptTy.getRank())
+          v = memref::ExpandShapeOp::create(rewriter, a.getLoc(), fine, v,
+                                            fromKept);
+        if (fine.size() != (size_t)t.getRank())
+          v = memref::CollapseShapeOp::create(rewriter, a.getLoc(), v,
+                                              toTarget);
+      } else {
+        // Go through one dimension: any two shapes with the same number of
+        // elements are reshapes of it.
+        if (keptTy.getRank() > 1) {
+          SmallVector<ReassociationIndices> toFlat(1);
+          for (int64_t i = 0; i < keptTy.getRank(); i++)
+            toFlat[0].push_back(i);
+          v = memref::CollapseShapeOp::create(rewriter, a.getLoc(), v, toFlat);
+        }
+        if (t.getRank() > 1) {
+          SmallVector<ReassociationIndices> fromFlat(1);
+          for (int64_t i = 0; i < t.getRank(); i++)
+            fromFlat[0].push_back(i);
+          v = memref::ExpandShapeOp::create(rewriter, a.getLoc(), t.getShape(),
+                                            v, fromFlat);
+        }
       }
     }
     rewriter.replaceOp(a, v);

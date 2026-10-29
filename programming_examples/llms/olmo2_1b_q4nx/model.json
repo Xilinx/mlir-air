@@ -1,0 +1,39 @@
+{
+  "name": "OLMo2-1B",
+  "module": "olmo2_1b_q4nx",
+  "checkpoint": "allenai/OLMo-2-0425-1B-Instruct",
+  "revision": "48d788eca847d4d7548f375ad03d3c9312f6139e",
+  "config_sha256": "0d15ebb6cb8d998513b46ef337214176a6fd59fe5f16b30387c70d5f87795a9c",
+  "vocab_size": 100352,
+  "configurations": [
+    [
+      512,
+      1024
+    ],
+    [
+      1024,
+      2048
+    ],
+    [
+      2048,
+      4096
+    ]
+  ],
+  "q4_aliases": {},
+  "bf16_matrices": [
+    "model.embed_tokens.weight"
+  ],
+  "source_shards": [
+    {
+      "file": "model.safetensors",
+      "bytes": 2969854224,
+      "sha256": "36d044c73655bb904f822915e6294ba3dae8e6e1af5e703e9d452f2d6a3a294f"
+    }
+  ],
+  "reference_attention": "sdpa",
+  "prefill_rms": {
+    "p512": "decode",
+    "p1024": "decode",
+    "p2048": "decode"
+  }
+}

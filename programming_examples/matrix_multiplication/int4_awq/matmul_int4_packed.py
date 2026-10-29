@@ -70,8 +70,7 @@ and the loop a single BD repeated at runtime.
 The module is built for **npu2**: the kernel object is compiled
 ``--target=aie2p``, both lits are ``REQUIRES: ryzen_ai_npu2``, and the widest
 configuration wants an 8-column part. ``build_module`` returns the module rather
-than the launch, because the int4 prefill stitchers under
-``llms/llama32_1b_int4/`` call it for one and match its signature positionally.
+than the launch, so a caller can stitch it into a multi-launch ELF directly.
 """
 
 import argparse

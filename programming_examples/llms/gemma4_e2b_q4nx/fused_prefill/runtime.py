@@ -104,7 +104,7 @@ class FusedPrefill(Engine):
         ]
         self.attn_setup()
         self.kvb = {
-            L: self.kv_bo("s" if gw.is_sliding(L) else "f")
+            L: self.kv_bo("s" if gw.is_sliding(L) else "f", gw.N_KV_HEADS)
             for L in range(gw.NUM_LAYERS)
             if gw.owns_kv(L)
         }
@@ -255,15 +255,17 @@ class FusedPrefill(Engine):
             ch = self.attn_chunk(kv["op"], c)
             hg = ch["parts"][0]["hg"]
             for i, p in enumerate(ch["parts"]):
-                H.q_pack(q[:, i * hg : (i + 1) * hg], scale, p["qm"])
+                q16 = self.q_stage(p)
+                H.q_pack(q[:, i * hg : (i + 1) * hg], scale, q16)
+                self.q_write(p, q16)
             att.append(self.attn_start(kv, c, r0, t))
         pend = []
         for c, (r0, t) in enumerate(chunks):
             a = self.a_chunk(dq, c)
             h0 = 0
-            for om in self.attn_wait(att[c]):
-                H.o_tile(om, t, h0, dq, a[1], D.TM, D.TK)
-                h0 += om.shape[0]
+            for p in self.attn_wait(att[c]):
+                self.o_read(p, t, h0, dq, a[1])
+                h0 += p["hg"]
             a[0].sync(TO)
             pend.append(self.gemm_start(f"{L}.o", c))
         gu = []

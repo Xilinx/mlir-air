@@ -27,7 +27,7 @@ Two modes (mutually exclusive, selected by --prompts):
 Example invocations:
     python verify_runner.py --runner=llama32_1b.verify_adapter \\
         --prompts topk_token --max-prompts 2
-    python verify_runner.py --runner=llama32_1b_int4.verify_adapter \\
+    python verify_runner.py --runner=llama32_1b_q4nx.verify_adapter \\
         --prompts topk_token --max-prompts 2
 """
 
@@ -213,7 +213,7 @@ def main():
         "--runner",
         required=True,
         help="Dotted path to the model's verify adapter (e.g. "
-        "'llama32_1b.verify_adapter', 'llama32_1b_int4.verify_adapter').",
+        "'llama32_1b.verify_adapter', 'llama32_1b_q4nx.verify_adapter').",
     )
     p.add_argument(
         "--model",
@@ -325,8 +325,8 @@ def main():
     def build_hf():
         from runners.hf_runner import HfRunner
 
-        # Optional adapter hook: produce a custom HF model (e.g. meta-llama
-        # architecture with AWQ-dequantized weights patched in) so the verify
+        # Optional adapter hook: produce a custom HF model (e.g. the bf16
+        # checkpoint with its quantized weights round-tripped) so the verify
         # gate isolates NPU drift from quantization error.
         hf_model = None
         if hasattr(adapter, "build_hf_model"):

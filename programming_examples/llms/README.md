@@ -20,7 +20,6 @@ The remaining models were developed directly in MLIR-AIR.
 | Model | HF checkpoint | Layers | emb / head_dim / hidden | Attention | Family delta | Status |
 |---|---|---|---|---|---|---|
 | **Llama-3.2-1B** | `meta-llama/Llama-3.2-1B` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | reference exemplar | prefill + decode |
-| **Llama-3.2-1B int4-AWQ** | `amd/Llama-3.2-1B-Instruct-awq-...` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | int4-AWQ (prefill) | prefill; decode follow-up |
 | **Llama-3.2-1B Q4NX** | `FastFlowLM/Llama-3.2-1B-NPU2` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | q4nx 4-bit weights, fused decode | prefill + decode |
 | **SmolLM2-1.7B** | `HuggingFaceTB/SmolLM2-1.7B` | 24 | 2048 / 64 / 8192 | MHA 32Q/32KV | pure MHA | prefill + decode |
 | **Qwen2.5-0.5B** | `Qwen/Qwen2.5-0.5B` | 24 | 896 / 64 / 4864 | GQA 14Q/2KV | QKV bias | prefill + decode |
@@ -36,7 +35,27 @@ The remaining models were developed directly in MLIR-AIR.
 | **Llama-3.1-8B Q4NX** | `FastFlowLM/Llama-3.1-8B-NPU2` | 32 | 4096 / 128 / 14336 | GQA 32Q/8KV | q4nx, **untied LM head**, llama3 rope factor 8.0, split weight BOs | prefill + decode |
 | **LFM2-1.2B Q4_0** | `LiquidAI/LFM2-1.2B` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | **hybrid conv-attention** — 10 of 16 layers are a gated causal depthwise conv, not attention; q4_0, QK-norm, tied head, vocab 65536 | prefill + decode |
 
-All are decoder-only with RMSNorm + SwiGLU FFN + RoPE. **LFM2-1.2B is the
+### Affine-Q4 deployments with BFP16 prefill
+
+The following examples prepare group-32 affine Q4 directly from pinned HF
+checkpoints. Their prefill GEMMs use the shared BFP16 compute path; decode
+fuses all transformer blocks into one native submission. OpenELM and Phi-2
+use a separate full-head submission. See the [common commands](shared/AFFINE_Q4_DEPLOYMENTS.md)
+for weight preparation, native-configuration sweeps and full-logit verification. The
+[implementation guide](shared/AFFINE_Q4_IMPLEMENTATION.md) explains the architecture
+mapping; [measured results](shared/AFFINE_Q4_RESULTS.md) cover all 19 native points.
+
+| Example | Layers | Architecture details | Native input lengths / KV capacity |
+| --- | --- | --- | --- |
+| [Granite-3.3-2B](granite33_2b_q4nx/) | 40 | GQA, embedding/attention/residual/logit scaling | 512/1024, 1024/2048, 2048/4096, 4096/8192 |
+| [SmolLM3-3B](smollm3_3b_q4nx/) | 36 | GQA, every fourth layer omits RoPE, padded FFN | all four above |
+| [OLMo2-1B](olmo2_1b_q4nx/) | 16 | MHA, full-width Q/K norm, post-attention/MLP norm | first three above |
+| [OpenELM-1.1B](openelm_1b_q4nx/) | 28 | variable layer widths, Q/K norm, tied BF16 head | first two above |
+| [Phi-2](phi2_2_7b_q4nx/) | 32 | LayerNorm, parallel residual, GELU, biases, partial RoPE | first two above |
+| [Mistral-7B-Instruct-v0.3](mistral7b_v03_q4nx/) | 32 | GQA, independent head | all four above |
+
+Most transformer examples use RMSNorm + SwiGLU FFN + RoPE; Phi-2 uses
+LayerNorm + GELU and Gemma uses GELU. **LFM2-1.2B is the
 exception to "decoder-only transformer"**: only 6 of its 16 layers are
 attention, and the other 10 replace it with `Lfm2ShortConv` — in_proj to
 `[B | C | x]`, gate `h = B * x`, a causal depthwise convolution over `h` with 3
@@ -55,6 +74,9 @@ The architecture axes that shape each deployment's dataflow:
   limit, not a launch-count limit).
 
 ## Performance (NPU2, seq_len=2048, bf16)
+
+This table records the earlier per-operator examples. The six affine-Q4
+deployments above have their own configuration sweeps and timing records.
 
 Measured end-to-end via `make run`. **Prefill (TTFT)** = time-to-first-token
 (tokenize + EOS-pad + prefill + LM head); **Decode (TPS)** = steady-state decode
@@ -83,7 +105,7 @@ form (Qwen3-0.6B/1.7B, matching Llama-3.2-1B) needs aligned dims + emb<2560 +
 hidden÷512; bigger models split the FFN and run a 5-ELF decode (the fused
 `o_gemv_ffn` cascade is capped at 4 cascade core-rows and needs hidden÷512).
 
-### What runs on NPU vs CPU
+### Placement in the earlier per-operator BF16 examples
 - **NPU** (the entire compute-heavy path): all GEMM (prefill) / GEMV (decode)
   projections, RMSNorm, RoPE, QK-norm (Qwen3) / QKV-bias (Qwen2.5), FlashAttention
   (prefill), SwiGLU, and the LM-head GEMV.
@@ -126,7 +148,6 @@ not, so there `diagnosis` reports the token-level view instead.
 ```
 llms/
 ├── llama32_1b/         # bf16 Llama-3.2-1B (the reference exemplar)
-├── llama32_1b_int4/    # int4-AWQ variant (own quantized builders)
 ├── llama32_1b_q4nx/    # Q4NX 4-bit Llama-3.2-1B (fused decode superkernel)
 ├── llama32_3b/         # bf16 Llama-3.2-3B (pure Llama, head_dim=128)
 ├── llama32_3b_q4nx/    # Q4NX 4-bit Llama-3.2-3B (reuses the bf16 3B runner)
@@ -153,8 +174,7 @@ llms/
 
 Models compose blocks from `shared/builders/` (reused directly when the shape
 contract matches) or assemble new blocks declaratively with `stitch_elf` from
-`shared.infra.stitching`. The `int4` example keeps its own quantized builders
-since the int4/bfp16 GEMM ABIs differ from bf16.
+`shared.infra.stitching`.
 
 ## Running a model
 

@@ -147,12 +147,10 @@ class Channel:
         self.name = name
         # Only the types this package can gate against a real design are
         # implemented: npu_cascade by matrix_vector_multiplication/bf16_cascade
-        # on npu1, and npu_dma_packet by llms/.../o_gemv_ffn_int4_fused, whose
-        # 16-destination res1ToCons broadcast is packet-switched because the LD
-        # stream switch arbiter's 4-msel multicast limit leaves no other way to
-        # reach that many cores. The rest each have their own lowering and
-        # verifier rules -- see _UNSUPPORTED -- and adding one blind would be a
-        # channel that compiles as something other than what was asked for.
+        # on npu1, and npu_dma_packet by fused_decode. The rest each have their
+        # own lowering and verifier rules -- see _UNSUPPORTED -- and adding one
+        # blind would be a channel that compiles as something other than what
+        # was asked for.
         if channel_type is not None and channel_type not in _IMPLEMENTED_TYPES:
             raise NotImplementedError(
                 f"air.channel(channel_type={channel_type!r}) is not implemented. "
@@ -241,10 +239,9 @@ class Channel:
         # happen to be used first is not merely untidy: air-to-aie walks the
         # air.channel symbols in order when it hands out shim DMA channels, so
         # on a design near the shim's limits the order decides whether an L3
-        # endpoint gets an allocation at all. o_gemv_ffn_int4_fused is the
-        # worked case -- use order there puts laResDebug where a column has no
-        # MM2S left, and it fails to compile with "failed to get MM2S tile for
-        # L3 allocation".
+        # endpoint gets an allocation at all. Use order can put an L3 endpoint
+        # on a column with no MM2S left, which fails to compile with "failed to
+        # get MM2S tile for L3 allocation".
         #
         # Construction order is what the author wrote and what the raw-bindings
         # predecessors control directly, so that is the order to reproduce:

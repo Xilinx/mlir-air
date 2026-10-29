@@ -546,9 +546,14 @@ def ShareAllocOp : Op<Transform_Dialect, "air.share_alloc",
     layouts, one memory space, and the same element type and element count.
     The first target is kept, moved ahead of the others in the block, and the
     others are replaced by it: an alloc of the same type directly, one of a
-    different shape through a `memref.collapse_shape` of the kept buffer to
-    one dimension and a `memref.expand_shape` to its own shape. Their
-    `memref.dealloc` ops are erased.
+    different shape through reshapes of the kept buffer. Where both shapes
+    merge consecutive dimensions of a common finer shape, a
+    `memref.expand_shape` of the kept buffer to that shape and a
+    `memref.collapse_shape` from it to the target's (each left out where it
+    would change nothing), so that loads and stores through them fold into
+    the kept buffer; otherwise a `memref.collapse_shape` to one dimension and
+    a `memref.expand_shape` to the target's shape. Their `memref.dealloc` ops
+    are erased.
 
     The transform does not check lifetimes. The caller asserts that no two of
     the buffers hold live values at the same time, as for the buffers of two
@@ -1059,6 +1064,8 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
     * Uses that require exact type equality across region boundaries (e.g.,
       `scf.yield`, `func.return`) are **not** rewritten; such allocations are skipped.
     * Hoisting increases the buffer's lifetime; apply with care on large buffers.
+    * With `memory_space`, only allocations in that memory space are hoisted;
+      allocations of other spaces, or of none yet, stay where they are.
 
     ### Example
 
@@ -1097,10 +1104,12 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
     ```
   }];
 
-  let arguments = (ins TransformHandleTypeInterface:$target);
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   OptionalAttr<I32Attr>:$memory_space);
   let results = (outs);
 
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat =
+      "$target prop-dict attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(

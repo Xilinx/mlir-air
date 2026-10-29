@@ -56,13 +56,21 @@ constexpr int DV = DK;
 // kv head per CU (so the CU count equals the kv-head count).
 #if ATTN_IMPL == ATTN_IMPL_2x4x1
 constexpr int NUM_MHA_CU = NUM_KV_HEADS / 2;
+#elif ATTN_IMPL == ATTN_IMPL_4x1x1
+constexpr int NUM_MHA_CU = NUM_KV_HEADS / 4;
 #else
 constexpr int NUM_MHA_CU = NUM_KV_HEADS;
 #endif
 constexpr int KV_HEADS_PER_CU = NUM_KV_HEADS / NUM_MHA_CU;
 constexpr int Q_HEADS_PER_CU = NUM_ATTN_HEADS / NUM_MHA_CU;
 
-#if ATTN_IMPL == ATTN_IMPL_2x4x1
+#if ATTN_IMPL == ATTN_IMPL_4x1x1
+const int GQA_R = 4;
+const int GQA_S = 8;
+const int GQA_T = 8;
+constexpr int GQA_SEGMENT_SIZE = 1;
+constexpr int ATTN_GROUPS_PADDING = 0;
+#elif ATTN_IMPL == ATTN_IMPL_2x4x1
 const int GQA_R = 8;
 const int GQA_S = 8;
 const int GQA_T = 8;

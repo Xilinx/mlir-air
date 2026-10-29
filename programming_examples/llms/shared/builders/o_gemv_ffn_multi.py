@@ -174,8 +174,8 @@ def build_o_gemv_ffn_module(emb_dim=2048, hidden_dim=8192):
             extern_syms=_EXTERNS,
         ),
     ]
-    # args 2,4,5,8,9,10,13 are dead-ABI placeholders: present so this ELF's
-    # signature matches the int4 o_gemv_ffn variant, but not wired to any launch.
+    # args 2,4,5,8,9,10,13 are placeholders not wired to any launch; they keep
+    # the ELF signature its callers bind.
     return stitch_elf(
         "o_gemv_ffn",
         base_args,

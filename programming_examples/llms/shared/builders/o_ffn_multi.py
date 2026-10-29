@@ -91,6 +91,7 @@ def _build_add(
     func_name=None,
     seg_name="add_seg",
     herd_name="add_herd",
+    residual_multiplier=1.0,
 ):
     """The residual/FFN eltwise add, shared by the 2D->2D and 2D->1D entry points.
 
@@ -123,6 +124,13 @@ def _build_add(
     A = air.tensor([rows, cols], dtype)
     B = air.tensor([rows, cols], dtype)
     OUT = air.tensor([rows, cols], dtype) if out_2d else air.tensor([n], dtype)
+    scaled_add = None
+    if residual_multiplier != 1.0:
+        scaled_add = air.extern(
+            "scaled_residual_bf16",
+            link_with="scaled_residual.o",
+            scalars=[air.i32, air.f32],
+        )
 
     name = func_name or ("eltwise_add_2d" if out_2d else "eltwise_add")
 
@@ -160,28 +168,68 @@ def _build_add(
                                 off = iv + (tx * herd_y + ty) * chunk_size
                                 ops.load(l1_a, a_flat[off : off + tile_n])
                                 ops.load(l1_b, b_flat[off : off + tile_n])
-                                l1_out[:] = l1_a[:] + l1_b[:]
+                                if residual_multiplier == 1.0:
+                                    l1_out[:] = l1_a[:] + l1_b[:]
+                                else:
+                                    # C++ implements FP32 scalar multiplication
+                                    # followed by BF16 rounding and BF16 add.
+                                    scaled_add(
+                                        l1_out, l1_a, l1_b, tile_n, residual_multiplier
+                                    )
                                 ops.store(l1_out, out_flat[off : off + tile_n])
 
     return launch.build(target=target)
 
 
 def _build_add_2d_to_2d(
-    rows, cols, np_dtype, vector_size=16, herd_x=8, herd_y=1, target="npu2"
+    rows,
+    cols,
+    np_dtype,
+    vector_size=16,
+    herd_x=8,
+    herd_y=1,
+    target="npu2",
+    residual_multiplier=1.0,
 ):
     """Eltwise add with all three args 2-D, flattened to 1-D views inside.
 
     Keeping the OUTPUT 2-D lets a following launch read it without an
     expand_shape. Used for the residual add (proj + x_residual), both bf16.
     """
-    return _build_add(rows, cols, np_dtype, vector_size, herd_x, herd_y, True, target)
+    return _build_add(
+        rows,
+        cols,
+        np_dtype,
+        vector_size,
+        herd_x,
+        herd_y,
+        True,
+        target,
+        residual_multiplier=residual_multiplier,
+    )
 
 
 def _build_add_2d_to_1d(
-    rows, cols, np_dtype, vector_size=16, total_tiles=8, target="npu2"
+    rows,
+    cols,
+    np_dtype,
+    vector_size=16,
+    total_tiles=8,
+    target="npu2",
+    residual_multiplier=1.0,
 ):
     """Eltwise add with 2-D inputs and a flat output. The FFN add."""
-    return _build_add(rows, cols, np_dtype, vector_size, total_tiles, 1, False, target)
+    return _build_add(
+        rows,
+        cols,
+        np_dtype,
+        vector_size,
+        total_tiles,
+        1,
+        False,
+        target,
+        residual_multiplier=residual_multiplier,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +265,8 @@ def build_o_ffn_module(
     hidden_dim=8192,
     print_kernels=False,
     herd_m=8,
+    residual_multiplier=1.0,
+    rms_builder=None,
 ):
     """Build the fused O-proj + Residual + FFN ELF.
 
@@ -236,6 +286,8 @@ def build_o_ffn_module(
         gate_herd_m=herd_m,
         down_herd_m=herd_m,
         print_kernels=print_kernels,
+        residual_multiplier=residual_multiplier,
+        rms_builder=rms_builder,
     )
 
 
@@ -254,6 +306,8 @@ def _build_o_ffn(
     swiglu_herd_x=8,
     swiglu_herd_y=1,
     print_kernels=False,
+    residual_multiplier=1.0,
+    rms_builder=None,
 ):
     """O-proj + Residual + FFN, all-bf16 outward buffers.
 
@@ -272,6 +326,8 @@ def _build_o_ffn(
     from air_examples.weighted_rms_norm.weighted_rms_norm import (
         build_module as build_rms,
     )
+
+    build_rms = rms_builder or build_rms
 
     # Per-GEMM config from the kernel_registry JSON (single source of truth): method
     # (fused-cast vs drain) AND all tiles are looked up per shape — never hardcoded.
@@ -315,7 +371,11 @@ def _build_o_ffn(
 
     # L2: Residual Add (2D → 2D, all args 2D, collapse inside)
     print("  [2/8] Residual Add (2D -> 2D)...")
-    res_add_ir = str(_build_add_2d_to_2d(seq_len, emb_dim, bfloat16))
+    res_add_ir = str(
+        _build_add_2d_to_2d(
+            seq_len, emb_dim, bfloat16, residual_multiplier=residual_multiplier
+        )
+    )
 
     # L3: FFN RMSNorm (bare herd → wrap)
     print("  [3/8] FFN RMSNorm...")
@@ -399,7 +459,11 @@ def _build_o_ffn(
     # taking them, which is why the four out-of-tree copies of it are the
     # parameterised ones. Same kernel, same func symbol (@eltwise_add).
 
-    ffn_add_ir = str(_build_add_2d_to_1d(seq_len, emb_dim, bfloat16))
+    ffn_add_ir = str(
+        _build_add_2d_to_1d(
+            seq_len, emb_dim, bfloat16, residual_multiplier=residual_multiplier
+        )
+    )
 
     if print_kernels:
         for name, ir in [
@@ -487,8 +551,22 @@ def _build_o_ffn(
             _gemm_arg_map(0, 1, 2, scratch_for[0]),
             extern_syms=_gemm_extern_syms(o_spec),
         ),
-        KernelSlice(res_add_ir, "ra", {0: 2, 1: 3, 2: 4}, private_from=False),
-        KernelSlice(rms_ir, "rm", {0: 4, 1: 5, 2: 6}, private_from=False),
+        KernelSlice(
+            res_add_ir,
+            "ra",
+            {0: 2, 1: 3, 2: 4},
+            extern_syms=(
+                {"@scaled_residual_bf16"} if residual_multiplier != 1.0 else set()
+            ),
+            private_from=residual_multiplier != 1.0,
+        ),
+        KernelSlice(
+            rms_ir,
+            "rm",
+            {0: 4, 1: 5, 2: 6},
+            private_from=rms_builder is not None,
+            extern_syms={"@rms_norm_aie"} if rms_builder is not None else set(),
+        ),
         KernelSlice(
             gate_ir,
             "gg",
@@ -511,7 +589,15 @@ def _build_o_ffn(
             _gemm_arg_map(11, 12, 13, scratch_for[3]),
             extern_syms=_gemm_extern_syms(d_spec),
         ),
-        KernelSlice(ffn_add_ir, "fa", {0: 13, 1: 4, 2: 14}, private_from=False),
+        KernelSlice(
+            ffn_add_ir,
+            "fa",
+            {0: 13, 1: 4, 2: 14},
+            extern_syms=(
+                {"@scaled_residual_bf16"} if residual_multiplier != 1.0 else set()
+            ),
+            private_from=False,
+        ),
     ]
 
     module = stitch_elf(
