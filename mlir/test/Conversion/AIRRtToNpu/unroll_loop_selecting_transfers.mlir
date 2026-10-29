@@ -211,3 +211,117 @@ module {
   }
 }
 
+// -----
+
+// The loop also loads a herd, and the launch ends after the loop. The herd
+// load's RTP write and core release are hoisted to the front of their block;
+// unrolled, the second trip's value would overwrite the first before any
+// transfer runs. The loop stays rolled.
+
+// CHECK-LABEL: aie.runtime_sequence @pick_drain_herd(
+// CHECK: scf.for
+// CHECK: aiex.npu.rtp_write
+// CHECK: aiex.set_lock
+// CHECK: scf.index_switch
+
+module {
+  aie.device(npu1) @seg {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %__air_herd_lock_0_2 = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %__air_herd_rtp_0_2 = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    aie.shim_dma_allocation @out(%tile_0_0, S2MM, 0)
+    %mem = aie.mem(%tile_0_2) { aie.end }
+    %core = aie.core(%tile_0_2) { aie.end } {link_with = "kernel.o"}
+  } {sym_name = "seg"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "seg"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 2 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @pick_drain_herd(%arg0: memref<64xi32>, %arg1: memref<64xi32>, %arg2: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %id = arith.constant 4 : i32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    scf.for %i = %c0 to %c2 step %c1 {
+      %r = arith.index_cast %i : index to i32
+      %hl = airrt.herd_load "herd_0" (%r) {segment_name = "seg"} : (i32) -> i64
+      scf.index_switch %i
+      case 0 {
+        %f = airrt.dma_memcpy_nd(%id, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @out} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+        scf.yield
+      }
+      default {
+        %g = airrt.dma_memcpy_nd(%id, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @out} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+        scf.yield
+      }
+      %h = airrt.dma_memcpy_nd(%id, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @out} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+      airrt.wait_all %h
+    }
+    airrt.wait_all {"air.launch_end"}
+    %p = airrt.segment_load "seg" : i64
+    return
+  }
+}
+
+// -----
+
+// Each trip ends a launch, so each trip's RTP write stays ahead of that trip's
+// transfers once unrolled.
+
+// CHECK-LABEL: aie.runtime_sequence @pick_drain_herd_per_launch
+// CHECK-NOT: scf.for
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %c0_i32)
+// CHECK: aiex.dma_configure_task_for @out
+// CHECK: aiex.dma_await_task
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %c1_i32{{.*}})
+// CHECK: aiex.dma_configure_task_for @out
+// CHECK: aiex.dma_await_task
+
+module {
+  aie.device(npu1) @seg {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %__air_herd_lock_0_2 = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %__air_herd_rtp_0_2 = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    aie.shim_dma_allocation @out(%tile_0_0, S2MM, 0)
+    %mem = aie.mem(%tile_0_2) { aie.end }
+    %core = aie.core(%tile_0_2) { aie.end } {link_with = "kernel.o"}
+  } {sym_name = "seg"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "seg"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 2 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @pick_drain_herd_per_launch(%arg0: memref<64xi32>, %arg1: memref<64xi32>, %arg2: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %id = arith.constant 4 : i32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    scf.for %i = %c0 to %c2 step %c1 {
+      %r = arith.index_cast %i : index to i32
+      %hl = airrt.herd_load "herd_0" (%r) {segment_name = "seg"} : (i32) -> i64
+      scf.index_switch %i
+      case 0 {
+        %f = airrt.dma_memcpy_nd(%id, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @out} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+        scf.yield
+      }
+      default {
+        %g = airrt.dma_memcpy_nd(%id, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @out} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+        scf.yield
+      }
+      %h = airrt.dma_memcpy_nd(%id, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @out} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+      airrt.wait_all %h
+      airrt.wait_all {"air.launch_end"}
+    }
+    %p = airrt.segment_load "seg" : i64
+    return
+  }
+}

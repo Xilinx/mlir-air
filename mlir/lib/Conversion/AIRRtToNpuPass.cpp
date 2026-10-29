@@ -5024,6 +5024,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // it, and awaitInChannelOrder only releases older tasks in the block of the
   // await. Unrolled, the switch folds (FoldConstIndexSwitchPattern) and the
   // transfer sits in that block.
+  //
+  // A loop that loads a herd stays rolled unless each trip ends a launch: the
+  // RTP writes and core releases of a herd load are hoisted to the front of
+  // their block, or of their launch, and unrolled trips of one launch would
+  // all share the front of one block.
   void unrollLoopsSelectingTransfers(ModuleOp module) {
     auto dependsOn = [](Value v, Value iv) {
       SmallVector<Value> work{v};
@@ -5052,6 +5057,20 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             !getConstantIntValue(loop.getLowerBound()) ||
             !getConstantIntValue(loop.getUpperBound()) ||
             !getConstantIntValue(loop.getStep()))
+          return;
+        bool loadsHerd = loop.getBody()
+                             ->walk([](airrt::HerdLoadOp) {
+                               return WalkResult::interrupt();
+                             })
+                             .wasInterrupted();
+        bool endsLaunch = loop.getBody()
+                              ->walk([](airrt::WaitAllOp w) {
+                                return w->hasAttr("air.launch_end")
+                                           ? WalkResult::interrupt()
+                                           : WalkResult::advance();
+                              })
+                              .wasInterrupted();
+        if (loadsHerd && !endsLaunch)
           return;
         WalkResult picks = loop.getBody()->walk([&](scf::IndexSwitchOp sw) {
           bool lost =
