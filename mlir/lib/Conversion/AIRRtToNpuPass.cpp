@@ -3952,12 +3952,18 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
           // Drain j of a channel holding D of them is armed at round
           // floor(j * rounds / D), ahead of that round's feeds, so it is
-          // running before its producer emits. Assuming the drains draw on the
-          // feeds evenly, drain j is complete once round
-          // lastRound(j) = ceil((j + 1) * rounds / D) - 1 has been fed, and the
-          // cap makes drain j wait for drain j - burstLimit; so drain j is held
-          // back until the round after that one, or the wait would be on feeds
-          // not yet issued. Round `rounds` means after every feed.
+          // running before its producer emits. The cap makes drain j wait for
+          // drain j - burstLimit, which retires only once the feeds producing
+          // it have run, so drain j is held back until the round after
+          // lastRound(j - burstLimit), or the wait would be on feeds not yet
+          // issued. Assuming the drains draw on the feeds evenly, drain j is
+          // complete once round ceil((j + 1) * rounds / D) - 1 has been fed.
+          // That is only an estimate, and it comes early when a job feeds more
+          // than its share, so it is raised to the round of the first feed
+          // that awaits drain j or a later drain on its channel: the channel
+          // fills drains in order, so such an await follows every feed that
+          // produces drain j. It is never lowered, so a program that awaits
+          // nothing keeps the estimate. Round `rounds` means after every feed.
           SmallVector<SmallVector<Unit>> drainsAt(rounds + 1);
           // The round each leading drain is armed at, per channel; drains
           // between the feeds come no earlier.
@@ -3987,7 +3993,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             for (auto &kv : drainsByChan) {
               unsigned d = kv.second.size();
               auto lastRound = [&](unsigned j) {
-                return ((j + 1) * rounds + d - 1) / d - 1;
+                unsigned awaiter = rounds;
+                for (unsigned k = j; k < d; k++)
+                  awaiter = std::min(awaiter, firstAwaiter(kv.second[k]));
+                unsigned estimate = ((j + 1) * rounds + d - 1) / d - 1;
+                return awaiter < rounds ? std::max(estimate, awaiter)
+                                        : estimate;
               };
               for (unsigned j = 0; j < d; j++) {
                 unsigned r =
