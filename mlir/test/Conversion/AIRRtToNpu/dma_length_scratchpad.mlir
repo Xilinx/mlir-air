@@ -129,7 +129,8 @@ module {
 // shim_drain_weave's @mid, with the feed that reads the drain back sized by a
 // length parameter. Its static length of 0 is not its footprint, so it still
 // counts as reading the drain: channel B is woven in, and the drain's await
-// travels with that feed.
+// travels with that feed. The producer B feeds precede the read-back in
+// source order, as preserved by shim-BD isolation.
 
 // ELF-LABEL: aie.runtime_sequence @midp_seg_sequence
 // ELF: %[[A0:.*]] = aiex.dma_configure_task_for @midp_a
@@ -168,13 +169,13 @@ module {
     %2 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c512_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_out} : (i32, i64, i64, memref<1024xi32>) : !airrt.event
     %3 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %4 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
-    airrt.wait_all %2
-    %5 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %nrows, %c64_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) {metadata = @midp_a} : (i32, i64, i64, memref<1024xi32>) : !airrt.event
     %6 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %7 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %8 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %9 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %10 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @midp_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    airrt.wait_all %2
+    %5 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %nrows, %c64_i64], [%c0_i64, %c0_i64, %c64_i64, %c1_i64]) {metadata = @midp_a} : (i32, i64, i64, memref<1024xi32>) : !airrt.event
     airrt.wait_all %0, %1, %3, %4, %5, %6, %7, %8, %9, %10
     return
   }

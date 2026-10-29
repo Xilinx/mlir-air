@@ -212,8 +212,8 @@ module {
 
 // -----
 
-// A launch emitted channel by channel, with a drain between channel A's
-// feeds and a feed of A that reads that drain back. The drain stays in the
+// The producer's A and B feeds precede the read-back barrier, as preserved
+// by shim-BD isolation for host read-backs. A drain between A's feeds stays in the
 // burst, armed at the round of the feed it preceded, so channel B's feeds are
 // still woven in rather than left behind every task of A; the drain's await
 // travels with the feed that reads it, last in its round.
@@ -254,13 +254,13 @@ module {
     %2 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @mid_out} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %3 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @mid_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %4 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @mid_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
-    airrt.wait_all %2
-    %5 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @mid_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %6 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @mid_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %7 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @mid_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %8 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @mid_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %9 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @mid_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %10 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @mid_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    airrt.wait_all %2
+    %5 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @mid_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     airrt.wait_all %0, %1, %3, %4, %5, %6, %7, %8, %9, %10
     return
   }
@@ -323,9 +323,9 @@ module {
 // -----
 
 // Two channels each read back a region one drain wrote, each behind its own
-// wait for it. The weave lays channel B's read down in the same round as A's;
-// whichever goes first is behind the await, and the other's await of the same
-// drain is dropped.
+// wait for it. Both readers follow all producer feeds and the drain await.
+// Channel A's reader precedes channel B's reader; the duplicate await of the
+// same drain is dropped.
 // CHECK-LABEL: aie.runtime_sequence @shared_read_back
 // CHECK: %[[D:.*]] = aiex.dma_configure_task_for @srb_out
 // CHECK-NEXT: aie.dma_bd(%arg1
@@ -361,13 +361,13 @@ module {
     %3 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @srb_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %4 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @srb_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %5 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @srb_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
-    airrt.wait_all %0
-    %6 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @srb_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %7 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @srb_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %8 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @srb_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %9 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @srb_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %10 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @srb_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     %11 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @srb_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    airrt.wait_all %0
+    %6 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @srb_a} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     airrt.wait_all %0
     %12 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @srb_b} : (i32, i64, i64, memref<64xi32>) : !airrt.event
     airrt.wait_all %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12
@@ -411,14 +411,14 @@ module {
     %3 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drb_a} : (i32, i64, i64, memref<256xi32>) : !airrt.event
     %4 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drb_a} : (i32, i64, i64, memref<256xi32>) : !airrt.event
     %5 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drb_a} : (i32, i64, i64, memref<256xi32>) : !airrt.event
-    airrt.wait_all %0
-    %6 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drb_a} : (i32, i64, i64, memref<256xi32>) : !airrt.event
     %7 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drb_b} : (i32, i64, i64, memref<256xi32>) : !airrt.event
     %8 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drb_b} : (i32, i64, i64, memref<256xi32>) : !airrt.event
     %9 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drb_b} : (i32, i64, i64, memref<256xi32>) : !airrt.event
     %10 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drb_b} : (i32, i64, i64, memref<256xi32>) : !airrt.event
     %11 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drb_b} : (i32, i64, i64, memref<256xi32>) : !airrt.event
     %12 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c64_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drb_b} : (i32, i64, i64, memref<256xi32>) : !airrt.event
+    airrt.wait_all %0
+    %6 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @drb_a} : (i32, i64, i64, memref<256xi32>) : !airrt.event
     airrt.wait_all %0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12
     return
   }

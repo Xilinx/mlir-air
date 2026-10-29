@@ -2174,7 +2174,6 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     // Hoisting one external op at a time leaves the later ones depending on
     // placeholder copies of the loops that held the earlier ones. The writer
     // of a region is the hoisted loop, so depend on its token.
-    depTracer.tokenLoopsAreSources = true;
     f.walk<WalkOrder::PreOrder,
            ForwardDominanceIterator<>>([&](air::MemcpyInterface memcpy_op) {
       if (!memcpy_op->hasAttr("loop-carried-dep"))

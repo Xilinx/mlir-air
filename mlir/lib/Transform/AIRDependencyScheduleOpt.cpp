@@ -35,6 +35,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ValueBoundsOpInterface.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -7395,6 +7396,36 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
 
     auto f = for_op->getParentOfType<func::FuncOp>();
     if (!f)
+      return failure();
+
+    // A host read-back couples all feeds of the producing job, including
+    // channels with no SSA edge to the drain. Splitting this loop by channel
+    // moves later jobs' waits ahead of feeds still needed by earlier jobs.
+    // Keep the loop's cross-channel order; BD specialization can still fold
+    // its inner single-channel loops and unroll the remaining mixed loop.
+    auto bufferOf = [](Value value) {
+      while (Operation *def = value.getDefiningOp()) {
+        if (auto view = dyn_cast<ViewLikeOpInterface>(def))
+          value = view.getViewSource();
+        else if (auto cast = dyn_cast<memref::CastOp>(def))
+          value = cast.getSource();
+        else
+          break;
+      }
+      return value;
+    };
+    llvm::DenseSet<Value> hostWrites;
+    for_op.walk([&](air::ChannelGetOp get) {
+      if (air::isL3(cast<BaseMemRefType>(get.getMemref().getType())))
+        hostWrites.insert(bufferOf(get.getMemref()));
+    });
+    bool readsBack = false;
+    for_op.walk([&](air::ChannelPutOp put) {
+      if (air::isL3(cast<BaseMemRefType>(put.getMemref().getType())) &&
+          hostWrites.contains(bufferOf(put.getMemref())))
+        readsBack = true;
+    });
+    if (readsBack)
       return failure();
 
     // Identify target child ops for hoisting.

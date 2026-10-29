@@ -788,15 +788,9 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
                                          opers[2], opers[3], offsetsOFR,
                                          wrapsOFR, stridesOFR);
   // Copy over discardable attrs assigned in -air-to-aie pass.
-  Attribute programOrder = thisOp->getAttr("id");
   thisOp->removeAttr("id"); // Op's id is no longer useful. Airrt.dma op's id
                             // has been assigned.
   airrtOp->setAttrs(thisOp->getDiscardableAttrDictionary());
-  // ... but its position in the launch body is: it tells airrt-to-npu which
-  // job a transfer belongs to once the transfers are regrouped by channel.
-  if (programOrder &&
-      thisOp->getParentOfType<ModuleOp>()->hasAttr("air.keep_program_order"))
-    airrtOp->setDiscardableAttr(air::attrs::ProgramOrder, programOrder);
   // Preserve channel name for downstream ordering decisions.
   if (auto chanName = thisOp->getAttrOfType<FlatSymbolRefAttr>("chan_name"))
     airrtOp->setDiscardableAttr("chan_name", chanName);
@@ -1479,11 +1473,10 @@ static void orderReadsAfterDrains(ArrayRef<Operation *> window,
   launchEnd->setOperands(leOps);
 }
 
-// The same inside the launch's nested regions, such as the cases of an
-// scf.index_switch or scf.if. Each block is ordered on its own. A loop body is
-// not: a drain left outstanding by one iteration would take the await meant
-// for the next iteration's. An input that depends on a drain it cannot order
-// against is diagnosed.
+// Order each nested block's local drains and reads. A loop must also retire
+// its local drains before its backedge, so a later iteration cannot consume an
+// earlier iteration's completion token. A dependency on a drain outside the
+// block still cannot be ordered here and is diagnosed.
 template <typename IsDrainFn>
 static void orderNestedReadsAfterDrains(ArrayRef<Operation *> window,
                                         IsDrainFn isDrain) {
@@ -1493,12 +1486,17 @@ static void orderNestedReadsAfterDrains(ArrayRef<Operation *> window,
       ops.push_back(&op);
     DrainDeps deps = getDrainDeps(ops, isDrain);
     SmallVector<Operation *> unordered;
-    if (inLoop) {
-      for (auto &[op, ds] : deps)
-        if (!ds.empty())
-          unordered.push_back(op);
-    } else {
-      (void)awaitDrainsBeforeReads(ops, isDrain, deps, unordered);
+    auto awaited = awaitDrainsBeforeReads(ops, isDrain, deps, unordered);
+    if (inLoop && !awaited.empty()) {
+      SmallVector<Value> localDrains;
+      for (Operation *op : ops)
+        if (auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op); dma && isDrain(dma))
+          localDrains.push_back(dma->getResult(0));
+      if (!localDrains.empty()) {
+        OpBuilder b(blk.getTerminator());
+        airrt::WaitAllOp::create(b, blk.getTerminator()->getLoc(), TypeRange{},
+                                 localDrains);
+      }
     }
     for (Operation *op : unordered)
       op->emitWarning("this read of host memory depends on a device-to-host "
@@ -1668,8 +1666,6 @@ public:
 
     auto module = getOperation();
     auto context = module.getContext();
-    if (clKeepProgramOrder)
-      module->setAttr("air.keep_program_order", UnitAttr::get(context));
 
     TypeConverter converter;
     converter.addConversion([&](Type type) -> std::optional<Type> {
@@ -1855,7 +1851,6 @@ public:
       IRRewriter rewriter(module.getContext());
       rewriter.replaceOp(fop, fop.getInitArgs());
     }
-    module->removeAttr("air.keep_program_order");
   }
 };
 
