@@ -27,6 +27,7 @@ class CharTokenizer:
     """One token per character, digits only; 9 is EOS."""
 
     bos_token_id = None
+    bos_token = None
     eos_token_id = 9
 
     def encode(self, text, add_special_tokens=False):
@@ -108,7 +109,39 @@ class NpuLMTest(unittest.TestCase):
             lm.generate_until([req("1", {"until": [], "max_gen_toks": 8})])
 
 
+class BosTokenizer(CharTokenizer):
+    """CharTokenizer whose BOS (id 8) is spelled "<s>"."""
+
+    bos_token_id = 8
+    bos_token = "<s>"
+
+    def encode(self, text, add_special_tokens=False):
+        if text.startswith("<s>"):
+            return [8] + super().encode(text[3:])
+        return super().encode(text)
+
+
+@unittest.skipIf(lm_eval is None, "needs lm_eval")
+class ChatPromptTest(unittest.TestCase):
+    def test_no_second_bos_after_a_template(self):
+        runner = CountingRunner()
+        lm = le._lm_class()(runner, BosTokenizer(), 8, 64, 64)
+        lm.generate_until([req("<s>12", {"until": [], "max_gen_toks": 2})])
+        self.assertEqual(runner.prompt, [8, 1, 2])
+        lm.generate_until([req("12", {"until": [], "max_gen_toks": 2})])
+        self.assertEqual(runner.prompt, [8, 1, 2])
+
+
 class StatsTest(unittest.TestCase):
+    def test_chat_only_for_chat_tasks_when_both_sides_have_a_template(self):
+        chat = SimpleNamespace(chat_template="{{ messages }}")
+        plain = SimpleNamespace(chat_template=None)
+        self.assertEqual(
+            le.chat_tasks(["gsm8k", "mmlu"], chat, chat),
+            {"gsm8k": True, "mmlu": False},
+        )
+        self.assertEqual(le.chat_tasks(["gsm8k"], chat, plain), {"gsm8k": False})
+
     def test_mcnemar(self):
         self.assertEqual(le.mcnemar_p(0, 0), 1.0)
         self.assertAlmostEqual(le.mcnemar_p(0, 6), 2 / 64)

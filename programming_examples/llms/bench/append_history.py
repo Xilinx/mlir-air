@@ -235,6 +235,7 @@ def _flat_tasks_rows(recs, run_id):
                 "task": task,
                 "limit": d.get("limit"),
                 "n_shot": (d.get("n_shot") or {}).get(task),
+                "chat_template": (d.get("chat_template") or {}).get(task),
                 "n": t.get("n"),
                 "npu": t.get("npu"),
                 "ref": t.get("ref"),

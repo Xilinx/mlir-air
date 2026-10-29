@@ -56,6 +56,15 @@ TASK_METRICS = {
 }
 
 
+# Generation tasks run through the model's chat template when it has one: a
+# plain few-shot prompt can make an instruct model end its turn before it
+# answers. Loglikelihood tasks score fixed continuations and stay plain.
+CHAT_TASKS = {"gsm8k"}
+# A template with a thinking mode would spend the generation budget on it;
+# templates without one ignore the argument.
+CHAT_ARGS = {"enable_thinking": False}
+
+
 def _lm_class():
     from lm_eval.api.model import LM
 
@@ -72,6 +81,30 @@ def _lm_class():
         def _encode(self, text):
             return self.tok.encode(text, add_special_tokens=False)
 
+        def _with_bos(self, text):
+            # As lm_eval's HF model: no BOS of our own when the text (a chat
+            # template's output) already starts with one.
+            bos_text = self.tok.bos_token
+            if self.bos is None or (bos_text and text.startswith(bos_text)):
+                return []
+            return [self.bos]
+
+        @property
+        def tokenizer_name(self):
+            return self.tok.name_or_path.replace("/", "__")
+
+        def chat_template(self, chat_template=False):
+            return self.tok.chat_template or ""
+
+        def apply_chat_template(self, chat_history, add_generation_prompt=True):
+            return self.tok.apply_chat_template(
+                chat_history,
+                tokenize=False,
+                add_generation_prompt=add_generation_prompt,
+                continue_final_message=not add_generation_prompt,
+                **CHAT_ARGS,
+            )
+
         def _encode_pair(self, context, continuation):
             # As lm_eval's HF model: an empty context becomes one prefix token,
             # trailing context spaces move into the continuation, and the
@@ -86,7 +119,7 @@ def _lm_class():
                 context, continuation = context[:-n], context[-n:] + continuation
             whole = self._encode(context + continuation)
             ctx = self._encode(context)
-            ctx_ids = ([self.bos] if self.bos is not None else []) + ctx
+            ctx_ids = self._with_bos(context) + ctx
             return ctx_ids, whole[len(ctx) :]
 
         def loglikelihood(self, requests):
@@ -135,9 +168,7 @@ def _lm_class():
                 until = kw.get("until") or []
                 until = [until] if isinstance(until, str) else list(until)
                 max_gen = int(kw.get("max_gen_toks", 256))
-                ids = ([self.bos] if self.bos is not None else []) + self._encode(
-                    context
-                )
+                ids = self._with_bos(context) + self._encode(context)
                 # As lm_eval's HF model: keep the last max_seq - max_gen
                 # prompt tokens, so the whole budget fits.
                 if max_gen >= self.max_seq:
@@ -187,22 +218,38 @@ def _logsumexp(x):
     return m + np.log(np.exp(x - m).sum(axis=-1, keepdims=True))
 
 
-def run_tasks(lm, args):
+def run_tasks(lm, args, chat):
+    """Each task in its own run, so each takes its own `chat` setting."""
     import lm_eval
 
-    res = lm_eval.simple_evaluate(
-        model=lm,
-        tasks=args.tasks,
-        num_fewshot=args.num_fewshot,
-        limit=args.limit,
-        log_samples=True,
-        bootstrap_iters=0,
-        random_seed=0,
-        numpy_random_seed=1234,
-        torch_random_seed=1234,
-        fewshot_random_seed=1234,
-    )
-    return per_sample(res), res["results"], res.get("n-shot", {})
+    samples, results, nshot = {}, {}, {}
+    for task in args.tasks:
+        res = lm_eval.simple_evaluate(
+            model=lm,
+            tasks=[task],
+            num_fewshot=args.num_fewshot,
+            limit=args.limit,
+            apply_chat_template=chat[task],
+            fewshot_as_multiturn=chat[task],
+            log_samples=True,
+            bootstrap_iters=0,
+            random_seed=0,
+            numpy_random_seed=1234,
+            torch_random_seed=1234,
+            fewshot_random_seed=1234,
+        )
+        samples.update(per_sample(res))
+        results.update(res["results"])
+        nshot.update(res.get("n-shot", {}))
+    return samples, results, nshot
+
+
+def chat_tasks(tasks, *tokenizers):
+    """{task: whether it runs through the chat template}: a CHAT_TASKS task,
+    when every tokenizer (the NPU's and the reference's) has a template, so
+    both sides see the same prompt."""
+    has = all(getattr(t, "chat_template", None) for t in tokenizers)
+    return {t: has and t in CHAT_TASKS for t in tasks}
 
 
 def _top_task(sub):
@@ -263,7 +310,7 @@ def compare(npu, ref):
     return rows
 
 
-def ref_phase(args, hf_ref_model, bos, cache_path):
+def ref_phase(args, hf_ref_model, bos, chat, cache_path):
     from lm_eval.models.huggingface import HFLM
 
     lm = HFLM(
@@ -275,8 +322,9 @@ def ref_phase(args, hf_ref_model, bos, cache_path):
         # The NPU's limit: requests longer than this are cut from the left
         # by the same rule on both sides.
         max_length=args.prefill_len,
+        chat_template_args=CHAT_ARGS,
     )
-    samples, results, nshot = run_tasks(lm, args)
+    samples, results, nshot = run_tasks(lm, args, chat)
     cache_path.write_text(
         json.dumps({"samples": samples, "results": results, "n-shot": nshot})
     )
@@ -310,6 +358,11 @@ def main():
     )
     tokenizer = _get_tokenizer(model_name)
     bos = model_bos(adapter, tokenizer)
+    from transformers import AutoTokenizer
+
+    chat = chat_tasks(
+        args.tasks, tokenizer, AutoTokenizer.from_pretrained(hf_ref_model)
+    )
     settings = {
         "ref": hf_ref_model,
         "revision": _revision(hf_ref_model),
@@ -319,6 +372,7 @@ def main():
         "prefill_len": args.prefill_len,
         "max_length": args.prefill_len,
         "bos": bos,
+        "chat": chat,
         # The cached reference holds per-item scores for these metrics only.
         "metrics": {t: TASK_METRICS.get(t) for t in args.tasks},
     }
@@ -329,7 +383,7 @@ def main():
     cache.parent.mkdir(parents=True, exist_ok=True)
 
     if args.phase == "ref":
-        ref_phase(args, hf_ref_model, bos, cache)
+        ref_phase(args, hf_ref_model, bos, chat, cache)
         return
     if args.phase == "auto" and not cache.exists():
         print("[lm_eval_npu] reference phase (subprocess)...", flush=True)
@@ -357,7 +411,7 @@ def main():
         args.prefill_len,
         stop_ids(hf_ref_model),
     )
-    samples, results, nshot = run_tasks(lm, args)
+    samples, results, nshot = run_tasks(lm, args, chat)
     elapsed = time.time() - t0
     table = compare(samples, ref["samples"])
 
@@ -368,6 +422,7 @@ def main():
         "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "limit": args.limit,
         "n_shot": group_shots(nshot),
+        "chat_template": chat,
         "seconds": elapsed,
         "tasks": table,
     }
