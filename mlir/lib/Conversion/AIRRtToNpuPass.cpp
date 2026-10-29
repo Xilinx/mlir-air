@@ -4643,6 +4643,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         OpBuilder b(coreOp);
         Value tile = coreOp.getTile();
         auto newCore = xilinx::AIE::CoreOp::create(b, coreOp.getLoc(), tile);
+        // The clone allocates the same buffers as the device it resets, and
+        // aiecc places them above the core's stack: without the original
+        // stack size the empty core gets the default one, and a tile filled
+        // with data memory up to a small stack no longer fits.
+        if (auto stack = coreOp.getStackSizeAttr())
+          newCore.setStackSizeAttr(stack);
         Block *body = b.createBlock(&newCore.getBody());
         b.setInsertionPointToEnd(body);
         xilinx::AIE::EndOp::create(b, coreOp.getLoc());

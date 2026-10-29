@@ -1,0 +1,11 @@
+{
+  "krackan-point": {
+    "label": "Krackan Point",
+    "detail": "AMD Ryzen AI 5 PRO 340 / Ryzen AI 7 PRO 350, NPU2",
+    "nightly": true
+  },
+  "strix-halo": {
+    "label": "Strix Halo",
+    "detail": "AMD Ryzen AI Max+ 395, NPU2"
+  }
+}
