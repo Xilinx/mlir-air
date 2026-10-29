@@ -690,9 +690,18 @@ for _affine_module in (
         LLM_DISPLAY[_id] = (f"{_affine_spec['name']} (P{_p}/C{_c})", "Affine Q4", None)
 
 
+# Offline rows published before rows carried their hardware all came from a
+# Krackan Point machine.
+_OFFLINE_HARDWARE = "Krackan Point, NPU2"
+
+
 def _source(row):
     """Where a history row was measured: the nightly runner unless marked offline."""
-    return {"source": row.get("source", "nightly"), "runner": row.get("runner", "")}
+    return {
+        "source": row.get("source", "nightly"),
+        "runner": row.get("runner", ""),
+        "hardware": row.get("hardware", ""),
+    }
 
 
 def _offline_mark(rec):
@@ -701,12 +710,18 @@ def _offline_mark(rec):
 
 def _offline_legend(*rec_lists):
     machines = sorted(
-        {r.get("runner") or "?" for recs in rec_lists for r in recs if _offline_mark(r)}
+        {
+            (r.get("runner") or "?", r.get("hardware") or _OFFLINE_HARDWARE)
+            for recs in rec_lists
+            for r in recs
+            if _offline_mark(r)
+        }
     )
     if not machines:
         return ""
+    where = ", ".join(f"{name} ({hardware})" for name, hardware in machines)
     return (
-        f"† Measured offline on {', '.join(machines)} (Krackan Point, NPU2), not on "
+        f"† Measured offline on {where}, not on "
         "the nightly runner: 7-8B models do not fit its disk.\n\n"
     )
 
