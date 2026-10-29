@@ -27,17 +27,13 @@ sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path_
 ]
 
 
-def prepare_air_project(quant: str = "bf16"):
+def prepare_air_project():
     """Clean and prepare the air_project/ directory for a fresh compilation.
 
     aircc defaults to 'air_project/' as its working directory. Sequential
     compilations leave stale artifacts that corrupt subsequent kernels.
     This method wipes the directory, compiles all external C++ kernels from
     source, and copies them to air_project/.
-
-    Args:
-        quant: "bf16" or "awq". When "awq", also compiles + stages
-            `mv_int4_bf16.o` so the int4 decode ELFs can link it.
     """
     air_proj = Path("air_project")
     if air_proj.exists():
@@ -49,7 +45,7 @@ def prepare_air_project(quant: str = "bf16"):
         compile_all_external_kernels,
     )
 
-    compile_all_external_kernels(quant=quant)
+    compile_all_external_kernels()
 
     # Copy compiled .o files to air_project/ for aiecc to find. Must include
     # every external symbol referenced by `link_with` in the kernel modules:
@@ -59,7 +55,6 @@ def prepare_air_project(quant: str = "bf16"):
     # - silu_and_mul.o  : SwiGLU (prefill o_ffn, decode o_gemv_ffn)
     # - attn.o          : flash attention (prefill, when --cpu-attn=False)
     # - attn_npu2.o     : flash attention NPU2 variant alias
-    # - mv_int4_bf16.o  : int4-AWQ GEMV (decode int4 ELFs only, when quant=awq)
     obj_names = [
         "silu_and_mul.o",
         "rope.o",
@@ -74,9 +69,8 @@ def prepare_air_project(quant: str = "bf16"):
         "mm.o",
         "mm_m32.o",
         "mm_m64.o",
+        "scaled_residual.o",
     ]
-    if quant == "awq":
-        obj_names.append("mv_int4_bf16.o")
     for obj_name in obj_names:
         src = Path(obj_name)
         if src.exists():
@@ -287,9 +281,7 @@ class Profiler:
             print(
                 f"  {'Kernel':20s} {'BO Write':>10s} {'NPU Run':>10s} {'BO Read':>10s} {'Total':>10s}  {'Written':>8s} {'Read':>6s}"
             )
-            print(
-                f"  {'\u2500'*20} {'\u2500'*10} {'\u2500'*10} {'\u2500'*10} {'\u2500'*10}  {'\u2500'*8} {'\u2500'*6}"
-            )
+            print(f"  {'─'*20} {'─'*10} {'─'*10} {'─'*10} {'─'*10}  {'─'*8} {'─'*6}")
             total_write = total_kernel = total_read = 0
             for name in sorted(self.kernel_breakdowns.keys()):
                 entries = self.kernel_breakdowns[name]
@@ -310,9 +302,7 @@ class Profiler:
                     f"  {mb:6.1f}MB {avg_nr:4.0f}bo  (x{n})"
                 )
             grand_total = total_write + total_kernel + total_read
-            print(
-                f"  {'\u2500'*20} {'\u2500'*10} {'\u2500'*10} {'\u2500'*10} {'\u2500'*10}"
-            )
+            print(f"  {'─'*20} {'─'*10} {'─'*10} {'─'*10} {'─'*10}")
             print(
                 f"  {'TOTAL':20s} {total_write:8.1f}ms {total_kernel:8.1f}ms {total_read:8.1f}ms {grand_total:8.1f}ms"
             )
@@ -387,6 +377,15 @@ class KernelCache:
     def _log(self, msg):
         if self.verbose:
             print(f"  [KernelCache] {msg}")
+
+    def close(self):
+        """Release this cache's buffers and contexts, retaining compiled artifacts."""
+        self._cached_bos.clear()
+        self._shared_bos.clear()
+        for name, backend in list(self._loaded.items()):
+            backend.unload()
+            KernelCache._contexts.pop((self._uid, name), None)
+        self._loaded.clear()
 
     def _toolchain_id(self):
         """Identity of the toolchain that produced the cached ELFs.
@@ -515,11 +514,7 @@ class KernelCache:
         from air.backend.xrt import XRTBackend
 
         self._log(f"Compiling {name}...")
-        # Int4 ELFs need the AWQ GEMV micro-kernel staged alongside the bf16
-        # objects. Detect from kernel name so existing call sites don't need
-        # an extra flag.
-        quant = "awq" if "int4" in name else "bf16"
-        prepare_air_project(quant=quant)
+        prepare_air_project()
         backend = XRTBackend(**backend_kwargs)
 
         t0 = time.time()

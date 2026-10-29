@@ -20,8 +20,23 @@
 #ifndef DH
 #define DH 128
 #endif
-#define LQ 32
+#ifndef LK
 #define LK 32
+#endif
+#define LQ LK
+#ifndef SUM_LANES
+#define SUM_LANES 8
+#endif
+static_assert(SUM_LANES == 8 || SUM_LANES == 1, "SUM_LANES must be 8 or 1");
+// LK / 8 key blocks per call, two or four, each in registers of its own: K2
+// keeps what only the third and fourth take
+#if LK == 16
+#define K2(...)
+#elif LK == 32
+#define K2(...) __VA_ARGS__
+#else
+#error "LK must be 16 or 32"
+#endif
 
 static_assert(LQ == LK, "the masks compare q and key block indices");
 
@@ -32,9 +47,13 @@ using VB = aie::vector<bfloat16, 64>;
 static constexpr float LOG2E = 1.4426950408889634f;
 static constexpr float SCALE = LOG2E / (DH == 64    ? 8.0f
                                         : DH == 128 ? 11.313708498984761f
-                                                    : 16.0f);
+                                        : DH == 256 ? 16.0f
+                                                    : 22.627416997969522f);
 // the most negative finite bf16: a masked score, and the initial max
 static const bfloat16 LOWEST = -3.3895313892515355e38f;
+// floats of ml before the running sums: the maxima, padded so the sums'
+// vectors are 64-byte aligned
+static constexpr int ML_SUMS = (LQ / 2 + 15) / 16 * 16;
 
 // col - row of each lane of an 8x8 block
 alignas(aie::vector_decl_align) static const int16 cmr[64] = {
@@ -51,6 +70,32 @@ static inline VB rows8(aie::vector<bfloat16, 8> v) {
   aie::vector<bfloat16, 32> d = aie::concat(c.first, c.second);
   auto e = aie::interleave_zip(d, d, 4);
   return aie::concat(e.first, e.second);
+}
+
+// the same for float
+static inline aie::vector<float, 64> rows8(aie::vector<float, 8> v) {
+  auto a = aie::interleave_zip(v, v, 1);
+  aie::vector<float, 16> b = aie::concat(a.first, a.second);
+  auto c = aie::interleave_zip(b, b, 2);
+  aie::vector<float, 32> d = aie::concat(c.first, c.second);
+  auto e = aie::interleave_zip(d, d, 4);
+  return aie::concat(e.first, e.second);
+}
+
+// a row block's running sums, each row's in all 8 lanes
+static inline aie::vector<float, 64> load_sums(const float *l) {
+  if constexpr (SUM_LANES == 8)
+    return aie::load_v<64>(l);
+  else
+    return rows8(aie::load_v<8>(l));
+}
+
+static inline void store_sums(float *l, aie::vector<float, 64> v) {
+  if constexpr (SUM_LANES == 8)
+    aie::store_v(l, v);
+  else
+    aie::store_v(
+        l, aie::filter_even(aie::filter_even(aie::filter_even(v, 1), 1), 1));
 }
 
 // the max of each row (8 lanes) of an 8x8 block
@@ -103,14 +148,14 @@ static inline VB exp2_scaled(VB hi, VB lo, VB m) {
 
 extern "C" {
 
-// ml: per row block, the running max (bf16 [LQ]) then the running sum as
-// 8x8 blocks with each row's sum in all 8 lanes (float [LQ / 8][64])
+// ml: the running max (bf16 [LQ]), then from ML_SUMS the running sums
+// (float [LQ][SUM_LANES])
 void attn_init(bfloat16 *o, float *ml) {
   for (int i = 0; i < LQ * DH; i += 64)
     aie::store_v(o + i, aie::zeros<bfloat16, 64>());
   aie::store_v((bfloat16 *)ml, aie::broadcast<bfloat16, LQ>(LOWEST));
-  for (int i = 0; i < LQ * 8; i += 64)
-    aie::store_v(ml + LQ / 2 + i, aie::zeros<float, 64>());
+  for (int i = 0; i < LQ * SUM_LANES; i += 16)
+    aie::store_v(ml + ML_SUMS + i, aie::zeros<float, 16>());
 }
 
 void attn_blk(bfloat16 *qb16, bfloat16 *k, bfloat16 *v, bfloat16 *o, float *ml,
@@ -125,35 +170,33 @@ void attn_blk(bfloat16 *qb16, bfloat16 *k, bfloat16 *v, bfloat16 *o, float *ml,
   const VB lowest = aie::broadcast<bfloat16, 64>(LOWEST);
   const BV ones = to_bfp(aie::broadcast<bfloat16, 64>(1.0f));
   bfloat16 *mrow = (bfloat16 *)ml;
-  float *lrow = ml + LQ / 2;
+  float *lrow = ml + ML_SUMS;
   constexpr int QROW = (DH / 8) * 72; // bytes of one row block's q
 
   for (int mq = 0; mq < LQ / 8; mq++) {
-    ACC c0, c1, c2, c3;
+    ACC c0, c1 K2(, c2, c3);
     {
       aie::block_vector_input_buffer_stream<bfp16ebs8, 64> qs(
           (const bfp16ebs8 *)((const char *)qb16 + mq * QROW));
       aie::block_vector_input_buffer_stream<bfp16ebs8, 64> ks((bfp16ebs8 *)k);
-      BV a, b0, b1, b2, b3;
+      BV a, b0, b1 K2(, b2, b3);
       qs >> a;
-      ks >> b0 >> b1 >> b2 >> b3;
+      ks >> b0 >> b1 K2(>> b2 >> b3);
       c0 = mm(a, b0);
       c1 = mm(a, b1);
-      c2 = mm(a, b2);
-      c3 = mm(a, b3);
+      K2(c2 = mm(a, b2); c3 = mm(a, b3);)
       for (int kd = 1; kd < DH / 8; kd++) {
         qs >> a;
-        ks >> b0 >> b1 >> b2 >> b3;
+        ks >> b0 >> b1 K2(>> b2 >> b3);
         c0 = mma(c0, a, b0);
         c1 = mma(c1, a, b1);
-        c2 = mma(c2, a, b2);
-        c3 = mma(c3, a, b3);
+        K2(c2 = mma(c2, a, b2); c3 = mma(c3, a, b3);)
       }
     }
     VB s0 = c0.template to_vector<bfloat16>();
     VB s1 = c1.template to_vector<bfloat16>();
-    VB s2 = c2.template to_vector<bfloat16>();
-    VB s3 = c3.template to_vector<bfloat16>();
+    K2(VB s2 = c2.template to_vector<bfloat16>();
+       VB s3 = c3.template to_vector<bfloat16>();)
 #ifdef ATTN_SPLIT_SCORES
     // q/k projection biases (Qwen2.5) can put raw scores in the tens of
     // thousands, where a bf16 step is coarser than the score differences the
@@ -162,18 +205,19 @@ void attn_blk(bfloat16 *qb16, bfloat16 *k, bfloat16 *v, bfloat16 *o, float *ml,
     // value here and in the correction c.
     VB r0 = aie::sub(c0, s0).template to_vector<bfloat16>();
     VB r1 = aie::sub(c1, s1).template to_vector<bfloat16>();
-    VB r2 = aie::sub(c2, s2).template to_vector<bfloat16>();
-    VB r3 = aie::sub(c3, s3).template to_vector<bfloat16>();
+    K2(VB r2 = aie::sub(c2, s2).template to_vector<bfloat16>();
+       VB r3 = aie::sub(c3, s3).template to_vector<bfloat16>();)
 #endif
     if (edge) {
       s0 = aie::select(lowest, s0, keep_mask(edge, 0, mq, d));
       s1 = aie::select(lowest, s1, keep_mask(edge, 1, mq, d));
-      s2 = aie::select(lowest, s2, keep_mask(edge, 2, mq, d));
-      s3 = aie::select(lowest, s3, keep_mask(edge, 3, mq, d));
+      K2(s2 = aie::select(lowest, s2, keep_mask(edge, 2, mq, d));
+         s3 = aie::select(lowest, s3, keep_mask(edge, 3, mq, d));)
     }
+    VB smax = aie::max(s0, s1);
+    K2(smax = aie::max(smax, aie::max(s2, s3));)
     aie::vector<bfloat16, 8> m_old = aie::load_v<8>(mrow + mq * 8);
-    aie::vector<bfloat16, 8> m_new =
-        aie::max(m_old, row_max(aie::max(aie::max(s0, s1), aie::max(s2, s3))));
+    aie::vector<bfloat16, 8> m_new = aie::max(m_old, row_max(smax));
     aie::vector<bfloat16, 16> dm = aie::concat(m_old, m_new);
     aie::vector<bfloat16, 16> dn = aie::concat(m_new, m_new);
     aie::vector<bfloat16, 8> c =
@@ -185,45 +229,45 @@ void attn_blk(bfloat16 *qb16, bfloat16 *k, bfloat16 *v, bfloat16 *o, float *ml,
     VB cp = rows8(c);
 #ifdef ATTN_SPLIT_SCORES
     VB p0 = exp2_scaled(s0, r0, mp), p1 = exp2_scaled(s1, r1, mp);
-    VB p2 = exp2_scaled(s2, r2, mp), p3 = exp2_scaled(s3, r3, mp);
+    K2(VB p2 = exp2_scaled(s2, r2, mp), p3 = exp2_scaled(s3, r3, mp);)
 #else
     VB p0 = exp2_scaled(s0, mp), p1 = exp2_scaled(s1, mp);
-    VB p2 = exp2_scaled(s2, mp), p3 = exp2_scaled(s3, mp);
+    K2(VB p2 = exp2_scaled(s2, mp), p3 = exp2_scaled(s3, mp);)
 #endif
     if (edge) {
       const VB z = aie::zeros<bfloat16, 64>();
       p0 = aie::select(z, p0, keep_mask(edge, 0, mq, d));
       p1 = aie::select(z, p1, keep_mask(edge, 1, mq, d));
-      p2 = aie::select(z, p2, keep_mask(edge, 2, mq, d));
-      p3 = aie::select(z, p3, keep_mask(edge, 3, mq, d));
+      K2(p2 = aie::select(z, p2, keep_mask(edge, 2, mq, d));
+         p3 = aie::select(z, p3, keep_mask(edge, 3, mq, d));)
     }
-    BV q0 = to_bfp(p0), q1 = to_bfp(p1), q2 = to_bfp(p2), q3 = to_bfp(p3);
+    BV q0 = to_bfp(p0), q1 = to_bfp(p1);
+    K2(BV q2 = to_bfp(p2), q3 = to_bfp(p3);)
 
     // l = l c + rowsum(P): P times a block of ones sums each row into all
     // eight of its lanes
     aie::accum<accfloat, 64> cpa;
     cpa.from_vector(cp);
-    float *lp = lrow + mq * 64;
-    ACC L = aie::mul(aie::load_v<64>(lp), cpa.template to_vector<float>());
-    L = mma(mma(mma(mma(L, q0, ones), q1, ones), q2, ones), q3, ones);
-    aie::store_v(lp, L.template to_vector<float>());
+    float *lp = lrow + mq * 8 * SUM_LANES;
+    ACC L = aie::mul(load_sums(lp), cpa.template to_vector<float>());
+    L = mma(mma(L, q0, ones), q1, ones);
+    K2(L = mma(mma(L, q2, ones), q3, ones);)
+    store_sums(lp, L.template to_vector<float>());
 
     // two output column blocks at a time: two independent accumulators
     aie::block_vector_input_buffer_stream<bfp16ebs8, 64> vs((bfp16ebs8 *)v);
     for (int nd = 0; nd < DH / 8; nd += 2) {
       bfloat16 *o0 = o + (nd * (LQ / 8) + mq) * 64, *o1 = o0 + (LQ / 8) * 64;
-      BV b0, b1, b2, b3, e0, e1, e2, e3;
-      vs >> b0 >> b1 >> b2 >> b3 >> e0 >> e1 >> e2 >> e3;
+      BV b0, b1, e0, e1 K2(, b2, b3, e2, e3);
+      vs >> b0 >> b1 K2(>> b2 >> b3) >> e0 >> e1 K2(>> e2 >> e3);
       ACC r0 = aie::mul(aie::load_v<64>(o0), cp);
       ACC r1 = aie::mul(aie::load_v<64>(o1), cp);
       r0 = mma(r0, q0, b0);
       r1 = mma(r1, q0, e0);
       r0 = mma(r0, q1, b1);
       r1 = mma(r1, q1, e1);
-      r0 = mma(r0, q2, b2);
-      r1 = mma(r1, q2, e2);
-      r0 = mma(r0, q3, b3);
-      r1 = mma(r1, q3, e3);
+      K2(r0 = mma(r0, q2, b2); r1 = mma(r1, q2, e2); r0 = mma(r0, q3, b3);
+         r1 = mma(r1, q3, e3);)
       aie::store_v(o0, r0.template to_vector<bfloat16>());
       aie::store_v(o1, r1.template to_vector<bfloat16>());
     }
@@ -234,7 +278,7 @@ void attn_fin(bfloat16 *o, float *ml) {
   ::aie::set_rounding(aie::rounding_mode::conv_even);
   for (int mq = 0; mq < LQ / 8; mq++) {
     aie::accum<accfloat, 64> ia;
-    ia.from_vector(aie::inv(aie::load_v<64>(ml + LQ / 2 + mq * 64)));
+    ia.from_vector(aie::inv(load_sums(ml + ML_SUMS + mq * 8 * SUM_LANES)));
     VB r = ia.template to_vector<bfloat16>();
     for (int nd = 0; nd < DH / 8; nd++) {
       bfloat16 *op = o + (nd * (LQ / 8) + mq) * 64;

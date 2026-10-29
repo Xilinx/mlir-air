@@ -104,6 +104,20 @@ class Engine:
         # whether it has ops for chunk pairs (_pair)
         self.gemm_format = self.man.get("gemm_format", "bfp16")
         self.gemm_pairs = self.man.get("gemm_pairs", True)
+        # the attention's operands: "bfp16" q and KV records with o in 8x8
+        # tiles (attn_bfp16.cc), or "bf16" q, records and o in 8x8 blocks
+        # (kv_rec, q_write, o_read), V in "attn_v_chunks" column chunks
+        self.attn_format = self.man.get("attn_format", "bfp16")
+        self.attn_v_chunks = self.man.get("attn_v_chunks", 1)
+        if self.attn_format == "bf16":
+            # every chunk whole 8-column blocks of V
+            n = self.attn_v_chunks
+            ok = isinstance(n, int) and n >= 1
+            if not ok or any(g.dh % (8 * n) for g in cfg.attn.values()):
+                raise ValueError(
+                    f"attn_v_chunks {n!r} does not split every attention "
+                    "group's dh into 8-column blocks"
+                )
         self.max_len = max_len
         # first kernel BO argument of each group: the GEMM's, then the
         # attention groups' in config order
@@ -320,23 +334,46 @@ class Engine:
             )
 
     def _attn_part(self, g, hg, s, bos):
-        """One group's q and o buffers for hg heads; q is bfp16 for attn_bfp16."""
+        """One group's q and o buffers for hg heads."""
         n = hg * D.M * g.dh
-        q = self.fp.bo(n * 9 // 8 if g.kern == "bfp16" else n * 2, s)
-        o = self.fp.bo(n * 2, s + 2)
-        if g.kern == "bfp16":
-            qm = view(q, np.uint8, (hg, D.M * g.dh * 9 // 8))
-        else:
+        if self.attn_format == "bf16":
+            q = self.fp.bo(n * 2, s)
             qm = view(q, bfloat16, (hg, D.M, g.dh))
+        else:
+            q = self.fp.bo(n * 9 // 8, s)
+            qm = view(q, np.uint8, (hg, D.M * g.dh * 9 // 8))
+        o = self.fp.bo(n * 2, s + 2)
         qm[:] = 0
         bos[s : s + 3] = [q, self.dummy[s + 1], o]
         om = view(o, bfloat16, (hg, D.M, g.dh))
-        return dict(q=q, qm=qm, o=o, om=om, hg=hg)
+        return dict(q=q, qm=qm, o=o, om=om, hg=hg, g=g)
+
+    def q_stage(self, p):
+        """bf16 [hg, M, dh] to write part p's q into, which q_write packs."""
+        shape = (p["hg"], D.M, p["g"].dh)
+        if getattr(self, "q16", None) is None or self.q16.shape != shape:
+            self.q16 = np.zeros(shape, bfloat16)
+        return self.q16
+
+    def q_write(self, p, q16):
+        """Part p's q from q16 (q_stage) into its buffer."""
+        if self.attn_format == "bf16":
+            H.q_tiles(q16, p["qm"])
+        else:
+            H.q_bfp(q16, p["g"].lkp, p["qm"])
+
+    def o_read(self, p, t, h0, k, dst):
+        """Rows [0, t) of part p's o into heads [h0, h0 + hg) of dst, the
+        A of GEMMs of depth k."""
+        if self.attn_format == "bf16":
+            H.o_tiles(p["om"], t, h0, k, dst, D.TM, D.TK)
+        else:
+            H.o_tile(p["om"], t, h0, k, dst, D.TM, D.TK, p["g"].lkp)
 
     @staticmethod
     def _nkv(g, n):
-        """attn_bfp16 reads K blocks in pairs; the extra one is masked."""
-        return n + n % 2 if g.kern == "bfp16" else n
+        """The cores read K blocks in pairs; the extra one is masked."""
+        return n + n % 2
 
     def attn_chunk(self, op, c):
         """Chunk c's attention dispatch state for op: per group its q and o
@@ -358,15 +395,15 @@ class Engine:
 
     def attn_start(self, kv, c, r0, t):
         """Queue chunk c's attention (tokens [r0, r0+t)) on its q buffers,
-        which the caller has filled; attn_wait returns the o views."""
+        which the caller has filled; attn_wait returns the parts."""
         op = kv["op"]
         at, ch = self.attn[op], self.attn_chunk(op, c)
         g = self.cfg.attn[at["groups"][0]]
         q0 = r0 // g.lkp
         nend = -(-(r0 + t) // g.lkp)
-        window = (self.cfg.windows or {}).get(op, g.window)
+        window = (self.cfg.windows or {}).get(op)
         k0 = max(0, q0 - window // g.lkp) if window else 0
-        rec = D.kv_rec(g) * 2
+        rec = self.kv_rec(g) * 2
         for a, p, kp in zip(at["groups"], ch["parts"], kv["parts"]):
             p["q"].sync(TO)
             sk = (id(kp["bo"]), k0)
@@ -395,41 +432,63 @@ class Engine:
             raise RuntimeError(f"fused prefill {tag}: {st}")
         for p in ch["parts"]:
             p["o"].sync(FROM)
-        return [p["om"] for p in ch["parts"]]
+        return ch["parts"]
 
-    def kv_bo(self, op):
+    def kv_rec(self, g):
+        """bf16 elements of one K block's record (D.kv_rec when bfp16)."""
+        return 2 * g.lkp * g.dh if self.attn_format == "bf16" else D.kv_rec(g)
+
+    def kv_write(self, k, v, c0, t, g, dst):
+        """Columns [c0, c0 + dh) of K/V bf16 [t, ld] as records from dst on."""
+        if self.attn_format == "bf16":
+            dvt = g.dh // self.attn_v_chunks
+            H.kv_rec_bf16(k, v, c0, t, g.dh, g.lkp, dvt, dst)
+        else:
+            H.kv_rec_bfp(k, v, c0, t, g.dh, g.lkp, dst)
+
+    def kv_bo(self, op, kv_heads=None):
         """The KV records of one layer for attention op `op`: per group, per
-        KV head, a block per lkp tokens."""
-        parts = []
-        for a in D.attn_ops(self.cfg)[op]:
+        KV head, a block per lkp tokens. Given the model's kv_heads, groups
+        that take the same KV heads share their records."""
+        groups = D.attn_ops(self.cfg)[op]
+        parts, made = [], {}
+        for i, a in enumerate(groups):
             g = self.cfg.attn[a]
-            nblk = g.max_blocks if g.kv_heads > 1 else -(-self.max_len // g.lkp)
-            assert nblk * g.lkp >= self.max_len, (nblk, g.lkp, self.max_len)
-            shape = (g.kv_heads, nblk, D.kv_rec(g))
-            bo = self.fp.bo(int(np.prod(shape)) * 2, self.slot[a] + 1)
-            parts.append(dict(bo=bo, m=view(bo, bfloat16, shape), a=a))
+            # the cores read an even number of blocks, so one past the last
+            last = -(-self.max_len // g.lkp)
+            nblk = g.max_blocks if g.kv_heads > 1 else last + 1
+            assert nblk > last, (nblk, g.lkp, self.max_len)
+            shape = (g.kv_heads, nblk, self.kv_rec(g))
+            h0 = i * kv_heads // len(groups) if kv_heads else None
+            key = (h0, g._replace(col=0)) if kv_heads else a
+            if key not in made:
+                bo = self.fp.bo(int(np.prod(shape)) * 2, self.slot[a] + 1)
+                made[key] = (bo, view(bo, bfloat16, shape))
+            bo, m = made[key]
+            parts.append(dict(bo=bo, m=m, a=a))
         return dict(op=op, parts=parts)
 
     def kv_append(self, kv, r0, k, v):
         """K/V [T, kv_heads, dh] of tokens [r0, r0+T) as KV records (r0 is a
-        whole number of blocks); the op's groups take the heads in order."""
-        h0 = 0
-        for p in kv["parts"]:
+        whole number of blocks); each of the op's groups takes the KV heads of
+        its q heads."""
+        groups, done = len(kv["parts"]), set()
+        for i, p in enumerate(kv["parts"]):
+            if id(p["bo"]) in done:
+                continue
+            done.add(id(p["bo"]))
+            h0 = i * k.shape[1] // groups
             g = self.cfg.attn[p["a"]]
             b0 = r0 // g.lkp
-            rec = D.kv_rec(g) * 2
+            rec = self.kv_rec(g) * 2
             nblk = p["m"].shape[1]
             nb = -(-k.shape[0] // g.lkp)
             for h in range(g.kv_heads):
-                if g.kern == "bfp16":
-                    kb = np.ascontiguousarray(k[:, h0 + h]).astype(bfloat16)
-                    vb = np.ascontiguousarray(v[:, h0 + h]).astype(bfloat16)
-                    H.kv_rec_bfp(kb, vb, 0, kb.shape[0], g.dh, g.lkp, p["m"][h, b0])
-                else:
-                    recs = P.kv_records(g, k[:, h0 + h], v[:, h0 + h])
-                    p["m"][h, b0 : b0 + nb] = recs
+                kb = np.ascontiguousarray(k[:, h0 + h]).astype(bfloat16)
+                vb = np.ascontiguousarray(v[:, h0 + h]).astype(bfloat16)
+                t, dst = kb.shape[0], p["m"][h, b0]
+                self.kv_write(kb, vb, 0, t, g, dst)
                 p["bo"].sync(TO, nb * rec, (h * nblk + b0) * rec)
-            h0 += g.kv_heads
 
     # ---- context ----
 

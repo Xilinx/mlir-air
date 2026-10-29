@@ -1,0 +1,303 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+#include "aie_array_layout.h"
+#include "aie_kernel_utils.h"
+#include "typedef.hpp"
+
+#ifdef HAS_QK_NORM
+///@brief pseduo rms norm: y = x * w
+///@param y: output
+///@param x_buf: copy of x
+///@param x: input
+///@param w: weight
+///@param overwrite_x_buf: if true, overwrite x_buf with x
+template <int N = DH>
+void qk_norm(const bf16 *restrict x, const bf16 *restrict w) {
+  bf16 *it_x = const_cast<bf16 *>(x);
+  bf16 *it_w = const_cast<bf16 *>(w);
+  const float epsilon = 1e-6;
+
+  constexpr int vector_size = 16;
+  constexpr float one_over_D = 1.0f / (float)N;
+
+  aie::accum<accfloat, vector_size> sum_squares = aie::zeros<accfloat>();
+  aie::vector<float, vector_size> mx_vec;
+
+  const int F = N / vector_size;
+  AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(F, F) for (int i = 0; i < F; i++) {
+    auto x_vec = aie::load_v<vector_size>(it_x);
+    sum_squares = aie::mac_square(sum_squares, x_vec);
+    it_x += vector_size;
+  }
+
+  it_x = const_cast<bf16 *>(x);
+
+  mx_vec = sum_squares.template to_vector<float>();
+  float sum = aie::reduce_add(mx_vec);
+  sum = sum * one_over_D;
+  sum = sum + epsilon;
+  float x2, divrms;
+  const float threehalfs = 1.5F;
+  uint32_t i_u32;
+
+  x2 = sum * 0.5F;
+  divrms = sum;
+  i_u32 = *(uint32_t *)&divrms;      // evil floating point bit level hacking
+  i_u32 = 0x5f3759df - (i_u32 >> 1); // what the fuck?
+  divrms = *(float *)&i_u32;
+  divrms = divrms * (threehalfs - (x2 * divrms * divrms)); // 1st iteration
+  divrms =
+      divrms * (threehalfs -
+                (x2 * divrms * divrms)); // 2nd iteration, this can be removed
+
+  AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(F, F) for (int i = 0; i < F; i++) {
+    aie::vector<bf16, vector_size> x_vec = aie::load_v<vector_size>(it_x);
+    aie::vector<bf16, vector_size> w_vec = aie::load_v<vector_size>(it_w);
+    // OpenELM: normalize in FP32, round to BF16, then BF16 weight multiply.
+    aie::vector<float, vector_size> xf =
+        aie::mul(x_vec, (bf16)1.0f).template to_vector<float>();
+    aie::vector<bf16, vector_size> normed =
+        aie::mul(xf, divrms).template to_vector<bf16>();
+    aie::vector<bf16, vector_size> o_vec =
+        aie::mul(normed, w_vec).template to_vector<bf16>();
+    aie::store_v(it_x, o_vec);
+    it_x += vector_size;
+    it_w += vector_size;
+  }
+}
+#endif
+
+// Rotates the leading ROPE_DIM of the head (halves ROPE_DIM/2 apart) and copies
+// the remaining DH-ROPE_DIM through untouched. ROPE_DIM == DH (every model but
+// Phi-4) leaves the tail loop empty, so those builds are unchanged.
+void apply_rope(bf16 *restrict y, bf16 *restrict x, bf16 *restrict cos_val,
+                bf16 *restrict sin_val) {
+  constexpr int vector_size = 16;
+  const int DH_2 = ROPE_DIM / 2;
+  constexpr int F = ROPE_DIM / 2 / vector_size;
+  bf16 *it_y_p1 = y;
+  bf16 *it_y_p2 = y + DH_2;
+  bf16 *it_x_p1 = x;
+  bf16 *it_x_p2 = x + DH_2;
+  bf16 *it_cos = cos_val;
+  bf16 *it_sin = sin_val;
+
+  AIE_PREPARE_FOR_PIPELINING AIE_LOOP_RANGE(8) for (int i = 0; i < F; i++) {
+    aie::vector<bf16, vector_size> x1_vec = aie::load_v<vector_size>(it_x_p1);
+    aie::vector<bf16, vector_size> x2_vec = aie::load_v<vector_size>(it_x_p2);
+    aie::vector<bf16, vector_size> cos_vec = aie::load_v<vector_size>(it_cos);
+    aie::vector<bf16, vector_size> sin_vec = aie::load_v<vector_size>(it_sin);
+    aie::accum<accfloat, vector_size> C = aie::mul(x1_vec, cos_vec);
+#if !defined(__chess__)
+    // Peano can't legalize vector FNEG on bf16 (aie::neg) -> emits code that
+    // stalls the core; use multiply-subtract (C - x2*sin) instead.
+    C = aie::msc(C, x2_vec, sin_vec);
+#else
+    aie::vector<bf16, vector_size> neg_sin_vec = aie::neg(sin_vec);
+    C = aie::mac(C, x2_vec, neg_sin_vec);
+#endif
+    aie::accum<accfloat, vector_size> D = aie::mul(x1_vec, sin_vec);
+    D = aie::mac(D, x2_vec, cos_vec);
+    aie::store_v(it_y_p1, C.template to_vector<bf16>());
+    aie::store_v(it_y_p2, D.template to_vector<bf16>());
+    it_y_p1 += vector_size;
+    it_y_p2 += vector_size;
+    it_x_p1 += vector_size;
+    it_x_p2 += vector_size;
+    it_cos += vector_size;
+    it_sin += vector_size;
+  }
+  // Partial rotary (Phi-4): the trailing DH-ROPE_DIM of the head is not
+  // rotated, it is copied verbatim. Compile-time empty when ROPE_DIM == DH.
+  if constexpr (ROPE_DIM < DH) {
+    bf16 *it_x_t = x + ROPE_DIM;
+    bf16 *it_y_t = y + ROPE_DIM;
+    AIE_PREPARE_FOR_PIPELINING
+    for (int i = 0; i < (DH - ROPE_DIM) / vector_size; i++) {
+      aie::store_v(it_y_t, aie::load_v<vector_size>(it_x_t));
+      it_x_t += vector_size;
+      it_y_t += vector_size;
+    }
+  }
+}
+
+#ifdef HAS_QKV_BIAS
+///@brief add the per-projection bias (Qwen2.5 q/k/v_proj.bias) to qkv IN-PLACE,
+/// BEFORE RoPE. Bias slab is laid out [q(DQ)|k(DK)|v(DV)] and lives at
+/// rope_w+DH (appended after the DH cos/sin LUT in the rope weight buffer).
+void add_q_k_v_bias(const bf16 *q_k_v_bias_in, bf16 *qkv) {
+  constexpr uint32_t vec_len = 16;
+  static_assert((DQ + DK + DV) % vec_len == 0);
+  const bf16 *bias_ptr = q_k_v_bias_in;
+  AIE_PREPARE_FOR_PIPELINING
+  AIE_LOOP_RANGE((DQ + DK + DV) / vec_len, (DQ + DK + DV) / vec_len)
+  for (int i = 0; i < DQ + DK + DV; i += vec_len) {
+    aie::vector<bf16, vec_len> bias_vec = aie::load_v<vec_len>(bias_ptr);
+    aie::vector<bf16, vec_len> val_vec = aie::load_v<vec_len>(qkv);
+    aie::store_v(qkv, aie::add(bias_vec, val_vec));
+    bias_ptr += vec_len;
+    qkv += vec_len;
+  }
+}
+#endif
+
+///@brief pseduo RoPE: q = q, k = k + 1, v = v - 1
+///@param y: output
+///@param x: input
+///@param w: weight
+///@note: C = A cos - B sin, D = A sin + B cos
+void pseduo_rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
+                 bf16 *restrict qkv, bf16 *restrict rope_w) {
+  bf16 *it_q = q;
+  bf16 *it_k = k;
+  bf16 *it_v = v;
+  bf16 *it_qkv = qkv;
+  bf16 *it_rope = rope_w;
+#ifdef FULL_QK_NORM
+  qk_norm<DQ>(qkv, rope_w + DH);
+  qk_norm<DK>(qkv + DQ, rope_w + DH + DQ);
+#elif defined(HAS_QK_NORM)
+  bf16 *q_norm_weight = rope_w + DH;
+  bf16 *k_norm_weight = rope_w + DH + DH;
+#endif
+  const int DH_2 = DH / 2;
+
+  // The cos/sin LUT is ROPE_DIM wide (== DH for full rotary), so sin starts at
+  // ROPE_DIM/2, not DH/2. The zero-padding stores below stay DH-wide: that pads
+  // whole q heads for GQA-segment alignment, independent of the rotary width.
+  bf16 *cos_val = it_rope;
+  bf16 *sin_val = it_rope + ROPE_DIM / 2;
+
+  for (int h = 0; h < NUM_KV_HEADS; h++) {
+    for (int g = 0; g < Q_HEADS_PER_GROUP; g++) {
+#if defined(HAS_QK_NORM) && !defined(FULL_QK_NORM)
+      qk_norm(it_qkv, q_norm_weight);
+#endif
+      apply_rope(it_q, it_qkv, cos_val, sin_val);
+      it_q += DH;
+      it_qkv += DH;
+    }
+    aie::vector<bf16, DH_2> zero = aie::zeros<bf16, DH_2>();
+    for (int i = 0; i < ATTN_GROUPS_PADDING; i++) {
+      aie::store_v(it_q, zero);
+      it_q += DH_2;
+      aie::store_v(it_q, zero);
+      it_q += DH_2;
+    }
+  }
+
+  for (int h = 0; h < NUM_KV_HEADS; h++) {
+#if defined(HAS_QK_NORM) && !defined(FULL_QK_NORM)
+    qk_norm(it_qkv, k_norm_weight);
+#endif
+    apply_rope(it_k, it_qkv, cos_val, sin_val);
+    it_k += DH;
+    it_qkv += DH;
+  }
+
+  // move v from qkv to v, N
+  for (int i = 0; i < DV / 32; i++) {
+    aie::vector<bf16, 32> v_vec = aie::load_v<32>(it_qkv);
+    aie::store_v(it_v, v_vec);
+    it_v += 32;
+    it_qkv += 32;
+  }
+}
+
+extern "C" {
+
+void rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
+          bf16 *restrict qkv, bf16 *restrict rope_w) {
+  aie_round_nearest_even();
+  constexpr int qkv_prod_lock = 0;
+  constexpr int qkv_cons_lock = 1;
+  constexpr int q_prod_lock = 2;
+  constexpr int q_cons_lock = 3;
+  constexpr int k_prod_lock = 4;
+  constexpr int k_cons_lock = 5;
+  constexpr int v_prod_lock = 6;
+  constexpr int v_cons_lock = 7;
+  constexpr int rope_prod_lock = 8;
+  constexpr int rope_cons_lock = 9;
+  _lock_acquire(qkv_cons_lock);
+  _lock_acquire(rope_cons_lock);
+  _lock_acquire(q_prod_lock);
+  _lock_acquire(k_prod_lock, 2);
+  _lock_acquire(v_prod_lock, 2);
+#ifdef HAS_QKV_BIAS
+  add_q_k_v_bias(rope_w + DH, qkv); // Qwen2.5 q/k/v bias, before RoPE
+#endif
+  pseduo_rope(q, k, v, qkv, rope_w);
+  _lock_release(rope_prod_lock);
+  _lock_release(qkv_prod_lock);
+  _lock_release(q_cons_lock);
+  _lock_release(v_cons_lock, 2);
+  _lock_release(k_cons_lock, 2);
+}
+
+// MLIR-managed-lock decode (q4nx_decode_repro): pure-compute leaf so the rope
+// core's lock/control-flow can live in the aie.core body (explicit
+// aie.use_lock).
+void rope_compute(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
+                  bf16 *restrict qkv, bf16 *restrict rope_w, int _arm) {
+  aie_round_nearest_even();
+  (void)_arm; // per-token RTP arm-gate operand (kept alive so AIR emits the arm
+              // lock)
+#ifdef HAS_QKV_BIAS
+  add_q_k_v_bias(rope_w + DH, qkv); // Qwen2.5 q/k/v bias, before RoPE
+#endif
+  pseduo_rope(q, k, v, qkv, rope_w);
+}
+
+// Arm-switched entry for the HYBRID (one binary, two layer types). Identical to
+// rope_compute on an attention wave; a defined no-op on a ShortConv one.
+//
+// This is the reference's IS_ATTN branch, and it is load-bearing rather than an
+// optimisation. pseduo_rope normalises IN PLACE: qk_norm const_casts its input
+// and writes the normalised head back over it. On a ShortConv wave `qkv` is not
+// a QKV vector at all -- it is the first half of the assembled [B|C|X] that
+// shortconv_stage2 has still to copy across to the mixer tile -- so running
+// rope over it destroys B. Worse, a ShortConv layer's rope_w slab holds the
+// depthwise taps rather than a cos/sin/q-norm table, so B is overwritten with
+// noise rather than merely rescaled.
+//
+// Measured on device, 1-layer hybrid, layer 0 (ShortConv), against the packed
+// reference for B*X: rope enabled gave norm 0.81 vs 8.79 and cos 0.096; rope
+// pointed at a scratch buffer (ROPE_SCRATCH_QKV=1) gave cos 0.9999. That is the
+// whole of the hybrid's numerics failure.
+//
+// A separate symbol rather than a branch inside rope_compute: every shipped
+// model calls rope_compute with arm == 1 meaning "decode", so an `arm != 2`
+// test there would disable RoPE for all of them. Keeping the hybrid on its own
+// entry also leaves their emitted IR byte-identical.
+void rope_compute_hyb(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
+                      bf16 *restrict qkv, bf16 *restrict rope_w, int _arm) {
+  aie_round_nearest_even();
+  // arm: 0 = lm-head wave, 1 = ShortConv layer, 2 = attention layer.
+  if (_arm != 2) {
+    // The q/k/v channel puts still fire on every decode wave -- the CUs run
+    // every wave and starve otherwise -- so these buffers must be DEFINED even
+    // though every consumer discards them. Uninitialised L1 can hold NaN bit
+    // patterns, and a NaN through flash attention is harder to recognise than a
+    // zero. Zeroing is a few hundred cycles against a wave dominated by the
+    // ShortConv stage.
+    constexpr int VS = 16;
+    constexpr int Q_LEN =
+        NUM_KV_HEADS * (Q_HEADS_PER_GROUP + ATTN_GROUPS_PADDING) * DH;
+    constexpr int K_LEN = NUM_KV_HEADS * DH;
+    aie::vector<bf16, VS> z = aie::zeros<bf16, VS>();
+    AIE_PREPARE_FOR_PIPELINING for (int i = 0; i < Q_LEN; i += VS)
+        aie::store_v(q + i, z);
+    AIE_PREPARE_FOR_PIPELINING for (int i = 0; i < K_LEN; i += VS)
+        aie::store_v(k + i, z);
+    AIE_PREPARE_FOR_PIPELINING for (int i = 0; i < DV; i += VS)
+        aie::store_v(v + i, z);
+    return;
+  }
+#ifdef HAS_QKV_BIAS
+  add_q_k_v_bias(rope_w + DH, qkv);
+#endif
+  pseduo_rope(q, k, v, qkv, rope_w);
+}
+}

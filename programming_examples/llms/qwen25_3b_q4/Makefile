@@ -148,6 +148,7 @@ help:
 	@echo "Correctness:"
 	@echo "  make verify          Top-k token-set gate vs HF bf16 (2 prompts x 32 tokens, k=5)"
 	@echo "  make verify-full     Same over every prompt in the shared prompt file"
+	@echo "  make accuracy         Teacher-forced PPL + KL divergence vs the HF reference on wikitext-2 (see verify/accuracy.mk)"
 	@echo "  make verify-paris    Fast prefill-only weight-integrity smoke (no decode build)"
 	@echo "  make diagnosis       Single-prompt lens through the shared runner (informational)"
 	@echo "  make profile         Perf capture (prefill TTFT + decode tok/s) for bench/extract_perf.py"
@@ -336,3 +337,10 @@ compile-decode: compile-decode-elf
 FUSED_MODEL := qwen25_3b_q4
 MODEL_SOURCE := $(MODEL)
 include $(srcdir)/../shared/fused_prefill/fused_prefill.mk
+
+# verify runs from llms/ with the adapter key in MODEL_CHOICE; so does accuracy.
+ACC_MODEL := $(MODEL_CHOICE)
+ACC_DIR := $(srcdir)/..
+ACC_ENV := Q4NX_MODEL_SOURCE=$(MODEL)
+
+include $(srcdir)/../verify/accuracy.mk

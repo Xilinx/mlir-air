@@ -35,10 +35,12 @@ def load(build_dir):
     _l = ctypes.c_long
     _lib.head_post.argtypes = [_p, _i, _i, _i, _i, _i, _p, _p, _f, _p, _p, _i, _f]
     _lib.head_post.argtypes += [_p, _l, _l]
-    _lib.kv_rec.argtypes = [_p, _p, _i, _i, _i, _i, _i, _i, _p]
-    _lib.o_tile.argtypes = [_p, _i, _i, _i, _i, _i, _i, _i, _i, _p]
+    _lib.o_tile.argtypes = [_p, _i, _i, _i, _i, _i, _i, _i, _i, _i, _p]
     _lib.kv_rec_bfp.argtypes = [_p, _p, _i, _i, _i, _i, _i, _p]
     _lib.q_bfp.argtypes = [_p, _i, _i, _i, _i, _p]
+    _lib.o_tiles.argtypes = [_p, _i, _i, _i, _i, _i, _i, _i, _i, _p]
+    _lib.kv_rec_bf16.argtypes = [_p, _p, _i, _i, _i, _i, _i, _i, _p]
+    _lib.q_tiles.argtypes = [_p, _i, _i, _i, _p]
 
 
 _tiles = {}
@@ -243,18 +245,21 @@ def head_post(src, t, col0, nh, dh, bias, norm, eps, rope, scale, dst, hs, rs):
     )
 
 
-def kv_rec(k, v, c0, t, dh, lkp, dvt, dst):
-    """KV records of the head at column c0 of k / v bf16 [t, ld] into dst."""
-    _lib.kv_rec(
-        k.ctypes.data, v.ctypes.data, k.shape[1], c0, t, dh, lkp, dvt, dst.ctypes.data
-    )
-
-
-def o_tile(o, t, h0, k, dst, tm, tk):
-    """Heads of o bf16 [nh, M, dh] into heads [h0, h0 + nh) of dst (A, K = k)."""
+def o_tile(o, t, h0, k, dst, tm, tk, tq):
+    """Heads of o bf16 [nh, M, dh], in tiles of tq rows as the attention cores
+    write them, into heads [h0, h0 + nh) of dst (A, K = k)."""
     nh, m, dh = o.shape
     a = _bf16_tiles(dst, tm, tk)
-    _lib.o_tile(o.ctypes.data, t, nh, dh, m, h0, k, tm, tk, a.ctypes.data)
+    _lib.o_tile(o.ctypes.data, t, nh, dh, m, tq, h0, k, tm, tk, a.ctypes.data)
+    _to_bfp(a, t, dst, h0 * dh, (h0 + nh) * dh)
+
+
+def o_tiles(o, t, h0, k, dst, tm, tk):
+    """Heads of o bf16 [nh, M, dh] in 8x8 blocks (q_tiles' order) into heads
+    [h0, h0 + nh) of dst (A, K = k)."""
+    nh, m, dh = o.shape
+    a = _bf16_tiles(dst, tm, tk)
+    _lib.o_tiles(o.ctypes.data, t, nh, dh, m, h0, k, tm, tk, a.ctypes.data)
     _to_bfp(a, t, dst, h0 * dh, (h0 + nh) * dh)
 
 
@@ -263,6 +268,23 @@ def kv_rec_bfp(k, v, c0, t, dh, lkp, dst):
     _lib.kv_rec_bfp(
         k.ctypes.data, v.ctypes.data, k.shape[1], c0, t, dh, lkp, dst.ctypes.data
     )
+
+
+def kv_rec_bf16(k, v, c0, t, dh, lkp, dvt, dst):
+    """Columns [c0, c0 + dh) of k and v bf16 [t, ld] as bf16 records into dst:
+    per lkp rows the K tile's 8x8 blocks [lkp/8, dh/8], then V's in column
+    chunks dvt wide, each [lkp/8, dvt/8]; each block row-major, rows past t
+    zero."""
+    _lib.kv_rec_bf16(
+        k.ctypes.data, v.ctypes.data, k.shape[1], c0, t, dh, lkp, dvt, dst.ctypes.data
+    )
+
+
+def q_tiles(q, dst):
+    """q bf16 [nh, M, dh] into dst as 8x8 blocks, per head [M/8, dh/8], each
+    row-major."""
+    nh, m, dh = q.shape
+    _lib.q_tiles(q.ctypes.data, nh, m, dh, dst.ctypes.data)
 
 
 def q_bfp(q, tq, dst):

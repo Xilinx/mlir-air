@@ -7047,17 +7047,21 @@ public:
   }
 
   /// Where to release `get`'s slot when its channel's gets reuse a buffer.
-  /// The channel's BDs share one counting lock, so release k of a trip admits
-  /// BD `slots + k`, whichever buffer that fills: the release follows that
-  /// buffer's last use and release k - 1. Fails unless the core's gets on this
+  /// The BDs of one rotation of buffers on the channel share one counting
+  /// lock (see getLockForDMA), so release k of a trip admits BD `slots + k`
+  /// of the rotation, whichever buffer that fills: the release follows that
+  /// buffer's last use and release k - 1. Gets into other buffers count on
+  /// pairs of their own and are not part of the ring. Returns null, for the
+  /// usual release after the get's last use, unless the core's gets on this
   /// DMA channel are one channel, in one block or in blocks that each take the
-  /// channel's buffers whole and in order.
+  /// channel's buffers whole and in order. Fails, with an error, when the
+  /// lock's credits let the DMA refill a buffer before its last use.
   FailureOr<Operation *> findRingReleasePoint(air::MemcpyInterface get,
                                               ArrayRef<Operation *> ringOps,
                                               int64_t slots) {
     auto self = dyn_cast<air::ChannelGetOp>(get.getOperation());
     if (!self)
-      return failure();
+      return nullptr;
     Block *block = get->getBlock();
     auto core = get->getParentOfType<AIE::CoreOp>();
     auto chan = self.getChanName();
@@ -7067,7 +7071,14 @@ public:
         continue;
       auto g = dyn_cast<air::ChannelGetOp>(o);
       if (!g || g.getChanName() != chan)
-        return failure();
+        return nullptr;
+      // gets into buffers of another rotation count on lock pairs of their
+      // own (see getLockForDMA)
+      if (!air::buffersShareRotation(
+              air::getChannelDeclarationThroughSymbol(self),
+              air::resolveBufferRoot(self.getMemref()),
+              air::resolveBufferRoot(g.getMemref())))
+        continue;
       byBlock[g->getBlock()].push_back(g);
     }
     for (auto &[b, gets] : byBlock)
@@ -7077,7 +7088,7 @@ public:
     SmallVector<air::ChannelGetOp> ring = byBlock.lookup(block);
     int64_t n = ring.size();
     if (n < 2 || slots < 1)
-      return failure();
+      return nullptr;
     // Gets in several blocks: each block must take the BD chain whole, in
     // order, so the DMA is at the chain's start whenever a block begins, and
     // no block may hold another, whose gets would run in the middle of it.
@@ -7085,7 +7096,7 @@ public:
       for (Block *b : llvm::make_first_range(byBlock))
         for (Block *o : llvm::make_first_range(byBlock))
           if (b != o && b->findAncestorOpInBlock(*o->getParentOp()))
-            return failure();
+            return nullptr;
       SmallVector<Value> roots, chain;
       for (auto g : ring)
         roots.push_back(air::resolveBufferRoot(g.getMemref()));
@@ -7113,16 +7124,28 @@ public:
                             [&](size_t i) { return roots[i] != roots[i % p]; }))
           p++;
         if (!takesWhole(ArrayRef<Value>(roots).take_front(p)))
-          return failure();
+          return nullptr;
       }
     }
     auto *it = llvm::find(ring, self);
     if (it == ring.end())
-      return failure();
+      return nullptr;
     int64_t idx = it - ring.begin();
     auto root = [&](int64_t i) {
       return air::resolveBufferRoot(ring[i % n].getMemref());
     };
+    auto unsafe = [&]() -> FailureOr<Operation *> {
+      get->emitOpError("shares a counting lock with the other buffers of its "
+                       "rotation, but the lock's credits let the DMA refill a "
+                       "buffer before the core's last use of it");
+      return failure();
+    };
+    // The lock's initial credits admit the first `slots` fills before the
+    // core releases anything, so those must fill distinct buffers.
+    for (int64_t i = 0; i < std::min(slots, n); i++)
+      for (int64_t j = 0; j < i; j++)
+        if (root(i) == root(j))
+          return unsafe();
 
     // last op after `from` and before `to` (or the block end) touching any
     // view of `buf`; deallocs do not count
@@ -7151,7 +7174,7 @@ public:
         if (root(q) != buf)
           continue;
         if (q >= n)
-          return failure(); // more credits than buffers in the ring
+          return unsafe(); // more credits than buffers in the ring
         Operation *next = m < n ? ring[m].getOperation() : nullptr;
         Operation *use = lastUse(ring[q], next, buf);
         Operation *bound = use ? use : ring[q].getOperation();
@@ -7334,8 +7357,10 @@ public:
                        ? findRingReleasePoint(memcpyOpIf,
                                               dma_alloc.value().memcpyOps,
                                               *relLockOp.getInit())
-                       : FailureOr<Operation *>(failure());
-               succeeded(ringPos)) {
+                       : FailureOr<Operation *>(nullptr);
+               failed(ringPos)) {
+      return failure();
+    } else if (*ringPos) {
       // the channel's gets reuse a buffer: release as the DMA refills
       builder.setInsertionPointAfter(*ringPos);
       AIE::UseLockOp::create(builder, (*ringPos)->getLoc(), relLockOp,
@@ -7494,8 +7519,9 @@ public:
       // One entry per BD task, in program order: the repeat count the task runs
       // at, and the transfers it chains. A repeat count can recur -- two loops
       // with equal trip counts are two tasks, not one (see getRepeatCounts).
+      llvm::DenseMap<Operation *, int64_t> timesPerTrip;
       SmallVector<std::pair<int, llvm::SetVector<Operation *>>> repeat_counts =
-          air::getRepeatCounts(memcpy_ops);
+          air::getRepeatCounts(memcpy_ops, &timesPerTrip);
 
       // Note: each entry in repeat_counts is one BD task, in program order. If
       // the whole channel collapses to a single entry -- every memcpy op on it
@@ -7507,9 +7533,25 @@ public:
         if (rep == air::kUnsupportedRunTimeRepeatCount)
           return task_ops.front()->emitOpError(
               "repeats a run-time number of times, but also a fixed number of "
-              "times within it, or in run-time loops with other bounds than "
+              "times within it beside other transfers or from a re-fed "
+              "buffer, or other times in a row than the transfers its BD "
+              "also stands for, or in run-time loops with other bounds than "
               "those of the transfers before it on its DMA channel; one "
               "circular BD chain cannot express that");
+      // The chain sends in BD order, so a core must release its puts in that
+      // order. A put sent several times in a row per trip waits inside its
+      // loop for the DMA to send its previous fill, while the DMA may wait for
+      // an earlier put whose release comes after the loop.
+      if constexpr (std::is_same_v<dmaAllocatorTy, air::TileDMAAllocator>) {
+        if (dir == AIE::DMAChannelDir::MM2S && repeat_counts.size() == 1 &&
+            repeat_counts.front().second.size() > 1)
+          for (Operation *op : repeat_counts.front().second)
+            if (timesPerTrip.lookup(op) > 1)
+              return op->emitOpError(
+                  "is sent several times in a row per trip from a core, "
+                  "beside other transfers on its DMA channel; the core's "
+                  "releases cannot follow the order of the circular BD chain");
+      }
       if (!infiniteBDLoopMode)
         for (auto &[rep, task_ops] : repeat_counts)
           if (rep == air::kRunTimeRepeatCount)
@@ -7558,12 +7600,13 @@ public:
       // For every BD task
       for (auto &[rep, task_ops] : repeat_counts) {
         // A circular chain sends each re-fed transfer as many times per fill
-        // as its flow needs (see getCircularChainBDs); a finite task runs its
-        // BDs once per repeat.
+        // as its flow needs, and a transfer run several times in a row per
+        // trip that many times (see getCircularChainBDs); a finite task runs
+        // its BDs once per repeat.
         SmallVector<Operation *> bd_ops =
             infiniteBDLoopMode
                 ? air::getCircularChainBDs(memcpy_ops, task_ops.getArrayRef(),
-                                           sendsPerFill)
+                                           sendsPerFill, timesPerTrip)
                 : SmallVector<Operation *>(task_ops.begin(), task_ops.end());
         // The block containing aie.dma_start
         Block *start_bb = new Block();

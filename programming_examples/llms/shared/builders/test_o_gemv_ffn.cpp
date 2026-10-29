@@ -5,9 +5,8 @@
 //
 // XRT (ELF) profiling harness for the 15-arg LLAMA decode ELF2 op
 // (matvec_2tile_add + matvec_swiglu_rms + matvec_2tile_add fused via
-// arg6-row0 subview routing). Works for both the bf16 baseline
-// (o_gemv_ffn) and the full int4 variant (o_gemv_ffn_int4) — size
-// the three weight BOs from the CLI.
+// arg6-row0 subview routing) of o_gemv_ffn — size the three weight BOs
+// from the CLI.
 
 #include "cxxopts.hpp"
 #include <algorithm>
@@ -64,7 +63,7 @@ int main(int argc, const char *argv[]) {
   xrt::hw_context context(device, ctx_elf);
   auto kernel = xrt::ext::kernel(context, vm["kernel"].as<std::string>());
 
-  // 15 args (see o_gemv_ffn_int4_multi.py docstring for ABI).
+  // 15 args (see o_gemv_ffn_multi.py for ABI).
   xrt::bo bo0 = xrt::ext::bo{device, w0_bytes};      // wo
   xrt::bo bo1 = xrt::ext::bo{device, emb_bytes};     // attn_out
   xrt::bo bo2 = xrt::ext::bo{device, emb_bytes};     // dead

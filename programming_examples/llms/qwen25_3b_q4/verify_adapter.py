@@ -68,6 +68,41 @@ _N_LAYERS = _w.NUM_LAYERS
 _SEQ_LEN = int(os.environ.get("QWEN_Q4_SEQ_LEN", "2048"))
 
 
+def build_dequant_hf_model(npu_model_name: str, hf_ref_model: str, config):
+    """The `make accuracy ACC_REF=dequant` reference: the bf16 checkpoint with
+    the Q4_0 weights qwen25_3b_q4_requant packs as stored, dequantized, and with
+    the bundle's own norms and input embedding. Those differ from the
+    checkpoint's (the bundle is not a plain round trip of it), and the NPU
+    reads them from the bundle. The loader pads the MLP axis to INTER_PAD with
+    zeros; the reference takes the model's own shape out of it."""
+    from dequant_reference import LM_HEAD, dequantized_reference
+
+    qm = _w.open_weight_source(QWEN_Q4_MODEL_SOURCE)
+
+    def unpadded(get):
+        return lambda shape: np.asarray(get())[: shape[0], : shape[1]]
+
+    weights = [
+        (
+            f"model.layers.{k}.{t}.weight",
+            unpadded(lambda k=k, nm=nm: qm.proj_fp(k, nm)),
+        )
+        for k in range(config.n_layers)
+        for nm, (t, _, _) in qm._PROJ.items()
+    ]
+    weights.append((LM_HEAD, unpadded(qm.lm_head_fp)))
+    norms = [
+        f"model.layers.{k}.{n}.weight"
+        for k in range(config.n_layers)
+        for n in ("input_layernorm", "post_attention_layernorm")
+    ]
+    for name in norms + ["model.norm.weight", "model.embed_tokens.weight"]:
+        weights.append(
+            (name, lambda shape, n=name: np.asarray(qm.bf16(n)).reshape(shape))
+        )
+    return dequantized_reference(hf_ref_model, weights)
+
+
 def build_config():
     return LlamaConfig(n_layers=_N_LAYERS)
 
@@ -169,6 +204,10 @@ class NpuRunner:
             logits_at_pred=logits,
             top1_token=first,
         )
+
+    def prefill_logits(self, prompt_tokens: np.ndarray, logits_from: int):
+        """Logits of the prompt's rows from logits_from on."""
+        return fused_prefill.prefill_logits(self.prefiller, prompt_tokens, logits_from)
 
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:
         # `current_pos` is the absolute position of `input_token` (the runner

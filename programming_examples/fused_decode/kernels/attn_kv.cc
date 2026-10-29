@@ -317,6 +317,59 @@ __attribute__((noinline)) void scale_div_aie(bf16 *a, bf16 *o, float *l) {
   }
 }
 
+#elif ATTN_IMPL == ATTN_IMPL_1x4x1 && MODEL_TYPE == SMOLLM3_3B
+
+// Four real query heads per KV head. Keep one matrix accumulator live, and
+// carry online-softmax state through ordinary float vector operations.
+ATTN_HOT void calculate_l(bf16 *__restrict scores, float *__restrict correction,
+                          float *__restrict denominator) {
+  aie_round_nearest_even();
+  for (int h = 0; h < 4; ++h) {
+    auto values = aie::load_v<16>(scores + h * 16);
+    auto values_f = aie::mul(values, (bf16)1).template to_vector<float>();
+    denominator[h] = denominator[h] * correction[h] + aie::reduce_add(values_f);
+  }
+}
+
+typedef float y_acc_dtype;
+template <unsigned colQ, unsigned r, unsigned s, unsigned t, bool RESCALE>
+ATTN_HOT void attn_fv(bf16 *__restrict scores, bf16 *__restrict values,
+                      y_acc_dtype *__restrict output,
+                      float *__restrict correction) {
+  aie_round_nearest_even();
+  using MMUL = aie::mmul<r, s, t, bf16, bf16, accfloat>;
+  auto score = aie::load_v<64>(scores);
+  auto first = aie::filter_even(score, 8);
+  auto second = aie::filter_odd(score, 8);
+  auto c = aie::concat(aie::broadcast<float, 8>(correction[0]),
+                       aie::broadcast<float, 8>(correction[1]),
+                       aie::broadcast<float, 8>(correction[2]),
+                       aie::broadcast<float, 8>(correction[3]));
+  for (unsigned d = 0; d < colQ; ++d) {
+    auto previous = aie::load_v<32>(output + d * 32);
+    if constexpr (RESCALE)
+      previous = aie::mul(c, previous).template to_vector<float>();
+    MMUL acc(aie::zeros<bf16, 32>());
+    acc.mac(first, aie::load_v<64>(values + d * 64));
+    acc.mac(second, aie::load_v<64>(values + (colQ + d) * 64));
+    aie::store_v(output + d * 32,
+                 aie::add(acc.template to_vector<float>(), previous));
+  }
+}
+
+template <unsigned N>
+ATTN_HOT void scale_div_aie(bf16 *input, bf16 *output, float *denominator) {
+  aie_round_nearest_even();
+  bf16 inverse[4];
+  for (int h = 0; h < 4; ++h)
+    inverse[h] = (bf16)getInvBf16(denominator[h]);
+  for (int d = 0; d < N / 32; ++d)
+    for (int h = 0; h < 4; ++h)
+      for (int k = 0; k < 8; ++k)
+        output[d * 32 + h * 8 + k] =
+            (bf16)((float)input[d * 32 + h * 8 + k] * (float)inverse[h]);
+}
+
 #elif ATTN_IMPL == ATTN_IMPL_1x4x1
 
 // The score block is Q_HEADS_PADDED_PER_CU heads x 16 keys, and the r=4 mmul

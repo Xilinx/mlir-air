@@ -2086,28 +2086,10 @@ LogicalResult air::canonicalizeWrapAndStrideList(
   }
 
   // Canonicalize dimensions with size = 1
-  SmallVector<int> erase_dims;
-  for (int i = sizes.size() - 1; i >= 0; i--) {
-    auto const_size = getConstantIntValue(sizes[i]);
-    if (!const_size)
-      continue;
-    if (*const_size != 1)
-      continue;
-    erase_dims.push_back(i);
-  }
-
-  // Empty list is the sentinel for "full-volume contiguous access" (see final
-  // block below). If erasing all dims but the access is partial, keep the
-  // innermost dim; eraseWrapNStrideDim composes outer offsets into inner dims.
-  int64_t access_volume = 1;
-  for (auto s : sizes)
-    if (auto c = getConstantIntValue(s))
-      access_volume *= *c;
-  if (!erase_dims.empty() &&
-      static_cast<size_t>(erase_dims.size()) == sizes.size() &&
-      access_volume != memref_volume)
-    erase_dims.erase(
-        erase_dims.begin()); // erase_dims is high-to-low; front() = innermost
+  SmallVector<int64_t> constSizes;
+  for (Value s : sizes)
+    constSizes.push_back(*getConstantIntValue(s));
+  SmallVector<int> erase_dims = getDroppableUnitDims(constSizes, memref_volume);
 
   listsHaveChanged |=
       eraseWrapNStrideDim(builder, erase_dims, offsets, sizes, strides)
@@ -2129,7 +2111,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(
                                         getAsOpFoldResult(strides)))
           continue;
       auto const_stride_prev = getConstantIntValue(strides[i - 1]);
-      if (*const_stride_prev == *const_size * *const_stride)
+      if (continuesInnerDim(*const_stride_prev, *const_size, *const_stride))
         listsHaveChanged |=
             eraseWrapNStrideDim(builder, SmallVector<int>{i - 1}, offsets,
                                 sizes, strides)
@@ -2413,6 +2395,66 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
   return success();
 }
 
+SmallVector<int> air::getDroppableUnitDims(ArrayRef<int64_t> sizes,
+                                           int64_t memrefVolume) {
+  SmallVector<int> dims;
+  for (int i = sizes.size() - 1; i >= 0; i--)
+    if (sizes[i] == 1)
+      dims.push_back(i);
+  // Empty lists stand for the whole memref. If every dimension would go but
+  // the access is partial, keep the innermost one.
+  int64_t volume = 1;
+  for (int64_t s : sizes)
+    volume *= s;
+  if (!dims.empty() && dims.size() == sizes.size() && volume != memrefVolume)
+    dims.erase(dims.begin());
+  return dims;
+}
+
+std::optional<air::LinearAccessPattern> air::getLinearAccessPattern(
+    ArrayRef<OpFoldResult> offsets, ArrayRef<OpFoldResult> sizes,
+    ArrayRef<OpFoldResult> strides, int64_t memrefVolume) {
+  LinearAccessPattern p;
+  if (offsets.empty() && sizes.empty() && strides.empty())
+    return p;
+  if (sizes.size() != strides.size() || offsets.size() > strides.size())
+    return std::nullopt;
+  // Offsets left out in front are 0, as canonicalizeWrapAndStrideList reads
+  // them.
+  size_t omitted = strides.size() - offsets.size();
+  for (auto [i, size, stride] : llvm::enumerate(sizes, strides)) {
+    auto sz = getConstantIntValue(size), st = getConstantIntValue(stride);
+    if (!sz || !st)
+      return std::nullopt;
+    p.sizes.push_back(*sz);
+    p.strides.push_back(*st);
+    if (i < omitted)
+      continue;
+    OpFoldResult off = offsets[i - omitted];
+    if (auto c = getConstantIntValue(off))
+      p.offset += *c * *st;
+    else if (*st)
+      p.offsetTerms.push_back({cast<Value>(off), *st});
+  }
+  for (int i : getDroppableUnitDims(p.sizes, memrefVolume)) {
+    p.sizes.erase(p.sizes.begin() + i);
+    p.strides.erase(p.strides.begin() + i);
+  }
+  for (int i = p.sizes.size() - 1; i >= 1; i--) {
+    if (!continuesInnerDim(p.strides[i - 1], p.sizes[i], p.strides[i]))
+      continue;
+    p.sizes[i] *= p.sizes[i - 1];
+    p.sizes.erase(p.sizes.begin() + i - 1);
+    p.strides.erase(p.strides.begin() + i - 1);
+  }
+  if (p.sizes.size() == 1 && p.strides[0] == 1 && p.sizes[0] == memrefVolume &&
+      p.offset == 0 && p.offsetTerms.empty()) {
+    p.sizes.clear();
+    p.strides.clear();
+  }
+  return p;
+}
+
 // If wrap-and-stride lists are empty, populate them with default data access
 // layout (contiguous, row-major).
 void air::populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
@@ -2687,34 +2729,70 @@ getOffsetRangeAfterShrinkage(Value v, OffsetDepth depth,
                                           exec);
     return getOffsetRangeAfterShrinkage(yielded, OffsetDepth::Deeper);
   }
-  auto operandRange = [&](Value operand) {
-    OffsetDepth next = OffsetDepth::Deeper;
+  auto nextDepth = [&](Value operand) {
     if (depth == OffsetDepth::Offset)
-      next = OffsetDepth::Operand;
-    else if (depth == OffsetDepth::InOffsetBody)
-      next = offsetExec.getRegion().isAncestor(operand.getParentRegion())
+      return OffsetDepth::Operand;
+    if (depth == OffsetDepth::InOffsetBody)
+      return offsetExec.getRegion().isAncestor(operand.getParentRegion())
                  ? OffsetDepth::InOffsetBody
                  : OffsetDepth::Operand;
-    return getOffsetRangeAfterShrinkage(operand, next, offsetExec);
+    return OffsetDepth::Deeper;
+  };
+  auto operandRange = [&](Value operand) {
+    return getOffsetRangeAfterShrinkage(operand, nextDepth(operand),
+                                        offsetExec);
+  };
+  // Whether a tile index read as `operand` is one the rewrite zeroes.
+  auto zeroedAsOperand = [&](Value operand) {
+    return nextDepth(operand) == OffsetDepth::Operand;
   };
 
   if (auto apply = dyn_cast<affine::AffineApplyOp>(def)) {
     // The map's value with every input at 0, plus each distinct operand's
-    // coefficient times that operand's range. A map that is not linear in its
-    // operands has no coefficients and is not modelled.
+    // coefficient times that operand's range.
     AffineMap map = apply.getAffineMap();
     auto constant = air::evaluateConstantsInMap(
         map, SmallVector<std::optional<int64_t>>(map.getNumSymbols(), 0),
         SmallVector<std::optional<int64_t>>(map.getNumDims(), 0),
         apply.getContext());
-    if (!constant)
-      return std::nullopt;
-    Range range{*constant, *constant};
     SetVector<Value> operands(llvm::from_range, apply.getMapOperands());
+    bool linear = constant && llvm::all_of(operands, [&](Value operand) {
+                    return air::getAffineApplyCoefficient(apply, operand);
+                  });
+    if (!linear) {
+      // Bounded as a whole by value-bounds analysis instead, with the tile
+      // indices the rewrite removes at 0. Inside an offset's air.execute the
+      // rewrite also zeroes tile indices that the map's operands are computed
+      // from, which value-bounds would see unchanged, so such a map is not
+      // bounded.
+      if (depth == OffsetDepth::InOffsetBody)
+        return std::nullopt;
+      SmallVector<AffineExpr> dims, syms;
+      unsigned nd = map.getNumDims();
+      for (auto [i, operand] : llvm::enumerate(apply.getMapOperands())) {
+        AffineExpr e = i < nd ? getAffineDimExpr(i, apply.getContext())
+                              : getAffineSymbolExpr(i - nd, apply.getContext());
+        if (air::getHerdArgOwner(operand) && zeroedAsOperand(operand))
+          e = getAffineConstantExpr(0, apply.getContext());
+        (i < nd ? dims : syms).push_back(e);
+      }
+      AffineMap zeroed =
+          map.replaceDimsAndSymbols(dims, syms, nd, map.getNumSymbols());
+      using VB = ValueBoundsConstraintSet;
+      VB::Variable var(zeroed, apply.getMapOperands());
+      ValueBoundsOptions closed;
+      closed.closedUB = true;
+      FailureOr<int64_t> lo =
+          VB::computeConstantBound(presburger::BoundType::LB, var);
+      FailureOr<int64_t> hi = VB::computeConstantBound(
+          presburger::BoundType::UB, var, nullptr, closed);
+      if (failed(lo) || failed(hi))
+        return std::nullopt;
+      return Range{*lo, *hi};
+    }
+    Range range{*constant, *constant};
     for (Value operand : operands) {
       auto c = air::getAffineApplyCoefficient(apply, operand);
-      if (!c)
-        return std::nullopt;
       if (*c == 0)
         continue;
       auto r = operandRange(operand);

@@ -357,10 +357,12 @@ def run_npu_prefill(
     cpu_attn=True,
     profile=False,
     quiet=False,
+    logits_from=None,
 ):
     """Run NPU prefill (28 Qwen2.5 layers) and extract KV cache.
 
     Returns: (prefill_token, logits_row, k_cache, v_cache, prompt_len).
+    With logits_from, logits_row is [prompt_len - logits_from, vocab].
     K cache stores k_roped (AFTER bias AND RoPE); V stores bias-added projection.
     """
     seq_len = len(token_ids)
@@ -419,6 +421,23 @@ def run_npu_prefill(
 
     logits_row = _run_lm_head(decode_cache, weights, last_normed, vocab_size)
     prefill_token = int(np.argmax(logits_row))
+    if logits_from is not None:
+        # Every row from logits_from on, through the same final norm and
+        # NPU LM head as the prediction row.
+        hidden = np.asarray(x_bf16, dtype=np.float32)
+        logits_row = np.stack(
+            [
+                _run_lm_head(
+                    decode_cache,
+                    weights,
+                    rms_norm(hidden[r : r + 1], weights.final_norm, eps=EPS)
+                    .flatten()
+                    .astype(bfloat16),
+                    vocab_size,
+                )
+                for r in range(logits_from, prompt_len)
+            ]
+        )
 
     t_prefill = time.time() - t_start
     if not quiet:

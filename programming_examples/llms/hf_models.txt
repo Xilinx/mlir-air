@@ -1,8 +1,10 @@
-# HuggingFace model repos the llms/ verify + profile paths load (base +
-# instruct variants + the int4 AWQ source). Single source of truth for the
-# manual "Download LLM Weights" workflow (.github/workflows/downloadLLMWeights.yml),
-# which pre-seeds these into the perf runner's HF cache so the nightly can run
-# with HF_HUB_OFFLINE=1.
+# HuggingFace model repos the nightly perf runner seeds (base + instruct
+# variants). Single source of truth for the manual "Download LLM Weights"
+# workflow (.github/workflows/downloadLLMWeights.yml), which pre-seeds these into
+# the runner's HF cache so the nightly can run with HF_HUB_OFFLINE=1. lit runs an
+# example only when its weights are seeded, so this list is the nightly's model
+# set: models up to 4B, plus llms/llama31_8b_q4nx to cover the 8B-only paths.
+# Other 7-8B examples run on a separate Krackan machine: hf_models_offline.txt.
 #
 # Keep in sync with the model IDs in llms/*/{verify_adapter,*_inference}.py.
 # One repo id per line, optionally repo@revision; blank lines and comments are ignored.
@@ -22,7 +24,6 @@ Qwen/Qwen3-1.7B
 Qwen/Qwen3-4B
 HuggingFaceTB/SmolLM2-1.7B
 HuggingFaceTB/SmolLM2-1.7B-Instruct
-amd/Llama-3.2-1B-Instruct-awq-uint4-asym-g128-bf16-lmhead
 
 # FastFlowLM Q4NX NPU2 packaging of Llama-3.2-1B (single model.q4nx safetensors:
 # per-layer Q4NX projections + bf16 norms/embed + Q4NX lm_head). Used by
@@ -47,13 +48,6 @@ HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 FastFlowLM/Gemma3-4B-NPU2
 unsloth/gemma-3-4b-it
 
-# Same Q4NX packaging of Qwen3-8B. Used by llms/qwen3_8b_q4nx (NPU weights),
-# plus the bf16 reference `make verify` compares against. The FLM card declares
-# `base_model: Qwen/Qwen3-8B`, and Qwen3 unifies base + instruct in one
-# checkpoint, so that single repo is the reference.
-FastFlowLM/Qwen3-8B-NPU2
-Qwen/Qwen3-8B
-
 # Same Q4NX packaging of Qwen3-4B. Used by llms/qwen3_4b_q4nx (NPU weights);
 # Qwen/Qwen3-4B is already listed above for the bf16 llms/qwen3_4b example and
 # doubles as the reference `make verify` compares against.
@@ -65,9 +59,6 @@ FastFlowLM/Qwen3-4B-NPU2
 FastFlowLM/Qwen3-4B-NPU2@07651f11cac70ff5b7a81731643dee6f6e7baee1
 Qwen/Qwen3-4B@1cfa9a7208912126459214e8b04321603b3df60c
 z-lab/Qwen3-4B-DFlash-b16@b74e3a329c4d963783143b1e970d95b002be72bd
-FastFlowLM/Qwen3-8B-NPU2@941c148c228496682e95c413cb90025f73200af2
-Qwen/Qwen3-8B@b968826d9c46dd6066d109eabc6255188de91218
-z-lab/Qwen3-8B-DFlash-b16@9b41424b7109f9c5413454f481b09a82b85333f4
 
 # Same Q4NX packaging of Qwen2.5-3B-Instruct. Used by llms/qwen25_3b_q4, which
 # PR #1943 moved onto this bundle without listing it here -- so the offline
@@ -75,11 +66,6 @@ z-lab/Qwen3-8B-DFlash-b16@9b41424b7109f9c5413454f481b09a82b85333f4
 # Qwen/Qwen2.5-3B-Instruct is already listed above and doubles as the bf16
 # reference `make verify` uses.
 FastFlowLM/Qwen2.5-3B-Instruct-NPU2
-
-# Qwen2.5-7B-Instruct is listed ONCE, not as a pair: FastFlowLM publishes no
-# Qwen2.5-7B bundle, so llms/qwen25_7b_q4nx quantizes this checkpoint to Q4NX on
-# load and `make verify` compares against the same repo in bf16. Ungated.
-Qwen/Qwen2.5-7B-Instruct
 
 # Same Q4NX packaging of Phi-4-mini-instruct. Used by llms/phi4_mini_q4nx (the
 # fused decode loads weights from this repo), plus the bf16 reference `make
@@ -95,7 +81,6 @@ microsoft/Phi-4-mini-instruct
 # Its config matches the FLM bundle's exactly, including the 3-way eos_token_id.
 FastFlowLM/Llama-3.1-8B-NPU2
 NousResearch/Meta-Llama-3.1-8B-Instruct
-NousResearch/Meta-Llama-3.1-8B
 
 # LFM2-1.2B (llms/lfm2_1_2b_q4nx), the first HYBRID conv-attention model here.
 # Listed ONCE, not as a pair: LiquidAI publishes a single checkpoint with no
@@ -116,7 +101,10 @@ FastFlowLM/Gemma4-E2B-IT-NPU2
 # for the same reason as E2B.
 FastFlowLM/Gemma4-E4B-IT-NPU2
 
-# Llama-3.1-8B DFlash B8: pinned target, BF16 reference/tokenizer, and drafter.
-FastFlowLM/Llama-3.1-8B-NPU2@527006483dca6c9d75474ff92b8a6bdd8f257914
-NousResearch/Meta-Llama-3.1-8B-Instruct@d10aef7999a2b5ba950ab3974312feeedbfe0b77
-z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat@d3af30def9601abdd10810aba220d692f0e803f0
+# Affine-Q4 deployments and original-BF16 references: pin the same snapshots
+# as each example's model.json, including OpenELM's Python modeling files.
+ibm-granite/granite-3.3-2b-instruct@707f574c62054322f6b5b04b6d075f0a8f05e0f0
+HuggingFaceTB/SmolLM3-3B@a07cc9a04f16550a088caea529712d1d335b0ac1
+allenai/OLMo-2-0425-1B-Instruct@48d788eca847d4d7548f375ad03d3c9312f6139e
+apple/OpenELM-1_1B-Instruct@effd796da2a77361d7360e45e54c7cc14bc5df2a
+microsoft/phi-2@810d367871c1d460086d9f82db8696f2e0a0fcd0

@@ -76,6 +76,7 @@ help:
 	@echo "Correctness:"
 	@echo "  make verify           Top-k token-set inclusion gate: NPU q4nx vs HF bf16 (2 prompts x 32 tokens, k=5)"
 	@echo "  make verify-full      Same gate over the full prompt set"
+	@echo "  make accuracy         Teacher-forced PPL + KL divergence vs the HF reference on wikitext-2 (see verify/accuracy.mk)"
 	@echo "  make diagnosis        Per-layer ffn_out cosine vs HF bf16 (single prompt, informational)"
 	@echo "  make verify-paris     Fast weight-integrity smoke: prefill first-token argmax gate (12366 ' Paris')"
 	@echo ""
@@ -187,3 +188,5 @@ clean:
 
 FUSED_MODEL := llama32_1b_q4nx
 include $(srcdir)/../shared/fused_prefill/fused_prefill.mk
+
+include $(srcdir)/../verify/accuracy.mk

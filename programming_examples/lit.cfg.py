@@ -221,6 +221,8 @@ llvm_config.with_system_environment(
         "HF_HOME",
         "HF_HUB_CACHE",
         "DFLASH_CACHE_DIR",
+        "AIR_AFFINE_Q4_REFERENCE_PYTHON",
+        "AIR_OPENELM_REFERENCE_PYTHON",
         "OMP_NUM_THREADS",
         "OPENBLAS_NUM_THREADS",
     ]

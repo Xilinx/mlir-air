@@ -224,6 +224,18 @@ def requant_q4k_dequant(w, group):
     return out.numpy()
 
 
+def requant_q4k_packed(w, group):
+    """`w` as the device holds it after requant_q4k and a cascade pack, float32
+    [M, K]: the 4-bit codes with their scale and min rounded to bf16, as
+    pack_q4k_cascade and pack_q4k_cascade_fast store them."""
+    q, sc, mn = requant_q4k(np.asarray(w, np.float32), group)
+    return dequant_q4(q, _bf16_round(sc), _bf16_round(mn), group)
+
+
+def _bf16_round(a):
+    return np.asarray(a, np.float32).astype(bfloat16).astype(np.float32)
+
+
 def requant_q4_0(w, group):
     """Symmetric signed 4-bit per-group quant of `w` [M, K] -> (q uint8 [M, K]
     holding int8 two's complement, scale float32 [M, K/group]), w ~= q * scale:

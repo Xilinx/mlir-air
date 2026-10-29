@@ -113,6 +113,7 @@ help:
 	@echo "  make chat                Interactive chat REPL (streaming output)"
 	@echo "  make verify              Top-k token-set gate vs HF bf16 (2 prompts x 32 tokens, k=5)"
 	@echo "  make verify-full         Same over every prompt in the shared prompt file"
+	@echo "  make accuracy         Teacher-forced PPL + KL divergence vs the HF reference on wikitext-2 (see verify/accuracy.mk)"
 	@echo "  make verify-paris        Fast prefill-only weight-integrity gate"
 	@echo "  make diagnosis           Single-prompt lens through the shared runner (informational)"
 	@echo "  make profile             TTFT + decode throughput over N_TOKENS tokens"
@@ -314,3 +315,9 @@ compile-decode: compile-decode-elf
 
 FUSED_MODEL := qwen3_8b_q4nx
 include $(srcdir)/../shared/fused_prefill/fused_prefill.mk
+
+# verify runs from llms/ with the adapter key in MODEL_CHOICE; so does accuracy.
+ACC_MODEL := $(MODEL_CHOICE)
+ACC_DIR := $(srcdir)/..
+
+include $(srcdir)/../verify/accuracy.mk
