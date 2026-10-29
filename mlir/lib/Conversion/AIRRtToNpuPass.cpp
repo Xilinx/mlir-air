@@ -4550,11 +4550,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
   // Lower each air.launch_end. Between launch iterations every shim channel
   // the launch used is drained, so the next iteration's configuration cannot
-  // race this one's transfers (issue #1373), or the device is reset when its
-  // locks need it. The drain waits on each of the launch's transfers the
-  // launch end does not wait on itself. A transfer in a nested block -- an
-  // arm of a feed select, a rolled loop body -- is waited at the end of that
-  // block, the last point its event is visible.
+  // race this one's transfers (issue #1373). On the NPU2 family, a device
+  // whose locks need it is reset instead. The drain waits on each of the
+  // launch's transfers the launch end does not wait on itself. A transfer in a
+  // nested block -- an arm of a feed select, a rolled loop body -- is waited at
+  // the end of that block, the last point its event is visible.
   void lowerLaunchEnds(ModuleOp module) {
     SmallVector<airrt::WaitAllOp> launchEnds;
     module.walk([&](airrt::WaitAllOp w) {
@@ -4583,12 +4583,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     for (auto [launchEnd, transfers] : llvm::zip(launchEnds, launches)) {
       launchEnd->removeAttr("air.launch_end");
       auto device = launchEnd->getParentOfType<AIE::DeviceOp>();
-      if (!device ||
-          !llvm::isa<AIE::BaseNPU2TargetModel>(device.getTargetModel()))
+      if (!device)
         continue;
       OpBuilder b(launchEnd->getContext());
       b.setInsertionPointAfter(launchEnd);
-      if (clOutputElf && deviceNeedsLockReset(device)) {
+      if (llvm::isa<AIE::BaseNPU2TargetModel>(device.getTargetModel()) &&
+          clOutputElf && deviceNeedsLockReset(device)) {
         auto deviceRef = FlatSymbolRefAttr::get(launchEnd->getContext(),
                                                 device.getSymName());
         AIEX::NpuLoadPdiOp::create(b, launchEnd.getLoc(), deviceRef,
