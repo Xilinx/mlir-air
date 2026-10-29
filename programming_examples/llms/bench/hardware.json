@@ -1,0 +1,15 @@
+{
+  "krackan-point-runner": {
+    "label": "Krackan Point · 64 GB",
+    "detail": "AMD Ryzen AI 5 PRO 340, NPU2, 2×32 GB DDR5-5600 SODIMM",
+    "nightly": true
+  },
+  "krackan-point-laptop": {
+    "label": "Krackan Point · 32 GB",
+    "detail": "AMD Ryzen AI 7 PRO 350, NPU2, 32 GB"
+  },
+  "strix-halo": {
+    "label": "Strix Halo · 128 GB",
+    "detail": "AMD Ryzen AI Max (Strix Halo), NPU2, 128 GB"
+  }
+}

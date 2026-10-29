@@ -302,8 +302,8 @@ def main():
     ap.add_argument(
         "--hardware",
         default=None,
-        help="the machine's chip and NPU, e.g. 'Strix Halo, NPU2'; stored on "
-        "every row",
+        help="the machine's key in hardware.json (e.g. strix-halo), stored on "
+        "every row; rows without it are the nightly runner's",
     )
     args = ap.parse_args()
 

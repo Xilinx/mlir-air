@@ -26,7 +26,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 # Reused so model ordering/labels match the operator+LLM dashboard.
 try:
-    from generate_readme import LLM_HF_MODELS
+    from generate_readme import HARDWARE, LLM_HF_MODELS, hardware_label
 except ImportError:  # pragma: no cover - allow running from another cwd
     # By file path rather than by adding SCRIPT_DIR to sys.path: that would
     # publish every example directory here as a top-level module name.
@@ -37,7 +37,12 @@ except ImportError:  # pragma: no cover - allow running from another cwd
     )
     _mod = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_mod)
+    HARDWARE = _mod.HARDWARE
     LLM_HF_MODELS = _mod.LLM_HF_MODELS
+    hardware_label = _mod.hardware_label
+
+# A row without a hardware field is the nightly runner's.
+_NIGHTLY_HARDWARE = next(k for k, v in HARDWARE.items() if v.get("nightly"))
 
 FAIL_COLOR = "#d32f2f"
 
@@ -82,33 +87,52 @@ def load_history(history_path):
     return rows
 
 
+def _hardware(row):
+    return row.get("hardware") or _NIGHTLY_HARDWARE
+
+
 def _model_order(rows):
-    """Models sorted with dashboard-known ones first (registry order), then any
-    extras alphabetically — so the legend is stable across runs."""
+    """One line per (model, hardware): models with dashboard-known ones first
+    (registry order), then any extras alphabetically, and within a model the
+    nightly runner first -- so the legend is stable across runs."""
     present = {r.get("model", "") for r in rows if r.get("model")}
     known = [m for m in LLM_HF_MODELS if m in present]
     extra = sorted(present - set(known))
-    return known + extra
+    hardware = {}
+    for r in rows:
+        if r.get("model"):
+            hardware.setdefault(r["model"], set()).add(_hardware(r))
+    return [
+        (m, hw)
+        for m in known + extra
+        for hw in sorted(
+            hardware[m], key=lambda k: (k != _NIGHTLY_HARDWARE, hardware_label(k))
+        )
+    ]
+
+
+def _line_label(model, hw):
+    return model if hw == _NIGHTLY_HARDWARE else f"{model} ({hardware_label(hw)})"
 
 
 def _series(rows, models, labels, metric):
-    """Build one Chart.js dataset per model for the given metric key.
+    """Build one Chart.js dataset per (model, hardware) for the given metric.
 
     Values are aligned to `labels` (the sorted unique dates); a missing date is
     null so Chart.js leaves a gap. Per-point colors flag failed-verify runs red.
     """
-    # (model, date) -> most recent row for that pair
+    # (model, hardware, date) -> most recent row for that triple
     by_key = {}
     for r in rows:
-        by_key[(r.get("model"), r.get("date"))] = r
+        by_key[(r.get("model"), _hardware(r), r.get("date"))] = r
 
     datasets = []
-    for i, model in enumerate(models):
+    for i, (model, hw) in enumerate(models):
         color = PALETTE[i % len(PALETTE)]
         data, point_colors, metas = [], [], []
         point_styles, point_radii, hover_radii = [], [], []
         for date in labels:
-            r = by_key.get((model, date))
+            r = by_key.get((model, hw, date))
             if r is None:
                 data.append(None)
                 point_colors.append(color)
@@ -138,7 +162,7 @@ def _series(rows, models, labels, metric):
             )
         datasets.append(
             {
-                "label": model,
+                "label": _line_label(model, hw),
                 "data": data,
                 "borderColor": color,
                 "backgroundColor": color,
@@ -182,7 +206,8 @@ HTML_TEMPLATE = """\
 <p class="sub">Per-nightly TTFT and decode throughput. Each point is one nightly, labeled by date;
 hover for the commit and verify status. A
 <span style="color:{fail_color}; font-weight:700;">red &#10007;</span> marks a nightly whose verify failed;
-a triangle marks a 7-8B run measured offline on another Krackan machine.</p>
+a triangle marks a run measured offline. A line from hardware other than the
+nightly runner names that hardware after the model.</p>
 <p class="legend-note">Click a model in a legend to toggle its line.{window_note}</p>
 
 <div class="chart-box"><canvas id="ttft"></canvas></div>

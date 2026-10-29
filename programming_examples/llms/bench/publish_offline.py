@@ -4,9 +4,10 @@
 """Publish LLM results measured off the nightly runner to the docs page.
 
 The nightly runner's disk holds the models up to 4B (hf_models.txt); the 7-8B
-examples (hf_models_offline.txt) run on another machine, named on the page
-with its hardware (--machine, --hardware). After running their lit suites
-there, e.g. from the build directory:
+examples (hf_models_offline.txt) run on another machine. Each row records the
+machine (--machine) and its hardware (--hardware, a key of hardware.json, which
+the page shows on every row). After running their lit suites there, e.g. from
+the build directory:
 
   LIT_OPTS="--xunit-xml-output $PWD/../verify.xml --filter <models>" \\
     ninja check-programming-examples-llms-verify
@@ -108,8 +109,8 @@ def main():
     ap.add_argument(
         "--hardware",
         required=True,
-        help="its chip and NPU as the page should name them, e.g. "
-        "'Krackan Point, NPU2' or 'Strix Halo, NPU2'",
+        choices=sorted(json.loads((HERE / "hardware.json").read_text())),
+        help="the machine's entry in hardware.json; add one for new hardware",
     )
     ap.add_argument("--build-dir", required=True, help="the build tree lit ran in")
     ap.add_argument(
