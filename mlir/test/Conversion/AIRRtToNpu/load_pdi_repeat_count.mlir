@@ -575,8 +575,8 @@ module {
 
 // -----
 
-// Test 7: the reset device clones every buffer of the device it resets, and
-// aiecc places them below each core's stack. The empty core in the clone keeps
+// Test 11: the reset device clones every buffer of the device it resets, and
+// aiecc places them above each core's stack. The empty core in the clone keeps
 // the original core's stack_size: with the default one, a tile whose data
 // memory is filled up to a small stack does not fit the clone.
 
