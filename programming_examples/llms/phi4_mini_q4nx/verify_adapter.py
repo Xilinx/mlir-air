@@ -140,6 +140,10 @@ class FusedDecodeRunner:
             raise RuntimeError(
                 f"max_seq {max_seq} exceeds decode ATTN_MAXL {self._dec.ATTN_MAXL}"
             )
+        # The LongRoPE table follows the context this session runs to, not the
+        # decode's build: a HF reference over the same tokens picks it that way.
+        self._context = max_seq
+        self._dec.set_context(max_seq)
         # The two paths score different LM heads on the first token, so log which
         # one ran.
         self._no_pf = os.environ.get("Q4NX_VERIFY_NO_PREFILL") == "1"
@@ -165,7 +169,7 @@ class FusedDecodeRunner:
                 flush=True,
             )
             self._pf = fused_prefill.load(
-                "phi4_mini_q4nx", self._model_source, context=self._dec.ATTN_MAXL
+                "phi4_mini_q4nx", self._model_source, context=self._context
             )
         if self._pf is None:
             from phi4_mini_q4nx_prefill import LlamaQ4nxPrefill
@@ -173,7 +177,7 @@ class FusedDecodeRunner:
             self._pf = LlamaQ4nxPrefill(
                 seq_len=PREFILL_SEQ_LEN,
                 n_layers=self._dec.N_LAYERS,
-                context=self._dec.ATTN_MAXL,
+                context=self._context,
             )
             self._pf.load_weights(model=self._model_source)
         return self._pf

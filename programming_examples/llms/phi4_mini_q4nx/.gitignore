@@ -37,4 +37,11 @@ decode.insts.bin
 
 # Staircase window manifest (which ATTN_MAXL pairs this dir holds).
 .decode_windows
+
+# Full-ELF decode artifacts + build-flag stamp (make compile-decode-elf).
+decode_scratchpad.elf
+decode_scratchpad.params.txt
+decode_scratchpad.args
+decode_scratchpad.maxl
+.decode_elf_flags
 _fused_prefill/
