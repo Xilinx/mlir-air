@@ -126,14 +126,15 @@ class AccuracyColumns(unittest.TestCase):
         )
         self.assertEqual(text(row(table)[-2]), "0.0033")
 
-    def test_accuracy_from_other_hardware_is_named_on_the_row(self):
+    def test_accuracy_from_other_hardware_goes_on_the_row(self):
         # Speed timed on Krackan Point, accuracy measured on Strix Halo: one
-        # row, which names both.
+        # row, whose Hardware is the speed's; the tooltip says where the
+        # accuracy was measured.
         acc = load([accuracy("dequant", "decode", 0.02, hardware="strix-halo")])
         cells = row(generate_readme.render_llm_sweep([sweep()], accuracy=acc))
         self.assertEqual(text(cells[-4]), "0.0200")
-        self.assertIn(KRACKAN, cells[1])
-        self.assertIn(f"accuracy: {HALO}", cells[1])
+        self.assertIn(HALO, cells[-4])
+        self.assertEqual(cells[1], KRACKAN)
 
     def test_newest_measurement_wins_whatever_its_hardware(self):
         acc = load(
@@ -159,7 +160,7 @@ class AccuracyColumns(unittest.TestCase):
 
     def test_tooltip_entries_from_other_runs_name_their_hardware(self):
         # 2k measured on Krackan Point, 8k later on Strix Halo: the 8k entry
-        # says where it came from, and so does the Hardware cell.
+        # says where it came from.
         acc = load(
             [
                 accuracy("dequant", "decode", 0.03),
@@ -168,7 +169,7 @@ class AccuracyColumns(unittest.TestCase):
         )
         cells = row(generate_readme.render_llm_sweep([sweep()], accuracy=acc))
         self.assertIn(f"8k: KLD 0.0400 ({HALO},", cells[-4])
-        self.assertIn(f"accuracy: {HALO}", cells[1])
+        self.assertEqual(cells[1], KRACKAN)
 
     def test_unmeasured_cells_are_blank(self):
         # A dash in these tables means a context the speed sweep skipped.

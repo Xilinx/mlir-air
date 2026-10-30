@@ -897,7 +897,7 @@ def load_llm_accuracy(accuracy_path, tasks_path):
     accuracy_history.ndjson, the task from tasks_history.ndjson -- whichever
     hardware measured it: the NPU computes the same on every NPU2 machine, so
     a model's accuracy belongs on its row whatever hardware timed that row.
-    The record keeps its own hardware for the page to name.
+    Each record keeps its own hardware, which its cell's tooltip names.
     """
     newest = {}
     for path, key in (
@@ -967,7 +967,7 @@ def _task_cell(r):
 
 
 def _decode_accuracy(model, acc):
-    """The decode table's accuracy cells and the records they show."""
+    """The decode table's accuracy cells."""
     same = _same_weights_ref(model)
     head = acc.get((same, "decode", 2048))
     # Longer contexts score the end of one long window; their KLD goes in the
@@ -995,41 +995,25 @@ def _decode_accuracy(model, acc):
         )
         for text, r in extra
     ]
-    shown = [r for r in (head, acc.get("gsm8k"), acc.get("mmlu")) if r]
-    if head is not None:
-        shown += [r for _, r in extra]
     cells = [
         _kld_cell(head, more),
         _task_cell(acc.get("gsm8k")),
         _task_cell(acc.get("mmlu")),
     ]
-    return cells, shown
+    return cells
 
 
 def _prefill_accuracy(model, acc):
     r = acc.get((_same_weights_ref(model), "prefill", 2048))
-    return [_kld_cell(r)], [r] if r else []
-
-
-def _hardware_cell(d, shown):
-    """The row's hardware, then any other hardware its accuracy came from."""
-    own = _hardware(d)
-    others = sorted(
-        {hardware_label(_hardware(r)) for r in shown} - {hardware_label(own)}
-    )
-    cell = hardware_label(own)
-    if others:
-        cell += f"<br><small>accuracy: {', '.join(others)}</small>"
-    return cell
+    return [_kld_cell(r)]
 
 
 _ACCURACY_LEGEND = """\
 **Accuracy** (the decode table's KLD, GSM8K and MMLU; the prefill table's KLD).
 The NPU is compared with the same model on the CPU (PyTorch): on wikitext-2 the
 way llama.cpp's `llama-perplexity --kl-divergence` does, and on benchmark
-questions. Measured offline. The NPU gives the same accuracy on every NPU2
-machine, so a row whose accuracy was measured on other hardware names it under
-Hardware. Hover over a number for its details.
+questions. Measured offline; the NPU gives the same accuracy on every NPU2
+machine. Hover over a number for its details.
 
 - **KLD**: KL divergence of the NPU's next-token distribution from the CPU's
   with the same weights (4-bit weights dequantized on the CPU); 0 means
@@ -1078,9 +1062,9 @@ def render_llm_sweep(recs, base_url="", accuracy=None):
 
     rows, markers = [], set()
     for d in _by_model(recs):
-        acc_cells, shown = [], []
+        acc_cells = []
         if accuracy:
-            acc_cells, shown = _decode_accuracy(
+            acc_cells = _decode_accuracy(
                 d.get("model", ""), accuracy.get(d.get("model"), {})
             )
         by_ctx = {pt.get("context_len"): pt for pt in d.get("points", []) or []}
@@ -1093,7 +1077,7 @@ def render_llm_sweep(recs, base_url="", accuracy=None):
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
             f'| {_llm_model_cell(d.get("model", ""), base_url)} '
-            f"| {_hardware_cell(d, shown)} "
+            f"| {hardware_label(_hardware(d))} "
             f'| {_llm_weights(d.get("model", ""))} | '
             + " | ".join(cells + acc_cells)
             + f" | {verify} |"
@@ -1237,9 +1221,9 @@ def render_llm_prefill_sweep(recs, base_url="", accuracy=None):
 
     rows, markers = [], set()
     for d in _by_model(recs):
-        acc_cells, shown = [], []
+        acc_cells = []
         if accuracy:
-            acc_cells, shown = _prefill_accuracy(
+            acc_cells = _prefill_accuracy(
                 d.get("model", ""), accuracy.get(d.get("model"), {})
             )
         by_len = {pt.get("prefill_len"): pt for pt in d.get("points", []) or []}
@@ -1252,7 +1236,7 @@ def render_llm_prefill_sweep(recs, base_url="", accuracy=None):
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
             f'| {_llm_model_cell(d.get("model", ""), base_url)} '
-            f"| {_hardware_cell(d, shown)} "
+            f"| {hardware_label(_hardware(d))} "
             f'| {_llm_weights(d.get("model", ""))} | '
             + " | ".join(cells + acc_cells)
             + f" | {verify} |"
