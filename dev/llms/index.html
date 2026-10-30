@@ -404,7 +404,9 @@
           
             
               
-              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" hidden>
                 <div class="md-sidebar__scrollwrap">
                   <div class="md-sidebar__inner">
                     
@@ -1258,7 +1260,9 @@
             
             
               
-              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" hidden>
                 <div class="md-sidebar__scrollwrap">
                   <div class="md-sidebar__inner">
                     
@@ -1351,6 +1355,8 @@
               <article class="md-content__inner md-typeset">
                 
                   
+  
+
 
 
   
@@ -1551,6 +1557,9 @@ model's number for this metric is in a curve instead.</p>
 <th style="text-align: right;">8k</th>
 <th style="text-align: right;">32k</th>
 <th style="text-align: right;">128k</th>
+<th style="text-align: right;">KLD</th>
+<th style="text-align: right;">GSM8K</th>
+<th style="text-align: right;">MMLU</th>
 <th style="text-align: center;">Verify</th>
 </tr>
 </thead>
@@ -1563,6 +1572,9 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">14.94</td>
 <td style="text-align: right;">7.33</td>
 <td style="text-align: right;">2.37</td>
+<td style="text-align: right;"><span title="KLD 0.0925 ± 0.0049; same top-1 89.9%; 4092 tokens; 8k: KLD 0.0971; PPL vs the bf16 checkpoint +3.2%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0925</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 1, only on the reference 10; McNemar p = 0.012; Krackan Point, 2026-10-30, mlir-air a96acba">71 / 80</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 31, only on the reference 38; McNemar p = 0.470; Krackan Point, 2026-10-29, mlir-air 74985f0">62 / 63</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1573,6 +1585,9 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">32.13</td>
 <td style="text-align: right;">26.03</td>
 <td style="text-align: right;">14.63</td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1583,6 +1598,9 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">14.34</td>
 <td style="text-align: right;">10.54</td>
 <td style="text-align: right;">5.06</td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1593,16 +1611,22 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">47.90</td>
 <td style="text-align: right;">23.34</td>
 <td style="text-align: right;">7.66</td>
+<td style="text-align: right;"><span title="KLD 0.0011 ± 0.0000; same top-1 98.3%; 4092 tokens; 8k: KLD 0.0009 (Krackan Point, 2026-10-29, mlir-air 74985f0); PPL vs the bf16 checkpoint +7.7%; Krackan Point, 2026-10-28, mlir-air 74985f0">0.0011</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 4, only on the reference 18; McNemar p = 0.004; Krackan Point, 2026-10-30, mlir-air a96acba">53 / 67</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 28, only on the reference 34; McNemar p = 0.526; Krackan Point, 2026-10-29, mlir-air 74985f0">55 / 56</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama31_8b_q4nx/">Llama-3.1-8B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2">HF</a>)</span></td>
-<td style="text-align: left;">Krackan Point</td>
+<td style="text-align: left;">Krackan Point<br><small>accuracy: Strix Halo</small></td>
 <td style="text-align: left;">Q4NX</td>
 <td style="text-align: right;">12.99</td>
 <td style="text-align: right;">10.72</td>
 <td style="text-align: right;">6.24</td>
 <td style="text-align: right;">2.31</td>
+<td style="text-align: right;"><span title="KLD 0.0137 ± 0.0005; same top-1 94.6%; 4092 tokens; 8k: KLD 0.0113; PPL vs the bf16 checkpoint +5.3%; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0137</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 7, only on the reference 8; McNemar p = 1.000; Strix Halo, 2026-10-30, mlir-air 78b621b">80 / 81</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 15, only on the reference 22; McNemar p = 0.324; Strix Halo, 2026-10-30, mlir-air 78b621b">68 / 69</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1613,6 +1637,9 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">4.63</td>
 <td style="text-align: right;">1.21</td>
 <td style="text-align: right;">0.22</td>
+<td style="text-align: right;"><span title="KLD 0.0056 ± 0.0001; same top-1 96.6%; 4092 tokens; PPL vs the bf16 checkpoint -0.4%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0056</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 4, only on the reference 6; McNemar p = 0.754; Krackan Point, 2026-10-29, mlir-air a96acba">39 / 41</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 10, only on the reference 16; McNemar p = 0.327; Krackan Point, 2026-10-28, mlir-air 74985f0">48 / 49</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1623,6 +1650,9 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">4.51</td>
 <td style="text-align: right;">1.16</td>
 <td style="text-align: right;">0.18</td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1633,16 +1663,22 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">48.54</td>
 <td style="text-align: right;">23.44</td>
 <td style="text-align: right;">7.66</td>
+<td style="text-align: right;"><span title="KLD 0.0107 ± 0.0002; same top-1 94.1%; 4092 tokens; 8k: KLD 0.0108; PPL vs the bf16 checkpoint +6.1%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0107</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 11, only on the reference 15; McNemar p = 0.557; Krackan Point, 2026-10-30, mlir-air a96acba">37 / 41</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 33, only on the reference 41; McNemar p = 0.416; Krackan Point, 2026-10-29, mlir-air 74985f0">48 / 49</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b/">Llama-3.2-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.2-3B">HF</a>)</span></td>
-<td style="text-align: left;">Krackan Point</td>
+<td style="text-align: left;">Krackan Point<br><small>accuracy: Strix Halo</small></td>
 <td style="text-align: left;">bf16</td>
 <td style="text-align: right;">3.35</td>
 <td style="text-align: right;">1.77</td>
 <td style="text-align: right;">0.27</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0031 ± 0.0001; same top-1 96.9%; 4092 tokens; PPL vs the bf16 checkpoint +0.4%; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0031</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 3, only on the reference 4; McNemar p = 1.000; Strix Halo, 2026-10-30, mlir-air 78b621b">75 / 76</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 8, only on the reference 8; McNemar p = 1.000; Strix Halo, 2026-10-30, mlir-air 78b621b">65 / 65</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1653,6 +1689,9 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">17.38</td>
 <td style="text-align: right;">7.51</td>
 <td style="text-align: right;">2.30</td>
+<td style="text-align: right;"><span title="KLD 0.0109 ± 0.0003; same top-1 95.2%; 4092 tokens; 8k: KLD 0.0102; PPL vs the bf16 checkpoint +3.2%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0109</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 7, only on the reference 12; McNemar p = 0.359; Krackan Point, 2026-10-30, mlir-air a96acba">72 / 77</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 21, only on the reference 25; McNemar p = 0.659; Krackan Point, 2026-10-29, mlir-air 74985f0">64 / 65</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1663,6 +1702,9 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">14.80</td>
 <td style="text-align: right;">6.50</td>
 <td style="text-align: right;">2.00</td>
+<td style="text-align: right;"><span title="KLD 0.0274 ± 0.0007; same top-1 90.4%; 4092 tokens; 8k: KLD 0.0247 (Krackan Point, 2026-10-30, mlir-air a96acba); PPL vs the bf16 checkpoint +52.3%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0274</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 11, only on the reference 11; McNemar p = 1.000; Krackan Point, 2026-10-30, mlir-air a96acba">81 / 81</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 19, only on the reference 18; McNemar p = 1.000; Krackan Point, 2026-10-29, mlir-air 74985f0">68 / 68</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1673,6 +1715,9 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">5.46</td>
 <td style="text-align: right;">1.69</td>
 <td style="text-align: right;">0.29</td>
+<td style="text-align: right;"><span title="KLD 0.0063 ± 0.0003; same top-1 96.0%; 4092 tokens; PPL vs the bf16 checkpoint +0.4%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0063</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 12, only on the reference 9; McNemar p = 0.664; Krackan Point, 2026-10-29, mlir-air a96acba">39 / 36</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 23, only on the reference 14; McNemar p = 0.188; Krackan Point, 2026-10-29, mlir-air 74985f0">50 / 48</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1683,6 +1728,9 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">3.61</td>
 <td style="text-align: right;">0.82</td>
 <td style="text-align: right;">0.17</td>
+<td style="text-align: right;"><span title="KLD 0.0019 ± 0.0001; same top-1 97.5%; 4092 tokens; PPL vs the bf16 checkpoint -0.0%; Krackan Point, 2026-10-30, mlir-air dd97081">0.0019</span></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 8, only on the reference 5; McNemar p = 0.581; Krackan Point, 2026-10-30, mlir-air dd97081">63 / 63</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1693,6 +1741,9 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">2.14</td>
 <td style="text-align: right;">0.48</td>
 <td style="text-align: right;">0.10</td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1703,16 +1754,22 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">15.58</td>
 <td style="text-align: right;">7.55</td>
 <td style="text-align: right;">2.47</td>
+<td style="text-align: right;"><span title="KLD 0.0262 ± 0.0008; same top-1 92.2%; 4092 tokens; 8k: KLD 0.0370; PPL vs the bf16 checkpoint +13.0%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0262</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 10, only on the reference 9; McNemar p = 1.000; Krackan Point, 2026-10-30, mlir-air a96acba">60 / 59</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 30, only on the reference 28; McNemar p = 0.896; Krackan Point, 2026-10-29, mlir-air 74985f0">69 / 69</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">Qwen2.5-7B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</span></td>
-<td style="text-align: left;">Krackan Point</td>
+<td style="text-align: left;">Krackan Point<br><small>accuracy: Strix Halo</small></td>
 <td style="text-align: left;">Q4NX</td>
 <td style="text-align: right;">12.81</td>
 <td style="text-align: right;">10.21</td>
 <td style="text-align: right;">5.64</td>
 <td style="text-align: right;">2.02</td>
+<td style="text-align: right;"><span title="KLD 0.0183 ± 0.0005; same top-1 94.5%; 4092 tokens; 8k: KLD 0.0107; PPL vs the bf16 checkpoint +7.9%; Strix Halo, 2026-10-30, mlir-air 78b621b">0.0183</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 3, only on the reference 10; McNemar p = 0.092; Strix Halo, 2026-10-30, mlir-air 78b621b">69 / 76</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 14, only on the reference 24; McNemar p = 0.143; Strix Halo, 2026-10-30, mlir-air 78b621b">73 / 74</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1723,6 +1780,9 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">2.62</td>
 <td style="text-align: right;">0.49</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0121 ± 0.0003; same top-1 94.6%; 4092 tokens; PPL vs the bf16 checkpoint +0.4%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0121</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 8, only on the reference 10; McNemar p = 0.815; Krackan Point, 2026-10-29, mlir-air a96acba">42 / 44</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 25, only on the reference 16; McNemar p = 0.211; Krackan Point, 2026-10-29, mlir-air 74985f0">44 / 42</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1733,36 +1793,48 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">2.27</td>
 <td style="text-align: right;">0.52</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0120 ± 0.0007; same top-1 95.0%; 4092 tokens; PPL vs the bf16 checkpoint +0.9%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0120</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 6, only on the reference 10; McNemar p = 0.454; Krackan Point, 2026-10-30, mlir-air a96acba">63 / 67</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 13, only on the reference 11; McNemar p = 0.839; Krackan Point, 2026-10-29, mlir-air 74985f0">59 / 59</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</span></td>
-<td style="text-align: left;">Krackan Point</td>
+<td style="text-align: left;">Krackan Point<br><small>accuracy: Strix Halo</small></td>
 <td style="text-align: left;">bf16</td>
 <td style="text-align: right;">2.54</td>
 <td style="text-align: right;">1.29</td>
 <td style="text-align: right;">0.24</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0043 ± 0.0003; same top-1 97.6%; 4092 tokens; PPL vs the bf16 checkpoint +0.4%; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0043</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 7, only on the reference 4; McNemar p = 0.549; Strix Halo, 2026-10-30, mlir-air 78b621b">78 / 75</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 11, only on the reference 16; McNemar p = 0.442; Strix Halo, 2026-10-30, mlir-air 78b621b">72 / 73</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b_q4nx/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2">HF</a>)</span></td>
-<td style="text-align: left;">Krackan Point</td>
+<td style="text-align: left;">Krackan Point<br><small>accuracy: Strix Halo</small></td>
 <td style="text-align: left;">Q4NX</td>
 <td style="text-align: right;">19.24</td>
 <td style="text-align: right;">12.83</td>
 <td style="text-align: right;">5.52</td>
 <td style="text-align: right;">1.68</td>
+<td style="text-align: right;"><span title="KLD 0.0306 ± 0.0033; same top-1 93.7%; 4092 tokens; 8k: KLD 0.0381 (Strix Halo, 2026-10-30, mlir-air 78b621b); 32k: KLD 0.0271 (Strix Halo, 2026-10-30, mlir-air 78b621b); PPL vs the bf16 checkpoint +13.2%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0306</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 7, only on the reference 2; McNemar p = 0.180; Krackan Point, 2026-10-30, mlir-air a96acba">80 / 75</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 21, only on the reference 27; McNemar p = 0.471; Krackan Point, 2026-10-29, mlir-air 74985f0">72 / 73</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
-<td style="text-align: left;">Krackan Point</td>
+<td style="text-align: left;">Krackan Point<br><small>accuracy: Strix Halo</small></td>
 <td style="text-align: left;">Q4NX</td>
 <td style="text-align: right;">12.06</td>
 <td style="text-align: right;">9.17</td>
 <td style="text-align: right;">4.70</td>
 <td style="text-align: right;">1.59</td>
+<td style="text-align: right;"><span title="KLD 0.0189 ± 0.0011; same top-1 95.0%; 4092 tokens; 8k: KLD 0.0210; PPL vs the bf16 checkpoint +4.9%; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0189</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 6, only on the reference 5; McNemar p = 1.000; Strix Halo, 2026-10-30, mlir-air 78b621b">87 / 86</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 15, only on the reference 13; McNemar p = 0.851; Strix Halo, 2026-10-30, mlir-air 78b621b">77 / 76</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1773,11 +1845,28 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: right;">2.18</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0061 ± 0.0002; same top-1 95.9%; 4092 tokens; PPL vs the bf16 checkpoint +0.7%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0061</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 4, only on the reference 4; McNemar p = 1.000; Krackan Point, 2026-10-29, mlir-air a96acba">42 / 42</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 14, only on the reference 13; McNemar p = 1.000; Krackan Point, 2026-10-29, mlir-air 74985f0">51 / 51</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 </tbody>
 </table>
 <p>— not swept at this context, or an expected failure.</p>
+<p><strong>Accuracy</strong> (the decode table's KLD, GSM8K and MMLU; the prefill table's KLD).
+The NPU is compared with the same model on the CPU (PyTorch): on wikitext-2 the
+way llama.cpp's <code>llama-perplexity --kl-divergence</code> does, and on benchmark
+questions. Measured offline. The NPU gives the same accuracy on every NPU2
+machine, so a row whose accuracy was measured on other hardware names it under
+Hardware. Hover over a number for its details.</p>
+<ul>
+<li><strong>KLD</strong>: KL divergence of the NPU's next-token distribution from the CPU's
+  with the same weights (4-bit weights dequantized on the CPU); 0 means
+  identical. It measures the NPU implementation alone.</li>
+<li><strong>GSM8K / MMLU</strong>: % correct, NPU / original bf16 checkpoint on the CPU, on
+  the same questions (GSM8K 100, MMLU 570). For 4-bit models this includes the
+  cost of the 4-bit weights.</li>
+</ul>
 <h3 id="prefill-latency-vs-prefill-length-ttft-ms">Prefill latency vs prefill length (TTFT, ms)<a class="headerlink" href="#prefill-latency-vs-prefill-length-ttft-ms" title="Permanent link">&para;</a></h3>
 <p>Time to first token at increasing prefill length. A model with a fused prefill
 is timed on a prompt of exactly that many tokens, one build serving every
@@ -1796,6 +1885,7 @@ than the number of real prompt tokens.</p>
 <th style="text-align: right;">4k</th>
 <th style="text-align: right;">8k</th>
 <th style="text-align: right;">32k</th>
+<th style="text-align: right;">KLD</th>
 <th style="text-align: center;">Verify</th>
 </tr>
 </thead>
@@ -1810,6 +1900,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">2482</td>
 <td style="text-align: right;">5228</td>
 <td style="text-align: right;">25773</td>
+<td style="text-align: right;"><span title="KLD 0.0255 ± 0.0014; same top-1 94.6%; 4092 tokens; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0255</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1822,6 +1913,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">2635</td>
 <td style="text-align: right;">6072</td>
 <td style="text-align: right;">42985</td>
+<td style="text-align: right;"></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1834,6 +1926,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">4018</td>
 <td style="text-align: right;">8854</td>
 <td style="text-align: right;">54245</td>
+<td style="text-align: right;"></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1846,11 +1939,12 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">1240</td>
 <td style="text-align: right;">3083</td>
 <td style="text-align: right;">26012</td>
+<td style="text-align: right;"><span title="KLD 0.0027 ± 0.0001; same top-1 96.9%; 4092 tokens; Krackan Point, 2026-10-28, mlir-air 74985f0">0.0027</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama31_8b_q4nx/">Llama-3.1-8B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2">HF</a>)</span></td>
-<td style="text-align: left;">Krackan Point</td>
+<td style="text-align: left;">Krackan Point<br><small>accuracy: Strix Halo</small></td>
 <td style="text-align: left;">Q4NX</td>
 <td style="text-align: right;">567</td>
 <td style="text-align: right;">1169</td>
@@ -1858,6 +1952,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">6295</td>
 <td style="text-align: right;">17170</td>
 <td style="text-align: right;">182764</td>
+<td style="text-align: right;"><span title="KLD 0.0021 ± 0.0001; same top-1 97.7%; 4092 tokens; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0021</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1870,6 +1965,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">1792</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0052 ± 0.0001; same top-1 96.0%; 4092 tokens; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0052</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1882,6 +1978,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">1799</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1894,11 +1991,12 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">1582</td>
 <td style="text-align: right;">4683</td>
 <td style="text-align: right;">55255</td>
+<td style="text-align: right;"><span title="KLD 0.0035 ± 0.0001; same top-1 97.2%; 4092 tokens; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0035</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b/">Llama-3.2-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.2-3B">HF</a>)</span></td>
-<td style="text-align: left;">Krackan Point</td>
+<td style="text-align: left;">Krackan Point<br><small>accuracy: Strix Halo</small></td>
 <td style="text-align: left;">bf16</td>
 <td style="text-align: right;">611</td>
 <td style="text-align: right;">1109</td>
@@ -1906,6 +2004,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">4821</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0054 ± 0.0003; same top-1 96.4%; 4092 tokens; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0054</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1918,6 +2017,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">3348</td>
 <td style="text-align: right;">9777</td>
 <td style="text-align: right;">110712</td>
+<td style="text-align: right;"><span title="KLD 0.0024 ± 0.0001; same top-1 97.7%; 4092 tokens; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0024</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1930,6 +2030,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">3838</td>
 <td style="text-align: right;">11172</td>
 <td style="text-align: right;">126541</td>
+<td style="text-align: right;"><span title="KLD 0.0103 ± 0.0001; same top-1 93.7%; 4092 tokens; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0103</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1942,6 +2043,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">1490</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0179 ± 0.0005; same top-1 93.5%; 4092 tokens; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0179</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1954,6 +2056,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">4337</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0048 ± 0.0002; same top-1 96.5%; 4092 tokens; Krackan Point, 2026-10-30, mlir-air dd97081">0.0048</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1966,6 +2069,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">8123</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -1978,11 +2082,12 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">2995</td>
 <td style="text-align: right;">7846</td>
 <td style="text-align: right;">73981</td>
+<td style="text-align: right;"><span title="KLD 0.0035 ± 0.0001; same top-1 97.2%; 4092 tokens; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0035</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">Qwen2.5-7B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</span></td>
-<td style="text-align: left;">Krackan Point</td>
+<td style="text-align: left;">Krackan Point<br><small>accuracy: Strix Halo</small></td>
 <td style="text-align: left;">Q4NX</td>
 <td style="text-align: right;">565</td>
 <td style="text-align: right;">1096</td>
@@ -1990,6 +2095,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">4961</td>
 <td style="text-align: right;">12383</td>
 <td style="text-align: right;">107506</td>
+<td style="text-align: right;"><span title="KLD 0.0472 ± 0.0060; same top-1 93.7%; 4092 tokens; Strix Halo, 2026-10-30, mlir-air 78b621b">0.0472</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -2002,6 +2108,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">2663</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0130 ± 0.0006; same top-1 94.1%; 4092 tokens; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0130</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -2014,11 +2121,12 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">3784</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0170 ± 0.0031; same top-1 95.0%; 4092 tokens; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0170</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</span></td>
-<td style="text-align: left;">Krackan Point</td>
+<td style="text-align: left;">Krackan Point<br><small>accuracy: Strix Halo</small></td>
 <td style="text-align: left;">bf16</td>
 <td style="text-align: right;">1243</td>
 <td style="text-align: right;">2394</td>
@@ -2026,6 +2134,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">10071</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0161 ± 0.0021; same top-1 95.8%; 4092 tokens; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0161</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -2038,11 +2147,12 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">5074</td>
 <td style="text-align: right;">15364</td>
 <td style="text-align: right;">184350</td>
+<td style="text-align: right;"><span title="KLD 0.0033 ± 0.0002; same top-1 98.0%; 4092 tokens; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0033</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
-<td style="text-align: left;">Krackan Point</td>
+<td style="text-align: left;">Krackan Point<br><small>accuracy: Strix Halo</small></td>
 <td style="text-align: left;">Q4NX</td>
 <td style="text-align: right;">571</td>
 <td style="text-align: right;">1187</td>
@@ -2050,6 +2160,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">6570</td>
 <td style="text-align: right;">18318</td>
 <td style="text-align: right;">196089</td>
+<td style="text-align: right;"><span title="KLD 0.0030 ± 0.0001; same top-1 97.6%; 4092 tokens; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0030</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
@@ -2062,6 +2173,7 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">3050</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
+<td style="text-align: right;"><span title="KLD 0.0047 ± 0.0001; same top-1 96.2%; 4092 tokens; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0047</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 </tbody>
@@ -2155,8 +2267,13 @@ token stream, so there is no decode throughput and no context to sweep.
 
 
 
+  
+  
 
 
+
+
+  
 
 
 
@@ -2181,6 +2298,8 @@ token stream, so there is no decode throughput and no context to sweep.
         <footer class="md-footer">
   
     
+      
+        
       
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
