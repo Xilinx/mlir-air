@@ -132,6 +132,30 @@ class ChatPromptTest(unittest.TestCase):
         self.assertEqual(runner.prompt, [8, 1, 2])
 
 
+class PlainGreedyTest(unittest.TestCase):
+    def test_reference_decodes_plain_greedy(self):
+        try:
+            from transformers import GenerationConfig
+        except ImportError:
+            self.skipTest("transformers not installed")
+        model = SimpleNamespace(
+            generation_config=GenerationConfig(
+                do_sample=True,
+                temperature=0.7,
+                top_k=20,
+                repetition_penalty=1.1,
+                eos_token_id=[7, 9],
+                pad_token_id=9,
+            )
+        )
+        le.plain_greedy(model)
+        gc = model.generation_config
+        self.assertFalse(gc.do_sample)
+        self.assertIn(gc.repetition_penalty, (None, 1.0))
+        self.assertEqual(gc.eos_token_id, [7, 9])
+        self.assertEqual(gc.pad_token_id, 9)
+
+
 class StatsTest(unittest.TestCase):
     def test_chat_only_for_chat_tasks_when_both_sides_have_a_template(self):
         chat = SimpleNamespace(chat_template="{{ messages }}")

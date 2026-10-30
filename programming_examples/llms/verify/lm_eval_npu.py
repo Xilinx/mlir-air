@@ -310,6 +310,21 @@ def compare(npu, ref):
     return rows
 
 
+def plain_greedy(model):
+    """Reset an HF model's generation_config to plain greedy decoding, as the
+    NPU decodes, keeping only its token ids. A checkpoint's config can carry
+    decoding settings that lm_eval's greedy request leaves in force, such as
+    Qwen2.5-Instruct's repetition_penalty."""
+    from transformers import GenerationConfig
+
+    old = model.generation_config
+    model.generation_config = GenerationConfig(
+        bos_token_id=old.bos_token_id,
+        eos_token_id=old.eos_token_id,
+        pad_token_id=old.pad_token_id,
+    )
+
+
 def ref_phase(args, hf_ref_model, bos, chat, cache_path):
     from lm_eval.models.huggingface import HFLM
 
@@ -324,6 +339,7 @@ def ref_phase(args, hf_ref_model, bos, chat, cache_path):
         max_length=args.prefill_len,
         chat_template_args=CHAT_ARGS,
     )
+    plain_greedy(lm.model)
     samples, results, nshot = run_tasks(lm, args, chat)
     cache_path.write_text(
         json.dumps({"samples": samples, "results": results, "n-shot": nshot})
@@ -375,6 +391,7 @@ def main():
         "chat": chat,
         # The cached reference holds per-item scores for these metrics only.
         "metrics": {t: TASK_METRICS.get(t) for t in args.tasks},
+        "decoding": "plain greedy",
     }
     key = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:8]
     cache = Path(args.cache_dir) / (
