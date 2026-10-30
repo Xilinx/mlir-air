@@ -3580,7 +3580,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     });
 
     // Bound how far one shim feed channel may run ahead of its siblings.
-    boundShimFeedBursts(module);
+    if (failed(boundShimFeedBursts(module))) {
+      signalPassFailure();
+      return;
+    }
     awaitInChannelOrder(module);
 
     // Repair dominance after the reordering above. Every hoist here moves a
@@ -3735,15 +3738,18 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // with the feeds they precede. Every drain on a channel counts toward its
   // cap, which a drain-only launch gets too.
   //
-  // Only bursts that exceed the limit are touched. A design whose channels were
-  // already short-run keeps its emission order and its await structure byte for
-  // byte, which is what keeps this off the hot path of the tuned LLM decoders.
-  void boundShimFeedBursts(ModuleOp module) {
+  // Bursts without read-backs or middle drains that already fit the queue keep
+  // their emission order and await structure unchanged. Read-backs need
+  // ordering constraints even when every channel is below the queue limit.
+  LogicalResult boundShimFeedBursts(ModuleOp module) {
     // Tasks in flight per shim channel: the shim DMA task queue depth, which a
     // channel holds regardless of how large its tasks are.
     constexpr unsigned burstLimit = 4;
+    bool invalidSchedule = false;
 
     module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (invalidSchedule)
+        return;
       if (seq.getBody().empty())
         return;
       auto device = seq->getParentOfType<AIE::DeviceOp>();
@@ -3801,6 +3807,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // Drain awaits that must stay right in front of this feed: it reads
         // what those drains wrote (air-to-std put them there).
         SmallVector<Operation *> prefix = {};
+        // Input position among feeds; for a drain, the following feed's index.
+        unsigned pos = 0;
+        unsigned round = 0;
+        // Original channel index, used to preserve peer pacing frontiers.
+        unsigned baseRound = 0;
+        // Earliest slot after all feeds preceding this feed in the input.
+        unsigned before = 0;
+        unsigned slot = 0;
       };
 
       SmallVector<Block *> blocks;
@@ -3809,9 +3823,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         SmallVector<Unit> run;
         // Drains ahead of the run's first feed.
         SmallVector<Unit> drains;
-        // Drains between the run's feeds, each with the round of the feed
-        // after it in its channel (rounds = after every feed when none).
-        SmallVector<std::pair<Unit, unsigned>> midDrains;
+        // Drains between feeds, or after the last feed.
+        SmallVector<Unit> midDrains;
         SmallVector<Unit> pendingDrains;
         // Drain awaits waiting for the feed they guard.
         SmallVector<Operation *> pendingAwaits;
@@ -3855,8 +3868,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           // Drain awaits after the run's last feed stay behind every feed.
           SmallVector<Operation *> trailing = std::move(pendingAwaits);
           pendingAwaits.clear();
-          for (const Unit &d : pendingDrains)
-            midDrains.push_back({d, ~0u});
+          if (invalidSchedule)
+            return;
+          llvm::append_range(midDrains, pendingDrains);
           pendingDrains.clear();
           if (!fence)
             return;
@@ -3882,131 +3896,281 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
               });
             return;
           }
+          // Slots 2*r and 2*r+1 are respectively before and after round r's
+          // ordinary feeds. Emit early drains, ordinary feeds, late drains,
+          // then read-back waits and their feeds. All constraints below use
+          // this same order: an ordinary feed finishes issuing at slot 2*r+1,
+          // an awaiting feed at slot 2*r+2. In particular, two awaiting feeds
+          // cannot share a round if the later one's wait must follow the
+          // earlier one's start.
           llvm::MapVector<StringRef, SmallVector<Unit>> byChan;
-          for (const Unit &u : run)
-            byChan[u.chan].push_back(u);
+          bool readsBack = llvm::any_of(
+              run, [](const Unit &u) { return !u.prefix.empty(); });
+          unsigned rounds = 0;
+          unsigned before = 0;
+          for (Unit &u : run) {
+            auto &ch = byChan[u.chan];
+            unsigned r = ch.empty() ? 0 : ch.back().round + 1;
+            u.baseRound = ch.size();
+            u.before = before;
+            if (!u.prefix.empty())
+              r = std::max(r, before / 2);
+            u.round = r;
+            before = std::max(before, 2 * r + (u.prefix.empty() ? 1 : 2));
+            rounds = std::max(rounds, r + 1);
+            ch.push_back(u);
+          }
           llvm::MapVector<StringRef, SmallVector<Unit>> drainsByChan;
           for (const Unit &u : drains)
             drainsByChan[u.chan].push_back(u);
-          unsigned rounds = 0;
-          for (auto &kv : byChan)
-            rounds = std::max<unsigned>(rounds, kv.second.size());
-          // Every drain on a channel, ahead of the feeds and between them, in
-          // program order: the order the channel fills them in.
-          llvm::MapVector<StringRef, SmallVector<Unit>> allDrainsByChan;
-          for (const Unit &u : drains)
-            allDrainsByChan[u.chan].push_back(u);
-          for (auto &[u, r] : midDrains)
+          llvm::MapVector<StringRef, SmallVector<Unit>> allDrainsByChan =
+              drainsByChan;
+          for (const Unit &u : midDrains)
             allDrainsByChan[u.chan].push_back(u);
           unsigned deepestDrain = 0;
           for (auto &kv : drainsByChan)
             deepestDrain = std::max<unsigned>(deepestDrain, kv.second.size());
           bool weaveDrains = deepestDrain > burstLimit;
-          // A feed that reads back a drain waits for it, and that drain's
-          // producer may also need this round's feeds on the other channels;
-          // left channel-major, those come after the wait.
-          bool readsBack = llvm::any_of(
-              run, [](const Unit &u) { return !u.prefix.empty(); });
           if (rounds <= burstLimit && !weaveDrains && !readsBack &&
               midDrains.empty())
-            return; // already within what a channel absorbs; leave as emitted.
+            return;
 
-          // Drain j of a channel holding D of them is armed at round
-          // floor(j * rounds / D), ahead of that round's feeds, so it is
-          // running before its producer emits. Assuming the drains draw on the
-          // feeds evenly, drain j is complete once round
-          // lastRound(j) = ceil((j + 1) * rounds / D) - 1 has been fed, and the
-          // cap makes drain j wait for drain j - burstLimit; so drain j is held
-          // back until the round after that one, or the wait would be on feeds
-          // not yet issued. Round `rounds` means after every feed.
-          SmallVector<SmallVector<Unit>> drainsAt(rounds + 1);
-          // The round each leading drain is armed at, per channel; drains
-          // between the feeds come no earlier.
-          llvm::StringMap<unsigned> lastLeadingRound;
-          // The round of the first feed that awaits `drain`, or `rounds`.
-          auto firstAwaiter = [&](Unit drain) {
-            unsigned r = rounds;
-            for (auto &ch : byChan)
-              for (auto [i, u] : llvm::enumerate(ch.second))
-                if (llvm::any_of(u.prefix, [&](Operation *a) {
-                      return cast<AIEX::DMAAwaitTaskOp>(a).getTask() ==
-                             drain.cfg.getResult();
-                    }))
-                  r = std::min<unsigned>(r, i);
-            return r;
+          // Preserve peer feeds that the channel-index weave issued before
+          // each pacing wait. An awaiting peer originally after the paced task
+          // belongs to a later read-back phase; its producer boundary takes
+          // precedence over its old channel index. Other peer inversions need
+          // explicit ordering constraints, not a post-emission cap insertion.
+          // Search each channel's ordered baseline to find its last such peer.
+          // Store feed indices and round distances; no IR is moved yet.
+          SmallVector<SmallVector<std::pair<unsigned, unsigned>>> capPeers(
+              run.size());
+          auto key = [&](const Unit &u, unsigned channel) -> uint64_t {
+            return uint64_t(2 * u.baseRound + (u.prefix.empty() ? 0 : 1)) *
+                       byChan.size() +
+                   channel;
           };
-          if (weaveDrains) {
-            for (auto &kv : drainsByChan) {
-              unsigned d = kv.second.size();
-              auto lastRound = [&](unsigned j) {
-                return ((j + 1) * rounds + d - 1) / d - 1;
-              };
-              for (unsigned j = 0; j < d; j++) {
-                unsigned r = j * rounds / d;
-                if (j >= burstLimit)
-                  r = std::max(r, lastRound(j - burstLimit) + 1);
-                // Never after a feed that awaits it.
-                r = std::min(r, firstAwaiter(kv.second[j]));
-                if (j)
-                  r = std::max(r, lastLeadingRound[kv.first]);
-                lastLeadingRound[kv.first] = std::min(r, rounds);
-                drainsAt[std::min(r, rounds)].push_back(kv.second[j]);
+          if (readsBack) {
+            for (auto [channel, kv] : llvm::enumerate(byChan)) {
+              for (unsigned i = burstLimit; i < kv.second.size(); i++) {
+                const Unit &u = kv.second[i];
+                for (auto [peerChannel, peer] : llvm::enumerate(byChan)) {
+                  if (channel == peerChannel)
+                    continue;
+                  uint64_t at = key(u, channel);
+                  unsigned peerIndex = peerChannel;
+                  auto it = llvm::lower_bound(peer.second, at,
+                                              [&](const Unit &p, uint64_t at) {
+                                                return key(p, peerIndex) < at;
+                                              });
+                  // A channel's tasks have increasing input positions. At most
+                  // one awaiting feed can occupy its final baseline round.
+                  while (it != peer.second.begin()) {
+                    const Unit &p = *--it;
+                    if (!p.prefix.empty() &&
+                        p.pos > kv.second[i - burstLimit].pos)
+                      continue;
+                    unsigned phase = u.prefix.empty() ? 0 : 1;
+                    unsigned peerPhase = p.prefix.empty() ? 0 : 1;
+                    unsigned distance =
+                        phase > peerPhase ||
+                                (phase == peerPhase && channel > peerChannel)
+                            ? 0
+                            : 1;
+                    capPeers[u.pos].push_back({p.pos, distance});
+                    break;
+                  }
+                }
               }
             }
+            // Propagate the constraints below with channel order and read-back
+            // producer boundaries. Every constraint has a nonnegative round
+            // distance, so a change on the Nth pass means a positive cycle.
+            // Channel order and the read-back bound only point to earlier
+            // input positions. A peer constraint to a later position is a
+            // preference taken from the channel-index weave, not a dependency
+            // the IR states, and it is the only edge that can close a cycle.
+            // So a cycle drops those and keeps the peers that precede the
+            // paced task; any cycle left is a conflict to report.
+            SmallVector<unsigned> startRound;
+            for (const Unit &u : run)
+              startRound.push_back(u.round);
+            auto propagate = [&]() {
+              for (Unit &u : run)
+                u.round = startRound[u.pos];
+              for (unsigned iteration = 0; iteration < run.size();
+                   iteration++) {
+                llvm::StringMap<unsigned> next;
+                bool changed = false;
+                before = 0;
+                rounds = 0;
+                for (Unit &u : run) {
+                  unsigned r = std::max(u.round, next.lookup(u.chan));
+                  u.before = before;
+                  if (!u.prefix.empty())
+                    r = std::max(r, before / 2);
+                  for (auto [peer, distance] : capPeers[u.pos])
+                    r = std::max(r, run[peer].round + distance);
+                  changed |= r != u.round;
+                  u.round = r;
+                  next[u.chan] = r + 1;
+                  before = std::max(before, 2 * r + (u.prefix.empty() ? 1 : 2));
+                  rounds = std::max(rounds, r + 1);
+                }
+                if (!changed)
+                  return true;
+              }
+              return false;
+            };
+            if (!propagate()) {
+              for (unsigned pos = 0; pos < capPeers.size(); pos++)
+                llvm::erase_if(capPeers[pos],
+                               [pos](std::pair<unsigned, unsigned> e) {
+                                 return e.first >= pos;
+                               });
+              if (!propagate()) {
+                seq.emitError("cannot schedule shim DMA tasks: channel pacing "
+                              "and read-back ordering form a cycle");
+                invalidSchedule = true;
+                return;
+              }
+            }
+            for (auto &kv : byChan)
+              for (Unit &u : kv.second)
+                u = run[u.pos];
           }
 
-          // A drain between feeds is armed at the round of the feed it was
-          // emitted in front of, but never after a feed that awaits it, and in
-          // its channel's order.
-          {
-            llvm::MapVector<StringRef, SmallVector<std::pair<Unit, unsigned>>>
-                midByChan;
-            for (auto &[u, r] : midDrains)
-              midByChan[u.chan].push_back({u, std::min(r, firstAwaiter(u))});
-            for (auto &kv : midByChan) {
-              auto &ds = kv.second;
-              if (auto it = lastLeadingRound.find(kv.first);
-                  it != lastLeadingRound.end() && !ds.empty())
-                ds[0].second = std::max(ds[0].second, it->second);
-              for (unsigned j = 1; j < ds.size(); j++)
-                ds[j].second = std::max(ds[j].second, ds[j - 1].second);
-              for (unsigned j = ds.size(); j-- > 1;)
-                ds[j - 1].second = std::min(ds[j - 1].second, ds[j].second);
-              for (auto &[u, r] : ds)
-                drainsAt[r].push_back(u);
+          const unsigned endSlot = 2 * rounds;
+          // Compute the first explicit await once. The second value is the
+          // producer-feed boundary that any earlier synthetic await must also
+          // respect. Channel-order normalization waits for older drains too.
+          llvm::DenseMap<Value, std::pair<unsigned, unsigned>> firstAwaiter;
+          for (const Unit &u : run)
+            for (Operation *a : u.prefix)
+              firstAwaiter.try_emplace(cast<AIEX::DMAAwaitTaskOp>(a).getTask(),
+                                       2 * u.round + 1, u.before);
+
+          // A middle drain may receive output from an earlier streaming feed.
+          // Arm it before any new cap wait for such a feed. Store prefix minima
+          // indexed by input position, so finding this deadline is linear in
+          // the number of feeds and drains, not a scan per drain.
+          SmallVector<unsigned> capBefore(run.size() + 1, endSlot);
+          for (auto &kv : byChan) {
+            const auto &ch = kv.second;
+            for (unsigned i = burstLimit; i < ch.size(); i++) {
+              unsigned pos = ch[i - burstLimit].pos + 1;
+              unsigned slot = 2 * ch[i].round + (ch[i].prefix.empty() ? 0 : 1);
+              capBefore[pos] = std::min(capBefore[pos], slot);
+            }
+          }
+          for (unsigned i = 1; i < capBefore.size(); i++)
+            capBefore[i] = std::min(capBefore[i], capBefore[i - 1]);
+
+          SmallVector<SmallVector<Unit>> drainsAt(endSlot + 1);
+          for (auto &kv : allDrainsByChan) {
+            auto &ds = kv.second;
+            auto leadingIt = drainsByChan.find(kv.first);
+            unsigned leading =
+                leadingIt == drainsByChan.end() ? 0 : leadingIt->second.size();
+            SmallVector<unsigned> upper(ds.size(), endSlot);
+            SmallVector<unsigned> feedUpper(ds.size(), endSlot);
+            SmallVector<unsigned> producerBefore(ds.size(), 0);
+            // Propagate await deadlines and producer boundaries over leading
+            // and middle drains together, in reverse channel order. An await
+            // of a later drain also waits for all older drains on that channel.
+            unsigned awaitSlot = endSlot, feedBoundary = 0;
+            for (unsigned j = ds.size(); j-- > 0;) {
+              if (auto it = firstAwaiter.find(ds[j].cfg.getResult());
+                  it != firstAwaiter.end() && it->second.first <= awaitSlot) {
+                awaitSlot = it->second.first;
+                feedBoundary = it->second.second;
+              }
+              upper[j] = awaitSlot;
+              producerBefore[j] = feedBoundary;
+              // A feed's cap wait may need a later drain armed, but nothing
+              // in the IR says it does. Keep that bound apart: it holds when
+              // the drain's own constraints leave room, and gives way when
+              // they do not.
+              feedUpper[j] = upper[j];
+              if (readsBack && j >= leading)
+                feedUpper[j] = std::min(feedUpper[j], capBefore[ds[j].pos]);
+              if (j + 1 < ds.size()) {
+                upper[j] = std::min(upper[j], upper[j + 1]);
+                feedUpper[j] = std::min(feedUpper[j], feedUpper[j + 1]);
+              }
+            }
+            unsigned previous = 0;
+            for (unsigned j = 0; j < ds.size(); j++) {
+              Unit &u = ds[j];
+              unsigned target = 0, lower = previous, spread = 0;
+              if (j < leading) {
+                if (weaveDrains) {
+                  // Retain the proportional leading-drain weave. Its pacing
+                  // lower bound assumes drains consume feeds evenly; read-back
+                  // producer boundaries below must never be weakened by it.
+                  target = 2 * (j * rounds / leading);
+                  if (j >= burstLimit) {
+                    unsigned afterProducer =
+                        ((j - burstLimit + 1) * rounds + leading - 1) / leading;
+                    spread = 2 * afterProducer;
+                  }
+                }
+              } else {
+                target = u.pos < run.size() ? 2 * run[u.pos].round : endSlot;
+              }
+              if (j >= burstLimit)
+                lower = std::max(lower, producerBefore[j - burstLimit]);
+              // Resolve both bounds before moving IR. A drain cap can require
+              // the late slot in a round; clamping it to an early slot would
+              // put a blocking wait ahead of the inputs producing that drain.
+              unsigned bound = lower <= feedUpper[j] ? feedUpper[j] : upper[j];
+              u.slot = std::max(lower, std::min(target, bound));
+              // The spread of the leading drains over the rounds is a
+              // preference. It holds only where an await of the drain, or the
+              // producer bound above, leaves room for it.
+              if (spread <= bound)
+                u.slot = std::max(u.slot, spread);
+              if (u.slot > upper[j]) {
+                u.cfg.emitError(
+                    "cannot schedule shim DMA tasks: channel pacing conflicts "
+                    "with read-back or streaming-drain ordering");
+                invalidSchedule = true;
+                return;
+              }
+              previous = u.slot;
+              // Leading drains that were not woven already precede every feed.
+              if (j >= leading || weaveDrains)
+                drainsAt[u.slot].push_back(u);
             }
           }
 
-          for (unsigned i = 0; i <= rounds; i++) {
-            for (const Unit &u : drainsAt[i]) {
+          llvm::StringMap<unsigned> cursor;
+          for (unsigned slot = 0; slot <= endSlot; slot++) {
+            for (const Unit &u : drainsAt[slot]) {
               u.cfg->moveBefore(fence);
               u.start->moveBefore(fence);
             }
-            if (i == rounds)
+            if (slot == endSlot)
               break;
-            // Feeds carrying a drain await go last in their round, so the
-            // other channels' feeds of the round are out before the control
-            // program blocks.
-            for (bool awaiting : {false, true})
-              for (auto &kv : byChan) {
-                if (i >= kv.second.size())
-                  continue;
-                const Unit &u = kv.second[i];
-                if (u.prefix.empty() == awaiting)
-                  continue;
-                for (Operation *a : u.prefix)
-                  a->moveBefore(fence);
-                u.cfg->moveBefore(fence);
-                u.start->moveBefore(fence);
-              }
+            for (auto &kv : byChan) {
+              unsigned &cur = cursor[kv.first];
+              if (cur >= kv.second.size())
+                continue;
+              const Unit &u = kv.second[cur];
+              if (2 * u.round + (u.prefix.empty() ? 0 : 1) != slot)
+                continue;
+              cur++;
+              for (Operation *a : u.prefix)
+                a->moveBefore(fence);
+              u.cfg->moveBefore(fence);
+              u.start->moveBefore(fence);
+            }
           }
           for (Operation *a : trailing)
             a->moveBefore(fence);
           for (auto &kv : byChan)
             capChannel(kv.second,
                        [&](unsigned i) { return kv.second[i].start; });
-          // A drain's wait goes ahead of its configure rather than its start,
-          // so the BD it frees is free for the configure to take.
+          // Free a drain's BD before configuring its replacement.
           for (auto &kv : allDrainsByChan)
             capChannel(kv.second, [&](unsigned i) {
               return kv.second[i].cfg.getOperation();
@@ -4044,6 +4208,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // transparent; moving a task above its operands is repaired by the
         // rematerialization pass below, which is there for exactly this.
         for (Operation &o : llvm::make_early_inc_range(*blk)) {
+          if (invalidSchedule)
+            break;
           if (auto await = dyn_cast<AIEX::DMAAwaitTaskOp>(&o)) {
             if (travelling.contains(&o)) {
               pendingAwaits.push_back(&o);
@@ -4077,16 +4243,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             StringRef chan = cfg.getAlloc().getLeafReference().getValue();
             if (start && isDrain(cfg)) {
               (run.empty() ? drains : pendingDrains)
-                  .push_back({cfg, start, chan});
+                  .push_back({cfg, start, chan, {}, (unsigned)run.size()});
               continue;
             }
             if (start && isReorderable(cfg)) {
-              unsigned round = llvm::count_if(
-                  run, [&](const Unit &u) { return u.chan == chan; });
-              for (const Unit &d : pendingDrains)
-                midDrains.push_back({d, round});
+              llvm::append_range(midDrains, pendingDrains);
               pendingDrains.clear();
-              run.push_back({cfg, start, chan, std::move(pendingAwaits)});
+              run.push_back({cfg, start, chan, std::move(pendingAwaits),
+                             (unsigned)run.size()});
               pendingAwaits.clear();
               continue;
             }
@@ -4117,6 +4281,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           f->erase();
       }
     });
+    return failure(invalidSchedule);
   }
 
   // Put each channel's awaits in the order its tasks were started, and release

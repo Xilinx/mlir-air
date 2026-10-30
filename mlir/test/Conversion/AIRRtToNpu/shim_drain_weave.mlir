@@ -323,9 +323,8 @@ module {
 // -----
 
 // Two channels each read back a region one drain wrote, each behind its own
-// wait for it. The weave lays channel B's read down in the same round as A's;
-// whichever goes first is behind the await, and the other's await of the same
-// drain is dropped.
+// wait for it. Both reads follow the drain's await, and the redundant second
+// await is dropped. Awaiting feeds retain their input order.
 // CHECK-LABEL: aie.runtime_sequence @shared_read_back
 // CHECK: %[[D:.*]] = aiex.dma_configure_task_for @srb_out
 // CHECK-NEXT: aie.dma_bd(%arg1
