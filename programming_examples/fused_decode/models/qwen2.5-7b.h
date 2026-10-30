@@ -18,6 +18,9 @@ constexpr int VOCAB_SIZE = 152064;
 constexpr float ATTN_SCALE = 0.08838834764831843f; // 1/sqrt(128)
 
 #define ATTN_IMPL ATTN_IMPL_1x8x1
+// The q/k bias leaves a few channels far larger than the rest; with BFP16's
+// shared exponents the rest lose their precision.
+#define ATTN_QK_NATIVE_BF16 1
 #define A_FUNC A_SILU
 #define HAS_QKV_BIAS
 
