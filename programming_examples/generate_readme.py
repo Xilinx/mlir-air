@@ -19,6 +19,7 @@
 #   "ryzen_ai_npu2" → matches NPU2 only
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -889,8 +890,146 @@ def _swept_models(recs):
     return {(d.get("model"), _hardware(d)) for d in recs}
 
 
-def render_llm_sweep(recs, base_url=""):
-    """Render decode tok/s against context length, one row per model.
+def load_llm_accuracy(accuracy_path, tasks_path):
+    """Accuracy and task scores per model, for the decode and prefill tables.
+
+    The newest record of each series -- (reference, NPU path, context) from
+    accuracy_history.ndjson, the task from tasks_history.ndjson -- whichever
+    hardware measured it: the NPU computes the same on every NPU2 machine, so
+    a model's accuracy belongs on its row whatever hardware timed that row.
+    The record keeps its own hardware for the page to name.
+    """
+    newest = {}
+    for path, key in (
+        (accuracy_path, lambda r: (r["ref_kind"], r["path"], r["ctx"])),
+        (tasks_path, lambda r: r["task"]),
+    ):
+        if not path or not Path(path).is_file():
+            continue
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                r = json.loads(line)
+                k = (r["model"], key(r))
+            except (json.JSONDecodeError, KeyError):
+                continue
+            if (r.get("timestamp_utc") or "") >= (
+                newest.get(k, {}).get("timestamp_utc") or ""
+            ):
+                newest[k] = r
+    by_model = {}
+    for (model, series), r in newest.items():
+        by_model.setdefault(model, {})[series] = r
+    return by_model
+
+
+def _same_weights_ref(model):
+    """The reference that runs the model's own weights: the bf16 checkpoint
+    for a bf16 model, the 4-bit weights dequantized on the CPU otherwise."""
+    return "bf16" if (_llm_weights(model) or "bf16") == "bf16" else "dequant"
+
+
+def _measured_on(r):
+    return (
+        f"{hardware_label(_hardware(r))}, {(r.get('timestamp_utc') or '')[:10]}, "
+        f"mlir-air {(r.get('air_sha') or '')[:7]}"
+    )
+
+
+def _kld_cell(r, more=()):
+    """KL divergence, with its error, same top-1 and where it was measured
+    in the cell's tooltip. Blank when not measured: a dash in these tables
+    marks a context the speed sweep skipped."""
+    if r is None:
+        return ""
+    tip = [
+        f"KLD {r['kld_mean']:.4f} ± {r['kld_se']:.4f}",
+        f"same top-1 {100 * r['same_top']:.1f}%",
+        f"{r['n_tokens']} tokens",
+        *more,
+        _measured_on(r),
+    ]
+    return f'<span title="{"; ".join(tip)}">{r["kld_mean"]:.4f}</span>'
+
+
+def _task_cell(r):
+    """% correct on the NPU / on the reference, the paired counts in the
+    tooltip."""
+    if r is None:
+        return ""
+    tip = (
+        f"{r['n']} questions; right only on the NPU {r['npu_only_right']}, only "
+        f"on the reference {r['ref_only_right']}; McNemar p = "
+        f"{r['mcnemar_p']:.3f}; {_measured_on(r)}"
+    )
+    return f'<span title="{tip}">{100 * r["npu"]:.0f} / {100 * r["ref"]:.0f}</span>'
+
+
+def _decode_accuracy(model, acc):
+    """The decode table's accuracy cells and the records they show."""
+    same = _same_weights_ref(model)
+    head = acc.get((same, "decode", 2048))
+    # Longer contexts score the end of one long window; their KLD goes in the
+    # tooltip.
+    deep = sorted(
+        k[2]
+        for k in acc
+        if isinstance(k, tuple) and k[:2] == (same, "decode") and k[2] != 2048
+    )
+    more = [
+        f"{_ctx_label(c)}: KLD {acc[(same, 'decode', c)]['kld_mean']:.4f}" for c in deep
+    ]
+    vs_bf16 = acc.get(("bf16", "decode", 2048))
+    if vs_bf16 is not None:
+        ratio = math.exp(vs_bf16["ln_ppl_ratio"])
+        more.append(f"PPL vs the bf16 checkpoint {100 * (ratio - 1):+.1f}%")
+    shown = [r for r in (head, acc.get("gsm8k"), acc.get("mmlu")) if r]
+    cells = [
+        _kld_cell(head, more),
+        _task_cell(acc.get("gsm8k")),
+        _task_cell(acc.get("mmlu")),
+    ]
+    return cells, shown
+
+
+def _prefill_accuracy(model, acc):
+    r = acc.get((_same_weights_ref(model), "prefill", 2048))
+    return [_kld_cell(r)], [r] if r else []
+
+
+def _hardware_cell(d, shown):
+    """The row's hardware, then any other hardware its accuracy came from."""
+    own = _hardware(d)
+    others = sorted(
+        {hardware_label(_hardware(r)) for r in shown} - {hardware_label(own)}
+    )
+    cell = hardware_label(own)
+    if others:
+        cell += f"<br><small>accuracy: {', '.join(others)}</small>"
+    return cell
+
+
+_ACCURACY_LEGEND = """\
+**Accuracy** (the decode table's KLD, GSM8K and MMLU; the prefill table's KLD).
+The NPU is compared with the same model on the CPU (PyTorch): on wikitext-2 the
+way llama.cpp's `llama-perplexity --kl-divergence` does, and on benchmark
+questions. Measured offline. The NPU gives the same accuracy on every NPU2
+machine, so a row whose accuracy was measured on other hardware names it under
+Hardware. Hover over a number for its details.
+
+- **KLD**: KL divergence of the NPU's next-token distribution from the CPU's
+  with the same weights (4-bit weights dequantized on the CPU); 0 means
+  identical. It measures the NPU implementation alone.
+- **GSM8K / MMLU**: % correct, NPU / original bf16 checkpoint on the CPU, on
+  the same questions (GSM8K 100, MMLU 570). For 4-bit models this includes the
+  cost of the 4-bit weights.
+"""
+
+
+def render_llm_sweep(recs, base_url="", accuracy=None):
+    """Render decode tok/s against context length, one row per model, and
+    each model's decode accuracy when `accuracy` (load_llm_accuracy) has it.
 
     Models with a sweep are published here instead of in the single-point table:
     decode throughput is dominated by KV streaming and falls by more than 10x
@@ -912,19 +1051,25 @@ def render_llm_sweep(recs, base_url=""):
     if not ctxs:
         return ""
 
+    acc_head = ["KLD", "GSM8K", "MMLU"] if accuracy else []
     head = (
         "| Model | Hardware | Weights | "
-        + " | ".join(_ctx_label(c) for c in ctxs)
+        + " | ".join([_ctx_label(c) for c in ctxs] + acc_head)
         + " | Verify |"
     )
     sep = (
         "|:------|:---------|:--------|"
-        + "".join("------:|" for _ in ctxs)
+        + "".join("------:|" for _ in ctxs + acc_head)
         + ":------:|"
     )
 
     rows, markers = [], set()
     for d in _by_model(recs):
+        acc_cells, shown = [], []
+        if accuracy:
+            acc_cells, shown = _decode_accuracy(
+                d.get("model", ""), accuracy.get(d.get("model"), {})
+            )
         by_ctx = {pt.get("context_len"): pt for pt in d.get("points", []) or []}
         cells = []
         for c in ctxs:
@@ -935,9 +1080,9 @@ def render_llm_sweep(recs, base_url=""):
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
             f'| {_llm_model_cell(d.get("model", ""), base_url)} '
-            f"| {hardware_label(_hardware(d))} "
+            f"| {_hardware_cell(d, shown)} "
             f'| {_llm_weights(d.get("model", ""))} | '
-            + " | ".join(cells)
+            + " | ".join(cells + acc_cells)
             + f" | {verify} |"
         )
 
@@ -968,7 +1113,8 @@ Steady-state decode throughput at increasing KV-cache depth.
 {chr(10).join(rows)}
 
 {legend}
-"""
+
+{_ACCURACY_LEGEND if accuracy else ""}"""
 
 
 def load_llm_prefill_sweep_history(path):
@@ -1039,8 +1185,9 @@ def _prefill_sweep_cell(pt):
     return "—" if pt.get("status", "") in ("", "ok", "expected_fail") else "✗"
 
 
-def render_llm_prefill_sweep(recs, base_url=""):
-    """Render prefill TTFT against prefill length, one row per model.
+def render_llm_prefill_sweep(recs, base_url="", accuracy=None):
+    """Render prefill TTFT against prefill length, one row per model, and
+    each model's prefill KLD when `accuracy` (load_llm_accuracy) has it.
 
     The x-axis is the number of token rows the prefill computes, which is what
     TTFT scales with. A fused prefill is timed on a prompt of that many tokens,
@@ -1063,19 +1210,25 @@ def render_llm_prefill_sweep(recs, base_url=""):
     if not lens:
         return ""
 
+    acc_head = ["KLD"] if accuracy else []
     head = (
         "| Model | Hardware | Weights | "
-        + " | ".join(_ctx_label(l) for l in lens)
+        + " | ".join([_ctx_label(l) for l in lens] + acc_head)
         + " | Verify |"
     )
     sep = (
         "|:------|:---------|:--------|"
-        + "".join("------:|" for _ in lens)
+        + "".join("------:|" for _ in lens + acc_head)
         + ":------:|"
     )
 
     rows, markers = [], set()
     for d in _by_model(recs):
+        acc_cells, shown = [], []
+        if accuracy:
+            acc_cells, shown = _prefill_accuracy(
+                d.get("model", ""), accuracy.get(d.get("model"), {})
+            )
         by_len = {pt.get("prefill_len"): pt for pt in d.get("points", []) or []}
         cells = []
         for l in lens:
@@ -1086,9 +1239,9 @@ def render_llm_prefill_sweep(recs, base_url=""):
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")
         rows.append(
             f'| {_llm_model_cell(d.get("model", ""), base_url)} '
-            f"| {hardware_label(_hardware(d))} "
+            f"| {_hardware_cell(d, shown)} "
             f'| {_llm_weights(d.get("model", ""))} | '
-            + " | ".join(cells)
+            + " | ".join(cells + acc_cells)
             + f" | {verify} |"
         )
 
@@ -1409,6 +1562,7 @@ def render_llm_benchmark(
     prefill_sweep_recs=(),
     history_path=None,
     spec_decode_recs=(),
+    accuracy=None,
 ):
     """Render the nightly LLM benchmark section.
 
@@ -1513,8 +1667,10 @@ def render_llm_benchmark(
         if s
     )
 
-    _sweep_table = render_llm_sweep(sweep_recs, base_url=base_url)
-    _prefill_table = render_llm_prefill_sweep(prefill_sweep_recs, base_url=base_url)
+    _sweep_table = render_llm_sweep(sweep_recs, base_url=base_url, accuracy=accuracy)
+    _prefill_table = render_llm_prefill_sweep(
+        prefill_sweep_recs, base_url=base_url, accuracy=accuracy
+    )
     _spec_table = render_spec_decode(spec_decode_recs, base_url=base_url)
     _vla_table = render_vla_benchmark(recs, base_url=base_url)
 
@@ -1614,6 +1770,8 @@ def generate_readme(
     llm_prefill_sweep_history_path=None,
     llm_spec_decode_path=None,
     llm_spec_decode_history_path=None,
+    llm_accuracy_history_path=None,
+    llm_tasks_history_path=None,
 ):
     """Generate dashboard content.
 
@@ -1631,6 +1789,7 @@ def generate_readme(
     spec_decode_recs = load_spec_decode_history(
         llm_spec_decode_history_path
     ) or load_spec_decode(llm_spec_decode_path)
+    accuracy = load_llm_accuracy(llm_accuracy_history_path, llm_tasks_history_path)
 
     if section == "llm":
         llm_section = render_llm_benchmark(
@@ -1645,8 +1804,16 @@ def generate_readme(
             or load_llm_sweeps(llm_prefill_sweep_path),
             history_path=llm_history_path,
             spec_decode_recs=spec_decode_recs,
+            accuracy=accuracy,
         )
+        # The curve tables are wider than the content column next to the
+        # navigation and table-of-contents sidebars, so this page hides both.
         return f"""\
+---
+hide:
+  - navigation
+  - toc
+---
 <!-- This file is auto-generated by generate_readme.py. Do not edit manually. -->
 
 # LLMs and VLAs on NPU
@@ -1666,6 +1833,7 @@ End-to-end inference of decoder-only LLMs and vision-language-action (VLA) polic
         or load_llm_sweeps(llm_prefill_sweep_path),
         history_path=llm_history_path,
         spec_decode_recs=spec_decode_recs,
+        accuracy=accuracy,
     )
     return (
         _operator_dashboard(base_url=base_url) + llm_section + _getting_started_footer()
@@ -1738,6 +1906,18 @@ if __name__ == "__main__":
         "--llm-spec-decode, same reason as --llm-history.",
     )
     parser.add_argument(
+        "--llm-accuracy-history",
+        default=None,
+        help="Path to accuracy_history.ndjson (verify/accuracy.py results). "
+        "Adds KLD columns to the decode and prefill tables.",
+    )
+    parser.add_argument(
+        "--llm-tasks-history",
+        default=None,
+        help="Path to tasks_history.ndjson (verify/lm_eval_npu.py results). "
+        "Adds GSM8K and MMLU columns to the decode table.",
+    )
+    parser.add_argument(
         "--section",
         choices=["full", "operators", "llm"],
         default="full",
@@ -1757,6 +1937,8 @@ if __name__ == "__main__":
         llm_prefill_sweep_history_path=args.llm_prefill_sweep_history,
         llm_spec_decode_path=args.llm_spec_decode,
         llm_spec_decode_history_path=args.llm_spec_decode_history,
+        llm_accuracy_history_path=args.llm_accuracy_history,
+        llm_tasks_history_path=args.llm_tasks_history,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # Explicit encoding: the tables carry the verify/status emoji, and on a
