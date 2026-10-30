@@ -4068,10 +4068,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           // The channels of a burst share the streams that feed them, so a
           // channel's drains cannot finish unless the other channels' first
           // drains are armed too. When an await of a woven leading drain
-          // follows, every channel's leading drains are armed before it, or the
-          // cap waits of one channel would block on tiles that the others
-          // cannot produce yet. It is a preference, like the cap bound below:
-          // it gives way to a channel's own producer boundary.
+          // follows, every channel's first burstLimit leading drains are armed
+          // before it, or the cap waits of one channel would block on tiles
+          // that the others cannot produce yet. It is a preference, like the
+          // cap bound below: it gives way to a channel's own producer boundary.
           unsigned leadingDeadline = endSlot;
           if (readsBack && weaveDrains)
             for (auto &kv : allDrainsByChan)
@@ -4115,7 +4115,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                 feedUpper[j] = std::min(feedUpper[j], feedUpper[j + 1]);
               }
             }
-            for (unsigned j = 0; j < std::min<unsigned>(leading, ds.size());
+            for (unsigned j = 0;
+                 j < std::min<unsigned>(
+                         {leading, (unsigned)burstLimit, (unsigned)ds.size()});
                  j++) {
               feedUpper[j] = std::min(feedUpper[j], leadingDeadline);
             }
