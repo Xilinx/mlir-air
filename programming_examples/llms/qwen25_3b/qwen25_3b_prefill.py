@@ -1063,6 +1063,9 @@ def run_transformer_block_qwen25(
             head_dim,
             seq_len,
             verbose=verbose,
+            # The q/k projection biases leave keys a shared part large
+            # enough to swamp the scores' BFP16 precision.
+            center_k=True,
         )
     inter["attn_out"] = attn_out
 

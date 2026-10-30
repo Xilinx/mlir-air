@@ -166,6 +166,25 @@ def compile_headfirst_fa(
     cache.compile_and_cache(name, mod, _fa_backend_kwargs(verbose, head_dim // dv_tile))
 
 
+def _center_keys(k):
+    """k [seq, kv_heads, d] bf16, minus the part all keys share where it dominates.
+
+    Any vector subtracted from every key leaves each query's softmax unchanged,
+    so the vector only has to carry what q/k projection biases leave: a few
+    channels where every key holds about the same large value. Those are the
+    channels whose mean, over every 16th key, exceeds their spread; only they
+    are subtracted, and a layer without any comes back as it is.
+    """
+    s = k[::16].astype(np.float32)
+    kbar = s.mean(axis=0)
+    shared = np.abs(kbar) > np.abs(s - kbar).max(axis=0)
+    if not shared.any():
+        return k
+    kf = k.astype(np.float32)
+    kf -= np.where(shared, kbar, 0.0)
+    return kf.astype(bfloat16)
+
+
 def npu_fa_headfirst(
     cache,
     q_roped,
@@ -177,6 +196,7 @@ def npu_fa_headfirst(
     seq_len,
     verbose=False,
     name="flash_attn",
+    center_k=False,
 ):
     """Run head-first FlashAttention on NPU and return seq-first bf16 output.
 
@@ -188,6 +208,11 @@ def npu_fa_headfirst(
         name: cache key of the ELF to run. Models with per-layer attention
             variants (e.g. Gemma3's alternating sliding-window / global layers)
             compile one ELF per variant and select here.
+        center_k: first subtract from every key the large part all keys
+            share (_center_keys). Every score of a query moves by the same
+            amount, which the softmax ignores, but that part no longer sets the
+            scale the matmul's BFP16 operands are quantized to. For q/k
+            projection biases, which leave such a part.
     Returns:
         (seq, n_heads*head_dim) seq-first bf16 attention output.
     """
@@ -204,6 +229,8 @@ def npu_fa_headfirst(
     # Q L3: [n_heads, seq, head_dim]
     q_hf = np.ascontiguousarray(q.transpose(1, 0, 2))
     # K L3: [n_kv_heads, seq, head_dim]
+    if center_k:
+        k = _center_keys(k)
     k_hf = np.ascontiguousarray(k.transpose(1, 0, 2))
     # V L3: [n_kv_heads*dv_chunks, seq, dv_tile] -- split head_dim into
     # dv_chunks slices of dv_tile=lkp, dv-chunk axis nests inside the kv-head
