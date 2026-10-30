@@ -157,6 +157,19 @@ class AccuracyColumns(unittest.TestCase):
         self.assertEqual(text(cell), "0.0300")
         self.assertIn("8k: KLD 0.0400", cell)
 
+    def test_tooltip_entries_from_other_runs_name_their_hardware(self):
+        # 2k measured on Krackan Point, 8k later on Strix Halo: the 8k entry
+        # says where it came from, and so does the Hardware cell.
+        acc = load(
+            [
+                accuracy("dequant", "decode", 0.03),
+                accuracy("dequant", "decode", 0.04, ctx=8192, hardware="strix-halo"),
+            ]
+        )
+        cells = row(generate_readme.render_llm_sweep([sweep()], accuracy=acc))
+        self.assertIn(f"8k: KLD 0.0400 ({HALO},", cells[-4])
+        self.assertIn(f"accuracy: {HALO}", cells[1])
+
     def test_unmeasured_cells_are_blank(self):
         # A dash in these tables means a context the speed sweep skipped.
         acc = load([accuracy("dequant", "decode", 0.03)])

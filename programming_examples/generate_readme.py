@@ -977,14 +977,27 @@ def _decode_accuracy(model, acc):
         for k in acc
         if isinstance(k, tuple) and k[:2] == (same, "decode") and k[2] != 2048
     )
-    more = [
-        f"{_ctx_label(c)}: KLD {acc[(same, 'decode', c)]['kld_mean']:.4f}" for c in deep
+    extra = [
+        (f"{_ctx_label(c)}: KLD {r['kld_mean']:.4f}", r)
+        for c in deep
+        for r in [acc[(same, "decode", c)]]
     ]
     vs_bf16 = acc.get(("bf16", "decode", 2048))
     if vs_bf16 is not None:
         ratio = math.exp(vs_bf16["ln_ppl_ratio"])
-        more.append(f"PPL vs the bf16 checkpoint {100 * (ratio - 1):+.1f}%")
+        extra.append((f"PPL vs the bf16 checkpoint {100 * (ratio - 1):+.1f}%", vs_bf16))
+    # An entry from another run than the cell's own names where it was measured.
+    more = [
+        (
+            text
+            if head is None or _measured_on(r) == _measured_on(head)
+            else f"{text} ({_measured_on(r)})"
+        )
+        for text, r in extra
+    ]
     shown = [r for r in (head, acc.get("gsm8k"), acc.get("mmlu")) if r]
+    if head is not None:
+        shown += [r for _, r in extra]
     cells = [
         _kld_cell(head, more),
         _task_cell(acc.get("gsm8k")),
