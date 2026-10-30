@@ -10,13 +10,9 @@
 // Two external (L3) channel ops in a segment: a loop of gets that fills a
 // buffer, and a put that reads a region of the same buffer afterwards.
 // air-dependency makes the put depend on the loop. air-dma-to-channel hoists
-// the external ops to the launch one at a time. By the time the put is hoisted,
-// the gets already live in a hoisted loop, and the put's dependency was cloned
-// from the original loop, which then only holds placeholders. The dependency
-// repair afterwards only accepted air async ops as the source of a
-// dependency, not an scf loop yielding a token, so the put kept depending on
-// the empty copy and nothing ordered it after the gets: a read of the buffer
-// before it is filled.
+// the external ops to the launch one at a time, so when the put is hoisted the
+// gets already live in a hoisted loop. The put must depend on that loop's
+// token, or nothing orders the read after the writes that fill the buffer.
 
 // The put depends on the hoisted loop that holds the gets.
 // CHECK: %[[LOOP:.*]] = scf.for

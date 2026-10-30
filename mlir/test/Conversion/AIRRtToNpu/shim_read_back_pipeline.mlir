@@ -70,9 +70,9 @@ module {
 // IDS: air.channel.put async {{.*}}@a
 // IDS: air.channel.put async {{.*}}@a{{.*}}id = [[ID]] : i32
 
-// BD specialization clones two jobs after air-renumber-dma. Repeated static
-// IDs must not change the order of either copy or move the second job's feeds
-// before the first job's read-back barrier.
+// BD specialization clones two jobs after air-renumber-dma, so the copies share
+// channel op ids. Neither copy is reordered, and the second job's feeds stay
+// behind the first job's read-back wait.
 // CHECK-LABEL: aie.runtime_sequence @cloned_jobs
 // CHECK: %[[CD0:.*]] = aiex.dma_configure_task_for @air_out
 // CHECK: aiex.dma_configure_task_for @air_a
