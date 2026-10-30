@@ -62,6 +62,23 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
                        float *__restrict c, aie::mask<16> &mask,
                        bool &is_first);
 
+// Running-max state for a new query. update_split() keeps the max as a pair:
+// m_hi in the lower half, m_lo in the upper half. m_lo starts at 0 so the
+// first block's comparison stays finite.
+#if defined(HAS_QKV_BIAS) && ATTN_IMPL == ATTN_IMPL_1x8x1
+#if ATTN_KV_PARTS > 1
+#error "attn_merge reads one scaled max per head; update_split keeps a raw pair"
+#endif
+static inline aie::vector<bf16, 16> m_state_init() {
+  return aie::concat(aie::broadcast<bf16, 8>(-0x1.FEp127f),
+                     aie::zeros<bf16, 8>());
+}
+#else
+static inline aie::vector<bf16, 16> m_state_init() {
+  return aie::broadcast<bf16, 16>(-0x1.FEp127f);
+}
+#endif
+
 constexpr int q_prod_lock = 0;
 constexpr int q_cons_lock = 1;
 constexpr int k_prod_lock = 2;
@@ -87,7 +104,6 @@ void attn_qk(bf16 *__restrict q_ping, bf16 *__restrict q_pong,
       __attribute__((section(".data"))) float c_local[8] = {};
   // Peano: non-static so the broadcast/init runs each call (peano's non-atomic
   // static-init guard lives in unzeroed .bss and may skip the constructor).
-  const aie::vector<bf16, 16> neg_inf = aie::broadcast<bf16, 16>(-0x1.FEp127f);
   const aie::vector<int, 16> idx = aie::vector<int, 16>(
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
 
@@ -100,7 +116,7 @@ void attn_qk(bf16 *__restrict q_ping, bf16 *__restrict q_pong,
   // bf16 *l = ql ? l_ping : l_pong;
   bf16 *q = ql ? q_ping : q_pong;
   // aie::store_v(l_local, zero);
-  aie::store_v(m, neg_inf);
+  aie::store_v(m, m_state_init());
   int rounds = (L[0] + 15) / 16;
   _lock_release(l_cons_lock);
   AIE_LOCK_LOOP_CTR i = L[0];
@@ -377,17 +393,38 @@ void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK, bfloat16 *__restrict pY,
 // block accumulator is split into hi (rounded to bf16) and lo (the rest), both
 // go through the same shuffles into heads, and update_split() takes the offset
 // from the max as (hi - max) + lo. hi - max is exact for every key within a
-// factor of two of the max, which are the keys that carry weight. m is the
-// running max in raw score units here; it only has to be the same value in a
-// block's exponentials and in its correction c.
-ATTN_HOT aie::vector<bf16, 16> update_split(bf16 *m, float *c,
+// factor of two of the max, which are the keys that carry weight.
+//
+// The running max is the pair (m_hi, m_lo), the largest hi + lo so far, so
+// every exponent is at most 0 as in update(). With a max of hi alone, the top
+// key's exponent would be lo * ATTN_SCALE, which grows with the bf16 step of
+// the scores; at large scores the exponentials overflow the softmax sum and
+// the output is NaN. m_lo sits in the upper half of the 16-slot m state, which
+// one CU's heads do not use.
+static_assert(Q_HEADS_PADDED_PER_CU <= 8,
+              "update_split keeps m_lo in m[8 + h]");
+ATTN_HOT aie::vector<bf16, 16> update_split(bf16 *m_hi, bf16 *m_lo, float *c,
                                             aie::vector<bf16, 16> &hi,
                                             aie::vector<bf16, 16> &lo,
                                             aie::mask<16> &mask) {
   aie::vector<bf16, 16> masked_vm = aie::select((bf16)(-0x1.FEp127f), hi, mask);
-  bf16 vm = aie::reduce_max(masked_vm);
-  bf16 vmax = aie::max(vm, *m);
-  aie::vector<bf16, 16> Vecsub = aie::add(aie::sub(hi, vmax), lo);
+  bf16 vmax = aie::reduce_max(masked_vm);
+  // The block's max as the pair (vmax, dmax). The top key has hi == vmax, so
+  // its offset from vmax is exactly its lo.
+  aie::vector<bf16, 16> d = aie::add(aie::sub(hi, vmax), lo);
+  bf16 dmax = aie::reduce_max(aie::select((bf16)(-0x1.FEp127f), d, mask));
+
+  // The block raises the running max if (vmax - m_hi) + (dmax - m_lo) > 0.
+  // The first difference is exact when the two are close and the second is
+  // small, so the sign can be trusted.
+  bf16 rise = aie::add(aie::sub(vmax, *m_hi), aie::sub(dmax, *m_lo));
+  bool raised = (__builtin_bit_cast(uint16_t, rise) & 0x8000) == 0 &&
+                __builtin_bit_cast(uint16_t, rise) != 0;
+  bf16 n_hi = raised ? vmax : *m_hi;
+  bf16 n_lo = raised ? dmax : *m_lo;
+
+  aie::vector<bf16, 16> Vecsub =
+      aie::add(aie::sub(hi, n_hi), aie::sub(lo, n_lo));
   Vecsub = aie::mul(Vecsub, (bf16)ATTN_SCALE).template to_vector<bf16>();
 
   constexpr int min_clamp = -87.0f;
@@ -403,8 +440,8 @@ ATTN_HOT aie::vector<bf16, 16> update_split(bf16 *m, float *c,
   // Most blocks leave the max where it was; their correction is exactly 1,
   // which also lets attn_kv's lazy rescale skip them.
   float cf = 1.0f;
-  if (__builtin_bit_cast(uint16_t, vmax) != __builtin_bit_cast(uint16_t, *m)) {
-    bf16 correct = aie::sub(*m, vmax);
+  if (raised) {
+    bf16 correct = aie::add(aie::sub(*m_hi, n_hi), aie::sub(*m_lo, n_lo));
     aie::vector<bf16, 16> correct_vec =
         aie::mul(aie::broadcast<bf16, 16>(correct), (bf16)ATTN_SCALE)
             .template to_vector<bf16>();
@@ -413,7 +450,8 @@ ATTN_HOT aie::vector<bf16, 16> update_split(bf16 *m, float *c,
     cf = e.to_vector<float>().get(0);
   }
 
-  *m = vmax;
+  *m_hi = n_hi;
+  *m_lo = n_lo;
   *c = cf;
   return Vec;
 }
@@ -509,7 +547,7 @@ ATTN_HOT void _attn_qk(bf16 *__restrict pQ, bf16 *__restrict pK,
     for (int h = 0; h < Q_HEADS_PER_CU; h++) {
 #ifdef HAS_QKV_BIAS
       aie::vector<bf16, 16> vec =
-          update_split(m + h, c + h, hi[h], lo[h], mask);
+          update_split(m + h, m + 8 + h, c + h, hi[h], lo[h], mask);
 #else
       aie::vector<bf16, 16> vec = update(m + h, c + h, out[h], mask, is_first);
 #endif
@@ -559,7 +597,6 @@ void attn_qk_blk(bf16 *__restrict q, bf16 *__restrict k_block,
                  bf16 *__restrict m_state, float *__restrict c_state,
                  bf16 *__restrict s_block, int blk, int L) {
   aie_round_nearest_even();
-  const aie::vector<bf16, 16> neg_inf = aie::broadcast<bf16, 16>(-0x1.FEp127f);
   const aie::vector<int, 16> idx = aie::vector<int, 16>(
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
   // The RTP packs a sliding window above L: bits 0-19 are L, bits 20-30 the
@@ -568,7 +605,7 @@ void attn_qk_blk(bf16 *__restrict q, bf16 *__restrict k_block,
   L &= ATTN_RTP_L_MASK;
 #if ATTN_KV_PARTS == 1
   if (blk == lo / 16)
-    aie::store_v(m_state, neg_inf); // reset running max for a new query
+    aie::store_v(m_state, m_state_init()); // reset running max for a new query
 #endif
   int rem = L - blk * 16;
   // Block fully beyond the current KV length L (rem<=0): every key is masked,
@@ -604,7 +641,7 @@ void attn_qk_blk(bf16 *__restrict q, bf16 *__restrict k_block,
 // window's, so the state is cleared before the block loop instead.
 ATTN_ENTRY
 void attn_qk_reset(bf16 *__restrict m_state) {
-  aie::store_v(m_state, aie::broadcast<bf16, 16>(-0x1.FEp127f));
+  aie::store_v(m_state, m_state_init());
 }
 #endif
 }
