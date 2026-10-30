@@ -3991,6 +3991,19 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             // the IR states, and it is the only edge that can close a cycle.
             // So a cycle drops those and keeps the peers that precede the
             // paced task; any cycle left is a conflict to report.
+            // The last read-back feed before each feed, in input order. Task i
+            // of a channel is preceded by a wait on task i - burstLimit. That
+            // wait goes after the read-back feed before task i - burstLimit,
+            // and so after every feed before that read-back. Otherwise the host
+            // blocks on a task whose job cannot run yet: it needs the read-back
+            // data, or an earlier job still needs inputs issued after the wait.
+            SmallVector<std::optional<unsigned>> readerBefore(run.size());
+            std::optional<unsigned> lastReader;
+            for (const Unit &u : run) {
+              readerBefore[u.pos] = lastReader;
+              if (!u.prefix.empty())
+                lastReader = u.pos;
+            }
             SmallVector<unsigned> startRound;
             for (const Unit &u : run)
               startRound.push_back(u.round);
@@ -4010,6 +4023,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                     r = std::max(r, before / 2);
                   for (auto [peer, distance] : capPeers[u.pos])
                     r = std::max(r, run[peer].round + distance);
+                  if (u.baseRound >= burstLimit) {
+                    const Unit &paced =
+                        byChan[u.chan][u.baseRound - burstLimit];
+                    if (auto reader = readerBefore[paced.pos])
+                      r = std::max(r, run[*reader].round + 1);
+                  }
                   changed |= r != u.round;
                   u.round = r;
                   next[u.chan] = r + 1;
