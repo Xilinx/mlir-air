@@ -197,6 +197,7 @@ class NpuRunner:
             cpu_attn=self.cpu_attn,
             profile=False,
             quiet=True,
+            prompt_len=min(len(prompt_tokens), self.max_seq),
         )
         self.k_cache = k_cache
         self.v_cache = v_cache
@@ -263,6 +264,7 @@ class NpuRunner:
             profile=False,
             quiet=True,
             logits_from=logits_from,
+            prompt_len=len(prompt_tokens),
         )
         return np.asarray(logits, np.float32)
 

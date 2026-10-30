@@ -450,6 +450,7 @@ def run_npu_prefill(
     profile=False,
     quiet=False,
     logits_from=None,
+    prompt_len=None,
 ):
     """Run NPU prefill and extract KV cache for decode.
 
@@ -463,6 +464,10 @@ def run_npu_prefill(
         v_cache: (n_layers, n_kv_heads, max_seq, head_dim) bfloat16
         prompt_len: actual prompt length (before padding)
     """
+    if prompt_len is None:
+        # Counting non-EOS tokens would stop short of a prompt that holds EOS,
+        # as a chat template's turn ends do; the caller knows where it ends.
+        raise ValueError("run_npu_prefill needs prompt_len, the unpadded length")
     seq_len = len(token_ids)
     emb_dim = config.emb_dim
     n_kv_heads = config.n_kv_heads
@@ -521,7 +526,6 @@ def run_npu_prefill(
     # Do CPU RMSNorm on just that row (<1 ms) and reuse the decode-side
     # 8-partition GEMV ELF (~14 ms NPU) instead of the full-seq GEMM ELF.
     vocab_size = weights.lm_head.shape[0]
-    prompt_len = len([t for t in token_ids if t != tokenizer.eos_token_id])
     pred_pos = prompt_len - 1
 
     from llama32_1b_cpu_helpers import rms_norm
@@ -686,6 +690,7 @@ def generate(
     cpu_attn=True,
     on_token=None,
     ttft_start=None,
+    prompt_len=None,
 ):
     """Run NPU prefill + NPU decode generation.
 
@@ -728,6 +733,7 @@ def generate(
         cpu_attn=cpu_attn,
         profile=profile,
         quiet=True,
+        prompt_len=prompt_len,
     )
 
     ttft = time.perf_counter() - ttft_start
@@ -1105,6 +1111,7 @@ def run_once(
         cpu_attn=cpu_attn,
         on_token=on_token,
         ttft_start=ttft_start,
+        prompt_len=prompt_len_actual,
     )
     return generated, prompt_len_actual
 

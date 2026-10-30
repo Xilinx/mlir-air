@@ -75,7 +75,11 @@ def _bf(a):
 class LlamaQ4nxPrefill:
     """AIR realization of the Q4NX causal-LM prefill interface (Phi-4-mini)."""
 
-    def __init__(self, seq_len=2048, n_layers=32, cache_dir=None, verbose=False):
+    def __init__(
+        self, seq_len=2048, n_layers=32, cache_dir=None, verbose=False, context=None
+    ):
+        """`context`: the longest context the decode this prefill feeds runs to;
+        it picks the LongRoPE table (generate_rope_lut). Default seq_len."""
         self.seq = seq_len
         self.n_layers = n_layers
         self.MAX_L = seq_len
@@ -116,7 +120,10 @@ class LlamaQ4nxPrefill:
         # (head_dim - ROPE_DIM) columns zero -- rope_partial never reads them.
         self._rope_lut = _bf(
             generate_rope_lut(
-                config=self.config, seq_len=seq_len, width=self.config.head_dim
+                config=self.config,
+                seq_len=seq_len,
+                width=self.config.head_dim,
+                context=context,
             )
         )
         self._lm_backend = dict(LM_GEMV_BACKEND)

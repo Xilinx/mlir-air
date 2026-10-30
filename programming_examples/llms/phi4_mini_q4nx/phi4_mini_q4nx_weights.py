@@ -113,13 +113,20 @@ def load_rope_factors(model_source=None):
 
 
 def generate_rope_lut(
-    config=None, seq_len=2048, dtype=bfloat16, model_source=None, width=None
+    config=None,
+    seq_len=2048,
+    dtype=bfloat16,
+    model_source=None,
+    width=None,
+    context=None,
 ):
     """RoPE LUT [seq_len, ROPE_DIM] as concatenated [cos..., sin...].
 
     ROPE_DIM (96) wide by default, not head_dim: the trailing 32 dims are not
     rotated (the kernel copies them through), so there are no cos/sin entries for
-    them. Picks the short or long LongRoPE factor table by seq_len, as HF does.
+    them. Picks the short or long LongRoPE factor table by `context`, the longest
+    context the session runs to (default seq_len). A prefill that feeds a decode
+    passes the decode's context: the decode's queries attend the keys it rotates.
 
     `width` zero-pads each row out to that many columns. The DECODE wants the bare
     96 (its rope_w buffer is ROPE_W_LEN). The PREFILL wants head_dim=128, because
@@ -129,7 +136,7 @@ def generate_rope_lut(
     if config is None:
         config = phi4_mini_config()
     short, long_ = load_rope_factors(model_source)
-    factors = short if seq_len <= ROPE_ORIG_MAX_POS else long_
+    factors = short if (context or seq_len) <= ROPE_ORIG_MAX_POS else long_
     inv = longrope_inv_freq(factors, dim=ROPE_DIM, theta=config.rope_base)
     half = ROPE_DIM // 2
     scale = longrope_attention_scaling()

@@ -222,13 +222,25 @@ def drop_superseded(base_path: Path) -> list:
 _REF_SEGMENT = 4096
 
 
+def _longrope(model):
+    """Whether the model uses LongRoPE. HF picks its RoPE table per call from
+    that call's positions, so a chunk past the original context run in segments
+    would rotate its first keys with one table and its later queries with the
+    other; such a chunk has to run in one pass."""
+    c = model.config.get_text_config()
+    rope = getattr(c, "rope_parameters", None) or getattr(c, "rope_scaling", None)
+    return (
+        isinstance(rope, dict) and rope.get("rope_type", rope.get("type")) == "longrope"
+    )
+
+
 def _reference_logits(model, toks, first):
     """[n - 1 - first, vocab] float32 reference logits for rows first..n-2."""
     import torch
 
     n = len(toks)
     ids = torch.tensor(toks).unsqueeze(0)
-    if n <= _REF_SEGMENT:
+    if n <= _REF_SEGMENT or _longrope(model):
         # Logits only for rows first..n-1; the last is not scored.
         out = model(ids, use_cache=False, logits_to_keep=n - first)
         return out.logits[0, :-1].float().numpy()
@@ -279,7 +291,6 @@ def run_npu_phase(args, adapter, model_name, base_path, meta):
     if base.n_ctx != args.ctx or base.n_chunk < args.chunks:
         raise SystemExit(f"{base_path} does not match --ctx/--chunks")
     tokenizer = _get_tokenizer(model_name)
-    eos = tokenizer.eos_token_id
     print(f"[accuracy] building NPU runner ({args.runner})...")
     npu = adapter.build_runner(
         model_name=model_name,
@@ -294,13 +305,6 @@ def run_npu_phase(args, adapter, model_name, base_path, meta):
     first = args.first
     for ci in range(args.chunks):
         toks = base.chunk_tokens(ci).astype(np.int64)
-        # A prefill driver may find the prompt length by counting non-EOS
-        # tokens, which would misread an EOS inside the prompt.
-        prefilled = (
-            min(first + 1, args.prefill_len) if args.path == "decode" else args.ctx - 1
-        )
-        if eos is not None and (toks[:prefilled] == eos).any():
-            raise SystemExit(f"chunk {ci} contains the EOS token in its prefill")
         t0 = time.time()
         path_logits = (
             decode_path_logits if args.path == "decode" else prefill_path_logits
@@ -460,9 +464,13 @@ def main():
         # hook gets a new base file too.
         hook = inspect.getsource(_dequant_builder(adapter))
         meta["hook_sha256"] = hashlib.sha256(hook.encode()).hexdigest()
+    # The code that computes the reference is part of the key as well.
+    ref_code = "".join(inspect.getsource(f) for f in (_longrope, _reference_logits))
+    meta["reference_sha256"] = hashlib.sha256(ref_code.encode()).hexdigest()
     fingerprint = hashlib.sha256(
         json.dumps(
-            {k: meta.get(k) for k in ("weights", "hook_sha256")}, sort_keys=True
+            {k: meta.get(k) for k in ("weights", "hook_sha256", "reference_sha256")},
+            sort_keys=True,
         ).encode()
     ).hexdigest()[:8]
     kind = args.ref

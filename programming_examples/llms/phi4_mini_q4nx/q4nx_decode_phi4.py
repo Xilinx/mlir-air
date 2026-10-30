@@ -29,15 +29,16 @@ import decode_elf  # noqa: E402  (needs the sys.path above)
 import decode_staircase as stair  # noqa: E402
 
 
-def phi4_rope(n_pos, model_source):
+def phi4_rope(n_pos, model_source, context=None):
     """RoPE cos/sin [n_pos, ROPE_DIM/2] for Phi-4-mini.
 
     PARTIAL rotary: only ROPE_DIM=96 of the 128 head dims are rotated (config
     partial_rotary_factor=0.75), so there are 48 frequencies and the device LUT
-    is 96 wide, not 128. LongRoPE picks the short factor table within
+    is 96 wide, not 128. LongRoPE picks the short factor table when `context`
+    (default n_pos), the longest context the session runs to, is within
     original_max_position_embeddings=4096 and the long one beyond; short is all
-    1.0, so at the shipped 2048 template this is plain inv_freq(1e4, 96) --
-    exactly FastFlowLM's phi4_rope short half.
+    1.0, so within 4096 this is plain inv_freq(1e4, 96) -- exactly FastFlowLM's
+    phi4_rope short half.
     """
     from phi4_mini_q4nx_weights import (
         load_rope_factors,
@@ -48,7 +49,7 @@ def phi4_rope(n_pos, model_source):
     )
 
     short, long_ = load_rope_factors(model_source)
-    inv = longrope_inv_freq(short if n_pos <= ROPE_ORIG_MAX_POS else long_)
+    inv = longrope_inv_freq(short if (context or n_pos) <= ROPE_ORIG_MAX_POS else long_)
     # HF scales BOTH cos and sin by this; FLM does not (see the weights module).
     sc = longrope_attention_scaling()
     fr = np.arange(n_pos)[:, None] * inv[None, :]
@@ -231,6 +232,7 @@ class FusedDecodePhi4:
         # BOs and the rope table are sized for the largest window and shared by all.
         self.ATTN_MAXL = max(self.windows)
         self.ROPE_W = fd.ROPE_W_LEN  # 96: partial rotary, not DH
+        self._model_source = model_source
         self.rope_cos, self.rope_sin = phi4_rope(self.ATTN_MAXL, model_source)
 
         RMS_LAYER = fd.RMS_LAYER
@@ -313,6 +315,14 @@ class FusedDecodePhi4:
         self.cur_maxl = m
         self.kern = self._kern[m][1]
         self.ib = self._st["ib"]
+
+    def set_context(self, context):
+        """Use the LongRoPE table of a session that runs to `context` tokens
+        instead of ATTN_MAXL's. The prefill that seeds the KV must use the same
+        context."""
+        self.rope_cos, self.rope_sin = phi4_rope(
+            self.ATTN_MAXL, self._model_source, context
+        )
 
     def reset_kv(self):
         """Zero the device-resident KV cache (start a fresh sequence)."""

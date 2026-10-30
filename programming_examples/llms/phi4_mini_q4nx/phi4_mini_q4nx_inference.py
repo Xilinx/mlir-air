@@ -164,8 +164,9 @@ def generate_stream(
 PREFILL_MIN_TOKENS = int(os.environ.get("Q4NX_PREFILL_MIN", "96"))
 
 
-def build_prefiller(args, prompt_len=None):
-    """Batched NPU prefill (partial rotary via rope_partial)."""
+def build_prefiller(args, context, prompt_len=None):
+    """Batched NPU prefill (partial rotary via rope_partial). `context` is the
+    decode's longest context, which picks the LongRoPE table both use."""
     if args.fused_prefill:
         import types
 
@@ -179,12 +180,13 @@ def build_prefiller(args, prompt_len=None):
             "phi4_mini_q4nx",
             args.fused_prefill,
             args.model_source,
+            context,
         )
     if prompt_len is not None and prompt_len < PREFILL_MIN_TOKENS:
         return None
     from phi4_mini_q4nx_prefill import LlamaQ4nxPrefill
 
-    pf = LlamaQ4nxPrefill(seq_len=args.seq_len, n_layers=32)
+    pf = LlamaQ4nxPrefill(seq_len=args.seq_len, n_layers=32, context=context)
     pf.load_weights(model=args.model_source)
     return pf
 
@@ -318,12 +320,12 @@ if __name__ == "__main__":
     if args.interactive:
         # Prompt lengths vary per turn, so build the prefill engine up front and let
         # generate_stream fall back per turn for short prompts.
-        prefiller = build_prefiller(args)
+        prefiller = build_prefiller(args, dec.ATTN_MAXL)
         repl(dec, tokenizer, args, prefiller)
         sys.exit(0)
 
     ids = format_prompt(tokenizer, args.prompt, args.model)
-    prefiller = build_prefiller(args, prompt_len=len(ids))
+    prefiller = build_prefiller(args, dec.ATTN_MAXL, prompt_len=len(ids))
     print(f"\nPrompt: {args.prompt}\n")
     gen, t_prompt, t_gen = generate_stream(
         dec,

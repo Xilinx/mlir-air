@@ -383,7 +383,12 @@ def run_npu_prefill(
     profile=False,
     quiet=False,
     logits_from=None,
+    prompt_len=None,
 ):
+    if prompt_len is None:
+        # Counting non-EOS tokens would stop short of a prompt that holds EOS,
+        # as a chat template's turn ends do; the caller knows where it ends.
+        raise ValueError("run_npu_prefill needs prompt_len, the unpadded length")
     seq_len = len(token_ids)
     n_kv_heads = config.n_kv_heads
     head_dim = config.head_dim
@@ -426,7 +431,6 @@ def run_npu_prefill(
             )
         prefill_cache.profiler.end_layer(layer_idx, t0)
 
-    prompt_len = len([t for t in token_ids if t != tokenizer.eos_token_id])
     pred_pos = prompt_len - 1
     with prefill_cache.profiler.time_cpu("final_rms_norm"):
         last_hidden = np.asarray(x_bf16, dtype=np.float32)[pred_pos : pred_pos + 1]
@@ -520,6 +524,7 @@ def generate(
     cpu_attn=True,
     on_token=None,
     ttft_start=None,
+    prompt_len=None,
 ):
     seq_len = len(prompt_tokens)
     max_seq = seq_len + n_tokens
@@ -544,6 +549,7 @@ def generate(
         cpu_attn=cpu_attn,
         profile=profile,
         quiet=True,
+        prompt_len=prompt_len,
     )
 
     ttft = time.perf_counter() - ttft_start
@@ -700,6 +706,7 @@ def run_once(
         cpu_attn=cpu_attn,
         on_token=on_token,
         ttft_start=ttft_start,
+        prompt_len=prompt_len_actual,
     )
     return generated, prompt_len_actual
 
