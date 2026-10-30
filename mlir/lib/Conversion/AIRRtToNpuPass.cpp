@@ -4065,6 +4065,23 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           for (unsigned i = 1; i < capBefore.size(); i++)
             capBefore[i] = std::min(capBefore[i], capBefore[i - 1]);
 
+          // The channels of a burst share the streams that feed them, so a
+          // channel's drains cannot finish unless the other channels' first
+          // drains are armed too. When an await of a woven leading drain
+          // follows, every channel's first burstLimit leading drains are armed
+          // before it, or the cap waits of one channel would block on tiles
+          // that the others cannot produce yet. It is a preference, like the
+          // cap bound below: it gives way to a channel's own producer boundary.
+          unsigned leadingDeadline = endSlot;
+          if (readsBack && weaveDrains)
+            for (auto &kv : allDrainsByChan)
+              for (Unit d : kv.second)
+                if (auto it = firstAwaiter.find(d.cfg.getResult());
+                    it != firstAwaiter.end())
+                  leadingDeadline = std::min(leadingDeadline, it->second.first);
+          // Position of each drain in its channel, for ordering within a slot.
+          llvm::DenseMap<Operation *, unsigned> drainIndex;
+
           SmallVector<SmallVector<Unit>> drainsAt(endSlot + 1);
           for (auto &kv : allDrainsByChan) {
             auto &ds = kv.second;
@@ -4098,9 +4115,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                 feedUpper[j] = std::min(feedUpper[j], feedUpper[j + 1]);
               }
             }
+            for (unsigned j = 0;
+                 j < std::min<unsigned>(
+                         {leading, (unsigned)burstLimit, (unsigned)ds.size()});
+                 j++) {
+              feedUpper[j] = std::min(feedUpper[j], leadingDeadline);
+            }
             unsigned previous = 0;
             for (unsigned j = 0; j < ds.size(); j++) {
               Unit &u = ds[j];
+              drainIndex[u.cfg.getOperation()] = j;
               unsigned target = 0, lower = previous, spread = 0;
               if (j < leading) {
                 if (weaveDrains) {
@@ -4142,6 +4166,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                 drainsAt[u.slot].push_back(u);
             }
           }
+
+          // Within a slot the channels take turns, one drain index at a time:
+          // each cap wait then follows the same-index drain of every channel.
+          for (auto &at : drainsAt)
+            llvm::stable_sort(at, [&](Unit a, Unit b) {
+              return drainIndex[a.cfg.getOperation()] <
+                     drainIndex[b.cfg.getOperation()];
+            });
 
           llvm::StringMap<unsigned> cursor;
           for (unsigned slot = 0; slot <= endSlot; slot++) {

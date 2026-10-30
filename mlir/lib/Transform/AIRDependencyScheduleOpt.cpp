@@ -35,6 +35,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ValueBoundsOpInterface.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -7397,6 +7398,36 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     if (!f)
       return failure();
 
+    // A host read-back couples all feeds of the producing job, including
+    // channels with no SSA edge to the drain. Splitting this loop by channel
+    // moves later jobs' waits ahead of feeds still needed by earlier jobs.
+    // Keep the loop's cross-channel order; BD specialization can still fold
+    // its inner single-channel loops and unroll the remaining mixed loop.
+    auto bufferOf = [](Value value) {
+      while (Operation *def = value.getDefiningOp()) {
+        if (auto view = dyn_cast<ViewLikeOpInterface>(def))
+          value = view.getViewSource();
+        else if (auto cast = dyn_cast<memref::CastOp>(def))
+          value = cast.getSource();
+        else
+          break;
+      }
+      return value;
+    };
+    llvm::DenseSet<Value> hostWrites;
+    for_op.walk([&](air::ChannelGetOp get) {
+      if (air::isL3(cast<BaseMemRefType>(get.getMemref().getType())))
+        hostWrites.insert(bufferOf(get.getMemref()));
+    });
+    bool readsBack = false;
+    for_op.walk([&](air::ChannelPutOp put) {
+      if (air::isL3(cast<BaseMemRefType>(put.getMemref().getType())) &&
+          hostWrites.contains(bufferOf(put.getMemref())))
+        readsBack = true;
+    });
+    if (readsBack)
+      return failure();
+
     // Identify target child ops for hoisting.
     SmallVector<llvm::SetVector<Operation *>> target_ops_sets;
 
@@ -8726,6 +8757,34 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
       fusableBandHead.getResult(i).replaceAllUsesWith(new_loop_op.getResult(i));
     }
     rewriter.eraseOp(fusableBandHead);
+  }
+
+  // The fused loop sits after the last loop it replaces, so an op between two
+  // of the replaced loops that waits on one of them now precedes the value it
+  // uses. Sink such ops, and whatever they feed, below the fused loop.
+  {
+    Operation *fusedHead = getParentScfForNest(new_loop_op).back();
+    Block *fusedBlock = fusedHead->getBlock();
+    SetVector<Operation *> sunk;
+    SmallVector<Operation *> worklist = {fusedHead};
+    while (!worklist.empty()) {
+      Operation *def = worklist.pop_back_val();
+      for (Operation *user : def->getUsers()) {
+        Operation *ancestor = fusedBlock->findAncestorOpInBlock(*user);
+        if (ancestor && ancestor != fusedHead &&
+            ancestor->isBeforeInBlock(fusedHead) && sunk.insert(ancestor))
+          worklist.push_back(ancestor);
+      }
+    }
+    SmallVector<Operation *> ordered = sunk.takeVector();
+    llvm::sort(ordered, [](Operation *a, Operation *b) {
+      return a->isBeforeInBlock(b);
+    });
+    Operation *anchor = fusedHead;
+    for (Operation *op : ordered) {
+      op->moveAfter(anchor);
+      anchor = op;
+    }
   }
 
   // Fuse allocs and deallocs into the created scf.for loop.

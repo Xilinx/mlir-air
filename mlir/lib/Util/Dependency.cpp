@@ -3366,6 +3366,18 @@ void dependencyTracer::addDependencyBetweenOps(Operation *source,
         addAsyncDependencyIfNew(async_sink, async_source.getAsyncToken());
         return;
       }
+      // A preceding loop's token results carry completion of its nested
+      // accesses, even when it also returns non-token loop-carried values.
+      if (isa<scf::ForOp, scf::ParallelOp>(parent)) {
+        bool added = false;
+        for (Value result : parent->getResults())
+          if (isa<air::AsyncTokenType>(result.getType())) {
+            addAsyncDependencyIfNew(async_sink, result);
+            added = true;
+          }
+        if (added)
+          return;
+      }
     }
   }
 }

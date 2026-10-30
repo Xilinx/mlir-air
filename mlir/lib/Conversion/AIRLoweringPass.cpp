@@ -1473,11 +1473,10 @@ static void orderReadsAfterDrains(ArrayRef<Operation *> window,
   launchEnd->setOperands(leOps);
 }
 
-// The same inside the launch's nested regions, such as the cases of an
-// scf.index_switch or scf.if. Each block is ordered on its own. A loop body is
-// not: a drain left outstanding by one iteration would take the await meant
-// for the next iteration's. An input that depends on a drain it cannot order
-// against is diagnosed.
+// Order each nested block's local drains and reads. A loop must also retire
+// its local drains before its backedge, so a later iteration cannot consume an
+// earlier iteration's completion token. A dependency on a drain outside the
+// block still cannot be ordered here and is diagnosed.
 template <typename IsDrainFn>
 static void orderNestedReadsAfterDrains(ArrayRef<Operation *> window,
                                         IsDrainFn isDrain) {
@@ -1487,12 +1486,17 @@ static void orderNestedReadsAfterDrains(ArrayRef<Operation *> window,
       ops.push_back(&op);
     DrainDeps deps = getDrainDeps(ops, isDrain);
     SmallVector<Operation *> unordered;
-    if (inLoop) {
-      for (auto &[op, ds] : deps)
-        if (!ds.empty())
-          unordered.push_back(op);
-    } else {
-      (void)awaitDrainsBeforeReads(ops, isDrain, deps, unordered);
+    auto awaited = awaitDrainsBeforeReads(ops, isDrain, deps, unordered);
+    if (inLoop && !awaited.empty()) {
+      SmallVector<Value> localDrains;
+      for (Operation *op : ops)
+        if (auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op); dma && isDrain(dma))
+          localDrains.push_back(dma->getResult(0));
+      if (!localDrains.empty()) {
+        OpBuilder b(blk.getTerminator());
+        airrt::WaitAllOp::create(b, blk.getTerminator()->getLoc(), TypeRange{},
+                                 localDrains);
+      }
     }
     for (Operation *op : unordered)
       op->emitWarning("this read of host memory depends on a device-to-host "
