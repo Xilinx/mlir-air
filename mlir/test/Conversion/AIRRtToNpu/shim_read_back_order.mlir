@@ -52,9 +52,10 @@ module {
 
 // -----
 
-// A channel used only by the next job must not overtake that job's read-back
-// barrier. Otherwise its fifth task's queue-cap wait can block on a producer
-// that still needs the reader behind the barrier.
+// A channel used only by the next job may queue up to its cap ahead of the
+// read-back barrier, but its fifth task's queue-cap wait must follow the
+// reader. Otherwise that wait can block on a producer that still needs the
+// reader behind the barrier.
 // CHECK-LABEL: aie.runtime_sequence @later_feeds
 // CHECK: %[[LD:.*]] = aiex.dma_configure_task_for @po_out
 // CHECK: aiex.dma_configure_task_for @po_a
@@ -62,7 +63,9 @@ module {
 // CHECK: aiex.dma_await_task(%[[LD]])
 // CHECK: %[[READER:.*]] = aiex.dma_configure_task_for @po_a
 // CHECK: aiex.dma_start_task(%[[READER]])
-// CHECK-COUNT-5: aiex.dma_configure_task_for @po_c
+// CHECK: %[[LAST:.*]] = aiex.dma_configure_task_for @po_c
+// CHECK: aiex.dma_await_task(
+// CHECK-NEXT: aiex.dma_start_task(%[[LAST]])
 
 module {
   aie.device(npu2) {
