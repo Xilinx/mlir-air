@@ -67,10 +67,6 @@ PEANO_KBASE += $(if $(GLU_SLICE_EXPECTED),-DGLU_SLICE_EXPECTED=$(GLU_SLICE_EXPEC
 KERNEL_DIR      := $(DEC)
 KERNEL_SRC_DIRS := $(DEC)/kernels
 KERNEL_FLAGS     = $(PEANO_KBASE)
-# q.k on the native bf16 mmul. The BFP16 emulation gives each 8 values one
-# exponent, and the q/k bias makes a few channels far larger than the rest, so
-# the rest lose their precision and some heads attend to the wrong keys.
-attn_qk_FLAGS   := -UAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 O2_KERNELS      := $(NONATTN_KERNELS)
 LL_KERNELS      := $(ATTN_LL_KERNELS)
 include $(DEC)/decode_kernels.mk

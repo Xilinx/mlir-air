@@ -2,6 +2,16 @@
 // SPDX-License-Identifier: MIT
 //
 
+// A model header can opt q.k out of the BFP16 emulation; that has to happen
+// before aie_api is included.
+#include "../models/all_models.h"
+#ifndef ATTN_QK_NATIVE_BF16
+#define ATTN_QK_NATIVE_BF16 0
+#endif
+#if ATTN_QK_NATIVE_BF16
+#undef AIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
+#endif
+
 #include "aie_array_layout.h"
 #include "aie_kernel_utils.h"
 #include "lut_based_ops.h"
