@@ -11,7 +11,7 @@
 // 2. The device needs a lock/DMA-state reset -- i.e. it has core/memtile DMAs
 //    with repeat_count > 0, OR it is a single-trip cascade launch (a
 //    multi-iteration cascade launch, looped or unrolled, does NOT).
-// The lightweight *_reset device clone is likewise only created in ELF mode.
+// The *_reset device clone is likewise only created in ELF mode.
 
 // RUN: air-opt -airrt-to-npu="output-elf=true" --split-input-file %s | FileCheck %s --check-prefix=EMIT-TRUE
 // RUN: air-opt -airrt-to-npu="output-elf=false" --split-input-file %s | FileCheck %s --check-prefix=EMIT-FALSE
@@ -20,9 +20,8 @@
 // With output-elf=true: load_pdi SHOULD be generated inside <device>_sequence
 // With output-elf=false: load_pdi should NOT be generated
 
-// The reset device should exist with preserved DMA BDs and no
-// runtime_sequence. It is a lightweight clone for between-iteration
-// load_pdi that resets DMA/lock state without reloading ELFs.
+// The load_pdi resets the device from a clone of it with the same DMA BDs and
+// no runtime_sequence.
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment0_reset {
 // EMIT-TRUE:   aie.mem
 // EMIT-TRUE:     aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 3)
@@ -286,18 +285,17 @@ module {
 
 // -----
 
-// Test 6: Device with CoreOp — the reset device should have an empty
-// CoreOp (no elf_file, no link_with, empty body) so that initLocks
-// and addCoreEnable still fire during PDI expansion, but no ELF
-// is compiled or loaded.
+// Test 6: device with a core. The reset device keeps the BDs and an empty
+// core, so that the reset still resets and re-enables the core. The empty core
+// keeps every attribute that places the tile's buffers, so that they land
+// where they do in the device it resets, and drops the ones that name code.
 
-// The reset device has DMA BDs preserved, no runtime_sequence,
-// and CoreOps replaced with empty shells (no elf_file/link_with).
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment_with_core_reset {
 // EMIT-TRUE:   aie.mem
 // EMIT-TRUE:     aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 3)
-// EMIT-TRUE-NOT: link_with
-// EMIT-TRUE-NOT: elf_file
+// EMIT-TRUE:   aie.core
+// EMIT-TRUE-NEXT: aie.end
+// EMIT-TRUE-NEXT: } {data_size = 2048 : i32, stack_bank = 3 : i32, stack_size = 512 : i32}
 // EMIT-TRUE-NOT: runtime_sequence
 // EMIT-TRUE: }
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment_with_core {
@@ -324,10 +322,10 @@ module {
       aie.end
     }
 
-    // Core with link_with — should be replaced with empty core in reset device
     %core_0_2 = aie.core(%tile_0_2) {
+      %c0 = arith.constant 0 : i32
       aie.end
-    } {link_with = "kernel.o"}
+    } {data_size = 2048 : i32, link_with = "kernel.o", stack_bank = 3 : i32, stack_size = 512 : i32}
   } {sym_name = "segment_with_core"}
 
   airrt.module_metadata{}
@@ -569,59 +567,6 @@ module {
       airrt.wait_all %c {"air.launch_end"}
     }
     %p = airrt.segment_load "flash_attn_seg" : i64
-    return
-  }
-}
-
-// -----
-
-// Test 11: the reset device clones every buffer of the device it resets, and
-// aiecc places them above each core's stack. The empty core in the clone keeps
-// the original core's stack_size: with the default one, a tile whose data
-// memory is filled up to a small stack does not fit the clone.
-
-// EMIT-TRUE-LABEL: aie.device(npu2) @segment_core_stack_reset {
-// EMIT-TRUE:   aie.core
-// EMIT-TRUE-NOT: link_with
-// EMIT-TRUE: stack_size = 512
-// EMIT-TRUE-LABEL: aie.device(npu2) @segment_core_stack {
-// EMIT-TRUE:   aie.core
-// EMIT-TRUE:   aie.runtime_sequence @func_core_stack
-
-// EMIT-FALSE-LABEL: aie.device(npu2) @segment_core_stack {
-// EMIT-FALSE-NOT: segment_core_stack_reset
-
-module {
-  aie.device(npu2) {
-    %tile_0_0 = aie.tile(0, 0)
-    %tile_0_2 = aie.tile(0, 2)
-    %shim_noc_tile_0_0 = aie.tile(0, 0)
-    aie.shim_dma_allocation @airMemcpyId12(%shim_noc_tile_0_0, S2MM, 0)
-
-    %mem_0_2 = aie.mem(%tile_0_2) {
-      %0 = aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 3)
-    ^bb1:
-      aie.end
-    ^bb2:
-      aie.end
-    }
-
-    // Core with link_with and a small stack: the reset device's empty core keeps the stack size
-    %core_0_2 = aie.core(%tile_0_2) {
-      aie.end
-    } {link_with = "kernel.o", stack_size = 512 : i32}
-  } {sym_name = "segment_core_stack"}
-
-  airrt.module_metadata{}
-
-  func.func @func_core_stack(%arg0: memref<64xi32>) {
-    %c0_i64 = arith.constant 0 : i64
-    %c1_i64 = arith.constant 1 : i64
-    %c64_i64 = arith.constant 64 : i64
-    %c12_i32 = arith.constant 12 : i32
-    %0 = airrt.dma_memcpy_nd(%c12_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId12} : (i32, i64, i64, memref<64xi32>) : !airrt.event
-    airrt.wait_all %0 {"air.launch_end"}
-    %p = airrt.segment_load "segment_core_stack" : i64
     return
   }
 }
