@@ -32,6 +32,85 @@ def air_UniverseAllocOp : air_Op<"universe.alloc", [Pure]>,
   let assemblyFormat = "`(` $capacity `)` attr-dict";
 }
 
+def air_ChipletIdOp : air_Op<"chiplet_id", [Pure]>,
+    Results<(outs Index:$result)> {
+  let summary = "Index of the chiplet this code is running on";
+  let description = [{
+    Returns the index of the chiplet -- an independent accelerator die with its
+    own last-level cache -- that the surrounding workgroup landed on, in
+    `[0, number_of_chiplets)`.
+
+    Chiplet identity is *discovered*, not requested. The hardware dispatcher
+    places workgroups on dies; this op reports where a placement ended up.
+    That is why it is a value read inside the body and not another level of the
+    `air.launch` / `air.segment` / `air.herd` hierarchy: a program cannot ask
+    for a particular die, only find out which one it got.
+
+    Knowing the die matters because a chiplet's last-level cache is private to
+    it. Two workgroups that share data cheaply are two workgroups on the same
+    chiplet, and synchronization between them can stay die-local instead of
+    going out to device scope.
+
+    On AMD GPUs a chiplet is an XCD (Accelerator Complex Die) and this reads the
+    `HW_REG_XCC_ID` hardware register. On a target that is not built from
+    multiple dies the result is 0.
+
+    The value is invariant for the lifetime of a wavefront -- a wave does not
+    migrate between dies -- so the op is `Pure` and repeated reads fold.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
+def air_ChipletBlockIdOp : air_Op<"chiplet_block_id">,
+    Results<(outs Index:$result)> {
+  let summary = "Rank of this workgroup among those sharing its chiplet";
+  let description = [{
+    Returns this workgroup's rank among all workgroups of the launch that
+    landed on the same chiplet, in `[0, air.chiplet_dim_blocks)`.
+
+    Together with [`air.chiplet_dim_blocks`](#airchiplet_dim_blocks) this is
+    what lets the workgroups on one die split work between themselves: worker
+    `r` of `n` takes every `n`-th tile starting at `r`, so the tiles they touch
+    stay inside the die's own last-level cache instead of each die pulling the
+    whole operand from memory.
+
+    Ranks are dense and distinct within a chiplet, but they are assigned in
+    arrival order, so a given workgroup is not guaranteed the same rank on
+    every run. Do not use the rank as a stable name for a workgroup; use it
+    only to partition work.
+
+    This op leans on the co-residency `air.launch` already guarantees: the
+    segments declared in a launch body are co-resident on the device when that
+    body begins executing (see the `launch` description in AIROpBase.td, and
+    AIRComputeModel.md section 2.2). Counting how many workgroups share a
+    chiplet means waiting until all of them have reported in, which only
+    terminates because they are all resident to begin with. A lowering that
+    emits a grid larger than the device can hold breaks that guarantee, and
+    breaks it loudly: the workgroups that were never scheduled cannot report,
+    and the ones waiting on them never finish.
+
+    [`air.chiplet_id`](#airchiplet_id) carries no such dependency -- a
+    workgroup reads its own die without coordinating with anyone.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
+def air_ChipletDimBlocksOp : air_Op<"chiplet_dim_blocks">,
+    Results<(outs Index:$result)> {
+  let summary = "Number of workgroups of this launch sharing this chiplet";
+  let description = [{
+    Returns how many workgroups of the launch landed on the same chiplet as
+    this one. This is discovered at run time, not computed from the grid shape:
+    the dispatcher decides the placement, and a launch smaller than the device,
+    a partitioned device, or a masked compute unit all change the answer.
+
+    Depends on the launch's co-residency guarantee for the same reason as
+    [`air.chiplet_block_id`](#airchiplet_block_id): the count is not final
+    until every workgroup has reported in.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
 def air_RankOp : air_Op<"rank", [air_AsyncOpInterface,
                                   air_HierarchyInterface,
                                   AttrSizedOperandSegments,

@@ -39,7 +39,19 @@ def ConvertAIRToROCDL : Pass<"air-to-rocdl", "ModuleOp"> {
   let options = [
     Option<"waveSize", "wave-size", "uint64_t", "/*default=*/64",
            "Wavefront width for the target GPU (64 on MI3xx, 32 on NVIDIA). "
-           "Determines the multiplier between herd Nx and gpu.blockDim.x.">
+           "Determines the multiplier between herd Nx and gpu.blockDim.x.">,
+    Option<"maxResidentWorkgroups", "max-resident-workgroups", "uint64_t",
+           "/*default=*/4096",
+           "How many workgroups the target can hold at once. `air.launch` "
+           "promises its segments are co-resident when the body starts "
+           "(AIROpBase.td, `launch`), so a launch whose iteration space is "
+           "larger than this cannot be lowered while keeping that promise: "
+           "the pass rejects it rather than emit a grid the device will "
+           "serialize. Ops that wait on all workgroups reporting in, such as "
+           "`air.chiplet_dim_blocks`, hang outright when it is broken. Also "
+           "sizes the reporting array those ops scan. Only checked when the "
+           "iteration space is a compile-time constant; the default is a "
+           "loose bound, well above any current part's co-residency limit.">
   ];
 }
 
