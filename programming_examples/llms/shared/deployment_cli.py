@@ -134,6 +134,9 @@ def checkpoint(model, requested):
             s["checkpoint"],
             revision=s["revision"],
             allow_patterns=["*.safetensors", "*.json", "*.py"],
+            # A second copy of the weights in Mistral's own layout. The seeded
+            # cache leaves it out, and offline a missing file fails the call.
+            ignore_patterns=["consolidated*.safetensors"],
             local_files_only=HF_HUB_OFFLINE,
         )
     )
