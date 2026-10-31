@@ -314,6 +314,8 @@ module {
     %shim_noc_tile_0_0 = aie.tile(0, 0)
     aie.shim_dma_allocation @airMemcpyId12(%shim_noc_tile_0_0, S2MM, 0)
 
+    %lock_0_2 = aie.lock(%tile_0_2, 0)
+
     %mem_0_2 = aie.mem(%tile_0_2) {
       %0 = aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 3)
     ^bb1:
@@ -323,7 +325,8 @@ module {
     }
 
     %core_0_2 = aie.core(%tile_0_2) {
-      %c0 = arith.constant 0 : i32
+      %c1 = arith.constant 1 : i32
+      aie.use_lock(%lock_0_2, AcquireGreaterEqual, %c1)
       aie.end
     } {data_size = 2048 : i32, link_with = "kernel.o", stack_bank = 3 : i32, stack_size = 512 : i32}
   } {sym_name = "segment_with_core"}
