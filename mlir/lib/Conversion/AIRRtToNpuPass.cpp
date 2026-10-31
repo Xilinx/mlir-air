@@ -3316,10 +3316,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                       std::move(funcToSeqPatterns))))
       signalPassFailure();
 
-    // Create a lightweight copy of the segment device (without core
-    // bodies/ELFs) and redirect between-iteration load_pdi to it. Only needed
-    // in ELF output mode -- load_pdi is never emitted otherwise, so the clone
-    // would be dead IR.
+    // load_pdi is only emitted in ELF output mode, so the reset clones are
+    // too.
     if (clOutputElf)
       createLightweightResetDevice(module);
 
@@ -4695,10 +4693,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     pendingMainDevice = std::nullopt;
   }
 
-  // Create a lightweight device clone for between-iteration load_pdi.
-  // The clone has the same DMA BDs, locks, and switches but empty core
-  // bodies (no ELFs). The between-iteration load_pdi references this
-  // clone, so aie-expand-load-pdi generates a PDI without ELF data.
+  // Clone each device that is reset after a launch, without its runtime
+  // sequences and with empty core bodies, and point the reset's load_pdi at
+  // the clone. The reset reprograms the BDs from the clone, so the clone must
+  // place every buffer where the device it resets does: its cores keep every
+  // attribute except the ones that name the core's code.
   void createLightweightResetDevice(ModuleOp module) {
     SmallVector<std::pair<AIE::DeviceOp, std::string>> devicesToClone;
     module.walk([&](AIE::DeviceOp device) {
@@ -4715,40 +4714,25 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       auto clone = cast<AIE::DeviceOp>(builder.clone(*device));
       clone.setSymName(resetName);
 
-      // Strip core bodies and attributes from the clone, and remove
-      // runtime_sequence. CoreOps are kept (empty, no elf_file,
-      // no link_with) so that initLocks does core reset/unreset and
-      // addCoreEnable re-enables cores. aiecc.py skips compilation
-      // for cores without link_with/elf_file.
+      // Drop the runtime sequences and empty the cores. The cores stay so
+      // that the reset still resets and re-enables them.
       SmallVector<AIE::RuntimeSequenceOp> seqsToErase;
       clone.walk([&](AIE::RuntimeSequenceOp op) { seqsToErase.push_back(op); });
       for (auto op : seqsToErase)
         op->erase();
 
-      SmallVector<xilinx::AIE::CoreOp> coresToReplace;
       clone.walk([&](xilinx::AIE::CoreOp coreOp) {
-        coresToReplace.push_back(coreOp);
-      });
-      for (auto coreOp : coresToReplace) {
-        OpBuilder b(coreOp);
-        Value tile = coreOp.getTile();
-        auto newCore = xilinx::AIE::CoreOp::create(b, coreOp.getLoc(), tile);
-        // The clone allocates the same buffers as the device it resets, and
-        // aiecc places them above the core's stack: without the original
-        // stack size the empty core gets the default one, and a tile filled
-        // with data memory up to a small stack no longer fits.
-        if (auto stack = coreOp.getStackSizeAttr())
-          newCore.setStackSizeAttr(stack);
-        Block *body = b.createBlock(&newCore.getBody());
-        b.setInsertionPointToEnd(body);
+        Region &body = coreOp.getBody();
+        body.dropAllReferences();
+        body.getBlocks().clear();
+        OpBuilder b = OpBuilder::atBlockEnd(&body.emplaceBlock());
         xilinx::AIE::EndOp::create(b, coreOp.getLoc());
-        LLVM_DEBUG(llvm::dbgs()
-                   << "Created empty CoreOp in reset device for tile: " << tile
-                   << "\n");
-        coreOp->erase();
-      }
+        coreOp.removeLinkWithAttr();
+        coreOp.removeLinkFilesAttr();
+        coreOp.removeLinkMergeFilesAttr();
+        coreOp.removeElfFileAttr();
+      });
 
-      // Redirect between-iteration load_pdi to the clone
       AIE::RuntimeSequenceOp runtimeSeq = nullptr;
       device.walk([&](AIE::RuntimeSequenceOp seq) { runtimeSeq = seq; });
       if (!runtimeSeq)
