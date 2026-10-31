@@ -1023,8 +1023,15 @@ def run_transformer_block_qwen25(
         # Seq-first NPU FlashAttention (head_dim=64 → no hang risk). Inputs are
         # already seq-first contiguous: q (seq, n_heads*head_dim), k/v
         # (seq, n_kv_heads*head_dim). Output is seq-first (seq, n_heads*head_dim).
+        from air_examples.llms.shared.infra.fa_headfirst import center_keys
+
         q_attn = np.ascontiguousarray(q_roped).reshape(seq_len, q_dim)
-        k_attn = np.ascontiguousarray(k_roped).reshape(seq_len, kv_dim)
+        # The q/k projection biases leave keys a shared part large enough to
+        # swamp the scores' BFP16 precision. Only attention's copy is centred:
+        # the KV cache keeps the keys as they are.
+        k_attn = center_keys(
+            np.asarray(k_roped, dtype=bfloat16).reshape(seq_len, n_kv_heads, head_dim)
+        ).reshape(seq_len, kv_dim)
         v_attn = np.ascontiguousarray(v).reshape(seq_len, kv_dim)
         attn_output = np.zeros((seq_len, q_dim), dtype=bfloat16)
         attn_res = cache.load_and_run(
