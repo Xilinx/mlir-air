@@ -685,6 +685,8 @@ for _affine_module in (
         (Path(__file__).parent / "llms" / _affine_module / "model.json").read_text()
     )
     LLM_HF_MODELS[_affine_module] = _affine_spec["checkpoint"]
+    # The decode sweep's rows, under the bare module name.
+    LLM_DISPLAY[_affine_module] = (_affine_spec["name"], "Affine Q4", None)
     for _p, _c in _affine_spec["configurations"]:
         _id = f"{_affine_module}_p{_p}_c{_c}"
         _MODEL_DIRS[_id] = _affine_module

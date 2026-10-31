@@ -56,3 +56,10 @@ ci-verify ci-profile:
 	  --model $(MODEL_MODULE) --prefill $(P) --work-dir "$(abspath $(CI_DIR))" \
 	  $(if $(CHECKPOINT),--checkpoint "$(CHECKPOINT)") \
 	  $(if $(Q4_DIR),--q4-dir "$(Q4_DIR)")
+
+# Decode templates at any KV capacity, for bench/sweep_decode.py: decode_L$(LBUILD)
+# and decode_L$(LBUILD-1) in DECODE_SWEEP_DIR (its --template-dir).
+DECODE_SWEEP_DIR ?= $(abspath $(BUILD_DIR))/sweep-decode
+.PHONY: _compile_decode_build
+_compile_decode_build:
+	$(DRIVER) compile --part decode --capacity $(LBUILD) --out "$(DECODE_SWEEP_DIR)"

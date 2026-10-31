@@ -238,6 +238,13 @@ def main(model):
         "--out", type=Path, help="new output directory for this invocation"
     )
     parser.add_argument(
+        "--capacity",
+        type=int,
+        help="compile --part decode: build the decode templates for this KV "
+        "capacity into --out, outside the native configurations "
+        "(bench/sweep_decode.py)",
+    )
+    parser.add_argument(
         "--reference-dir",
         type=Path,
         help="directory containing p<P>.npz from the reference command",
@@ -280,6 +287,14 @@ def main(model):
         return
     if args.command == "compile":
         build = importlib.import_module(f"air_examples.llms.{model}.build")
+        if args.capacity is not None:
+            if args.part != "decode" or args.out is None:
+                parser.error(
+                    "--capacity builds decode templates only: --part decode --out DIR"
+                )
+            build.build_decode(args.out.resolve(), args.capacity)
+            print("Compilation passed.")
+            return
         folder = base / selected["id"]
         if args.part == "kernels":
             build.build_decode_kernels(folder / "decode", selected["capacity"])
