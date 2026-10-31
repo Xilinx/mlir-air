@@ -3,6 +3,7 @@
 // Fixed full-input P512/C1024; original-HF BF16 gate precedes any profiling.
 // One native configuration per test bounds compilation/reference/runtime time.
 // PERF_MODEL: mistral7b_v03_q4nx_p512_c1024
+// PERF_MODEL: mistral7b_v03_q4nx
 // REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hfweights_mistralai_mistral_7b_instruct_v0_3
 // RUN: make -f %S/Makefile ci-verify P=512 CI_DIR=affine-ci PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: [affine-ci] PASS mistral7b_v03_q4nx_p512_c1024 verify

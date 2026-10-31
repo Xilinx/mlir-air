@@ -169,7 +169,7 @@ class DeploymentCITests(unittest.TestCase):
             for line in (LLMS / name).read_text().splitlines()
         ]
         cases = []
-        names = set()
+        names, swept = set(), set()
         for model in MODELS:
             s = spec(model)
             self.assertIn(s["checkpoint"] + "@" + s["revision"], seeded)
@@ -180,6 +180,12 @@ class DeploymentCITests(unittest.TestCase):
                     text = (LLMS / model / f"run_npu2_{stage}_p{p}.lit").read_text()
                     self.assertIn("PERF_MODEL: " + name, text)
                     self.assertIn(f"ci-{stage} P={p}", text)
+                # A decode sweep publishes under the bare name; every native
+                # verify gates it.
+                if (LLMS / model / "run_npu2_sweep.lit").exists():
+                    text = (LLMS / model / f"run_npu2_verify_p{p}.lit").read_text()
+                    self.assertIn("PERF_MODEL: " + model + "\n", text)
+                    swept.add(model)
                 cases.append(
                     f'<testcase classname="llms/{model}" name="run_npu2_verify_p{p}.lit"/>'
                 )
@@ -188,7 +194,8 @@ class DeploymentCITests(unittest.TestCase):
             xml = Path(tmp) / "verify.xml"
             xml.write_text("<testsuite>" + "".join(cases) + "</testsuite>")
             self.assertEqual(
-                verification_status(xml, LLMS), {name: "pass" for name in names}
+                verification_status(xml, LLMS),
+                {name: "pass" for name in names | swept},
             )
 
 
