@@ -166,7 +166,7 @@ def compile_headfirst_fa(
     cache.compile_and_cache(name, mod, _fa_backend_kwargs(verbose, head_dim // dv_tile))
 
 
-def _center_keys(k):
+def center_keys(k):
     """k [seq, kv_heads, d] bf16, minus the part all keys share where it dominates.
 
     Any vector subtracted from every key leaves each query's softmax unchanged,
@@ -209,7 +209,7 @@ def npu_fa_headfirst(
             variants (e.g. Gemma3's alternating sliding-window / global layers)
             compile one ELF per variant and select here.
         center_k: first subtract from every key the large part all keys
-            share (_center_keys). Every score of a query moves by the same
+            share (center_keys). Every score of a query moves by the same
             amount, which the softmax ignores, but that part no longer sets the
             scale the matmul's BFP16 operands are quantized to. For q/k
             projection biases, which leave such a part.
@@ -230,7 +230,7 @@ def npu_fa_headfirst(
     q_hf = np.ascontiguousarray(q.transpose(1, 0, 2))
     # K L3: [n_kv_heads, seq, head_dim]
     if center_k:
-        k = _center_keys(k)
+        k = center_keys(k)
     k_hf = np.ascontiguousarray(k.transpose(1, 0, 2))
     # V L3: [n_kv_heads*dv_chunks, seq, dv_tile] -- split head_dim into
     # dv_chunks slices of dv_tile=lkp, dv-chunk axis nests inside the kv-head
