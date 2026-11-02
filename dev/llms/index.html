@@ -1876,10 +1876,10 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Strix Halo</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">10.13</td>
+<td style="text-align: right;">10.16</td>
 <td style="text-align: right;">8.02</td>
 <td style="text-align: right;">4.38</td>
-<td style="text-align: right;">✗</td>
+<td style="text-align: right;">1.55</td>
 <td style="text-align: right;"><span title="KLD 0.0189 ± 0.0011; same top-1 95.0%; 4092 tokens; 8k: KLD 0.0210; PPL vs the bf16 checkpoint +4.9%; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0189</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 6, only on the reference 5; McNemar p = 1.000; Strix Halo, 2026-10-30, mlir-air 78b621b">87 / 86</span></td>
 <td style="text-align: right;"><span title="570 questions; right only on the NPU 15, only on the reference 13; McNemar p = 0.851; Strix Halo, 2026-10-30, mlir-air 78b621b">77 / 76</span></td>
@@ -1914,7 +1914,6 @@ model's number for this metric is in a curve instead.</p>
 </tbody>
 </table>
 <p>— not swept at this context, or an expected failure.</p>
-<p>✗ unexpected failure.</p>
 <p><strong>Accuracy</strong> (the decode table's KLD, GSM8K and MMLU; the prefill table's KLD).
 The NPU is compared with the same model on the CPU (PyTorch): on wikitext-2 the
 way llama.cpp's <code>llama-perplexity --kl-divergence</code> does, and on benchmark
