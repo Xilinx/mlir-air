@@ -3,7 +3,7 @@
 
 # Two inbound packet flows into one core.
 #
-# The host sends x and r, ROWS rows each, on two packet channels from two
+# The host sends x and r one row at a time on two packet channels, from two
 # independent shim DMAs. The core takes one row of each per iteration and sends
 # back x - r. A packet header routes an arrival to the tile, not to a BD, so the
 # core's receive side must keep the two flows apart however their arrivals
@@ -47,8 +47,11 @@ def build_module():
 
         @launch(operands=[x, r, y])
         def launch_body(l3_x, l3_r, l3_y):
-            ChannelPut("XIn", l3_x)
-            ChannelPut("RIn", l3_r)
+            for i in range_(ROWS):
+                off = arith.muli(i, arith.ConstantOp.create_index(LEN))
+                ChannelPut("XIn", l3_x, offsets=[off], sizes=[LEN], strides=[1])
+                ChannelPut("RIn", l3_r, offsets=[off], sizes=[LEN], strides=[1])
+                yield_([])
             for i in range_(ROWS):
                 off = arith.muli(i, arith.ConstantOp.create_index(LEN))
                 ChannelGet("YOut", l3_y, offsets=[off], sizes=[LEN], strides=[1])
