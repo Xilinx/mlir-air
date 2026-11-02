@@ -116,10 +116,47 @@ class ImageSweepTest(unittest.TestCase):
         ]
         table = generate_readme.render_llm_image_sweep(recs)
         row = next(l for l in table.splitlines() if MODEL in l)
-        self.assertIn("| 367 | ✗ | 4862 |", row)
-        self.assertIn("| 31.6–32.5 |", row)
-        self.assertIn("| 70 | 280 | 1120 |", table)
+        right = '<td style="text-align: right;">'
+        self.assertIn(f"{right}367</td>{right}✗</td>{right}4862</td>", row)
+        self.assertIn(f"{right}31.6–32.5</td>", row)
+        self.assertIn('colspan="3">Number of image tokens</th>', table)
+        self.assertIn(">70</th>", table)
+        self.assertIn(">1120</th>", table)
         self.assertIn("✗ failed.", table)
+
+    def test_measured_date_ignores_failed_points(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.append(d, [record([point(70, 367.0, 32.5)])], 1)
+            hist = self.append(
+                d,
+                [
+                    record(
+                        [
+                            point(70, None, None, status="error"),
+                            point(1120, None, None, status="error"),
+                        ],
+                        ts="2026-11-03T00:00:00Z",
+                    )
+                ],
+                2,
+            )
+            recs = generate_readme.load_llm_image_sweep_history(hist)
+        # 70 keeps the Nov 2 number and date; the failed run does not move it.
+        pts = {p["image_budget"]: p for p in recs[0]["points"]}
+        self.assertEqual(pts[70]["ttft_ms"], 367.0)
+        self.assertEqual(recs[0]["timestamp_utc"][:10], "2026-11-02")
+
+    def test_newer_verify_from_history(self):
+        rec = dict(record([point(70, 367.0, 32.5)]), verify_utc="2026-11-02")
+        later_fail = {(MODEL, "krackan-point"): ("2026-11-04T00:00:00Z", "fail")}
+        older_fail = {(MODEL, "krackan-point"): ("2026-11-01T00:00:00Z", "fail")}
+        fail_cell = generate_readme._VERIFY_CELL["fail"]
+        pass_cell = generate_readme._VERIFY_CELL["pass"]
+        row = lambda t: next(l for l in t.splitlines() if MODEL in l)
+        newer = generate_readme.render_llm_image_sweep([rec], verify=later_fail)
+        older = generate_readme.render_llm_image_sweep([rec], verify=older_fail)
+        self.assertIn(fail_cell, row(newer))
+        self.assertIn(pass_cell, row(older))
 
     def test_no_points_no_table(self):
         self.assertEqual(generate_readme.render_llm_image_sweep([]), "")

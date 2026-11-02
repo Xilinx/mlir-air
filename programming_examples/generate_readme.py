@@ -1290,7 +1290,10 @@ than the number of real prompt tokens.
 def load_llm_image_sweep_history(path):
     """Newest point per (model, image-token budget) from the image-turn series,
     with load_llm_prefill_sweep_history's semantics on the image_budget axis.
-    Each record also carries the newest measurement date."""
+
+    Each record's timestamp_utc is that of its newest point with a TTFT, so the
+    Measured date matches the numbers shown; verify_utc is that of the series'
+    newest row, which its verify_status comes from."""
     if not path or not Path(path).is_file():
         return []
     newest, verify = {}, {}
@@ -1329,11 +1332,13 @@ def load_llm_image_sweep_history(path):
                 "model": model[0],
                 "points": [],
                 "verify_status": verify[model][1],
+                "verify_utc": verify[model][0],
                 "timestamp_utc": "",
                 **verify[model][2],
             },
         )
-        d["timestamp_utc"] = max(d["timestamp_utc"], ts)
+        if r.get("ttft_ms") is not None:
+            d["timestamp_utc"] = max(d["timestamp_utc"], ts)
         d["points"].append(
             {
                 k: r.get(k)
@@ -1358,13 +1363,20 @@ def _image_models(recs):
     )
 
 
-def render_llm_image_sweep(recs, base_url=""):
+def render_llm_image_sweep(recs, base_url="", verify=None):
     """Image-turn TTFT against the image-token budget, one row per model.
 
     TTFT here is the vision encoder plus the prefill of a short prompt around
     one image, so it is not comparable with the prefill table's TTFT at the
     same number of tokens. Decode after the image is the text decoder's, so it
     is one column, the range over the budgets, rather than a curve.
+
+    `verify` maps (model, hardware) to the (timestamp, verify_status) of that
+    model's newest perf-history row. A run that fails verify writes no image
+    sweep, so that row is the newer word on it when it postdates the sweep.
+
+    HTML rather than a markdown table, for the header row that spans the
+    budget columns.
     """
     if not _image_models(recs):
         return ""
@@ -1376,18 +1388,15 @@ def render_llm_image_sweep(recs, base_url=""):
             if pt.get("image_budget")
         }
     )
-    head = (
-        "| Model | Hardware | Weights | "
-        + " | ".join(str(b) for b in budgets)
-        + " | Decode (tok/s) | Measured | Verify |"
-    )
-    sep = (
-        "|:------|:---------|:--------|"
-        + "".join("------:|" for _ in budgets)
-        + "--------------:|:---------|:------:|"
-    )
+    verify = verify or {}
+    td_l, td_r = '<td style="text-align: left;">', '<td style="text-align: right;">'
+    td_c = '<td style="text-align: center;">'
     rows, markers = [], set()
     for d in _by_model(recs):
+        key = (d.get("model"), _hardware(d))
+        status = d.get("verify_status", "")
+        if key in verify and verify[key][0] > (d.get("verify_utc") or ""):
+            status = verify[key][1]
         pts = d.get("points", []) or []
         by_budget = {pt.get("image_budget"): pt for pt in pts}
         cells = []
@@ -1395,7 +1404,7 @@ def render_llm_image_sweep(recs, base_url=""):
             cell = _prefill_sweep_cell(by_budget.get(b) or {})
             if cell in ("—", "✗"):
                 markers.add(cell)
-            cells.append(cell)
+            cells.append(f"{td_r}{cell}</td>")
         tok_s = sorted(
             pt["decode_tokens_per_sec"]
             for pt in pts
@@ -1408,14 +1417,33 @@ def render_llm_image_sweep(recs, base_url=""):
         else:
             decode = f"{tok_s[0]:.1f}–{tok_s[-1]:.1f}"
         rows.append(
-            f'| {_llm_model_cell(d.get("model", ""), base_url)} '
-            f"| {hardware_label(_hardware(d))} "
-            f'| {_llm_weights(d.get("model", ""))} | '
-            + " | ".join(cells)
-            + f" | {decode} "
-            f'| {(d.get("timestamp_utc") or "")[:10] or "—"} '
-            f'| {_VERIFY_CELL.get(d.get("verify_status", ""), "")} |'
+            "<tr>"
+            f'{td_l}{_llm_model_cell(d.get("model", ""), base_url)}</td>'
+            f"{td_l}{hardware_label(_hardware(d))}</td>"
+            f'{td_l}{_llm_weights(d.get("model", ""))}</td>'
+            + "".join(cells)
+            + f"{td_r}{decode}</td>"
+            f'{td_l}{(d.get("timestamp_utc") or "")[:10] or "—"}</td>'
+            f'{td_c}{_VERIFY_CELL.get(status, "")}</td>'
+            "</tr>"
         )
+    th = (
+        '<th style="text-align: {}; vertical-align: bottom;" rowspan="2">{}</th>'.format
+    )
+    head = (
+        "<tr>"
+        + th("left", "Model")
+        + th("left", "Hardware")
+        + th("left", "Weights")
+        + f'<th style="text-align: center;" colspan="{len(budgets)}">'
+        "Number of image tokens</th>"
+        + th("right", "Decode (tok/s)")
+        + th("left", "Measured")
+        + th("center", "Verify")
+        + "</tr>\n<tr>"
+        + "".join(f'<th style="text-align: right;">{b}</th>' for b in budgets)
+        + "</tr>"
+    )
     legend = "\n\n".join(
         note
         for marker, note in (
@@ -1428,14 +1456,17 @@ def render_llm_image_sweep(recs, base_url=""):
 
 ### Image + text: time to first token vs image tokens (ms)
 
-One image and the prompt "Describe this image.". Each column is an image-token
-budget; the image takes at most that many of the prompt's tokens. **TTFT** is
-the vision encoder plus the prefill. **Decode** is generation after the image,
-the range over the budgets.
+One image and the prompt "Describe this image.". Each budget column is the
+number of image tokens the image may take; the cell is the time to first token,
+which is the vision encoder plus the prefill. **Decode** is generation after the
+image, the range over the budgets.
 
-{head}
-{sep}
+<table>
+<thead>{head}</thead>
+<tbody>
 {chr(10).join(rows)}
+</tbody>
+</table>
 
 {legend}
 """
@@ -1841,7 +1872,17 @@ def render_llm_benchmark(
     _prefill_table = render_llm_prefill_sweep(
         prefill_sweep_recs, base_url=base_url, accuracy=accuracy
     )
-    _image_table = render_llm_image_sweep(image_sweep_recs, base_url=base_url)
+    _image_table = render_llm_image_sweep(
+        image_sweep_recs,
+        base_url=base_url,
+        verify={
+            (d.get("model"), _hardware(d)): (
+                d.get("timestamp_utc") or "",
+                d.get("verify_status", ""),
+            )
+            for d in recs
+        },
+    )
     _spec_table = render_spec_decode(spec_decode_recs, base_url=base_url)
     _vla_table = render_vla_benchmark(recs, base_url=base_url)
 
