@@ -136,11 +136,25 @@ def _resolve(source):
         return hits[0]
     from huggingface_hub import snapshot_download
 
-    d = Path(snapshot_download(source, allow_patterns=["*.safetensors", "*.json"]))
+    d = Path(
+        snapshot_download(source, allow_patterns=["*.safetensors", "*.json", "*.jinja"])
+    )
     hits = sorted(d.glob("*.safetensors"))
     if not hits:
         raise FileNotFoundError(f"no .safetensors in {d}")
     return hits[0]
+
+
+def checkpoint_identity(source=MODEL_DEFAULT):
+    """A string that changes when the checkpoint's weights or config do: the
+    resolved file (a hub snapshot path carries the revision), its size and
+    mtime, and a hash of config.json. For keying cached reference outputs."""
+    import hashlib
+
+    path = _resolve(source)
+    st = path.stat()
+    cfg = hashlib.sha256((path.parent / "config.json").read_bytes()).hexdigest()
+    return f"{path.resolve()}:{st.st_size}:{st.st_mtime_ns}:{cfg}"
 
 
 def load_vision_config(source=MODEL_DEFAULT):

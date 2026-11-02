@@ -122,6 +122,7 @@ _GEMM = {
     (D, OUT_D): (64, 4),  # multimodal projection
 }
 _TILE_M, _HERD_M, _TILE_K_L1 = 32, 8, 32
+_GEMM_OPS = ("qkv", "o", "gate", "up", "down", "proj")
 
 # Attention schedule: q blocks of 256 rows in 4 tiles, 2 heads per unroll.
 _FA_LQP, _FA_Q_TILES, _FA_HEADS_PER_UNROLL = 256, 4, 2
@@ -142,8 +143,13 @@ class NpuOps:
     def __init__(self, cache_dir=None, verbose=False):
         from air_examples.llms.shared.infra.cache import KernelCache
 
-        self.dir = Path(cache_dir or (_HERE / "_vision_cache"))
-        self.cache = KernelCache(cache_dir=str(self.dir), verbose=verbose)
+        self.dir = Path(cache_dir or H.build_dir() / "elf_cache")
+        # One image shape's ELFs (the GEMMs and the attention) stay loaded; a
+        # new shape evicts the old one's, which leaves the device's remaining
+        # hardware contexts to the prefill and the decoder.
+        self.cache = KernelCache(
+            cache_dir=str(self.dir), verbose=verbose, max_contexts=len(_GEMM_OPS) + 1
+        )
         self.cache.load_manifest()
         self.verbose = verbose
         self.names = {}
@@ -183,6 +189,7 @@ class NpuOps:
             "down": (rows, INTER, D, False),
             "proj": (m_soft, D, OUT_D, False),
         }
+        assert tuple(plan) == _GEMM_OPS, tuple(plan)
         for op, (m, k, n, gelu) in plan.items():
             self.names[op] = (f"gemm_{m}x{k}x{n}" + ("_gelu" if gelu else ""), m, k, n)
         stages = _fa_stages(shape.kv_rows)

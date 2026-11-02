@@ -12,17 +12,23 @@ from ml_dtypes import bfloat16
 
 _HERE = Path(__file__).resolve().parent
 _SRC = _HERE / "hostops.c"
-_LIB = _HERE / ".build" / "libvishostops.so"
 _p, _i, _l, _f = ctypes.c_void_p, ctypes.c_int, ctypes.c_long, ctypes.c_float
 _lib = None
+
+
+def build_dir():
+    """Where generated files go: $G4_VISION_BUILD_DIR, else .build next to the
+    sources."""
+    return Path(os.environ.get("G4_VISION_BUILD_DIR") or _HERE / ".build")
 
 
 def _load():
     global _lib
     if _lib is not None:
         return _lib
+    _LIB = build_dir() / "libvishostops.so"
     if not _LIB.exists() or _LIB.stat().st_mtime < _SRC.stat().st_mtime:
-        _LIB.parent.mkdir(exist_ok=True)
+        _LIB.parent.mkdir(parents=True, exist_ok=True)
         tmp = _LIB.with_suffix(f".{os.getpid()}.so")
         subprocess.run(
             ["gcc", "-O3", "-march=native", "-fopenmp", "-shared", "-fPIC"]

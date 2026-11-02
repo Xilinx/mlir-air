@@ -23,6 +23,10 @@ RUN_LBUILD ?= 512
 FUSED_DIR ?= $(CURDIR)/_fused_prefill
 override FUSED_DIR := $(abspath $(FUSED_DIR))
 
+## Generated files (host library, ELF cache) go under the directory make runs
+## in, so builds in different directories do not share them.
+export G4_VISION_BUILD_DIR ?= $(CURDIR)/_vision_build
+
 ## Tower gate floor, NPU soft tokens vs HF.
 TOWER_COS ?= 0.99
 ## Turns timed by `make profile`, after one warm-up turn, at PROFILE_MST soft
@@ -77,4 +81,4 @@ profile:
 	  $(IMAGE_ARG) $(PROMPT_ARG)
 
 clean:
-	rm -rf $(srcdir)/_vision_cache $(srcdir)/.build $(srcdir)/__pycache__ air_project
+	rm -rf $(G4_VISION_BUILD_DIR) air_project

@@ -94,7 +94,8 @@ def build_prompt_ids(tok, ids_cfg, text, n_soft):
 
 
 class VisionLanguageModel:
-    """Vision tower, fused prefill and fused decode, loaded once."""
+    """Vision tower, fused prefill and fused decode, each loaded once and kept
+    for every turn."""
 
     def __init__(self, fused_dir, max_len=2048, verbose=False):
         from air_examples.llms.gemma4_e2b_q4nx.fused_prefill.runtime import (
@@ -106,6 +107,20 @@ class VisionLanguageModel:
         self.enc = VisionEncoder(NpuOps(verbose=verbose))
         self.pf = FusedPrefill(fused_dir, max_len=max_len)
         self.pf.load_weights(model=Q4NX_MODEL)
+        self.dec = None
+
+    def decoder(self):
+        """The fused decode, built on first use at the build's full context."""
+        if self.dec is None:
+            from gemma4_e2b_q4nx_inference import FusedDecoder
+
+            self.dec = FusedDecoder(model=Q4NX_MODEL, verbose=self.verbose)
+        return self.dec
+
+    def close(self):
+        if self.dec is not None:
+            self.dec.close()
+            self.dec = None
 
     def prompt(self, image, text, max_soft_tokens=None):
         """-> (pixel_values, position_ids, prompt ids)."""
@@ -130,38 +145,38 @@ class VisionLanguageModel:
 
     def generate(self, ids, first_logits, n_tokens, stop=True, topk=None):
         """Greedy decode after a prefill of `ids`. -> (tokens, decode seconds,
-        per-step top-k ids if `topk`)."""
-        from gemma4_e2b_q4nx_inference import EOS_IDS, FusedDecoder
+        per-step top-k ids if `topk`). The KV handoff from the prefill is timed
+        separately, in self.handoff."""
+        from gemma4_e2b_q4nx_inference import EOS_IDS
         from air_examples.llms.verify.comparators import topk_token_ids
 
         P = len(ids)
+        t_h = time.perf_counter()
         ks, vs = self.pf.kv_stack()
         self.pf.suspend()  # release its hw_contexts for the decoder
-        dec = FusedDecoder(model=Q4NX_MODEL, max_L=P + n_tokens, verbose=self.verbose)
-        try:
-            dec.seed_kv(ks, vs, P)
-            tok = int(first_logits.argmax())
-            gen, tops = [tok], []
+        dec = self.decoder()
+        dec.seed_kv(ks, vs, P)
+        t0 = time.perf_counter()
+        self.handoff = t0 - t_h
+        tok = int(first_logits.argmax())
+        gen, tops = [tok], []
+        if topk:
+            tops.append(topk_token_ids(first_logits, topk))
+        for p in range(P, min(P + n_tokens - 1, dec.maxL)):
+            if stop and tok in EOS_IDS:
+                break
+            z = np.asarray(dec.dispatch(tok, p), np.float32)
+            tok = int(z.argmax())
+            gen.append(tok)
             if topk:
-                tops.append(topk_token_ids(first_logits, topk))
-            t0 = time.perf_counter()
-            for p in range(P, min(P + n_tokens - 1, dec.maxL)):
-                if stop and tok in EOS_IDS:
-                    break
-                z = np.asarray(dec.dispatch(tok, p), np.float32)
-                tok = int(z.argmax())
-                gen.append(tok)
-                if topk:
-                    tops.append(topk_token_ids(z, topk))
-            t_dec = time.perf_counter() - t0
-            if len(gen) < n_tokens and not (stop and tok in EOS_IDS):
-                print(
-                    f"[vlm] stopped at the decode build's context limit "
-                    f"({dec.maxL}); rebuild with a larger RUN_LBUILD",
-                    flush=True,
-                )
-        finally:
-            dec.close()
+                tops.append(topk_token_ids(z, topk))
+        t_dec = time.perf_counter() - t0
+        if len(gen) < n_tokens and not (stop and tok in EOS_IDS):
+            print(
+                f"[vlm] stopped at the decode build's context limit "
+                f"({dec.maxL}); rebuild with a larger RUN_LBUILD",
+                flush=True,
+            )
         if stop and gen[-1] in EOS_IDS:
             gen = gen[:-1]
         return gen, t_dec, tops
@@ -219,12 +234,18 @@ def main():
         gen, t_dec, _ = vlm.generate(ids, logits, args.n_tokens)
         text = vlm.tok.decode(gen)
         n = max(len(gen) - 1, 1)
-        t.update(ttft=t["vision"] + t["prefill"], tok_s=n / t_dec, n=len(gen))
+        t.update(
+            ttft=t["vision"] + t["prefill"],
+            handoff=vlm.handoff,
+            tok_s=n / t_dec,
+            n=len(gen),
+        )
         warm = args.repeat > 1 and r == 0
         print(
             f"[vlm] {'warm-up' if warm else f'turn {len(rounds) + 1}'}: "
             f"vision {t['vision'] * 1e3:.0f} ms + prefill {t['prefill'] * 1e3:.0f} ms"
-            f" = TTFT {t['ttft'] * 1e3:.0f} ms | decode {t['tok_s']:.2f} tok/s "
+            f" = TTFT {t['ttft'] * 1e3:.0f} ms | KV handoff "
+            f"{t['handoff'] * 1e3:.0f} ms | decode {t['tok_s']:.2f} tok/s "
             f"({len(gen)} tokens)",
             flush=True,
         )
@@ -235,6 +256,7 @@ def main():
     med = {k: float(np.median([r[k] for r in rounds])) for k in rounds[0]}
     print(f"Time to first token (TTFT): {med['ttft']:.3f}s")
     print(f"Decode throughput: {med['tok_s']:.2f} tok/s")
+    vlm.close()
     return _gate(text) if args.gate else 0
 
 

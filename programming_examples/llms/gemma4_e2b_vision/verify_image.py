@@ -19,6 +19,7 @@ on the CPU in bf16 and is cached on disk, keyed on its inputs.
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -29,7 +30,11 @@ sys.path.insert(0, str(_HERE))
 
 import gemma4_vision_inference as V  # noqa: E402
 import gemma4_vision_reference as R  # noqa: E402
-from gemma4_vision_weights import VisionWeights, preprocess  # noqa: E402
+from gemma4_vision_weights import (  # noqa: E402
+    VisionWeights,
+    checkpoint_identity,
+    preprocess,
+)
 
 # (name, image, max soft tokens). The 640x480 image's patches do not fill whole
 # attention key blocks, so it covers the padding-key path.
@@ -99,9 +104,7 @@ def hf_reference(image, prompt, mst, n_tokens, k, expect_ids):
 
 def cached_reference(name, image, prompt, mst, n_tokens, k, expect_ids):
     h = hashlib.sha256(
-        json.dumps(
-            [expect_ids, prompt, n_tokens, k, str(VisionWeights().path)]
-        ).encode()
+        json.dumps([expect_ids, prompt, n_tokens, k, checkpoint_identity()]).encode()
     )
     h.update(np.asarray(image, np.uint8).tobytes())
     path = _REF_DIR / f"hf_{name}_{h.hexdigest()[:12]}.json"
@@ -110,7 +113,9 @@ def cached_reference(name, image, prompt, mst, n_tokens, k, expect_ids):
     chosen, tops = hf_reference(image, prompt, mst, n_tokens, k, expect_ids)
     _REF_DIR.mkdir(exist_ok=True)
     rec = dict(chosen=chosen, topk=tops)
-    path.write_text(json.dumps(rec))
+    tmp = path.with_suffix(f".{os.getpid()}.json")
+    tmp.write_text(json.dumps(rec))
+    os.replace(tmp, path)
     return rec
 
 
@@ -123,11 +128,20 @@ def main():
     ap.add_argument("--fused-dir", default=str(V._TEXT / "_fused_prefill"))
     ap.add_argument("--reference-only", action="store_true")
     args = ap.parse_args()
+    if args.n_tokens < 1:
+        ap.error("--n-tokens must be at least 1")
 
     from air_examples.llms.verify.comparators import compute_topk_set_check
 
     tok, ids_cfg = V.load_tokenizer()
-    cases = [c for c in CASES if c[0] in args.cases.split(",")]
+    wanted = [c for c in args.cases.split(",") if c]
+    unknown = sorted(set(wanted) - {c[0] for c in CASES})
+    if not wanted or unknown:
+        ap.error(
+            f"--cases must name cases from {[c[0] for c in CASES]}"
+            + (f"; unknown: {unknown}" if unknown else "")
+        )
+    cases = [c for c in CASES if c[0] in wanted]
     plans = []
     for name, size, mst in cases:
         image = case_image(size)
@@ -150,6 +164,15 @@ def main():
         gen, _, tops = vlm.generate(
             ids, logits, args.n_tokens, stop=False, topk=args.topk
         )
+        n = args.n_tokens
+        lens = [len(gen), len(tops), len(ref["chosen"]), len(ref["topk"])]
+        if lens != [n] * 4:
+            print(
+                f"[{name}] FAIL: expected {n} tokens and top-k lists on both "
+                f"sides, got {lens} (NPU tokens, NPU top-k, HF tokens, HF top-k)"
+            )
+            fails += 1
+            continue
         rec = compute_topk_set_check(
             gen, tops, ref["chosen"], ref["topk"], k=args.topk, prompt_idx=i,
             prompt_text=name,
@@ -162,6 +185,7 @@ def main():
             + (f" ({rec.fail_reason})" if rec.fail_reason else "")
         )
         fails += rec.status != "OK"
+    vlm.close()
     print("PASS!" if not fails else f"FAIL ({fails} of {len(plans)} cases)")
     return 1 if fails else 0
 

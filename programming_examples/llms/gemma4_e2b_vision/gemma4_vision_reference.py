@@ -7,6 +7,7 @@
 # The NumPy tower computes what the NPU encoder computes and can return each
 # layer's output, which `make diagnosis` compares against. Run this file to
 # check the NumPy tower against HF.
+import os
 import sys
 from pathlib import Path
 
@@ -197,20 +198,25 @@ _ORACLE_DIR = _HERE / "_oracle_cache"
 
 
 def cached_hf_tower(pixel_values, position_ids, source=None):
-    """hf_tower(), memoised on disk, keyed on the inputs rather than the image
-    path so a changed preprocessing config cannot hit a stale entry."""
+    """hf_tower(), memoised on disk, keyed on the inputs and the checkpoint
+    rather than the image path, so neither a changed preprocessing config nor
+    another checkpoint can hit a stale entry."""
     import hashlib
+
+    from gemma4_vision_weights import checkpoint_identity
 
     h = hashlib.sha256()
     h.update(np.ascontiguousarray(pixel_values, np.float32))
     h.update(np.ascontiguousarray(position_ids, np.int64))
-    h.update(str(source).encode())
+    h.update(checkpoint_identity(source).encode())
     path = _ORACLE_DIR / f"{h.hexdigest()[:16]}.npy"
     if path.exists():
         return np.load(path)
     out = hf_tower(pixel_values, position_ids, source)
     _ORACLE_DIR.mkdir(exist_ok=True)
-    np.save(path, out)
+    tmp = path.with_suffix(f".{os.getpid()}.npy")
+    np.save(tmp, out)
+    os.replace(tmp, path)
     return out
 
 
