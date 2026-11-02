@@ -123,6 +123,12 @@ def main():
             f"{loadavg()} host={ {k: round(v * 1e3, 1) for k, v in m.times.items()} }",
             flush=True,
         )
+        # the line bench/sweep_prefill.py --fused reads
+        print(
+            f"[bench] prefill L={P} median {med * 1e3:.1f} ms "
+            f"min {min(samples) * 1e3:.1f} ms",
+            flush=True,
+        )
     Path(a.out).write_text(
         json.dumps(
             dict(

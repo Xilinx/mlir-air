@@ -134,10 +134,10 @@ should be serialized, e.g. `flock /tmp/mlir-air-npu.lock make ...`.
 | --- | --- |
 | `run_npu2_compile_fused_prefill.lit` | the prefill device compiles; no NPU, no weights |
 | `run_npu2_verify.lit` | `make verify` (PASS 67/67) |
+| `run_npu2_prefill_sweep.lit` | decision latency at P = 512 ... 4096 for the nightly prefill table (`make profile-fused-prefill`, through `bench/sweep_prefill.py --fused`); latency only |
 
-There is no profile lit: the shared profile and prefill-sweep scripts read
-TTFT and decode lines that a decision model does not produce; `make bench` is
-its timing.
+There is no profile or decode-sweep lit: d3 has no decode. The prefill
+table's TTFT column is, for d3, the latency of one decision.
 
 ## Files
 

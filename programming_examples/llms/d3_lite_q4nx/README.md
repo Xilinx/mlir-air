@@ -121,6 +121,7 @@ checked). NPU runs should be serialized, e.g.
 | --- | --- |
 | `run_npu2_compile_fused_prefill.lit` | the prefill device compiles; no NPU, no weights |
 | `run_npu2_verify.lit` | `make verify` (PASS 67/67) |
+| `run_npu2_prefill_sweep.lit` | decision latency at P = 512 ... 4096 for the nightly prefill table (`make profile-fused-prefill`, through `bench/sweep_prefill.py --fused`); latency only |
 
 ## Files
 
