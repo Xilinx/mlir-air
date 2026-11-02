@@ -117,8 +117,12 @@ BUILD_LIMIT_RES = (
 # A host that could not hold the point, as opposed to a repo that could not
 # build it. Checked before the generic rc!=0 branch, which used to fold these
 # into an unnameable "fail: Killed".
+# XRT's pinned host BOs fail with err=-11 past the locked-memory limit
+# (ulimit -l), whatever RAM is free (see sweep_decode.py's HOST_OOM_RE).
 HOST_OOM_RE = re.compile(
-    r"std::bad_alloc|MemoryError|Cannot allocate|Killed|out of memory", re.I
+    r"std::bad_alloc|MemoryError|Cannot allocate|err=-1[12]\b"
+    r"|Failed to allocate host memory|Killed|out of memory",
+    re.I,
 )
 
 
