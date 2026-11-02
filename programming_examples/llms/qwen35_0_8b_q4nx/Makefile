@@ -13,6 +13,7 @@
 #   make gate            the model gate for one configuration (P, C); gate-all
 #   make reference-timing, fullfit   the gate on the bucket-filling prompts
 #   make bench           complete-request timing for one configuration; bench-all
+#   make profile-decode  decode tok/s at each of CONTEXTS (bench/sweep_decode_runtime.py)
 #
 # Builds go to BUILD (default ./build). Weights: the pinned Hub revision of
 # FastFlowLM/Qwen3.5-0.8B-NPU2 (cached under HF_HOME), or MODEL_SOURCE (a
@@ -27,6 +28,9 @@ OUT ?= $(CURDIR)/out
 # Decode capacities (KV cache length, one ELF each) and the gate / timing
 # configurations P/C: 512/1024, 1024/2048, 2048/4096, 4096/8192.
 CAPACITIES ?= 1024 2048 4096 8192
+# Decode contexts `make profile-decode` measures, comma-separated: one ELF of
+# that capacity each (built if missing).
+CONTEXTS ?= 2048,8192
 P ?= 512
 C ?= 1024
 PROMPT ?= Introduce me what is GPU
@@ -50,11 +54,11 @@ MAX_PROMPTS    ?= 2
 FDG := $(srcdir)/../../fused_decode_gdn
 
 .PHONY: help compile compile-fused-prefill compile-decode run verify verify-full profile \
-        profile-fused-prefill reference reference-timing gate gate-all fullfit fullfit-all bench \
+        profile-fused-prefill profile-decode reference reference-timing gate gate-all fullfit fullfit-all bench \
         bench-all clean
 
 help:
-	@sed -n '4,20p' $(srcdir)/Makefile
+	@sed -n '4,21p' $(srcdir)/Makefile
 
 compile: compile-fused-prefill compile-decode
 
@@ -101,6 +105,14 @@ profile:
 FUSED_LENGTHS ?= 512,1024,2048,4096
 profile-fused-prefill:
 	$(PYTHON) $(srcdir)/bench.py --prefill-only $(FUSED_LENGTHS) --device $(FUSED_DIR)
+
+## Decode tok/s at each of CONTEXTS: the decode of capacity C stepping at
+## position C - 1 over synthetic cache rows (bench.py --decode-only).
+comma := ,
+profile-decode:
+	$(MAKE) --no-print-directory -f $(srcdir)/Makefile compile-decode \
+	  CAPACITIES="$(subst $(comma), ,$(CONTEXTS))"
+	$(PYTHON) $(srcdir)/bench.py --build $(BUILD) --decode-only $(CONTEXTS)
 
 reference:
 	$(PYTHON) $(srcdir)/reference.py --out $(REF)

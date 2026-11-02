@@ -17,6 +17,13 @@ At least --warmup seconds of untimed requests, then timed requests until both
 --prefill-only L1,L2,... times the prefill alone (the fused_prefill device in
 --device) at each length: one warm-up, then --min-runs prefills, printing the
 line bench/sweep_prefill.py --fused reads.
+
+--decode-only C1,C2,... times one decode step at each context C: the
+fused_decode_gdn ELF of capacity C in BUILD/fdg_C stepping at position C - 1,
+attending over C cache rows. The rows are synthetic (zero), as in the other
+models' decode sweeps, so a context needs no C-token prefill. A step is what a
+generated token costs the host: the embedding row and rotary rows in, the
+dispatch, the logits read. Prints the line bench/sweep_decode_runtime.py reads.
 """
 
 import argparse
@@ -74,6 +81,39 @@ def prefill_only(device, lengths, runs):
         )
 
 
+def decode_only(build, contexts, runs, warmup=5):
+    """[bench] decode ctx=<n> median <ms> ms min <ms> ms (<tok/s> tok/s), per
+    context."""
+    import numpy as np
+    from ml_dtypes import bfloat16
+
+    from air_examples.llms.qwen35_0_8b_q4nx import q35_npu as N
+    from air_examples.llms.qwen35_0_8b_q4nx import q35_weights as W
+    from air_examples.llms.qwen35_0_8b_q4nx.q35_fdg import FdgDecode
+
+    cfg = N.text_config()
+    Wt = W.Q4nx()
+    cos, sin = N.rotary_table(cfg, max(contexts) + 32)
+    cos, sin = cos.astype(bfloat16), sin.astype(bfloat16)
+    row = (np.random.default_rng(0).standard_normal(W.D) * 0.02).astype(bfloat16)
+    for n in contexts:
+        dec = FdgDecode(build, n, Wt, cos, sin)
+        for _ in range(warmup):
+            dec.step(row, n - 1)
+        ts = []
+        for _ in range(runs):
+            t0 = time.perf_counter()
+            dec.step(row, n - 1)
+            ts.append((time.perf_counter() - t0) * 1e3)
+        med = statistics.median(ts)
+        print(
+            f"[bench] decode ctx={n} median {med:.2f} ms min {min(ts):.2f} ms "
+            f"({1e3 / med:.2f} tok/s)",
+            flush=True,
+        )
+        del dec  # its buffers and hardware context, before the next capacity
+
+
 def main():
     from air_examples.llms.qwen35_0_8b_q4nx.q35_npu import Qwen35Npu, tokenizer
 
@@ -90,7 +130,14 @@ def main():
     ap.add_argument(
         "--device", default=None, help="the prefill device (--prefill-only)"
     )
+    ap.add_argument("--decode-only", default=None, help="comma list of decode contexts")
+    ap.add_argument(
+        "--steps", type=int, default=40, help="timed steps per context (--decode-only)"
+    )
     a = ap.parse_args()
+    if a.decode_only:
+        decode_only(a.build, [int(n) for n in a.decode_only.split(",")], a.steps)
+        return
     if a.prefill_only:
         lengths = [int(n) for n in a.prefill_only.split(",")]
         prefill_only(
