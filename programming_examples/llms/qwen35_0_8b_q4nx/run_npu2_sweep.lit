@@ -1,0 +1,24 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Qwen3.5-0.8B Q4NX decode throughput vs context, into
+// qwen35_0_8b_q4nx.sweep.json (collected by the nightly LLM benchmark). The
+// context is compiled into each fused_decode_gdn ELF, so make profile-decode
+// builds one per context and times a decode step at its last position over
+// synthetic cache rows; one process walks the list
+// (bench/sweep_decode_runtime.py). Contexts stop at 8192, the largest decode
+// capacity the model's gate covers.
+//
+// Latency only, never a correctness gate (run_npu2_verify.lit is that).
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22, llvm_link_pre23, hf_token, hfweights_fastflowlm_qwen3_5_0_8b_npu2, hfweights_qwen_qwen3_5_0_8b
+//
+// RUN: mkdir -p test_peano_sweep
+// RUN: cd test_peano_sweep
+// RUN: %run_on_npu2% %PYTHON %S/../bench/sweep_decode_runtime.py --model-name qwen35_0_8b_q4nx --makefile %S/Makefile --contexts 2048,8192 --peano-dir %PEANO_INSTALL_DIR --out qwen35_0_8b_q4nx.sweep.json
+// RUN: FileCheck %s < qwen35_0_8b_q4nx.sweep.json
+// CHECK: "model": "qwen35_0_8b_q4nx"
+// CHECK: "axis": "context_len"
+// A parsed number at the reference context, not just a well-formed file.
+// CHECK: "context_len": 2048
+// CHECK-NEXT: "decode_tokens_per_sec": {{[0-9]}}

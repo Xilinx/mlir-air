@@ -204,10 +204,14 @@ Builds go to `BUILD` (default `./build`); NPU runs should be serialized, e.g.
 | `run_npu2_verify.lit` | `make verify` (PASS) |
 | `run_npu2_profile.lit` | `make profile` into `qwen35_0_8b_q4nx.perf.json` |
 | `run_npu2_prefill_sweep.lit` | prefill time at 512-4096 tokens (`bench/sweep_prefill.py --fused`) |
+| `run_npu2_sweep.lit` | decode tok/s at contexts 2048 and 8192 (`make profile-decode` through `bench/sweep_decode_runtime.py`) |
 
-There is no decode sweep lit: `bench/sweep_decode.py` drives `fused_decode`'s
-template builds and its `bench_decode` geometry, which the fork does not
-provide. `make bench-all` times decode at capacities 1024-8192.
+The decode sweep does not use `bench/sweep_decode.py`, which drives
+`fused_decode`'s template builds and its `bench_decode` geometry. The fork's
+context is compiled into each ELF, so `make profile-decode` builds the ELF of
+each context and `bench.py --decode-only` times a step at its last position
+over synthetic cache rows, one process for the list. `make bench-all` times
+complete requests at capacities 1024-8192.
 
 ## Files
 
