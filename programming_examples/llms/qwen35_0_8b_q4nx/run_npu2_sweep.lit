@@ -6,9 +6,9 @@
 // context is compiled into each fused_decode_gdn ELF, so make profile-decode
 // builds one per context and times a decode step at its last position over
 // synthetic cache rows; one process walks the list
-// (bench/sweep_decode_runtime.py). Contexts stop at 32768: the KV cache holds a
-// slot for each of the 24 layers, and at 131072 it outgrows the decode's
-// buffer offsets.
+// (bench/sweep_decode_runtime.py). Contexts stop at 32768: at 131072 the
+// builder splits the KV cache over two buffers, and q35_fdg.FdgDecode binds
+// only the first.
 //
 // Latency only, never a correctness gate (run_npu2_verify.lit is that).
 //

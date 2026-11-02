@@ -211,10 +211,10 @@ The decode sweep does not use `bench/sweep_decode.py`, which drives
 context is compiled into each ELF, so `make profile-decode` builds the ELF of
 each context and `bench.py --decode-only` times a step at its last position
 over synthetic cache rows, one process for the list. `make bench-all` times
-complete requests at capacities 1024-8192. The sweep stops at 32768: the decode's
-KV buffer keeps a slot for each of the 24 layers, not only the 6 attention layers,
-and at a 131072 capacity it exceeds the buffer offsets the decode can address
-(the dispatch times out).
+complete requests at capacities 1024-8192. The sweep stops at 32768. At a 131072
+capacity the builder splits the KV cache over two buffers (`KV_BO_ELEMS`), and
+`q35_fdg.FdgDecode` allocates and binds only the first, so the dispatch times
+out.
 
 ## Files
 
