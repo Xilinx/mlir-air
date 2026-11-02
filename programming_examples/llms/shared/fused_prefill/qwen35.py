@@ -213,16 +213,20 @@ class Qwen35Prefill(Engine):
             )
             self._site(f"{L}.down", Wt.q4(p + "mlp.down_proj.weight", d, I), I)
         self.w["norm"] = Wt.bf16("model.norm.weight")
-        q, sc = Wt.q8("lm_head.weight", W.NV, d)
+        self._load_head()
+        self.attn_setup()
+        self.kvb = {L: self.kv_bo("a") for L in self.attn_layers}
+        self.warm("0.gu")
+
+    def _load_head(self):
+        d = W.D
+        q, sc = self.Wt.q8("lm_head.weight", W.NV, d)
         width = S.SHAPES["head"][1]
         for i, (n0, n1) in enumerate(S.HEAD_PIECES):
             t = W.q8_as_q4(q[n0:n1], sc[n0:n1])
             if n1 - n0 < width:  # the last piece: zero rows to the built width
                 t = _rows([t, _zero_rows(width - (n1 - n0), 2 * d)])
             self._site(f"head.{i}", t, 2 * d)
-        self.attn_setup()
-        self.kvb = {L: self.kv_bo("a") for L in self.attn_layers}
-        self.warm("0.gu")
 
     # ---- prefill ----
 

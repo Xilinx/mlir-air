@@ -56,7 +56,11 @@ class D3Npu:
         return z
 
     def probabilities(self, ids, count):
-        z = self.logits(ids)[:count].astype(np.float64) / self.temperature
+        return self.softmax(self.logits(ids)[:count])
+
+    def softmax(self, z):
+        """The option probabilities of the option logits z."""
+        z = np.asarray(z, np.float64) / self.temperature
         e = np.exp(z - z.max())
         return (e / e.sum()).astype(np.float32)
 

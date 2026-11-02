@@ -228,9 +228,8 @@ class D3Prefill(Q35.Qwen35Prefill):
 
     # ---- weights ----
 
-    def _site(self, name, q4, k):
-        if not name.startswith("head."):  # d3 has no lm_head
-            super()._site(name, q4, k)
+    def _load_head(self):
+        pass  # d3 has no lm_head; the readout runs on the host
 
     def _bsite(self, name, w):
         """A BF16 weight w float32 [n, k]: one BFP16 copy at depth k, or
@@ -446,13 +445,15 @@ class D3Prefill(Q35.Qwen35Prefill):
             return mixer()
         th = threading.Thread(target=mixer)
         th.start()
-        for _ in chunks:
-            item = done.get()
-            if isinstance(item, BaseException):
-                th.join()
-                raise item
-            ffn.push(*item)
-        th.join()
+        # joined on every exit: the mixer writes this engine's buffers
+        try:
+            for _ in chunks:
+                item = done.get()
+                if isinstance(item, BaseException):
+                    raise item
+                ffn.push(*item)
+        finally:
+            th.join()
 
     def _qkv_in(self, L, x, chunks):
         pend = []

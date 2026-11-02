@@ -31,6 +31,7 @@ sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path_
     str(HERE.parents[1])
 ]
 
+from air_examples.llms.d3_edge import d3_weights as W3  # noqa: E402
 from air_examples.llms.d3_edge.d3_npu import D3Npu, add_model_args  # noqa: E402
 from air_examples.llms.d3_edge.reference import requests_sha256  # noqa: E402
 
@@ -82,6 +83,19 @@ def main():
     assert ref["identity"]["requests_sha256"] == requests_sha256(
         a.requests
     ), "reference is for another request set"
+    # both models share the request set: the reference must be of this
+    # model, and for lite of the pinned bundle's values
+    idn = ref["identity"]
+    assert (idn["repo"], idn["revision"]) == W3.MODELS[
+        a.model
+    ], "reference is for another model"
+    if a.model == "lite":
+        pinned = (W3.LITE_REPO, W3.LITE_REVISION, W3.LITE_SHA256)
+        assert (
+            idn.get("package_repo"),
+            idn.get("package_revision"),
+            idn.get("bundle_sha256"),
+        ) == pinned, "reference is not of the pinned d3-lite bundle"
     refq = {(q["request"], q["question"]): q for q in ref["questions"]}
     rows, t0 = [], time.time()
     m = D3Npu(a.build, a.model, a.wform)
@@ -90,7 +104,7 @@ def main():
             r = refq[(req["id"], key)]
             count = len(nq.keys)
             z = m.logits(ids)[:count]
-            p = m.probabilities(ids, count)
+            p = m.softmax(z)
             row = dict(
                 request=req["id"],
                 question=key,
