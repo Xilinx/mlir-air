@@ -12,7 +12,8 @@ OPTIONS = --build-dir "$(abspath $(BUILD_DIR))" --prefill $(P) \
   $(if $(INPUT_IDS),--input-ids "$(INPUT_IDS)")
 
 .PHONY: help info weights compile compile-kernels compile-decode compile-prefill \
-        compile-head reference verify run profile compile-all verify-all profile-all
+        compile-head reference verify run profile profile-decode compile-all verify-all \
+        profile-all
 .DEFAULT_GOAL := help
 help:
 	@echo "$(MODEL_MODULE): affine Q4, BFP16 prefill GEMM, NPU2"
@@ -44,6 +45,11 @@ run:
 	$(DRIVER) run $(OPTIONS) --outputs $(N_TOKENS)
 profile:
 	$(DRIVER) profile $(OPTIONS)
+# Decode tok/s at each of CONTEXTS (bench/sweep_decode_runtime.py). Each
+# context is the capacity of a native configuration; its builds are made first.
+CONTEXTS ?= 2048
+profile-decode: weights compile-all
+	$(DRIVER) profile-decode $(OPTIONS) --contexts $(CONTEXTS)
 compile-all verify-all profile-all:
 	@set -e; for p in $(NATIVE_LENGTHS); do $(MAKE) -f $(srcdir)/Makefile $(@:-all=) P=$$p; done
 

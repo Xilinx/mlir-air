@@ -205,6 +205,47 @@ def reference(model, selected, source, out, threads):
     )
 
 
+def profile_decode(model, contexts, lock, out, steps=40, warmup=5):
+    """Decode time per context for bench/sweep_decode_runtime.py: the session of
+    the native configuration whose capacity is the context, one decode step
+    (layer waves and head) at the last position over a zeroed KV cache. Prints
+    one `[bench] decode ctx=` line per context."""
+    s = spec(model)
+    factory = importlib.import_module(
+        f"air_examples.llms.{model}.session"
+    ).create_session
+    for ctx in contexts:
+        p = next((p for p, c in s["configurations"] if c == ctx), None)
+        if p is None:
+            raise ValueError(f"no native configuration has capacity {ctx}")
+        selected = configuration(model, p)
+        token = selected["token_ids"][0]
+        times = []
+        with device_lock(lock):
+            session = factory(
+                task=read_task(model, selected),
+                runtime=runtime(model, selected, out / f"c{ctx}"),
+            )
+            try:
+                # zero-length inputs: seed_kv writes a cleared cache
+                empty = np.zeros((256, 0, 0), np.float32)
+                session.decode.seed_kv(empty, empty, 0)
+                for i in range(warmup + steps):
+                    session.position = ctx - 1
+                    t0 = time.perf_counter()
+                    session.decode_step(token, ctx - 1)
+                    if i >= warmup:
+                        times.append((time.perf_counter() - t0) * 1e3)
+            finally:
+                session.close()
+        med = float(np.median(times))
+        print(
+            f"[bench] decode ctx={ctx} median {med:.2f} ms min {min(times):.2f} ms "
+            f"({1e3 / med:.2f} tok/s)",
+            flush=True,
+        )
+
+
 def main(model):
     s = spec(model)
     parser = argparse.ArgumentParser(
@@ -212,7 +253,16 @@ def main(model):
     )
     parser.add_argument(
         "command",
-        choices=("info", "weights", "compile", "reference", "verify", "run", "profile"),
+        choices=(
+            "info",
+            "weights",
+            "compile",
+            "reference",
+            "verify",
+            "run",
+            "profile",
+            "profile-decode",
+        ),
     )
     parser.add_argument(
         "--prefill",
@@ -259,6 +309,11 @@ def main(model):
         help="run output count; verify=32, profile=128",
     )
     parser.add_argument("--threads", type=int, default=8, help="CPU reference threads")
+    parser.add_argument(
+        "--contexts",
+        default="",
+        help="profile-decode: comma-separated KV capacities of native configurations",
+    )
     parser.add_argument("--lock", default="/tmp/mlir-air-npu.lock")
     parser.add_argument(
         "--check-reset",
@@ -317,6 +372,12 @@ def main(model):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     out = (args.out or base / "runs" / (stamp + "-" + args.command)).resolve()
     out.mkdir(parents=True, exist_ok=args.command == "reference")
+    if args.command == "profile-decode":
+        contexts = [int(c) for c in args.contexts.split(",") if c.strip()]
+        if not contexts:
+            parser.error("profile-decode needs --contexts")
+        profile_decode(model, contexts, args.lock, out)
+        return
     if args.command == "reference":
         if (out / (selected["id"] + ".npz")).exists():
             raise ValueError(
