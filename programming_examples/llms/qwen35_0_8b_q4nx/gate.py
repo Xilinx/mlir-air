@@ -108,7 +108,10 @@ def main():
         reference=ref["meta"],
         decode="fused_decode_gdn",
         method="greedy 32, EOS ignored, mutual top-5 at first divergence, full finite logits",
-        verdict="PASS" if all(r["verdict"] == "PASS" for r in rows) else "FAIL",
+        # an empty selection compared nothing and must not pass
+        verdict=(
+            "PASS" if rows and all(r["verdict"] == "PASS" for r in rows) else "FAIL"
+        ),
         prompts=rows,
         time=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     )

@@ -13,8 +13,16 @@ qwen35.py): attn_bfp16 with head_dim 256, the 8 query heads in two groups of
 4 on columns 0 and 7, one KV head each, causal, KV records for max_len tokens.
 """
 
-from air_examples.llms.shared.fused_prefill import device as D
-from air_examples.llms.shared.fused_prefill.models import Desc, spec
+import sys
+import types
+from pathlib import Path
+
+# llms/shared is imported as the air_examples package, not through sys.path.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+from air_examples.llms.shared.fused_prefill import device as D  # noqa: E402
+from air_examples.llms.shared.fused_prefill.models import Desc, spec  # noqa: E402
 
 D_MODEL, INTER = 1024, 3584
 HEADS, KV_HEADS, DH = 8, 2, 256

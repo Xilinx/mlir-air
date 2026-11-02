@@ -15,7 +15,7 @@
 // RUN: cd test_npu2_profile
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile compile CAPACITIES=1024 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
-// RUN: make -f %S/Makefile profile C=1024 N_TOKENS=64 PROMPT="What is the capital of France?" PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | tee profile.txt
+// RUN: %run_on_npu2% make -f %S/Makefile profile C=1024 N_TOKENS=64 PROMPT="What is the capital of France?" PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | tee profile.txt
 // RUN: %PYTHON %S/../bench/extract_perf.py profile.txt --model qwen35_0_8b_q4nx --n-tokens 64 > qwen35_0_8b_q4nx.perf.json
 // RUN: FileCheck %s < qwen35_0_8b_q4nx.perf.json
 // CHECK: "model": "qwen35_0_8b_q4nx"

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import sys
+import types
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +35,10 @@ if str(_VERIFY) not in sys.path:
 
 from runners._records import DecodeStepRecord, PrefillRecord  # noqa: E402
 
+# The model is imported as the air_examples package, not through sys.path.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
 from air_examples.llms.qwen35_0_8b_q4nx import q35_npu  # noqa: E402
 
 _N_LAYERS = 24

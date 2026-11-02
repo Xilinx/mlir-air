@@ -26,14 +26,21 @@ lo bf16 words}.
 import ctypes
 import os
 import subprocess
+import sys
 import time
+import types
 from pathlib import Path
 
 import numpy as np
 from ml_dtypes import bfloat16
 
-from air_examples.llms.qwen35_0_8b_q4nx import q35_spec as S
-from air_examples.llms.qwen35_0_8b_q4nx import q35_weights as W
+# The model directory is imported as the air_examples package, not through
+# sys.path.
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[3])
+]
+from air_examples.llms.qwen35_0_8b_q4nx import q35_spec as S  # noqa: E402
+from air_examples.llms.qwen35_0_8b_q4nx import q35_weights as W  # noqa: E402
 
 from . import device as D
 from . import hostops as H
@@ -51,9 +58,11 @@ HOST_THREADS = 16
 
 
 def build_host(out):
-    """The model's host C library (libq35host.so) into the build dir, and
-    hostops (build.py's libhostops.so) again with HOST_THREADS row threads:
-    its rows are independent, so its results do not depend on the count."""
+    """hostops (build.py's libhostops.so) again with HOST_THREADS row threads
+    (its rows are independent, so its results do not depend on the count),
+    then the model's host C library (libq35host.so) into the build dir. The
+    model library is built last: Qwen35Prefill rebuilds both when it is older
+    than libhostops.so."""
     flags = [
         "gcc",
         "-O3",
@@ -64,8 +73,8 @@ def build_host(out):
         "-fPIC",
     ]
     for src, so in (
-        (HOST_C, "libq35host.so"),
         (HERE / "kernels" / "hostops.c", "libhostops.so"),
+        (HOST_C, "libq35host.so"),
     ):
         subprocess.run(
             flags

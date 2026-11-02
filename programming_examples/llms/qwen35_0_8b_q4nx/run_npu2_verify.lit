@@ -20,5 +20,5 @@
 // RUN: cd test_npu2_verify
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile compile CAPACITIES=1024 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
-// RUN: make -f %S/Makefile verify C=1024 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// RUN: %run_on_npu2% make -f %S/Makefile verify C=1024 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: [verify] PASS
