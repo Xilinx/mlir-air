@@ -1508,24 +1508,6 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
-<td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">Qwen2.5-7B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</span></td>
-<td style="text-align: left;">Strix Halo</td>
-<td style="text-align: right;">36</td>
-<td style="text-align: right;">202.0</td>
-<td style="text-align: right;">11.88</td>
-<td style="text-align: left;">2026-10-30</td>
-<td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
-</tr>
-<tr>
-<td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
-<td style="text-align: left;">Strix Halo</td>
-<td style="text-align: right;">24</td>
-<td style="text-align: right;">233.0</td>
-<td style="text-align: right;">10.89</td>
-<td style="text-align: left;">2026-10-30</td>
-<td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
-</tr>
-<tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm3_3b_q4nx/">SmolLM3-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/HuggingFaceTB/SmolLM3-3B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: right;">—</td>
@@ -1813,6 +1795,19 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
+<td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">Qwen2.5-7B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</span></td>
+<td style="text-align: left;">Strix Halo</td>
+<td style="text-align: left;">Q4NX</td>
+<td style="text-align: right;">11.02</td>
+<td style="text-align: right;">8.66</td>
+<td style="text-align: right;">4.69</td>
+<td style="text-align: right;">1.55</td>
+<td style="text-align: right;"><span title="KLD 0.0183 ± 0.0005; same top-1 94.5%; 4092 tokens; 8k: KLD 0.0107; PPL vs the bf16 checkpoint +7.9%; Strix Halo, 2026-10-30, mlir-air 78b621b">0.0183</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 3, only on the reference 10; McNemar p = 0.092; Strix Halo, 2026-10-30, mlir-air 78b621b">69 / 76</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 14, only on the reference 24; McNemar p = 0.143; Strix Halo, 2026-10-30, mlir-air 78b621b">73 / 74</span></td>
+<td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
+</tr>
+<tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_0_6b/">Qwen3-0.6B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-0.6B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
@@ -1878,6 +1873,19 @@ model's number for this metric is in a curve instead.</p>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
+<td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
+<td style="text-align: left;">Strix Halo</td>
+<td style="text-align: left;">Q4NX</td>
+<td style="text-align: right;">10.13</td>
+<td style="text-align: right;">8.02</td>
+<td style="text-align: right;">4.38</td>
+<td style="text-align: right;">✗</td>
+<td style="text-align: right;"><span title="KLD 0.0189 ± 0.0011; same top-1 95.0%; 4092 tokens; 8k: KLD 0.0210; PPL vs the bf16 checkpoint +4.9%; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0189</span></td>
+<td style="text-align: right;"><span title="100 questions; right only on the NPU 6, only on the reference 5; McNemar p = 1.000; Strix Halo, 2026-10-30, mlir-air 78b621b">87 / 86</span></td>
+<td style="text-align: right;"><span title="570 questions; right only on the NPU 15, only on the reference 13; McNemar p = 0.851; Strix Halo, 2026-10-30, mlir-air 78b621b">77 / 76</span></td>
+<td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
+</tr>
+<tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm2_1_7b/">SmolLM2-1.7B</a> <span class="air-nowrap">(<a href="https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
@@ -1906,6 +1914,7 @@ model's number for this metric is in a curve instead.</p>
 </tbody>
 </table>
 <p>— not swept at this context, or an expected failure.</p>
+<p>✗ unexpected failure.</p>
 <p><strong>Accuracy</strong> (the decode table's KLD, GSM8K and MMLU; the prefill table's KLD).
 The NPU is compared with the same model on the CPU (PyTorch): on wikitext-2 the
 way llama.cpp's <code>llama-perplexity --kl-divergence</code> does, and on benchmark
@@ -2138,6 +2147,19 @@ than the number of real prompt tokens.</p>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
+<td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">Qwen2.5-7B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</span></td>
+<td style="text-align: left;">Strix Halo</td>
+<td style="text-align: left;">Q4NX</td>
+<td style="text-align: right;">582</td>
+<td style="text-align: right;">1046</td>
+<td style="text-align: right;">2192</td>
+<td style="text-align: right;">4970</td>
+<td style="text-align: right;">12350</td>
+<td style="text-align: right;">107296</td>
+<td style="text-align: right;"><span title="KLD 0.0472 ± 0.0060; same top-1 93.7%; 4092 tokens; Strix Halo, 2026-10-30, mlir-air 78b621b">0.0472</span></td>
+<td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
+</tr>
+<tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_0_6b/">Qwen3-0.6B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-0.6B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
@@ -2199,6 +2221,19 @@ than the number of real prompt tokens.</p>
 <td style="text-align: right;">6570</td>
 <td style="text-align: right;">18318</td>
 <td style="text-align: right;">196089</td>
+<td style="text-align: right;"><span title="KLD 0.0030 ± 0.0001; same top-1 97.6%; 4092 tokens; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0030</span></td>
+<td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
+</tr>
+<tr>
+<td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
+<td style="text-align: left;">Strix Halo</td>
+<td style="text-align: left;">Q4NX</td>
+<td style="text-align: right;">570</td>
+<td style="text-align: right;">1183</td>
+<td style="text-align: right;">2658</td>
+<td style="text-align: right;">6588</td>
+<td style="text-align: right;">18258</td>
+<td style="text-align: right;">195830</td>
 <td style="text-align: right;"><span title="KLD 0.0030 ± 0.0001; same top-1 97.6%; 4092 tokens; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0030</span></td>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
