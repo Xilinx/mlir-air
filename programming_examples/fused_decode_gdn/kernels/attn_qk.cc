@@ -108,8 +108,8 @@ void attn_qk(bf16 *__restrict q_ping, bf16 *__restrict q_pong,
   // zero-init scratch in .data so they are actually zeroed at load.
   __attribute__((section(".data"))) static bool is_ql_ping = false;
   __attribute__((section(".data"))) static bool is_ksc_ping = false;
-  alignas(aie::vector_decl_align) static
-      __attribute__((section(".data"))) bf16 m[16] = {};
+  alignas(aie::vector_decl_align) static __attribute__((section(".data")))
+  bf16 m[16] = {};
   alignas(aie::vector_decl_align) static
       __attribute__((section(".data"))) float c_local[8] = {};
   // Peano: non-static so the broadcast/init runs each call (peano's non-atomic
