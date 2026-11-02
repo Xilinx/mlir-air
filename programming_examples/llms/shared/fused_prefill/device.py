@@ -71,6 +71,9 @@ class Attn(NamedTuple):
     # for models whose q/k biases put scores far above the differences
     # between them (attn_bfp16.cc, ATTN_SPLIT_SCORES)
     split_scores: bool = False
+    # every query sees every key before the op's run-time key count, which
+    # the op takes as a fourth scalar (attn_bfp16.cc, ATTN_NONCAUSAL)
+    noncausal: bool = False
 
 
 # a window no prompt reaches, which makes the window mask causal
@@ -104,6 +107,11 @@ def kv_rec(g):
     """bf16 elements of one K block's record: the K tile, then the V tile,
     both bfp16 (9 bytes per 8 values)."""
     return 2 * g.lkp * g.dh * 9 // 16
+
+
+def attn_suffix(g):
+    """The kernel symbols' and object's suffix of group g."""
+    return f"_d{g.dh}" + ("n" if g.noncausal else "")
 
 
 def sum_lanes(dh):
@@ -372,9 +380,10 @@ def _attention(name, gs, wave, puts, externs, rtps):
     loops = []
     for g, *_, win, rounds in gs:
         nr = air.rtp(wave * 0 + rounds)
-        wb = air.rtp(wave * 0 + win // g.lkp)
+        # noncausal: the key count in tokens, else the window in blocks
+        wb = _rtp(wave, win) if g.noncausal else air.rtp(wave * 0 + win // g.lkp)
         params += [nr, wb]
-        suf = f"_d{g.dh}"
+        suf = attn_suffix(g)
         obj = f"attn_bfp16{suf}.o"
 
         def ext(f, suf=suf, obj=obj, **kw):
@@ -461,7 +470,9 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
     op 'g': (k, n, act, wq, pair), C[128 p, n] = A[128 p, k] @ W for p chunks
             (2 with pair, else 1), with the activation drain if act and int4
             weight packets if wq (bf16 otherwise)
-    op <attention op>: (heads, nkv, q0, k0), attention for one chunk
+    op <attention op>: (heads, nkv, q0, k0), attention for one chunk; a
+            noncausal op's keys are its nkv blocks, and with own it takes
+            the key count as a fourth run-time scalar nk
 
     With own, the segment holds only the op's own groups: the device is then
     the union of every op's segment @seg (see air-to-aie), and the op's func
@@ -493,6 +504,8 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
             ga = cfg.attn[a]
             assert hg * len(groups) == heads and hg % ga.kv_heads == 0, (heads, ga)
             win = (cfg.windows or {}).get(op) or NO_WINDOW
+            if ga.noncausal:
+                win = nkv * ga.lkp
             at[a].update(nkv=nkv, q0=q0, k0=k0, win=win, rounds=hg * attn_qr(ga))
 
     mm = [
@@ -526,9 +539,14 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
     for a, ga in cfg.attn.items():
         cols.setdefault(ga.col, []).append(a)
     if runtime:
-        scalars = {n: air.tensor([], i32, name=n) for n in ("nkv", "q0", "k0")}
+        names = ("nkv", "q0", "k0")
+        if any(cfg.attn[a].noncausal for a in drive):
+            names += ("nk",)
+        scalars = {n: air.tensor([], i32, name=n) for n in names}
         for a in drive:
-            at[a].update(scalars)
+            at[a].update({k: scalars[k] for k in ("nkv", "q0", "k0")})
+            if cfg.attn[a].noncausal:
+                at[a]["win"] = scalars["nk"]
 
     with air.launch(repeat=1, name=name, attrs=["air.preserve_shim_dma_order"]) as lch:
 

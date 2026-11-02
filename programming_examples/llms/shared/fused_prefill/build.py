@@ -182,16 +182,16 @@ def build_kernels(out, cfg):
         ],
         [cc, *f, "-c", kern / "gemv_q4.cc", "-o", out / "gemv_q4.o"],
     ]
-    # one attention object per head_dim; groups sharing one must agree on how
-    # it is built
+    # one attention object per head_dim (and mode, D.attn_suffix); groups
+    # sharing one must agree on how it is built
     built = {}
     for g in cfg.attn.values():
         key = (g.lkp, g.split_scores)
-        if built.setdefault(g.dh, key) != key:
+        if built.setdefault((g.dh, D.attn_suffix(g)), key) != key:
             raise ValueError(
                 f"attention groups with head_dim {g.dh} differ in lkp or split_scores"
             )
-    for dh, (lkp, sp) in built.items():
+    for (dh, suf), (lkp, sp) in built.items():
         jobs.append(
             [
                 cc,
@@ -199,12 +199,13 @@ def build_kernels(out, cfg):
                 "-c",
                 kern / "attn_bfp16.cc",
                 "-o",
-                out / f"attn_bfp16_d{dh}.o",
+                out / f"attn_bfp16{suf}.o",
                 f"-DDH={dh}",
                 f"-DLK={lkp}",
                 f"-DSUM_LANES={D.sum_lanes(dh)}",
                 *(["-DATTN_SPLIT_SCORES"] if sp else []),
-                *[f"-D{fn}={fn}_d{dh}" for fn in ("attn_init", "attn_blk", "attn_fin")],
+                *(["-DATTN_NONCAUSAL"] if suf.endswith("n") else []),
+                *[f"-D{fn}={fn}{suf}" for fn in ("attn_init", "attn_blk", "attn_fin")],
             ]
         )
     jobs.append(

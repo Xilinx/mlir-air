@@ -1,0 +1,18 @@
+# Additional Python packages for the d3-lite Q4NX example.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, pyxrt, etc.). Install with:
+#     pip install -r requirements.txt
+
+# Download the weights, the package's runtime, tokenizer and readout from the
+# Hub at their pinned revisions; read the readout.
+huggingface_hub
+safetensors
+
+# The tokenizer and rotary table, and the package's own runtime (d3_runtime)
+# for the prompts and the CPU reference. Needs Qwen3.5 (qwen3_5) support;
+# verified with transformers 5.21.0.
+transformers
+
+# The rotary table and the CPU reference.
+torch
