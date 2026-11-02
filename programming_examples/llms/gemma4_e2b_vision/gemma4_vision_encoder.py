@@ -1,7 +1,7 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# Gemma4-E2B vision tower on NPU2.
+# Gemma4 (E2B, E4B) vision tower on NPU2.
 #
 # The GEMMs and the attention run on the NPU. The elementwise work between them
 # runs on the host in hostops.c. Rows are the processor's patch count L padded
@@ -48,7 +48,6 @@ from gemma4_vision_weights import (  # noqa: E402
     INTER,
     NUM_LAYERS,
     N_HEADS,
-    OUT_D,
     RMS_EPS,
     VisionWeights,
     gelu_tanh,
@@ -87,7 +86,7 @@ class CpuOps:
 
     kv_block = _LKP
 
-    def build(self, shape, m_soft):
+    def build(self, shape, m_soft, out_dim):
         pass
 
     def gemm(self, name, x, w, site=None):
@@ -119,8 +118,9 @@ _GEMM = {
     (D, D): (64, 3),  # patch embed, o
     (D, INTER): (128, 4),  # gate (GELU drain), up
     (INTER, D): (128, 3),  # down
-    (D, OUT_D): (64, 4),  # multimodal projection
 }
+# The multimodal projection, D -> the text model's hidden size.
+_PROJ = (64, 4)
 _TILE_M, _HERD_M, _TILE_K_L1 = 32, 8, 32
 _GEMM_OPS = ("qkv", "o", "gate", "up", "down", "proj")
 
@@ -176,7 +176,7 @@ class NpuOps:
             "instance_name": "attention_bf16",
         }
 
-    def build(self, shape, m_soft):
+    def build(self, shape, m_soft, out_dim):
         """Compile whatever this shape needs and is not cached yet."""
         import os
 
@@ -187,7 +187,7 @@ class NpuOps:
             "gate": (rows, D, INTER, True),
             "up": (rows, D, INTER, False),
             "down": (rows, INTER, D, False),
-            "proj": (m_soft, D, OUT_D, False),
+            "proj": (m_soft, D, out_dim, False),
         }
         assert tuple(plan) == _GEMM_OPS, tuple(plan)
         for op, (m, k, n, gelu) in plan.items():
@@ -223,7 +223,7 @@ class NpuOps:
 
         # DIM_N is baked into mm.o, so each tile_n gets its own object, compiled
         # first so the ELF links below find it in the build dir.
-        for tn in sorted({tn for tn, _ in _GEMM.values()}):
+        for tn in sorted({tn for tn, _ in [*_GEMM.values(), _PROJ]}):
             sfx = f"_m{_TILE_M}n{tn}"
             compile_gemm_mm(
                 tile_m=_TILE_M,
@@ -236,7 +236,8 @@ class NpuOps:
             name = self.names[op][0]
             if name in self.cache.artifacts:
                 continue
-            tn, hn = _GEMM[(k, n)]
+            tn, hn = _PROJ if op == "proj" else _GEMM[(k, n)]
+            assert n % (tn * hn) == 0, (op, n, tn, hn)
             tk2 = min(256, k)
             sfx = f"_m{_TILE_M}n{tn}"
             spec = _spec_with_tiles(
@@ -329,7 +330,7 @@ class NpuOps:
 
 
 class VisionEncoder:
-    """Gemma4 vision tower: pixels -> [n_soft, OUT_D] soft tokens.
+    """Gemma4 vision tower: pixels -> [n_soft, out_dim] soft tokens.
 
     enc = VisionEncoder(ops)            # ops: NpuOps() or CpuOps()
     soft = enc.encode(pixel_values, position_ids)
@@ -397,7 +398,7 @@ class VisionEncoder:
         sh = self.shape_of(position_ids)
         n_slots = sh.L // 9
         m_soft = _round_up(n_slots, _ROW_ALIGN)
-        self.ops.build(sh, m_soft)
+        self.ops.build(sh, m_soft, self.w.out_dim)
         t0 = time.perf_counter()
         self._dev_t = 0.0
 

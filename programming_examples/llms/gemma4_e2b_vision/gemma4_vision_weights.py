@@ -1,8 +1,9 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# Weight loader, image preprocessing and shared math for the Gemma4-E2B vision
-# tower.
+# Weight loader, image preprocessing and shared math for the Gemma4 E2B and E4B
+# vision tower, which the two models share; only the projection into the text
+# model's hidden size differs.
 #
 # The weights come from the bf16 HF checkpoint, which also carries the
 # ClippableLinear bounds, so the tower and its HF oracle read the same file.
@@ -14,7 +15,8 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 # ---------------------------------------------------------------- dims
-# vision_config of Gemma4-E2B-IT; load_vision_config() asserts each one.
+# vision_config of Gemma4-E2B-IT and -E4B-IT; load_vision_config() asserts
+# each one.
 D = 768  # hidden_size, == 3 * patch_size**2
 INTER = 3072  # intermediate_size
 NUM_LAYERS = 16
@@ -25,7 +27,6 @@ POOL_K = 3  # pooling_kernel_size
 POS_TABLE = 10240  # position_embedding_size
 ROPE_THETA = 100.0
 RMS_EPS = 1e-6
-OUT_D = 1536  # the text model's hidden_size
 DEFAULT_OUTPUT_LEN = 280  # soft tokens per image
 
 # Gemma4VisionAttention sets scaling = 1.0 rather than 1/sqrt(head_dim).
@@ -33,7 +34,12 @@ ATTN_SCALE = 1.0
 # Gemma4VisionPooler multiplies by sqrt(hidden_size) after averaging.
 POOL_SCALE = float(np.sqrt(D))
 
-MODEL_DEFAULT = os.environ.get("G4_VISION_MODEL_SOURCE", "unsloth/gemma-4-E2B-it")
+# GEMMA4_VARIANT selects the model, as for ../gemma4_e2b_q4nx.
+VARIANT = os.environ.get("GEMMA4_VARIANT", "e2b")
+_SOURCES = {"e2b": "unsloth/gemma-4-E2B-it", "e4b": "unsloth/gemma-4-E4B-it"}
+if VARIANT not in _SOURCES:
+    raise SystemExit(f"GEMMA4_VARIANT={VARIANT!r}: want one of {sorted(_SOURCES)}")
+MODEL_DEFAULT = os.environ.get("G4_VISION_MODEL_SOURCE", _SOURCES[VARIANT])
 
 _PREFIX = "model.vision_tower"
 _EMBED_PROJ = "model.embed_vision.embedding_projection.weight"
@@ -196,8 +202,13 @@ class VisionWeights:
     def __init__(self, source=MODEL_DEFAULT):
         from safetensors import safe_open
 
+        import json
+
         self.path = _resolve(source)
         self.config = load_vision_config(self.path)
+        # The text model's hidden size, which the soft tokens are projected to.
+        full = json.loads((self.path.parent / "config.json").read_text())
+        self.out_dim = full["text_config"]["hidden_size"]
         self._f = safe_open(str(self.path), "np")
         self._cache = {}
         self._derived = {}
@@ -263,7 +274,7 @@ class VisionWeights:
         )
 
     def embed_proj(self):
-        """Multimodal embedder projection as stored, [OUT_D, D] bf16."""
+        """Multimodal embedder projection as stored, [out_dim, D] bf16."""
         return self._get(_EMBED_PROJ)
 
     def embed_proj_T(self):

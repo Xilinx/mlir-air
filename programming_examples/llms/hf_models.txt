@@ -102,6 +102,10 @@ FastFlowLM/Gemma4-E2B-IT-NPU2
 # against this checkpoint. Ungated.
 unsloth/gemma-4-E2B-it
 
+# Gemma4-E4B-IT in bf16, for llms/gemma4_e4b_vision as the E2B one above is for
+# llms/gemma4_e2b_vision. Ungated.
+unsloth/gemma-4-E4B-it
+
 # Gemma4-E4B (text), same packaging. Used by llms/gemma4_e4b_q4nx; listed alone
 # for the same reason as E2B.
 FastFlowLM/Gemma4-E4B-IT-NPU2

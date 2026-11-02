@@ -1,7 +1,7 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# NumPy reference for the Gemma4-E2B vision tower, plus the HF oracle it is
+# NumPy reference for the Gemma4 vision tower, plus the HF oracle it is
 # checked against.
 #
 # The NumPy tower computes what the NPU encoder computes and can return each
@@ -104,7 +104,7 @@ def layer(w, h, i, cos, sin, pad, taps=None):
 
 
 def tower(w, pixel_values, position_ids, n_layers=NUM_LAYERS, taps=None):
-    """Full vision tower: pixels -> [n_soft, OUT_D] soft tokens."""
+    """Full vision tower: pixels -> [n_soft, out_dim] soft tokens."""
     h, pad = patch_embed(w, pixel_values, position_ids, taps)
     if taps is not None:
         taps["embeds"] = h

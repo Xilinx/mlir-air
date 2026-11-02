@@ -1,13 +1,17 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# Gemma4-E2B image + text on NPU2. The vision tower lives here; the text model
-# is ../gemma4_e2b_q4nx, whose fused prefill and fused decode this example
-# drives (`make compile` builds both there).
+# Gemma4 image + text on NPU2. The vision tower lives here; the text model is
+# ../gemma4_$(VARIANT)_q4nx, whose fused prefill and fused decode this example
+# drives (`make compile` builds both there). ../gemma4_e4b_vision includes this
+# file with VARIANT=e4b.
 
-srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+# This file's directory, also when another Makefile includes it.
+VISION := $(patsubst %/,%,$(dir $(realpath $(lastword $(MAKEFILE_LIST)))))
 PYTHON ?= python3
-TEXT := $(srcdir)/../gemma4_e2b_q4nx
+VARIANT ?= e2b
+export GEMMA4_VARIANT := $(VARIANT)
+TEXT := $(VISION)/../gemma4_$(VARIANT)_q4nx
 
 IMAGE ?=
 IMAGE_ARG := $(if $(IMAGE),--image $(IMAGE),)
@@ -41,8 +45,8 @@ IMAGE_BUDGETS ?= 70,140,280,560,1120
         profile-image-sweep clean
 
 help:
-	@echo "Gemma4-E2B vision (NPU2)"
-	@echo "  make compile       Text model's fused prefill + decode (../gemma4_e2b_q4nx)"
+	@echo "Gemma4-$(VARIANT) vision (NPU2)"
+	@echo "  make compile       Text model's fused prefill + decode (../gemma4_$(VARIANT)_q4nx)"
 	@echo "  make reference     NumPy tower vs HF (no NPU)"
 	@echo "  make vision        NPU tower vs HF (cosine >= $(TOWER_COS))"
 	@echo "  make diagnosis     NPU tower, per-layer cosine vs the numpy tower"
@@ -58,37 +62,37 @@ compile:
 	  PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)
 
 reference:
-	$(PYTHON) $(srcdir)/gemma4_vision_reference.py $(IMAGE_ARG) $(MST_ARG)
+	$(PYTHON) $(VISION)/gemma4_vision_reference.py $(IMAGE_ARG) $(MST_ARG)
 
 vision:
-	$(PYTHON) $(srcdir)/run_vision.py --min-cosine $(TOWER_COS) $(IMAGE_ARG) $(MST_ARG)
+	$(PYTHON) $(VISION)/run_vision.py --min-cosine $(TOWER_COS) $(IMAGE_ARG) $(MST_ARG)
 
 diagnosis:
-	$(PYTHON) $(srcdir)/run_vision.py --diagnosis $(IMAGE_ARG) $(MST_ARG)
+	$(PYTHON) $(VISION)/run_vision.py --diagnosis $(IMAGE_ARG) $(MST_ARG)
 
 run:
-	$(PYTHON) $(srcdir)/gemma4_vision_inference.py --fused-dir $(FUSED_DIR) \
+	$(PYTHON) $(VISION)/gemma4_vision_inference.py --fused-dir $(FUSED_DIR) \
 	  --n-tokens $(N_TOKENS) $(IMAGE_ARG) $(PROMPT_ARG) $(MST_ARG)
 
 ## Two gates: the description of the shapes image must name both shapes, their
 ## colors and a position; and the first 32 tokens of each image turn in
 ## verify_image.py must pass the top-k check against HF bf16.
 verify: verify-image
-	$(PYTHON) $(srcdir)/gemma4_vision_inference.py --fused-dir $(FUSED_DIR) \
+	$(PYTHON) $(VISION)/gemma4_vision_inference.py --fused-dir $(FUSED_DIR) \
 	  --n-tokens $(N_TOKENS) --gate $(MST_ARG)
 
 verify-image:
-	$(PYTHON) $(srcdir)/verify_image.py --fused-dir $(FUSED_DIR)
+	$(PYTHON) $(VISION)/verify_image.py --fused-dir $(FUSED_DIR)
 
 profile:
-	$(PYTHON) $(srcdir)/gemma4_vision_inference.py --fused-dir $(FUSED_DIR) \
+	$(PYTHON) $(VISION)/gemma4_vision_inference.py --fused-dir $(FUSED_DIR) \
 	  --n-tokens $(N_TOKENS) --repeat $(REPEAT) --max-soft-tokens $(PROFILE_MST) \
 	  $(IMAGE_ARG) $(PROMPT_ARG)
 
 ## TTFT and decode tok/s at each image-token budget, written to
 ## gemma4_e2b_vision.image_sweep.json in the current directory.
 profile-image-sweep:
-	$(PYTHON) $(srcdir)/bench_image.py --fused-dir $(FUSED_DIR) \
+	$(PYTHON) $(VISION)/bench_image.py --fused-dir $(FUSED_DIR) \
 	  --budgets $(IMAGE_BUDGETS) --repeat $(REPEAT) $(IMAGE_ARG)
 
 clean:

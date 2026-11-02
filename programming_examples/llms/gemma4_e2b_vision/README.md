@@ -17,6 +17,9 @@ make profile-image-sweep   # TTFT and decode tok/s per image-token budget
 make help             # everything else
 ```
 
+[`gemma4_e4b_vision`](../gemma4_e4b_vision) runs this example at
+`VARIANT=e4b` for Gemma4-E4B, which has the same vision tower.
+
 Weights: the vision tower and the multimodal projection come from the bf16
 `unsloth/gemma-4-E2B-it` checkpoint (`G4_VISION_MODEL_SOURCE` overrides it).
 The text model is the `FastFlowLM/Gemma4-E2B-IT-NPU2` q4nx bundle

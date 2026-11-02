@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Gemma4-E2B image + text -> text on NPU2.
+"""Gemma4 (E2B, E4B) image + text -> text on NPU2.
 
   vision: gemma4_vision_encoder (this directory) -- the 16-layer tower and the
     multimodal projection, pixels -> soft tokens in the text model's space.
-  prefill: ../gemma4_e2b_q4nx/fused_prefill -- the text model's fused prefill,
-    with the soft tokens in place of the image placeholder's embeddings.
-  decode: ../gemma4_e2b_q4nx's full-ELF fused decode, seeded with the prefill's
-    KV.
+  prefill: the text model's fused prefill (../gemma4_<variant>_q4nx), with the
+    soft tokens in place of the image placeholder's embeddings.
+  decode: that text model's full-ELF fused decode, seeded with the prefill's KV.
+
+GEMMA4_VARIANT (e2b by default) selects the model.
 
 Run:
   python3 gemma4_vision_inference.py --gate          # shapes image, keyword gate
@@ -20,7 +21,6 @@ Needs the text model's fused prefill and decode (`make compile`).
 
 import argparse
 import json
-import os
 import sys
 import time
 import types
@@ -29,9 +29,9 @@ from pathlib import Path
 import numpy as np
 
 _HERE = Path(__file__).resolve().parent
-_TEXT = _HERE.parent / "gemma4_e2b_q4nx"
 _PE = _HERE.parent.parent  # programming_examples
-for _p in (str(_HERE), str(_TEXT)):
+# The Gemma4 text modules live in ../gemma4_e2b_q4nx for both variants.
+for _p in (str(_HERE), str(_HERE.parent / "gemma4_e2b_q4nx")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
@@ -40,9 +40,13 @@ sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path_
 
 import gemma4_vision_reference as R  # noqa: E402
 from gemma4_vision_encoder import NpuOps, VisionEncoder  # noqa: E402
-from gemma4_vision_weights import VisionWeights, preprocess  # noqa: E402
+from gemma4_vision_weights import VARIANT, VisionWeights, preprocess  # noqa: E402
+import gemma4_e2b_q4nx_weights as _gw  # noqa: E402
 
-Q4NX_MODEL = os.environ.get("Q4NX_MODEL_SOURCE", "FastFlowLM/Gemma4-E2B-IT-NPU2")
+assert _gw.VARIANT == VARIANT, (_gw.VARIANT, VARIANT)
+# The text model's directory, where its fused prefill and decode are built.
+_TEXT = Path(_gw.MODEL_DIR)
+Q4NX_MODEL = _gw.MODEL_DEFAULT
 DEFAULT_PROMPT = "Describe the shapes and their colors and positions."
 
 
@@ -98,9 +102,11 @@ class VisionLanguageModel:
     for every turn."""
 
     def __init__(self, fused_dir, max_len=2048, verbose=False):
-        from air_examples.llms.gemma4_e2b_q4nx.fused_prefill.runtime import (
-            FusedPrefill,
-        )
+        import importlib
+
+        FusedPrefill = importlib.import_module(
+            f"air_examples.llms.{_TEXT.name}.fused_prefill.runtime"
+        ).FusedPrefill
 
         self.verbose = verbose
         self.tok, self.ids = load_tokenizer()
