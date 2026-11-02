@@ -255,7 +255,7 @@ def main():
     print("\n--- generated ---\n" + text + "\n")
     med = {k: float(np.median([r[k] for r in rounds])) for k in rounds[0]}
     print(f"Time to first token (TTFT): {med['ttft']:.3f}s")
-    print(f"Decode throughput: {med['tok_s']:.2f} tok/s")
+    print(f"Tokens/second: {med['tok_s']:.2f}")
     vlm.close()
     return _gate(text) if args.gate else 0
 

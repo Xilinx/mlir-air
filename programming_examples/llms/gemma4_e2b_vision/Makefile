@@ -17,9 +17,9 @@ PROMPT_ARG := $(if $(PROMPT),--prompt "$(PROMPT)",)
 MST ?=
 MST_ARG := $(if $(MST),--max-soft-tokens $(MST),)
 N_TOKENS ?= 100
-## Longest context the decode serves: a 280-soft-token image turn is ~290
+## Longest context the decode serves: a 1120-soft-token image turn is ~1100
 ## prompt tokens, plus N_TOKENS.
-RUN_LBUILD ?= 512
+RUN_LBUILD ?= 2048
 FUSED_DIR ?= $(CURDIR)/_fused_prefill
 override FUSED_DIR := $(abspath $(FUSED_DIR))
 
@@ -34,7 +34,11 @@ TOWER_COS ?= 0.99
 REPEAT ?= 3
 PROFILE_MST ?= 70
 
-.PHONY: help compile reference vision diagnosis run verify verify-image profile clean
+## Image-token budgets `make profile-image-sweep` measures.
+IMAGE_BUDGETS ?= 70,140,280,560,1120
+
+.PHONY: help compile reference vision diagnosis run verify verify-image profile \
+        profile-image-sweep clean
 
 help:
 	@echo "Gemma4-E2B vision (NPU2)"
@@ -45,6 +49,7 @@ help:
 	@echo "  make run           Describe IMAGE (default: the shapes image)"
 	@echo "  make verify        Keyword gate on the shapes image + image-turn top-k gate"
 	@echo "  make profile       TTFT and decode tok/s, model resident"
+	@echo "  make profile-image-sweep  TTFT per image-token budget ($(IMAGE_BUDGETS))"
 	@echo "  IMAGE=<path> PROMPT=<text> MST=<soft tokens> N_TOKENS=$(N_TOKENS)"
 
 compile:
@@ -79,6 +84,12 @@ profile:
 	$(PYTHON) $(srcdir)/gemma4_vision_inference.py --fused-dir $(FUSED_DIR) \
 	  --n-tokens $(N_TOKENS) --repeat $(REPEAT) --max-soft-tokens $(PROFILE_MST) \
 	  $(IMAGE_ARG) $(PROMPT_ARG)
+
+## TTFT and decode tok/s at each image-token budget, written to
+## gemma4_e2b_vision.image_sweep.json in the current directory.
+profile-image-sweep:
+	$(PYTHON) $(srcdir)/bench_image.py --fused-dir $(FUSED_DIR) \
+	  --budgets $(IMAGE_BUDGETS) --repeat $(REPEAT) $(IMAGE_ARG)
 
 clean:
 	rm -rf $(G4_VISION_BUILD_DIR) air_project

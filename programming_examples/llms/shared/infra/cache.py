@@ -378,6 +378,12 @@ class KernelCache:
         if self.verbose:
             print(f"  [KernelCache] {msg}")
 
+    def drop_bos(self, pred):
+        """Free the cached BO sets whose bo_key satisfies pred(bo_key), for
+        buffers that will not be reused (a later call rebuilds them)."""
+        for key in [k for k in self._cached_bos if pred(k)]:
+            del self._cached_bos[key]
+
     def close(self):
         """Release this cache's buffers and contexts, retaining compiled artifacts."""
         self._cached_bos.clear()

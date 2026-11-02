@@ -13,6 +13,7 @@ make vision           # NPU tower vs HF, cosine >= 0.99
 make run IMAGE=photo.jpg PROMPT="What is in this picture?"
 make verify           # image-turn top-k gate vs HF bf16 + the shapes keyword gate
 make profile          # TTFT and decode tok/s at a 70-soft-token image
+make profile-image-sweep   # TTFT and decode tok/s per image-token budget
 make help             # everything else
 ```
 
@@ -57,6 +58,21 @@ widened from 64 to 128 columns: column 64 is 1 in Q, 0 in a real key and -1e4
 in a padding key. Every padding score becomes -1e4 and drops out of the softmax.
 Zero-padded keys would not: they score 0, which is not small next to some
 queries' real scores.
+
+## Benchmark
+
+`make profile-image-sweep` (`bench_image.py`) measures one image with the
+prompt "Describe this image." at each image-token budget (70, 140, 280, 560 and
+1120 soft tokens; Gemma4's processor resizes the image to the budget). For each
+budget it reports:
+
+- the median time to first token, which is the vision tower plus the prefill,
+  and each of the two parts;
+- decode tok/s over a fixed number of tokens.
+
+Each budget runs one warm-up turn and then the timed turns, with the vision
+tower, prefill and decoder kept loaded. The results go to
+`gemma4_e2b_vision.image_sweep.json`.
 
 ## Gates
 

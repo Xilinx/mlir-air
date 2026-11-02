@@ -196,6 +196,10 @@ class NpuOps:
         self.names["fa"] = f"fa_{rows}x{shape.kv_rows}_s{stages}"
         todo = [v[0] for v in self.names.values() if isinstance(v, tuple)]
         todo.append(self.names["fa"])
+        # Another shape's buffers (its weight copies above all) are not needed
+        # again until that shape returns, and then are rebuilt on first use.
+        live = set(todo)
+        self.cache.drop_bos(lambda key: key.split(":")[0] not in live)
         if all(t in self.cache.artifacts for t in todo):
             return
 
