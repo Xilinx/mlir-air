@@ -46,6 +46,7 @@ SERIES = [
     ("perf.json", "history.ndjson", "--perf", True),
     ("sweep.json", "sweep_history.ndjson", "--sweep", True),
     ("prefill_sweep.json", "prefill_sweep_history.ndjson", "--prefill-sweep", True),
+    ("image_sweep.json", "image_sweep_history.ndjson", "--image-sweep", True),
     ("full20.json", "spec_decode_history.ndjson", "--spec-decode", True),
     ("accuracy.json", "accuracy_history.ndjson", "--accuracy", False),
     ("tasks.json", "tasks_history.ndjson", "--tasks", False),

@@ -602,6 +602,7 @@ LLM_HF_MODELS = {
     "gemma3_4b_q4nx": "FastFlowLM/Gemma3-4B-NPU2",
     "gemma4_e2b_q4nx": "FastFlowLM/Gemma4-E2B-IT-NPU2",
     "gemma4_e4b_q4nx": "FastFlowLM/Gemma4-E4B-IT-NPU2",
+    "gemma4_e2b_vision": "unsloth/gemma-4-E2B-it",
     "llama31_8b_q4nx": "FastFlowLM/Llama-3.1-8B-NPU2",
     # Q4_0-quantized on load from an upstream bf16 checkpoint (LiquidAI
     # publishes no pre-quantized bundle), so this points at the source repo
@@ -652,6 +653,7 @@ LLM_DISPLAY = {
     "gemma3_4b_q4nx": ("gemma-3-4b-it", "Q4NX", "gemma3"),
     "gemma4_e2b_q4nx": ("gemma-4-E2B-it", "Q4NX", "gemma4e"),
     "gemma4_e4b_q4nx": ("gemma-4-E4B-it", "Q4NX", "gemma4e"),
+    "gemma4_e2b_vision": ("gemma-4-E2B-it", "Q4NX, bf16 vision", "gemma4e"),
     "lfm2_1_2b_q4nx": ("LFM2-1.2B", "Q4_0", "lfm2"),
     "llama31_8b_q4nx": ("Llama-3.1-8B-Instruct", "Q4NX", "llama3"),
     "llama32_1b": ("Llama-3.2-1B", "bf16", None),
@@ -1285,6 +1287,160 @@ than the number of real prompt tokens.
 """
 
 
+def load_llm_image_sweep_history(path):
+    """Newest point per (model, image-token budget) from the image-turn series,
+    with load_llm_prefill_sweep_history's semantics on the image_budget axis.
+    Each record also carries the newest measurement date."""
+    if not path or not Path(path).is_file():
+        return []
+    newest, verify = {}, {}
+    run_budgets, latest = {}, {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        name, budget = r.get("model"), r.get("image_budget")
+        if not name or budget is None:
+            continue
+        model = (name, _hardware(r))
+        ts = r.get("timestamp_utc") or r.get("date") or ""
+        run = r.get("run_id")
+        if run is not None:
+            run_budgets.setdefault((model, run), set()).add(budget)
+            if model not in latest or ts >= latest[model][0]:
+                latest[model] = (ts, run)
+        cur = newest.get((model, budget))
+        better = r.get("ttft_ms") is not None
+        if cur is None or (better, ts) >= (cur[0], cur[1]):
+            newest[(model, budget)] = (better, ts, r)
+        if model not in verify or ts >= verify[model][0]:
+            verify[model] = (ts, r.get("verify_status", ""), _source(r))
+    curves = {}
+    for (model, budget), (_, ts, r) in sorted(newest.items()):
+        live = run_budgets.get((model, latest[model][1])) if model in latest else None
+        if live is not None and budget not in live:
+            continue
+        d = curves.setdefault(
+            model,
+            {
+                "model": model[0],
+                "points": [],
+                "verify_status": verify[model][1],
+                "timestamp_utc": "",
+                **verify[model][2],
+            },
+        )
+        d["timestamp_utc"] = max(d["timestamp_utc"], ts)
+        d["points"].append(
+            {
+                k: r.get(k)
+                for k in (
+                    "image_budget",
+                    "image_tokens",
+                    "ttft_ms",
+                    "decode_tokens_per_sec",
+                    "status",
+                )
+            }
+        )
+    return [curves[m] for m in sorted(curves)]
+
+
+def _image_models(recs):
+    """(model, hardware) of every row render_llm_image_sweep puts on the page."""
+    return frozenset(
+        (d.get("model"), _hardware(d))
+        for d in recs
+        if any(pt.get("image_budget") for pt in d.get("points", []) or [])
+    )
+
+
+def render_llm_image_sweep(recs, base_url=""):
+    """Image-turn TTFT against the image-token budget, one row per model.
+
+    TTFT here is the vision encoder plus the prefill of a short prompt around
+    one image, so it is not comparable with the prefill table's TTFT at the
+    same number of tokens. Decode after the image is the text decoder's, so it
+    is one column, the range over the budgets, rather than a curve.
+    """
+    if not _image_models(recs):
+        return ""
+    budgets = sorted(
+        {
+            pt["image_budget"]
+            for d in recs
+            for pt in d.get("points", []) or []
+            if pt.get("image_budget")
+        }
+    )
+    head = (
+        "| Model | Hardware | Weights | "
+        + " | ".join(str(b) for b in budgets)
+        + " | Decode (tok/s) | Measured | Verify |"
+    )
+    sep = (
+        "|:------|:---------|:--------|"
+        + "".join("------:|" for _ in budgets)
+        + "--------------:|:---------|:------:|"
+    )
+    rows, markers = [], set()
+    for d in _by_model(recs):
+        pts = d.get("points", []) or []
+        by_budget = {pt.get("image_budget"): pt for pt in pts}
+        cells = []
+        for b in budgets:
+            cell = _prefill_sweep_cell(by_budget.get(b) or {})
+            if cell in ("—", "✗"):
+                markers.add(cell)
+            cells.append(cell)
+        tok_s = sorted(
+            pt["decode_tokens_per_sec"]
+            for pt in pts
+            if isinstance(pt.get("decode_tokens_per_sec"), (int, float))
+        )
+        if not tok_s:
+            decode = "—"
+        elif f"{tok_s[0]:.1f}" == f"{tok_s[-1]:.1f}":
+            decode = f"{tok_s[0]:.1f}"
+        else:
+            decode = f"{tok_s[0]:.1f}–{tok_s[-1]:.1f}"
+        rows.append(
+            f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+            f"| {hardware_label(_hardware(d))} "
+            f'| {_llm_weights(d.get("model", ""))} | '
+            + " | ".join(cells)
+            + f" | {decode} "
+            f'| {(d.get("timestamp_utc") or "")[:10] or "—"} '
+            f'| {_VERIFY_CELL.get(d.get("verify_status", ""), "")} |'
+        )
+    legend = "\n\n".join(
+        note
+        for marker, note in (
+            ("—", "— not measured at this budget."),
+            ("✗", "✗ failed."),
+        )
+        if marker in markers
+    )
+    return f"""
+
+### Image + text: time to first token vs image tokens (ms)
+
+One image and the prompt "Describe this image.". Each column is an image-token
+budget; the image takes at most that many of the prompt's tokens. **TTFT** is
+the vision encoder plus the prefill. **Decode** is generation after the image,
+the range over the budgets.
+
+{head}
+{sep}
+{chr(10).join(rows)}
+
+{legend}
+"""
+
+
 def load_llm_history(path):
     """Newest row per model and hardware from the append-only history, in
     perf.json shape.
@@ -1572,6 +1728,7 @@ def render_llm_benchmark(
     history_path=None,
     spec_decode_recs=(),
     accuracy=None,
+    image_sweep_recs=(),
 ):
     """Render the nightly LLM benchmark section.
 
@@ -1625,13 +1782,17 @@ def render_llm_benchmark(
         (d.get("model"), _hardware(d)) for d in spec_decode_recs if d.get("per_dataset")
     }
 
+    # An image-input model's TTFT includes its vision encoder; its own table
+    # below carries both metrics.
+    image = _image_models(image_sweep_recs)
+
     rows = []
     for d in _by_model(recs):
         # A VLA model is published in its own table below; two of these three
         # columns do not apply to it. See _VLA_MODELS.
         name = d.get("model")
         key = (name, _hardware(d))
-        if name in _VLA_MODELS or key in spec:
+        if name in _VLA_MODELS or key in spec or key in image:
             continue
         in_decode, in_prefill = key in swept, key in prefill_swept
         if in_decode and in_prefill:
@@ -1680,6 +1841,7 @@ def render_llm_benchmark(
     _prefill_table = render_llm_prefill_sweep(
         prefill_sweep_recs, base_url=base_url, accuracy=accuracy
     )
+    _image_table = render_llm_image_sweep(image_sweep_recs, base_url=base_url)
     _spec_table = render_spec_decode(spec_decode_recs, base_url=base_url)
     _vla_table = render_vla_benchmark(recs, base_url=base_url)
 
@@ -1707,10 +1869,10 @@ model's number for this metric is in a curve instead.
 
 End-to-end LLM inference performance on NPU2. Each row names the hardware it was measured on: the benchmark runner's rows are refreshed nightly, rows from other machines are measured offline. **TTFT** is time to first token (prefill latency); **Decode** is steady-state generation throughput.
 
-{_hardware_legend(recs, sweep_recs, prefill_sweep_recs, spec_decode_recs)}{_VERIFY_LEGEND}
+{_hardware_legend(recs, sweep_recs, prefill_sweep_recs, image_sweep_recs, spec_decode_recs)}{_VERIFY_LEGEND}
 
 {_scalar_table}{_sweep_table}
-{_prefill_table}
+{_prefill_table}{_image_table}
 {_spec_table}{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
 _{provenance}_
@@ -1781,6 +1943,8 @@ def generate_readme(
     llm_spec_decode_history_path=None,
     llm_accuracy_history_path=None,
     llm_tasks_history_path=None,
+    llm_image_sweep_path=None,
+    llm_image_sweep_history_path=None,
 ):
     """Generate dashboard content.
 
@@ -1799,6 +1963,9 @@ def generate_readme(
         llm_spec_decode_history_path
     ) or load_spec_decode(llm_spec_decode_path)
     accuracy = load_llm_accuracy(llm_accuracy_history_path, llm_tasks_history_path)
+    image_sweep_recs = load_llm_image_sweep_history(
+        llm_image_sweep_history_path
+    ) or load_llm_sweeps(llm_image_sweep_path)
 
     if section == "llm":
         llm_section = render_llm_benchmark(
@@ -1814,6 +1981,7 @@ def generate_readme(
             history_path=llm_history_path,
             spec_decode_recs=spec_decode_recs,
             accuracy=accuracy,
+            image_sweep_recs=image_sweep_recs,
         )
         # The curve tables are wider than the content column next to the
         # navigation and table-of-contents sidebars, so this page hides both.
@@ -1827,7 +1995,7 @@ hide:
 
 # LLMs and VLAs on NPU
 
-End-to-end inference of decoder-only LLMs and vision-language-action (VLA) policies on the AMD NPU2 via MLIR-AIR, with bf16 and 4-bit (Q4NX, Q4_0) weights. Models with an FLM link reimplement AMD NPU LLM designs originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team, using the higher-level abstractions of the MLIR-AIR dialect; the link points to the original FastFlowLM code. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
+End-to-end inference of decoder-only LLMs, with text or image + text input, and vision-language-action (VLA) policies on the AMD NPU2 via MLIR-AIR, with bf16 and 4-bit (Q4NX, Q4_0) weights. Models with an FLM link reimplement AMD NPU LLM designs originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team, using the higher-level abstractions of the MLIR-AIR dialect; the link points to the original FastFlowLM code. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
 {llm_section}"""
 
     # section == "full" (legacy single-page dashboard)
@@ -1843,6 +2011,7 @@ End-to-end inference of decoder-only LLMs and vision-language-action (VLA) polic
         history_path=llm_history_path,
         spec_decode_recs=spec_decode_recs,
         accuracy=accuracy,
+        image_sweep_recs=image_sweep_recs,
     )
     return (
         _operator_dashboard(base_url=base_url) + llm_section + _getting_started_footer()
@@ -1903,6 +2072,18 @@ if __name__ == "__main__":
         "--llm-prefill-sweep, same reason as --llm-history.",
     )
     parser.add_argument(
+        "--llm-image-sweep",
+        default=None,
+        help="Path to the nightly image_sweep.json (image-turn TTFT per "
+        "image-token budget). Rendered as its own table. Omitted when absent.",
+    )
+    parser.add_argument(
+        "--llm-image-sweep-history",
+        default=None,
+        help="Path to image_sweep_history.ndjson. Preferred over "
+        "--llm-image-sweep, same reason as --llm-history.",
+    )
+    parser.add_argument(
         "--llm-spec-decode",
         default=None,
         help="Path to the nightly full20.json (paired target-only vs "
@@ -1948,6 +2129,8 @@ if __name__ == "__main__":
         llm_spec_decode_history_path=args.llm_spec_decode_history,
         llm_accuracy_history_path=args.llm_accuracy_history,
         llm_tasks_history_path=args.llm_tasks_history,
+        llm_image_sweep_path=args.llm_image_sweep,
+        llm_image_sweep_history_path=args.llm_image_sweep_history,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # Explicit encoding: the tables carry the verify/status emoji, and on a

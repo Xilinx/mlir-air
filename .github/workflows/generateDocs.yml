@@ -161,6 +161,9 @@ jobs:
           test -f /tmp/llmperf/prefill_sweep.json \
             && echo "prefill_sweep.json fetched" \
             || echo "no prefill_sweep.json in that artifact; TTFT table omitted"
+          test -f /tmp/llmperf/image_sweep.json \
+            && echo "image_sweep.json fetched" \
+            || echo "no image_sweep.json in that artifact; image table omitted"
 
       # Pull the append-only time series from the durable `perf-history` branch
       # (accumulated by nightlyPerfBenchmark.yml). Best-effort: if the branch
@@ -180,6 +183,9 @@ jobs:
             git show FETCH_HEAD:prefill_sweep_history.ndjson > /tmp/llmperf_history/prefill_sweep_history.ndjson \
               && echo "prefill_sweep_history.ndjson fetched" \
               || echo "perf-history branch has no prefill_sweep_history.ndjson"
+            git show FETCH_HEAD:image_sweep_history.ndjson > /tmp/llmperf_history/image_sweep_history.ndjson \
+              && echo "image_sweep_history.ndjson fetched" \
+              || echo "perf-history branch has no image_sweep_history.ndjson"
             git show FETCH_HEAD:spec_decode_history.ndjson > /tmp/llmperf_history/spec_decode_history.ndjson \
               && echo "spec_decode_history.ndjson fetched" \
               || echo "perf-history branch has no spec_decode_history.ndjson"
@@ -212,6 +218,8 @@ jobs:
             --llm-sweep /tmp/llmperf/sweep.json \
             --llm-prefill-sweep-history /tmp/llmperf_history/prefill_sweep_history.ndjson \
             --llm-prefill-sweep /tmp/llmperf/prefill_sweep.json \
+            --llm-image-sweep-history /tmp/llmperf_history/image_sweep_history.ndjson \
+            --llm-image-sweep /tmp/llmperf/image_sweep.json \
             --llm-spec-decode-history /tmp/llmperf_history/spec_decode_history.ndjson \
             --llm-accuracy-history /tmp/llmperf_history/accuracy_history.ndjson \
             --llm-tasks-history /tmp/llmperf_history/tasks_history.ndjson \
