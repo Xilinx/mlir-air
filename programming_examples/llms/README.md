@@ -34,6 +34,7 @@ The remaining models were developed directly in MLIR-AIR.
 | **Phi-4-mini Q4NX** | `FastFlowLM/Phi4-mini-Instruct-NPU2` | 32 | 3072 / 128 / 8192 | GQA 24Q/8KV | q4nx, **partial rotary (96/128)**, LongRoPE, vocab 200064 | prefill + decode |
 | **Llama-3.1-8B Q4NX** | `FastFlowLM/Llama-3.1-8B-NPU2` | 32 | 4096 / 128 / 14336 | GQA 32Q/8KV | q4nx, **untied LM head**, llama3 rope factor 8.0, split weight BOs | prefill + decode |
 | **LFM2-1.2B Q4_0** | `LiquidAI/LFM2-1.2B` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | **hybrid conv-attention** — 10 of 16 layers are a gated causal depthwise conv, not attention; q4_0, QK-norm, tied head, vocab 65536 | prefill + decode |
+| **Qwen3.5-0.8B Q4NX** | `FastFlowLM/Qwen3.5-0.8B-NPU2` | 24 | 1024 / 256 / 3584 | GQA 8Q/2KV | **hybrid Gated DeltaNet-attention** — 18 of 24 layers are Gated DeltaNet linear attention (FP32 recurrent state); gated attention with QK-norm, partial RoPE 64/256; Q4K + Q8 weights, tied head, vocab 248320; decode on the `fused_decode_gdn` fork | prefill + decode |
 
 ### Affine-Q4 deployments with BFP16 prefill
 
@@ -63,6 +64,11 @@ taps, then gate `y = C * h`. That block carries no KV cache; what it carries
 across tokens is a 2-row conv state, which is the left pad its next
 convolution consumes. Both layer types run in ONE fused decode dispatch, chosen
 per wave by a runtime arm, so the schedule's irregularity costs no extra binary.
+**Qwen3.5-0.8B** is the other hybrid: 18 of its 24 layers are Gated DeltaNet
+linear attention, whose 1 MiB recurrent state per layer is read and written
+every token. Its decode therefore runs on a fork of the fused decode engine,
+[`fused_decode_gdn`](../fused_decode_gdn), which adds a Gated DeltaNet herd
+while keeping one dispatch per token.
 
 The architecture axes that shape each deployment's dataflow:
 - **Attention norm/bias**: Llama (none) · Qwen2.5 (**QKV bias**, fused into the

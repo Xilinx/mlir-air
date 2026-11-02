@@ -267,10 +267,12 @@ EXAMPLES = [
         "datatypes": "Q4NX weights / bf16 activations",
     },
     # fused_decode_ple (the per-layer-embedding fork of the above, driven by
-    # llms/gemma4_e2b_q4nx) is deliberately NOT listed. The status columns are
-    # derived from .lit files in the example's own directory, and that engine
-    # holds none: a second lit there would build into the same directory as the
-    # model-level compile gate and race it under the unfiltered suite. A row
+    # llms/gemma4_e2b_q4nx) and fused_decode_gdn (the Gated DeltaNet fork,
+    # driven by llms/qwen35_0_8b_q4nx) are deliberately NOT listed. The status
+    # columns are derived from .lit files in the example's own directory, and
+    # those engines hold none: a second lit there would build into the same
+    # directory as the model-level compile gate and race it under the
+    # unfiltered suite. A row
     # would therefore report "no NPU2 coverage" for an engine that is in fact
     # gated, which is worse than no row. Add one when it gets a test of its own.
     {
@@ -625,6 +627,7 @@ LLM_HF_MODELS = {
     "qwen3_4b": "Qwen/Qwen3-4B",
     "qwen3_4b_q4nx": "FastFlowLM/Qwen3-4B-NPU2",
     "qwen3_8b_q4nx": "FastFlowLM/Qwen3-8B-NPU2",
+    "qwen35_0_8b_q4nx": "FastFlowLM/Qwen3.5-0.8B-NPU2",
     "smollm2_1_7b": "HuggingFaceTB/SmolLM2-1.7B",
     "smolvla": "lerobot/smolvla_base",
 }
@@ -660,6 +663,7 @@ LLM_DISPLAY = {
     "qwen3_4b": ("Qwen3-4B", "bf16", None),
     "qwen3_4b_q4nx": ("Qwen3-4B", "Q4NX", "qwen3"),
     "qwen3_8b_q4nx": ("Qwen3-8B", "Q4NX", "qwen3"),
+    "qwen35_0_8b_q4nx": ("Qwen3.5-0.8B", "Q4NX", "qwen3_5vl"),
     "smollm2_1_7b": ("SmolLM2-1.7B", "bf16", None),
     "qwen3_4b_dflash_b8": ("Qwen3-4B", "Q4NX", None),
     "qwen3_4b_dflash_b16": ("Qwen3-4B", "Q4NX", None),

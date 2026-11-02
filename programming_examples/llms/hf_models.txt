@@ -101,6 +101,14 @@ FastFlowLM/Gemma4-E2B-IT-NPU2
 # for the same reason as E2B.
 FastFlowLM/Gemma4-E4B-IT-NPU2
 
+# Qwen3.5-0.8B (text), llms/qwen35_0_8b_q4nx: FastFlowLM's Q4K bundle (branch
+# flm_q4k_high_precision, the file FastFlowLM 1.0.11 loads) and the BF16
+# checkpoint it was quantized from, the reference `make verify` compares
+# against. Both pinned: the example loads exactly these snapshots (and checks
+# the bundle's sha256). Ungated.
+FastFlowLM/Qwen3.5-0.8B-NPU2@1d16e5eaa2508889fb88eb1bfab1921a30a1a466
+Qwen/Qwen3.5-0.8B@2fc06364715b967f1860aea9cf38778875588b17
+
 # Affine-Q4 deployments and original-BF16 references: pin the same snapshots
 # as each example's model.json, including OpenELM's Python modeling files.
 ibm-granite/granite-3.3-2b-instruct@707f574c62054322f6b5b04b6d075f0a8f05e0f0
