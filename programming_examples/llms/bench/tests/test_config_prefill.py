@@ -57,6 +57,14 @@ class ConfigPrefillTest(unittest.TestCase):
         # one failing configuration fails the curve
         self.assertEqual(curve["verify_status"], "fail")
 
+    def test_skipped_configuration_is_not_a_pass(self):
+        recs = [
+            _row("granite33_2b_q4nx_p512_c1024", 610.27, 35.32),
+            _row("granite33_2b_q4nx_p1024_c2048", 1166.3, 32.36, verify="skip"),
+        ]
+        (curve,) = generate_readme.config_prefill_curves(recs)
+        self.assertEqual(curve["verify_status"], "skip")
+
     def test_measured_sweep_wins(self):
         recs = [_row("granite33_2b_q4nx_p512_c1024", 610.27, 35.32)]
         have = [{"model": "granite33_2b_q4nx", "points": []}]

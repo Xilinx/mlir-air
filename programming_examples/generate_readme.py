@@ -1348,7 +1348,7 @@ def config_prefill_curves(recs, prefill_sweep_recs=()):
     render_llm_prefill_sweep. A model that has a measured prefill sweep on the
     same hardware keeps it."""
     have = {(d.get("model"), _hardware(d)) for d in prefill_sweep_recs}
-    rank = {"": 0, "skip": 1, "pass": 2, "fail": 3}
+    rank = {"": 0, "pass": 1, "skip": 2, "fail": 3}
     curves = {}
     for d in recs:
         cfg = _CONFIG_PREFILL.get(d.get("model"))
@@ -1375,7 +1375,7 @@ def config_prefill_curves(recs, prefill_sweep_recs=()):
                 "status": "ok" if ttft is not None else "fail",
             }
         )
-        # one configuration failing its gate fails the curve
+        # the worst configuration: a failure, then a skipped gate, then a pass
         v = d.get("verify_status", "")
         if rank.get(v, 0) > rank.get(c["verify_status"], 0):
             c["verify_status"] = v
