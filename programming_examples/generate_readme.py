@@ -573,6 +573,11 @@ _VERIFY_LEGEND = (
 # broken LLM into the VLA table is a worse failure than maintaining one name.
 _VLA_MODELS = frozenset({"smolvla", "smolvla_all"})
 
+# Decision models: one prefill per question and no decode, so the prefill table
+# carries their whole measurement (its TTFT is the latency of one decision) and
+# their verify status. Listed for the same reason as _VLA_MODELS.
+_NO_DECODE_MODELS = frozenset({"d3_edge", "d3_lite_q4nx"})
+
 # Records that are a variant of an example rather than an example of their own,
 # mapped to the directory under llms/ that implements them. smolvla_all is
 # smolvla with every stage on the NPU (run_npu2_profile_all.lit).
@@ -1688,7 +1693,7 @@ def render_llm_benchmark(
         # A per-configuration row's metrics are on its module's curves.
         curve_key = (_CONFIG_PREFILL.get(name, (name,))[0], _hardware(d))
         in_decode, in_prefill = curve_key in swept, curve_key in prefill_swept
-        if in_decode and in_prefill:
+        if in_prefill and (in_decode or name in _NO_DECODE_MODELS):
             continue
         m = d.get("metrics", {})
         verify = _VERIFY_CELL.get(d.get("verify_status", ""), "")

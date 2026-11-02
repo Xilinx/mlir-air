@@ -82,11 +82,27 @@ class ConfigPrefillTest(unittest.TestCase):
         self.assertIn("| ↓ | 10.86 |", scalar)
 
 
-def _render(recs, sweeps):
+class NoDecodeTest(unittest.TestCase):
+    def test_decision_model_leaves_with_its_prefill_curve(self):
+        recs = [
+            _row("d3_edge", None, None),
+            _row("phi2_2_7b_q4nx_p512_c1024", 1857.3, 10.86),
+        ]
+        prefill = [
+            {"model": "d3_edge", "points": [{"prefill_len": 512, "ttft_ms": 53.0}]}
+        ]
+        self.assertNotIn("d3-edge", _render(recs, [], prefill))
+        # without its prefill curve it still shows its verify row
+        self.assertIn("d3-edge", _render(recs, [], []))
+
+
+def _render(recs, sweeps, prefill=()):
     """The single-point table of the page rendered from perf.json-shaped recs."""
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(recs, f)
-    page = generate_readme.render_llm_benchmark(f.name, sweep_recs=sweeps)
+    page = generate_readme.render_llm_benchmark(
+        f.name, sweep_recs=sweeps, prefill_sweep_recs=prefill
+    )
     Path(f.name).unlink()
     start = page.index("Single-point rows")
     return page[start : page.index("###", start)]
