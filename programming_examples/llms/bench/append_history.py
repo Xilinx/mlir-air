@@ -22,6 +22,8 @@ Usage:
   python3 append_history.py --sweep sweep.json --history sweep_history.ndjson --run-id 123
   python3 append_history.py --prefill-sweep prefill_sweep.json \
                             --history prefill_sweep_history.ndjson --run-id 123
+  python3 append_history.py --image-sweep image_sweep.json \
+                            --history image_sweep_history.ndjson --run-id 123
   python3 append_history.py --spec-decode full20.json \
                             --history spec_decode_history.ndjson --run-id 123
   python3 append_history.py --accuracy accuracy.json \
@@ -91,6 +93,39 @@ def _flat_sweep_rows(recs, run_id):
                 # identically in the curve without it.
                 "min_ms_per_token": pt.get("min_ms_per_token"),
                 "status": pt.get("status", ""),
+                "verify_status": d.get("verify_status", ""),
+            }
+
+
+def _flat_image_sweep_rows(recs, run_id):
+    """Yield one flat history row per (model, image-token budget) point.
+
+    Its own series: the x-axis is the image-token budget and ttft_ms covers the
+    vision encoder as well as the prefill, so it is not comparable with a
+    prefill_sweep row at the same prompt length.
+    """
+    for d in recs:
+        tc = d.get("toolchain", {}) or {}
+        ts = d.get("timestamp_utc", "") or ""
+        for pt in d.get("points", []) or []:
+            yield {
+                "date": ts[:10],
+                "timestamp_utc": ts,
+                "run_id": run_id,
+                "air_sha": tc.get("mlir_air_sha", ""),
+                "aie_hash": tc.get("mlir_aie_hash", ""),
+                "peano": tc.get("llvm_aie_version", ""),
+                "model": d.get("model", ""),
+                "runner": d.get("runner", ""),
+                "image_budget": pt.get("image_budget"),
+                "image_tokens": pt.get("image_tokens"),
+                "prompt_len": pt.get("prompt_len"),
+                "ttft_ms": pt.get("ttft_ms"),
+                "vision_ms": pt.get("vision_ms"),
+                "prefill_ms": pt.get("prefill_ms"),
+                "decode_tokens_per_sec": pt.get("decode_tokens_per_sec"),
+                "status": pt.get("status", ""),
+                "detail": pt.get("detail", ""),
                 "verify_status": d.get("verify_status", ""),
             }
 
@@ -275,6 +310,10 @@ def main():
         "--prefill-sweep", help="Path to the nightly prefill_sweep.json (TTFT curves)"
     )
     src.add_argument(
+        "--image-sweep",
+        help="Path to image_sweep.json (image-turn TTFT per image-token budget)",
+    )
+    src.add_argument(
         "--spec-decode",
         help="Path to the nightly full20.json (speculative decoding study)",
     )
@@ -317,6 +356,7 @@ def main():
         args.perf
         or args.sweep
         or args.prefill_sweep
+        or args.image_sweep
         or args.spec_decode
         or args.accuracy
         or args.tasks
@@ -327,6 +367,8 @@ def main():
         flatten = _flat_sweep_rows
     elif args.prefill_sweep:
         flatten = _flat_prefill_sweep_rows
+    elif args.image_sweep:
+        flatten = _flat_image_sweep_rows
     elif args.spec_decode:
         flatten = _flat_spec_decode_rows
     elif args.accuracy:

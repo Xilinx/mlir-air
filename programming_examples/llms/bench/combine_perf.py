@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: MIT
 """Combine one benchmark run's per-model results into the files the docs publish.
 
-Reads <build-dir>/test/llms/**/*.{perf,sweep,prefill_sweep,full20,full80,
-accuracy,tasks}.json and verify.xml; writes perf.json, sweep.json,
-prefill_sweep.json, full20.json, full80.json, accuracy.json, tasks.json and
-perf_out/ in the current directory.
+Reads <build-dir>/test/llms/**/*.{perf,sweep,prefill_sweep,image_sweep,full20,
+full80,accuracy,tasks}.json and verify.xml; writes perf.json, sweep.json,
+prefill_sweep.json, image_sweep.json, full20.json, full80.json, accuracy.json,
+tasks.json and perf_out/ in the current directory.
 Used by the nightly and by publish_offline.py, so both publish the same shape.
 """
 
@@ -192,6 +192,33 @@ json.dump(pf, open("prefill_sweep.json", "w"), indent=2)
 print(
     f"{len(pf)} prefill sweep(s):",
     ", ".join(f"{s['model']}({len(s['points'])} pts)" for s in pf),
+)
+
+# Image-turn TTFT per image-token budget (a vision encoder ahead of the
+# prefill), in its own file: its x-axis and its TTFT differ from the prefill
+# sweep's.
+img = []
+for f in sorted(
+    glob.glob(f"{args.build_dir}/test/llms/**/*.image_sweep.json", recursive=True)
+):
+    try:
+        d = json.load(open(f))
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"WARNING: {f} unreadable ({e}); skipping", file=sys.stderr)
+        continue
+    d["runner"] = args.runner
+    d["toolchain"] = {
+        "mlir_air_sha": air_sha,
+        "mlir_aie_hash": aie_hash,
+        "llvm_aie_version": peano_ver,
+    }
+    d["verify_status"] = vstatus.get(d["model"], "")
+    img.append(d)
+img.sort(key=lambda r: r["model"])
+json.dump(img, open("image_sweep.json", "w"), indent=2)
+print(
+    f"{len(img)} image sweep(s):",
+    ", ".join(f"{s['model']}({len(s['points'])} pts)" for s in img),
 )
 
 # Accuracy records (verify/accuracy.py), one per (model, reference, path,
