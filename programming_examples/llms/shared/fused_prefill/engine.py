@@ -386,16 +386,20 @@ class Engine:
                 parts.append(
                     self._attn_part(self.cfg.attn[a], at["hg"], self.slot[a], bos)
                 )
-            # the stream's length does not depend on (nkv, q0, k0)
-            ib, iv = fp.insts(self._insts(at["seq"], 1, 0, 0))
+            # the stream's length does not depend on (nkv, q0, k0[, nk])
+            g = self.cfg.attn[at["groups"][0]]
+            nk = (g.lkp,) if g.noncausal else ()
+            ib, iv = fp.insts(self._insts(at["seq"], 1, 0, 0, *nk))
             self.chunk_attn[key] = dict(
                 parts=parts, ib=ib, iv=iv, run=fp.run(ib, iv.size, bos), pt=None
             )
         return self.chunk_attn[key]
 
-    def attn_start(self, kv, c, r0, t):
+    def attn_start(self, kv, c, r0, t, nk=None):
         """Queue chunk c's attention (tokens [r0, r0+t)) on its q buffers,
-        which the caller has filled; attn_wait returns the parts."""
+        which the caller has filled; attn_wait returns the parts. A
+        noncausal op (Attn.noncausal) reads keys [0, nk), whose records the
+        caller has written."""
         op = kv["op"]
         at, ch = self.attn[op], self.attn_chunk(op, c)
         g = self.cfg.attn[at["groups"][0]]
@@ -403,6 +407,8 @@ class Engine:
         nend = -(-(r0 + t) // g.lkp)
         window = (self.cfg.windows or {}).get(op)
         k0 = max(0, q0 - window // g.lkp) if window else 0
+        if g.noncausal:
+            nend = -(-nk // g.lkp)
         rec = self.kv_rec(g) * 2
         for a, p, kp in zip(at["groups"], ch["parts"], kv["parts"]):
             p["q"].sync(TO)
@@ -413,7 +419,7 @@ class Engine:
                 kp["subs"][sk] = sub
             ch["run"].set_arg(3 + self.slot[a] + 1, sub)
             p["o"].sync(TO, 64, 0)
-        pt = (self._nkv(g, nend - k0), q0, k0)
+        pt = (self._nkv(g, nend - k0), q0, k0) + ((nk,) if g.noncausal else ())
         if ch["pt"] != pt:
             ch["iv"][:] = self._insts(at["seq"], *pt)
             ch["ib"].sync(TO)

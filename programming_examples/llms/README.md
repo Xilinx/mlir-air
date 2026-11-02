@@ -35,6 +35,8 @@ The remaining models were developed directly in MLIR-AIR.
 | **Llama-3.1-8B Q4NX** | `FastFlowLM/Llama-3.1-8B-NPU2` | 32 | 4096 / 128 / 14336 | GQA 32Q/8KV | q4nx, **untied LM head**, llama3 rope factor 8.0, split weight BOs | prefill + decode |
 | **LFM2-1.2B Q4_0** | `LiquidAI/LFM2-1.2B` | 16 | 2048 / 64 / 8192 | GQA 32Q/8KV | **hybrid conv-attention** — 10 of 16 layers are a gated causal depthwise conv, not attention; q4_0, QK-norm, tied head, vocab 65536 | prefill + decode |
 | **Qwen3.5-0.8B Q4NX** | `FastFlowLM/Qwen3.5-0.8B-NPU2` | 24 | 1024 / 256 / 3584 | GQA 8Q/2KV | **hybrid Gated DeltaNet-attention** — 18 of 24 layers are Gated DeltaNet linear attention (FP32 recurrent state); gated attention with QK-norm, partial RoPE 64/256; Q4K + Q8 weights, tied head, vocab 248320; decode on the `fused_decode_gdn` fork | prefill + decode |
+| **d3-edge** | `vllm-sr/d3-edge` | 12 | 1024 / 256 / 3584 | GQA 8Q/2KV, **noncausal** | Qwen3.5-0.8B-derived decision model: one forward pass per System One question, 255-way FP32 readout of the last row instead of an LM head; noncausal full attention (`attn_bfp16` noncausal mode), 6 of 12 layers Gated DeltaNet; BF16 weights; [d3_edge](d3_edge/) | prefill only |
+| **d3-lite Q4NX** | `FastFlowLM/D3-Lite-NPU2` | 24 | 1024 / 256 / 3584 | GQA 8Q/2KV, **noncausal** | as d3-edge, 18 of 24 layers Gated DeltaNet; Q4K + Q8 weights of FastFlowLM's package; [d3_lite_q4nx](d3_lite_q4nx/) | prefill only |
 
 ### Affine-Q4 deployments with BFP16 prefill
 

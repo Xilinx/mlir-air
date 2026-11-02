@@ -592,6 +592,10 @@ _MODEL_DIRS = {
 # instruct variants, and some load weights indirectly). Keep in sync with
 # programming_examples/llms/hf_models.txt.
 LLM_HF_MODELS = {
+    # The d3 decision models. d3_lite_q4nx runs FastFlowLM's Q4K package of
+    # vllm-sr/d3-lite, whose CPU runtime is its reference.
+    "d3_edge": "vllm-sr/d3-edge",
+    "d3_lite_q4nx": "FastFlowLM/D3-Lite-NPU2",
     "dflash/llama31_8b": "meta-llama/Llama-3.1-8B-Instruct",
     "dflash/qwen3_4b": "Qwen/Qwen3-4B",
     "dflash/qwen3_8b": "Qwen/Qwen3-8B",
@@ -643,6 +647,8 @@ _FLM_SRC = (
 # FastFlowLM modeling file the design reimplements (None if it is not a
 # FastFlowLM reimplementation). Records missing here render under their own key.
 LLM_DISPLAY = {
+    "d3_edge": ("d3-edge", "bf16", "qwen3_5vl"),
+    "d3_lite_q4nx": ("d3-lite", "Q4NX", "qwen3_5vl"),
     "gemma3_4b_q4nx": ("gemma-3-4b-it", "Q4NX", "gemma3"),
     "gemma4_e2b_q4nx": ("gemma-4-E2B-it", "Q4NX", "gemma4e"),
     "gemma4_e4b_q4nx": ("gemma-4-E4B-it", "Q4NX", "gemma4e"),

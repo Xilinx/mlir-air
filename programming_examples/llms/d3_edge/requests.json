@@ -1,0 +1,1912 @@
+{
+  "format": "d3-edge-gate-requests/1",
+  "buckets": [
+    512,
+    1024,
+    2048,
+    4096
+  ],
+  "n_requests": 17,
+  "n_questions": 67,
+  "requests": [
+    {
+      "id": "quickstart_text",
+      "state": "The order arrived damaged yesterday. The customer has a receipt and asks for a replacement today.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults"
+          }
+        },
+        "receipt": {
+          "type": "noul",
+          "instructions": "Does the customer have a receipt?"
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Routine",
+            "Soon",
+            "Today"
+          ]
+        }
+      },
+      "bucket": 512,
+      "lengths": {
+        "route": 128,
+        "receipt": 109,
+        "urgency": 108
+      }
+    },
+    {
+      "id": "b512_r0",
+      "bucket": 512,
+      "state": "Customer: The box was left in the rain and the manual is soaked.\nAgent: The customer provided order number 76421 and the purchase date.\nSupervisor: A photo of the item was attached to the ticket at 9:46.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The box was left in the rain and the manual is soaked.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The box was left in the rain and the manual is soaked.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The agent explained the standard processing time of three to five business days.\nSupervisor: The courier marked it delivered but the outer carton was torn open.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: A photo of the item was attached to the ticket at 11:38.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The customer asked whether they need to return the original packaging.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The box was left in the rain and the manual is soaked.\nSupervisor: The customer asked whether they need to return the original packaging.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Does the customer mention an order number?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Not urgent",
+            "Low",
+            "Medium",
+            "High",
+            "Critical"
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 497,
+        "escalate": 479,
+        "urgency": 486,
+        "mood": 490
+      }
+    },
+    {
+      "id": "b512_r1",
+      "bucket": 512,
+      "state": "Customer: My refund from last month still has not appeared on my statement.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: The coupon code was accepted but the total did not change.\nAgent: A photo of the item was attached to the ticket at 18:52.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: I was charged twice for the same order on my credit card.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: A photo of the item was attached to the ticket at 8:58.\nAgent: The invoice lists a subscription fee I never agreed to.\nCustomer: A photo of the item was attached to the ticket at 12:01.\nAgent: The agent apologised and asked for the order number.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults",
+            "account": "Logins, profiles and account settings"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Should this ticket be escalated to a supervisor?"
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 325,
+        "escalate": 296,
+        "urgency": 332,
+        "mood": 306
+      }
+    },
+    {
+      "id": "b512_r2",
+      "bucket": 512,
+      "state": "Customer: The motor makes a grinding noise on the highest speed setting.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: The device does not pair with my phone over Bluetooth.\nAgent: The customer provided order number 27951 and the purchase date.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The device does not pair with my phone over Bluetooth.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The device does not pair with my phone over Bluetooth.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: The motor makes a grinding noise on the highest speed setting.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The supervisor approved an exception for expedited shipping.\nCustomer: After the firmware update the display flickers every few seconds.\nAgent: The agent explained the standard processing time of three to five business days.\nSupervisor: The customer said they need the item before a family event on Saturday.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults",
+            "account": "Logins, profiles and account settings",
+            "other": null
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Does the customer mention an order number?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Not urgent",
+            "Low",
+            "Medium",
+            "High",
+            "Critical"
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 414,
+        "escalate": 380,
+        "urgency": 387,
+        "mood": 391
+      }
+    },
+    {
+      "id": "b512_r3",
+      "bucket": 512,
+      "state": {
+        "ticket": "T-865473",
+        "channel": "chat",
+        "transcript": [
+          {
+            "speaker": "Customer",
+            "text": "Please change the shipping address on my profile to my office."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer provided order number 35856 and the purchase date."
+          },
+          {
+            "speaker": "Customer",
+            "text": "Please change the shipping address on my profile to my office."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Agent",
+            "text": "I want to close my account and delete my stored payment methods."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer mentioned that this is the third time they have contacted support."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Agent",
+            "text": "Please change the shipping address on my profile to my office."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent checked the warehouse log and found shipment batch 48306."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer said they need the item before a family event on Saturday."
+          }
+        ]
+      },
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Should this ticket be escalated to a supervisor?"
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Routine",
+            "Soon",
+            "Today"
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 431,
+        "escalate": 414,
+        "urgency": 411,
+        "mood": 424
+      }
+    },
+    {
+      "id": "b1024_r0",
+      "bucket": 1024,
+      "state": "Customer: The coupon code was accepted but the total did not change.\nAgent: A photo of the item was attached to the ticket at 17:32.\nSupervisor: The customer asked whether they need to return the original packaging.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The invoice lists a subscription fee I never agreed to.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The coupon code was accepted but the total did not change.\nCustomer: The customer mentioned that this is the second time they have contacted support.\nAgent: A photo of the item was attached to the ticket at 13:08.\nSupervisor: My refund from last month still has not appeared on my statement.\nCustomer: The customer provided order number 54661 and the purchase date.\nAgent: The customer confirmed the email address on file ends in example.com.\nCustomer: The coupon code was accepted but the total did not change.\nAgent: The supervisor approved an exception for expedited shipping.\nSupervisor: The customer provided order number 38691 and the purchase date.\nCustomer: I was charged twice for the same order on my credit card.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: My refund from last month still has not appeared on my statement.\nSupervisor: A photo of the item was attached to the ticket at 18:07.\nCustomer: A photo of the item was attached to the ticket at 16:46.\nAgent: The invoice lists a subscription fee I never agreed to.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: I was charged twice for the same order on my credit card.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nCustomer: The coupon code was accepted but the total did not change.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The customer mentioned that this is the first time they have contacted support.\nAgent: The invoice lists a subscription fee I never agreed to.\nSupervisor: The customer mentioned that this is the second time they have contacted support.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: My refund from last month still has not appeared on my statement.\nCustomer: A photo of the item was attached to the ticket at 10:29.\nAgent: The supervisor approved an exception for expedited shipping.\nSupervisor: The invoice lists a subscription fee I never agreed to.\nCustomer: The agent checked the warehouse log and found shipment batch 22142.\nAgent: The agent apologised and asked for the order number.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: A photo of the item was attached to the ticket at 18:39.\nCustomer: The invoice lists a subscription fee I never agreed to.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The coupon code was accepted but the total did not change.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Should this ticket be escalated to a supervisor?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 986,
+        "escalate": 969,
+        "urgency": 1005,
+        "mood": 979
+      }
+    },
+    {
+      "id": "b1024_r1",
+      "bucket": 1024,
+      "state": "Customer: The app crashes when I open the settings page.\nAgent: The supervisor approved an exception for expedited shipping.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: After the firmware update the display flickers every few seconds.\nAgent: The customer mentioned that this is the second time they have contacted support.\nCustomer: The agent apologised and asked for the order number.\nAgent: The device does not pair with my phone over Bluetooth.\nSupervisor: The agent apologised and asked for the order number.\nCustomer: The agent apologised and asked for the order number.\nAgent: The motor makes a grinding noise on the highest speed setting.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The motor makes a grinding noise on the highest speed setting.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: After the firmware update the display flickers every few seconds.\nAgent: The agent explained the standard processing time of three to five business days.\nSupervisor: A photo of the item was attached to the ticket at 8:28.\nCustomer: After the firmware update the display flickers every few seconds.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The customer mentioned that this is the fifth time they have contacted support.\nAgent: The app crashes when I open the settings page.\nSupervisor: The customer asked whether they need to return the original packaging.\nCustomer: The customer mentioned that this is the second time they have contacted support.\nAgent: The app crashes when I open the settings page.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: After the firmware update the display flickers every few seconds.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The device does not pair with my phone over Bluetooth.\nAgent: The agent checked the warehouse log and found shipment batch 66508.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The motor makes a grinding noise on the highest speed setting.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: The agent checked the warehouse log and found shipment batch 99234.\nAgent: The app crashes when I open the settings page.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: A photo of the item was attached to the ticket at 8:37.\nAgent: The app crashes when I open the settings page.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The motor makes a grinding noise on the highest speed setting.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The customer mentioned that this is the fifth time they have contacted support.\nCustomer: The app crashes when I open the settings page.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: The app crashes when I open the settings page.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The customer mentioned that this is the first time they have contacted support.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults",
+            "account": "Logins, profiles and account settings"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Does the customer mention an order number?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Not urgent",
+            "Low",
+            "Medium",
+            "High",
+            "Critical"
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 922,
+        "escalate": 892,
+        "urgency": 899,
+        "mood": 903
+      }
+    },
+    {
+      "id": "b1024_r2",
+      "bucket": 1024,
+      "state": "Customer: Please change the shipping address on my profile to my office.\nAgent: The customer mentioned that this is the first time they have contacted support.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The agent checked the warehouse log and found shipment batch 16435.\nAgent: Two-factor codes are rejected even though the clock is correct.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: Please change the shipping address on my profile to my office.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: A photo of the item was attached to the ticket at 17:10.\nSupervisor: Please change the shipping address on my profile to my office.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The customer provided order number 48882 and the purchase date.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: A photo of the item was attached to the ticket at 18:14.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: The agent checked the warehouse log and found shipment batch 11976.\nAgent: I want to close my account and delete my stored payment methods.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: The agent apologised and asked for the order number.\nAgent: Please change the shipping address on my profile to my office.\nCustomer: The agent checked the warehouse log and found shipment batch 65008.\nAgent: The customer mentioned that this is the fifth time they have contacted support.\nSupervisor: Please change the shipping address on my profile to my office.\nCustomer: A photo of the item was attached to the ticket at 11:54.\nAgent: The customer provided order number 94567 and the purchase date.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The ticket was escalated because the first response took more than 48 hours.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: I want to close my account and delete my stored payment methods.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: Please change the shipping address on my profile to my office.\nCustomer: The customer provided order number 84646 and the purchase date.\nAgent: The customer asked whether they need to return the original packaging.\nSupervisor: I cannot log in because the reset email never arrives.\nCustomer: The agent checked the warehouse log and found shipment batch 66574.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults",
+            "account": "Logins, profiles and account settings",
+            "other": null
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Should this ticket be escalated to a supervisor?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Not urgent",
+            "Low",
+            "Medium",
+            "High",
+            "Critical"
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 863,
+        "escalate": 830,
+        "urgency": 836,
+        "mood": 840
+      }
+    },
+    {
+      "id": "b1024_r3",
+      "bucket": 1024,
+      "state": {
+        "ticket": "T-507692",
+        "channel": "chat",
+        "transcript": [
+          {
+            "speaker": "Customer",
+            "text": "The box was left in the rain and the manual is soaked."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Customer",
+            "text": "I would like a replacement unit rather than store credit."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The package arrived with a cracked lid and the blender jar is chipped."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The package arrived with a cracked lid and the blender jar is chipped."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The package arrived with a cracked lid and the blender jar is chipped."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer provided order number 83359 and the purchase date."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The package arrived with a cracked lid and the blender jar is chipped."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer provided order number 14475 and the purchase date."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The courier marked it delivered but the outer carton was torn open."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent apologised and asked for the order number."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The package arrived with a cracked lid and the blender jar is chipped."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The package arrived with a cracked lid and the blender jar is chipped."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The courier marked it delivered but the outer carton was torn open."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent checked the warehouse log and found shipment batch 87679."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          }
+        ]
+      },
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Does the customer mention an order number?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 875,
+        "escalate": 857,
+        "urgency": 894,
+        "mood": 868
+      }
+    },
+    {
+      "id": "b2048_r0",
+      "bucket": 2048,
+      "state": "Customer: The motor makes a grinding noise on the highest speed setting.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: The agent checked the warehouse log and found shipment batch 35550.\nCustomer: The device does not pair with my phone over Bluetooth.\nAgent: A photo of the item was attached to the ticket at 11:42.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The motor makes a grinding noise on the highest speed setting.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The motor makes a grinding noise on the highest speed setting.\nCustomer: The agent checked the warehouse log and found shipment batch 25754.\nAgent: The agent checked the warehouse log and found shipment batch 53039.\nSupervisor: The motor makes a grinding noise on the highest speed setting.\nCustomer: The customer provided order number 39387 and the purchase date.\nAgent: The customer provided order number 92693 and the purchase date.\nCustomer: The device does not pair with my phone over Bluetooth.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: The device does not pair with my phone over Bluetooth.\nAgent: The agent apologised and asked for the order number.\nCustomer: The agent checked the warehouse log and found shipment batch 79610.\nAgent: After the firmware update the display flickers every few seconds.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: After the firmware update the display flickers every few seconds.\nCustomer: The agent apologised and asked for the order number.\nAgent: The customer provided order number 22136 and the purchase date.\nSupervisor: The app crashes when I open the settings page.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nCustomer: The motor makes a grinding noise on the highest speed setting.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The agent checked the warehouse log and found shipment batch 54737.\nCustomer: After the firmware update the display flickers every few seconds.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The app crashes when I open the settings page.\nSupervisor: The agent apologised and asked for the order number.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The device does not pair with my phone over Bluetooth.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: After the firmware update the display flickers every few seconds.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: After the firmware update the display flickers every few seconds.\nAgent: The agent checked the warehouse log and found shipment batch 91254.\nSupervisor: The agent apologised and asked for the order number.\nCustomer: The device does not pair with my phone over Bluetooth.\nAgent: The customer confirmed the email address on file ends in example.com.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: After the firmware update the display flickers every few seconds.\nSupervisor: The customer provided order number 31872 and the purchase date.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: After the firmware update the display flickers every few seconds.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: After the firmware update the display flickers every few seconds.\nCustomer: A photo of the item was attached to the ticket at 16:24.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: After the firmware update the display flickers every few seconds.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The agent checked the warehouse log and found shipment batch 46820.\nCustomer: The motor makes a grinding noise on the highest speed setting.\nAgent: The customer mentioned that this is the third time they have contacted support.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The app crashes when I open the settings page.\nSupervisor: A photo of the item was attached to the ticket at 8:09.\nCustomer: The agent apologised and asked for the order number.\nAgent: After the firmware update the display flickers every few seconds.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The agent checked the warehouse log and found shipment batch 73199.\nSupervisor: The app crashes when I open the settings page.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: After the firmware update the display flickers every few seconds.\nAgent: The customer provided order number 96806 and the purchase date.\nSupervisor: A photo of the item was attached to the ticket at 18:11.\nCustomer: The motor makes a grinding noise on the highest speed setting.\nAgent: The customer confirmed the email address on file ends in example.com.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The motor makes a grinding noise on the highest speed setting.\nSupervisor: The customer mentioned that this is the first time they have contacted support.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The device does not pair with my phone over Bluetooth.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: After the firmware update the display flickers every few seconds.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: After the firmware update the display flickers every few seconds.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The device does not pair with my phone over Bluetooth.\nAgent: The agent checked the warehouse log and found shipment batch 81307.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The device does not pair with my phone over Bluetooth.\nSupervisor: The ticket was escalated because the first response took more than 48 hours.\nCustomer: The customer mentioned that this is the first time they have contacted support.\nAgent: The app crashes when I open the settings page.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The agent checked the warehouse log and found shipment batch 30509.\nSupervisor: The motor makes a grinding noise on the highest speed setting.\nCustomer: The customer mentioned that this is the fifth time they have contacted support.\nAgent: The supervisor approved an exception for expedited shipping.\nCustomer: The device does not pair with my phone over Bluetooth.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The device does not pair with my phone over Bluetooth.\nAgent: The agent checked the warehouse log and found shipment batch 25484.\nCustomer: The customer mentioned that this is the fifth time they have contacted support.\nAgent: The device does not pair with my phone over Bluetooth.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: The customer mentioned that this is the third time they have contacted support.\nAgent: The motor makes a grinding noise on the highest speed setting.\nCustomer: The customer confirmed the email address on file ends in example.com.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Does the customer mention an order number?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Not urgent",
+            "Low",
+            "Medium",
+            "High",
+            "Critical"
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 2030,
+        "escalate": 2012,
+        "urgency": 2019,
+        "mood": 2023
+      }
+    },
+    {
+      "id": "b2048_r1",
+      "bucket": 2048,
+      "state": "Customer: Please change the shipping address on my profile to my office.\nAgent: A photo of the item was attached to the ticket at 12:43.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The agent checked the warehouse log and found shipment batch 89167.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: I want to close my account and delete my stored payment methods.\nSupervisor: A photo of the item was attached to the ticket at 10:05.\nCustomer: The agent checked the warehouse log and found shipment batch 83164.\nAgent: Please change the shipping address on my profile to my office.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The customer mentioned that this is the first time they have contacted support.\nSupervisor: I want to close my account and delete my stored payment methods.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: A photo of the item was attached to the ticket at 8:21.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The customer provided order number 62512 and the purchase date.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: The agent apologised and asked for the order number.\nCustomer: A photo of the item was attached to the ticket at 11:51.\nAgent: I want to close my account and delete my stored payment methods.\nSupervisor: The agent checked the warehouse log and found shipment batch 26962.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: Two-factor codes are rejected even though the clock is correct.\nCustomer: The customer provided order number 72439 and the purchase date.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: Two-factor codes are rejected even though the clock is correct.\nCustomer: The agent checked the warehouse log and found shipment batch 56052.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: Two-factor codes are rejected even though the clock is correct.\nAgent: The customer mentioned that this is the fourth time they have contacted support.\nSupervisor: A photo of the item was attached to the ticket at 8:25.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: I cannot log in because the reset email never arrives.\nSupervisor: The agent apologised and asked for the order number.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: Two-factor codes are rejected even though the clock is correct.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: I cannot log in because the reset email never arrives.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: I want to close my account and delete my stored payment methods.\nSupervisor: A photo of the item was attached to the ticket at 18:57.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: Please change the shipping address on my profile to my office.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: I cannot log in because the reset email never arrives.\nCustomer: A photo of the item was attached to the ticket at 16:21.\nAgent: The customer confirmed the email address on file ends in example.com.\nCustomer: Two-factor codes are rejected even though the clock is correct.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The agent checked the warehouse log and found shipment batch 61708.\nAgent: Please change the shipping address on my profile to my office.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The customer mentioned that this is the fourth time they have contacted support.\nAgent: I cannot log in because the reset email never arrives.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: I cannot log in because the reset email never arrives.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The agent checked the warehouse log and found shipment batch 37160.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: The agent explained the standard processing time of three to five business days.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: I want to close my account and delete my stored payment methods.\nSupervisor: The ticket was escalated because the first response took more than 48 hours.\nCustomer: A photo of the item was attached to the ticket at 13:58.\nAgent: I want to close my account and delete my stored payment methods.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: Two-factor codes are rejected even though the clock is correct.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The customer confirmed the email address on file ends in example.com.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The customer asked whether they need to return the original packaging.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The customer mentioned that this is the second time they have contacted support.\nCustomer: The ticket was escalated because the first response took more than 48 hours.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults",
+            "account": "Logins, profiles and account settings"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Should this ticket be escalated to a supervisor?"
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Not urgent",
+            "Low",
+            "Medium",
+            "High",
+            "Critical"
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 1728,
+        "escalate": 1699,
+        "urgency": 1705,
+        "mood": 1709
+      }
+    },
+    {
+      "id": "b2048_r2",
+      "bucket": 2048,
+      "state": "Customer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The customer provided order number 33518 and the purchase date.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nCustomer: The agent apologised and asked for the order number.\nAgent: The box was left in the rain and the manual is soaked.\nSupervisor: The agent apologised and asked for the order number.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nCustomer: A photo of the item was attached to the ticket at 15:13.\nAgent: The agent explained the standard processing time of three to five business days.\nSupervisor: The courier marked it delivered but the outer carton was torn open.\nCustomer: The agent apologised and asked for the order number.\nAgent: The agent checked the warehouse log and found shipment batch 22712.\nCustomer: The box was left in the rain and the manual is soaked.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The customer provided order number 39447 and the purchase date.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The courier marked it delivered but the outer carton was torn open.\nSupervisor: The customer provided order number 16647 and the purchase date.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The box was left in the rain and the manual is soaked.\nCustomer: The agent checked the warehouse log and found shipment batch 13208.\nAgent: The customer provided order number 55655 and the purchase date.\nSupervisor: The courier marked it delivered but the outer carton was torn open.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The customer mentioned that this is the second time they have contacted support.\nCustomer: The courier marked it delivered but the outer carton was torn open.\nAgent: The supervisor approved an exception for expedited shipping.\nSupervisor: A photo of the item was attached to the ticket at 8:21.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The agent apologised and asked for the order number.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The customer mentioned that this is the second time they have contacted support.\nSupervisor: The package arrived with a cracked lid and the blender jar is chipped.\nCustomer: The customer provided order number 63888 and the purchase date.\nAgent: The agent checked the warehouse log and found shipment batch 73224.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The customer asked whether they need to return the original packaging.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: The agent apologised and asked for the order number.\nAgent: The box was left in the rain and the manual is soaked.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: The customer provided order number 35900 and the purchase date.\nAgent: The courier marked it delivered but the outer carton was torn open.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The box was left in the rain and the manual is soaked.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The customer mentioned that this is the fifth time they have contacted support.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The customer asked whether they need to return the original packaging.\nSupervisor: The customer provided order number 15678 and the purchase date.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The customer confirmed the email address on file ends in example.com.\nCustomer: The agent apologised and asked for the order number.\nAgent: I would like a replacement unit rather than store credit.\nSupervisor: The agent checked the warehouse log and found shipment batch 54846.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The courier marked it delivered but the outer carton was torn open.\nCustomer: The customer provided order number 36110 and the purchase date.\nAgent: The customer asked whether they need to return the original packaging.\nSupervisor: The box was left in the rain and the manual is soaked.\nCustomer: The customer provided order number 91632 and the purchase date.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The courier marked it delivered but the outer carton was torn open.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: The courier marked it delivered but the outer carton was torn open.\nAgent: The agent checked the warehouse log and found shipment batch 90846.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nSupervisor: The agent apologised and asked for the order number.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The box was left in the rain and the manual is soaked.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The supervisor approved an exception for expedited shipping.\nSupervisor: I would like a replacement unit rather than store credit.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The customer provided order number 82125 and the purchase date.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The agent checked the warehouse log and found shipment batch 26795.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The customer provided order number 91824 and the purchase date.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nSupervisor: The agent checked the warehouse log and found shipment batch 59805.\nCustomer: The agent checked the warehouse log and found shipment batch 77957.\nAgent: I would like a replacement unit rather than store credit.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The supervisor approved an exception for expedited shipping.\nSupervisor: I would like a replacement unit rather than store credit.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The agent checked the warehouse log and found shipment batch 71252.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The courier marked it delivered but the outer carton was torn open.\nAgent: The customer provided order number 40491 and the purchase date.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults",
+            "account": "Logins, profiles and account settings",
+            "other": null
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Does the customer mention an order number?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 1975,
+        "escalate": 1941,
+        "urgency": 1978,
+        "mood": 1952
+      }
+    },
+    {
+      "id": "b2048_r3",
+      "bucket": 2048,
+      "state": {
+        "ticket": "T-687513",
+        "channel": "chat",
+        "transcript": [
+          {
+            "speaker": "Customer",
+            "text": "I was charged twice for the same order on my credit card."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Customer",
+            "text": "I was charged twice for the same order on my credit card."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Customer",
+            "text": "A photo of the item was attached to the ticket at 11:32."
+          },
+          {
+            "speaker": "Agent",
+            "text": "My refund from last month still has not appeared on my statement."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "A photo of the item was attached to the ticket at 9:01."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer mentioned that this is the fourth time they have contacted support."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The invoice lists a subscription fee I never agreed to."
+          },
+          {
+            "speaker": "Customer",
+            "text": "A photo of the item was attached to the ticket at 16:30."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "My refund from last month still has not appeared on my statement."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The coupon code was accepted but the total did not change."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Customer",
+            "text": "My refund from last month still has not appeared on my statement."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The invoice lists a subscription fee I never agreed to."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer mentioned that this is the first time they have contacted support."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The coupon code was accepted but the total did not change."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer provided order number 24422 and the purchase date."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "My refund from last month still has not appeared on my statement."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer provided order number 69584 and the purchase date."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent apologised and asked for the order number."
+          },
+          {
+            "speaker": "Customer",
+            "text": "I was charged twice for the same order on my credit card."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Customer",
+            "text": "I was charged twice for the same order on my credit card."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer provided order number 69464 and the purchase date."
+          },
+          {
+            "speaker": "Customer",
+            "text": "A photo of the item was attached to the ticket at 13:22."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The coupon code was accepted but the total did not change."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The agent checked the warehouse log and found shipment batch 88366."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The invoice lists a subscription fee I never agreed to."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer provided order number 34500 and the purchase date."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer provided order number 88483 and the purchase date."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The coupon code was accepted but the total did not change."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer provided order number 27365 and the purchase date."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent apologised and asked for the order number."
+          },
+          {
+            "speaker": "Customer",
+            "text": "My refund from last month still has not appeared on my statement."
+          },
+          {
+            "speaker": "Agent",
+            "text": "A photo of the item was attached to the ticket at 14:04."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Customer",
+            "text": "I was charged twice for the same order on my credit card."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Agent",
+            "text": "My refund from last month still has not appeared on my statement."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The invoice lists a subscription fee I never agreed to."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "My refund from last month still has not appeared on my statement."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent apologised and asked for the order number."
+          },
+          {
+            "speaker": "Customer",
+            "text": "I was charged twice for the same order on my credit card."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "A photo of the item was attached to the ticket at 15:31."
+          },
+          {
+            "speaker": "Customer",
+            "text": "My refund from last month still has not appeared on my statement."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent checked the warehouse log and found shipment batch 62677."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Agent",
+            "text": "I was charged twice for the same order on my credit card."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          }
+        ]
+      },
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Has the customer contacted support before about this issue?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Not urgent",
+            "Low",
+            "Medium",
+            "High",
+            "Critical"
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 1823,
+        "escalate": 1807,
+        "urgency": 1812,
+        "mood": 1816
+      }
+    },
+    {
+      "id": "b4096_r0",
+      "bucket": 4096,
+      "state": "Customer: I cannot log in because the reset email never arrives.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: The customer provided order number 76186 and the purchase date.\nAgent: Please change the shipping address on my profile to my office.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The agent checked the warehouse log and found shipment batch 10168.\nAgent: I cannot log in because the reset email never arrives.\nCustomer: The customer provided order number 57974 and the purchase date.\nAgent: The agent apologised and asked for the order number.\nSupervisor: Please change the shipping address on my profile to my office.\nCustomer: The customer mentioned that this is the first time they have contacted support.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: The customer provided order number 85737 and the purchase date.\nSupervisor: The customer mentioned that this is the third time they have contacted support.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The customer mentioned that this is the fourth time they have contacted support.\nCustomer: A photo of the item was attached to the ticket at 10:32.\nAgent: Two-factor codes are rejected even though the clock is correct.\nSupervisor: The agent checked the warehouse log and found shipment batch 91466.\nCustomer: The customer provided order number 46306 and the purchase date.\nAgent: I cannot log in because the reset email never arrives.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: I cannot log in because the reset email never arrives.\nCustomer: A photo of the item was attached to the ticket at 10:04.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: A photo of the item was attached to the ticket at 14:30.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: A photo of the item was attached to the ticket at 10:35.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: I want to close my account and delete my stored payment methods.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: I want to close my account and delete my stored payment methods.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: Two-factor codes are rejected even though the clock is correct.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The supervisor approved an exception for expedited shipping.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: The customer mentioned that this is the first time they have contacted support.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The customer provided order number 46787 and the purchase date.\nAgent: I cannot log in because the reset email never arrives.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: Two-factor codes are rejected even though the clock is correct.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The customer mentioned that this is the second time they have contacted support.\nSupervisor: Two-factor codes are rejected even though the clock is correct.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: The customer asked whether they need to return the original packaging.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: Two-factor codes are rejected even though the clock is correct.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: The agent checked the warehouse log and found shipment batch 74631.\nAgent: I cannot log in because the reset email never arrives.\nSupervisor: The customer asked whether they need to return the original packaging.\nCustomer: The customer mentioned that this is the third time they have contacted support.\nAgent: Two-factor codes are rejected even though the clock is correct.\nCustomer: The agent apologised and asked for the order number.\nAgent: The agent apologised and asked for the order number.\nSupervisor: Two-factor codes are rejected even though the clock is correct.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: A photo of the item was attached to the ticket at 17:47.\nSupervisor: The customer provided order number 51506 and the purchase date.\nCustomer: Two-factor codes are rejected even though the clock is correct.\nAgent: The customer provided order number 12449 and the purchase date.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: I want to close my account and delete my stored payment methods.\nSupervisor: A photo of the item was attached to the ticket at 16:13.\nCustomer: A photo of the item was attached to the ticket at 13:29.\nAgent: Two-factor codes are rejected even though the clock is correct.\nCustomer: The customer mentioned that this is the fifth time they have contacted support.\nAgent: A photo of the item was attached to the ticket at 17:07.\nSupervisor: Please change the shipping address on my profile to my office.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The supervisor approved an exception for expedited shipping.\nSupervisor: The agent apologised and asked for the order number.\nCustomer: Two-factor codes are rejected even though the clock is correct.\nAgent: The customer confirmed the email address on file ends in example.com.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: I cannot log in because the reset email never arrives.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The customer mentioned that this is the second time they have contacted support.\nAgent: Two-factor codes are rejected even though the clock is correct.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The customer asked whether they need to return the original packaging.\nSupervisor: I cannot log in because the reset email never arrives.\nCustomer: A photo of the item was attached to the ticket at 18:04.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The customer asked whether they need to return the original packaging.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: The agent apologised and asked for the order number.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: Two-factor codes are rejected even though the clock is correct.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: The customer mentioned that this is the second time they have contacted support.\nAgent: Please change the shipping address on my profile to my office.\nCustomer: The agent checked the warehouse log and found shipment batch 56272.\nAgent: The agent apologised and asked for the order number.\nSupervisor: I cannot log in because the reset email never arrives.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The agent checked the warehouse log and found shipment batch 28123.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The customer provided order number 39369 and the purchase date.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: Please change the shipping address on my profile to my office.\nSupervisor: A photo of the item was attached to the ticket at 17:15.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: Two-factor codes are rejected even though the clock is correct.\nCustomer: The customer mentioned that this is the second time they have contacted support.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: I cannot log in because the reset email never arrives.\nCustomer: The agent apologised and asked for the order number.\nAgent: The customer provided order number 99506 and the purchase date.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: Please change the shipping address on my profile to my office.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: Please change the shipping address on my profile to my office.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The agent apologised and asked for the order number.\nSupervisor: Please change the shipping address on my profile to my office.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: The agent checked the warehouse log and found shipment batch 83156.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The supervisor approved an exception for expedited shipping.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: I cannot log in because the reset email never arrives.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The agent apologised and asked for the order number.\nAgent: I cannot log in because the reset email never arrives.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nSupervisor: Two-factor codes are rejected even though the clock is correct.\nCustomer: The customer mentioned that this is the fifth time they have contacted support.\nAgent: The agent checked the warehouse log and found shipment batch 45305.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: Two-factor codes are rejected even though the clock is correct.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: The agent checked the warehouse log and found shipment batch 64256.\nAgent: Please change the shipping address on my profile to my office.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: Two-factor codes are rejected even though the clock is correct.\nCustomer: The agent apologised and asked for the order number.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: Two-factor codes are rejected even though the clock is correct.\nAgent: The agent apologised and asked for the order number.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: Please change the shipping address on my profile to my office.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The agent apologised and asked for the order number.\nAgent: Two-factor codes are rejected even though the clock is correct.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The customer mentioned that this is the second time they have contacted support.\nSupervisor: I cannot log in because the reset email never arrives.\nCustomer: The customer provided order number 48831 and the purchase date.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: I cannot log in because the reset email never arrives.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: A photo of the item was attached to the ticket at 17:35.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: I cannot log in because the reset email never arrives.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: A photo of the item was attached to the ticket at 12:56.\nAgent: Please change the shipping address on my profile to my office.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The customer mentioned that this is the fifth time they have contacted support.\nSupervisor: Please change the shipping address on my profile to my office.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: Two-factor codes are rejected even though the clock is correct.\nAgent: The customer mentioned that this is the second time they have contacted support.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: Two-factor codes are rejected even though the clock is correct.\nSupervisor: The ticket was escalated because the first response took more than 48 hours.\nCustomer: The agent checked the warehouse log and found shipment batch 80520.\nAgent: I cannot log in because the reset email never arrives.\nCustomer: The customer provided order number 16935 and the purchase date.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: Two-factor codes are rejected even though the clock is correct.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The supervisor approved an exception for expedited shipping.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The customer provided order number 28959 and the purchase date.\nSupervisor: The agent checked the warehouse log and found shipment batch 22949.\nCustomer: I want to close my account and delete my stored payment methods.\nAgent: The customer confirmed the email address on file ends in example.com.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: Please change the shipping address on my profile to my office.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: The agent apologised and asked for the order number.\nAgent: Please change the shipping address on my profile to my office.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: I cannot log in because the reset email never arrives.\nCustomer: The agent apologised and asked for the order number.\nAgent: The supervisor approved an exception for expedited shipping.\nCustomer: Please change the shipping address on my profile to my office.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Does the customer mention an order number?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Routine",
+            "Soon",
+            "Today"
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 4075,
+        "escalate": 4057,
+        "urgency": 4055,
+        "mood": 4068
+      }
+    },
+    {
+      "id": "b4096_r1",
+      "bucket": 4096,
+      "state": "Customer: I would like a replacement unit rather than store credit.\nAgent: The agent checked the warehouse log and found shipment batch 77006.\nSupervisor: The ticket was escalated because the first response took more than 48 hours.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The agent apologised and asked for the order number.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: I would like a replacement unit rather than store credit.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: The agent checked the warehouse log and found shipment batch 21863.\nAgent: The box was left in the rain and the manual is soaked.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The box was left in the rain and the manual is soaked.\nCustomer: The agent apologised and asked for the order number.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The agent explained the standard processing time of three to five business days.\nSupervisor: A photo of the item was attached to the ticket at 8:06.\nCustomer: The courier marked it delivered but the outer carton was torn open.\nAgent: The customer provided order number 32491 and the purchase date.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The courier marked it delivered but the outer carton was torn open.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The customer mentioned that this is the fifth time they have contacted support.\nAgent: The courier marked it delivered but the outer carton was torn open.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: The courier marked it delivered but the outer carton was torn open.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The customer provided order number 36813 and the purchase date.\nSupervisor: The customer mentioned that this is the second time they have contacted support.\nCustomer: The courier marked it delivered but the outer carton was torn open.\nAgent: The customer confirmed the email address on file ends in example.com.\nCustomer: The customer mentioned that this is the fourth time they have contacted support.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: The customer mentioned that this is the fourth time they have contacted support.\nAgent: The courier marked it delivered but the outer carton was torn open.\nCustomer: The customer provided order number 93157 and the purchase date.\nAgent: The agent checked the warehouse log and found shipment batch 83799.\nSupervisor: The courier marked it delivered but the outer carton was torn open.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: The box was left in the rain and the manual is soaked.\nAgent: A photo of the item was attached to the ticket at 14:24.\nSupervisor: The customer provided order number 89295 and the purchase date.\nCustomer: The courier marked it delivered but the outer carton was torn open.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The courier marked it delivered but the outer carton was torn open.\nSupervisor: The customer provided order number 67659 and the purchase date.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The box was left in the rain and the manual is soaked.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nSupervisor: The box was left in the rain and the manual is soaked.\nCustomer: The agent apologised and asked for the order number.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: The box was left in the rain and the manual is soaked.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The courier marked it delivered but the outer carton was torn open.\nAgent: A photo of the item was attached to the ticket at 8:27.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The box was left in the rain and the manual is soaked.\nSupervisor: The agent apologised and asked for the order number.\nCustomer: The agent apologised and asked for the order number.\nAgent: The box was left in the rain and the manual is soaked.\nCustomer: The customer mentioned that this is the fifth time they have contacted support.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The courier marked it delivered but the outer carton was torn open.\nCustomer: A photo of the item was attached to the ticket at 9:20.\nAgent: The agent apologised and asked for the order number.\nCustomer: The box was left in the rain and the manual is soaked.\nAgent: The agent explained the standard processing time of three to five business days.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The supervisor approved an exception for expedited shipping.\nCustomer: The agent checked the warehouse log and found shipment batch 50801.\nAgent: The box was left in the rain and the manual is soaked.\nSupervisor: The customer provided order number 76979 and the purchase date.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nCustomer: The agent checked the warehouse log and found shipment batch 90002.\nAgent: The customer asked whether they need to return the original packaging.\nSupervisor: The package arrived with a cracked lid and the blender jar is chipped.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The customer mentioned that this is the first time they have contacted support.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: A photo of the item was attached to the ticket at 15:02.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The box was left in the rain and the manual is soaked.\nSupervisor: The customer asked whether they need to return the original packaging.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: I would like a replacement unit rather than store credit.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: I would like a replacement unit rather than store credit.\nCustomer: The agent checked the warehouse log and found shipment batch 14833.\nAgent: The customer provided order number 69827 and the purchase date.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: The agent apologised and asked for the order number.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nSupervisor: The customer provided order number 26943 and the purchase date.\nCustomer: The customer mentioned that this is the first time they have contacted support.\nAgent: The box was left in the rain and the manual is soaked.\nCustomer: The customer provided order number 12543 and the purchase date.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: I would like a replacement unit rather than store credit.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The customer mentioned that this is the fifth time they have contacted support.\nSupervisor: The customer asked whether they need to return the original packaging.\nCustomer: The box was left in the rain and the manual is soaked.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The supervisor approved an exception for expedited shipping.\nSupervisor: The box was left in the rain and the manual is soaked.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The customer mentioned that this is the fourth time they have contacted support.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nSupervisor: The customer asked whether they need to return the original packaging.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: I would like a replacement unit rather than store credit.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nSupervisor: The courier marked it delivered but the outer carton was torn open.\nCustomer: The agent checked the warehouse log and found shipment batch 61231.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The agent checked the warehouse log and found shipment batch 41222.\nSupervisor: The agent apologised and asked for the order number.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The customer mentioned that this is the second time they have contacted support.\nCustomer: The agent apologised and asked for the order number.\nAgent: The box was left in the rain and the manual is soaked.\nSupervisor: The agent checked the warehouse log and found shipment batch 96514.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The box was left in the rain and the manual is soaked.\nCustomer: The customer mentioned that this is the first time they have contacted support.\nAgent: The customer provided order number 49753 and the purchase date.\nSupervisor: The box was left in the rain and the manual is soaked.\nCustomer: The customer provided order number 92363 and the purchase date.\nAgent: The supervisor approved an exception for expedited shipping.\nCustomer: The package arrived with a cracked lid and the blender jar is chipped.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The customer provided order number 28198 and the purchase date.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The courier marked it delivered but the outer carton was torn open.\nSupervisor: The agent apologised and asked for the order number.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The courier marked it delivered but the outer carton was torn open.\nCustomer: The agent checked the warehouse log and found shipment batch 70593.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The package arrived with a cracked lid and the blender jar is chipped.\nCustomer: The agent checked the warehouse log and found shipment batch 69376.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nCustomer: The courier marked it delivered but the outer carton was torn open.\nAgent: The supervisor approved an exception for expedited shipping.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The courier marked it delivered but the outer carton was torn open.\nAgent: The customer provided order number 64675 and the purchase date.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The courier marked it delivered but the outer carton was torn open.\nSupervisor: The supervisor approved an exception for expedited shipping.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nCustomer: The agent checked the warehouse log and found shipment batch 35417.\nAgent: The agent explained the standard processing time of three to five business days.\nSupervisor: The courier marked it delivered but the outer carton was torn open.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The customer provided order number 22460 and the purchase date.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: The agent checked the warehouse log and found shipment batch 56996.\nSupervisor: The customer provided order number 23673 and the purchase date.\nCustomer: I would like a replacement unit rather than store credit.\nAgent: A photo of the item was attached to the ticket at 15:47.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The courier marked it delivered but the outer carton was torn open.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: A photo of the item was attached to the ticket at 13:45.\nAgent: The package arrived with a cracked lid and the blender jar is chipped.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The customer provided order number 30074 and the purchase date.\nSupervisor: I would like a replacement unit rather than store credit.\nCustomer: The agent checked the warehouse log and found shipment batch 46102.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The courier marked it delivered but the outer carton was torn open.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The supervisor approved an exception for expedited shipping.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults",
+            "account": "Logins, profiles and account settings"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Should this ticket be escalated to a supervisor?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 3684,
+        "escalate": 3655,
+        "urgency": 3691,
+        "mood": 3665
+      }
+    },
+    {
+      "id": "b4096_r2",
+      "bucket": 4096,
+      "state": "Customer: I was charged twice for the same order on my credit card.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: A photo of the item was attached to the ticket at 9:44.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: I was charged twice for the same order on my credit card.\nSupervisor: The customer asked whether they need to return the original packaging.\nCustomer: The agent apologised and asked for the order number.\nAgent: I was charged twice for the same order on my credit card.\nCustomer: The agent checked the warehouse log and found shipment batch 64708.\nAgent: The agent checked the warehouse log and found shipment batch 13525.\nSupervisor: My refund from last month still has not appeared on my statement.\nCustomer: The agent checked the warehouse log and found shipment batch 28743.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: I was charged twice for the same order on my credit card.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: My refund from last month still has not appeared on my statement.\nSupervisor: The ticket was escalated because the first response took more than 48 hours.\nCustomer: A photo of the item was attached to the ticket at 16:32.\nAgent: The invoice lists a subscription fee I never agreed to.\nCustomer: The agent apologised and asked for the order number.\nAgent: A photo of the item was attached to the ticket at 14:58.\nSupervisor: The coupon code was accepted but the total did not change.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: A photo of the item was attached to the ticket at 13:44.\nCustomer: The invoice lists a subscription fee I never agreed to.\nAgent: The customer provided order number 70084 and the purchase date.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: I was charged twice for the same order on my credit card.\nAgent: The customer confirmed the email address on file ends in example.com.\nCustomer: The customer mentioned that this is the third time they have contacted support.\nAgent: I was charged twice for the same order on my credit card.\nSupervisor: The agent checked the warehouse log and found shipment batch 65379.\nCustomer: The customer mentioned that this is the first time they have contacted support.\nAgent: My refund from last month still has not appeared on my statement.\nCustomer: The agent apologised and asked for the order number.\nAgent: The customer provided order number 22435 and the purchase date.\nSupervisor: The invoice lists a subscription fee I never agreed to.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: A photo of the item was attached to the ticket at 14:07.\nCustomer: The invoice lists a subscription fee I never agreed to.\nAgent: The customer mentioned that this is the second time they have contacted support.\nSupervisor: A photo of the item was attached to the ticket at 16:20.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The customer mentioned that this is the fifth time they have contacted support.\nAgent: The invoice lists a subscription fee I never agreed to.\nSupervisor: The customer provided order number 54701 and the purchase date.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: My refund from last month still has not appeared on my statement.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The customer mentioned that this is the first time they have contacted support.\nSupervisor: I was charged twice for the same order on my credit card.\nCustomer: The customer mentioned that this is the third time they have contacted support.\nAgent: The agent checked the warehouse log and found shipment batch 38228.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: The customer asked whether they need to return the original packaging.\nSupervisor: The agent checked the warehouse log and found shipment batch 81035.\nCustomer: The coupon code was accepted but the total did not change.\nAgent: The customer provided order number 76608 and the purchase date.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: I was charged twice for the same order on my credit card.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The invoice lists a subscription fee I never agreed to.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nSupervisor: I was charged twice for the same order on my credit card.\nCustomer: A photo of the item was attached to the ticket at 14:47.\nAgent: The agent checked the warehouse log and found shipment batch 93939.\nCustomer: The invoice lists a subscription fee I never agreed to.\nAgent: A photo of the item was attached to the ticket at 16:52.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The coupon code was accepted but the total did not change.\nAgent: The customer provided order number 24185 and the purchase date.\nCustomer: The customer provided order number 18230 and the purchase date.\nAgent: The coupon code was accepted but the total did not change.\nSupervisor: A photo of the item was attached to the ticket at 10:25.\nCustomer: The customer provided order number 14909 and the purchase date.\nAgent: I was charged twice for the same order on my credit card.\nCustomer: The customer provided order number 18915 and the purchase date.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nSupervisor: My refund from last month still has not appeared on my statement.\nCustomer: A photo of the item was attached to the ticket at 8:42.\nAgent: The supervisor approved an exception for expedited shipping.\nCustomer: The invoice lists a subscription fee I never agreed to.\nAgent: The agent explained the standard processing time of three to five business days.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The invoice lists a subscription fee I never agreed to.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The coupon code was accepted but the total did not change.\nCustomer: A photo of the item was attached to the ticket at 15:21.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nSupervisor: The coupon code was accepted but the total did not change.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The customer confirmed the email address on file ends in example.com.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The agent checked the warehouse log and found shipment batch 44680.\nCustomer: I was charged twice for the same order on my credit card.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The coupon code was accepted but the total did not change.\nSupervisor: The ticket was escalated because the first response took more than 48 hours.\nCustomer: The customer mentioned that this is the third time they have contacted support.\nAgent: I was charged twice for the same order on my credit card.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: The customer asked whether they need to return the original packaging.\nSupervisor: The invoice lists a subscription fee I never agreed to.\nCustomer: A photo of the item was attached to the ticket at 15:57.\nAgent: The customer provided order number 20925 and the purchase date.\nCustomer: The coupon code was accepted but the total did not change.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The agent checked the warehouse log and found shipment batch 88449.\nCustomer: The coupon code was accepted but the total did not change.\nAgent: The customer provided order number 29686 and the purchase date.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: My refund from last month still has not appeared on my statement.\nSupervisor: The customer asked whether they need to return the original packaging.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The invoice lists a subscription fee I never agreed to.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: My refund from last month still has not appeared on my statement.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: The customer confirmed the email address on file ends in example.com.\nSupervisor: The agent noted that the warranty covers manufacturing defects for two years.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: The ticket was escalated because the first response took more than 48 hours.\nAgent: I was charged twice for the same order on my credit card.\nSupervisor: The agent checked the warehouse log and found shipment batch 48098.\nCustomer: The customer provided order number 32777 and the purchase date.\nAgent: I was charged twice for the same order on my credit card.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The agent checked the warehouse log and found shipment batch 82320.\nSupervisor: The coupon code was accepted but the total did not change.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The agent apologised and asked for the order number.\nCustomer: The coupon code was accepted but the total did not change.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The customer asked whether they need to return the original packaging.\nCustomer: I was charged twice for the same order on my credit card.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: The agent checked the warehouse log and found shipment batch 48347.\nAgent: The coupon code was accepted but the total did not change.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: The coupon code was accepted but the total did not change.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: The invoice lists a subscription fee I never agreed to.\nCustomer: The customer provided order number 34362 and the purchase date.\nAgent: The customer said they need the item before a family event on Saturday.\nCustomer: My refund from last month still has not appeared on my statement.\nAgent: The customer said they need the item before a family event on Saturday.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: The coupon code was accepted but the total did not change.\nAgent: The customer asked whether they need to return the original packaging.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The invoice lists a subscription fee I never agreed to.\nSupervisor: The agent checked the warehouse log and found shipment batch 36664.\nCustomer: The customer mentioned that this is the third time they have contacted support.\nAgent: I was charged twice for the same order on my credit card.\nCustomer: A photo of the item was attached to the ticket at 8:59.\nAgent: The agent checked the warehouse log and found shipment batch 94354.\nSupervisor: I was charged twice for the same order on my credit card.\nCustomer: The customer asked whether they need to return the original packaging.\nAgent: The agent apologised and asked for the order number.\nCustomer: I was charged twice for the same order on my credit card.\nAgent: The agent noted that the warranty covers manufacturing defects for two years.\nSupervisor: The agent checked the warehouse log and found shipment batch 97422.\nCustomer: The invoice lists a subscription fee I never agreed to.\nAgent: The customer provided order number 21592 and the purchase date.\nCustomer: A photo of the item was attached to the ticket at 11:48.\nAgent: I was charged twice for the same order on my credit card.\nSupervisor: The ticket was escalated because the first response took more than 48 hours.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: I was charged twice for the same order on my credit card.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: The ticket was escalated because the first response took more than 48 hours.\nSupervisor: My refund from last month still has not appeared on my statement.\nCustomer: The supervisor approved an exception for expedited shipping.\nAgent: The agent explained the standard processing time of three to five business days.\nCustomer: I was charged twice for the same order on my credit card.\nAgent: The customer provided order number 72543 and the purchase date.\nSupervisor: The customer said they need the item before a family event on Saturday.\nCustomer: I was charged twice for the same order on my credit card.\nAgent: The supervisor approved an exception for expedited shipping.\nCustomer: The customer provided order number 43217 and the purchase date.\nAgent: I was charged twice for the same order on my credit card.\nSupervisor: The agent explained the standard processing time of three to five business days.\nCustomer: The agent explained the standard processing time of three to five business days.\nAgent: I was charged twice for the same order on my credit card.\nCustomer: The agent noted that the warranty covers manufacturing defects for two years.\nAgent: The customer provided order number 29985 and the purchase date.\nSupervisor: My refund from last month still has not appeared on my statement.\nCustomer: The customer said they need the item before a family event on Saturday.\nAgent: The customer provided order number 17277 and the purchase date.\nCustomer: I was charged twice for the same order on my credit card.\nAgent: The agent apologised and asked for the order number.\nSupervisor: The customer confirmed the email address on file ends in example.com.\nCustomer: The coupon code was accepted but the total did not change.\nAgent: The customer provided order number 69964 and the purchase date.\nCustomer: The customer confirmed the email address on file ends in example.com.\nAgent: My refund from last month still has not appeared on my statement.\nSupervisor: The ticket was escalated because the first response took more than 48 hours.\nCustomer: A photo of the item was attached to the ticket at 11:58.\nAgent: The invoice lists a subscription fee I never agreed to.",
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults",
+            "account": "Logins, profiles and account settings",
+            "other": null
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Does the customer mention an order number?"
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Routine",
+            "Soon",
+            "Today"
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 3861,
+        "escalate": 3827,
+        "urgency": 3825,
+        "mood": 3838
+      }
+    },
+    {
+      "id": "b4096_r3",
+      "bucket": 4096,
+      "state": {
+        "ticket": "T-732314",
+        "channel": "chat",
+        "transcript": [
+          {
+            "speaker": "Customer",
+            "text": "The device does not pair with my phone over Bluetooth."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer provided order number 95774 and the purchase date."
+          },
+          {
+            "speaker": "Customer",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Customer",
+            "text": "A photo of the item was attached to the ticket at 8:00."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Agent",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent apologised and asked for the order number."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer provided order number 78106 and the purchase date."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent apologised and asked for the order number."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The device does not pair with my phone over Bluetooth."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent checked the warehouse log and found shipment batch 74726."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent checked the warehouse log and found shipment batch 72228."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent checked the warehouse log and found shipment batch 44464."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent checked the warehouse log and found shipment batch 96617."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Customer",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer provided order number 70264 and the purchase date."
+          },
+          {
+            "speaker": "Customer",
+            "text": "A photo of the item was attached to the ticket at 9:36."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent checked the warehouse log and found shipment batch 95257."
+          },
+          {
+            "speaker": "Customer",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The device does not pair with my phone over Bluetooth."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer mentioned that this is the second time they have contacted support."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer provided order number 82667 and the purchase date."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent apologised and asked for the order number."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Agent",
+            "text": "A photo of the item was attached to the ticket at 13:15."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Customer",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Customer",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer provided order number 92978 and the purchase date."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Customer",
+            "text": "A photo of the item was attached to the ticket at 18:58."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent explained the standard processing time of three to five business days."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The device does not pair with my phone over Bluetooth."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer mentioned that this is the first time they have contacted support."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "A photo of the item was attached to the ticket at 18:24."
+          },
+          {
+            "speaker": "Customer",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The device does not pair with my phone over Bluetooth."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The device does not pair with my phone over Bluetooth."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer provided order number 12803 and the purchase date."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The agent apologised and asked for the order number."
+          },
+          {
+            "speaker": "Customer",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent checked the warehouse log and found shipment batch 24638."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer provided order number 54161 and the purchase date."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer said they need the item before a family event on Saturday."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent checked the warehouse log and found shipment batch 80846."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent apologised and asked for the order number."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent apologised and asked for the order number."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The device does not pair with my phone over Bluetooth."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "A photo of the item was attached to the ticket at 13:17."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer provided order number 99752 and the purchase date."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The motor makes a grinding noise on the highest speed setting."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent checked the warehouse log and found shipment batch 16036."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer confirmed the email address on file ends in example.com."
+          },
+          {
+            "speaker": "Customer",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The customer mentioned that this is the fourth time they have contacted support."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The customer asked whether they need to return the original packaging."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The app crashes when I open the settings page."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Agent",
+            "text": "After the firmware update the display flickers every few seconds."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The supervisor approved an exception for expedited shipping."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The ticket was escalated because the first response took more than 48 hours."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The device does not pair with my phone over Bluetooth."
+          },
+          {
+            "speaker": "Customer",
+            "text": "The agent apologised and asked for the order number."
+          },
+          {
+            "speaker": "Agent",
+            "text": "The agent noted that the warranty covers manufacturing defects for two years."
+          },
+          {
+            "speaker": "Supervisor",
+            "text": "The device does not pair with my phone over Bluetooth."
+          }
+        ]
+      },
+      "questions": {
+        "route": {
+          "type": "choice",
+          "instructions": "Which team should handle this request?",
+          "criteria": {
+            "returns": "Refunds, replacements and damaged deliveries",
+            "billing": "Payments, invoices and charges",
+            "technical": "Product setup and faults"
+          }
+        },
+        "escalate": {
+          "type": "noul",
+          "instructions": "Does the customer mention an order number?",
+          "criteria": {
+            "false": "No escalation needed",
+            "true": "Escalate"
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "instructions": "How urgent is this request?",
+          "criteria": [
+            "Routine",
+            "Soon",
+            "Today"
+          ]
+        },
+        "mood": {
+          "type": "choice",
+          "instructions": "What is the customer's sentiment?",
+          "criteria": {
+            "positive": "The customer sounds satisfied",
+            "neutral": null,
+            "negative": "The customer sounds frustrated or angry"
+          }
+        }
+      },
+      "lengths": {
+        "route": 3737,
+        "escalate": 3719,
+        "urgency": 3717,
+        "mood": 3730
+      }
+    }
+  ]
+}

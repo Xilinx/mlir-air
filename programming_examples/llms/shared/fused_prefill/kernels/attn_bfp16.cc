@@ -14,6 +14,9 @@
 //   ml  running max and sum (attn_init)
 // qb and kb are the q and key block indices (LQ == LK), w the window in
 // blocks: a key block is visible to q block qb when qb - w <= kb <= qb.
+// Built with ATTN_NONCAUSAL, every query sees every key before w, the
+// number of keys (tokens): blocks at or past it are skipped and the block
+// holding it masked from w on.
 
 #include <aie_api/aie.hpp>
 
@@ -61,6 +64,14 @@ alignas(aie::vector_decl_align) static const int16 cmr[64] = {
     -2, -1, 0,  1,  2,  3,  4, 5, -3, -2, -1, 0,  1,  2,  3,  4,
     -4, -3, -2, -1, 0,  1,  2, 3, -5, -4, -3, -2, -1, 0,  1,  2,
     -6, -5, -4, -3, -2, -1, 0, 1, -7, -6, -5, -4, -3, -2, -1, 0};
+
+#ifdef ATTN_NONCAUSAL
+// col of each lane of an 8x8 block
+alignas(aie::vector_decl_align) static const int16 col8[64] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5,
+    6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3,
+    4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7};
+#endif
 
 // lane r * 8 + c of the result is v[r]
 static inline VB rows8(aie::vector<bfloat16, 8> v) {
@@ -117,6 +128,18 @@ static inline aie::mask<64> keep_mask(int edge, int nk, int mq,
                    : aie::gt(d, int16(0));
 }
 
+#ifdef ATTN_NONCAUSAL
+// the lanes of 8-key column block nk whose key is before lim, the number of
+// the block's keys that are in the prompt
+static inline aie::mask<64> key_mask(int nk, int lim,
+                                     aie::vector<int16, 64> c) {
+  return aie::lt(c, int16(lim - nk * 8));
+}
+#define KEEP(nk) key_mask(nk, lim, d)
+#else
+#define KEEP(nk) keep_mask(edge, nk, mq, d)
+#endif
+
 static inline BV to_bfp(VB v) {
   ACC a;
   a.from_vector(v);
@@ -161,12 +184,22 @@ void attn_init(bfloat16 *o, float *ml) {
 void attn_blk(bfloat16 *qb16, bfloat16 *k, bfloat16 *v, bfloat16 *o, float *ml,
               int32_t qb, int32_t kb, int32_t w) {
   ::aie::set_rounding(aie::rounding_mode::conv_even);
+#ifdef ATTN_NONCAUSAL
+  if (kb * LK >= w)
+    return;
+  // the first lim keys of the block are in the prompt; the block holding the
+  // last key masks the rest
+  const int lim = w - kb * LK;
+  const int edge = lim < LK;
+  const aie::vector<int16, 64> d = aie::load_v<64>(col8);
+#else
   if (kb > qb || kb < qb - w)
     return;
   // 1: the diagonal block, keys past the query masked; 2: the oldest block
   // of the window, keys at or before query - window masked
   const int edge = kb == qb ? 1 : kb == qb - w ? 2 : 0;
   const aie::vector<int16, 64> d = aie::load_v<64>(cmr);
+#endif
   const VB lowest = aie::broadcast<bfloat16, 64>(LOWEST);
   const BV ones = to_bfp(aie::broadcast<bfloat16, 64>(1.0f));
   bfloat16 *mrow = (bfloat16 *)ml;
@@ -209,10 +242,10 @@ void attn_blk(bfloat16 *qb16, bfloat16 *k, bfloat16 *v, bfloat16 *o, float *ml,
        VB r3 = aie::sub(c3, s3).template to_vector<bfloat16>();)
 #endif
     if (edge) {
-      s0 = aie::select(lowest, s0, keep_mask(edge, 0, mq, d));
-      s1 = aie::select(lowest, s1, keep_mask(edge, 1, mq, d));
-      K2(s2 = aie::select(lowest, s2, keep_mask(edge, 2, mq, d));
-         s3 = aie::select(lowest, s3, keep_mask(edge, 3, mq, d));)
+      s0 = aie::select(lowest, s0, KEEP(0));
+      s1 = aie::select(lowest, s1, KEEP(1));
+      K2(s2 = aie::select(lowest, s2, KEEP(2));
+         s3 = aie::select(lowest, s3, KEEP(3));)
     }
     VB smax = aie::max(s0, s1);
     K2(smax = aie::max(smax, aie::max(s2, s3));)
@@ -236,10 +269,9 @@ void attn_blk(bfloat16 *qb16, bfloat16 *k, bfloat16 *v, bfloat16 *o, float *ml,
 #endif
     if (edge) {
       const VB z = aie::zeros<bfloat16, 64>();
-      p0 = aie::select(z, p0, keep_mask(edge, 0, mq, d));
-      p1 = aie::select(z, p1, keep_mask(edge, 1, mq, d));
-      K2(p2 = aie::select(z, p2, keep_mask(edge, 2, mq, d));
-         p3 = aie::select(z, p3, keep_mask(edge, 3, mq, d));)
+      p0 = aie::select(z, p0, KEEP(0));
+      p1 = aie::select(z, p1, KEEP(1));
+      K2(p2 = aie::select(z, p2, KEEP(2)); p3 = aie::select(z, p3, KEEP(3));)
     }
     BV q0 = to_bfp(p0), q1 = to_bfp(p1);
     K2(BV q2 = to_bfp(p2), q3 = to_bfp(p3);)

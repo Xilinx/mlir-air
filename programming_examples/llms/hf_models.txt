@@ -109,6 +109,17 @@ FastFlowLM/Gemma4-E4B-IT-NPU2
 FastFlowLM/Qwen3.5-0.8B-NPU2@1d16e5eaa2508889fb88eb1bfab1921a30a1a466
 Qwen/Qwen3.5-0.8B@2fc06364715b967f1860aea9cf38778875588b17
 
+# The d3 decision models (Qwen3.5-0.8B derivatives), all pinned: the examples
+# load exactly these snapshots and check the weights' sha256. llms/d3_edge runs
+# vllm-sr/d3-edge's BF16 checkpoint, which is also the CPU reference
+# `make verify` compares against. llms/d3_lite_q4nx runs FastFlowLM's Q4K
+# package of vllm-sr/d3-lite and takes the tokenizer, readout and runtime from
+# vllm-sr/d3-lite, whose CPU runtime with the bundle's values dequantized is
+# its reference. Ungated.
+vllm-sr/d3-edge@c454ee39b862248d70abd7f84195d2f54ffe6d43
+vllm-sr/d3-lite@03560c26f5199c3c04129a2ccb38960c913635e0
+FastFlowLM/D3-Lite-NPU2@51563157b724a1bf69c5c177e000dd7038acd63c
+
 # Affine-Q4 deployments and original-BF16 references: pin the same snapshots
 # as each example's model.json, including OpenELM's Python modeling files.
 ibm-granite/granite-3.3-2b-instruct@707f574c62054322f6b5b04b6d075f0a8f05e0f0
