@@ -683,6 +683,8 @@ LLM_DISPLAY = {
 # The affine-Q4 profiles measure fixed full-input requests, not the short chat
 # prompts of older profiles. Include P/C in each label and keep every config's
 # history separate. Model metadata is the same source used by the CI driver.
+# Per-configuration ID -> (module, P), for the prefill curve those profiles make.
+_CONFIG_PREFILL = {}
 for _affine_module in (
     "granite33_2b_q4nx",
     "smollm3_3b_q4nx",
@@ -701,6 +703,7 @@ for _affine_module in (
         _id = f"{_affine_module}_p{_p}_c{_c}"
         _MODEL_DIRS[_id] = _affine_module
         LLM_DISPLAY[_id] = (f"{_affine_spec['name']} (P{_p}/C{_c})", "Affine Q4", None)
+        _CONFIG_PREFILL[_id] = (_affine_module, _p)
 
 
 # The machines results are measured on, keyed as history rows store them
@@ -1338,6 +1341,49 @@ def load_llm_history(path):
     ]
 
 
+def config_prefill_curves(recs, prefill_sweep_recs=()):
+    """Prefill curves of the models profiled once per native configuration
+    (_CONFIG_PREFILL). Each configuration builds its prefill for its own P, so
+    its TTFT is the point at that length, as a per-op prefill's column is in
+    render_llm_prefill_sweep. A model that has a measured prefill sweep on the
+    same hardware keeps it."""
+    have = {(d.get("model"), _hardware(d)) for d in prefill_sweep_recs}
+    rank = {"": 0, "skip": 1, "pass": 2, "fail": 3}
+    curves = {}
+    for d in recs:
+        cfg = _CONFIG_PREFILL.get(d.get("model"))
+        if cfg is None:
+            continue
+        module, plen = cfg
+        key = (module, _hardware(d))
+        if key in have:
+            continue
+        c = curves.setdefault(
+            key,
+            {
+                "model": module,
+                "points": [],
+                "verify_status": "",
+                **{k: d[k] for k in ("source", "hardware") if k in d},
+            },
+        )
+        ttft = (d.get("metrics") or {}).get("ttft_ms")
+        c["points"].append(
+            {
+                "prefill_len": plen,
+                "ttft_ms": ttft,
+                "status": "ok" if ttft is not None else "fail",
+            }
+        )
+        # one configuration failing its gate fails the curve
+        v = d.get("verify_status", "")
+        if rank.get(v, 0) > rank.get(c["verify_status"], 0):
+            c["verify_status"] = v
+    for c in curves.values():
+        c["points"].sort(key=lambda pt: pt["prefill_len"])
+    return [curves[k] for k in sorted(curves)]
+
+
 def _prefill_swept_models(recs):
     """The models render_llm_prefill_sweep will actually put a row on.
 
@@ -1588,8 +1634,14 @@ def render_llm_benchmark(
     if not recs:
         return ""
 
-    def _fmt(v):
-        return "—" if v is None else v
+    prefill_sweep_recs = list(prefill_sweep_recs) + config_prefill_curves(
+        recs, prefill_sweep_recs
+    )
+
+    def _fmt(v, digits=None):
+        if v is None:
+            return "—"
+        return round(v, digits) if digits is not None and isinstance(v, float) else v
 
     # Models with a sweep are published in the sweep table below instead; a
     # single near-zero-context point next to a curve invites reading the two as
@@ -1633,7 +1685,9 @@ def render_llm_benchmark(
         key = (name, _hardware(d))
         if name in _VLA_MODELS or key in spec:
             continue
-        in_decode, in_prefill = key in swept, key in prefill_swept
+        # A per-configuration row's metrics are on its module's curves.
+        curve_key = (_CONFIG_PREFILL.get(name, (name,))[0], _hardware(d))
+        in_decode, in_prefill = curve_key in swept, curve_key in prefill_swept
         if in_decode and in_prefill:
             continue
         m = d.get("metrics", {})
@@ -1645,8 +1699,8 @@ def render_llm_benchmark(
             f'| {_llm_model_cell(name or "", base_url)} '
             f"| {hardware_label(_hardware(d))} "
             f'| {_fmt(m.get("context_len"))} '
-            f'| {"↓" if in_prefill else _fmt(m.get("ttft_ms"))} '
-            f'| {"↓" if in_decode else _fmt(m.get("decode_tokens_per_sec"))} '
+            f'| {"↓" if in_prefill else _fmt(m.get("ttft_ms"), 1)} '
+            f'| {"↓" if in_decode else _fmt(m.get("decode_tokens_per_sec"), 2)} '
             f'| {(d.get("timestamp_utc") or "")[:10] or "—"} '
             f"| {verify} |"
         )
