@@ -1,0 +1,15 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Qwen3.5-0.8B Q4NX fused prefill compile-only test: builds the kernels and
+// every op's insts of the shared fused_prefill device (q35_spec.py: the
+// projection GEMMs, the head_dim-256 attention, the lm_head). Weights are
+// runtime buffers, so this needs no weight data.
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22
+//
+// RUN: mkdir -p test_npu2_compile_fused_prefill
+// RUN: cd test_npu2_compile_fused_prefill
+// RUN: make -f %S/Makefile compile-fused-prefill PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+//
+// CHECK: built {{[0-9]+}} ops into

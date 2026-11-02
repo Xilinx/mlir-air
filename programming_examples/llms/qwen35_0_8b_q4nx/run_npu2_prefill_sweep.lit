@@ -1,0 +1,28 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Qwen3.5-0.8B Q4NX prefill time vs prompt length, into
+// qwen35_0_8b_q4nx.prefill_sweep.json (collected by the nightly LLM
+// benchmark). It times the fused prefill that run, verify and profile use:
+// chunked, built once for prompts up to 4096 tokens, every length timed in one
+// process on the bucket-filling prompt of exactly that length.
+//
+// Latency only, never a correctness gate (run_npu2_verify.lit is that). There
+// is no decode sweep (run_npu2_sweep.lit): bench/sweep_decode.py drives
+// fused_decode's template builds and bench_decode geometry, which the
+// fused_decode_gdn fork does not provide; `make bench-all` times decode at
+// capacities 1024-8192.
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22, hf_token, hfweights_fastflowlm_qwen3_5_0_8b_npu2, hfweights_qwen_qwen3_5_0_8b
+//
+// RUN: mkdir -p test_peano_prefill_sweep
+// RUN: cd test_peano_prefill_sweep
+// RUN: %PYTHON %S/../bench/sweep_prefill.py --model-name qwen35_0_8b_q4nx --makefile %S/Makefile --lengths 512,1024,2048,4096 --fused --peano-dir %PEANO_INSTALL_DIR --out qwen35_0_8b_q4nx.prefill_sweep.json
+// RUN: FileCheck %s < qwen35_0_8b_q4nx.prefill_sweep.json
+// CHECK: "model": "qwen35_0_8b_q4nx"
+// CHECK: "axis": "prefill_len"
+// A parsed number at the reference length, not just a well-formed file: if the
+// bench's timing line drifts out of sweep_prefill.py's regex every point goes
+// null and the published curve silently empties while the test stays green.
+// CHECK: "prefill_len": 2048
+// CHECK-NEXT: "ttft_ms": {{[0-9]}}

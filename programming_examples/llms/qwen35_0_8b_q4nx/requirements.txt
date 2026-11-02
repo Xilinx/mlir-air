@@ -1,0 +1,17 @@
+# Additional Python packages for the Qwen3.5-0.8B Q4NX example.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, pyxrt, etc.). Install with:
+#     pip install -r requirements.txt
+
+# Download the model.q4nx bundle and the BF16 reference checkpoint from the Hub
+# at their pinned revisions.
+huggingface_hub
+
+# Tokenizer, configuration and rotary table of Qwen/Qwen3.5-0.8B, and the BF16
+# reference for `make verify` / `make reference`. Needs Qwen3.5 (qwen3_5)
+# support; verified with transformers 5.21.0.
+transformers
+
+# The rotary table and the CPU reference.
+torch

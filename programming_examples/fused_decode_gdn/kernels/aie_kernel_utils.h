@@ -1,0 +1,257 @@
+/*
+    Copyright (C) 2014 - 2022 Xilinx, Inc. All rights reserved.
+    Copyright (C) 2022 - 2025 Advanced Micro Devices, Inc. All rights reserved.
+    SPDX-License-Identifier: MIT
+*/
+
+#ifndef _AIE_KERNEL_UTILS_
+#define _AIE_KERNEL_UTILS_
+#include "typedef.hpp"
+#if defined(__chess__)
+#define AIE_LOOP_UNROLL(x) [[chess::unroll_loop(x)]]
+#define AIE_LOOP_UNROLL_FULL [[chess::unroll_loop()]]
+#define AIE_LOOP_NO_UNROLL [[chess::no_unroll]]
+#define AIE_LOOP_MIN_ITERATION_COUNT(x) [[chess::min_loop_count(x)]]
+#define AIE_LOOP_MAX_ITERATION_COUNT(x) [[chess::max_loop_count(x)]]
+#define AIE_LOOP_RANGE(a, ...)                                                 \
+  [[chess::min_loop_count(a)]] __VA_OPT__(                                     \
+      [[chess::max_loop_count(__VA_ARGS__)]])
+#define AIE_PREPARE_FOR_PIPELINING [[chess::prepare_for_pipelining]]
+#define AIE_NO_PREPARE_FOR_PIPELINING [[chess::no_prepare_for_pipelining]]
+#define AIE_MODULO_SCHEDULING_BUDGET_RATIO(x)                                  \
+  [[chess::modulo_scheduling_budget_ratio(x)]]
+#define AIE_KEEP_SW_LOOP [[chess::keep_sw_loop]]
+#define AIE_PEEL_PIPELINED_LOOP(x) [[chess::peel_pipelined_loop(x)]]
+#define AIE_KEEP_FREE_FOR_PIPELINING(x) [[chess::keep_free_for_pipelining(x)]]
+#define AIE_ALLOCATE(x) [[chess::allocate(x)]]
+#define AIE_NO_HW_LOOP [[chess::no_hw_loop]]
+#define AIE_TRY_INITIATION_INTERVAL(x)
+#define AIE_PREPARE_FOR_POSTPIPELINING
+#define AIE_LOOP_FLATTEN chess_flatten_loop
+
+#elif defined(__AIECC__)
+#ifndef __STRINGIFY
+#define __STRINGIFY(a) #a
+#endif
+#define AIE_LOOP_UNROLL(x) _Pragma(__STRINGIFY(clang loop unroll_count(x)))
+#define AIE_LOOP_UNROLL_FULL _Pragma("clang loop unroll(full)")
+#define AIE_LOOP_NO_UNROLL _Pragma("clang loop unroll(disable)")
+#define AIE_LOOP_MIN_ITERATION_COUNT(x)                                        \
+  _Pragma(__STRINGIFY(clang loop min_iteration_count(x)))
+#define AIE_LOOP_MAX_ITERATION_COUNT(x)                                        \
+  _Pragma(__STRINGIFY(clang loop max_iteration_count(x)))
+#define AIE_LOOP_RANGE(a, ...)                                                 \
+  AIE_LOOP_MIN_ITERATION_COUNT(a)                                              \
+  __VA_OPT__(AIE_LOOP_MAX_ITERATION_COUNT(__VA_ARGS__))
+#define AIE_PREPARE_FOR_PIPELINING
+#define AIE_NO_PREPARE_FOR_PIPELINING
+#define AIE_MODULO_SCHEDULING_BUDGET_RATIO(x)
+#define AIE_KEEP_SW_LOOP
+#define AIE_PEEL_PIPELINED_LOOP(x)
+#define AIE_KEEP_FREE_FOR_PIPELINING(x)
+#define AIE_ALLOCATE(x)
+#define AIE_NO_HW_LOOP
+#define AIE_TRY_INITIATION_INTERVAL(x)                                         \
+  _Pragma(__STRINGIFY(clang loop pipeline_initiation_interval(x)))
+#define AIE_PREPARE_FOR_POSTPIPELINING _Pragma("clang loop pipeline(disable)")
+#define AIE_LOOP_FLATTEN
+
+#else
+#define AIE_LOOP_UNROLL(x)
+#define AIE_LOOP_UNROLL_FULL
+#define AIE_LOOP_NO_UNROLL
+#define AIE_LOOP_MIN_ITERATION_COUNT(x)
+#define AIE_LOOP_MAX_ITERATION_COUNT(x)
+#define AIE_LOOP_RANGE(a, ...)
+#define AIE_PREPARE_FOR_PIPELINING
+#define AIE_NO_PREPARE_FOR_PIPELINING
+#define AIE_MODULO_SCHEDULING_BUDGET_RATIO(x)
+#define AIE_KEEP_SW_LOOP
+#define AIE_PEEL_PIPELINED_LOOP(x)
+#define AIE_KEEP_FREE_FOR_PIPELINING(x)
+#define AIE_ALLOCATE(x)
+#define AIE_NO_HW_LOOP
+#define AIE_TRY_INITIATION_INTERVAL(x)
+#define AIE_PREPARE_FOR_POSTPIPELINING
+#define AIE_LOOP_FLATTEN
+#endif
+
+// Loop-counter type for loops whose body ends in a per-iteration lock release.
+// Peano/llvm-aie (non-chess) sinks the final lock release past the loop
+// back-edge, so it runs once on loop exit instead of every iteration and
+// deadlocks any multi-iteration lock loop. A volatile counter makes the trip
+// count opaque and keeps the release inside the loop. chess schedules
+// correctly.
+#if defined(__chess__)
+#define AIE_LOCK_LOOP_CTR int
+#else
+#define AIE_LOCK_LOOP_CTR volatile int
+#endif
+
+// Some lock utilities
+/// \brief Acquire a lock with given lock ID on this CT and number of locks
+/// \param lock_id The lock ID to acquire
+/// \param num_locks The number of locks to acquire
+inline void _lock_acquire(int lock_id, int num_locks = 1) {
+  acquire_greater_equal(lock_id + 48, num_locks);
+}
+
+/// \brief Release a lock with given lock ID on this CT and number of locks
+/// \param lock_id The lock ID to release
+/// \param num_locks The number of locks to release
+inline void _lock_release(int lock_id, int num_locks = 1) {
+  release(lock_id + 48, num_locks);
+}
+
+/// \brief Acquire a lock with given lock ID on left CT and number of locks
+/// \param lock_id The lock ID to acquire
+/// \param num_locks The number of locks to acquire
+inline void _left_lock_acquire(int lock_id, int num_locks = 1) {
+  acquire_greater_equal(lock_id + 16, num_locks);
+}
+
+/// \brief Release a lock with given lock ID on left CT and number of locks
+/// \param lock_id The lock ID to release
+/// \param num_locks The number of locks to release
+inline void _left_lock_release(int lock_id, int num_locks = 1) {
+  release(lock_id + 16, num_locks);
+}
+
+/// \brief Acquire a lock with given lock ID on up CT and number of locks
+/// \param lock_id The lock ID to acquire
+/// \param num_locks The number of locks to acquire
+inline void _up_lock_acquire(int lock_id, int num_locks = 1) {
+  acquire_greater_equal(lock_id + 32, num_locks);
+}
+
+/// \brief Release a lock with given lock ID on up CT and number of locks
+/// \param lock_id The lock ID to release
+/// \param num_locks The number of locks to release
+inline void _up_lock_release(int lock_id, int num_locks = 1) {
+  release(lock_id + 32, num_locks);
+}
+
+/// \brief Acquire a lock with given lock ID on down CT and number of locks
+/// \param lock_id The lock ID to acquire
+/// \param num_locks The number of locks to acquire
+inline void _down_lock_acquire(int lock_id, int num_locks = 1) {
+  acquire_greater_equal(lock_id, num_locks);
+}
+
+/// \brief Release a lock with given lock ID on down CT and number of locks
+/// \param lock_id The lock ID to release
+/// \param num_locks The number of locks to release
+inline void _down_lock_release(int lock_id, int num_locks = 1) {
+  release(lock_id, num_locks);
+}
+
+template <typename T, int M>
+void zero_vectorized(T *__restrict c) {
+  constexpr int r = 256 / (sizeof(T) * 8); // one 256 bit store unit
+  static_assert((M) % r == 0);
+  const aie::vector<T, r> zeros = aie::zeros<T, r>();
+  const T *__restrict c_end = c + M;
+  for (; c < c_end; c += r) {
+    aie::store_v(c, zeros);
+  }
+}
+
+template <int m>
+void copy_float_to_bf16(bfloat16 *y, const float *y_acc) {
+  static_assert(m % 16 == 0);
+  AIE_PREPARE_FOR_PIPELINING
+  AIE_LOOP_UNROLL_FULL
+  for (int i = 0; i < m / 16; i++) {
+    aie::vector<float, 16> y_vec = aie::load_v<16>(y_acc + i * 16);
+    aie::accum<accfloat, 16> acc;
+    acc.from_vector(y_vec);
+    aie::store_v(y + i * 16, acc.template to_vector<bfloat16>());
+  }
+}
+
+template <int m>
+void copy_bf16_to_float(float *y, const bfloat16 *y_bf16) {
+  static_assert(m % 16 == 0);
+  AIE_PREPARE_FOR_PIPELINING
+  for (int i = 0; i < m / 16; i++) {
+    aie::vector<bfloat16, 16> y_vec = aie::load_v<16>(y_bf16 + i * 16);
+    aie::accum<accfloat, 16> acc;
+    acc.from_vector(y_vec);
+    aie::store_v(y + i * 16, acc.template to_vector<float>());
+  }
+}
+
+template <int m>
+void copy_bf16_to_bf16(bfloat16 *y, const bfloat16 *y_bf16) {
+  static_assert(m % 16 == 0);
+  AIE_PREPARE_FOR_PIPELINING
+  for (int i = 0; i < m / 16; i++) {
+    aie::vector<bfloat16, 16> y_vec = aie::load_v<16>(y_bf16 + i * 16);
+    aie::store_v(y + i * 16, y_vec);
+  }
+}
+
+// Round-to-nearest-even for every accumulator narrowing in this core, if the
+// model asked for it.
+//
+// NO-OP unless -DDECODE_ROUND_NEAREST. Without the flag this writes nothing and
+// the core keeps whatever mode it already has, which for a decode dispatch is
+// the power-up FLOOR -- so a model bringing up on the default is flooring every
+// accum->bf16 narrowing, by design. Read the two blocks below together: the
+// first is why nearest is the better mode, the last is why it is not the
+// default.
+//
+// An AIE core comes up with its rounding mode set to FLOOR (toward -inf), and
+// the mode is a core register that nothing else here writes -- so a kernel that
+// does not set it narrows accum->bf16 by flooring, on EVERY conversion. That is
+// not a wash: it is a one-sided bias, so it does not cancel across a reduction
+// the way round-to-nearest error does, and it compounds down a residual stream.
+//
+// Measured on LFM2-1.2B decode (16 layers, NPU2): flooring reproduced the
+// device BIT-EXACTLY while round-to-nearest was 0.0152 away, and the bias grew
+// from 0.015 relative error on layer 0's ShortConv state to 0.264 by layer 15,
+// dragging the whole-model logit cosine to 0.876 and flipping top-1 tokens.
+// Setting the mode once per kernel entry costs one register write.
+//
+// This is the same call the conv2d/matmul kernels in aie_kernels and
+// programming_examples already make; the decode kernels were the ones missing
+// it. Call it FIRST in every extern "C" entry point -- the register is per
+// core, but a core runs whichever kernels its herd assigns, so relying on some
+// other entry point having set it is how one path silently keeps flooring.
+//
+// Opt-in per model via -DDECODE_ROUND_NEAREST, and OFF by default, because
+// llama31_8b, qwen25_7b and qwen25_3b score WORSE under round-to-nearest than
+// under the power-up floor (8B top-k gate: 5/5 flooring, 4/5 nearest). The mode
+// a decode wants is a property of that model, not of the kernels. A new model
+// should measure both; if its gate moves, say which it picked in its Makefile.
+static inline void aie_round_nearest_even() {
+#ifdef DECODE_ROUND_NEAREST
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
+#endif
+}
+
+// The attention herd's RTP-L word. Bits 0-19 are the context length L; bits
+// 20-30 are a sliding window in units of 16 keys, 0 for full attention. The
+// builder sets the window on a sliding layer's wave only, as a constant offset
+// on that wave's word, so DecodeInstsGen's L-slope calibration -- which writes
+// base + slope * L -- reproduces it unchanged at every L.
+#define ATTN_RTP_L_MASK 0xFFFFF
+
+// Parts the context is split into across attention CUs; each part's partial
+// softmax sums are merged after the block loop.
+#ifndef ATTN_KV_PARTS
+#define ATTN_KV_PARTS 1
+#endif
+// Where the qk -> kv score message carries the running max: after the scores
+// and the correction factors.
+#define ATTN_S_M_OFF (Q_HEADS_PADDED_PER_CU * 16 + 16)
+
+// The first key position the current token may attend: the token sits at L-1,
+// and with a window W it sees keys j with (L-1) - j < W, i.e. j >= L - W.
+static inline int attn_window_lo(int rtp) {
+  const int L = rtp & ATTN_RTP_L_MASK;
+  const int W = ((rtp >> 20) & 0x7FF) * 16;
+  return (W > 0 && L > W) ? L - W : 0;
+}
+
+#endif
