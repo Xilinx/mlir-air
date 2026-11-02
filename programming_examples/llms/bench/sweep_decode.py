@@ -57,9 +57,13 @@ XRT_FAIL_RE = re.compile(
 
 # A bench that could not allocate its buffers on the host, pinned KV included.
 # How much memory a box will give is a property of the box, as in the sibling
-# sweeps (sweep_prefill.py, sweep_decode_runtime.py).
+# sweeps (sweep_prefill.py, sweep_decode_runtime.py). XRT pins host-only BOs,
+# so a BO past the process's locked-memory limit (ulimit -l) fails its mmap
+# with err=-11 however much RAM is free.
 HOST_OOM_RE = re.compile(
-    r"std::bad_alloc|Cannot allocate|err=-12\b|Killed|out of memory", re.I
+    r"std::bad_alloc|Cannot allocate|err=-1[12]\b|Failed to allocate host memory"
+    r"|Killed|out of memory",
+    re.I,
 )
 
 # Statuses --expect-fail is allowed to forgive: ONLY a dispatch that reached the

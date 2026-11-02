@@ -55,7 +55,13 @@ XRT_FAIL_RE = re.compile(
 # published cell has to mean "this box ran out of RAM for the KV cache", which
 # is a property of the runner, not of the design -- the same reason
 # sweep_decode.py records 64k/128k separately.
-OOM_RE = re.compile(r"std::bad_alloc|MemoryError|Cannot allocate|Killed", re.I)
+# XRT's pinned host BOs fail with err=-11 past the locked-memory limit
+# (ulimit -l), whatever RAM is free (see sweep_decode.py's HOST_OOM_RE).
+OOM_RE = re.compile(
+    r"std::bad_alloc|MemoryError|Cannot allocate|err=-1[12]\b"
+    r"|Failed to allocate host memory|Killed",
+    re.I,
+)
 
 
 def _classify(out, rc):
