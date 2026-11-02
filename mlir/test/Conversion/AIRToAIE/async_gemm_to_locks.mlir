@@ -12,19 +12,15 @@
 // CHECK-DAG:   %[[VAL_1:.*]] = aie.tile(6, 3)
 // CHECK-DAG:   %[[VAL_2:.*]] = aie.tile(5, 4)
 // CHECK-DAG:   %[[VAL_3:.*]] = aie.tile(6, 4)
-// CHECK-DAG:   %[[LOCK_VAL_0:.*]] = aie.lock(%[[VAL_0]], 3) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_1:.*]] = aie.lock(%[[VAL_0]], 2) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_2:.*]] = aie.lock(%[[VAL_0]], 1) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_3:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
-// CHECK-DAG:   %[[LOCK_VAL_4:.*]] = aie.lock(%[[VAL_1]], 3) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_5:.*]] = aie.lock(%[[VAL_1]], 2) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_6:.*]] = aie.lock(%[[VAL_1]], 1) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_7:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
-// CHECK-DAG:   %[[LOCK_VAL_8:.*]] = aie.lock(%[[VAL_2]], 3) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_9:.*]] = aie.lock(%[[VAL_2]], 2) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_10:.*]] = aie.lock(%[[VAL_2]], 1) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_11:.*]] = aie.lock(%[[VAL_2]], 0) {init = 0 : i32}
-// CHECK-DAG:   %[[LOCK_VAL_12:.*]] = aie.lock(%[[VAL_3]], 3) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_13:.*]] = aie.lock(%[[VAL_3]], 2) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_14:.*]] = aie.lock(%[[VAL_3]], 1) {init = 0 : i32}
 // CHECK-DAG:   %[[LOCK_VAL_15:.*]] = aie.lock(%[[VAL_3]], 0) {init = 0 : i32}
@@ -48,11 +44,9 @@
 #map = affine_map<()[s0] -> (s0 * 64)>
 module {
   air.channel @channel_3 [2, 2]
-  // The core inputs are packet-switched: each core takes three (A, B and its
-  // C tile) on two S2MM channels, so two of them share one.
-  air.channel @channel_2 [2, 2] {channel_type = "npu_dma_packet"}
-  air.channel @channel_1 [2, 2] {channel_type = "npu_dma_packet"}
-  air.channel @channel_0 [2, 2] {channel_type = "npu_dma_packet"}
+  // Each core receives A and B; its C tile is zero-filled on the core.
+  air.channel @channel_1 [2, 2]
+  air.channel @channel_0 [2, 2]
   func.func @matmul(%arg0: memref<128x384xbf16>, %arg1: memref<384x128xbf16>, %arg2: memref<128x128xbf16>) {
     %c128 = arith.constant 128 : index
     %c64 = arith.constant 64 : index
@@ -100,26 +94,7 @@ module {
         scf.reduce.return %8 : !air.async.token
       }
     }
-    %4 = scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%async_token_0) -> !air.async.token {
-      %async_token_1, %results_2 = air.execute -> (index) {
-        %9 = affine.apply #map()[%arg3]
-        air.execute_terminator %9 : index
-      }
-      %async_token_3, %results_4 = air.execute -> (index) {
-        %9 = affine.apply #map()[%arg4]
-        air.execute_terminator %9 : index
-      }
-      %7 = air.wait_all async [%async_token_3, %async_token_1, %async_token_0] 
-      %8 = scf.for %arg5 = %c0 to %c384 step %c96 iter_args(%arg6 = %7) -> (!air.async.token) {
-        %9 = air.channel.put async [%arg6]  @channel_2[%arg3, %arg4] (%results[%results_2, %results_4] [%c64, %c64] [%c128, %c1]) {id = 3 : i32} : (memref<128x128xbf16>)
-        scf.yield %9 : !air.async.token
-      }
-      scf.reduce(%8 : !air.async.token) {
-      ^bb0(%arg5: !air.async.token, %arg6: !air.async.token):
-        %9 = air.wait_all async [%arg5, %arg6] 
-        scf.reduce.return %9 : !air.async.token
-      }
-    }
+    %4 = air.wait_all async [%async_token_0]
     %5 = scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%async_token_0) -> !air.async.token {
       %async_token_1, %results_2 = air.execute -> (index) {
         %9 = affine.apply #map()[%arg3]
@@ -160,7 +135,10 @@ module {
         }
         %9 = air.channel.get async [%async_token_4, %arg8]  @channel_0[%arg3, %arg4] (%results_5[] [] []) {id = 5 : i32} : (memref<64x96xbf16, 2>)
         %10 = air.channel.get async [%async_token_6, %arg8]  @channel_1[%arg3, %arg4] (%results_7[] [] []) {id = 6 : i32} : (memref<96x64xbf16, 2>)
-        %11 = air.channel.get async [%async_token_8, %arg8]  @channel_2[%arg3, %arg4] (%results_9[] [] []) {id = 7 : i32} : (memref<64x64xbf16, 2>)
+        %11 = air.execute [%async_token_8, %arg8] {
+          %cst = arith.constant 0.000000e+00 : bf16
+          linalg.fill ins(%cst : bf16) outs(%results_9 : memref<64x64xbf16, 2>)
+        }
         %async_token_10 = air.execute [%11, %10, %9] {
           linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%results_5, %results_7 : memref<64x96xbf16, 2>, memref<96x64xbf16, 2>) outs(%results_9 : memref<64x64xbf16, 2>)
         }
