@@ -173,7 +173,12 @@ class FusedPrefill(Engine):
         vs.append(v.reshape(v.shape[0], -1))
         self.kv_append(self.kvb[L], r0, k, v)
 
-    def prefill(self, ids):
+    def prefill(self, ids, soft_embeds=None, soft_positions=None):
+        """`soft_embeds` [k, D] (a vision tower's output) replace the token
+        embeddings at `soft_positions`, where `ids` must hold the pad token.
+        As in Gemma4Model.forward, the per-layer token table is looked up with
+        those pad ids, while the per-layer projection reads the embeddings
+        after the soft tokens are in place."""
         self.resume()
         ids = [int(t) for t in np.asarray(ids).reshape(-1)]
         n = len(ids)
@@ -181,6 +186,11 @@ class FusedPrefill(Engine):
             raise ValueError(f"prompt of {n} tokens exceeds max_len {self.max_len}")
         qm = self.model
         emb = qm.embed_rows("model.embed_tokens.weight", ids) * gw.EMBED_SCALE
+        if soft_embeds is not None:
+            pos = np.asarray(soft_positions, np.int64)
+            assert len(pos) == len(soft_embeds), (len(pos), len(soft_embeds))
+            emb = np.array(emb, np.float32)
+            emb[pos] = np.asarray(soft_embeds, np.float32)
         tbl = qm.embed_rows("model.per_layer_token_embd.weight", ids)
         tbl = tbl.reshape(n, gw.NUM_LAYERS, gw.PLI_D) * gw.PLE_EMBED_SCALE
         self.kv = {}

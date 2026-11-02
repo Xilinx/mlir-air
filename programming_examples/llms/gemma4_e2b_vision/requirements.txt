@@ -1,0 +1,13 @@
+# Additional Python packages for the Gemma4-E2B vision example, on top of the
+# mlir-air base environment and ../gemma4_e2b_q4nx/requirements.txt (the text
+# model this example drives).
+
+# Image preprocessing (Gemma4ImageProcessorPil) and the shapes test image.
+pillow
+
+# The HF reference: the vision tower oracle (run_vision.py) and the image-turn
+# model gate (verify_image.py), whose Gemma4Processor imports torchvision.
+torch
+torchvision
+transformers
+huggingface_hub

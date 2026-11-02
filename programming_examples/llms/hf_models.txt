@@ -97,6 +97,11 @@ LiquidAI/LFM2-1.2B
 # Ungated, so CI needs no license grant.
 FastFlowLM/Gemma4-E2B-IT-NPU2
 
+# Gemma4-E2B-IT in bf16. llms/gemma4_e2b_vision loads its vision tower from
+# here (the q4nx bundle above serves the text model) and gates image turns
+# against this checkpoint. Ungated.
+unsloth/gemma-4-E2B-it
+
 # Gemma4-E4B (text), same packaging. Used by llms/gemma4_e4b_q4nx; listed alone
 # for the same reason as E2B.
 FastFlowLM/Gemma4-E4B-IT-NPU2

@@ -236,6 +236,7 @@ def compile_attn_npu2(
     fused_merge=False,
     attention_multiplier=None,
     single_accumulator=False,
+    dv_full=None,
 ):
     """Compile attn_npu2.o (FlashAttention kernel) from source.
 
@@ -277,6 +278,8 @@ def compile_attn_npu2(
             with fused_merge=True links. Needs pretranspose_k.
         single_accumulator: opt in to one zero-initialized matrix accumulator
             followed by a vector addition of carried output state.
+        dv_full: the full V dimension when it differs from head_dim (the
+            full K dimension). Defaults to head_dim.
     """
     if lkp is None:
         lkp = head_dim
@@ -294,7 +297,7 @@ def compile_attn_npu2(
         f"-Ddk={dk_tile}",
         f"-Ddk_full={head_dim}",
         f"-Ddv={dv_tile}",
-        f"-Ddv_full={head_dim}",
+        f"-Ddv_full={dv_full or head_dim}",
         "-DROUND_CONV_EVEN",
     ]
     # BFP16 block-float emulation of the Q@Kᵀ / P@V matmuls trades accuracy for

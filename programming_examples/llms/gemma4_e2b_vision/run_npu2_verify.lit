@@ -1,0 +1,23 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Gemma4-E2B image turns end to end: NPU vision tower, the text model's fused
+// prefill with the soft tokens in place, and its fused decode. Two gates: the
+// top-k token check of each image turn in verify_image.py against HF bf16, and
+// a keyword check that the shapes image's description names both shapes,
+// their colors and a position.
+//
+// peano_ge22: the text model's fused prefill and decode need it.
+//
+// REQUIRES: ryzen_ai_npu2, peano, peano_ge22, hfweights_fastflowlm_gemma4_e2b_it_npu2, hfweights_unsloth_gemma_4_e2b_it
+//
+// RUN: mkdir -p test_npu2_verify
+// RUN: cd test_npu2_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile verify PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+//
+// CHECK: [shapes-280] OK
+// CHECK: [shapes640x480-70] OK
+// CHECK: PASS!
+// CHECK: PASS!
