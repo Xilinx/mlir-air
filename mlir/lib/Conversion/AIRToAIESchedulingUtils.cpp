@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallSet.h"
 
 #include <limits>
@@ -1752,6 +1753,49 @@ void air::DMAAllocator::sortMemcpyOps(std::vector<Operation *> dma_memcpy_ops) {
 
 // A very simple scheme to allocate channels for dma operations:
 //  <description>
+
+static Operation *channelDeclOf(Operation *o) {
+  auto c = dyn_cast_if_present<air::ChannelInterface>(o);
+  if (!c)
+    return nullptr;
+  auto d = air::getChannelDeclarationThroughSymbol(c);
+  return d ? d.getOperation() : nullptr;
+}
+
+// Whether `a` and `b` sit in different regions of one scf.if or
+// scf.index_switch, so that at most one of them runs.
+static bool onExclusivePaths(Operation *a, Operation *b) {
+  for (Region *r = a->getParentRegion(); r;
+       r = r->getParentOp()->getParentRegion()) {
+    Operation *p = r->getParentOp();
+    if (!p->isProperAncestor(b))
+      continue;
+    return isa<scf::IfOp, scf::IndexSwitchOp>(p) &&
+           !r->isAncestor(b->getParentRegion());
+  }
+  return false;
+}
+
+// Whether the flow `op` belongs to delivers more than once per dispatch of
+// `scope`: `op` sits in a loop below `scope`, or `scope` holds another
+// transfer of the same kind on the same channel that can run with it.
+static bool flowRepeats(Operation *op, Operation *scope) {
+  for (Operation *p = op->getParentOp(); p && p != scope; p = p->getParentOp())
+    if (isa<scf::ForOp, scf::WhileOp, affine::AffineForOp>(p))
+      return true;
+  Operation *decl = channelDeclOf(op);
+  if (!decl || !scope)
+    return false;
+  bool other = false;
+  scope->walk([&](air::ChannelInterface c) {
+    Operation *o = c.getOperation();
+    if (o != op && o->getName() == op->getName() && channelDeclOf(o) == decl &&
+        !onExclusivePaths(o, op))
+      other = true;
+  });
+  return other;
+}
+
 FailureOr<air::allocation_info_t>
 air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                                              AIE::TileOp tile, int chan) {
@@ -1823,15 +1867,63 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     // the pin dictates the physical channel, and same-channel reuse is already
     // handled above -- cross-channel packet reuse would silently override the
     // pin.
+    //
+    // An S2MM BD ring takes arrivals in ring order, whichever flow they come
+    // from: the packet header routes to the tile, not to a BD. Two distinct
+    // inbound flows that both repeat come from independent producers whose
+    // arrivals interleave in no fixed order, so on one ring they land in each
+    // other's buffers. Such a pair gets channels of its own. Transfers of one
+    // flow, flows where at most one side repeats, and outbound rings, which
+    // the core drives in program order, still share.
     if (isPacketFlowOp && !chanPinned && t.foundPacketFlowAllocInTile(tile)) {
-      t.memcpyOps.push_back(memcpyOp.getOperation());
-      return t;
+      Operation *newOp = memcpyOp.getOperation();
+      // The core this tile runs; the herd if the body is not outlined yet.
+      Operation *scope = newOp->getParentOfType<AIE::CoreOp>();
+      if (!scope)
+        scope = newOp->getParentOfType<air::HerdOp>();
+      Operation *newDecl = channelDeclOf(newOp);
+      bool sameFlow = newDecl && llvm::all_of(t.memcpyOps, [&](Operation *o) {
+                        return channelDeclOf(o) == newDecl;
+                      });
+      bool bothRepeat =
+          flowRepeats(newOp, scope) &&
+          llvm::any_of(t.memcpyOps, [&](Operation *o) {
+            return channelDeclOf(o) != newDecl && flowRepeats(o, scope);
+          });
+      if (isMM2S.value() || sameFlow || !bothRepeat) {
+        t.memcpyOps.push_back(newOp);
+        return t;
+      }
     }
   }
   // Need to allocate a new one
   int tile_dma_channels =
       isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
                      : tile.getNumDestConnections(AIE::WireBundle::DMA);
+  // An inbound packet flow gets here when the tile has no packet ring it can
+  // share (see above), so it needs an S2MM channel nothing uses yet. The
+  // round-robin's pick is used when free; it is not always free once some
+  // flows are pinned.
+  if (isPacketFlowOp && !isMM2S.value() && chan == -1) {
+    llvm::SmallBitVector taken(tile_dma_channels);
+    for (auto &t : *allocs)
+      if (t.foundAlloc(tile) && t.dma_channel.channel >= 0 &&
+          t.dma_channel.channel < tile_dma_channels)
+        taken.set(t.dma_channel.channel);
+    int free = num_allocs % tile_dma_channels;
+    if (taken.test(free))
+      free = taken.find_first_unset();
+    if (free < 0) {
+      memcpyOp->emitError()
+          << "no S2MM channel left for this inbound packet flow: the tile's "
+          << tile_dma_channels
+          << " are taken by flows it cannot share a BD ring with. Merge "
+             "transfers into fewer, wider ones or spread the consumer over "
+             "more tiles";
+      return failure();
+    }
+    chan = free;
+  }
   if (chan == -1)
     chan = num_allocs % tile_dma_channels;
   return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
