@@ -99,6 +99,8 @@ class AffinePrefill(DensePrefill):
         self.emb_scale = float(c.get("embedding_multiplier", 1.0))
         self.res_scale = float(c.get("residual_multiplier", 1.0))
         self.logit_scale = float(c.get("logits_scaling", 1.0))
+        if c.get("no_rope_layers") is not None:
+            self.rope_layers = [bool(v) for v in c["no_rope_layers"]]
         if c.get("attention_multiplier") is not None:
             self.q_scale = float(c["attention_multiplier"]) * np.sqrt(self.desc.dh)
         self.load_bundle(w)

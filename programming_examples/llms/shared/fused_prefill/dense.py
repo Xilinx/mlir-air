@@ -131,10 +131,12 @@ class DensePrefill(Engine):
     [layers, P, kv_heads * dh] roped K and raw V the fused decoder seeds from.
 
     q_scale multiplies q after rope, on top of the attention's 1 / sqrt(dh);
-    res_scale multiplies each sublayer's output before its residual add."""
+    res_scale multiplies each sublayer's output before its residual add;
+    rope_layers, when set, says per layer whether q and k take rope."""
 
     q_scale = 1.0
     res_scale = 1.0
+    rope_layers = None
 
     def __init__(self, build_dir, desc, context=None):
         self.desc = desc
@@ -157,6 +159,11 @@ class DensePrefill(Engine):
         eps and rope are already set."""
         e = self.desc
         norms = {"input": "input_layernorm", "post_attn": "post_attention_layernorm"}
+        if e.post_norm:
+            norms = {
+                "post_attn": "post_attention_layernorm",
+                "post_ffn": "post_feedforward_layernorm",
+            }
         if e.gemma:
             norms.update(
                 pre_ffn="pre_feedforward_layernorm",
@@ -266,7 +273,10 @@ class DensePrefill(Engine):
         pend = []
         for c, (r0, t) in enumerate(chunks):
             a = self.a_chunk(e.d, c)
-            H.rms_tile(rows[c], nm["input"], eps, a[1], TM, TK)
+            if e.post_norm:
+                H.tile_a(rows[c], a[1], TM, TK)
+            else:
+                H.rms_tile(rows[c], nm["input"], eps, a[1], TM, TK)
             a[0].sync(TO)
             pend.append(self.gemm_start(f"{L}.qkv", c))
         att = []
@@ -290,13 +300,21 @@ class DensePrefill(Engine):
         pend are the queued output projections of _mix_all."""
         e, nm, eps, TM, TK = self.desc, self.norms[L], self.eps, D.TM, D.TK
         rows = [x[r0 : r0 + t] for r0, t in chunks]
-        post = nm.get("post_attn") if e.gemma else None
-        pre = nm["pre_ffn"] if e.gemma else nm["post_attn"]
+        post = nm.get("post_attn") if e.gemma or e.post_norm else None
+        pre = nm["pre_ffn"] if e.gemma else None if e.post_norm else nm["post_attn"]
         gu = []
         for c, (r0, t) in enumerate(chunks):
             o = self.gemm_wait(pend[c], t)
             a = self.a_chunk(e.d, c)
-            H.add_rms_tile(rows[c], o, t, post, eps, pre, a[1], TM, TK, self.res_scale)
+            if pre is None:
+                H.add_rms_tile(
+                    rows[c], o, t, post, eps, None, None, TM, TK, self.res_scale
+                )
+                H.tile_a(rows[c], a[1], TM, TK)
+            else:
+                H.add_rms_tile(
+                    rows[c], o, t, post, eps, pre, a[1], TM, TK, self.res_scale
+                )
             a[0].sync(TO)
             gu.append(
                 (self.gemm_start(f"{L}.gate", c, 1), self.gemm_start(f"{L}.up", c))
@@ -309,7 +327,7 @@ class DensePrefill(Engine):
             H.glu_tile(g, u, t, e.inter, a[1], TM, TK)
             a[0].sync(TO)
             pend.append(self.gemm_start(f"{L}.down", c))
-        post = nm.get("post_ffn") if e.gemma else None
+        post = nm.get("post_ffn") if e.gemma or e.post_norm else None
         for c, (r0, t) in enumerate(chunks):
             f = self.gemm_wait(pend[c], t)
             H.add_rms_tile(rows[c], f, t, post, eps, None, None, TM, TK, self.res_scale)
@@ -319,9 +337,17 @@ class DensePrefill(Engine):
         and the kept cache."""
         e, nm, eps = self.desc, self.norms[L], self.eps
         dq, dk, dh = e.heads * e.dh, e.kv_heads * e.dh, e.dh
-        cs, sn = self._rope(op, r0, t)
-        rope = (cs, sn, self.rot)
+        rope = None
+        if self.rope_layers is None or self.rope_layers[L]:
+            cs, sn = self._rope(op, r0, t)
+            rope = (cs, sn, self.rot)
         bias = self.bias[L] if e.qkv_bias else None
+        qn, kn = nm.get("q_norm"), nm.get("k_norm")
+        if e.qk_norm_rows:
+            # one RMSNorm over all heads' q (k) columns, before rope
+            for c0, c1, w in ((0, dq, qn), (dq, dq + dk, kn)):
+                qkv[:t, c0:c1] = H.rms(np.asarray(qkv[:t, c0:c1], np.float32), w, eps)
+            qn = kn = None
         ch = self.attn_chunk(kvb["op"], c)
         h0 = 0
         for p in ch["parts"]:
@@ -334,7 +360,7 @@ class DensePrefill(Engine):
                 hg,
                 dh,
                 bias,
-                nm.get("q_norm"),
+                qn,
                 eps,
                 rope,
                 self.q_scale,
@@ -355,7 +381,7 @@ class DensePrefill(Engine):
             e.kv_heads,
             dh,
             bias,
-            nm.get("k_norm"),
+            kn,
             eps,
             rope,
             1.0,

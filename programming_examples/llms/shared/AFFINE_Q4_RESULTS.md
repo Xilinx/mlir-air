@@ -1,6 +1,6 @@
 # Affine-Q4 verification and performance
 
-Mistral-7B and Granite-3.3-2B have since moved their prefill to the shared fused prefill; their rows below are per-op prefill measurements, and their READMEs list the current ones.
+Mistral-7B, Granite-3.3-2B, SmolLM3-3B and OLMo2-1B have since moved their prefill to the shared fused prefill; their rows below are per-op prefill measurements.
 
 All **19 native configurations** passed the fixed original-HF BF16 model gate on the migrated implementation. Every model also passed a P512 A/B/A reset-and-repeatability check. Five longer configurations outside native context are excluded.
 
