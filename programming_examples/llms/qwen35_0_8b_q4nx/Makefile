@@ -30,7 +30,7 @@ OUT ?= $(CURDIR)/out
 CAPACITIES ?= 1024 2048 4096 8192
 # Decode contexts `make profile-decode` measures, comma-separated: one ELF of
 # that capacity each (built if missing).
-CONTEXTS ?= 2048,8192
+CONTEXTS ?= 2048,8192,32768
 P ?= 512
 C ?= 1024
 PROMPT ?= Introduce me what is GPU
