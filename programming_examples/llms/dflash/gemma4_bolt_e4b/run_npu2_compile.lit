@@ -1,0 +1,5 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+// Weight-free build of the target, drafter, prepass record and NPU prefill.
+// REQUIRES: peano, llvm_link_pre23
+// RUN: make -f %S/Makefile compile BUILD_DIR=dflash-build
