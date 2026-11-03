@@ -50,7 +50,7 @@ def verify(name, argv):
     from air_examples.llms.shared.fused_prefill import dense
 
     desc = MODELS[name]
-    if desc.family == "affine":
+    if desc.codec == "affine":
         sys.exit(f"{name}: gated through its deployment (make verify, ci-verify)")
     ap = argparse.ArgumentParser()
     ap.add_argument("build_dir")

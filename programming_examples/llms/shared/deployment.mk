@@ -24,8 +24,10 @@ help:
 	@echo "make run P=512 N_TOKENS=32; make profile P=512"
 	@echo "compile-all / verify-all / profile-all visit every native configuration"
 ifdef RUNNER_ADAPTER
-	@echo "fused prefill: any input up to its built length (one build for every P)"
 	@echo "make verify / accuracy / tasks: verify/ subsystem (after make weights compile P=1024)"
+endif
+ifneq ($(RUNNER_ADAPTER)$(FUSED_PREFILL),)
+	@echo "fused prefill: any input up to its built length (one build for every P)"
 	@echo "make compile-fused-prefill / profile-fused-prefill FUSED_LENGTHS=512,2048"
 endif
 info:
@@ -84,7 +86,7 @@ ifdef RUNNER_ADAPTER
 # prompts), `accuracy` (verify/accuracy.mk) and `tasks`. The adapter runs the
 # session of the native configuration whose KV capacity covers the tool's
 # sequence length, so build that configuration first (P=1024 for 2048).
-.PHONY: verify-native weights-prefill
+.PHONY: verify-native
 VERIFY_RUNNER := $(srcdir)/../verify/verify_runner.py
 MODEL_CHOICE ?= instruct
 MAX_PROMPTS ?= 2
@@ -99,8 +101,13 @@ ACC_MODEL := $(MODEL_CHOICE)
 ACC_DIR := $(srcdir)/..
 ACC_ENV = $(VERIFY_ENV)
 include $(srcdir)/../verify/accuracy.mk
+FUSED_PREFILL := 1
+endif
 
+# A model on the shared fused prefill without RUNNER_ADAPTER sets FUSED_PREFILL.
+ifdef FUSED_PREFILL
 # The fused prefill's own targets (fused_prefill.mk), on the logical Q4.
+.PHONY: weights-prefill
 weights-prefill:
 	$(DRIVER) weights $(OPTIONS) --part prefill
 FUSED_MODEL := $(MODEL_MODULE)

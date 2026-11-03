@@ -34,13 +34,17 @@ class Desc(NamedTuple):
     # (dense_main.py build --max-len). Longer prompts take the per-op prefill.
     max_len: int = 2048
     lkp: int = 32
-    family: str = "dense"  # "lfm2": lfm2.py, "affine": affine.py
+    # "lfm2": lfm2.py; "affine", "openelm": affine.py; "phi2": phi2.py
+    family: str = "dense"
     # the weights: a Q4NX bundle ("q4nx"), a bundle of Q4_0 matrices ("q4_0"),
     # a full-precision HF checkpoint rounded onto Q4NX at load ("hf"), or
     # canonical affine Q4 tensors (shared/affine_q4.py, "affine")
     codec: str = "q4nx"
     base: str = ""  # HF repo of the config and tokenizer, if `repo` has none
     tol: float = 0.99  # verify's logit cosine gate against the fp32 reference
+    # head dim of the device's attention when the model's dh is padded up to
+    # it, else 0
+    attn_dh: int = 0
 
 
 def layer_op(desc, L):
@@ -63,7 +67,7 @@ class Spec(NamedTuple):
 def spec(desc):
     a = D.Attn(
         col=0,
-        dh=desc.dh,
+        dh=desc.attn_dh or desc.dh,
         lkp=desc.lkp,
         kv_heads=desc.kv_heads // 2,
         # the cores read an even number of blocks, so one past the last
@@ -81,11 +85,13 @@ def spec(desc):
     dq, dk = desc.heads * desc.dh, desc.kv_heads * desc.dh
     shapes = {
         (desc.d, n(dq + 2 * dk), 0, 1),  # q | k | v
-        (dq, n(desc.d), 0, 1),  # o
-        (desc.d, n(desc.inter), 1, 1),  # gate, activation in the drain
-        (desc.d, n(desc.inter), 0, 1),  # up
-        (desc.inter, n(desc.d), 0, 1),  # down
+        # o, on the attention's output
+        (desc.heads * (desc.attn_dh or desc.dh), n(desc.d), 0, 1),
+        (desc.d, n(desc.inter), 0, 1),  # up (phi2: fc1)
+        (desc.inter, n(desc.d), 0, 1),  # down (phi2: fc2)
     }
+    if desc.family != "phi2":
+        shapes.add((desc.d, n(desc.inter), 1, 1))  # gate, activation in the drain
     if desc.family == "lfm2":
         shapes.add((desc.d, n(3 * desc.d), 0, 1))  # ShortConv in_proj
     # LM head, at most MAX_N columns per op
@@ -244,5 +250,38 @@ MODELS = {
         max_len=2048,
         family="affine",
         codec="affine",
+    ),
+    # Built for its widest layer (Q32, KV8, FFN 8192); the narrower layers'
+    # weights are zero-padded up to it.
+    "openelm_1b_q4nx": Desc(
+        "apple/OpenELM-1_1B-Instruct",
+        2048,
+        64,
+        32,
+        8,
+        8192,
+        28,
+        32000,
+        qk_norm=True,
+        max_len=2048,
+        family="openelm",
+        codec="affine",
+    ),
+    # Head dim 80, padded to 128 in the attention.
+    "phi2_2_7b_q4nx": Desc(
+        "microsoft/phi-2",
+        2560,
+        80,
+        32,
+        32,
+        10240,
+        32,
+        51200,
+        qkv_bias=True,
+        tied=False,
+        max_len=2048,
+        family="phi2",
+        codec="affine",
+        attn_dh=128,
     ),
 }

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Phi-2 fixed identities and local artifact paths."""
 
+from dataclasses import dataclass
 from pathlib import Path
 import os
 from ..shared.deployment import file_hash, save_json
@@ -21,6 +22,17 @@ H, HP, F, FP, D, DP, HEADS, BLOCKS, VOCAB = (
     32,
     51200,
 )
+
+
+@dataclass
+class Config:
+    n_layers: int = 32
+    emb_dim: int = 2560
+    n_heads: int = 32
+    n_kv_heads: int = 32
+    head_dim: int = 80
+    hidden_dim: int = 10240
+    vocab_size: int = 51200
 
 
 def read_task():

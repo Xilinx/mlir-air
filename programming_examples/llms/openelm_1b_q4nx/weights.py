@@ -19,7 +19,6 @@ from ..shared.q4_cascade import (
     check_seed_packer,
     pad,
     slice_rows,
-    dequant,
 )
 
 
@@ -76,10 +75,6 @@ def prepare(out, task):
             stream[offset : offset + block.size] = block
             offset += block.size
         assert offset == (l + 1) * fd.W_LAYER
-        for key, tensor in tensors.items():
-            np.save(
-                out / f"layer{l}_{key}.npy", dequant(tensor).T.copy().view(np.uint16)
-            )
         norms.append(
             np.stack(
                 [

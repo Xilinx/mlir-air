@@ -15,11 +15,11 @@ make compile P=512
 make run P=512 N_TOKENS=32
 ```
 
-For Mistral-7B, Granite-3.3-2B, SmolLM3-3B and OLMo2-1B, `make compile` builds the shared fused prefill once (into `BUILD_DIR/fused_prefill`, reused while its sources and toolchain are unchanged) and the P/C configuration's decode. That prefill takes any input of up to 4096 tokens; `INPUT_IDS` may hold fewer than P tokens, as long as the decode capacity C leaves room for the outputs.
+`make compile` builds the shared fused prefill once (into `BUILD_DIR/fused_prefill`, reused while its sources and toolchain are unchanged), the P/C configuration's decode and, for OpenELM and Phi-2, the decode's LM head. That prefill takes any input up to the model's longest native input (4096 tokens, 2048 for OLMo2, OpenELM and Phi-2); `INPUT_IDS` may hold fewer than P tokens, as long as the decode capacity C leaves room for the outputs.
 
-Without `CHECKPOINT`, weight preparation downloads the pinned HF revision. `Q4_DIR=/path/to/canonical-q4` reuses already-prepared logical Q4 tensors. Packing preserves their codes, scale and minimum values. Builds and packed weights go into `BUILD_DIR` (default `build/`); a separate directory may be selected. `make compile-kernels` compiles only the C++/LLVM kernels. `compile-decode`, `compile-prefill` and `compile-head` build individual components. Compile decode kernels before prefill variants that reuse their normalization object.
+Without `CHECKPOINT`, weight preparation downloads the pinned HF revision. `Q4_DIR=/path/to/canonical-q4` reuses already-prepared logical Q4 tensors. Packing preserves their codes, scale and minimum values. Builds and packed weights go into `BUILD_DIR` (default `build/`); a separate directory may be selected. `make compile-kernels` compiles only the C++/LLVM kernels. `compile-decode`, `compile-prefill` (the fused prefill) and `compile-head` (the fused prefill and, for OpenELM and Phi-2, the decode's LM head) build individual components.
 
-`make compile-all` builds all native P/C configurations. For the composed-prefill models each point has separate prefill and decode artifacts; the full head is shared. Their prefill build manifest records `gemm_bfp16=true`, and runtime rejects prefill artifacts lacking that setting. BFP16 GEMM selection does not change the model's attention precision or its head arithmetic.
+`make compile-all` builds the decode of every native P/C configuration; the fused prefill and the LM head are shared.
 
 ## Correctness and timing
 
@@ -33,7 +33,7 @@ make profile P=512
 
 For OpenELM, use a separate reference environment with Transformers 4.39.3 for its original HF Python implementation. A local OpenELM checkpoint must include the pinned repository's `configuration_openelm.py` and `modeling_openelm.py`; the default HF download includes them. Other models use Transformers 5.3.0. Reference generation loads original checkpoint weights and generates 32 greedy outputs, ignoring EOS. Verification requires complete finite full-vocabulary logits for every output and applies the shared mutual-top-5 check at the first divergent choice. It is a fixed-input model gate.
 
-For these four models this fixed-input gate is `make verify-native`. Their `make verify`, `make accuracy` and `make tasks` run AIR's shared [verify subsystem](../verify/README.md) through `verify_adapter.py` (`affine_verify.py`): the top-5 gate on its prompts, teacher-forced KL divergence on wikitext-2 against the BF16 checkpoint or the dequantized affine-Q4 weights (`ACC_REF=bf16|dequant`, `ACC_PATH=decode|prefill`), and GSM8K / MMLU scores. They run the session of the configuration whose KV capacity covers 2048 tokens, so build it first:
+For the models other than OpenELM this fixed-input gate is `make verify-native`. Their `make verify`, `make accuracy` and `make tasks` run AIR's shared [verify subsystem](../verify/README.md) through `verify_adapter.py` (`affine_verify.py`): the top-5 gate on its prompts, teacher-forced KL divergence on wikitext-2 against the BF16 checkpoint or the dequantized affine-Q4 weights (`ACC_REF=bf16|dequant`, `ACC_PATH=decode|prefill`), and GSM8K / MMLU scores. They run the session of the configuration whose KV capacity covers 2048 tokens, so build it first:
 
 ```bash
 make weights
@@ -43,7 +43,10 @@ make accuracy ACC_REF=dequant ACC_PATH=prefill
 make tasks TASKS=gsm8k TASKS_LIMIT=100
 ```
 
-`make compile-fused-prefill` and `make profile-fused-prefill FUSED_LENGTHS=512,1024,2048,4096` build and time the fused prefill alone on synthetic inputs (`bench/sweep_prefill.py --fused`).
+OpenELM's checkpoint ships neither a tokenizer nor an HF implementation the
+verify/ tools can load, so its `make verify` remains the fixed-input gate.
+
+`make compile-fused-prefill` and `make profile-fused-prefill FUSED_LENGTHS=512,1024,2048` build and time the fused prefill alone on synthetic inputs (`bench/sweep_prefill.py --fused`).
 
 For the optional A/B/A request-isolation check, run the common CLI from `programming_examples/llms/` (substitute the model and build paths):
 
@@ -69,9 +72,10 @@ Per-PR CI runs `shared/run_host_checks.lit` (codec, model-gate and CI failure-pa
 checks). The existing LLM compile suite builds P512 without weights. The nightly
 verify and profile suites discover **19 separate native-configuration tests per
 suite** and run them serially. Unsupported native contexts have no test entry.
-Each test has the nightly suite's 1,800-second timeout. Mistral-7B, Granite-3.3-2B,
-SmolLM3-3B and OLMo2-1B add `run_npu2_verify.lit`, `run_npu2_accuracy.lit`, `run_npu2_tasks.lit` and
-`run_npu2_prefill_sweep.lit`, which share one `affine-build` directory per model.
+Each test has the nightly suite's 1,800-second timeout. Every model adds
+`run_npu2_prefill_sweep.lit`, and all but OpenELM add `run_npu2_verify.lit`,
+`run_npu2_accuracy.lit` and `run_npu2_tasks.lit`; they share one `affine-build`
+directory per model.
 
 Seed the pinned revisions in `llms/hf_models.txt` with the existing Download LLM
 Weights workflow. Tests require the corresponding `hfweights_*` cache feature;
