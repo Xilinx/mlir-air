@@ -329,6 +329,9 @@ def main(model):
     os.environ["AIR_MODEL_BUILD_DIR"] = str(args.build_dir.resolve())
     if args.q4_dir:
         os.environ["AIR_MODEL_Q4_DIR"] = str(args.q4_dir.resolve())
+    if args.checkpoint:
+        # the session reads the checkpoint's config.json from here
+        os.environ["AIR_MODEL_CHECKPOINT"] = str(args.checkpoint.resolve())
     selected = configuration(
         model,
         args.prefill,
@@ -366,7 +369,7 @@ def main(model):
         if fused_prefill_model(model):
             # One fused prefill serves every native configuration, and the
             # LM head of its prefill is one of its GEMMs.
-            if args.part in ("all", "prefill"):
+            if args.part in ("all", "prefill", "head"):
                 build_fused_prefill(model, base / "fused_prefill")
             print("Compilation passed.")
             return

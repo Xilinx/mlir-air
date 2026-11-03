@@ -88,11 +88,27 @@ def _fused_prefill_key(model):
     for p in sorted(here.rglob("*")) + [mm]:
         if p.is_file() and p.suffix in (".py", ".cc", ".c", ".h"):
             h.update(str(p.relative_to(here.parents[2])).encode() + p.read_bytes())
-    for var in ("PEANO_INSTALL_DIR", "MLIR_AIE_INSTALL_DIR"):
-        h.update(os.environ.get(var, "").encode())
+    # The toolchain by identity, not location: an in-place rebuild or upgrade
+    # changes the key.
+    import importlib.metadata
+    import shutil
+
     import air
 
-    h.update(str(Path(air.__path__[0]).resolve()).encode())
+    for dist in ("mlir_aie", "llvm-aie"):
+        try:
+            h.update(f"{dist}={importlib.metadata.version(dist)}".encode())
+        except importlib.metadata.PackageNotFoundError:
+            h.update(f"{dist}=none".encode())
+    tools = [shutil.which("aircc"), shutil.which("aiecc.py")]
+    peano = os.environ.get("PEANO_INSTALL_DIR", "")
+    if peano:
+        tools += [Path(peano) / "bin" / name for name in ("clang", "llc", "opt")]
+    tools += sorted(Path(air.__path__[0]).resolve().rglob("*.so"))
+    for t in tools:
+        if t and Path(t).is_file():
+            st = Path(t).resolve().stat()
+            h.update(f"{Path(t).resolve()}:{st.st_size}:{st.st_mtime_ns}".encode())
     return h.hexdigest()
 
 

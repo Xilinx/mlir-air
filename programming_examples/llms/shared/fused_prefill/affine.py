@@ -17,6 +17,7 @@ multipliers when the config has them:
 """
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -62,13 +63,18 @@ def checkpoint_config(desc, weights):
     m = weights.manifest
     if m["checkpoint"] != desc.repo:
         raise ValueError(f"Q4 tensors are of {m['checkpoint']}, not {desc.repo}")
-    d = snapshot_download(
-        desc.repo,
-        revision=m["revision"],
-        allow_patterns=["config.json"],
-        local_files_only=HF_HUB_OFFLINE,
-    )
-    path = Path(d) / "config.json"
+    local = os.environ.get("AIR_MODEL_CHECKPOINT")
+    if local:
+        # a local checkpoint (CHECKPOINT=...) carries its own config.json
+        path = Path(local) / "config.json"
+    else:
+        d = snapshot_download(
+            desc.repo,
+            revision=m["revision"],
+            allow_patterns=["config.json"],
+            local_files_only=HF_HUB_OFFLINE,
+        )
+        path = Path(d) / "config.json"
     if file_hash(path) != m["config_sha256"]:
         raise ValueError(f"{path} differs from the one the Q4 tensors came from")
     return path

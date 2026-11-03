@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import importlib
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -82,12 +83,30 @@ def build_dequant_hf_model(model, npu_model_name, hf_ref_model, config):
     return dequantized_reference(hf_ref_model, weights)
 
 
+def _hold_device_lock(path="/tmp/mlir-air-npu.lock"):
+    """Wait for the NPU lock and keep it until the process exits."""
+    import fcntl
+
+    handle = open(path, "a")
+    fcntl.flock(handle, fcntl.LOCK_EX)
+    return handle
+
+
+def q4_manifest(model):
+    """The manifest of the canonical Q4 tensors the NPU runs."""
+    q4 = os.environ.get("AIR_MODEL_Q4_DIR", build_root(model) / "logical-q4")
+    return str(Path(q4).resolve() / "manifest.json")
+
+
 class Runner:
     """The production session of one native configuration."""
 
     name = "npu_affine_q4"
 
     def __init__(self, model, max_seq):
+        # The device lock the CLI takes, held from the session's creation until
+        # the process exits: the verify/ tools run all their NPU work on it.
+        self._lock = _hold_device_lock()
         s = spec(model)
         configs = sorted(s["configurations"], key=lambda pc: pc[1])
         p = next((p for p, c in configs if c >= max_seq), configs[-1][0])
@@ -158,4 +177,6 @@ def adapter(model):
         build_config=lambda: build_config(model),
         build_runner=build_runner,
         build_dequant_hf_model=dequant,
+        # keys accuracy.py's dequant reference on the Q4 tensors
+        MODEL_SOURCE=q4_manifest(model),
     )
