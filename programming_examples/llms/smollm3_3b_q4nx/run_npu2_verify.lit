@@ -1,0 +1,18 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// smollm3_3b_q4nx verify gate: top-k token-level inclusion, NPU vs the pinned HF bf16
+// checkpoint, 2 prompts x 32 greedy tokens, k=5 (verify/verify_runner.py
+// through verify_adapter.py). The production path: the fused prefill for the
+// prompt, its KV rows handed to the fused decode. The adapter runs the P1024
+// configuration, whose KV capacity of 2048 covers the runner's sequences.
+// run_npu2_verify_p*.lit is the fixed-input gate of each native configuration.
+//
+// The tests of this directory share affine-build: weights are packed once.
+//
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hfweights_huggingfacetb_smollm3_3b
+//
+// RUN: test -f affine-build/weights/manifest.json || make -f %S/Makefile weights BUILD_DIR=affine-build PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile compile P=1024 BUILD_DIR=affine-build PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile verify BUILD_DIR=affine-build PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: [verify] PASS

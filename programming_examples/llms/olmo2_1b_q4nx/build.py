@@ -5,9 +5,8 @@
 
 import os
 from pathlib import Path
-import time
 
-from .common import ROOT, save_json, file_hash
+from .common import ROOT
 from ..shared.decode_build import run, build_templates
 
 DECODE_ENV = dict(
@@ -91,40 +90,3 @@ def build_decode_kernels(out, capacity=1024):
         )
     )
     return settings, env, records
-
-
-def build_prefill(
-    out, sequence_length=512, rms_impl="decode", reuse_non_gemm_from=None
-):
-    from .prefill import compile_prefill
-
-    compile_prefill(out, sequence_length, reuse_non_gemm_from)
-
-
-def build_head(out):
-    out.mkdir(parents=True, exist_ok=True)
-    os.chdir(out)
-    os.environ["AIR_TARGET_DEVICE"] = "npu2"
-    from ..shared.infra.cache import KernelCache
-    from ..shared.infra.backend_presets import LM_GEMV_BACKEND
-    from ..shared.builders.lm_head_gemv_multi import (
-        build_lm_head_gemv_module,
-    )
-
-    cache = KernelCache(cache_dir=str(out / "cache"), verbose=True)
-    start = time.perf_counter()
-    cache.compile_and_cache(
-        "lm_head_gemv",
-        build_lm_head_gemv_module(2048, n_partitions=8),
-        dict(LM_GEMV_BACKEND, verbose=True, target_device="npu2"),
-    )
-    cache._save_manifest()
-    save_json(
-        out / "build.json",
-        {
-            "seconds": time.perf_counter() - start,
-            "artifacts": {
-                str(p.relative_to(out)): file_hash(p) for p in out.rglob("*.elf")
-            },
-        },
-    )

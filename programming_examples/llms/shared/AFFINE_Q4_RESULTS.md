@@ -1,5 +1,7 @@
 # Affine-Q4 verification and performance
 
+Mistral-7B, Granite-3.3-2B, SmolLM3-3B and OLMo2-1B have since moved their prefill to the shared fused prefill; their rows below are per-op prefill measurements.
+
 All **19 native configurations** passed the fixed original-HF BF16 model gate on the migrated implementation. Every model also passed a P512 A/B/A reset-and-repeatability check. Five longer configurations outside native context are excluded.
 
 Measured on an AMD Ryzen AI 9 HX 370, Ubuntu 24.04.3, XRT 2.21.0 / firmware 1.1.2.64. The initial 19-point campaign used source `9130011`, AIR `0.0.1.2026102604+2f080d3`, MLIR-AIE `1.4.5.dev64+g843e9c3`, Peano `22.0.0.2026101901+4f5df13d` and LLVM 18 linker. The table retains 17 of those measurements. OpenELM's two rows were remeasured after review fix `4bb3c89`, using the locally built AIR compiler `dddd696` based on upstream `5559460`, with the same AIE/Peano versions. The original OpenELM rows remain in `superseded_configurations` in the JSON record.

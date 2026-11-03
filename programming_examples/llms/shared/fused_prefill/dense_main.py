@@ -50,6 +50,8 @@ def verify(name, argv):
     from air_examples.llms.shared.fused_prefill import dense
 
     desc = MODELS[name]
+    if desc.family == "affine":
+        sys.exit(f"{name}: gated through its deployment (make verify, ci-verify)")
     ap = argparse.ArgumentParser()
     ap.add_argument("build_dir")
     ap.add_argument("--prompt", default="What is the capital of France?")

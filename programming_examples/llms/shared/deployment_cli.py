@@ -14,6 +14,7 @@ import time
 import numpy as np
 
 from .deployment import build_root, configuration, file_hash, read_task, runtime, spec
+from .deployment_runtime import build_fused_prefill, fused_prefill_model
 
 
 def write_json(path, value):
@@ -328,6 +329,9 @@ def main(model):
     os.environ["AIR_MODEL_BUILD_DIR"] = str(args.build_dir.resolve())
     if args.q4_dir:
         os.environ["AIR_MODEL_Q4_DIR"] = str(args.q4_dir.resolve())
+    if args.checkpoint:
+        # the session reads the checkpoint's config.json from here
+        os.environ["AIR_MODEL_CHECKPOINT"] = str(args.checkpoint.resolve())
     selected = configuration(
         model,
         args.prefill,
@@ -340,6 +344,9 @@ def main(model):
             from .prepare_affine_q4 import prepare
 
             prepare(checkpoint(model, args.checkpoint), q4, s)
+        if args.part == "prefill" and fused_prefill_model(model):
+            # the fused prefill reads the logical Q4 itself
+            return
         packer = importlib.import_module(f"air_examples.llms.{model}.weights")
         packer.prepare(base / "weights", read_task(model))
         return
@@ -359,6 +366,13 @@ def main(model):
             return
         if args.part in ("all", "decode"):
             build.build_decode(folder / "decode", selected["capacity"])
+        if fused_prefill_model(model):
+            # One fused prefill serves every native configuration, and the
+            # LM head of its prefill is one of its GEMMs.
+            if args.part in ("all", "prefill", "head"):
+                build_fused_prefill(model, base / "fused_prefill")
+            print("Compilation passed.")
+            return
         if args.part in ("all", "prefill"):
             build.build_prefill(
                 folder / "prefill",

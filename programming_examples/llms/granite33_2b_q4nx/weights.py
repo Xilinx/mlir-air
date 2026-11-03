@@ -71,13 +71,6 @@ def prepare(out, task):
             stream[offset : offset + block.size] = block
             offset += block.size
         assert offset == (layer + 1) * fd.W_LAYER
-        # Prefill matrices preserve these very same q/scale/min values, with
-        # one BF16 rounding after affine reconstruction, then [out,in]->[in,out].
-        for key, suffix in PROJECTIONS.items():
-            matrix = reader.dequant(f"model.layers.{layer}.{suffix}.weight").astype(
-                bfloat16
-            )
-            np.save(out / f"layer{layer}_{key}.npy", matrix.T.copy().view(np.uint16))
         norms.append(
             np.stack(
                 [

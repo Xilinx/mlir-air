@@ -3,4 +3,6 @@
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 MODEL_MODULE := granite33_2b_q4nx
 NATIVE_LENGTHS := 512 1024 2048 4096
+# Prefill on the shared fused prefill; verify/ through this adapter.
+RUNNER_ADAPTER := $(MODEL_MODULE).verify_adapter
 include $(srcdir)/../shared/deployment.mk

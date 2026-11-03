@@ -32,6 +32,7 @@ def load(build_dir):
     _lib.q_pack.argtypes = [_p, _i, _i, _i, _i, _f, _p]
     _lib.rms_tile.argtypes = [_p, _i, _i, _p, _f, _i, _i, _p]
     _lib.add_rms_tile.argtypes = [_p, _p, _i, _p, _f, _i, _i, _p, _i, _i, _p]
+    _lib.add_rms_tile_s.argtypes = _lib.add_rms_tile.argtypes + [_f]
     _l = ctypes.c_long
     _lib.head_post.argtypes = [_p, _i, _i, _i, _i, _i, _p, _p, _f, _p, _p, _i, _f]
     _lib.head_post.argtypes += [_p, _l, _l]
@@ -198,12 +199,13 @@ def rms_tile(x, w, eps, dst, tm, tk):
     _to_bfp(a, t, dst)
 
 
-def add_rms_tile(x, c, t, post, eps, w, dst, tm, tk):
+def add_rms_tile(x, c, t, post, eps, w, dst, tm, tk, scale=1.0):
     """x[:t] += post ? rms(c) * post : c (c bf16 [R, ld]), in place; then
-    dst (A) = bf16(rms(x) * w) if w is given."""
+    dst (A) = bf16(rms(x) * w) if w is given. A scale other than 1 takes
+    bf16(c * scale) for c."""
     n = x.shape[1]
     a = None if dst is None else _bf16_tiles(dst, tm, tk)
-    _lib.add_rms_tile(
+    args = [
         x.ctypes.data,
         c.ctypes.data,
         c.shape[1],
@@ -215,7 +217,11 @@ def add_rms_tile(x, c, t, post, eps, w, dst, tm, tk):
         tm,
         tk,
         _ptr(a),
-    )
+    ]
+    if scale == 1.0:
+        _lib.add_rms_tile(*args)
+    else:
+        _lib.add_rms_tile_s(*args, scale)
     if a is not None:
         _to_bfp(a, t, dst)
 
