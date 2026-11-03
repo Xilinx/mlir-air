@@ -3,8 +3,8 @@
 These examples extend AIR's existing LLM building blocks to six architectures.
 They use the shared fused-decode engine and BFP16 prefill GEMMs. Each model keeps
 its normalization, position encoding, residual structure and head semantics.
-Mistral-7B and Granite-3.3-2B prefill on the shared
-[fused prefill](fused_prefill/affine.py); the other four use composed per-op
+Mistral-7B, Granite-3.3-2B, SmolLM3-3B and OLMo2-1B prefill on the shared
+[fused prefill](fused_prefill/affine.py); OpenELM and Phi-2 use composed per-op
 prefill blocks.
 The [command guide](AFFINE_Q4_DEPLOYMENTS.md) covers checkpoint preparation,
 building, verification and profiling.
@@ -32,9 +32,9 @@ building, verification and profiling.
 
 A new model directory contains its semantic differences, rather than copies of
 packing, manifest I/O, cache loading, process logging or request measurement.
-Granite and Mistral prefill on the shared fused prefill. SmolLM3 reuses Llama's
-composed prefill blocks. OLMo2, OpenELM and Phi-2 have local prefill
-composition for their different normalization or residual layouts.
+Granite, Mistral, SmolLM3 and OLMo2 prefill on the shared fused prefill. OpenELM
+and Phi-2 have local prefill composition for their different normalization or
+residual layouts.
 
 ## Architecture and mapping
 
@@ -52,7 +52,7 @@ host launch count; it does not imply that every layer occupies separate cores
 simultaneously. OpenELM's variable widths and Phi-2's head geometry use padding
 to fit the shared spatial schedule. Model-local packers document the mapping.
 
-### Fused prefill (Mistral, Granite)
+### Fused prefill (Mistral, Granite, SmolLM3, OLMo2)
 
 The prefill runs on the device of [shared/fused_prefill](fused_prefill/), as
 the repository's other fused-prefill models do: every projection GEMM, the
@@ -70,6 +70,13 @@ embedding rows and scaled sublayer outputs are rounded to BF16 as in the
 checkpoint's BF16 model, the attention multiplier scales q, and the logits are
 divided on the host. After the first token is chosen, the prefill's roped K and
 V rows are copied into the fused decode's KV buffer.
+
+SmolLM3's layers whose `no_rope_layers` entry in its `config.json` is 0 take no
+RoPE (`DensePrefill.rope_layers`). OLMo2 normalizes each sublayer's output before
+the residual add and nothing before the sublayers (`Desc.post_norm`), so its
+GEMMs read the residual stream directly, and its q and k RMSNorms span all
+heads' columns together, before RoPE (`Desc.qk_norm_rows`). The fused prefill
+is built for 4096 tokens, 2048 for OLMo2, whose longest native input is 2048.
 
 ### Composed prefill (SmolLM3, OLMo2, OpenELM, Phi-2)
 

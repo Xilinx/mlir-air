@@ -23,6 +23,11 @@ class Desc(NamedTuple):
     qkv_bias: bool = False
     tied: bool = True  # LM head is the bf16 embedding, else the Q4NX lm_head
     gemma: bool = False  # norms around both sublayers, GELU
+    # norms only after each sublayer, on its output before the residual add,
+    # and none before it (OLMo2)
+    post_norm: bool = False
+    # q / k RMSNorm over all heads' columns together rather than per head
+    qk_norm_rows: bool = False
     window: int = 0  # sliding window of the layers that are not global
     global_every: int = 0  # layer L is global when (L + 1) % global_every == 0
     # KV records per head, so the longest prompt; a build can set its own
@@ -205,6 +210,38 @@ MODELS = {
         49159,
         tied=False,
         max_len=4096,
+        family="affine",
+        codec="affine",
+    ),
+    # Layers whose no_rope_layers entry in config.json is 0 take no rope.
+    "smollm3_3b_q4nx": Desc(
+        "HuggingFaceTB/SmolLM3-3B",
+        2048,
+        128,
+        16,
+        4,
+        11008,
+        36,
+        128256,
+        tied=False,
+        max_len=4096,
+        family="affine",
+        codec="affine",
+    ),
+    "olmo2_1b_q4nx": Desc(
+        "allenai/OLMo-2-0425-1B-Instruct",
+        2048,
+        128,
+        16,
+        16,
+        8192,
+        16,
+        100352,
+        qk_norm=True,
+        qk_norm_rows=True,
+        post_norm=True,
+        tied=False,
+        max_len=2048,
         family="affine",
         codec="affine",
     ),

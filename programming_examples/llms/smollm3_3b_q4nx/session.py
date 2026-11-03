@@ -3,7 +3,8 @@
 # Adapted from the declared Granite production session.
 """Production NPU session. No CPU transformer or replay path.
 
-Reuses the AIR Llama BF16 prefill blocks and custom Q4NX spatial decode.
+Prefill runs on the shared fused prefill (shared/fused_prefill/affine.py) for
+any input up to its built length; decode is the custom Q4NX spatial decode.
 All generated artifacts and prepared arrays are resolved relative to candidate_root.
 """
 
@@ -15,16 +16,18 @@ import time
 import numpy as np
 from ml_dtypes import bfloat16
 
-from ..shared.deployment import require_bfp16
-from .common import Config, RUN, REVISION, save_json, file_hash
+from .common import REVISION, save_json, file_hash
 from .build import decode_module
-from ..shared.deployment_runtime import read_bf16, load_cache
+from ..shared.deployment_runtime import FusedPrefillSession, read_bf16
 
 
 def rope_lut(capacity=1024):
     inv = 1.0 / (np.float32(5e6) ** (np.arange(0, 128, 2, dtype=np.float32) / 128))
     angles = np.arange(capacity, dtype=np.float32)[:, None] * inv[None, :]
     return np.concatenate([np.cos(angles), np.sin(angles)], axis=1).astype(bfloat16)
+
+
+MODEL = "smollm3_3b_q4nx"
 
 
 class FusedDecode:
@@ -125,250 +128,92 @@ class FusedDecode:
         self.dev = None
 
 
-class SmolLM3Session:
+class SmolLM3Session(FusedPrefillSession):
+    vocab = 128256
+
     def __init__(self, task, runtime):
         start = time.perf_counter()
         self.root = Path(runtime["candidate_root"]).resolve()
         self.work = Path(runtime["work_dir"]).resolve()
         self.work.mkdir(parents=True, exist_ok=True)
-        selected = runtime["configuration"]
-        expected = next(p for p in task["prompts"] if p["id"] == selected["id"])
-        for key in ("tokens", "prefill_build_length", "capacity", "ids_sha256"):
-            if selected[key] != expected[key]:
-                raise ValueError(f"configuration {key} differs from fixed task")
-        self.prompt_ids = expected["token_ids"]
-        build = self.root / runtime.get("build_dir", f"{RUN}/build-{selected['id']}")
-        prefill_build = self.root / runtime.get("prefill_dir", str(build / "prefill"))
-        head_build = self.root / runtime.get("head_dir", f"{RUN}/build-shared/head")
-        weights_dir = self.root / runtime.get("weights_dir", f"{RUN}/weights")
-        manifest = json.loads((weights_dir / "manifest.json").read_text())
-        if manifest["logical_manifest_sha256"] != task["assets"]["q4_manifest_sha256"]:
-            raise ValueError("packed weights do not bind the fixed logical weights")
         if task["model"]["revision"] != REVISION:
             raise ValueError("unsupported checkpoint revision")
+        build = Path(runtime["build_dir"])
+        fused = Path(runtime["fused_prefill_dir"])
+        weights = Path(runtime["weights_dir"])
+        manifest = json.loads((weights / "manifest.json").read_text())
+        if manifest["logical_manifest_sha256"] != task["assets"]["q4_manifest_sha256"]:
+            raise ValueError("packed weights do not bind the fixed logical weights")
         os.environ["AIR_TARGET_DEVICE"] = "npu2"
-        from .recipes import install
-
-        install()
-        self.config = Config()
-        self.prefill_length = int(selected["prefill_build_length"])
-        self.capacity = int(selected["capacity"])
-        if (self.prefill_length, self.capacity) not in (
-            (512, 1024),
-            (1024, 2048),
-            (2048, 4096),
-            (4096, 8192),
-        ):
-            raise ValueError("unsupported prefill/capacity configuration")
-        compiled_prefill = json.loads((prefill_build / "build.json").read_text())
-        require_bfp16(compiled_prefill)
-        if compiled_prefill["sequence_length"] != self.prefill_length:
-            raise ValueError("prefill artifact shape does not match the session")
-        self.prefill_rms_impl = compiled_prefill.get("rms_implementation", "seed")
-        self.config.gemm_bfp16 = bool(compiled_prefill["gemm_bfp16"])
-        self.resident_prefill = bool(runtime.get("resident_prefill", True))
-        self.cache = load_cache(prefill_build / "cache", resident=self.resident_prefill)
-        self.head_cache = load_cache(head_build / "cache")
-        self.artifact_identity = {
-            f"{mode}/{p.name}": {"path": str(p.resolve()), "sha256": file_hash(p)}
-            for mode, paths in (
-                ("prefill", (prefill_build / "cache").glob("*.elf")),
-                ("head", (head_build / "cache").glob("*.elf")),
-                ("decode", (build / "decode").glob("decode_L*.bin")),
-                ("decode", (build / "decode").glob("decode_L*.xclbin")),
-            )
-            for p in paths
-            if "-before-" not in p.name
-        }
-        self.packing_manifest_sha256 = file_hash(weights_dir / "manifest.json")
+        self.prefill_length = int(runtime["prefill_length"])
+        self.capacity = int(runtime["kv_capacity"])
         self.lut = rope_lut(self.capacity)
-        self.decode = FusedDecode(
-            build / "decode", weights_dir, self.lut, self.capacity
-        )
-        self.embed = self.decode.embed
-        self.final_norm = self.decode.final_norm
-        from llama32_1b_weights import LayerWeights, LlamaWeights
-        from llama32_1b_prefill import preload_prefill_weights
-
-        norms = read_bf16(weights_dir / "norms.npy")
-        fields = {
-            "q": "wq",
-            "k": "wk",
-            "v": "wv",
-            "o": "wo",
-            "gate": "w_gate",
-            "up": "w_up",
-            "down": "w_down",
-        }
-        layers = [
-            LayerWeights(
-                attn_norm=norms[i, 0],
-                ffn_norm=norms[i, 1],
-                **{
-                    field: read_bf16(weights_dir / f"layer{i}_{key}.npy")
-                    for key, field in fields.items()
-                },
-            )
-            for i in range(36)
-        ]
-        self.weights = LlamaWeights(None, layers, self.final_norm, None)
-        p = self.prefill_length
-        self.layer_luts = np.tile(self.lut[None, :p, :], (36, 1, 1))
-        self.layer_luts[3::4, :, :64] = 1
-        self.layer_luts[3::4, :, 64:] = 0
-        preload_prefill_weights(
-            self.weights, self.config, self.cache, p, self.layer_luts
-        )
-        if self.resident_prefill:
-            # KernelCache writes even intermediate slots on their FIRST use.
-            # Prime the attention BO set now, before a real request produces QKV.
-            # No request reset or actual prompt inference occurs during setup.
-            self.cache.load_and_run(
-                "flash_attn",
-                {"output_format": "elf", "instance_name": "attention_bf16"},
-                np.zeros((p, 2048), bfloat16),
-                np.zeros((p, 512), bfloat16),
-                np.zeros((p, 512), bfloat16),
-                np.zeros((p, 2048), bfloat16),
-            )
-            rms = self.cache._cached_bos["rms_gemms_rope_L0"]
-            attn = self.cache._cached_bos["flash_attn"]
-            ffn = self.cache._cached_bos["o_ffn_L0"]
-            assert rms[11] is attn[0] and rms[12] is attn[1] and rms[8] is attn[2]
-            assert attn[3] is ffn[0] and rms[0] is ffn[3] and ffn[3] is ffn[14]
-        from ..shared.affine_q4 import CanonicalWeights
-
-        reader = CanonicalWeights(task["assets"]["q4_root"])
-        self.head_parts = []
-        for part in range(8):
-            lo, hi = part * 16384, min((part + 1) * 16384, 128256)
-            arr = np.zeros((16384, 2048), bfloat16)
-            if hi > lo:
-                arr[: hi - lo] = reader.dequant("lm_head.weight", lo, hi).astype(
-                    bfloat16
-                )
-            self.head_parts.append(arr)
-        self.head_submissions = 0
-        self.head(np.zeros(2048, bfloat16))
-        self.position = None
-        self.prefill_submissions = 0
+        self.decode = FusedDecode(build / "decode", weights, self.lut, self.capacity)
+        self.request_number = 0
         self.closed = False
+        self.open_prefill(MODEL, fused, task["assets"]["q4_root"])
+        if self.prefill_length > self.max_prompt:
+            raise ValueError("the fused prefill build is shorter than the input")
+        self.artifact_identity = self.prefill_identity(fused)
+        self.artifact_identity.update(
+            {
+                f"decode/{p.name}": {"path": str(p.resolve()), "sha256": file_hash(p)}
+                for pattern in ("decode_L*.bin", "decode_L*.xclbin")
+                for p in (build / "decode").glob(pattern)
+            }
+        )
+        self.packing_manifest_sha256 = file_hash(weights / "manifest.json")
         self.loading_seconds = time.perf_counter() - start
         save_json(self.work / "session.json", self.describe_execution())
-
-    def head(self, hidden):
-        from ..shared.infra.backend_presets import LM_GEMV_BACKEND
-
-        args = [np.ascontiguousarray(hidden, dtype=bfloat16)]
-        for part in self.head_parts:
-            args.extend([part, np.zeros(16384, bfloat16)])
-        out = self.head_cache.load_and_run(
-            "lm_head_gemv",
-            LM_GEMV_BACKEND,
-            *args,
-            output_indices=list(range(2, 17, 2)),
-            static_input_indices=set(range(1, 16, 2)),
-            intermediate_indices=set(range(2, 17, 2)),
-        )
-        self.head_submissions += 1
-        return np.concatenate([out[i] for i in range(2, 17, 2)]).astype(np.float32)[
-            :128256
-        ]
-
-    def prefill(self, prompt_ids):
-        from llama32_1b_prefill import run_transformer_block
-
-        if self.closed:
-            raise RuntimeError("session is closed")
-        ids = np.asarray(prompt_ids, dtype=np.int64)
-        if (
-            ids.ndim != 1
-            or len(ids) != self.prefill_length
-            or np.any((ids < 0) | (ids >= 128256))
-        ):
-            raise ValueError("invalid prompt IDs")
-        self.position = None
-        x = np.zeros((self.prefill_length, 2048), bfloat16)
-        x[: len(ids)] = self.embed[ids]
-        keys = np.zeros((36, len(ids), 512), bfloat16)
-        values = np.zeros_like(keys)
-        for layer in range(36):
-            x, inter = run_transformer_block(
-                x,
-                self.weights.layers[layer],
-                self.layer_luts[layer],
-                self.config,
-                self.cache,
-                layer,
-                cpu_attn=False,
-            )
-            keys[layer] = inter["k_roped"][: len(ids)]
-            values[layer] = inter["v"][: len(ids)]
-            self.prefill_submissions += 3
-        # Stage request KV; physical overwrite/handoff follows first-token delivery.
-        self._pending_kv = (keys, values, len(ids))
-        xf = x[len(ids) - 1].astype(np.float32)
-        normalized = (xf / np.sqrt(np.mean(xf * xf) + 1e-6)).astype(bfloat16)
-        hidden = (
-            normalized.astype(np.float32) * self.final_norm.astype(np.float32)
-        ).astype(bfloat16)
-        logits = self.head(hidden)
-        self.position = len(ids)
-        return logits
-
-    def finish_prefill(self):
-        """Complete the physical KV reset/handoff after the first-token boundary."""
-        pending = getattr(self, "_pending_kv", None)
-        if pending is not None:
-            self.decode.seed_kv(*pending)
-            self._pending_kv = None
 
     def decode_step(self, input_token, current_pos):
         self.finish_prefill()
         if self.closed or self.position is None or current_pos != self.position:
             raise ValueError("decode position does not match active request")
-        if not 0 <= input_token < 128256 or not 0 <= current_pos < self.capacity:
+        if not 0 <= input_token < self.vocab or not 0 <= current_pos < self.capacity:
             raise ValueError("decode token/position out of bounds")
         logits = self.decode.step(input_token, current_pos)
         self.position += 1
         return logits
 
     def synchronize(self):
-        # Both paths synchronously wait and read back before returning logits.
+        # Every submit waits and reads back before returning logits.
         pass
 
     def describe_execution(self):
         return {
             "model": "smollm3-3b",
+            "revision": REVISION,
             "blocks": 36,
-            "prefill_build_length": self.prefill_length,
+            "prefill": "shared fused prefill, 128-row chunks, one hardware context",
+            "prefill_max_input": self.max_prompt,
+            "native_input_length": self.prefill_length,
             "kv_capacity": self.capacity,
-            "prefill_native_submissions_per_layer": 3,
-            "prefill_rms_implementation": self.prefill_rms_impl,
-            "prefill_gemm_bfp16": self.config.gemm_bfp16,
-            "resident_prefill_handoffs": self.resident_prefill,
+            "prefill_gemm": "BFP16 (int4 weights dequantized on the cores)",
+            "prefill_attention": "fused prefill attn_bfp16",
             "artifact_identity": self.artifact_identity,
             "packing_manifest_sha256": self.packing_manifest_sha256,
-            "prefill_head_native_submissions": 1,
             "decode_native_submissions_per_token": 1,
             "decode_body": "36 device layer waves followed by seven head waves",
+            "observed_requests": self.request_number,
+            "observed_prefills": self.prefill_dispatches,
+            "observed_decode_submissions": self.decode.submissions,
             "cpu": [
                 "embedding lookup",
-                "prefill final single-row RMSNorm",
+                "prefill RMSNorm, RoPE (not on the no-rope layers), residual adds and SwiGLU",
+                "prefill q / KV / A layouts",
                 "KV handoff",
                 "dispatch",
                 "sampling",
             ],
-            "loading_seconds": self.loading_seconds,
             "rope_layers": [i for i in range(36) if i % 4 != 3],
-            "ffn_logical_width": 11008,
-            "ffn_padded_width": 11264,
+            "loading_seconds": self.loading_seconds,
         }
 
     def close(self):
         if not self.closed:
-            self.cache.close()
-            self.head_cache.close()
+            self.prefiller.suspend()
+            self.prefiller = None
             self.decode.close()
             self.closed = True
 
