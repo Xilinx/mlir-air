@@ -125,6 +125,9 @@ jobs:
       # The persistent HF/derived-weight caches and each run's build tree share
       # one disk; fail here, not hours in, when this run would not fit.
       - name: Check runner disk
+        # PROBE: floor only (60 GiB); the watcher's 15 GiB abort still guards.
+        env:
+          MARGIN_PCT: "-100"
         run: bash utils/ci-disk-guard.sh preflight
 
       - name: Setup environment
@@ -335,6 +338,34 @@ jobs:
           # and takes the runner offline.
           bash "$GITHUB_WORKSPACE/utils/ci-disk-guard.sh" watch $$ &
 
+          # PROBE: used KiB and the lit test running, every 30 s; a du of every
+          # place tests write after each suite.
+          PROBE="$GITHUB_WORKSPACE/disk-probe"
+          mkdir -p "$PROBE"
+          (
+            while kill -0 $$ 2>/dev/null; do
+              t=$(ps -eo args | grep -oE 'Output/[^ ]+\.script|llms/[A-Za-z0-9_/.-]+/Makefile [A-Za-z0-9_-]+|--model-name [A-Za-z0-9_]+' | sort -u | head -4 | tr '\n' ' ')
+              echo "$(date -u +%H:%M:%S) $(df -Pk "$HOME" | awk 'NR==2 {print $3}') ${t:--}"
+              sleep 30
+            done
+          ) > "$PROBE/timeline.txt" 2>&1 &
+          snap() {
+            {
+              echo "== $1 $(date -u +%H:%M:%S) used_kb=$(df -Pk "$HOME" | awk 'NR==2 {print $3}')"
+              echo "-- build_assert/test"
+              du -xk --max-depth=4 "$GITHUB_WORKSPACE/build_assert/test" 2>/dev/null | sort -rn | head -200
+              echo "-- source tree"
+              du -xk --max-depth=4 "$GITHUB_WORKSPACE/programming_examples" 2>/dev/null | sort -rn | head -80
+              echo "-- workspace top"
+              du -xk --max-depth=1 "$GITHUB_WORKSPACE" 2>/dev/null | sort -rn | head -30
+              echo "-- home cache"
+              du -xk --max-depth=2 "$HOME/.cache" 2>/dev/null | sort -rn | head -60
+              echo "-- tmp"
+              du -xk --max-depth=1 /tmp 2>/dev/null | sort -rn | head -20
+            } > "$PROBE/snap-$1.txt"
+          }
+          snap 0-start
+
           source air-venv/bin/activate
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           source /opt/xilinx/xrt/setup.sh
@@ -418,6 +449,7 @@ jobs:
             LIT_OPTS="--timeout 1800 --xunit-xml-output $OLDPWD/verify.xml" \
               ninja check-programming-examples-llms-verify || rc=1
           fi
+          snap 1-verify
           if want profile; then
             # Perf capture: writes <model>.perf.json under test/llms/<model>/.
             LIT_OPTS="--timeout 1800" \
@@ -428,6 +460,7 @@ jobs:
           # point at the profile prompt's ~6 tokens of context, which is the
           # flattering end of a ~12x range and cannot see a KV-path regression.
           # Each context of a fused-decode sweep is a template build.
+          snap 2-profile
           if want sweep; then
             # Build the shared bench binary BEFORE any timed work. Every model's
             # `make clean` recurses into fused_decode's, which deletes it, so
@@ -458,6 +491,7 @@ jobs:
           # cost grows with the length; their longest points need GEMM registry
           # rows and shim-BD / FlashAttention support at that length, and report
           # no_registry_shape or bd_exhaustion without them.
+          snap 3-sweep
           if want prefill-sweep; then
             LIT_OPTS="--timeout 3600" \
               ninja check-programming-examples-llms-prefill-sweep || rc=1
@@ -465,6 +499,7 @@ jobs:
           # Full20 and Full80 take their per-test timeouts from their CMake
           # targets. Don't set --timeout in LIT_OPTS here: lit lets LIT_OPTS
           # override the target's own arguments.
+          snap 4-prefill-sweep
           if want full20; then
             # Four fixed prompts per dataset, both B1 and DFlash.
             ninja check-programming-examples-llms-full20 || rc=1
@@ -653,6 +688,13 @@ jobs:
             verify.xml
 
       # Same payload, name the publisher ignores: still there to download.
+      - name: Upload disk probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: disk-probe-${{ github.run_id }}
+          path: disk-probe/
+
       - name: Upload perf artifact (partial run)
         if: ${{ cancelled() || !(github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event.inputs.suites == 'verify,profile,sweep,prefill-sweep,full20')) }}
         uses: actions/upload-artifact@v4
