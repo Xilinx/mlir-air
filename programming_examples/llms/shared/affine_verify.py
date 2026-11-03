@@ -63,8 +63,9 @@ def build_config(model):
 
 def build_dequant_hf_model(model, npu_model_name, hf_ref_model, config):
     """The checkpoint with each Q4 matrix replaced by its logical affine-Q4
-    values. The embedding stays the checkpoint's bf16; a Q4 lm_head that is a
-    copy of the embedding unties the reference's head."""
+    values. The embedding stays the checkpoint's bf16. When the model ties its
+    head to the embedding, the head gets its own Q4 copy, so the reference is
+    untied to hold both."""
     from .affine_q4 import CanonicalWeights
 
     verify = str(LLMS / "verify")
