@@ -115,7 +115,13 @@ class DFlash:
             draft = self.drafter.verify(
                 [output[-1]] + [self.mask] * (self.batch - 1), position
             )
-            block = [output[-1]] + draft.logits[1:].argmax(axis=1).tolist()
+            # A drafter may choose its proposals itself (from more than its
+            # logits); otherwise they are the logits' argmax.
+            propose = getattr(self.drafter, "propose_tokens", None)
+            proposals = (
+                propose(draft) if propose else draft.logits[1:].argmax(axis=1).tolist()
+            )
+            block = [output[-1]] + proposals
             stages["draft"] += time.perf_counter() - t
             t = time.perf_counter()
             if official_start is None:
