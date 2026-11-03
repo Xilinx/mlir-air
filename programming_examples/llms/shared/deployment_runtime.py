@@ -157,10 +157,8 @@ class FusedPrefillSession:
         self.request_number += 1
         logits = self.prefiller.prefill(ids)
         self.prefill_dispatches += 1
-        keys, values = self.prefiller.kv_bf16()
-        self._pending_kv = (keys, values, len(ids))
-        if self.record_state:
-            self.last_prefill_keys, self.last_prefill_values = keys, values
+        # the prefiller keeps this prompt's KV rows until its next prefill
+        self._pending_kv = len(ids)
         self.position = len(ids)
         return np.asarray(logits, np.float32)
 
@@ -179,7 +177,10 @@ class FusedPrefillSession:
     def finish_prefill(self):
         """The physical KV handoff, after the first-token boundary."""
         if self._pending_kv is not None:
-            self.decode.seed_kv(*self._pending_kv)
+            keys, values = self.prefiller.kv_bf16()
+            if self.record_state:
+                self.last_prefill_keys, self.last_prefill_values = keys, values
+            self.decode.seed_kv(keys, values, self._pending_kv)
             self._pending_kv = None
 
     def prefill_identity(self, directory):
