@@ -147,16 +147,14 @@ class FusedPrefillSession:
         self._pending_kv = None
         self.position = None
 
-    def _ids(self, prompt_ids):
+    def _ids(self, prompt_ids, limit):
         ids = np.asarray(prompt_ids, dtype=np.int64)
         if (
             ids.ndim != 1
-            or not 0 < len(ids) <= self.max_prompt
+            or not 0 < len(ids) <= limit
             or np.any((ids < 0) | (ids >= self.vocab))
         ):
-            raise ValueError(
-                f"expected 1 to {self.max_prompt} token IDs below {self.vocab}"
-            )
+            raise ValueError(f"expected 1 to {limit} token IDs below {self.vocab}")
         return ids.tolist()
 
     def prefill(self, prompt_ids):
@@ -164,7 +162,7 @@ class FusedPrefillSession:
         finish_prefill(), after the first token is chosen."""
         if self.closed:
             raise RuntimeError("session is closed")
-        ids = self._ids(prompt_ids)
+        ids = self._ids(prompt_ids, self.max_prompt)
         self.position = None
         self.request_number += 1
         logits = self.prefiller.prefill(ids)
@@ -179,7 +177,7 @@ class FusedPrefillSession:
         on. No decode follows."""
         if self.closed:
             raise RuntimeError("session is closed")
-        ids = self._ids(prompt_ids)
+        ids = self._ids(prompt_ids, self.prefiller.max_len)
         self.position = None
         self._pending_kv = None
         rows = self.prefiller.prefill(ids, logits_from=int(logits_from))
