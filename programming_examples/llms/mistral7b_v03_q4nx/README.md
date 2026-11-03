@@ -54,6 +54,14 @@ configuration):
 | affine-Q4 weights, dequantized | prefill | 0.0055 | 6.358 / 6.363 | 97.2% |
 | affine-Q4 weights, dequantized | decode | 0.0115 | 6.400 / 6.363 | 95.9% |
 
+Task scores (`make tasks`, lm-evaluation-harness, the NPU and the BF16 checkpoint on the same
+items; McNemar p of the paired difference):
+
+| Task | NPU | BF16 checkpoint | p |
+| --- | ---: | ---: | ---: |
+| GSM8K, 100 items, 5-shot | 46.0% | 51.0% | 0.44 |
+| MMLU, 10 items per subject, 0-shot | 58.4% | 61.2% | 0.02 |
+
 ## Implementation and measured results
 
 See the [architecture and source guide](../shared/AFFINE_Q4_IMPLEMENTATION.md) for the model-specific mapping and common infrastructure. [Fresh upstream verification and profiling](../shared/AFFINE_Q4_RESULTS.md) lists all native configurations as measured with the earlier per-op prefill; the accompanying JSON retains gate hashes and individual request samples.
