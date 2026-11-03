@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 from paths import EXAMPLES, HERE
-from common.build_identity import digest
+from common.build_identity import build_identity, check_existing, digest
 
 PLE = EXAMPLES / "fused_decode_ple"
 CAPACITY = 4096
@@ -26,15 +26,16 @@ OUTPUTS += ("decode_scratchpad.args", "decode_scratchpad.maxl")
 
 
 def identity():
-    sources = [
-        HERE / "build_baseline.py",
-        PLE / "Makefile",
-        PLE / "fused_decode_ple.py",
-    ]
-    sources += sorted((PLE / "kernels").glob("*"))
-    sources += sorted((EXAMPLES / "fused_decode/kernels").glob("*"))
-    sources += [EXAMPLES / "fused_decode/fused_decode.py"]
-    return {str(p.relative_to(EXAMPLES)): digest(p) for p in sources if p.is_file()}
+    """The shared baseline identity (fused_decode sources, tools), extended
+    with fused_decode_ple's build and the kernel makefile it includes."""
+    ident = build_identity("baseline", HERE)
+    extra = [PLE / "Makefile", PLE / "fused_decode_ple.py"]
+    extra += sorted((PLE / "kernels").glob("*"))
+    extra += sorted((EXAMPLES / "fused_decode").glob("*.mk"))
+    ident["sources"].update(
+        {str(p.relative_to(EXAMPLES)): digest(p) for p in extra if p.is_file()}
+    )
+    return ident
 
 
 def main():
@@ -43,12 +44,9 @@ def main():
     a = p.parse_args()
     out = a.output.resolve()
     manifest = out / "manifest.json"
+    ident = identity()
     if manifest.exists():
-        saved = json.loads(manifest.read_text())
-        if saved.get("build_identity") != identity() or any(
-            digest(out / n) != h for n, h in saved["artifacts"].items()
-        ):
-            raise ValueError(f"Stale baseline build at {out}; choose a fresh BUILD_DIR")
+        check_existing(out, ident)
         return
     sys.path.insert(0, str(HERE.parents[1] / "gemma4_e4b_q4nx"))
     import gemma4_e4b_q4nx_weights as gw
@@ -82,7 +80,7 @@ def main():
                 capacity=CAPACITY,
                 batch=1,
                 command=cmd,
-                build_identity=identity(),
+                build_identity=ident,
                 artifacts={n: digest(out / n) for n in OUTPUTS},
             ),
             indent=2,

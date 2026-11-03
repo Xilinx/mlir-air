@@ -95,6 +95,9 @@ def main():
     ident = identity()
     if out.exists() and a.check_existing:
         check_existing(out, ident)
+        saved = json.loads((out / "manifest.json").read_text())["config"]
+        if saved != b8_config.load_layout(cfg).ABI["config"]:
+            raise ValueError("Build configuration differs; choose a fresh BUILD_DIR")
         print("up to date", out)
         return
     work = out / f"compile_L{cfg.build_length}"

@@ -22,6 +22,8 @@ QWEN = Path(__file__).resolve().parents[1] / "qwen3_4b"
 sys.path.append(str(QWEN))
 import target_config  # noqa: E402
 from selected_config import selected_config  # noqa: E402
+import common.build_target as build_target  # noqa: E402
+from common.build_identity import build_identity, digest  # noqa: E402
 from common.build_target import main  # noqa: E402
 
 
@@ -58,7 +60,20 @@ def kernel_defines(cfg):
     return ["-DMODEL_TYPE=QWEN3_4B"]
 
 
+def _identity(kind, model_dir):
+    """The shared builder's identity over the graph it builds (qwen3_4b's),
+    plus this file, which sets the drafter's geometry."""
+    ident = build_identity(kind, QWEN)
+    here = Path(__file__).resolve()
+    ident["sources"][str(here.relative_to(target_config.EXAMPLES))] = digest(here)
+    return ident
+
+
 if __name__ == "__main__":
     if "--role" not in sys.argv:
         sys.argv += ["--role", "drafter"]
+    # The shared builder hashes and records the sources of target_config.HERE,
+    # which the shared paths module resolves to this directory.
+    target_config.HERE = QWEN
+    build_target.build_identity = _identity
     main(target_config, selected_config, kernel_defines=kernel_defines)

@@ -29,12 +29,7 @@ import target_config  # noqa: E402
 
 import model_spec  # noqa: E402
 from draft_cpu import Draft, rms  # noqa: E402
-from model_paths import (  # noqa: E402
-    DRAFT_FILE,
-    DRAFT_REVISION,
-    TARGET_REVISION,
-    default_draft_snapshot,
-)
+from model_paths import DRAFT_FILE, default_draft_snapshot  # noqa: E402
 from weights_b8 import TokenRows, gw, host_weights  # noqa: E402
 
 
@@ -56,21 +51,47 @@ def _q4(w, group):
     return host_weights.requant_q4k(np.asarray(w, np.float32), group)
 
 
-def _identity():
-    """What the packed cache depends on: the packing code, the drafter's
-    geometry and the checkpoints."""
-    import inspect
+def _file_id(path):
+    """A file by content where the Hugging Face cache names its blob by hash,
+    otherwise by path, size and modification time."""
+    p = Path(path).resolve()
+    st = p.stat()
+    if "blobs" in p.parts:
+        return dict(blob=p.name, size=st.st_size)
+    return dict(path=str(p), size=st.st_size, mtime_ns=st.st_mtime_ns)
 
+
+def _identity(weights):
+    """What the packed cache depends on: the checkpoints it reads, the
+    packing code (here and the shared functions it calls) and the drafter's
+    geometry."""
+    import inspect
+    from gemma4_e2b_q4nx_requant import __file__ as requant
+
+    fused = paths.EXAMPLES / "fused_decode"
+    sources = [
+        Path(build_draft.__file__),
+        Path(target_config.__file__),
+        Path(host_weights.__file__),
+        Path(requant),
+        fused / "fused_decode.py",
+        fused / "proj_qmm_pack.py",
+    ]
     code = inspect.getsource(_q4) + inspect.getsource(build_cache)
     return dict(
-        draft_revision=DRAFT_REVISION,
-        target_revision=TARGET_REVISION,
         packing=hashlib.sha256(code.encode()).hexdigest(),
-        build_draft=hashlib.sha256(Path(build_draft.__file__).read_bytes()).hexdigest(),
+        sources={
+            str(p.relative_to(paths.EXAMPLES)): hashlib.sha256(
+                p.read_bytes()
+            ).hexdigest()
+            for p in sources
+        },
+        draft=_file_id(weights.snapshot / DRAFT_FILE),
+        target=_file_id(weights.qm.path),
     )
 
 
-def build_cache(draft, qm, path):
+def build_cache(draft, qm, path, identity):
     """Packed weights (the five layers, then the LM head) and the layers' two
     norms, in the drafter artifact's layout."""
     from gemma4_e2b_q4nx_requant import _interleave512
@@ -124,18 +145,19 @@ def build_cache(draft, qm, path):
         RMS_post=np.stack(rpost).view(np.int16),
     )
     partial.replace(path)
-    path.with_suffix(".json").write_text(json.dumps(_identity(), indent=2) + "\n")
+    path.with_suffix(".json").write_text(json.dumps(identity, indent=2) + "\n")
     return path
 
 
 def packed_cache(directory, weights):
-    """The packed cache in `directory` for the current sources and revisions,
-    built first if absent; the file name carries their hash."""
-    key = hashlib.sha256(json.dumps(_identity(), sort_keys=True).encode())
+    """The packed cache in `directory` for these weights and the current
+    packing code, built first if absent; the file name carries their hash."""
+    identity = _identity(weights)
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode())
     path = Path(directory) / f"packed-{key.hexdigest()[:16]}.npz"
     if path.exists():
         return path
-    return build_cache(weights.draft, weights.qm, path)
+    return build_cache(weights.draft, weights.qm, path, identity)
 
 
 class DraftWeights:
