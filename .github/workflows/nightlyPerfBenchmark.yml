@@ -343,6 +343,7 @@ jobs:
           PROBE="$GITHUB_WORKSPACE/disk-probe"
           mkdir -p "$PROBE"
           (
+            set +e +o pipefail
             while kill -0 $$ 2>/dev/null; do
               t=$(ps -eo args | grep -oE 'Output/[^ ]+\.script|llms/[A-Za-z0-9_/.-]+/Makefile [A-Za-z0-9_-]+|--model-name [A-Za-z0-9_]+' | sort -u | head -4 | tr '\n' ' ')
               echo "$(date -u +%H:%M:%S) $(df -Pk "$HOME" | awk 'NR==2 {print $3}') ${t:--}"
@@ -350,7 +351,8 @@ jobs:
             done
           ) > "$PROBE/timeline.txt" 2>&1 &
           snap() {
-            {
+            (
+              set +e +o pipefail
               echo "== $1 $(date -u +%H:%M:%S) used_kb=$(df -Pk "$HOME" | awk 'NR==2 {print $3}')"
               echo "-- build_assert/test"
               du -xk --max-depth=4 "$GITHUB_WORKSPACE/build_assert/test" 2>/dev/null | sort -rn | head -200
@@ -362,7 +364,8 @@ jobs:
               du -xk --max-depth=2 "$HOME/.cache" 2>/dev/null | sort -rn | head -60
               echo "-- tmp"
               du -xk --max-depth=1 /tmp 2>/dev/null | sort -rn | head -20
-            } > "$PROBE/snap-$1.txt"
+            ) > "$PROBE/snap-$1.txt" 2>&1
+            return 0
           }
           snap 0-start
 
