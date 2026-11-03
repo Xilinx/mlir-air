@@ -678,6 +678,37 @@ _MODELS["mistral7b-v03"] = dict(
     SPLIT_KV_APPEND=True,
     VOCAB_CHUNK_I2=16,
 )
+# Gemma4-E4B for the eight-token DFlash verifier (llms/dflash/gemma4_bolt_e4b).
+# Only its projection geometry comes from here: the graph is built at the
+# full-attention width, which is Qwen3-4B's K/M/DQ/DK, and each layer class
+# streams its own weights within it. The vocabulary is padded to whole
+# 2560-row blocks so 26 chunks of 20 row blocks per core cover it; the host
+# drops the padding.
+#   I2P = [6144, 2560, 2*10240, 2560]/(32*16) = [12, 5, 40, 5]
+#   J2P = [2560, 4096, 2560, 10240]/(2*256)   = [5, 8, 5, 20]
+_MODELS["gemma4-e4b-b8"] = dict(
+    _MODELS["qwen3-4b"],
+    I2P=[12, 5, 40, 5],
+    J2P=[5, 8, 5, 20],
+    VOCAB_SIZE=266240,
+    UNI_DEC=42,
+    UNI_LM=26,
+    VOCAB_CHUNK_I2=20,
+)
+# Its DFlash draft (NVIDIA's, five Qwen3-style layers over the target's LM
+# head). FFN 5120 would pair GLU outputs into 1024-wide slices; 512-wide ones
+# keep the Qwen3-4B kernels (GLU_SLICE 512) and the B8 graph's slice layout.
+# PROJ_X_PINGPONG double-buffers the projection cores' x blocks
+# (llms/dflash/qwen3_4b/batch_graph.py).
+#   I2P[2] = 2*5120/(32*16) = 20, J2P[3] = 5120/(2*256) = 10
+_MODELS["gemma4-e4b-dflash-draft"] = dict(
+    _MODELS["gemma4-e4b-b8"],
+    I2P=[12, 5, 20, 5],
+    J2P=[5, 8, 5, 10],
+    UNI_DEC=5,
+    GLU_PKTS=1,
+    PROJ_X_PINGPONG=True,
+)
 MODEL_NAME = _os.environ.get("DECODE_MODEL", "llama-3.2-1b")
 MODEL = {**_MODEL_DEFAULTS, **_MODELS[MODEL_NAME]}
 # A multi-token mapping may distribute each output block to an independent
@@ -1517,7 +1548,9 @@ HOST_DRAIN = [p for p in range(NDEST) if p != GLU_DEST and p != RMS_DEST]
 # that gives an odd count (qwen2.5-7b: INTERMEDIATE/512 = 37) drop to one packet per
 # slice: same 512-row interleave stride, half the slice, an even count, and the same
 # total. The kernel is generic in the slice length (pseduo_glu<GLU_SLICE>).
-GLU_PKTS = 2 if (ROUNDS_PER_DEST[GLU_DEST] // 2) % 2 == 0 else 1
+GLU_PKTS = MODEL.get("GLU_PKTS") or (
+    2 if (ROUNDS_PER_DEST[GLU_DEST] // 2) % 2 == 0 else 1
+)
 GLU_CHUNK = GLU_PKTS * PAYLOAD // 2  # gate-up interleaves up/gate in chunks this tall
 GLU_SLICE = GLU_PKTS * PAYLOAD  # 1024 = [up 512 | gate 512] (GLU_PKTS demux packets/BD)
 GLU_HID = GLU_SLICE // 2  # 512 out per 1024 slice
