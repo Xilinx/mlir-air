@@ -19,7 +19,7 @@ sys.path.insert(0, str(LLMS / "gemma4_e4b_q4nx"))
 import gemma4_e4b_variant  # noqa: E402,F401  (sets GEMMA4_VARIANT=e4b)
 
 sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
-    str(LLMS.parents[1])
+    str(LLMS.parent)
 ]
 
 import gemma4_e2b_q4nx_weights as gw  # noqa: E402

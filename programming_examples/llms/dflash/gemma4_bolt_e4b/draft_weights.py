@@ -23,6 +23,7 @@ import paths  # noqa: F401  (dflash on sys.path)
 # same name.
 QWEN = Path(__file__).resolve().parents[1] / "qwen3_4b"
 sys.path.append(str(QWEN))
+QWEN_PKG = "air_examples.llms.dflash.qwen3_4b"
 
 import build_draft  # noqa: E402,F401  (the draft geometry in target_config)
 import target_config  # noqa: E402
@@ -37,9 +38,9 @@ def _qwen_decoder():
     """qwen3_4b's TargetDecoder, imported with qwen3_4b's own model_paths
     (this directory has a module of that name too)."""
     own = sys.modules.get("model_paths")
-    sys.modules["model_paths"] = importlib.import_module("qwen3_4b.model_paths")
+    sys.modules["model_paths"] = importlib.import_module(f"{QWEN_PKG}.model_paths")
     try:
-        return importlib.import_module("qwen3_4b.target_runtime").TargetDecoder
+        return importlib.import_module(f"{QWEN_PKG}.target_runtime").TargetDecoder
     finally:
         if own is not None:
             sys.modules["model_paths"] = own

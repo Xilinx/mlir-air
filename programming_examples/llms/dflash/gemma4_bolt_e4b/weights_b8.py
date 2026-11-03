@@ -24,6 +24,7 @@ residual itself, takes c_L, and the norms do not see it.
 """
 
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -32,6 +33,9 @@ from ml_dtypes import bfloat16
 from b8_config import DH, KV_HEADS, Q_HEADS, PLE_GATE_N, PLE_PAD, ROPE_W_LEN
 
 LLMS = Path(__file__).resolve().parents[2]
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(LLMS.parent)
+]
 sys.path.insert(0, str(LLMS / "gemma4_e4b_q4nx"))
 import gemma4_e4b_variant  # noqa: E402,F401  (GEMMA4_VARIANT=e4b)
 import gemma4_e2b_q4nx_weights as gw  # noqa: E402
