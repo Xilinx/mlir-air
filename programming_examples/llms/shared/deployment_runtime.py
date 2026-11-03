@@ -120,6 +120,18 @@ def build_fused_prefill(model, out, jobs=4):
     save_json(stamp, dict(key=key, build=record))
 
 
+class _ChunkRows:
+    """[layers, rows, cols] of per-layer lists of row chunks, as seed_kv
+    indexes it: [layer, :n, c0:c1] copies only that column block."""
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    def __getitem__(self, key):
+        layer, rows, cols = key
+        return np.concatenate([c[:, cols] for c in self.chunks[layer]])[rows]
+
+
 class FusedPrefillSession:
     """The prefill of an affine-Q4 session on the shared fused prefill. The
     session provides self.decode (seed_kv), self.capacity and self.vocab, and
@@ -177,9 +189,12 @@ class FusedPrefillSession:
     def finish_prefill(self):
         """The physical KV handoff, after the first-token boundary."""
         if self._pending_kv is not None:
-            keys, values = self.prefiller.kv_bf16()
             if self.record_state:
+                keys, values = self.prefiller.kv_bf16()
                 self.last_prefill_keys, self.last_prefill_values = keys, values
+            else:
+                kv = self.prefiller.kv
+                keys, values = (_ChunkRows([a[i] for a in kv]) for i in range(2))
             self.decode.seed_kv(keys, values, self._pending_kv)
             self._pending_kv = None
 
