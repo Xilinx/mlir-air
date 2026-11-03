@@ -608,6 +608,7 @@ LLM_HF_MODELS = {
     "gemma4_e2b_q4nx": "FastFlowLM/Gemma4-E2B-IT-NPU2",
     "gemma4_e4b_q4nx": "FastFlowLM/Gemma4-E4B-IT-NPU2",
     "gemma4_e2b_vision": "unsloth/gemma-4-E2B-it",
+    "gemma4_e4b_vision": "unsloth/gemma-4-E4B-it",
     "llama31_8b_q4nx": "FastFlowLM/Llama-3.1-8B-NPU2",
     # Q4_0-quantized on load from an upstream bf16 checkpoint (LiquidAI
     # publishes no pre-quantized bundle), so this points at the source repo
@@ -659,6 +660,7 @@ LLM_DISPLAY = {
     "gemma4_e2b_q4nx": ("gemma-4-E2B-it", "Q4NX", "gemma4e"),
     "gemma4_e4b_q4nx": ("gemma-4-E4B-it", "Q4NX", "gemma4e"),
     "gemma4_e2b_vision": ("gemma-4-E2B-it", "Q4NX, bf16 vision", "gemma4e"),
+    "gemma4_e4b_vision": ("gemma-4-E4B-it", "Q4NX, bf16 vision", "gemma4e"),
     "lfm2_1_2b_q4nx": ("LFM2-1.2B", "Q4_0", "lfm2"),
     "llama31_8b_q4nx": ("Llama-3.1-8B-Instruct", "Q4NX", "llama3"),
     "llama32_1b": ("Llama-3.2-1B", "bf16", None),
