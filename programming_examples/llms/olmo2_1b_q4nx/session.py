@@ -145,6 +145,7 @@ class OLMo2Session(FusedPrefillSession):
         if manifest["logical_manifest_sha256"] != task["assets"]["q4_manifest_sha256"]:
             raise ValueError("packed weights do not bind the fixed logical weights")
         os.environ["AIR_TARGET_DEVICE"] = "npu2"
+        self.record_state = bool(runtime.get("record_state", False))
         self.prefill_length = int(runtime["prefill_length"])
         self.capacity = int(runtime["kv_capacity"])
         self.lut = rope_lut(self.capacity)
