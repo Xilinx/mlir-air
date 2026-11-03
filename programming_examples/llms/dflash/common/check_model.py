@@ -5,6 +5,10 @@
 Run NPU and HF captures in separate processes, then compare 32-token traces.
 With --inputs, decode follows the saved prefill's first token. Otherwise use
 NPU prefill and capture the full DFlash path on two short prompts.
+
+A model without an HF checkpoint supplies `reference` instead: the
+`reference` phase scores the NPU capture's tokens with it, teacher forced,
+and the compare phase takes that capture in place of HF's.
 """
 
 import argparse
@@ -43,7 +47,7 @@ def reference_geometry(snapshot):
     )
 
 
-def check(a, model: DFlashModel, prepare, load_prefill):
+def check(a, model: DFlashModel, prepare, load_prefill, reference=None):
     a.output.parent.mkdir(parents=True, exist_ok=True)
     if a.output.exists():
         raise FileExistsError(a.output)
@@ -103,6 +107,9 @@ def check(a, model: DFlashModel, prepare, load_prefill):
             r["reference_model"] = dict(
                 repo=model.tokenizer_model, revision=model.tokenizer_revision
             )
+        elif a.phase == "reference":
+            npu = json.loads(a.npu_capture.read_text())
+            assert npu["status"] == "captured" and npu["mode"] == r["mode"]
         elif a.phase == "npu":
             if a.inputs:
                 loop = load_pair(model, a.target, a.draft, prepass_artifacts=a.prepass)
@@ -182,6 +189,8 @@ def check(a, model: DFlashModel, prepare, load_prefill):
                     chosen, topk = _generate_with_topk(
                         runner, np.asarray(ids, np.int64), 32, 5
                     )
+                elif a.phase == "reference":
+                    chosen, topk = reference(ids, npu["captures"][number]["chosen"], 5)
                 else:
                     if not a.inputs:
                         pf, _ = engine.prepare(ids)
@@ -228,10 +237,14 @@ def check(a, model: DFlashModel, prepare, load_prefill):
         raise
 
 
-def main(model: DFlashModel, *, prepare, load_prefill):
-    """`prepare` resolves the pinned snapshots; `load_prefill` reads a saved state."""
+def main(model: DFlashModel, *, prepare, load_prefill, reference=None):
+    """`prepare` resolves the pinned snapshots; `load_prefill` reads a saved
+    state. `reference(prompt_ids, tokens, k)` gives, for each of the tokens
+    in turn, the reference's argmax and top-k after the prompt and the
+    tokens before it."""
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--phase", choices=("npu", "hf", "compare"), required=True)
+    phases = ("npu", "hf", "compare") + (("reference",) if reference else ())
+    p.add_argument("--phase", choices=phases, required=True)
     p.add_argument("--output", type=Path, required=True)
     for k in (
         "inputs",
@@ -243,4 +256,4 @@ def main(model: DFlashModel, *, prepare, load_prefill):
         "hf-capture",
     ):
         p.add_argument("--" + k, type=Path)
-    check(p.parse_args(), model, prepare, load_prefill)
+    check(p.parse_args(), model, prepare, load_prefill, reference)

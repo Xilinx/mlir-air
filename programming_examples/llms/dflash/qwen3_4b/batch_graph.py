@@ -1382,12 +1382,20 @@ def build_module(layout):
                                 a_acc = layout.AllocOp(yacc_mm_l1, [], [])
                                 a_ws = _ws
                                 layout.CallOp(mm_zero, [a_acc, _arm])
-                                a_x_resident = layout.AllocOp(xblk_mm_l1, [], [])
-                                a_x_resident.operation.attributes[
-                                    "air.disable_alloc_sink"
-                                ] = layout.UnitAttr.get()
+                                # PROJ_X_PINGPONG: a fresh x block per weight
+                                # block, so the next one lands during the product
+                                a_x_resident = None
+                                if not layout.MODEL.get("PROJ_X_PINGPONG"):
+                                    a_x_resident = layout.AllocOp(xblk_mm_l1, [], [])
+                                    a_x_resident.operation.attributes[
+                                        "air.disable_alloc_sink"
+                                    ] = layout.UnitAttr.get()
                                 for _j in layout.for_(idx(0), J2x2, idx(1)):
-                                    a_x = a_x_resident
+                                    a_x = (
+                                        a_x_resident
+                                        if a_x_resident is not None
+                                        else layout.AllocOp(xblk_mm_l1, [], [])
+                                    )
                                     layout.ChannelGet("inX", a_x, indices=[gcx, gcy])
                                     a_w = layout.AllocOp(wblk_l1, [], [])
                                     layout.ChannelGet(
@@ -1395,8 +1403,11 @@ def build_module(layout):
                                     )
                                     layout.CallOp(mm_acc, [a_x, a_w, a_acc, a_ws])
                                     layout.DeallocOp(a_w)
+                                    if a_x_resident is None:
+                                        layout.DeallocOp(a_x)
                                     layout.yield_([])
-                                layout.DeallocOp(a_x_resident)
+                                if a_x_resident is not None:
+                                    layout.DeallocOp(a_x_resident)
                                 return a_acc
 
                             _tokstr = layout.arith.ConstantOp(
