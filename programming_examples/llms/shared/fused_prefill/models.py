@@ -251,8 +251,7 @@ MODELS = {
         family="affine",
         codec="affine",
     ),
-    # Built for its widest layer (Q32, KV8, FFN 8192); the narrower layers'
-    # weights are zero-padded up to it.
+    # The shape of its widest layer; narrower layers are zero-padded to it.
     "openelm_1b_q4nx": Desc(
         "apple/OpenELM-1_1B-Instruct",
         2048,
@@ -267,7 +266,7 @@ MODELS = {
         family="openelm",
         codec="affine",
     ),
-    # Head dim 80, padded to 128 in the attention.
+    # dh padded to attn_dh in the attention (phi2.py).
     "phi2_2_7b_q4nx": Desc(
         "microsoft/phi-2",
         2560,
