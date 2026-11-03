@@ -1,0 +1,2 @@
+# Same as ../gemma4_e2b_vision, which this example runs.
+-r ../gemma4_e2b_vision/requirements.txt

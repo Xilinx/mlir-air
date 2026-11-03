@@ -63,7 +63,7 @@ def measure(vlm, image, budget, repeat, n_tokens):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--model", default="gemma4_e2b_vision")
+    ap.add_argument("--model", default=f"gemma4_{V.VARIANT}_vision")
     ap.add_argument(
         "--budgets", default=",".join(map(str, BUDGETS)), help="soft-token budgets"
     )
