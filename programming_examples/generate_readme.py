@@ -587,6 +587,7 @@ _MODEL_DIRS = {
     "qwen3_4b_dflash_b16": "dflash/qwen3_4b",
     "qwen3_8b_dflash_b8": "dflash/qwen3_8b",
     "llama31_8b_dflash_b8": "dflash/llama31_8b",
+    "gemma4_bolt_e4b_dflash_b8": "dflash/gemma4_bolt_e4b",
 }
 
 # ── LLM model registry ────────────────────────────────────────────────
@@ -601,6 +602,7 @@ LLM_HF_MODELS = {
     # vllm-sr/d3-lite, whose CPU runtime is its reference.
     "d3_edge": "vllm-sr/d3-edge",
     "d3_lite_q4nx": "FastFlowLM/D3-Lite-NPU2",
+    "dflash/gemma4_bolt_e4b": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB",
     "dflash/llama31_8b": "meta-llama/Llama-3.1-8B-Instruct",
     "dflash/qwen3_4b": "Qwen/Qwen3-4B",
     "dflash/qwen3_8b": "Qwen/Qwen3-8B",
@@ -682,6 +684,7 @@ LLM_DISPLAY = {
     "qwen3_4b_dflash_b16": ("Qwen3-4B", "Q4NX", None),
     "qwen3_8b_dflash_b8": ("Qwen3-8B", "Q4NX", None),
     "llama31_8b_dflash_b8": ("Llama-3.1-8B-Instruct", "Q4NX", None),
+    "gemma4_bolt_e4b_dflash_b8": ("Nemotron-3.5-Bolt-E4B", "Q4NX", None),
     "smolvla": ("smolvla_base", None, None),
     "smolvla_all": ("smolvla_base, all stages on NPU", None, None),
 }
@@ -1662,6 +1665,7 @@ _SPEC_DRAFTS = {
     "qwen3_4b_dflash_b16": ("z-lab/Qwen3-4B-DFlash-b16", 16),
     "qwen3_8b_dflash_b8": ("z-lab/Qwen3-8B-DFlash-b16", 8),
     "llama31_8b_dflash_b8": ("z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat", 8),
+    "gemma4_bolt_e4b_dflash_b8": ("nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB-DFlash", 8),
 }
 
 

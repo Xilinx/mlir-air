@@ -110,6 +110,11 @@ unsloth/gemma-4-E4B-it
 # for the same reason as E2B.
 FastFlowLM/Gemma4-E4B-IT-NPU2
 
+# Nemotron-3.5-Bolt-E4B DFlash B8 (llms/dflash/gemma4_bolt_e4b): the pinned
+# Q4NX target package (weights, tokenizer, chat template) and NVIDIA's drafter.
+FastFlowLM/Nemotron-3.5-Bolt-E4B-NPU2@f9ee21728399b0d570dd40273abe01f7662cbab8
+nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB-DFlash@0949a2eb7152ec6fda1a91ff9302aecbcd464fbf
+
 # Qwen3.5-0.8B (text), llms/qwen35_0_8b_q4nx: FastFlowLM's Q4K bundle (branch
 # flm_q4k_high_precision, the file FastFlowLM 1.0.11 loads) and the BF16
 # checkpoint it was quantized from, the reference `make verify` compares
