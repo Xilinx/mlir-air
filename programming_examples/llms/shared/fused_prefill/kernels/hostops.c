@@ -200,10 +200,10 @@ void rms_tile(const float *x, int t, int n, const float *w, float eps, int TM,
 }
 
 // x += post ? rms(c) * post : c, c bf16 [t, ldc]; then, if w, dst (tiled A)
-// = bf16(rms(x) * w)
-void add_rms_tile(float *x, const uint16_t *c, int ldc, const float *post,
-                  float eps, int t, int n, const float *w, int TM, int TK,
-                  uint16_t *dst) {
+// = bf16(rms(x) * w). With scale != 1, c is first bf16(c * scale).
+void add_rms_tile_s(float *x, const uint16_t *c, int ldc, const float *post,
+                    float eps, int t, int n, const float *w, int TM, int TK,
+                    uint16_t *dst, float scale) {
 #pragma omp parallel for num_threads(NT) schedule(static)
   for (int r = 0; r < t; r++) {
     float *a = x + (long)r * n;
@@ -211,6 +211,9 @@ void add_rms_tile(float *x, const uint16_t *c, int ldc, const float *post,
     const uint16_t *cr = c + (long)r * ldc;
     for (int j = 0; j < n; j++)
       row[j] = bf2f(cr[j]);
+    if (scale != 1.f)
+      for (int j = 0; j < n; j++)
+        row[j] = bf2f(f2bf(row[j] * scale));
     if (post) {
       float inv = 1.f / sqrtf(sumsq(row, n) / n + eps);
       for (int j = 0; j < n; j++)
@@ -226,6 +229,12 @@ void add_rms_tile(float *x, const uint16_t *c, int ldc, const float *post,
       tile_row(row, n, r, TM, TK, dst);
     }
   }
+}
+
+void add_rms_tile(float *x, const uint16_t *c, int ldc, const float *post,
+                  float eps, int t, int n, const float *w, int TM, int TK,
+                  uint16_t *dst) {
+  add_rms_tile_s(x, c, ldc, post, eps, t, n, w, TM, TK, dst, 1.f);
 }
 
 // nh heads of dh at column col0 of src bf16 [t, ld]: + bias, rms with norm

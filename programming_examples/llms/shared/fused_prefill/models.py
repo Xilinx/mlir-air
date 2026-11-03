@@ -29,9 +29,10 @@ class Desc(NamedTuple):
     # (dense_main.py build --max-len). Longer prompts take the per-op prefill.
     max_len: int = 2048
     lkp: int = 32
-    family: str = "dense"  # "lfm2": lfm2.py
+    family: str = "dense"  # "lfm2": lfm2.py, "affine": affine.py
     # the weights: a Q4NX bundle ("q4nx"), a bundle of Q4_0 matrices ("q4_0"),
-    # or a full-precision HF checkpoint rounded onto Q4NX at load ("hf")
+    # a full-precision HF checkpoint rounded onto Q4NX at load ("hf"), or
+    # canonical affine Q4 tensors (shared/affine_q4.py, "affine")
     codec: str = "q4nx"
     base: str = ""  # HF repo of the config and tokenizer, if `repo` has none
     tol: float = 0.99  # verify's logit cosine gate against the fp32 reference
@@ -174,5 +175,37 @@ MODELS = {
         qkv_bias=True,
         tied=False,
         codec="hf",
+    ),
+    # The affine-Q4 examples (shared/AFFINE_Q4_IMPLEMENTATION.md): `repo` is
+    # the checkpoint the canonical Q4 tensors were prepared from. max_len
+    # covers their longest native input.
+    "mistral7b_v03_q4nx": Desc(
+        "mistralai/Mistral-7B-Instruct-v0.3",
+        4096,
+        128,
+        32,
+        8,
+        14336,
+        32,
+        32768,
+        tied=False,
+        max_len=4096,
+        family="affine",
+        codec="affine",
+    ),
+    # The LM head is a Q4 copy of the embedding, as in its decode.
+    "granite33_2b_q4nx": Desc(
+        "ibm-granite/granite-3.3-2b-instruct",
+        2048,
+        64,
+        32,
+        8,
+        8192,
+        40,
+        49159,
+        tied=False,
+        max_len=4096,
+        family="affine",
+        codec="affine",
     ),
 }

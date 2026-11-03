@@ -128,7 +128,13 @@ def _bf(a):
 
 class DensePrefill(Engine):
     """prefill(ids) returns the last token's logits; kv_stack() the
-    [layers, P, kv_heads * dh] roped K and raw V the fused decoder seeds from."""
+    [layers, P, kv_heads * dh] roped K and raw V the fused decoder seeds from.
+
+    q_scale multiplies q after rope, on top of the attention's 1 / sqrt(dh);
+    res_scale multiplies each sublayer's output before its residual add."""
+
+    q_scale = 1.0
+    res_scale = 1.0
 
     def __init__(self, build_dir, desc, context=None):
         self.desc = desc
@@ -144,13 +150,19 @@ class DensePrefill(Engine):
         self.eps, self.inv_freq, self.rot, self.rope_scale = config(
             e, path, self.context
         )
+        self.load_bundle(P.open_weights(P.codec(e, path), path))
+
+    def load_bundle(self, b):
+        """Load the weights from bundle b (packing.Bundle's interface); norm
+        eps and rope are already set."""
+        e = self.desc
         norms = {"input": "input_layernorm", "post_attn": "post_attention_layernorm"}
         if e.gemma:
             norms.update(
                 pre_ffn="pre_feedforward_layernorm",
                 post_ffn="post_feedforward_layernorm",
             )
-        b = self.bundle = P.open_weights(P.codec(e, path), path)
+        self.bundle = b
         dq, dk = e.heads * e.dh, e.kv_heads * e.dh
         self.norms, self.bias = [], []
         for L in range(e.layers):
@@ -284,7 +296,7 @@ class DensePrefill(Engine):
         for c, (r0, t) in enumerate(chunks):
             o = self.gemm_wait(pend[c], t)
             a = self.a_chunk(e.d, c)
-            H.add_rms_tile(rows[c], o, t, post, eps, pre, a[1], TM, TK)
+            H.add_rms_tile(rows[c], o, t, post, eps, pre, a[1], TM, TK, self.res_scale)
             a[0].sync(TO)
             gu.append(
                 (self.gemm_start(f"{L}.gate", c, 1), self.gemm_start(f"{L}.up", c))
@@ -300,7 +312,7 @@ class DensePrefill(Engine):
         post = nm.get("post_ffn") if e.gemma else None
         for c, (r0, t) in enumerate(chunks):
             f = self.gemm_wait(pend[c], t)
-            H.add_rms_tile(rows[c], f, t, post, eps, None, None, TM, TK)
+            H.add_rms_tile(rows[c], f, t, post, eps, None, None, TM, TK, self.res_scale)
 
     def _qkv_post(self, L, kvb, c, r0, t, qkv, op):
         """q into chunk c's attention buffers, K/V into the layer's records
@@ -325,7 +337,7 @@ class DensePrefill(Engine):
                 nm.get("q_norm"),
                 eps,
                 rope,
-                1.0,
+                self.q_scale,
                 qm,
                 D.M * dh,
                 dh,
@@ -406,6 +418,8 @@ def load(name, build_dir, model=None, context=None):
         desc = desc._replace(max_len=man["max_len"])
     if desc.family == "lfm2":
         from .lfm2 import Lfm2Prefill as cls
+    elif desc.family == "affine":
+        from .affine import AffinePrefill as cls
     else:
         cls = DensePrefill
     pf = cls(build_dir, desc, context)

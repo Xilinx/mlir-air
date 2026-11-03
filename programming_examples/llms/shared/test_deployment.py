@@ -29,24 +29,48 @@ from .prepare_affine_q4 import prepare, quantize
 
 
 class AffineDeploymentTests(unittest.TestCase):
-    def test_prefill_reuse_rejects_wrong_sequence_before_build(self):
-        from air_examples.llms.granite33_2b_q4nx.build import (
-            build_prefill,
-            validate_prefill_reuse,
-        )
+    def test_affine_q4_on_fused_prefill_gemm(self):
+        """The fused prefill's int4 GEMM operands keep the canonical codes,
+        scales and mins, and its dequant (gemm_bfp16.cc dq4_bfp16: min - 128
+        scale, then + (128 + q) scale, in fp32) gives reconstruct() exactly."""
+        try:
+            from air_examples.llms.shared.fused_prefill import device as D
+            from air_examples.llms.shared.fused_prefill import packing as P
+        except ImportError as e:
+            self.skipTest(f"the fused prefill's host code needs AIR: {e}")
+        from ml_dtypes import bfloat16
+        from .affine_q4 import bf16_float
 
-        with tempfile.TemporaryDirectory() as tmp:
-            source, destination = Path(tmp) / "source", Path(tmp) / "new"
-            source.mkdir()
-            metadata = source / "build.json"
-            metadata.write_text(json.dumps({"sequence_length": 512}))
-            self.assertEqual(validate_prefill_reuse(source, 512), source.resolve())
-            with self.assertRaisesRegex(ValueError, "does not match requested 1024"):
-                build_prefill(destination, 1024, reuse_prefill=source)
-            self.assertFalse(destination.exists())
-            metadata.write_text("{}")
-            with self.assertRaisesRegex(ValueError, "sequence_length None"):
-                validate_prefill_reuse(source, 512)
+        n, k = 200, 256  # n is padded to whole GEMM rounds
+        x = np.random.default_rng(0).standard_normal((n, k)).astype(np.float32)
+        q, sb, mb = quantize(x.astype(bfloat16).astype(np.float32))
+        packed = P.pack_q4(q, bf16_float(sb), bf16_float(mb))
+        npd, TK, TN, MM = P.n_pad(n), D.TK, D.TN, D.MM
+        nq, ng = TN * TK // 2, TK // 32 * TN * 2
+        self.assertEqual(packed.shape, (npd // TN, k // TK, D.QB))
+        codes = np.empty(packed.shape[:2] + (2 * nq,), np.uint8)
+        codes[..., 0::2] = packed[..., :nq] & 15
+        codes[..., 1::2] = packed[..., :nq] >> 4
+        codes = codes.reshape(npd // TN, k // TK, TN // MM, TK // MM, MM, MM)
+        codes = codes.transpose(1, 3, 5, 0, 2, 4).reshape(k, npd).T
+
+        def groups(lo):
+            a = np.ascontiguousarray(packed[..., lo : lo + ng]).view("<u2")
+            a = a.reshape(npd // TN, k // TK, TK // 32, TN)
+            return a.transpose(1, 2, 0, 3).reshape(k // 32, npd).T
+
+        scale, mn = groups(nq), groups(nq + ng)
+        np.testing.assert_array_equal(codes[:n], q)
+        np.testing.assert_array_equal(scale[:n], sb)
+        np.testing.assert_array_equal(mn[:n], mb)
+        self.assertFalse(codes[n:].any() or scale[n:].any() or mn[n:].any())
+        s = np.repeat(bf16_float(scale[:n]), 32, 1)
+        m = np.repeat(bf16_float(mn[:n]), 32, 1)
+        w = (m - s * np.float32(128)) + (np.float32(128) + codes[:n]) * s
+        np.testing.assert_array_equal(
+            w.astype(np.float32).view(np.uint32),
+            reconstruct(q, sb, mb).view(np.uint32),
+        )
 
     def test_checkpoint_to_canonical_q4(self):
         from ml_dtypes import bfloat16

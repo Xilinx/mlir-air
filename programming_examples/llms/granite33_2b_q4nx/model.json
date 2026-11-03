@@ -42,10 +42,5 @@
     }
   ],
   "reference_attention": "sdpa",
-  "prefill_rms": {
-    "p512": "seed",
-    "p1024": "decode",
-    "p2048": "decode",
-    "p4096": "decode"
-  }
+  "prefill": "fused"
 }

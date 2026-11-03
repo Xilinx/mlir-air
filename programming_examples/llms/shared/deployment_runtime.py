@@ -66,3 +66,131 @@ def load_cache(path, *, resident=False):
             str(binary), kernel, str(insts) if insts else None
         )
     return cache
+
+
+def fused_prefill_model(model):
+    """Whether `model` prefills on the shared fused prefill (fused_prefill/affine.py)."""
+    from .deployment import spec
+
+    return spec(model).get("prefill") == "fused"
+
+
+def _fused_prefill_key(model):
+    """Identity of a fused prefill build: its sources, model shape and toolchain."""
+    import hashlib
+    import os
+
+    from .fused_prefill.models import MODELS
+
+    here = Path(__file__).resolve().parent / "fused_prefill"
+    mm = here.parents[2] / "matrix_multiplication/bf16_in_fp32_out/mm_aie2p.cc"
+    h = hashlib.sha256(repr(MODELS[model]).encode())
+    for p in sorted(here.rglob("*")) + [mm]:
+        if p.is_file() and p.suffix in (".py", ".cc", ".c", ".h"):
+            h.update(str(p.relative_to(here.parents[2])).encode() + p.read_bytes())
+    for var in ("PEANO_INSTALL_DIR", "MLIR_AIE_INSTALL_DIR"):
+        h.update(os.environ.get(var, "").encode())
+    import air
+
+    h.update(str(Path(air.__path__[0]).resolve()).encode())
+    return h.hexdigest()
+
+
+def build_fused_prefill(model, out, jobs=4):
+    """Build `model`'s fused prefill into `out` once: an existing build of the
+    same sources, shape and toolchain is kept."""
+    from .decode_build import run
+    from .deployment import save_json
+
+    out = Path(out).resolve()
+    key = _fused_prefill_key(model)
+    stamp = out / "build.json"
+    if (out / "manifest.json").is_file() and stamp.is_file():
+        if json.loads(stamp.read_text()).get("key") == key:
+            print(f"fused prefill up to date: {out}", flush=True)
+            return
+    out.mkdir(parents=True, exist_ok=True)
+    stamp.unlink(missing_ok=True)
+    main = Path(__file__).resolve().parent / "fused_prefill/dense_main.py"
+    record = run(
+        ["python3", main, "build", model, out, "-j", str(jobs)],
+        out,
+        out / "build.log",
+    )
+    save_json(stamp, dict(key=key, build=record))
+
+
+class FusedPrefillSession:
+    """The prefill of an affine-Q4 session on the shared fused prefill. The
+    session provides self.decode (seed_kv), self.capacity and self.vocab, and
+    calls open_prefill() while loading."""
+
+    def open_prefill(self, model, directory, q4_root):
+        from .fused_prefill import dense
+
+        self.prefiller = dense.load(model, directory, q4_root, context=self.capacity)
+        # one position stays free for the first decode step
+        self.max_prompt = min(self.prefiller.max_len, self.capacity - 1)
+        self.prefill_dispatches = 0
+        self._pending_kv = None
+        self.position = None
+
+    def _ids(self, prompt_ids):
+        ids = np.asarray(prompt_ids, dtype=np.int64)
+        if (
+            ids.ndim != 1
+            or not 0 < len(ids) <= self.max_prompt
+            or np.any((ids < 0) | (ids >= self.vocab))
+        ):
+            raise ValueError(
+                f"expected 1 to {self.max_prompt} token IDs below {self.vocab}"
+            )
+        return ids.tolist()
+
+    def prefill(self, prompt_ids):
+        """Last-row logits of the prompt; its KV rows go to the decode in
+        finish_prefill(), after the first token is chosen."""
+        if self.closed:
+            raise RuntimeError("session is closed")
+        ids = self._ids(prompt_ids)
+        self.position = None
+        self.request_number += 1
+        logits = self.prefiller.prefill(ids)
+        self.prefill_dispatches += 1
+        keys, values = self.prefiller.kv_bf16()
+        self._pending_kv = (keys, values, len(ids))
+        if self.record_state:
+            self.last_prefill_keys, self.last_prefill_values = keys, values
+        self.position = len(ids)
+        return np.asarray(logits, np.float32)
+
+    def prefill_logits(self, prompt_ids, logits_from):
+        """[n - logits_from, vocab] logits of the prompt's rows from logits_from
+        on. No decode follows."""
+        if self.closed:
+            raise RuntimeError("session is closed")
+        ids = self._ids(prompt_ids)
+        self.position = None
+        self._pending_kv = None
+        rows = self.prefiller.prefill(ids, logits_from=int(logits_from))
+        self.prefill_dispatches += 1
+        return np.asarray(rows, np.float32)
+
+    def finish_prefill(self):
+        """The physical KV handoff, after the first-token boundary."""
+        if self._pending_kv is not None:
+            self.decode.seed_kv(*self._pending_kv)
+            self._pending_kv = None
+
+    def prefill_identity(self, directory):
+        from .deployment import file_hash
+
+        directory = Path(directory)
+        return {
+            f"fused_prefill/{p.name}": {
+                "path": str(p.resolve()),
+                "sha256": file_hash(p),
+            }
+            for pattern in ("*.xclbin", "*.txn.h", "*.o", "*.so", "manifest.json")
+            for p in sorted(directory.glob(pattern))
+        }

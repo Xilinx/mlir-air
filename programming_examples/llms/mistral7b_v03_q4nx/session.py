@@ -3,7 +3,8 @@
 # Adapted from the declared Granite production session.
 """Production NPU session. No CPU transformer or replay path.
 
-Reuses the AIR Llama BF16 prefill blocks and custom Q4NX spatial decode.
+Prefill runs on the shared fused prefill (shared/fused_prefill/affine.py) for
+any input up to its built length; decode is the custom Q4NX spatial decode.
 All generated artifacts and prepared arrays are resolved relative to candidate_root.
 """
 
@@ -15,10 +16,9 @@ import time
 import numpy as np
 from ml_dtypes import bfloat16
 
-from ..shared.deployment import require_bfp16
 from .common import Config, RUN, REVISION, save_json, file_hash
 from .build import decode_module
-from ..shared.deployment_runtime import read_bf16, load_cache
+from ..shared.deployment_runtime import FusedPrefillSession, read_bf16
 
 
 def rope_lut(capacity=1024):
@@ -128,7 +128,9 @@ class FusedDecode:
         self.dev = None
 
 
-class MistralSession:
+class MistralSession(FusedPrefillSession):
+    vocab = 32768
+
     def __init__(self, task, runtime):
         start = time.perf_counter()
         self.root = Path(runtime["candidate_root"]).resolve()
@@ -141,7 +143,7 @@ class MistralSession:
                 raise ValueError(f"configuration {key} differs from fixed task")
         self.record_state = bool(runtime.get("record_state", False))
         build = self.root / runtime.get("build_dir", f"{RUN}/build-{selected['id']}")
-        head_build = self.root / runtime.get("head_dir", f"{RUN}/build-shared/head")
+        fused = self.root / runtime.get("fused_prefill_dir", f"{RUN}/fused_prefill")
         weights_dir = self.root / runtime.get("weights_dir", f"{RUN}/weights")
         manifest = json.loads((weights_dir / "manifest.json").read_text())
         if manifest["logical_manifest_sha256"] != task["assets"]["q4_manifest_sha256"]:
@@ -149,9 +151,6 @@ class MistralSession:
         if task["model"]["revision"] != REVISION:
             raise ValueError("unsupported checkpoint revision")
         os.environ["AIR_TARGET_DEVICE"] = "npu2"
-        from .recipes import install
-
-        install()
         self.config = Config()
         self.prefill_length = int(selected["prefill_build_length"])
         self.capacity = int(selected["capacity"])
@@ -162,166 +161,26 @@ class MistralSession:
             (4096, 8192),
         ):
             raise ValueError("unsupported prefill/capacity configuration")
-        compiled_prefill = json.loads((build / "prefill/build.json").read_text())
-        require_bfp16(compiled_prefill)
-        self.config.gemm_bfp16 = bool(compiled_prefill.get("gemm_bfp16", False))
-        if compiled_prefill["sequence_length"] != self.prefill_length:
-            raise ValueError("prefill artifact shape does not match the session")
-        self.prefill_rms_impl = compiled_prefill.get("rms_implementation", "seed")
-        self.resident_prefill = bool(runtime.get("resident_prefill", True))
-        self.cache = load_cache(build / "prefill/cache", resident=self.resident_prefill)
-        self.head_cache = load_cache(head_build / "cache")
-        self.artifact_identity = {
-            f"{mode}/{p.name}": {"path": str(p.resolve()), "sha256": file_hash(p)}
-            for mode, paths in (
-                ("prefill", (build / "prefill/cache").glob("*.elf")),
-                ("head", (head_build / "cache").glob("*.elf")),
-                ("decode", (build / "decode").glob("decode_L*.bin")),
-                ("decode", (build / "decode").glob("decode_L*.xclbin")),
-            )
-            for p in paths
-            if "-before-" not in p.name
-        }
-        self.packing_manifest_sha256 = file_hash(weights_dir / "manifest.json")
         self.lut = rope_lut(self.capacity)
         self.decode = FusedDecode(
             build / "decode", weights_dir, self.lut, self.capacity
         )
-        self.embed = self.decode.embed
-        self.final_norm = self.decode.final_norm
-        from llama32_1b_weights import LayerWeights, LlamaWeights
-        from llama32_1b_prefill import preload_prefill_weights
-
-        norms = read_bf16(weights_dir / "norms.npy")
-        fields = {
-            "q": "wq",
-            "k": "wk",
-            "v": "wv",
-            "o": "wo",
-            "gate": "w_gate",
-            "up": "w_up",
-            "down": "w_down",
-        }
-        layers = [
-            LayerWeights(
-                attn_norm=norms[i, 0],
-                ffn_norm=norms[i, 1],
-                **{
-                    field: read_bf16(weights_dir / f"layer{i}_{key}.npy")
-                    for key, field in fields.items()
-                },
-            )
-            for i in range(32)
-        ]
-        self.weights = LlamaWeights(None, layers, self.final_norm, None)
-        p = self.prefill_length
-        self.layer_luts = np.tile(self.lut[None, :p, :], (32, 1, 1))
-        preload_prefill_weights(
-            self.weights, self.config, self.cache, p, self.layer_luts
-        )
-        if self.resident_prefill:
-            # KernelCache writes even intermediate slots on their FIRST use.
-            # Prime the attention BO set now, before a real request produces QKV.
-            # No request reset or actual prompt inference occurs during setup.
-            self.cache.load_and_run(
-                "flash_attn",
-                {"output_format": "elf", "instance_name": "attention_bf16"},
-                np.zeros((p, 4096), bfloat16),
-                np.zeros((p, 1024), bfloat16),
-                np.zeros((p, 1024), bfloat16),
-                np.zeros((p, 4096), bfloat16),
-            )
-            rms = self.cache._cached_bos["rms_gemms_rope_L0"]
-            attn = self.cache._cached_bos["flash_attn"]
-            ffn = self.cache._cached_bos["o_ffn_L0"]
-            assert rms[11] is attn[0] and rms[12] is attn[1] and rms[8] is attn[2]
-            assert attn[3] is ffn[0] and rms[0] is ffn[3] and ffn[3] is ffn[14]
-        head_weights = read_bf16(weights_dir / "head_bf16.npy")
-        self.head_parts = []
-        for part in range(2):
-            lo, hi = part * 16384, min((part + 1) * 16384, 32768)
-            arr = np.zeros((16384, 4096), bfloat16)
-            if hi > lo:
-                arr[: hi - lo] = head_weights[lo:hi]
-            self.head_parts.append(arr)
-        self.head_submissions = 0
-        self.head(np.zeros(4096, bfloat16))
-        self.position = None
         self.request_number = 0
-        self.prefill_submissions = 0
         self.closed = False
+        self.open_prefill("mistral7b_v03_q4nx", fused, task["assets"]["q4_root"])
+        if self.prefill_length > self.max_prompt:
+            raise ValueError("the fused prefill build is shorter than the input")
+        self.artifact_identity = self.prefill_identity(fused)
+        self.artifact_identity.update(
+            {
+                f"decode/{p.name}": {"path": str(p.resolve()), "sha256": file_hash(p)}
+                for pattern in ("decode_L*.bin", "decode_L*.xclbin")
+                for p in (build / "decode").glob(pattern)
+            }
+        )
+        self.packing_manifest_sha256 = file_hash(weights_dir / "manifest.json")
         self.loading_seconds = time.perf_counter() - start
         save_json(self.work / "session.json", self.describe_execution())
-
-    def head(self, hidden):
-        from ..shared.infra.backend_presets import LM_GEMV_BACKEND
-
-        args = [np.ascontiguousarray(hidden, dtype=bfloat16)]
-        for part in self.head_parts:
-            args.extend([part, np.zeros(16384, bfloat16)])
-        out = self.head_cache.load_and_run(
-            "lm_head_gemv",
-            LM_GEMV_BACKEND,
-            *args,
-            output_indices=list(range(2, 5, 2)),
-            static_input_indices=set(range(1, 4, 2)),
-            intermediate_indices=set(range(2, 5, 2)),
-        )
-        self.head_submissions += 1
-        return np.concatenate([out[i] for i in range(2, 5, 2)]).astype(np.float32)[
-            :32768
-        ]
-
-    def prefill(self, prompt_ids):
-        from llama32_1b_prefill import run_transformer_block
-
-        if self.closed:
-            raise RuntimeError("session is closed")
-        ids = np.asarray(prompt_ids, dtype=np.int64)
-        if (
-            ids.ndim != 1
-            or len(ids) != self.prefill_length
-            or np.any((ids < 0) | (ids >= 32768))
-        ):
-            raise ValueError("invalid prompt IDs")
-        self.position = None
-        self.request_number += 1
-        x = np.zeros((self.prefill_length, 4096), bfloat16)
-        x[: len(ids)] = self.embed[ids]
-        keys = np.zeros((32, len(ids), 1024), bfloat16)
-        values = np.zeros_like(keys)
-        for layer in range(32):
-            x, inter = run_transformer_block(
-                x,
-                self.weights.layers[layer],
-                self.layer_luts[layer],
-                self.config,
-                self.cache,
-                layer,
-                cpu_attn=False,
-            )
-            keys[layer] = inter["k_roped"][: len(ids)]
-            values[layer] = inter["v"][: len(ids)]
-            self.prefill_submissions += 3
-        # Stage request KV; physical overwrite/handoff follows first-token delivery.
-        self._pending_kv = (keys, values, len(ids))
-        if self.record_state:
-            self.last_prefill_keys, self.last_prefill_values = keys, values
-        xf = x[len(ids) - 1].astype(np.float32)
-        normalized = (xf / np.sqrt(np.mean(xf * xf) + 1e-5)).astype(bfloat16)
-        hidden = (
-            normalized.astype(np.float32) * self.final_norm.astype(np.float32)
-        ).astype(bfloat16)
-        logits = self.head(hidden)
-        self.position = len(ids)
-        return logits
-
-    def finish_prefill(self):
-        """Complete the physical KV reset/handoff after the first-token boundary."""
-        pending = getattr(self, "_pending_kv", None)
-        if pending is not None:
-            self.decode.seed_kv(*pending)
-            self._pending_kv = None
 
     def decode_step(self, input_token, current_pos):
         self.finish_prefill()
@@ -341,24 +200,23 @@ class MistralSession:
         return {
             "model": "mistral7b-v03",
             "blocks": 32,
-            "prefill_build_length": self.prefill_length,
+            "prefill": "shared fused prefill, 128-row chunks, one hardware context",
+            "prefill_max_input": self.max_prompt,
+            "native_input_length": self.prefill_length,
             "kv_capacity": self.capacity,
-            "prefill_native_submissions_per_layer": 3,
-            "prefill_rms_implementation": self.prefill_rms_impl,
-            "prefill_gemm_bfp16": self.config.gemm_bfp16,
-            "resident_prefill_handoffs": self.resident_prefill,
+            "prefill_gemm": "BFP16 (int4 weights dequantized on the cores)",
+            "prefill_attention": "fused prefill attn_bfp16",
             "artifact_identity": self.artifact_identity,
             "packing_manifest_sha256": self.packing_manifest_sha256,
-            "prefill_head_native_submissions": 1,
             "decode_native_submissions_per_token": 1,
             "decode_body": "32 device layer waves followed by two full-vocabulary head waves",
             "observed_requests": self.request_number,
-            "observed_prefill_block_submissions": self.prefill_submissions,
-            "observed_prefill_head_submissions_including_setup": self.head_submissions,
+            "observed_prefills": self.prefill_dispatches,
             "observed_decode_submissions": self.decode.submissions,
             "cpu": [
                 "embedding lookup",
-                "prefill final single-row RMSNorm",
+                "prefill RMSNorm, RoPE, residual adds and SwiGLU",
+                "prefill q / KV / A layouts",
                 "KV handoff",
                 "dispatch",
                 "sampling",
@@ -377,8 +235,8 @@ class MistralSession:
     def close(self):
         if not self.closed:
             save_json(self.work / "session_close.json", self.describe_execution())
-            self.cache.close()
-            self.head_cache.close()
+            self.prefiller.suspend()
+            self.prefiller = None
             self.decode.close()
             self.closed = True
 

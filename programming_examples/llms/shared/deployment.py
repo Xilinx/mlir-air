@@ -55,11 +55,17 @@ def configuration(model, p, ids=None):
         prompts = json.loads((LLMS / model / "inputs.json").read_text())
         ids = prompts[f"p{p}"]
     a = np.asarray(ids, dtype="<i8")
-    if a.shape != (p,) or np.any(a < 0) or np.any(a >= spec(model)["vocab_size"]):
+    n = p
+    if spec(model).get("prefill") == "fused" and a.ndim == 1:
+        # The fused prefill takes any input the decode capacity leaves room for.
+        n = len(a)
+        if not 0 < n < matches[0][1]:
+            raise ValueError(f"expected 1 to {matches[0][1] - 1} token IDs")
+    if a.shape != (n,) or np.any(a < 0) or np.any(a >= spec(model)["vocab_size"]):
         raise ValueError(f"expected exactly {p} valid token IDs")
     return dict(
         id=f"p{p}",
-        tokens=p,
+        tokens=n,
         prefill_build_length=p,
         capacity=matches[0][1],
         token_ids=a.tolist(),
@@ -107,6 +113,7 @@ def runtime(model, selected, work):
         build_dir=str(build),
         weights_dir=str(base / "weights"),
         head_dir=str(base / "shared/head"),
+        fused_prefill_dir=str(base / "fused_prefill"),
         prefill_length=selected["tokens"],
         kv_capacity=selected["capacity"],
         resident_prefill=True,
