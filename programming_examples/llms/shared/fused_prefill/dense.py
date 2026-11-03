@@ -114,12 +114,13 @@ def config(desc, path, context=None):
         inv = inv / rs["factor"]
     elif kind is not None:
         raise ValueError(f"{path}: rope_scaling {kind} is not supported")
+    eps = c["rms_norm_eps"] if "rms_norm_eps" in c else c["layer_norm_eps"]
     if not desc.window:
-        return c["rms_norm_eps"], {"a": inv}, rot, scale
+        return eps, {"a": inv}, rot, scale
     # the sliding layers rotate with their own base and no scaling
     local = c["rope_local_base_freq"]
     loc = 1.0 / local ** (np.arange(0, rot, 2, dtype=np.float64) / rot)
-    return c["rms_norm_eps"], {"f": inv, "s": loc}, rot, scale
+    return eps, {"f": inv, "s": loc}, rot, scale
 
 
 def _bf(a):
@@ -137,6 +138,8 @@ class DensePrefill(Engine):
     q_scale = 1.0
     res_scale = 1.0
     rope_layers = None
+    EMBED = "model.embed_tokens.weight"
+    FINAL_NORM = "model.norm.weight"
 
     def __init__(self, build_dir, desc, context=None):
         self.desc = desc
@@ -154,9 +157,10 @@ class DensePrefill(Engine):
         )
         self.load_bundle(P.open_weights(P.codec(e, path), path))
 
-    def load_bundle(self, b):
-        """Load the weights from bundle b (packing.Bundle's interface); norm
-        eps and rope are already set."""
+    def layer_tensors(self, b, L):
+        """Layer L's weights from bundle b: "qkv" the (q, k, v) Q4 triples,
+        "o", "gate", "up" and "down" Q4 triples, "norms" {role: weight} and,
+        with qkv_bias, "bias" the q | k | v bias."""
         e = self.desc
         norms = {"input": "input_layernorm", "post_attn": "post_attention_layernorm"}
         if e.post_norm:
@@ -169,40 +173,57 @@ class DensePrefill(Engine):
                 pre_ffn="pre_feedforward_layernorm",
                 post_ffn="post_feedforward_layernorm",
             )
+        dq, dk = e.heads * e.dh, e.kv_heads * e.dh
+        p = f"model.layers.{L}."
+        w = {
+            "qkv": [
+                b.q4nx(p + f"self_attn.{n}_proj.weight", r, e.d)
+                for n, r in (("q", dq), ("k", dk), ("v", dk))
+            ]
+        }
+        for name, t, rows, k in (
+            ("o", "self_attn.o_proj", e.d, dq),
+            ("gate", "mlp.gate_proj", e.inter, e.d),
+            ("up", "mlp.up_proj", e.inter, e.d),
+            ("down", "mlp.down_proj", e.d, e.inter),
+        ):
+            w[name] = b.q4nx(p + t + ".weight", rows, k)
+        nm = {k: b.bf16(p + n + ".weight") for k, n in norms.items()}
+        if e.qk_norm:
+            nm["q_norm"] = b.bf16(p + "self_attn.q_norm.weight")
+            nm["k_norm"] = b.bf16(p + "self_attn.k_norm.weight")
+        w["norms"] = nm
+        if e.qkv_bias:
+            w["bias"] = np.concatenate(
+                [b.bf16(p + f"self_attn.{n}_proj.bias") for n in "qkv"]
+            )
+        return w
+
+    def load_bundle(self, b):
+        """Load the weights from bundle b (packing.Bundle's interface); norm
+        eps and rope are already set."""
+        e = self.desc
         self.bundle = b
         dq, dk = e.heads * e.dh, e.kv_heads * e.dh
         self.norms, self.bias = [], []
         for L in range(e.layers):
-            p = f"model.layers.{L}."
-            raw = [
-                b.q4nx(p + f"self_attn.{w}_proj.weight", r, e.d)
-                for w, r in (("q", dq), ("k", dk), ("v", dk))
-            ]
-            qkv = [np.concatenate(a) for a in zip(*raw)]
+            w = self.layer_tensors(b, L)
+            qkv = [np.concatenate(a) for a in zip(*w["qkv"])]
             self.gemm_site(f"{L}.qkv", e.d, dq + 2 * dk, self.pack_q4(*qkv), 1)
-            for name, t, rows, k in (
-                ("o", "self_attn.o_proj", e.d, dq),
-                ("gate", "mlp.gate_proj", e.inter, e.d),
-                ("up", "mlp.up_proj", e.inter, e.d),
-                ("down", "mlp.down_proj", e.d, e.inter),
+            for name, rows, k in (
+                ("o", e.d, dq),
+                ("gate", e.inter, e.d),
+                ("up", e.inter, e.d),
+                ("down", e.d, e.inter),
             ):
-                raw = b.q4nx(p + t + ".weight", rows, k)
-                self.gemm_site(f"{L}.{name}", k, rows, self.pack_q4(*raw), 1)
-            nm = {k: b.bf16(p + n + ".weight") for k, n in norms.items()}
-            if e.qk_norm:
-                nm["q_norm"] = b.bf16(p + "self_attn.q_norm.weight")
-                nm["k_norm"] = b.bf16(p + "self_attn.k_norm.weight")
-            self.norms.append(nm)
+                self.gemm_site(f"{L}.{name}", k, rows, self.pack_q4(*w[name]), 1)
+            self.norms.append(w["norms"])
             if e.qkv_bias:
-                self.bias.append(
-                    np.concatenate(
-                        [b.bf16(p + f"self_attn.{w}_proj.bias") for w in "qkv"]
-                    )
-                )
-        self.final_norm = b.bf16("model.norm.weight")
+                self.bias.append(w["bias"])
+        self.final_norm = b.bf16(self.FINAL_NORM)
         self.lm = D.n_split(e.vocab)
         if e.tied:
-            emb = b.bf16("model.embed_tokens.weight")
+            emb = b.bf16(self.EMBED)
         else:
             raw = b.q4nx("lm_head.weight", e.vocab, e.d)
         for i, (n0, n1) in enumerate(self.lm):
@@ -241,23 +262,19 @@ class DensePrefill(Engine):
             self._ffn_all(L, x, chunks, self._mix_all(L, x, chunks))
         self.current_context_length = n
         if logits_from is None:
-            last = H.rms(x[-1:], self.final_norm, self.eps)
-            return np.concatenate(
-                [self.mm(f"lm.{i}", last)[0] for i in range(len(self.lm))]
-            )
-        rows = H.rms(x[logits_from:], self.final_norm, self.eps)
+            return self._logits(x[-1:])[0]
+        rows = x[logits_from:]
         # The head takes at most one chunk (D.M rows) per dispatch.
         return np.concatenate(
-            [
-                np.concatenate(
-                    [
-                        self.mm(f"lm.{i}", rows[r : r + D.M])
-                        for i in range(len(self.lm))
-                    ],
-                    axis=1,
-                )
-                for r in range(0, len(rows), D.M)
-            ]
+            [self._logits(rows[r : r + D.M]) for r in range(0, len(rows), D.M)]
+        )
+
+    def _logits(self, x):
+        """[t, vocab] logits of rows x [t, d], t <= D.M: the final norm and
+        the LM head."""
+        h = H.rms(x, self.final_norm, self.eps)
+        return np.concatenate(
+            [self.mm(f"lm.{i}", h) for i in range(len(self.lm))], axis=1
         )
 
     def _mix_all(self, L, x, chunks):
@@ -406,7 +423,7 @@ class DensePrefill(Engine):
             h0 += g.kv_heads
 
     def _embed(self, ids):
-        return self.bundle.rows("model.embed_tokens.weight", ids)
+        return self.bundle.rows(self.EMBED, ids)
 
     def get_current_context_length(self):
         return self.current_context_length
@@ -446,6 +463,10 @@ def load(name, build_dir, model=None, context=None):
         from .lfm2 import Lfm2Prefill as cls
     elif desc.family == "affine":
         from .affine import AffinePrefill as cls
+    elif desc.family == "openelm":
+        from .affine import OpenELMPrefill as cls
+    elif desc.family == "phi2":
+        from .phi2 import Phi2Prefill as cls
     else:
         cls = DensePrefill
     pf = cls(build_dir, desc, context)

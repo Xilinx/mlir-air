@@ -237,6 +237,79 @@ void add_rms_tile(float *x, const uint16_t *c, int ldc, const float *post,
   add_rms_tile_s(x, c, ldc, post, eps, t, n, w, TM, TK, dst, 1.f);
 }
 
+// dst (tiled A, K = n) = bf16(layernorm(x) * w + b)
+void ln_tile(const float *x, int t, int n, const float *w, const float *b,
+             float eps, int TM, int TK, uint16_t *dst) {
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int r = 0; r < t; r++) {
+    const float *a = x + (long)r * n;
+    float row[n];
+    float acc[16] = {0};
+    int j = 0;
+    for (; j + 16 <= n; j += 16)
+      for (int l = 0; l < 16; l++)
+        acc[l] += a[j + l];
+    float mean = 0.f;
+    for (int l = 0; l < 16; l++)
+      mean += acc[l];
+    for (; j < n; j++)
+      mean += a[j];
+    mean /= n;
+    for (j = 0; j < n; j++)
+      row[j] = a[j] - mean;
+    float inv = 1.f / sqrtf(sumsq(row, n) / n + eps);
+    for (j = 0; j < n; j++)
+      row[j] = row[j] * inv * w[j] + b[j];
+    tile_row(row, n, r, TM, TK, dst);
+  }
+}
+
+// exp in vectorizable arithmetic (Cody-Waite reduction, degree-6 Taylor on
+// |r| <= ln2 / 2: relative error ~2e-7), so the GELU loop vectorizes without
+// -ffast-math
+static inline float vexp(float x) {
+  x = x < -87.f ? -87.f : (x > 88.f ? 88.f : x);
+  float n = rintf(x * 1.44269504f);
+  float r = x - n * 0.693145752f;
+  r = r - n * 1.42860677e-6f;
+  float p = 1.f / 720;
+  p = p * r + 1.f / 120;
+  p = p * r + 1.f / 24;
+  p = p * r + 1.f / 6;
+  p = p * r + 0.5f;
+  p = p * r + 1.f;
+  p = p * r + 1.f;
+  int32_t e = ((int32_t)n + 127) << 23;
+  float sc;
+  memcpy(&sc, &e, 4);
+  return p * sc;
+}
+
+// dst (tiled A, K = n) = bf16(gelu(g + bias)), g bf16 [t, ldg]; gelu is the
+// tanh form, 0.5 v (1 + tanh(u)) = v * sigmoid(2 u)
+void bias_gelu_tile(const uint16_t *g, int ldg, const float *bias, int t, int n,
+                    int TM, int TK, uint16_t *dst) {
+  int ks = n / TK;
+  const float c = 0.7978845608f; // sqrt(2 / pi)
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int r = 0; r < t; r++) {
+    int ty = r / TM, i = r % TM;
+    for (int s = 0; s < ks; s++) {
+      uint16_t *d = dst + (((long)ty * ks + s) * TM + i) * TK;
+      const uint16_t *gs = g + (long)r * ldg + s * TK;
+      const float *bs = bias + s * TK;
+      float y[TK];
+      for (int k = 0; k < TK; k++) {
+        float v = bf2f(gs[k]) + bs[k];
+        float u = c * (v + 0.044715f * v * v * v);
+        y[k] = v / (1.f + vexp(-2.f * u));
+      }
+      for (int k = 0; k < TK; k++)
+        d[k] = f2bf(y[k]);
+    }
+  }
+}
+
 // nh heads of dh at column col0 of src bf16 [t, ld]: + bias, rms with norm
 // (if given), half-split rotary on the first rot dims, * scale, to bf16
 // dst[h * hs + r * rs + i]

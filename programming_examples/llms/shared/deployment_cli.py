@@ -371,6 +371,9 @@ def main(model):
             # LM head of its prefill is one of its GEMMs.
             if args.part in ("all", "prefill", "head"):
                 build_fused_prefill(model, base / "fused_prefill")
+            # a decode that leaves the LM head to its own ELF
+            if args.part in ("all", "head") and hasattr(build, "build_head"):
+                build.build_head(base / "shared/head")
             print("Compilation passed.")
             return
         if args.part in ("all", "prefill"):

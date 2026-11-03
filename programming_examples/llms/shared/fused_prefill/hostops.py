@@ -33,6 +33,8 @@ def load(build_dir):
     _lib.rms_tile.argtypes = [_p, _i, _i, _p, _f, _i, _i, _p]
     _lib.add_rms_tile.argtypes = [_p, _p, _i, _p, _f, _i, _i, _p, _i, _i, _p]
     _lib.add_rms_tile_s.argtypes = _lib.add_rms_tile.argtypes + [_f]
+    _lib.ln_tile.argtypes = [_p, _i, _i, _p, _p, _f, _i, _i, _p]
+    _lib.bias_gelu_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p]
     _l = ctypes.c_long
     _lib.head_post.argtypes = [_p, _i, _i, _i, _i, _i, _p, _p, _f, _p, _p, _i, _f]
     _lib.head_post.argtypes += [_p, _l, _l]
@@ -224,6 +226,24 @@ def add_rms_tile(x, c, t, post, eps, w, dst, tm, tk, scale=1.0):
         _lib.add_rms_tile_s(*args, scale)
     if a is not None:
         _to_bfp(a, t, dst)
+
+
+def ln_tile(x, w, b, eps, dst, tm, tk):
+    """dst (A) = bf16(layernorm(x) * w + b); x [t, n] float32."""
+    t, n = x.shape
+    a = _bf16_tiles(dst, tm, tk)
+    _lib.ln_tile(_c(x).ctypes.data, t, n, _ptr(w), _ptr(b), eps, tm, tk, a.ctypes.data)
+    _to_bfp(a, t, dst)
+
+
+def bias_gelu_tile(g, bias, t, n, dst, tm, tk):
+    """dst (A) = bf16(gelu_tanh(g + bias)), g bf16 [R, ld] (rows [0, t),
+    columns [0, n)), bias float32 [n]."""
+    a = _bf16_tiles(dst, tm, tk)
+    _lib.bias_gelu_tile(
+        g.ctypes.data, g.shape[1], _ptr(bias), t, n, tm, tk, a.ctypes.data
+    )
+    _to_bfp(a, t, dst)
 
 
 def head_post(src, t, col0, nh, dh, bias, norm, eps, rope, scale, dst, hs, rs):

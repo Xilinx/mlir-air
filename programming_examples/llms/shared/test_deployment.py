@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -71,6 +72,97 @@ class AffineDeploymentTests(unittest.TestCase):
             w.astype(np.float32).view(np.uint32),
             reconstruct(q, sb, mb).view(np.uint32),
         )
+
+    def _fused_prefill(self, name):
+        try:
+            import importlib
+
+            return importlib.import_module(
+                f"air_examples.llms.shared.fused_prefill.{name}"
+            )
+        except ImportError as e:
+            self.skipTest(f"the fused prefill's host code needs AIR: {e}")
+
+    def test_phi2_dense_columns_keep_q4_groups(self):
+        """Phi-2's dense, its columns spread over the 128-wide head slots,
+        gives the same products as the canonical [2560, 2560] matrix on the
+        attention output placed the same way."""
+        phi2 = self._fused_prefill("phi2")
+        heads, dh, adh = 32, 80, 128
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((4, heads * dh)).astype(np.float32)
+        q, s, m = quantize(rng.standard_normal((64, heads * dh)).astype(np.float32))
+        cols = phi2.head_cols(heads, dh, adh)
+        self.assertTrue(np.array_equal(cols % 32, np.arange(heads * dh) % 32))
+        qp, sp, mp = phi2.spread_cols((q, s, m), heads * adh, cols)
+        xp = np.zeros((4, heads * adh), np.float32)
+        xp[:, cols] = x
+        from .affine_q4 import bf16_float
+
+        def w(q, s, m):
+            # reconstruct() rejects the padding's zero scales
+            return q * np.repeat(bf16_float(s), 32, 1) + np.repeat(bf16_float(m), 32, 1)
+
+        want = x @ reconstruct(q, s, m).T
+        got = xp @ w(qp, sp, mp).T
+        np.testing.assert_array_equal(w(q, s, m), reconstruct(q, s, m))
+        np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-4)
+        # place() moves heads written at column 0 to the same columns
+        a = np.zeros((heads, 4, adh), np.float32)
+        a[:, :, :dh] = x.reshape(4, heads, dh).transpose(1, 0, 2)
+        phi2.place(a, 0, dh)
+        np.testing.assert_array_equal(a.transpose(1, 0, 2).reshape(4, -1)[:, cols], x)
+        np.testing.assert_array_equal(
+            np.delete(a.transpose(1, 0, 2).reshape(4, -1), cols, 1), 0
+        )
+
+    def test_fused_prefill_layernorm_and_gelu(self):
+        """hostops.c's ln_tile and bias_gelu_tile against numpy."""
+        H = self._fused_prefill("hostops")
+        D = self._fused_prefill("device")
+        phi2 = self._fused_prefill("phi2")
+        from ml_dtypes import bfloat16
+
+        if shutil.which("gcc") is None:
+            self.skipTest("no gcc")
+        kern = Path(H.__file__).parent / "kernels/hostops.c"
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(
+                ["gcc", "-O3", "-march=native", "-ffp-contract=off", "-fopenmp"]
+                + ["-shared", "-fPIC", str(kern), "-o", f"{tmp}/libhostops.so", "-lm"],
+                check=True,
+            )
+            H.load(tmp)
+        TM, TK, t, n = D.TM, D.TK, 40, 512
+        rng = np.random.default_rng(1)
+        x = (rng.standard_normal((t, n)) * 3 + 1).astype(np.float32)
+        w, b = (rng.standard_normal(n).astype(np.float32) for _ in range(2))
+        tiles = np.zeros((-(-D.M // TM), n // TK, TM, TK), np.uint16)
+
+        def untile(rows):
+            a = tiles.transpose(0, 2, 1, 3).reshape(-1, n)[:rows]
+            return a.view(bfloat16).astype(np.float32)
+
+        H._lib.ln_tile(
+            x.ctypes.data,
+            t,
+            n,
+            w.ctypes.data,
+            b.ctypes.data,
+            1e-5,
+            TM,
+            TK,
+            tiles.ctypes.data,
+        )
+        want = phi2.layernorm(x, w, b, 1e-5).astype(bfloat16).astype(np.float32)
+        np.testing.assert_allclose(untile(t), want, rtol=1e-2, atol=1e-2)
+        g = rng.standard_normal((t, n + 64)).astype(bfloat16)
+        H._lib.bias_gelu_tile(
+            g.ctypes.data, n + 64, b.ctypes.data, t, n, TM, TK, tiles.ctypes.data
+        )
+        v = g[:, :n].astype(np.float32) + b
+        gelu = 0.5 * v * (1 + np.tanh(np.sqrt(2 / np.pi) * (v + 0.044715 * v**3)))
+        np.testing.assert_allclose(untile(t), gelu, rtol=1e-2, atol=1e-2)
 
     def test_checkpoint_to_canonical_q4(self):
         from ml_dtypes import bfloat16

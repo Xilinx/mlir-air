@@ -7,7 +7,7 @@ import numpy as np
 from ml_dtypes import bfloat16
 from ..shared.affine_q4 import CanonicalWeights
 from .common import H, HP, F, FP, save_json, file_hash
-from ..shared.q4_cascade import pack_cascade, check_seed_packer, dequant
+from ..shared.q4_cascade import pack_cascade, check_seed_packer
 from .build import decode_module, DECODE_ENV
 
 
@@ -95,7 +95,6 @@ def prepare(out, task):
             bias_col=96,
         )
         fc1 = mapped(codes("mlp.fc1"), FP, HP)
-        fc1_biased = mapped(codes("mlp.fc1"), FP, HP, bias=bias("mlp.fc1"), bias_col=H)
         up = bias_only(bias("mlp.fc1"), FP, HP)
         gu = tuple(
             np.stack(
@@ -113,10 +112,6 @@ def prepare(out, task):
             stream[offset : offset + len(block)] = block
             offset += len(block)
         assert offset == (layer + 1) * fd.W_LAYER
-        for key, t in [("qkv", qkv), ("o", o), ("fc1", fc1_biased), ("down", down)]:
-            np.save(
-                out / f"layer{layer}_{key}.npy", dequant(t).T.copy().view(np.uint16)
-            )
         norms.append(
             np.stack(
                 [

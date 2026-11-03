@@ -87,13 +87,7 @@ def build_decode_kernels(out, capacity=1024):
     return settings, env, records
 
 
-def build_prefill(out, sequence_length=512, rms_impl="decode"):
-    from .prefill import compile_prefill
-
-    compile_prefill(out, sequence_length)
-
-
 def build_head(out):
-    from .prefill import compile_head
+    from .head import compile_head
 
     compile_head(out)
