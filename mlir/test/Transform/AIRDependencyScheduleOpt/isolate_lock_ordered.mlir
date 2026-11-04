@@ -242,3 +242,56 @@ module {
     return
   }
 }
+
+// -----
+
+// G: the L2 buffer is allocated inside the loop and used only inside the
+// regions of the fill loop and of the loop around the put. After the split
+// both loops must use one buffer, so its alloc is hoisted out of the loop
+// instead of being cloned into each new loop.
+// CHECK-LABEL: func.func @shared_inner_alloc
+// CHECK: air.segment
+// CHECK-COUNT-1: memref.alloc() : memref<64xbf16, 1>
+// CHECK-NOT: memref.alloc() : memref<64xbf16, 1>
+// CHECK: scf.for
+// CHECK: air.channel.get{{.*}}@fill
+// CHECK: scf.for
+// CHECK: air.channel.put{{.*}}@out
+
+module {
+  air.channel @fill [1, 1]
+  air.channel @out [1, 1]
+  func.func @shared_inner_alloc() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%a, %b) in (%sa=%c1, %sb=%c1) {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c4 = arith.constant 4 : index
+        %c32 = arith.constant 32 : index
+        %w0 = air.wait_all async
+        %2 = scf.for %k = %c0 to %c4 step %c1_0 iter_args(%it = %w0) -> (!air.async.token) {
+          %t0, %buf = air.execute [%it] -> (memref<64xbf16, 1>) {
+            %m = memref.alloc() : memref<64xbf16, 1>
+            air.execute_terminator %m : memref<64xbf16, 1>
+          }
+          %f = scf.for %h = %c0 to %c2 step %c1_0 iter_args(%t = %t0) -> (!air.async.token) {
+            %off = arith.muli %h, %c32 : index
+            %g = air.channel.get async [%t] @fill[%c0, %c0] (%buf[%off] [%c32] [%c1_0]) : (memref<64xbf16, 1>)
+            scf.yield %g : !air.async.token
+          }
+          %p = scf.for %h = %c0 to %c1_0 step %c1_0 iter_args(%t = %f) -> (!air.async.token) {
+            %q = air.channel.put async [%t] @out[%c0, %c0] (%buf[] [] []) : (memref<64xbf16, 1>)
+            scf.yield %q : !air.async.token
+          }
+          %d = air.execute [%p] {
+            memref.dealloc %buf : memref<64xbf16, 1>
+          }
+          scf.yield %d : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}

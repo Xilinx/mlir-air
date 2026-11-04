@@ -7915,19 +7915,32 @@ private:
   void markAllocsToHoist(
       scf::ForOp for_op,
       SmallVector<llvm::SetVector<Operation *>> &target_ops_sets) const {
-    for (auto &set : target_ops_sets) {
+    auto mark = [&](Value memref) {
+      auto exec = dyn_cast_if_present<air::ExecuteOp>(memref.getDefiningOp());
+      if (exec && for_op->isProperAncestor(exec))
+        exec->setAttr("hoist_alloc",
+                      mlir::BoolAttr::get(exec->getContext(), true));
+    };
+    // The sets that use each memref inside their ops' regions.
+    llvm::DenseMap<Value, llvm::SmallDenseSet<unsigned, 2>> usedBySets;
+    for (auto [i, set] : llvm::enumerate(target_ops_sets)) {
       for (Operation *o : set) {
-        for (auto operand : o->getOperands()) {
-          if (!isa_and_present<MemRefType>(operand.getType()))
-            continue;
-          auto exec =
-              dyn_cast_if_present<air::ExecuteOp>(operand.getDefiningOp());
-          if (exec && for_op->isProperAncestor(exec))
-            exec->setAttr("hoist_alloc",
-                          mlir::BoolAttr::get(exec->getContext(), true));
-        }
+        for (auto operand : o->getOperands())
+          if (isa_and_present<MemRefType>(operand.getType()))
+            mark(operand);
+        llvm::SetVector<Value> above;
+        for (Region &region : o->getRegions())
+          getUsedValuesDefinedAbove(region, above);
+        for (Value v : above)
+          if (isa<MemRefType>(v.getType()))
+            usedBySets[v].insert(i);
       }
     }
+    // A buffer that ops of several new loops use must stay one buffer, so its
+    // alloc is hoisted rather than cloned into each loop.
+    for (auto &[memref, sets] : usedBySets)
+      if (sets.size() > 1)
+        mark(memref);
   }
 };
 
