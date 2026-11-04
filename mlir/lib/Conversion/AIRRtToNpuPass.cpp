@@ -5059,6 +5059,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                    32;
       }
       // The host checks the length against the table before it dispatches.
+      // One length per dispatch also makes every issue of the descriptor
+      // write the same word, so one landing while an earlier start is still
+      // queued changes nothing.
       int64_t scale, addend;
       BlockArgument lenArg =
           affineInSequenceArg(issue.getLength(), scale, addend,
