@@ -316,15 +316,29 @@ def _kv_put_runtime(kvin, KV, g, nkv, rounds):
     c = lambda v: ConstantOp(idx, IntegerAttr.get(idx, v)).result  # noqa: E731
     n = MulIOp(IndexCastOp(idx, nkv.value).result, c(kv_rec(g))).result
     h = g.kv_heads
+    span = g.max_blocks * kv_rec(g)
     kvin._declare()
-    ChannelPut(
-        kvin.name,
-        KV.value,
-        offsets=[c(0), c(0), c(0)],
-        sizes=[c(h), c(rounds // h), n],
-        strides=[c(g.max_blocks * kv_rec(g)), c(0), c(1)],
-        indices=kvin._indices(None, "put"),
-    )
+    if rounds // h > 1:
+        ChannelPut(
+            kvin.name,
+            KV.value,
+            offsets=[c(0), c(0), c(0)],
+            sizes=[c(h), c(rounds // h), n],
+            strides=[c(span), c(0), c(1)],
+            indices=kvin._indices(None, "put"),
+        )
+        return
+    # Without GQA each head is read once. A run-time size needs a contiguous
+    # transfer or a repeat around it (airrt-to-npu), so a put per head.
+    for i in range(h):
+        ChannelPut(
+            kvin.name,
+            KV.value,
+            offsets=[c(i * span)],
+            sizes=[n],
+            strides=[c(1)],
+            indices=kvin._indices(None, "put"),
+        )
 
 
 def _attention(name, gs, wave, puts, externs, rtps):
