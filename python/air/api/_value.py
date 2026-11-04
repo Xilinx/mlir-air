@@ -19,6 +19,7 @@ Three rules shape this module:
 """
 
 from ._index import coerce_index
+from .types import require_signless
 
 __all__ = ["Token", "Tensor", "TensorSlice", "Buffer", "BufferSlice", "BufferExpr"]
 
@@ -856,6 +857,7 @@ class BufferSlice(_StridedView):
                 f"an index has to be an integer; this buffer is {self.dtype.name}"
             )
         self._require_buffer_walk("as an index")
+        require_signless(self.dtype, "an L1 element used as an index")
         from air.dialects.arith import constant, index_cast
         from air.dialects.memref import load as memref_load
         from air.ir import IndexType
