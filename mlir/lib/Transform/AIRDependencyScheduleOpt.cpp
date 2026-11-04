@@ -6510,14 +6510,16 @@ private:
   // op, which would fill a different buffer; moveValueDefinitions declines
   // ops with side effects, an allocation among them. Returns false only for
   // an allocation that cannot move; with `dryRun`, moves nothing.
+  // Whether `op` is an air.execute whose body is a memref.alloc and the
+  // terminator yielding it.
+  static bool isAllocExecute(Operation *op) {
+    auto exec = dyn_cast_if_present<air::ExecuteOp>(op);
+    return exec && exec.getChildOps().size() == 2 &&
+           isa<memref::AllocOp>(exec.getChildOps().front());
+  }
   bool hoistAllocAbove(Value v, Operation *a, DominanceInfo &dom, bool dryRun) {
     Operation *def = v.getDefiningOp();
-    if (!def)
-      return true;
-    auto exec = dyn_cast<air::ExecuteOp>(def);
-    // The body is the alloc and the terminator yielding it.
-    if (!exec || exec.getChildOps().size() != 2 ||
-        !isa<memref::AllocOp>(exec.getChildOps().front()))
+    if (!def || !isAllocExecute(def))
       return true;
     if (dom.properlyDominates(def, a))
       return true;
@@ -6999,12 +7001,13 @@ private:
                (def && slice.contains(def) && air::isEffectFree(def)) ||
                (dryRun && dryMovedTokens.contains(v));
       };
-      // Operands defined in a region enclosing a were hoisted above a by
-      // hoistAllocAbove.
+      // Allocations in a region enclosing a were hoisted above a by
+      // hoistAllocAbove; other definitions there are not moved.
       if (!llvm::all_of(b->getOperands(), [&](Value v) {
             Operation *def = v.getDefiningOp();
-            return available(v) || (def && def->getParentRegion()->isAncestor(
-                                               a->getParentRegion()));
+            return available(v) ||
+                   (isAllocExecute(def) &&
+                    def->getParentRegion()->isAncestor(a->getParentRegion()));
           }))
         return false;
       for (Operation *op : slice)
