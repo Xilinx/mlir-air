@@ -35,6 +35,9 @@ IGNORE = ["original/*", "LICENSE*", "USE_POLICY*", "consolidated*.safetensors"]
 # the example's offline snapshot_download asks for every *.py of it.
 EXTRA_ALLOW = {
     "apple/OpenELM-1_1B-Instruct": ["*.py"],
+    # the d3 package's runtime, which its CPU reference imports
+    "vllm-sr/d3-edge": ["*.py"],
+    "vllm-sr/d3-lite": ["*.py"],
 }
 
 DEFAULT_LIST = (

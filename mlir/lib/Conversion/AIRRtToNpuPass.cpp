@@ -3715,6 +3715,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       return;
     }
     awaitInChannelOrder(module);
+    releaseAwaitedTasks(module);
 
     // Repair dominance after the reordering above. Every hoist here moves a
     // configure task or an RTP write past other ops, and a runtime access
@@ -4463,6 +4464,32 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       }
     });
     return failure(invalidSchedule);
+  }
+
+  // Frees each task configured inside a runtime loop or condition right after
+  // its await, unless a free of it already follows the await, in the same
+  // block or after an op enclosing the await.
+  // aie-lower-dynamic-bd-pool draws the BD ids of such tasks from a runtime
+  // pool that only dma_free_task returns them to; an await there only
+  // synchronizes. The await guarantees the task has completed, so the free is
+  // safe. Tasks at the top level of the sequence get their ids at compile time,
+  // and the await releases those.
+  void releaseAwaitedTasks(ModuleOp module) {
+    module.walk([&](AIEX::DMAAwaitTaskOp await) {
+      Value task = await.getTask();
+      Operation *cfg = task.getDefiningOp();
+      if (!cfg || isa<AIE::RuntimeSequenceOp, func::FuncOp>(cfg->getParentOp()))
+        return;
+      for (Operation *u : task.getUsers()) {
+        if (!isa<AIEX::DMAFreeTaskOp>(u))
+          continue;
+        Operation *anc = u->getBlock()->findAncestorOpInBlock(*await);
+        if (anc && anc->isBeforeInBlock(u))
+          return;
+      }
+      OpBuilder after(await->getBlock(), std::next(await->getIterator()));
+      AIEX::DMAFreeTaskOp::create(after, await.getLoc(), task);
+    });
   }
 
   // Put each channel's awaits in the order its tasks were started, and release

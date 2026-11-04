@@ -27,14 +27,9 @@ from .deployment_cli import device_lock
 def source_identity():
     root = LLMS.parents[1]
     names = subprocess.check_output(
-        [
-            "git",
-            "ls-files",
-            "-co",
-            "--exclude-standard",
-            "programming_examples",
-            "python/air",
-        ],
+        # Tracked files only: tests write untracked files into the source
+        # tree, which would change the key in the middle of a run.
+        ["git", "ls-files", "-c", "programming_examples", "python/air"],
         cwd=root,
         text=True,
     ).splitlines()
@@ -149,7 +144,10 @@ def execute(args, run=run_command):
     build_key = hashlib.sha256(
         json.dumps(asset_key, sort_keys=True).encode()
     ).hexdigest()
-    build = work / "build" / args.model / build_key[:20]
+    if args.build_dir:
+        build = args.build_dir.resolve()
+    else:
+        build = work / "build" / args.model / build_key[:20]
     build.mkdir(parents=True, exist_ok=True)
     state = dict(
         model=args.model,
@@ -188,10 +186,9 @@ def execute(args, run=run_command):
         save_json(out / "status.json", state)
 
     try:
-        # The source key changes on edits to tracked or new example sources.
-        # Incomplete packing has no manifest and the CLI refuses to overwrite it.
-        if not (build / "weights/manifest.json").is_file():
-            call("weights")
+        # The CLI reuses packed weights only when the same packing code made
+        # them from the same logical Q4 tensors.
+        call("weights")
         call("compile")
         call("reference", ["--out", str(out / "reference")], args.reference_python)
         extra = [
@@ -237,6 +234,9 @@ def main():
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--q4-dir", type=Path)
+    # the model's build to share with its other tests, instead of one per
+    # source key under the work directory
+    parser.add_argument("--build-dir", type=Path)
     parser.add_argument("--reference-python")
     args = parser.parse_args()
     key = (

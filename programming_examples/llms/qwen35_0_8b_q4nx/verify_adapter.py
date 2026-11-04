@@ -75,7 +75,12 @@ def resolve_model(model_choice_or_id: str) -> str:
         return repo
     from huggingface_hub import snapshot_download
 
-    return snapshot_download(repo, revision=q35_npu.HF_REVISION)
+    # the files the runner's offline cache holds (utils/hf_disk_budget.py)
+    return snapshot_download(
+        repo,
+        revision=q35_npu.HF_REVISION,
+        allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"],
+    )
 
 
 def build_runner(

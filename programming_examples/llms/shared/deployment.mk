@@ -72,7 +72,8 @@ ci-verify ci-profile:
 	cd $(srcdir)/.. && $(PYTHON) -m shared.deployment_ci $(@:ci-%=%) \
 	  --model $(MODEL_MODULE) --prefill $(P) --work-dir "$(abspath $(CI_DIR))" \
 	  $(if $(CHECKPOINT),--checkpoint "$(CHECKPOINT)") \
-	  $(if $(Q4_DIR),--q4-dir "$(Q4_DIR)")
+	  $(if $(Q4_DIR),--q4-dir "$(Q4_DIR)") \
+	  $(if $(CI_BUILD_DIR),--build-dir "$(abspath $(CI_BUILD_DIR))")
 
 # Decode templates at any KV capacity, for bench/sweep_decode.py: decode_L$(LBUILD)
 # and decode_L$(LBUILD-1) in DECODE_SWEEP_DIR (its --template-dir).

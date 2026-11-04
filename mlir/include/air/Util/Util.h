@@ -576,6 +576,12 @@ SmallVector<Value> lookupOrDefaultRange(OperandRange vec, IRMapping &remap);
 // Extend isPure method to operate on air.execute.
 bool isPure(Operation *op);
 
+// Returns true if `op` has no memory effects, so that a clone of it placed
+// under the same control flow computes the same results. Unlike isPure, this
+// accepts ops that are not speculatable, such as arith.divsi; a clone of one
+// must not be hoisted out of a condition.
+bool isEffectFree(Operation *op);
+
 // Collect the values used in `region` and defined above it: the constants
 // (arith.constant and ub.poison), or all the others.
 void getUsedConstsDefinedAbove(MutableArrayRef<Region> region,
