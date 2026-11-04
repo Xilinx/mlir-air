@@ -123,6 +123,43 @@ def compare_capture(candidate, reference, selected, model):
     return result
 
 
+def packing_key(model):
+    """Identity of the code that lays out `model`'s packed weights: its packer
+    and decode settings, the shared packing modules and the fused decode."""
+    import hashlib
+
+    llms = Path(__file__).resolve().parents[1]
+    files = [llms / model / "weights.py", llms / model / "build.py"]
+    files += [llms / "shared" / n for n in ("q4_cascade.py", "affine_q4.py")]
+    files += sorted((llms.parent / "fused_decode").glob("*.py"))
+    h = hashlib.sha256()
+    for f in files:
+        if f.is_file():
+            h.update(str(f.relative_to(llms.parent)).encode() + f.read_bytes())
+    return h.hexdigest()
+
+
+def pack(model, out, q4):
+    """`model`'s packed weights in out, reused when the same packing code made
+    them from the same logical Q4 tensors (out/packing.json, written last)."""
+    import shutil
+
+    stamp = out / "packing.json"
+    want = dict(
+        packing=packing_key(model),
+        logical_manifest_sha256=file_hash(Path(q4) / "manifest.json"),
+    )
+    if stamp.is_file() and json.loads(stamp.read_text()) == want:
+        print(f"packed weights up to date: {out}", flush=True)
+        return
+    if out.exists():
+        # incomplete, or packed by other code or from other weights
+        shutil.rmtree(out)
+    packer = importlib.import_module(f"air_examples.llms.{model}.weights")
+    packer.prepare(out, read_task(model))
+    write_json(stamp, want)
+
+
 def checkpoint(model, requested):
     if requested:
         return Path(requested).resolve()
@@ -347,16 +384,7 @@ def main(model):
         if args.part == "prefill" and fused_prefill_model(model):
             # the fused prefill reads the logical Q4 itself
             return
-        packed = base / "weights/manifest.json"
-        if packed.is_file():
-            # packing writes its manifest last
-            bound = json.loads(packed.read_text())["logical_manifest_sha256"]
-            if bound != file_hash(q4 / "manifest.json"):
-                raise ValueError(f"{packed} was packed from other logical Q4 weights")
-            print(f"packed weights up to date: {packed.parent}", flush=True)
-            return
-        packer = importlib.import_module(f"air_examples.llms.{model}.weights")
-        packer.prepare(base / "weights", read_task(model))
+        pack(model, base / "weights", q4)
         return
     if args.command == "compile":
         build = importlib.import_module(f"air_examples.llms.{model}.build")

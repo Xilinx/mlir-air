@@ -103,8 +103,9 @@ A/B/A bitwise reset check. CPU reference and NPU processes run sequentially.
 The normal dependency-aware compiler cache is used; packed weights are reused
 under a key of the tracked sources, or, with `CI_BUILD_DIR`, from that build
 directory, which the nightly shares with the model's other tests
-(`CI_BUILD_DIR=affine-build`). `make weights` keeps packed weights bound to the
-same logical Q4 tensors. Use one CI work directory per model. Failed stages
+(`CI_BUILD_DIR=affine-build`). `make weights` reuses packed weights only when
+the same packing code made them from the same logical Q4 tensors
+(`weights/packing.json`), and packs them again otherwise. Use one CI work directory per model. Failed stages
 stop the test and remove any stale performance record for that configuration.
 
 The nightly dashboard gives every configuration its own model ID and P/C label.

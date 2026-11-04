@@ -157,15 +157,47 @@ class DeploymentCITests(unittest.TestCase):
                 )
                 self.assertEqual(status["status"], "FAIL")
 
-    def test_shared_build_dir_reused(self):
-        """With --build-dir every stage builds there, and weights already
-        packed there are not packed again."""
+    def test_shared_build_dir(self):
+        """With --build-dir every stage builds there."""
         with tempfile.TemporaryDirectory() as tmp:
             build = Path(tmp) / "affine-build"
             self.assertIn("weights", self.pipeline(tmp, "verify", build_dir=build))
             self.assertTrue((build / "weights/manifest.json").is_file())
             self.assertFalse((Path(tmp) / "build").exists())
-            self.assertNotIn("weights", self.pipeline(tmp, "profile", build_dir=build))
+
+    def test_packed_weights_reused_only_from_same_code_and_q4(self):
+        from . import deployment_cli as cli
+
+        made = []
+
+        def prepare(out, task):
+            out.mkdir(parents=True, exist_ok=False)
+            (out / "manifest.json").write_text("{}")
+            made.append(out)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            q4, out = Path(tmp) / "q4", Path(tmp) / "build/weights"
+            q4.mkdir()
+            (q4 / "manifest.json").write_text('{"a": 1}')
+            packer = types.SimpleNamespace(prepare=prepare)
+            with patch.object(
+                cli.importlib, "import_module", return_value=packer
+            ), patch.object(cli, "read_task", return_value={}):
+                cli.pack("phi2_2_7b_q4nx", out, q4)
+                cli.pack("phi2_2_7b_q4nx", out, q4)
+                self.assertEqual(len(made), 1)
+                # other packing code
+                with patch.object(cli, "packing_key", return_value="other"):
+                    cli.pack("phi2_2_7b_q4nx", out, q4)
+                self.assertEqual(len(made), 2)
+                # other logical Q4 tensors
+                (q4 / "manifest.json").write_text('{"a": 2}')
+                cli.pack("phi2_2_7b_q4nx", out, q4)
+                self.assertEqual(len(made), 3)
+                # an interrupted packing has no stamp
+                (out / "packing.json").unlink()
+                cli.pack("phi2_2_7b_q4nx", out, q4)
+                self.assertEqual(len(made), 4)
 
     def test_verify_never_profiles(self):
         with tempfile.TemporaryDirectory() as tmp:

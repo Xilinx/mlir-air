@@ -186,10 +186,9 @@ def execute(args, run=run_command):
         save_json(out / "status.json", state)
 
     try:
-        # The source key changes on edits to tracked example sources.
-        # Incomplete packing has no manifest and the CLI refuses to overwrite it.
-        if not (build / "weights/manifest.json").is_file():
-            call("weights")
+        # The CLI reuses packed weights only when the same packing code made
+        # them from the same logical Q4 tensors.
+        call("weights")
         call("compile")
         call("reference", ["--out", str(out / "reference")], args.reference_python)
         extra = [
