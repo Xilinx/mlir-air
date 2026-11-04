@@ -5066,8 +5066,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (!lenArg)
         return issue->emitOpError(
             "length is not affine in one argument of the sequence");
-      bounds.append({static_cast<int64_t>(lenArg.getArgNumber()), scale,
-                     addend, bound.getInt()});
+      bounds.append({static_cast<int64_t>(lenArg.getArgNumber()), scale, addend,
+                     bound.getInt()});
       int col = tile.getCol(), row = tile.getRow();
       // The controller id the shim's completion tokens go out under; the
       // host programs it into the channel before it waits on one.

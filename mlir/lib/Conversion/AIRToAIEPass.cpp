@@ -5468,6 +5468,10 @@ public:
       air::ChannelPutOp arm = arms.lookup(id);
       if (!arm)
         return issue->emitOpError("has no host-side put to start");
+      // One armed BD per put; a second issuer would queue one never armed.
+      if (arm->hasAttr("air.device_issue_bd"))
+        return issue->emitOpError(
+            "starts an L3 transfer another issue also starts");
       auto metadata = arm->getAttrOfType<ArrayAttr>("metadataArray");
       auto slot = air::getIndexToMetadataArrayFromChannelIndices(arm);
       if (!metadata || !slot || *slot < 0 ||

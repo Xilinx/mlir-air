@@ -741,8 +741,9 @@ static LogicalResult saveModule(ModuleOp moduleOp, StringRef path) {
 static LogicalResult writeHostSidecars(ModuleOp moduleOp) {
   SmallString<256> dir(tmpDir);
   sys::path::append(dir, "host");
-  auto write = [&](StringRef name,
-                   llvm::function_ref<void(raw_ostream &)> body) -> LogicalResult {
+  auto write =
+      [&](StringRef name,
+          llvm::function_ref<void(raw_ostream &)> body) -> LogicalResult {
     sys::fs::create_directories(dir);
     SmallString<256> path(dir);
     sys::path::append(path, name);
