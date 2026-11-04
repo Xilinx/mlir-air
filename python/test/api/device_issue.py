@@ -95,6 +95,33 @@ def needs_a_core():
         print(e)
 
 
+# CHECK-LABEL: TEST: view_index
+# CHECK: cannot read {{.*}} as an index: it is a reshaped or transposed view
+@run
+def view_index():
+    W = air.tensor([NE, E], bf16)
+    wexp = air.channel("Wexp3", size=[1])
+    with air.launch(name="moe3") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    with air.herd([range(1)], name="router", shape=(1,)) as r:
+
+                        @r.body
+                        def _(tx):
+                            topk = air.alloc([2, 2], i32, scope=r.private())
+                            wexp.put(W[topk.transpose(1, 0)[1, 0], :], indices=[0])
+
+    try:
+        launch.mlir()
+    except TypeError as e:
+        print(e)
+
+
 # CHECK-LABEL: TEST: l2_extent
 #
 # A whole L2 buffer takes a run-time outermost extent: its row-major pattern,

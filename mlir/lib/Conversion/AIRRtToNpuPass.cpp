@@ -438,7 +438,8 @@ static Value peelStaticAddends(Value v, OpBuilder &builder, Location loc,
 // argument itself, so a cast that can change its value cannot be peeled.
 static BlockArgument affineInSequenceArg(Value v, int64_t &scale,
                                          int64_t &addend,
-                                         bool widenOnly = false) {
+                                         bool widenOnly = false,
+                                         bool funcArg = false) {
   scale = 1;
   addend = 0;
   auto width = [](Type t) -> unsigned {
@@ -484,8 +485,9 @@ static BlockArgument affineInSequenceArg(Value v, int64_t &scale,
   // induction variable is also a block argument but varies per iteration, and
   // the scratchpad holds one value per dispatch -- those offsets are folded
   // by unrolling further down the pipeline instead.
-  if (!llvm::isa<xilinx::AIE::RuntimeSequenceOp>(
-          blockArg.getOwner()->getParentOp()))
+  Operation *owner = blockArg.getOwner()->getParentOp();
+  if (!llvm::isa<xilinx::AIE::RuntimeSequenceOp>(owner) &&
+      !(funcArg && llvm::isa<func::FuncOp>(owner)))
     return nullptr;
   return blockArg;
 }
@@ -4997,12 +4999,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     constexpr int64_t entryWords = 6;
     llvm::MapVector<func::FuncOp, SmallVector<int32_t>> tables;
     SmallVector<std::tuple<air::ChannelIssueOp, int64_t, StringAttr>> reads;
+    SmallVector<int64_t> bounds;
     for (air::ChannelIssueOp issue : issues) {
       auto func = issue->getParentOfType<func::FuncOp>();
       auto device = issue->getParentOfType<AIE::DeviceOp>();
       auto bound = issue->getAttrOfType<IntegerAttr>("air.length_bound");
       if (!func || !device || !issue.getLength() || !bound)
         return issue->emitOpError("is not a host-issued length");
+      if (issue.getAsyncToken() && !issue.getAsyncToken().use_empty())
+        return issue->emitOpError("is ordered by its token, which the host "
+                                  "sequence cannot express");
       const auto &tm = device.getTargetModel();
       AIEX::DMAConfigureTaskOp tmpl;
       device.walk([&](AIEX::DMAConfigureTaskOp t) {
@@ -5052,6 +5058,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                        .getElementTypeBitWidth() /
                    32;
       }
+      // The host checks the length against the table before it dispatches.
+      int64_t scale, addend;
+      BlockArgument lenArg =
+          affineInSequenceArg(issue.getLength(), scale, addend,
+                              /*widenOnly=*/true, /*funcArg=*/true);
+      if (!lenArg)
+        return issue->emitOpError(
+            "length is not affine in one argument of the sequence");
+      bounds.append({static_cast<int64_t>(lenArg.getArgNumber()), scale,
+                     addend, bound.getInt()});
       int col = tile.getCol(), row = tile.getRow();
       // The controller id the shim's completion tokens go out under; the
       // host programs it into the channel before it waits on one.
@@ -5156,6 +5172,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                  "table; only one is supported");
       module->setAttr("air.ctrl_table",
                       DenseI32ArrayAttr::get(module.getContext(), table));
+      module->setAttr("air.ctrl_bounds",
+                      DenseI64ArrayAttr::get(module.getContext(), bounds));
     }
     for (auto &[issue, base, name] : reads) {
       OpBuilder b(issue);

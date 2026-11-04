@@ -741,19 +741,45 @@ static LogicalResult saveModule(ModuleOp moduleOp, StringRef path) {
 static LogicalResult writeHostSidecars(ModuleOp moduleOp) {
   SmallString<256> dir(tmpDir);
   sys::path::append(dir, "host");
-  if (auto table =
-          moduleOp->getAttrOfType<DenseI32ArrayAttr>("air.ctrl_table")) {
+  auto write = [&](StringRef name,
+                   llvm::function_ref<void(raw_ostream &)> body) -> LogicalResult {
     sys::fs::create_directories(dir);
     SmallString<256> path(dir);
-    sys::path::append(path, "air_ctrl_table.bin");
+    sys::path::append(path, name);
     std::error_code ec;
     raw_fd_ostream os(path, ec);
     if (ec) {
       llvm::errs() << "Error writing " << path << ": " << ec.message() << "\n";
       return failure();
     }
-    for (int32_t w : table.asArrayRef())
-      os.write(reinterpret_cast<const char *>(&w), sizeof(w));
+    body(os);
+    return success();
+  };
+  // A rebuild into the same directory must not leave a previous build's files.
+  for (StringRef name :
+       {"air_ctrl_table.bin", "air_ctrl_bounds.txt", "air_params.txt"}) {
+    SmallString<256> path(dir);
+    sys::path::append(path, name);
+    sys::fs::remove(path);
+  }
+  if (auto table =
+          moduleOp->getAttrOfType<DenseI32ArrayAttr>("air.ctrl_table")) {
+    if (failed(write("air_ctrl_table.bin", [&](raw_ostream &os) {
+          for (int32_t w : table.asArrayRef())
+            os.write(reinterpret_cast<const char *>(&w), sizeof(w));
+        })))
+      return failure();
+  }
+  // Per host-issued length: arg, scale, addend, and the most the table holds.
+  if (auto bounds =
+          moduleOp->getAttrOfType<DenseI64ArrayAttr>("air.ctrl_bounds")) {
+    if (failed(write("air_ctrl_bounds.txt", [&](raw_ostream &os) {
+          ArrayRef<int64_t> b = bounds.asArrayRef();
+          for (size_t i = 0; i + 3 < b.size(); i += 4)
+            os << b[i] << " " << b[i + 1] << " " << b[i + 2] << " " << b[i + 3]
+               << "\n";
+        })))
+      return failure();
   }
   std::string params;
   moduleOp.walk([&](xilinx::AIEX::ScratchpadParameterOp p) {
@@ -761,18 +787,9 @@ static LogicalResult writeHostSidecars(ModuleOp moduleOp) {
       params += p.getSymName().str() + " " + std::to_string(src[0]) + " " +
                 std::to_string(src[1]) + " " + std::to_string(src[2]) + "\n";
   });
-  if (!params.empty()) {
-    sys::fs::create_directories(dir);
-    SmallString<256> path(dir);
-    sys::path::append(path, "air_params.txt");
-    std::error_code ec;
-    raw_fd_ostream os(path, ec);
-    if (ec) {
-      llvm::errs() << "Error writing " << path << ": " << ec.message() << "\n";
-      return failure();
-    }
-    os << params;
-  }
+  if (!params.empty() &&
+      failed(write("air_params.txt", [&](raw_ostream &os) { os << params; })))
+    return failure();
   return success();
 }
 

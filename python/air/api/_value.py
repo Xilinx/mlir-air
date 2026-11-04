@@ -855,6 +855,7 @@ class BufferSlice(_StridedView):
             raise TypeError(
                 f"an index has to be an integer; this buffer is {self.dtype.name}"
             )
+        self._require_buffer_walk("as an index")
         from air.dialects.arith import constant, index_cast
         from air.dialects.memref import load as memref_load
         from air.ir import IndexType
@@ -879,16 +880,20 @@ class BufferSlice(_StridedView):
         # the buffer: a reshape changes the rank, a transpose permutes the
         # strides, and in either case an index into the region is not an index
         # into the buffer.
+        self._require_buffer_walk("elementwise")
+        return BufferExpr.leaf(self)
+
+    def _require_buffer_walk(self, how):
+        """Raise unless an index into this region is an index into the buffer."""
         if list(self.strides) != list(self.buffer.strides):
             raise TypeError(
-                f"cannot read {self!r} elementwise: it is a reshaped or "
+                f"cannot read {self!r} {how}: it is a reshaped or "
                 "transposed view, so it walks the buffer with strides "
                 f"{list(self.strides)} rather than its own "
                 f"{list(self.buffer.strides)}, and an index into the view is "
                 "not an index into the buffer. A plain region -- gu[1, :], or a "
-                "subscript of one -- reads elementwise."
+                f"subscript of one -- reads {how}."
             )
-        return BufferExpr.leaf(self)
 
     def _arith(self, other, op, reflected=False):
         expr = self._as_leaf()

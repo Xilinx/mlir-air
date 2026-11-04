@@ -286,3 +286,31 @@ module {
     return
   }
 }
+
+// -----
+
+module {
+  air.channel @cin5 [1, 1]
+  func.func @l3_in_loop(%arg0: memref<65536xi32>) {
+    air.launch () in () args(%a0=%arg0) : memref<65536xi32> {
+      air.segment @seg args(%s0=%a0) : memref<65536xi32> {
+        %c1 = arith.constant 1 : index
+        air.herd @router tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%w=%s0) : memref<65536xi32> {
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          %c4 = arith.constant 4 : index
+          %c1024 = arith.constant 1024 : index
+          %topk = memref.alloc() : memref<16xi32, 2 : i32>
+          scf.for %i = %c0 to %c4 step %c1_0 {
+            %v = memref.load %topk[%i] : memref<16xi32, 2 : i32>
+            %e = arith.index_cast %v : i32 to index
+            %off = arith.muli %e, %c1024 : index
+            // expected-error@+1 {{an L3 transfer whose offset a core computes cannot be in a loop in the herd; unroll the loop}}
+            air.channel.put @cin5[%tx, %ty] (%w[%off] [%c1024] [%c1_0]) : (memref<65536xi32>)
+          }
+        }
+      }
+    }
+    return
+  }
+}

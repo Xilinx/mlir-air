@@ -25,6 +25,8 @@ with tempfile.TemporaryDirectory() as d:
     np.arange(12, dtype=np.int32).tofile(os.path.join(host, "air_ctrl_table.bin"))
     with open(os.path.join(host, "air_params.txt"), "w") as f:
         f.write("__air_param_fwd_0 2 1 0\n")
+    with open(os.path.join(host, "air_ctrl_bounds.txt"), "w") as f:
+        f.write("2 1 0 8\n")
     params = os.path.join(d, "params.txt")
     with open(params, "w") as f:
         f.write("3 3\n")
@@ -51,6 +53,15 @@ with tempfile.TemporaryDirectory() as d:
     # CHECK: results ['ndarray', 'ndarray', 'int']
     out = side.results((x, y, 5), [x + 1, y + 1, buffers[-1]])
     print("results", [type(o).__name__ for o in out])
+
+    # A length the table has no entry for is refused before dispatch.
+    # CHECK: argument 2 = 0 sets a transfer length of 0; it must be between 1 and 8
+    # CHECK: argument 2 = 9 sets a transfer length of 9; it must be between 1 and 8
+    for bad in (0, 9):
+        try:
+            side.split((x, y, bad))
+        except Exception as e:
+            print(e)
 
 # No host directory: buffers pass through unchanged.
 # CHECK: plain 2

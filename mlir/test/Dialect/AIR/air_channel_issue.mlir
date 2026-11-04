@@ -60,3 +60,16 @@ func.func @host_offset(%n: index) {
   }
   return
 }
+
+// -----
+
+air.channel @c [1]
+func.func @core_length() {
+  %c1 = arith.constant 1 : index
+  air.herd tile (%x, %y) in (%sx = %c1, %sy = %c1) {
+    %n = arith.constant 4 : index
+    // expected-error@+1 {{can set an offset but not a length}}
+    air.channel.issue @c[] length(%n) {issue_id = 0 : i64}
+  }
+  return
+}

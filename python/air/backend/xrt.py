@@ -204,11 +204,16 @@ class _HostSide:
     def __init__(self, host_dir):
         self.table = None
         self.sources = {}
+        self.bounds = []
         if not host_dir:
             return
         table = os.path.join(host_dir, "air_ctrl_table.bin")
         if os.path.isfile(table):
             self.table = np.fromfile(table, dtype=np.int32)
+        bounds = os.path.join(host_dir, "air_ctrl_bounds.txt")
+        if os.path.isfile(bounds):
+            with open(bounds) as f:
+                self.bounds = [tuple(map(int, ln.split())) for ln in f if ln.split()]
         sources = os.path.join(host_dir, "air_params.txt")
         if os.path.isfile(sources):
             with open(sources) as f:
@@ -223,6 +228,18 @@ class _HostSide:
         scalars = {
             i: int(a) for i, a in enumerate(args) if not isinstance(a, np.ndarray)
         }
+        # The table holds one entry per length; any other picks a wrong one.
+        for arg, scale, addend, most in self.bounds:
+            if arg not in scalars:
+                raise AirBackendError(
+                    f"argument {arg} sets a transfer length and must be an int"
+                )
+            length = scale * scalars[arg] + addend
+            if not 1 <= length <= most:
+                raise AirBackendError(
+                    f"argument {arg} = {scalars[arg]} sets a transfer length of "
+                    f"{length}; it must be between 1 and {most}"
+                )
         if self.table is not None:
             buffers.append(self.table)
         return buffers, scalars
@@ -1041,7 +1058,20 @@ class XRTBackend(AirBackend):
                     )
                     bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
                     bos.append(bo)
-                _check_run_state(self.kernel(3, bo_instr, len(words), *bos).wait())
+
+                def dispatch():
+                    _check_run_state(self.kernel(3, bo_instr, len(words), *bos).wait())
+
+                if self.n_perf_iters > 0:
+                    for _ in range(self.n_warmup_iters):
+                        dispatch()
+                    t0 = time.perf_counter()
+                    for _ in range(self.n_perf_iters):
+                        dispatch()
+                    t1 = time.perf_counter()
+                    self.last_latency_us = (t1 - t0) / self.n_perf_iters * 1e6
+                else:
+                    dispatch()
                 outputs = []
                 for a, bo in zip(args, bos):
                     bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)

@@ -1841,6 +1841,14 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
       return op->emitOpError(
           "sizes and strides of a transfer cannot depend on a value computed "
           "in the herd; only its offset can");
+  // The host arms an L3 put once per issue, but would fold a rolled loop of
+  // them into one task repeated for every iteration.
+  if (put && l3)
+    for (Operation *p = op->getParentOp(); p != herd; p = p->getParentOp())
+      if (isa<scf::ForOp>(p))
+        return op->emitOpError(
+            "an L3 transfer whose offset a core computes cannot be in a loop "
+            "in the herd; unroll the loop");
   // The core's next start must not overtake this one's descriptor: it waits
   // for the data, so it has to be the one receiving it.
   if (put && l2) {

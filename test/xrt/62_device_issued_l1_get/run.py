@@ -47,6 +47,7 @@ def build_module():
                             topk = air.alloc([16], i32, scope=f.private())
                             slots = air.alloc([NE, E], i32, scope=f.private())
                             o = air.alloc([NE, E], i32, scope=f.private())
+                            air.ops.fill(slots, 0)
                             idx_in.get(topk)
                             for i in air.sequential(0, K):
                                 w_in.get(slots[topk[i], :])

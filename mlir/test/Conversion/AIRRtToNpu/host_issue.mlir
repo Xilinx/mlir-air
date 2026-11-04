@@ -237,7 +237,7 @@ module {
 // entry per length, word 0 then the queue, is the sequence's last argument; a
 // shim MM2S of the column reads the entry for L, a scratchpad offset.
 
-// CHECK: module attributes {air.ctrl_table = array<i32: 1, 17433312, 256, 1, -2130049484, 23, 1, 17433312, 512,
+// CHECK: module attributes {air.ctrl_bounds = array<i64: 2, 1, 0, 8>, air.ctrl_table = array<i32: 1, 17433312, 256, 1, -2130049484, 23, 1, 17433312, 512,
 // CHECK-LABEL: aie.runtime_sequence @host_issue_l2
 // CHECK-SAME: %{{.*}}: i32, %[[TAB:.*]]: memref<48xi32>)
 // CHECK: aiex.dma_configure_task(%{{.*}}, MM2S, 0)
@@ -367,7 +367,7 @@ module {
 // on a pinned BD and not started; the entry queues it with a completion token,
 // which the host waits on before freeing it.
 
-// CHECK: module attributes {air.ctrl_table = array<i32: 1, 16896480, 256, 1, -2130587116, -2147483633,
+// CHECK: module attributes {air.ctrl_bounds = array<i64: 2, 1, 0, 8>, air.ctrl_table = array<i32: 1, 16896480, 256, 1, -2130587116, -2147483633,
 // CHECK: aie.tile(0, 0) {controller_id = #aie.packet_info<pkt_type = 0, pkt_id = 15>}
 // CHECK-LABEL: aie.runtime_sequence @host_issue_l3
 // CHECK: %[[T:.*]] = aiex.dma_configure_task_for @air_XIn

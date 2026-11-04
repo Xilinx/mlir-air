@@ -4049,6 +4049,9 @@ LogicalResult air::ChannelIssueOp::verify() {
   if (!core && getOffset())
     return emitOpError("is issued by the host, which can set a length but not "
                        "an offset a core computes");
+  if (core && getLength())
+    return emitOpError("is issued by a core, which can set an offset but not "
+                       "a length");
   return success();
 }
 

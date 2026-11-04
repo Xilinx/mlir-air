@@ -4906,6 +4906,18 @@ static FailureOr<DeviceIssueCore> setUpDeviceIssueCore(AIE::CoreOp core,
   return ic;
 }
 
+// The patch runs in program order, so what waited on the issue's token waits
+// on what the issue waited on.
+static void eraseIssue(air::ChannelIssueOp issue) {
+  if (Value token = issue.getAsyncToken(); token && !token.use_empty()) {
+    OpBuilder b(issue);
+    auto wait = air::WaitAllOp::create(b, issue.getLoc(), token.getType(),
+                                       issue.getAsyncDependencies());
+    token.replaceAllUsesWith(wait.getAsyncToken());
+  }
+  issue.erase();
+}
+
 // Replace `issue` with the core's side of starting BD `bdId` on MM2S
 // `channel` of a shim tile, through packet `ctrlPkt` and reply `replyPkt`.
 static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
@@ -4969,6 +4981,8 @@ static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
   Value elems = issue.getOffset();
   if (elems.getType().isIndex())
     elems = arith::IndexCastOp::create(b, loc, b.getI64Type(), elems);
+  else if (elems.getType() != b.getI64Type())
+    elems = arith::ExtSIOp::create(b, loc, b.getI64Type(), elems);
   unsigned bytes = elemType.getIntOrFloatBitWidth() / 8;
   Value addr = arith::AddIOp::create(
       b, loc, base, arith::MulIOp::create(b, loc, elems, i64(bytes)));
@@ -4988,7 +5002,7 @@ static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
   // The task's repeat count is only known once airrt-to-npu shapes its BD;
   // it finds the queue word's store by this tag and adds the count.
   push->setAttr("air.device_issue", issue.getIssueIdAttr());
-  issue.erase();
+  eraseIssue(issue);
 }
 
 // Replace `issue` with the core's side of starting BD `bdId` on `channel` of
@@ -5062,7 +5076,7 @@ static void lowerOnChipIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
   send({i32(hdr),
         i32(air::ctrlPacketWord(ctrlPkt, /*read=*/false, 1, queueAddr)),
         i32(bdId)});
-  issue.erase();
+  eraseIssue(issue);
 }
 
 // The L2 side of a memtile transfer: the buffer its BD moves.
@@ -5322,8 +5336,12 @@ public:
     llvm::DenseMap<int64_t, air::ChannelPutOp> arms;
     for (auto op : shimMemcpyIfOps)
       if (auto put = dyn_cast<air::ChannelPutOp>(op.getOperation()))
-        if (auto id = put->getAttrOfType<IntegerAttr>("air.device_issue"))
-          arms[id.getInt()] = put;
+        if (auto id = put->getAttrOfType<IntegerAttr>("air.device_issue")) {
+          auto [it, isNew] = arms.try_emplace(id.getInt(), put);
+          if (!isNew && it->second != put)
+            return put->emitOpError("shares its air.device_issue id with "
+                                    "another L3 transfer");
+        }
     // Host issues cloned in with the launch's transfers are lowered on the
     // host side; their copies here are dead.
     SmallVector<air::ChannelIssueOp> issues;
