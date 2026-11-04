@@ -734,6 +734,48 @@ static LogicalResult saveModule(ModuleOp moduleOp, StringRef path) {
   return success();
 }
 
+/// What a host needs besides the binary to run a sequence that patches
+/// descriptors at run time: the control-packet table it passes as the
+/// sequence's last argument, and, for each core scratchpad parameter, the
+/// sequence argument it is written from (arg, scale, addend).
+static LogicalResult writeHostSidecars(ModuleOp moduleOp) {
+  SmallString<256> dir(tmpDir);
+  sys::path::append(dir, "host");
+  if (auto table =
+          moduleOp->getAttrOfType<DenseI32ArrayAttr>("air.ctrl_table")) {
+    sys::fs::create_directories(dir);
+    SmallString<256> path(dir);
+    sys::path::append(path, "air_ctrl_table.bin");
+    std::error_code ec;
+    raw_fd_ostream os(path, ec);
+    if (ec) {
+      llvm::errs() << "Error writing " << path << ": " << ec.message() << "\n";
+      return failure();
+    }
+    for (int32_t w : table.asArrayRef())
+      os.write(reinterpret_cast<const char *>(&w), sizeof(w));
+  }
+  std::string params;
+  moduleOp.walk([&](xilinx::AIEX::ScratchpadParameterOp p) {
+    if (auto src = p->getAttrOfType<DenseI64ArrayAttr>("air.source"))
+      params += p.getSymName().str() + " " + std::to_string(src[0]) + " " +
+                std::to_string(src[1]) + " " + std::to_string(src[2]) + "\n";
+  });
+  if (!params.empty()) {
+    sys::fs::create_directories(dir);
+    SmallString<256> path(dir);
+    sys::path::append(path, "air_params.txt");
+    std::error_code ec;
+    raw_fd_ostream os(path, ec);
+    if (ec) {
+      llvm::errs() << "Error writing " << path << ": " << ec.message() << "\n";
+      return failure();
+    }
+    os << params;
+  }
+  return success();
+}
+
 /// Clone a module (by serializing and re-parsing).
 static OwningOpRef<ModuleOp> cloneModule(ModuleOp moduleOp) {
   std::string irStr;
@@ -1319,6 +1361,8 @@ static LogicalResult runAieCompilation() {
   if (failed(runPassPipeline(npuPipeline, npuModule.get())))
     return failure();
   if (failed(saveModule(npuModule.get(), npuFile)))
+    return failure();
+  if (failed(writeHostSidecars(npuModule.get())))
     return failure();
 
   if (debugIr) {

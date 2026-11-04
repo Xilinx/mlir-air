@@ -463,11 +463,22 @@ class Channel:
             if extent is not None:
                 from ._index import coerce_index
 
-                if tensor is None or not sizes:
+                shape = list(getattr(obj, "shape", None) or [])
+                if not sizes and tensor is None and shape:
+                    # A whole buffer: its row-major pattern, which the extent
+                    # then cuts short.
+                    strides, step = [], 1
+                    for d in reversed(shape):
+                        strides.insert(0, step)
+                        step *= d
+                    offsets = [coerce_index(0).materialize() for _ in shape]
+                    sizes = [coerce_index(d).materialize() for d in shape]
+                    strides = [coerce_index(s).materialize() for s in strides]
+                if not sizes:
                     raise ValueError(
-                        f"air.channel {self.name!r}: extent= sets the size of an "
-                        "L3 region's outermost axis at run time; this endpoint "
-                        "has no such axis"
+                        f"air.channel {self.name!r}: extent= sets the size of a "
+                        "region's or buffer's outermost axis at run time; this "
+                        "endpoint has no such axis"
                     )
                 ext = extent
                 if isinstance(ext, Tensor):
@@ -577,10 +588,10 @@ class Channel:
         here, written again on the channel, and hoped to agree. Only meaningful
         on a channel_type="npu_dma_packet" channel with several consumers.
 
-        ``extent`` replaces the size of an L3 region's outermost axis with a
-        value known only at run time: a rank-0 tensor argument, or an index
-        computed inside the launch. The region's own size on that axis is the
-        most it may move.
+        ``extent`` replaces the size of an L3 region's, or an L2 buffer's,
+        outermost axis with a value known only at run time: a rank-0 tensor
+        argument, or an index computed inside the launch. The region's own size
+        on that axis is the most it may move.
         """
         _reject_unsupported(unsupported)
         return self._emit(obj, indices, dependency, "put", dest=dest, extent=extent)

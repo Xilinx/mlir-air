@@ -18,6 +18,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
@@ -31,6 +32,7 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -336,6 +338,32 @@ static bool reachesSequenceArg(Value v) {
                          blockArg.getOwner()->getParentOp());
 }
 
+// The scratchpad lowering below reads an offset as adds and multiplies of the
+// sequence's argument; expand the affine.apply a DSL may have built it with.
+static Value expandAffineOffset(OpBuilder &builder, Location loc, Value v) {
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return v;
+  if (llvm::isa<arith::IndexCastOp, arith::TruncIOp, arith::ExtUIOp,
+                arith::ExtSIOp>(def)) {
+    Value src = expandAffineOffset(builder, loc, def->getOperand(0));
+    if (src == def->getOperand(0))
+      return v;
+    IRMapping map;
+    map.map(def->getOperand(0), src);
+    return builder.clone(*def, map)->getResult(0);
+  }
+  auto apply = llvm::dyn_cast<affine::AffineApplyOp>(def);
+  if (!apply)
+    return v;
+  SmallVector<Value> operands;
+  for (Value o : apply.getMapOperands())
+    operands.push_back(expandAffineOffset(builder, loc, o));
+  auto expanded =
+      affine::expandAffineMap(builder, loc, apply.getAffineMap(), operands);
+  return expanded ? (*expanded)[0] : v;
+}
+
 // Peel the offset's top-level additive chain into the part that varies per
 // dispatch and the part that does not. Every addend that does not reach the
 // sequence argument is static -- a loop-varying base, a constant, or both --
@@ -371,11 +399,34 @@ static Value peelStaticAddends(Value v, OpBuilder &builder, Location loc,
     staticSides.push_back(lhsRuntime ? rhs : lhs);
     v = lhsRuntime ? lhs : rhs;
   }
+  // A negative constant cannot stay on the BD, whose offset the ELF encodes
+  // unsigned; it goes into the parameter instead.
+  int64_t constant = 0;
+  for (Value s : staticSides)
+    if (auto c = getConstantIntValue(s))
+      constant += *c;
+  bool constantsInParameter = constant < 0;
   for (Value s : staticSides) {
-    if (residual && residual.getType() != s.getType())
-      return nullptr;
+    if (constantsInParameter && getConstantIntValue(s))
+      continue;
+    // The sides sit at different widths of the chain (index, i64); a BD
+    // offset fits either, so bring them to the residual's.
+    if (residual && residual.getType() != s.getType()) {
+      Type t = residual.getType();
+      if (t.isIndex() || s.getType().isIndex())
+        s = arith::IndexCastOp::create(builder, loc, t, s);
+      else if (t.getIntOrFloatBitWidth() > s.getType().getIntOrFloatBitWidth())
+        s = arith::ExtSIOp::create(builder, loc, t, s);
+      else
+        s = arith::TruncIOp::create(builder, loc, t, s);
+    }
     residual = residual ? arith::AddIOp::create(builder, loc, residual, s) : s;
   }
+  if (constantsInParameter)
+    v = arith::AddIOp::create(
+        builder, loc, v,
+        arith::ConstantOp::create(
+            builder, loc, builder.getIntegerAttr(v.getType(), constant)));
   return v;
 }
 
@@ -724,6 +775,10 @@ bool isLiveRoot(Operation *op) {
 
   // func.func is a live root
   if (isa<func::FuncOp>(op))
+    return true;
+
+  // A host-issued patch, lowered to its control-packet table read.
+  if (isa<xilinx::air::ChannelIssueOp>(op))
     return true;
 
   // Ops that have memory effects on host memory (space 0) should be kept
@@ -1113,7 +1168,7 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         if (getConstantIntValue(ofr))
           continue;
         int64_t stride = *getConstantIntValue(mixedStrides[dim]);
-        Value v = cast<Value>(ofr);
+        Value v = expandAffineOffset(rewriter, op.getLoc(), cast<Value>(ofr));
         Value term =
             stride == 1
                 ? v
@@ -1215,7 +1270,10 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // be awaited for bounded double-buffered backpressure (see
     // synthesizeDoubleBufferedAwaits below).
     bool paced = op->hasAttr(air::attrs::PreserveShimDmaOrder);
-    bool issueToken = air::isDeviceToHostShimDMA(op) || paced;
+    // A core-started task is armed here and queued by the core with a
+    // completion token, which the host awaits.
+    auto issueBd = op->getAttrOfType<IntegerAttr>("air.device_issue_bd");
+    bool issueToken = air::isDeviceToHostShimDMA(op) || paced || issueBd;
 
     // Narrow the runtime length/offset here, not inside the descriptor block:
     // that block admits only the BD ops themselves. Place each narrowing at its
@@ -1433,9 +1491,53 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // Move insertion point after the configure task op
     rewriter.setInsertionPointAfter(configTaskOp);
 
-    // Create DMAStartTaskOp
-    AIEX::DMAStartTaskOp::create(rewriter, op.getLoc(),
-                                 configTaskOp.getResult());
+    if (issueBd) {
+      // The core addresses the BD by id, so it is pinned; the core starts it.
+      configTaskOp.walk([&](AIE::DMABDOp bd) {
+        bd.setBdIdAttr(rewriter.getI32IntegerAttr(issueBd.getInt()));
+      });
+      if (op->hasAttr("air.host_issue")) {
+        // The host's control packets set its length and queue it, by BD id.
+        if (repeatCountVal || repeatCount)
+          return op->emitOpError("a host-patched transfer must be one BD "
+                                 "without repeats");
+        configTaskOp->setAttr("air.host_issue", rewriter.getUnitAttr());
+        configTaskOp->setAttr("air.device_issue_lock",
+                              rewriter.getStringAttr(""));
+      } else {
+        configTaskOp->setAttr("air.device_issue_lock",
+                              op->getAttr("air.device_issue_lock"));
+      }
+      // The core's task-queue word carries the repeat count the BD was shaped
+      // with here (bits 16-23), as a host start's would.
+      if (repeatCountVal || repeatCount > 0xFF)
+        return op->emitOpError("a core-started transfer needs a constant "
+                               "repeat count below 256");
+      auto issueId = op->hasAttr("air.host_issue")
+                         ? Attribute()
+                         : op->getAttr("air.device_issue");
+      memref::StoreOp push;
+      op->getParentOfType<ModuleOp>().walk([&](memref::StoreOp st) {
+        if (issueId && st->getAttr("air.device_issue") == issueId)
+          push = st;
+      });
+      auto word = push ? getConstantIntValue(push.getValue()) : std::nullopt;
+      if (!word && issueId)
+        return op->emitOpError("no core-side queue word for this transfer");
+      if (repeatCount) {
+        OpBuilder::InsertionGuard g(rewriter);
+        rewriter.setInsertionPoint(push);
+        Value v = arith::ConstantOp::create(
+            rewriter, push.getLoc(),
+            rewriter.getI32IntegerAttr(*word | (repeatCount << 16)));
+        rewriter.modifyOpInPlace(push,
+                                 [&] { push.getValueMutable().assign(v); });
+      }
+    } else {
+      // Create DMAStartTaskOp
+      AIEX::DMAStartTaskOp::create(rewriter, op.getLoc(),
+                                   configTaskOp.getResult());
+    }
 
     // The task stands for the transfer: the wait_alls naming the transfer's
     // event await or free it (AIRRtWaitAllOpConversion).
@@ -1664,6 +1766,20 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
             // between the two passes -- re-deciding "is this constant?" here
             // would risk the two disagreeing after canonicalization.
             if (isScratchpadParameterSlot(module, coreOp, rtp_slot)) {
+              // Which sequence argument the host writes it from, for hosts
+              // that cannot tell by its name.
+              int64_t scale, addend;
+              auto herdName =
+                  coreOp->getAttrOfType<StringAttr>("air.herd_name");
+              std::string pname = "__air_param_" + herdName.getValue().str() +
+                                  "_" + std::to_string(rtp_slot);
+              auto decl =
+                  module.lookupSymbol<xilinx::AIEX::ScratchpadParameterOp>(
+                      pname);
+              if (BlockArgument arg = affineInSequenceArg(oper, scale, addend))
+                decl->setAttr("air.source",
+                              rewriter.getDenseI64ArrayAttr(
+                                  {arg.getArgNumber(), scale, addend}));
               rtp_slot++;
               continue;
             }
@@ -1853,6 +1969,8 @@ public:
     for (auto namedTask : named) {
       StringRef channel = channelOf(namedTask);
       auto task = inIssueOrder[channel][next[channel]++];
+      if (task->hasAttr("air.device_issue_lock"))
+        continue;
       if (isDeviceToHostShimChannel(device, channel))
         AIEX::DMAAwaitTaskOp::create(rewriter, op.getLoc(), task.getResult());
       else if (!task->hasAttr(air::attrs::PreserveShimDmaOrder))
@@ -2373,6 +2491,12 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
                << limits.maxWrapAt(i) << "] is a multiple of " << alignment
                << " elements. Reshape the transfer or pad the inner dimension.";
       }
+      // A factor of 1 splits nothing, and the dim would be revisited forever.
+      if (a_wrap == 1)
+        return memcpy_op.emitOpError()
+               << "cannot tile dim " << i << " of size " << const_wrap
+               << " into shim-legal chunks: it has no factor in [2, "
+               << limits.maxWrapAt(i) << "]. Pad it to a size that has one.";
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
       int new_a_stride = const_stride * a_wrap;
       auto volume = air::getTensorVolume(
@@ -3072,6 +3196,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       signalPassFailure();
       return;
     }
+    if (failed(lowerHostIssues(module))) {
+      signalPassFailure();
+      return;
+    }
 
     // Early cleanup: remove dead device compute ops (L1/L2 memory ops, pure
     // compute) that won't be converted to NPU ops. This is a performance
@@ -3300,6 +3428,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     bufferMemrefToSequenceArgs(module);
 
     paceShimFeeds(module);
+    if (failed(armDeviceIssuedTasks(module)))
+      return signalPassFailure();
 
     // Renumber npu dma ops
     renumberNpuDmaOps(module.getBody());
@@ -3460,7 +3590,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             g.rtps.push_back(o);
           else if (isa<AIEX::SyncScratchpadParametersFromHostOp>(o))
             g.syncs.push_back(o);
-          else if (isa<AIEX::SetLockOp>(o))
+          else if (isa<AIEX::SetLockOp>(o) && !o->hasAttr("air.device_issue"))
             g.locks.push_back(o);
           else if (!g.anchor)
             g.anchor = o;
@@ -4848,6 +4978,389 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     dma->erase();
     dma = withResult;
     return withResult->getResult(0);
+  }
+
+  // Release core-started tasks to their cores. Arms written back to back
+  // form a batch: the host sets the core's lock to the batch size, so each
+  // core issue consumes one armed BD. Lock writes are absolute, so a batch
+  // is released only once the previous one has completed; every task is
+  // awaited and freed before its block ends, so a rolled loop re-arms the
+  // same BDs each iteration.
+  // A transfer the host sizes at run time (an air.channel.issue outside any
+  // core): its descriptor waits in @__air_issue_templates. A shim MM2S of its
+  // column streams the control packets that set its length and start it,
+  // from a table in a hidden last argument holding one entry per length; the
+  // entry for this length is a run-time offset into it.
+  LogicalResult lowerHostIssues(ModuleOp module) {
+    SmallVector<air::ChannelIssueOp> issues;
+    module.walk([&](air::ChannelIssueOp op) { issues.push_back(op); });
+    constexpr int64_t entryWords = 6;
+    llvm::MapVector<func::FuncOp, SmallVector<int32_t>> tables;
+    SmallVector<std::tuple<air::ChannelIssueOp, int64_t, StringAttr>> reads;
+    for (air::ChannelIssueOp issue : issues) {
+      auto func = issue->getParentOfType<func::FuncOp>();
+      auto device = issue->getParentOfType<AIE::DeviceOp>();
+      auto bound = issue->getAttrOfType<IntegerAttr>("air.length_bound");
+      if (!func || !device || !issue.getLength() || !bound)
+        return issue->emitOpError("is not a host-issued length");
+      const auto &tm = device.getTargetModel();
+      AIEX::DMAConfigureTaskOp tmpl;
+      device.walk([&](AIEX::DMAConfigureTaskOp t) {
+        auto id = t->getAttrOfType<IntegerAttr>("air.device_issue");
+        if (id && id.getInt() == static_cast<int64_t>(issue.getIssueId()))
+          tmpl = t;
+      });
+      // The descriptor: a template on chip, or the shim task of an L3 put.
+      AIE::TileOp tile;
+      AIE::DMAChannelDir dir;
+      int tchan;
+      uint32_t bdId;
+      int64_t lenWords;
+      std::optional<AIE::PacketInfoAttr> packet;
+      if (tmpl) {
+        auto bd = *tmpl.getBody().getOps<AIE::DMABDOp>().begin();
+        tile = cast<AIE::TileOp>(tmpl.getTile().getDefiningOp());
+        dir = tmpl.getDirection();
+        tchan = tmpl.getChannel();
+        bdId = *bd.getBdId();
+        lenWords = bd.getLenInBytes() / 4;
+        if (auto p = bd.getPacket())
+          packet = *p;
+      } else {
+        airrt::DmaMemcpyNdOp put;
+        func.walk([&](airrt::DmaMemcpyNdOp d) {
+          if (d->hasAttr("air.host_issue") &&
+              d->getAttr("air.device_issue") == issue.getIssueIdAttr())
+            put = d;
+        });
+        auto alloc =
+            put ? air::lookupBySymName<AIE::ShimDMAAllocationOp>(
+                      device, put->getAttrOfType<FlatSymbolRefAttr>("metadata")
+                                  .getValue())
+                : AIE::ShimDMAAllocationOp();
+        if (!alloc)
+          return issue->emitOpError("has no descriptor to patch");
+        tile = cast<AIE::TileOp>(alloc.getTile().getDefiningOp());
+        dir = alloc.getChannelDir();
+        tchan = alloc.getChannelIndex();
+        bdId = put->getAttrOfType<IntegerAttr>("air.device_issue_bd").getInt();
+        int64_t elems = 1;
+        for (OpFoldResult l : put.getMixedLengths())
+          elems *= *getConstantIntValue(l);
+        lenWords = elems *
+                   cast<MemRefType>(put.getMemref().getType())
+                       .getElementTypeBitWidth() /
+                   32;
+      }
+      int col = tile.getCol(), row = tile.getRow();
+      // The controller id the shim's completion tokens go out under; the
+      // host programs it into the channel before it waits on one.
+      if (tm.isShimNOCTile(col, row) && !tile->hasAttr("controller_id"))
+        tile->setAttr(
+            "controller_id",
+            AIE::PacketInfoAttr::get(
+                module.getContext(), 0,
+                tm.getTileToControllerIdMap(true).lookup({col, row})));
+      if (lenWords % bound.getInt())
+        return issue->emitOpError("its length unit is not a whole word");
+      int64_t unitWords = lenWords / bound.getInt();
+
+      // The control packets' route: a free shim MM2S of the column.
+      OpBuilder db(device.getBody()->getTerminator());
+      auto shim = AIE::TileOp::getOrCreate(db, device, col, 0);
+      llvm::DenseSet<int> usedChans, usedIds;
+      device.walk([&](Operation *op) {
+        if (auto a = dyn_cast<AIE::ShimDMAAllocationOp>(op)) {
+          if (a.getTile() == shim.getResult() &&
+              a.getChannelDir() == AIE::DMAChannelDir::MM2S)
+            usedChans.insert(a.getChannelIndex());
+        } else if (auto f = dyn_cast<AIE::FlowOp>(op)) {
+          if (f.getSource() == shim.getResult() &&
+              f.getSourceBundle() == AIE::WireBundle::DMA)
+            usedChans.insert(f.getSourceChannel());
+        } else if (auto p = dyn_cast<AIE::PacketFlowOp>(op)) {
+          usedIds.insert(p.getID());
+        } else if (auto p = dyn_cast<AIE::PacketSourceOp>(op)) {
+          if (p.getTile() == shim.getResult() &&
+              p.getBundle() == AIE::WireBundle::DMA)
+            usedChans.insert(p.getChannel());
+        }
+      });
+      for (auto &[t, id] : tm.getTileToControllerIdMap(true))
+        usedIds.insert(id);
+      int chan = 0;
+      while (usedChans.contains(chan))
+        chan++;
+      int pkt = 1;
+      while (usedIds.contains(pkt))
+        pkt++;
+      if (chan > 1)
+        return issue->emitOpError("has no free shim MM2S channel in column ")
+               << col << " to stream its control packets";
+      auto flow =
+          AIE::PacketFlowOp::create(db, issue.getLoc(), pkt, nullptr, nullptr);
+      {
+        OpBuilder::InsertionGuard g(db);
+        db.createBlock(&flow.getPorts());
+        AIE::PacketSourceOp::create(db, issue.getLoc(), shim,
+                                    AIE::WireBundle::DMA, chan);
+        AIE::PacketDestOp::create(db, issue.getLoc(), tile,
+                                  AIE::WireBundle::TileControl, 0);
+        AIE::EndOp::create(db, issue.getLoc());
+      }
+      std::string name = "__air_ctrltab_" + std::to_string(issue.getIssueId());
+      AIE::ShimDMAAllocationOp::create(db, issue.getLoc(), name, shim,
+                                       AIE::DMAChannelDir::MM2S, chan,
+                                       /*plio=*/false, nullptr);
+
+      // One entry per length: write word 0, then queue the BD.
+      const AIE::DmaBdLayout *layout = tm.getDmaBdLayout(col, row);
+      uint32_t localMask = (1u << tm.getRowShift()) - 1;
+      uint32_t word0Addr =
+          tm.getDmaBdAddress(col, row, bdId, tchan, dir) & localMask;
+      uint32_t queueAddr =
+          tm.getLocalDmaControlAddress(col, row, tchan, dir) + 4;
+      uint32_t fields = 0;
+      if (packet)
+        fields = layout->enablePacket.place(1) |
+                 layout->packetType.place(packet->getPktType()) |
+                 layout->packetId.place(packet->getPktId());
+      // A shim task's completion token is what the host waits on.
+      uint32_t queueWord =
+          tm.isShimNOCTile(col, row) ? (1u << 31) | bdId : bdId;
+      uint32_t hdr = air::ctrlPacketHeader(col, 0, pkt);
+      auto &table = tables[func];
+      int64_t base = table.size();
+      for (int64_t v = 1; v <= bound.getInt(); v++) {
+        for (uint32_t w :
+             {hdr, air::ctrlPacketWord(pkt, false, 1, word0Addr),
+              fields | layout->bufferLength.place(v * unitWords), hdr,
+              air::ctrlPacketWord(pkt, false, 1, queueAddr), queueWord})
+          table.push_back(static_cast<int32_t>(w));
+      }
+      reads.push_back(
+          {issue, base, StringAttr::get(module.getContext(), name)});
+    }
+
+    // The table is the function's last argument; the host fills it.
+    llvm::DenseMap<func::FuncOp, Value> tableArg;
+    for (auto &[func, table] : tables) {
+      auto ty = MemRefType::get({static_cast<int64_t>(table.size())},
+                                IntegerType::get(module.getContext(), 32));
+      if (failed(func.insertArgument(func.getNumArguments(), ty, {},
+                                     func.getLoc())))
+        return func->emitOpError("cannot take the control-packet table");
+      tableArg[func] = func.getArgument(func.getNumArguments() - 1);
+      if (module->hasAttr("air.ctrl_table"))
+        return func->emitOpError("is a second sequence with a control-packet "
+                                 "table; only one is supported");
+      module->setAttr("air.ctrl_table",
+                      DenseI32ArrayAttr::get(module.getContext(), table));
+    }
+    for (auto &[issue, base, name] : reads) {
+      OpBuilder b(issue);
+      Location loc = issue.getLoc();
+      auto i64 = [&](int64_t v) -> Value {
+        return arith::ConstantOp::create(b, loc, b.getI64IntegerAttr(v));
+      };
+      Value len =
+          arith::IndexCastOp::create(b, loc, b.getI64Type(), issue.getLength());
+      Value off = arith::AddIOp::create(
+          b, loc,
+          arith::MulIOp::create(b, loc,
+                                arith::SubIOp::create(b, loc, len, i64(1)),
+                                i64(entryWords)),
+          i64(base));
+      SmallVector<OpFoldResult> offsets{b.getI64IntegerAttr(0),
+                                        b.getI64IntegerAttr(0),
+                                        b.getI64IntegerAttr(0), off};
+      SmallVector<OpFoldResult> lengths{
+          b.getI64IntegerAttr(1), b.getI64IntegerAttr(1),
+          b.getI64IntegerAttr(1), b.getI64IntegerAttr(entryWords)};
+      SmallVector<OpFoldResult> strides{
+          b.getI64IntegerAttr(0), b.getI64IntegerAttr(0),
+          b.getI64IntegerAttr(0), b.getI64IntegerAttr(1)};
+      auto dma = airrt::DmaMemcpyNdOp::create(
+          b, loc, TypeRange{airrt::EventType::get(b.getContext())},
+          arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(0)), i64(0),
+          i64(0), tableArg[issue->getParentOfType<func::FuncOp>()], offsets,
+          lengths, strides);
+      dma->setAttr("metadata", FlatSymbolRefAttr::get(name));
+      airrt::WaitAllOp::create(b, loc, Type(), ValueRange{dma.getEvent()});
+      issue.erase();
+    }
+    return success();
+  }
+
+  LogicalResult armDeviceIssuedTasks(ModuleOp module) {
+    // Descriptors cores patch on chip (air-to-aie parks them in
+    // @__air_issue_templates): each runtime sequence of their device writes
+    // them first, then lets the cores go. Their buffers do not move, so once
+    // per dispatch is enough.
+    SmallVector<AIE::RuntimeSequenceOp> holders;
+    module.walk([&](AIE::RuntimeSequenceOp s) {
+      if (s.getSymName() == "__air_issue_templates")
+        holders.push_back(s);
+    });
+    for (AIE::RuntimeSequenceOp holder : holders) {
+      auto device = holder->getParentOfType<AIE::DeviceOp>();
+      SmallVector<Block *> bodies;
+      device.walk([&](Operation *op) {
+        if ((isa<AIE::RuntimeSequenceOp>(op) && op != holder) ||
+            (isa<func::FuncOp>(op) && !op->getRegion(0).empty()))
+          bodies.push_back(&op->getRegion(0).front());
+      });
+      for (Block *body : bodies) {
+        OpBuilder b(body, body->begin());
+        IRMapping map;
+        llvm::SetVector<StringAttr> locks;
+        for (Operation &op : holder.getBody().front()) {
+          b.clone(op, map);
+          if (auto lock = op.getAttrOfType<StringAttr>("air.device_issue_lock"))
+            locks.insert(lock);
+        }
+        for (StringAttr name : locks) {
+          auto lock =
+              air::lookupBySymName<AIE::LockOp>(device, name.getValue());
+          if (!lock)
+            return holder->emitOpError("has no core lock ") << name;
+          Value one = arith::ConstantIntOp::create(b, holder.getLoc(),
+                                                   b.getI32Type(), 1);
+          AIEX::SetLockOp::create(b, holder.getLoc(), lock.getResult(), one)
+              ->setAttr("air.device_issue", b.getUnitAttr());
+        }
+      }
+      holder.erase();
+    }
+
+    // Sequences may still be func.func ops here.
+    SmallVector<Operation *> seqs;
+    module.walk([&](func::FuncOp f) { seqs.push_back(f); });
+    module.walk([&](AIE::RuntimeSequenceOp s) { seqs.push_back(s); });
+    for (Operation *seq : seqs) {
+      auto device = seq->getParentOfType<AIE::DeviceOp>();
+      if (!device || seq->getRegion(0).empty())
+        continue;
+      llvm::SetVector<Block *> blocks;
+      seq->walk([&](AIEX::DMAConfigureTaskForOp t) {
+        if (t->hasAttr("air.device_issue_lock"))
+          blocks.insert(t->getBlock());
+      });
+      for (Block *b : blocks)
+        if (failed(armDeviceIssuedTasks(device, *b)))
+          return failure();
+    }
+    return success();
+  }
+
+  LogicalResult armDeviceIssuedTasks(AIE::DeviceOp device, Block &body) {
+    using Tasks = SmallVector<AIEX::DMAConfigureTaskForOp>;
+    llvm::MapVector<StringAttr, Tasks> pending, outstanding;
+    // A token the core requests goes out under the controller id in the
+    // channel's control register, which only a host push would set.
+    llvm::DenseSet<std::pair<int, int>> tokenChannels;
+    auto programTokenId = [&](OpBuilder &b,
+                              AIEX::DMAConfigureTaskForOp t) -> LogicalResult {
+      auto alloc = air::lookupBySymName<AIE::ShimDMAAllocationOp>(
+          device, t.getAlloc().getLeafReference().getValue());
+      auto tile = cast<AIE::TileOp>(alloc.getTile().getDefiningOp());
+      if (!tokenChannels.insert({tile.getCol(), alloc.getChannelIndex()})
+               .second)
+        return success();
+      auto id = tile->getAttrOfType<AIE::PacketInfoAttr>("controller_id");
+      if (!id)
+        return t->emitOpError("has no controller id on its shim tile");
+      uint32_t ctrl = device.getTargetModel().getDmaControlAddress(
+          tile.getCol(), tile.getRow(), alloc.getChannelIndex(),
+          alloc.getChannelDir());
+      auto c = [&](uint32_t v) -> Value {
+        return arith::ConstantIntOp::create(b, t.getLoc(), b.getI32Type(),
+                                            static_cast<int32_t>(v));
+      };
+      AIEX::NpuMaskWrite32Op::create(b, t.getLoc(), c(ctrl),
+                                     c(id.getPktId() << 8), c(0x1F00), nullptr,
+                                     nullptr, nullptr);
+      return success();
+    };
+    // The core queued the task with a token, which the DMA-task verifier
+    // cannot see, so wait on the channel directly.
+    auto retire = [&](OpBuilder &b, Tasks &tasks) {
+      for (auto t : tasks) {
+        auto alloc = air::lookupBySymName<AIE::ShimDMAAllocationOp>(
+            device, t.getAlloc().getLeafReference().getValue());
+        auto tile = cast<AIE::TileOp>(alloc.getTile().getDefiningOp());
+        auto c = [&](int64_t v) -> Value {
+          return arith::ConstantIntOp::create(b, t.getLoc(), b.getI32Type(), v);
+        };
+        AIEX::NpuSyncOp::create(b, t.getLoc(), c(tile.getCol()),
+                                c(tile.getRow()),
+                                c(static_cast<int64_t>(alloc.getChannelDir())),
+                                c(alloc.getChannelIndex()), c(1), c(1));
+        AIEX::DMAFreeTaskOp::create(b, t.getLoc(), t.getResult());
+      }
+      tasks.clear();
+    };
+    auto flush = [&](OpBuilder &b) -> LogicalResult {
+      for (auto &[lockName, tasks] : pending) {
+        if (tasks.empty())
+          continue;
+        // Host-started tasks (empty lock name) have no core lock to release.
+        auto lock = lockName.getValue().empty()
+                        ? AIE::LockOp()
+                        : air::lookupBySymName<AIE::LockOp>(device, lockName);
+        if (!lock && !lockName.getValue().empty())
+          return tasks.front()->emitOpError("has no core lock ")
+                 << lockName << " to release";
+        retire(b, outstanding[lockName]);
+        for (auto t : tasks)
+          if (failed(programTokenId(b, t)))
+            return failure();
+        if (lock) {
+          Value n = arith::ConstantIntOp::create(b, tasks.front().getLoc(),
+                                                 b.getI32Type(), tasks.size());
+          AIEX::SetLockOp::create(b, tasks.front().getLoc(), lock.getResult(),
+                                  n)
+              ->setAttr("air.device_issue", b.getUnitAttr());
+        }
+        outstanding[lockName] = std::move(tasks);
+        tasks.clear();
+      }
+      return success();
+    };
+    for (Operation &op : llvm::make_early_inc_range(body)) {
+      auto task = dyn_cast<AIEX::DMAConfigureTaskForOp>(op);
+      if (auto lockName =
+              task ? task->getAttrOfType<StringAttr>("air.device_issue_lock")
+                   : nullptr) {
+        pending[lockName].push_back(task);
+        continue;
+      }
+      OpBuilder b(&op);
+      if (failed(flush(b)))
+        return failure();
+      // A host task queued behind core-started ones on the same channel waits
+      // for them; otherwise it would overtake them in the channel's queue.
+      llvm::StringSet<> channels;
+      op.walk([&](AIEX::DMAConfigureTaskForOp t) {
+        channels.insert(t.getAlloc().getLeafReference().getValue());
+      });
+      for (auto &[lockName, tasks] : outstanding)
+        if (llvm::any_of(tasks, [&](AIEX::DMAConfigureTaskForOp t) {
+              return channels.contains(
+                  t.getAlloc().getLeafReference().getValue());
+            }))
+          retire(b, tasks);
+    }
+    OpBuilder b(device.getContext());
+    if (!body.empty() && body.back().hasTrait<OpTrait::IsTerminator>())
+      b.setInsertionPoint(&body.back());
+    else
+      b.setInsertionPointToEnd(&body);
+    if (failed(flush(b)))
+      return failure();
+    for (auto &[lockName, tasks] : outstanding)
+      retire(b, tasks);
+    return success();
   }
 
   // Pace the shim feeds that are kept in order, after the awaits and frees

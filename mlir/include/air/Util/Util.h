@@ -90,6 +90,12 @@ bool isL1(BaseMemRefType memrefTy);
 bool isL2(BaseMemRefType memrefTy);
 bool isL3(BaseMemRefType memrefTy);
 
+// The words of a control packet to a tile's TileControl port: the stream
+// header, then the command (reads reply under `replyId`).
+uint32_t ctrlPacketHeader(int col, int row, uint32_t pktId);
+uint32_t ctrlPacketWord(uint32_t replyId, bool read, uint32_t words,
+                        uint32_t addr);
+
 // Compare memory space hierarchy levels. Higher numeric value = more local.
 // L3(0) < L2(1) < L1(2).
 // Returns true if space 'a' is strictly more local (closer to compute) than

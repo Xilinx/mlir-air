@@ -177,3 +177,28 @@ module {
     return
   }
 }
+
+// -----
+
+// An over-long outer wrap with no factor in [2, limit] (197 is prime) cannot
+// be split; the splitter used to retry the same dim forever.
+
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<197x2x16x64xbf16>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c4_i32 = arith.constant 4 : i32
+    %p = airrt.segment_load "forward_0" : i64
+    // expected-error@+1 {{cannot tile dim 0 of size 197 into shim-legal chunks: it has no factor in [2,}}
+    %0 = airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[0, 0, 0, 0], [197, 2, 8, 64], [2048, 1024, 64, 1]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<197x2x16x64xbf16>) : !airrt.event
+    return
+  }
+}

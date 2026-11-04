@@ -1654,6 +1654,353 @@ class AIRDemoteDmaToAIRHierarchyConversion
 // can move it as one linear run. The reordering goes to the L2 side, whose
 // descriptors take several dims. Copying the elements in another order puts
 // each in the same place.
+// Whether the host can evaluate `v` when it arms a hoisted L3 transfer: `v`
+// is built only from hierarchy arguments, loop ivs and pure index arithmetic.
+static bool isHostComputable(Value v, Operation *herd) {
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    Operation *owner = arg.getOwner()->getParentOp();
+    if (isa<air::HierarchyInterface>(owner))
+      return true;
+    if (auto loop = dyn_cast<LoopLikeOpInterface>(owner))
+      return llvm::is_contained(
+          loop.getLoopInductionVars().value_or(SmallVector<Value>{}), v);
+    return false;
+  }
+  Operation *def = v.getDefiningOp();
+  if (!herd->isProperAncestor(def))
+    return true;
+  // Async IR wraps index arithmetic in air.execute: judge what it yields.
+  if (auto exec = dyn_cast<air::ExecuteOp>(def)) {
+    auto result = cast<OpResult>(v);
+    if (result.getResultNumber() == 0)
+      return false;
+    Value yielded = exec.getRegion().front().getTerminator()->getOperand(
+        result.getResultNumber() - 1);
+    return isHostComputable(yielded, herd);
+  }
+  if (!mlir::isPure(def) || def->getNumRegions())
+    return false;
+  return llvm::all_of(def->getOperands(), [&](Value operand) {
+    return isHostComputable(operand, herd);
+  });
+}
+
+// Whether `v` depends on data the core reads from memory, which the host
+// cannot know. Index arithmetic the host can replay, loop-carried or wrapped
+// in air.execute, does not count.
+static bool readsCoreData(Value v, Operation *herd,
+                          llvm::SmallPtrSetImpl<Value> &seen) {
+  if (!seen.insert(v).second)
+    return false;
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    auto loop = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp());
+    if (!loop || arg.getArgNumber() == 0)
+      return false;
+    unsigned i = arg.getArgNumber() - 1;
+    return readsCoreData(loop.getInitArgs()[i], herd, seen) ||
+           readsCoreData(loop.getYieldedValues()[i], herd, seen);
+  }
+  Operation *def = v.getDefiningOp();
+  if (!herd->isProperAncestor(def))
+    return false;
+  if (auto exec = dyn_cast<air::ExecuteOp>(def)) {
+    auto result = cast<OpResult>(v);
+    if (result.getResultNumber() == 0)
+      return false;
+    return readsCoreData(exec.getRegion().front().getTerminator()->getOperand(
+                             result.getResultNumber() - 1),
+                         herd, seen);
+  }
+  unsigned n = isa<OpResult>(v) ? cast<OpResult>(v).getResultNumber() : 0;
+  if (auto loop = dyn_cast<scf::ForOp>(def))
+    return readsCoreData(loop.getInitArgs()[n], herd, seen) ||
+           readsCoreData(loop.getYieldedValues()[n], herd, seen);
+  if (auto ifOp = dyn_cast<scf::IfOp>(def))
+    return readsCoreData(ifOp.getCondition(), herd, seen) ||
+           readsCoreData(ifOp.thenYield().getOperand(n), herd, seen) ||
+           readsCoreData(ifOp.elseYield().getOperand(n), herd, seen);
+  if (isa<memref::LoadOp, affine::AffineLoadOp>(def) || !mlir::isPure(def))
+    return true;
+  return llvm::any_of(def->getOperands(), [&](Value operand) {
+    return readsCoreData(operand, herd, seen);
+  });
+}
+
+// Split offset `v` as host + device, where device is linear in the values
+// only the core can compute. `device` is null when `v` is host-computable.
+// The device part is i64: a core's index is 32 bits, an offset into a large
+// L3 tensor may not be.
+static LogicalResult splitOffset(OpBuilder &b, Location loc, Value v,
+                                 Operation *herd, Value &host, Value &device) {
+  device = nullptr;
+  if (isHostComputable(v, herd)) {
+    host = v;
+    return success();
+  }
+  Type i64 = b.getI64Type();
+  auto apply = v.getDefiningOp<affine::AffineApplyOp>();
+  if (!apply) {
+    host = arith::ConstantIndexOp::create(b, loc, 0);
+    device = arith::IndexCastOp::create(b, loc, i64, v);
+    return success();
+  }
+  AffineMap map = apply.getAffineMap();
+  bool linear = true;
+  map.getResult(0).walk([&](AffineExpr e) {
+    if (e.getKind() == AffineExprKind::Mod ||
+        e.getKind() == AffineExprKind::FloorDiv ||
+        e.getKind() == AffineExprKind::CeilDiv)
+      linear = false;
+    if (e.getKind() == AffineExprKind::Mul) {
+      auto mul = cast<AffineBinaryOpExpr>(e);
+      if (!isa<AffineConstantExpr>(mul.getLHS()) &&
+          !isa<AffineConstantExpr>(mul.getRHS()))
+        linear = false;
+    }
+  });
+  if (!linear)
+    return failure();
+  // Zero the other side's dims and symbols in the expression; the constant
+  // term goes with the host part.
+  unsigned nDims = map.getNumDims();
+  AffineExpr zero = b.getAffineConstantExpr(0);
+  SmallVector<AffineExpr> hostDims, hostSyms, allZeroDims, allZeroSyms;
+  for (auto [i, operand] : llvm::enumerate(apply.getMapOperands())) {
+    bool onHost = isHostComputable(operand, herd);
+    AffineExpr self =
+        i < nDims ? b.getAffineDimExpr(i) : b.getAffineSymbolExpr(i - nDims);
+    (i < nDims ? hostDims : hostSyms).push_back(onHost ? self : zero);
+    (i < nDims ? allZeroDims : allZeroSyms).push_back(zero);
+  }
+  AffineExpr expr = map.getResult(0);
+  AffineExpr constTerm = simplifyAffineExpr(
+      expr.replaceDimsAndSymbols(allZeroDims, allZeroSyms), 0, 0);
+  AffineExpr hostExpr =
+      simplifyAffineExpr(expr.replaceDimsAndSymbols(hostDims, hostSyms), nDims,
+                         map.getNumSymbols());
+  auto operands = apply.getMapOperands();
+  host = affine::makeComposedAffineApply(
+             b, loc, AffineMap::get(nDims, map.getNumSymbols(), hostExpr),
+             SmallVector<OpFoldResult>(operands.begin(), operands.end()))
+             .getResult();
+  // The device part, sum(coefficient * operand), evaluated in i64.
+  for (auto [i, operand] : llvm::enumerate(operands)) {
+    if (isHostComputable(operand, herd))
+      continue;
+    SmallVector<AffineExpr> unitDims(allZeroDims), unitSyms(allZeroSyms);
+    AffineExpr one = b.getAffineConstantExpr(1);
+    (i < nDims ? unitDims[i] : unitSyms[i - nDims]) = one;
+    auto coeff = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
+        expr.replaceDimsAndSymbols(unitDims, unitSyms) - constTerm, 0, 0));
+    if (!coeff)
+      return failure();
+    if (!coeff.getValue())
+      continue;
+    Value term = arith::MulIOp::create(
+        b, loc, arith::IndexCastOp::create(b, loc, i64, operand),
+        arith::ConstantOp::create(b, loc,
+                                  b.getI64IntegerAttr(coeff.getValue())));
+    device = device ? arith::AddIOp::create(b, loc, device, term) : term;
+  }
+  if (!device)
+    device = arith::ConstantOp::create(b, loc, b.getI64IntegerAttr(0));
+  return success();
+}
+
+// A transfer in a herd whose offset depends on a value the core computes
+// cannot be placed on a static buffer descriptor. Keep the host part on the
+// channel op, whose descriptor the core then patches and starts, and put an
+// air.channel.issue in the herd carrying the device part as an element offset.
+// The descriptor is the shim's for an L3 put, the memtile's for an L2 put,
+// and the core's own for an L1 get; on the last two only a constant can stay.
+static LogicalResult splitDeviceIssued(air::ChannelInterface op,
+                                       int64_t issueId) {
+  auto herd = op->getParentOfType<air::HerdOp>();
+  if (!herd)
+    return success();
+  auto put = dyn_cast<air::ChannelPutOp>(op.getOperation());
+  auto get = dyn_cast<air::ChannelGetOp>(op.getOperation());
+  auto memrefType = dyn_cast<MemRefType>(op.getMemref().getType());
+  if (!memrefType)
+    return success();
+  bool l3 = air::isL3(memrefType), l2 = air::isL2(memrefType);
+  if (!(put && (l3 || l2)) && !(get && air::isL1(memrefType)))
+    return success();
+  ValueRange dynOffsets =
+      put ? put.getDynamicSrcOffsets() : get.getDynamicDstOffsets();
+  llvm::SmallPtrSet<Value, 16> seen;
+  if (llvm::none_of(dynOffsets,
+                    [&](Value v) { return readsCoreData(v, herd, seen); }))
+    return success();
+  ValueRange dynSizes =
+      put ? put.getDynamicSrcSizes() : get.getDynamicDstSizes();
+  ValueRange dynStrides =
+      put ? put.getDynamicSrcStrides() : get.getDynamicDstStrides();
+  for (Value v : llvm::concat<Value>(dynSizes, dynStrides))
+    if (!isHostComputable(v, herd))
+      return op->emitOpError(
+          "sizes and strides of a transfer cannot depend on a value computed "
+          "in the herd; only its offset can");
+  // The core's next start must not overtake this one's descriptor: it waits
+  // for the data, so it has to be the one receiving it.
+  if (put && l2) {
+    bool receives = false;
+    herd.walk([&](air::ChannelGetOp g) {
+      receives |= g.getChanName() == put.getChanName();
+    });
+    if (!receives)
+      return op->emitOpError(
+          "an L2 transfer whose offset a core computes must be received by "
+          "that core");
+  }
+
+  OpBuilder b(op);
+  Location loc = op->getLoc();
+  SmallVector<OpFoldResult> strides =
+      put ? put.getMixedSrcStrides() : get.getMixedDstStrides();
+  if (strides.empty()) {
+    SmallVector<int64_t> layout;
+    int64_t unusedOffset;
+    if (failed(memrefType.getStridesAndOffset(layout, unusedOffset)))
+      return op->emitOpError("has a memref with a non-strided layout");
+    for (int64_t s : layout)
+      strides.push_back(b.getIndexAttr(s));
+  }
+
+  Value deviceElems = nullptr;
+  auto offsets = put ? put.getDynamicSrcOffsetsMutable()
+                     : get.getDynamicDstOffsetsMutable();
+  unsigned dynIdx = 0;
+  SmallVector<OpFoldResult> mixed =
+      put ? put.getMixedSrcOffsets() : get.getMixedDstOffsets();
+  for (auto [dim, offset] : llvm::enumerate(mixed)) {
+    auto v = dyn_cast<Value>(offset);
+    if (!v)
+      continue;
+    Value host, device;
+    if (failed(splitOffset(b, loc, v, herd, host, device)))
+      return op->emitOpError(
+          "offset depends on a value computed in the herd, but is not a host "
+          "part plus a linear function of the core's values");
+    // A memtile or core descriptor takes no run-time value from the host.
+    if (!l3 && device && !getConstantIntValue(host)) {
+      auto apply = host.getDefiningOp<affine::AffineApplyOp>();
+      if (!apply || !apply.getAffineMap().isSingleConstant())
+        return op->emitOpError(
+            "offset adds a core-computed value to one that is not a "
+            "constant; only an L3 transfer can take both");
+      host = arith::ConstantIndexOp::create(
+          b, loc, apply.getAffineMap().getSingleConstantResult());
+    }
+    offsets[dynIdx++].set(host);
+    if (!device)
+      continue;
+    Value stride = getValueOrCreateConstantIndexOp(b, loc, strides[dim]);
+    if (!isHostComputable(stride, herd))
+      return op->emitOpError(
+          "a device-computed offset needs host-computable strides");
+    Value term = arith::MulIOp::create(
+        b, loc, device,
+        arith::IndexCastOp::create(b, loc, b.getI64Type(), stride));
+    deviceElems =
+        deviceElems ? arith::AddIOp::create(b, loc, deviceElems, term) : term;
+  }
+
+  op->setAttr("air.device_issue", b.getI64IntegerAttr(issueId));
+  auto issue = [&]() {
+    air::ChannelIssueOp::create(
+        b, loc, /*async_token=*/Type(), ValueRange{},
+        FlatSymbolRefAttr::get(b.getContext(), op.getChanName()),
+        op.getIndices(), deviceElems,
+        /*length=*/Value(), b.getI64IntegerAttr(issueId));
+  };
+  // Wrapped in air.execute so the dependency passes order it.
+  auto async = cast<air::AsyncOpInterface>(op.getOperation());
+  if (async.getAsyncToken()) {
+    auto exec =
+        air::ExecuteOp::create(b, loc, air::AsyncTokenType::get(b.getContext()),
+                               async.getAsyncDependencies());
+    {
+      OpBuilder::InsertionGuard guard(b);
+      b.setInsertionPointToStart(b.createBlock(&exec.getRegion()));
+      issue();
+      air::ExecuteTerminatorOp::create(b, loc);
+    }
+    // A get the core issues itself starts only once its descriptor is set.
+    if (get)
+      async.addAsyncDependency(exec.getAsyncToken());
+  } else {
+    issue();
+  }
+  return success();
+}
+
+// A segment's L2 transfer whose outermost size is a run-time value of the
+// launch cannot be placed on a memtile descriptor either. Keep the largest
+// size on the channel op, whose descriptor the host then sets and starts
+// through control packets, with an air.channel.issue carrying the size.
+static LogicalResult splitHostIssued(air::ChannelInterface op,
+                                     int64_t issueId) {
+  auto seg = op->getParentOfType<air::SegmentOp>();
+  if (!seg || op->getParentOfType<air::HerdOp>())
+    return success();
+  auto memrefType = dyn_cast<MemRefType>(op.getMemref().getType());
+  if (!memrefType)
+    return success();
+  // An L3 length normally goes on the shim descriptor through the scratchpad;
+  // a launch asks for control packets instead with air.host_issue_lengths.
+  auto launch = seg->getParentOfType<air::LaunchOp>();
+  bool l3 = air::isL3(memrefType) && launch &&
+            launch->hasAttr("air.host_issue_lengths");
+  if (!air::isL2(memrefType) && !l3)
+    return success();
+  auto put = dyn_cast<air::ChannelPutOp>(op.getOperation());
+  auto get = dyn_cast<air::ChannelGetOp>(op.getOperation());
+  SmallVector<OpFoldResult> sizes =
+      put ? put.getMixedSrcSizes() : get.getMixedDstSizes();
+  int dyn = -1;
+  for (auto [i, size] : llvm::enumerate(sizes)) {
+    if (getConstantIntValue(size))
+      continue;
+    if (dyn >= 0 || i != 0)
+      return op->emitOpError(
+          "only the outermost size of a transfer can be a run-time value");
+    dyn = i;
+  }
+  if (dyn < 0)
+    return success();
+  if (static_cast<int64_t>(sizes.size()) != memrefType.getRank())
+    return op->emitOpError("a run-time size needs one size per dimension of "
+                           "the buffer, the largest being the buffer's");
+  if (l3 && !put)
+    return op->emitOpError("the host sets the length of an L3 put, not a get");
+
+  OpBuilder lb(op);
+  Value length = cast<Value>(sizes[0]);
+  // The op keeps the largest size; the host sets the one it runs with.
+  auto dynSizes =
+      put ? put.getDynamicSrcSizesMutable() : get.getDynamicDstSizesMutable();
+  dynSizes.erase(0);
+  SmallVector<int64_t> statics(put ? put.getStaticSrcSizes()
+                                   : get.getStaticDstSizes());
+  statics[0] = memrefType.getDimSize(0);
+  auto staticAttr = DenseI64ArrayAttr::get(op->getContext(), statics);
+  if (put)
+    put.setStaticSrcSizesAttr(staticAttr);
+  else
+    get.setStaticDstSizesAttr(staticAttr);
+  op->setAttr("air.device_issue", lb.getI64IntegerAttr(issueId));
+  auto issue = air::ChannelIssueOp::create(
+      lb, op->getLoc(), /*async_token=*/Type(), ValueRange{},
+      FlatSymbolRefAttr::get(op->getContext(), op.getChanName()),
+      op.getIndices(), /*offset=*/Value(), length,
+      lb.getI64IntegerAttr(issueId));
+  // The most the length can be: the host keeps a control packet per value.
+  issue->setAttr("air.length_bound",
+                 lb.getI64IntegerAttr(memrefType.getDimSize(0)));
+  return success();
+}
+
 static void putL3SideInMemoryOrder(air::DmaMemcpyNdOp dma) {
   auto srcTy = dyn_cast<BaseMemRefType>(dma.getSrcMemref().getType());
   auto dstTy = dyn_cast<BaseMemRefType>(dma.getDstMemref().getType());
@@ -1899,6 +2246,37 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     for (auto getput : externalChannelOps) {
       getput->setAttr("loop-carried-dep",
                       StringAttr::get(context, "internalGetPut"));
+    }
+
+    // A core-received L1 get stays in its herd; the other transfers a core
+    // starts are external.
+    SmallVector<air::ChannelInterface> issued(externalChannelOps.begin(),
+                                              externalChannelOps.end());
+    for (auto f : funcOps)
+      f.walk([&](air::ChannelGetOp get) {
+        if (isInMatchingHierarchy(get) && get->getParentOfType<air::HerdOp>())
+          issued.push_back(get);
+      });
+    int64_t nextIssueId = 0;
+    for (auto getput : issued) {
+      if (failed(splitDeviceIssued(getput, nextIssueId++))) {
+        signalPassFailure();
+        return;
+      }
+    }
+    // Segment L2 transfers the host sizes at run time.
+    SmallVector<air::ChannelInterface> segmentOps;
+    for (auto f : funcOps)
+      f.walk([&](air::ChannelInterface op) {
+        if (op->getParentOfType<air::SegmentOp>() &&
+            !op->getParentOfType<air::HerdOp>())
+          segmentOps.push_back(op);
+      });
+    for (auto op : segmentOps) {
+      if (failed(splitHostIssued(op, nextIssueId++))) {
+        signalPassFailure();
+        return;
+      }
     }
 
     for (auto getput : externalChannelOps) {

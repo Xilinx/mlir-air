@@ -351,6 +351,11 @@ def coerce_index(value):
 
     if isinstance(value, (_Switch, RuntimeParam)):
         return value.as_index()
+    # One element of an L1 buffer, read by the core: `W[topk[i]]`.
+    from ._value import BufferSlice
+
+    if isinstance(value, BufferSlice):
+        return IndexExpr.leaf(value.as_index(), "l1")
     # Symbol and anything else exposing __index__ resolves to its current value.
     if hasattr(value, "__index__"):
         return IndexExpr.constant(int(value))

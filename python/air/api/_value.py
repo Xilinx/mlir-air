@@ -831,6 +831,44 @@ class BufferSlice(_StridedView):
         """
         return list(self.offsets)
 
+    def as_index(self):
+        """Read this one-element region on the core, as an ``index`` value.
+
+        This is what lets an L3 slice take its offset from data the core
+        computed -- ``W[topk[i]]`` -- which the compiler lowers to a transfer
+        the host arms and the core starts.
+        """
+        from ._trace import current_herd
+
+        if self.shape != ():
+            raise TypeError(
+                f"only a single element can be used as an index; this region "
+                f"has shape {self.shape}"
+            )
+        self.buffer._require_compute("read")
+        if current_herd(required=False) is None:
+            raise TypeError(
+                "an L1 element can only be used as an index inside the herd "
+                "that owns it: only its core can read it"
+            )
+        if self.dtype.is_float:
+            raise TypeError(
+                f"an index has to be an integer; this buffer is {self.dtype.name}"
+            )
+        from air.dialects.arith import constant, index_cast
+        from air.dialects.memref import load as memref_load
+        from air.ir import IndexType
+        from ._index import materialize_index
+
+        indices = []
+        for offset in self.base:
+            value = materialize_index(offset)
+            if isinstance(value, int):
+                value = constant(IndexType.get(), value)
+            indices.append(value)
+        element = memref_load(self.buffer.value, indices)
+        return index_cast(IndexType.get(), element)
+
     def _as_leaf(self):
         """This region as an elementwise leaf, or a TypeError saying why not."""
         self.buffer._require_compute("read")

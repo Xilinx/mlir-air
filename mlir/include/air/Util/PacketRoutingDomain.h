@@ -39,6 +39,9 @@ StringRef getPacketFanoutName(PacketFanout f);
 struct PacketChannelFacts {
   PacketFanout fanout = PacketFanout::Unknown;
   unsigned numDests = 0;
+  /// Several destinations, some taking a run-time number of packets: volumes
+  /// cannot classify it, a put naming a `dest` upstream makes it a demux.
+  bool runtimeVolume = false;
   /// Why the classification came out Unknown. Empty otherwise.
   std::string reason;
 };

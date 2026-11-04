@@ -1772,6 +1772,8 @@ public:
         });
     target.addIllegalOp<air::WaitAllOp>();
     target.addLegalOp<UnrealizedConversionCastOp>();
+    // A host-issued patch stays for airrt-to-npu, which streams it.
+    target.addLegalOp<air::ChannelIssueOp>();
 
     air_patterns
         .add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,

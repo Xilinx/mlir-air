@@ -149,3 +149,30 @@ module {
     return
   }
 }
+
+// -----
+
+// The offset as a DSL builds it: an affine.apply of the argument, `(L-1)*256`
+// with no base. It is read as arith, and its -256 stays in the parameter --
+// the BD's own offset is unsigned in the ELF.
+
+// ELF-LABEL: aie.runtime_sequence @seg_affine_sequence
+// ELF:         aie.dma_bd(%{{.*}} offset = 0 {{.*}}) {offset_parameter = @__air_param_argoff_1_x256_m256}
+module {
+  aie.device(npu2) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @appendK(%shim_noc_tile_0_0, S2MM, 0)
+  } {sym_name = "seg_affine"}
+  func.func @affine_offset(%arg0: memref<1048576xbf16>, %L: i32) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c256_i64 = arith.constant 256 : i64
+    %p = airrt.segment_load "seg_affine" : i64
+    %l = arith.index_cast %L : i32 to index
+    %slot = affine.apply affine_map<()[s0] -> (s0 * 256 - 256)>()[%l]
+    %off = arith.index_cast %slot : index to i64
+    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %off], [%c1_i64, %c1_i64, %c1_i64, %c256_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @appendK} : (i32, i64, i64, memref<1048576xbf16>)
+    return
+  }
+}

@@ -121,6 +121,7 @@ static PacketChannelFacts classify(ChannelOp chanOp,
     return c;
   }
   llvm::MapVector<DestKey, int64_t> volByDest;
+  bool runtimeVolume = false;
   for (ChannelInterface g : gets) {
     std::optional<DestKey> key = destKeyOf(g, broadcastDim);
     if (!key) {
@@ -128,11 +129,8 @@ static PacketChannelFacts classify(ChannelOp chanOp,
       return c;
     }
     std::optional<int64_t> v = totalVolume(g, scopeRoot);
-    if (!v) {
-      c.reason = "a get has a non-static volume";
-      return c;
-    }
-    volByDest[*key] += *v;
+    runtimeVolume |= !v;
+    volByDest[*key] += v.value_or(0);
   }
   c.numDests = volByDest.size();
 
@@ -142,6 +140,11 @@ static PacketChannelFacts classify(ChannelOp chanOp,
   }
   if (volByDest.size() == 1) {
     c.fanout = PacketFanout::SingleDest;
+    return c;
+  }
+  if (runtimeVolume) {
+    c.runtimeVolume = true;
+    c.reason = "a get has a non-static volume";
     return c;
   }
 
@@ -451,7 +454,14 @@ void PacketRoutingDomainAnalysis::buildDomains() {
   // One domain per demux. Ids belong to the domain, so this is also the only
   // place they are handed out.
   for (ChannelOp d : packetChans) {
-    if (getFacts(d).fanout != PacketFanout::Demux)
+    PacketChannelFacts &f = facts[d.getOperation()];
+    if (f.runtimeVolume && llvm::any_of(origins, [&](const Origin &o) {
+          return o.reaches.contains(d.getOperation());
+        })) {
+      f.fanout = PacketFanout::Demux;
+      f.reason.clear();
+    }
+    if (f.fanout != PacketFanout::Demux)
       continue;
 
     PacketRoutingDomain dom;
