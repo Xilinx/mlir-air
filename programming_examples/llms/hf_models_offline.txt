@@ -31,3 +31,8 @@ z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat@d3af30def9601abdd10810aba220d692f0e8
 
 # Affine-Q4 deployment and original-BF16 reference, pinned like its model.json.
 mistralai/Mistral-7B-Instruct-v0.3@c170c708c41dac9275d15a8fff4eca08d52bab71
+
+# GPT-OSS-20B (llms/gpt_oss_20b_q4nx): FastFlowLM's bundle at the revision its
+# loader pins, and the HF checkpoint `make verify` compares the CPU reference to.
+FastFlowLM/GPT-OSS-20B-NPU2@v0.9.20-merge-lm-head
+openai/gpt-oss-20b

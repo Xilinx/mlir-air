@@ -654,83 +654,115 @@ class ChainRef:
         return x[0]
 
 
+def prompt_ids(tok, prompt, n):
+    """The prompt's tokens, repeated to n tokens when n is given."""
+    ids = tok.encode(prompt).ids
+    return (ids * (n // len(ids) + 1))[:n] if n else ids
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-p", "--print-module-only", action="store_true")
+    ap.add_argument("--compile-only", action="store_true")
     ap.add_argument("--maxl", type=int, default=256)
     ap.add_argument("--n-layers", type=int, default=g.N_LAYERS)
     ap.add_argument(
         "--layers", type=int, nargs="*", help="model layer of each wave (debug)"
     )
     ap.add_argument("--prompt", default="The capital of France is")
+    ap.add_argument(
+        "--prompt-len", type=int, default=0, help="repeat the prompt to N tokens"
+    )
     ap.add_argument("--steps", type=int, default=8, help="greedy tokens")
     ap.add_argument("--build-dir", type=Path, default=Path("build_decode"))
     ap.add_argument("--no-lm", action="store_true", help="skip the LM head")
+    ap.add_argument(
+        "--no-ref", action="store_true", help="time only: no CPU reference check"
+    )
     ap.add_argument("--bench", type=int, default=0, help="time N dispatches")
+    ap.add_argument(
+        "--bench-ctx", type=int, default=0, help="context of the timed dispatches"
+    )
     a = ap.parse_args()
     layers = a.layers or list(range(a.n_layers))
     if a.print_module_only:
         print(build_module(a.maxl, len(layers), not a.no_lm))
         return 0
-    from tokenizers import Tokenizer
-
-    tok = Tokenizer.from_file(str(g.flm_model_dir() / "tokenizer.json"))
-    ids = tok.encode(a.prompt).ids
     elf, kernel = compile_decode(
         a.maxl, len(layers), a.build_dir.resolve(), lm=not a.no_lm
     )
+    if a.compile_only:
+        print("Compilation passed.")
+        return 0
+    from tokenizers import Tokenizer
+
+    tok = Tokenizer.from_file(str(g.flm_model_dir() / "tokenizer.json"))
+    ids = prompt_ids(tok, a.prompt, a.prompt_len)
     w = g.GptOssQ4nx()
     full = layers == list(range(g.N_LAYERS))
-    ref = g.Reference(w) if full else ChainRef(w, layers)
+    ref = None
+    if not a.no_ref:
+        ref = g.Reference(w) if full else ChainRef(w, layers)
     ok, head = True, None
     with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
         npu = NpuDecoder(elf, kernel, a.maxl, layers, w)
         if a.bench:
+            ctx = a.bench_ctx or len(ids)
             npu.step(ids[0], 1)
-            t = np.array(npu.bench(len(ids), a.bench)) * 1e3
+            t = np.array(npu.bench(ctx, a.bench)) * 1e3
+            med = float(np.median(t))
             print(
-                f"{len(layers)} layers{'' if a.no_lm else ' + LM head'}: "
-                f"{t.mean():.2f} ms mean, {t.min():.2f} min, {t.max():.2f} max "
-                f"over {a.bench} dispatches ({1e3 / t.mean():.2f} tok/s)"
+                f"[bench] decode ctx={ctx} median {med:.2f} ms min {t.min():.2f} ms "
+                f"({1e3 / med:.2f} tok/s)"
             )
             return 0
-        seq, out = list(ids), []
+        seq, out, times = list(ids), [], []
         for t in range(len(ids) + a.steps - 1):
-            t0 = time.time()
+            t0 = time.perf_counter()
             x, logits = npu.step(seq[t], t + 1)
-            dt = time.time() - t0
-            if not full:
+            dt = time.perf_counter() - t0
+            times.append(dt)
+            want = None
+            if ref is not None and not full:
                 # a debug build: its last wave's output, and the LM head on it
                 xr = ref.step(seq[t], t)
                 c = cos_sim(x, xr)
                 ok &= c > 0.99
-                msg = f"L={t + 1}: last wave out cos {c:.5f}"
-                if a.no_lm:
-                    print(f"{msg} ({dt*1e3:.0f} ms)")
-                    # no logits to pick the next token from
-                    if t + 1 >= len(ids):
-                        break
-                    continue
-                if head is None:
-                    head = w.lm_head()
-                want = g.rmsnorm(xr[None], w.final_norm())[0] @ head.T
-                print(f"{msg} ({dt*1e3:.0f} ms)")
-            else:
+                print(f"L={t + 1}: last wave out cos {c:.5f} ({dt*1e3:.0f} ms)")
+                if not a.no_lm:
+                    if head is None:
+                        head = w.lm_head()
+                    want = g.rmsnorm(xr[None], w.final_norm())[0] @ head.T
+            elif ref is not None:
                 want = ref.forward([seq[t]])
-            if t + 1 >= len(ids):
-                nxt = int(logits.argmax())
+            if t + 1 < len(ids):
+                if ref is not None and full:
+                    print(f"L={t + 1}: prompt ({dt*1e3:.0f} ms)")
+                continue
+            if a.no_lm:
+                break  # no logits to pick the next token from
+            nxt = int(logits.argmax())
+            msg = f"L={t + 1}: npu {nxt} {tok.decode([nxt])!r}"
+            if want is not None:
                 c = cos_sim(logits, want)
-                print(
-                    f"L={t + 1}: npu {nxt} {tok.decode([nxt])!r} vs ref "
-                    f"{int(want.argmax())}  logits cos {c:.5f} ({dt*1e3:.0f} ms)"
-                )
+                msg += f" vs ref {int(want.argmax())}  logits cos {c:.5f}"
                 ok &= nxt == int(want.argmax()) and c > 0.99
-                seq.append(nxt)
-                out.append(nxt)
-            elif full:
-                print(f"L={t + 1}: prompt ({dt*1e3:.0f} ms)")
+            print(f"{msg} ({dt*1e3:.0f} ms)")
+            seq.append(nxt)
+            out.append(nxt)
     if out:
-        print(f"{a.prompt!r} -> {tok.decode(out)!r}")
+        print(f"{tok.decode(ids)!r} -> {tok.decode(out)!r}")
+        # the prompt goes through the decode loop: the first token is ready
+        # after its last step
+        gen = np.array(times[len(ids) :]) * 1e3
+        print(f"Inference: prompt_len={len(ids)}, n_tokens={len(out)}")
+        print(f"Time to first token (TTFT): {sum(times[: len(ids)]):.3f}s")
+        if len(gen):
+            med = float(np.median(gen))
+            print(
+                f"Decode: median {med:.2f} ms min {gen.min():.2f} ms "
+                f"({1e3 / med:.2f} tok/s)"
+            )
     print("PASS!" if ok else "failed.")
     return 0 if ok else 1
 
