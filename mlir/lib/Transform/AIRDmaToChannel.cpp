@@ -286,6 +286,16 @@ static void keepUsedOpsAndCarriedValues(SetVector<Operation *> &slice,
       [&](Operation *op) { return droppable(op) && !used.contains(op); });
 }
 
+// Greater than zero while cloning the branches of a flattened conditional: the
+// clones run whether or not the condition held.
+static thread_local unsigned unguardedCloneDepth = 0;
+namespace {
+struct UnguardedCloneScope {
+  UnguardedCloneScope() { ++unguardedCloneDepth; }
+  ~UnguardedCloneScope() { --unguardedCloneDepth; }
+};
+} // namespace
+
 // Clone ops in a block.
 SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
                                               IRMapping &remap) {
@@ -343,6 +353,13 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
         wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
         clonedOps.push_back(wa_op);
       }
+    } else if (!air::isPure(&o) && air::isEffectFree(&o) &&
+               unguardedCloneDepth > 0) {
+      // A clone here runs without the condition that guarded the original,
+      // which may be what keeps it defined (a division by a value the
+      // condition checks for zero).
+      o.emitOpError("cannot be hoisted out of the condition that guards it: "
+                    "it is not speculatable");
     } else if (!air::isEffectFree(&o) && !isa<air::WaitAllOp>(o)) {
       // Ops with memory effects are not repeated in the hoisted code.
       // Effect-free ops are cloned even when they are not speculatable (e.g.
@@ -365,6 +382,7 @@ air::cloneAffineIfUsingRemap(OpBuilder builder, IRMapping &remap,
   // Clone the affine if op body instead of the if op, flattening both
   // then/else blocks into the parent scope.
   SmallVector<Operation *> clonedOps;
+  UnguardedCloneScope unguarded;
   auto clonedThenOps = cloneOpsInBlock(aif_op.getThenBlock(), builder, remap);
   clonedOps.insert(clonedOps.end(), clonedThenOps.begin(), clonedThenOps.end());
   if (aif_op.hasElse()) {
@@ -449,6 +467,7 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
   if (!onlyTokens || (scf_if_op.getNumResults() != 0 &&
                       !remap.contains(scf_if_op.getCondition()))) {
     // Flatten: clone body ops without the scf.if wrapper.
+    UnguardedCloneScope unguarded;
     auto clonedThenOps = cloneOpsInBlock(scf_if_op.thenBlock(), builder, remap);
     clonedOps.insert(clonedOps.end(), clonedThenOps.begin(),
                      clonedThenOps.end());
