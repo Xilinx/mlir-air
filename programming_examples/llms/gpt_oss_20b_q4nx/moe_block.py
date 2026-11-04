@@ -18,6 +18,7 @@ import argparse
 import os
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 import filelock
@@ -28,15 +29,18 @@ from ml_dtypes import bfloat16
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "kernel_tests"))
-sys.path.insert(0, str(HERE.parent))
+# llms/shared is imported as the air_examples package, not through sys.path
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(HERE.parents[1])
+]
 
 import common  # noqa: E402
 import gpt_oss_20b_q4nx_weights as g  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
-from shared.moe.array import MvmArray, Phase  # noqa: E402
-from shared.moe.ffn import Moe, MoeShape, router_kernels  # noqa: E402
+from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
+from air_examples.llms.shared.moe.ffn import Moe, MoeShape, router_kernels  # noqa: E402
 
 R = 4
 NCB = g.D_PAD // g.COL_BLOCK  # 23 column blocks

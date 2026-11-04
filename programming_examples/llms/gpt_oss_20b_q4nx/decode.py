@@ -32,6 +32,7 @@ import argparse
 import os
 import sys
 import tempfile
+import types
 import time
 from pathlib import Path
 
@@ -43,7 +44,10 @@ from ml_dtypes import bfloat16
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "kernel_tests"))
-sys.path.insert(0, str(HERE.parent))
+# llms/shared is imported as the air_examples package, not through sys.path
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(HERE.parents[1])
+]
 sys.path.insert(0, str(HERE.parents[1] / "fused_decode"))
 
 import common  # noqa: E402
@@ -52,8 +56,8 @@ from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
 from attn_block import BLK, CU_LOC, DK, DQ, NCU, QH, QKV, SLAB, S_BLK  # noqa: E402
-from shared.moe.array import MvmArray, Phase  # noqa: E402
-from shared.moe.ffn import Moe, MoeShape, router_kernels  # noqa: E402
+from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
+from air_examples.llms.shared.moe.ffn import Moe, MoeShape, router_kernels  # noqa: E402
 
 DH = g.DH
 R = 4
