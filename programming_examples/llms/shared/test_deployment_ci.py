@@ -73,7 +73,7 @@ class DeploymentCITests(unittest.TestCase):
             with self.subTest(kind=kind), self.assertRaises(ValueError):
                 ci.performance_record(t["model"], configuration(t["model"], 512), t)
 
-    def pipeline(self, tmp, stage, failure=None):
+    def pipeline(self, tmp, stage, failure=None, build_dir=None):
         args = argparse.Namespace(
             model="phi2_2_7b_q4nx",
             prefill=512,
@@ -81,6 +81,7 @@ class DeploymentCITests(unittest.TestCase):
             stage=stage,
             checkpoint=None,
             q4_dir=None,
+            build_dir=build_dir,
             reference_python=sys.executable,
         )
         calls = []
@@ -155,6 +156,16 @@ class DeploymentCITests(unittest.TestCase):
                     next(Path(tmp).glob("evidence/*/status.json")).read_text()
                 )
                 self.assertEqual(status["status"], "FAIL")
+
+    def test_shared_build_dir_reused(self):
+        """With --build-dir every stage builds there, and weights already
+        packed there are not packed again."""
+        with tempfile.TemporaryDirectory() as tmp:
+            build = Path(tmp) / "affine-build"
+            self.assertIn("weights", self.pipeline(tmp, "verify", build_dir=build))
+            self.assertTrue((build / "weights/manifest.json").is_file())
+            self.assertFalse((Path(tmp) / "build").exists())
+            self.assertNotIn("weights", self.pipeline(tmp, "profile", build_dir=build))
 
     def test_verify_never_profiles(self):
         with tempfile.TemporaryDirectory() as tmp:

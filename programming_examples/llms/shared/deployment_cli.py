@@ -347,6 +347,14 @@ def main(model):
         if args.part == "prefill" and fused_prefill_model(model):
             # the fused prefill reads the logical Q4 itself
             return
+        packed = base / "weights/manifest.json"
+        if packed.is_file():
+            # packing writes its manifest last
+            bound = json.loads(packed.read_text())["logical_manifest_sha256"]
+            if bound != file_hash(q4 / "manifest.json"):
+                raise ValueError(f"{packed} was packed from other logical Q4 weights")
+            print(f"packed weights up to date: {packed.parent}", flush=True)
+            return
         packer = importlib.import_module(f"air_examples.llms.{model}.weights")
         packer.prepare(base / "weights", read_task(model))
         return
