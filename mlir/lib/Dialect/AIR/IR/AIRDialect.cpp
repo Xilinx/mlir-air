@@ -138,6 +138,9 @@ void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
   // after this copy.
   if (auto kph = src->getAttr(attrs::KeepPktHeader))
     dst->setAttr(attrs::KeepPktHeader, kph);
+  // The pairing with the air.channel.issue that patches and starts the op.
+  if (auto issue = src->getAttr("air.device_issue"))
+    dst->setAttr("air.device_issue", issue);
 }
 
 void air::addAsyncDependency(Operation *op, Value token) {
@@ -4028,6 +4031,28 @@ static LogicalResult FoldChannel(air::ChannelOp op, PatternRewriter &rewriter) {
 void air::ChannelOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                  MLIRContext *context) {
   patterns.add(FoldChannel);
+}
+
+//
+// ChannelIssue op
+//
+
+LogicalResult air::ChannelIssueOp::verify() {
+  if (!getOffset() && !getLength())
+    return emitOpError("patches nothing: give it an offset or a length");
+  // The issuer is the op's place: a herd's core, or else the host, which
+  // cannot read a core's values.
+  bool core = getOperation()->getParentOfType<air::HerdOp>();
+  for (Operation *p = getOperation()->getParentOp(); p && !core;
+       p = p->getParentOp())
+    core = p->getName().getStringRef() == "aie.core";
+  if (!core && getOffset())
+    return emitOpError("is issued by the host, which can set a length but not "
+                       "an offset a core computes");
+  if (core && getLength())
+    return emitOpError("is issued by a core, which can set an offset but not "
+                       "a length");
+  return success();
 }
 
 //

@@ -1677,6 +1677,372 @@ class AIRDemoteDmaToAIRHierarchyConversion
 // can move it as one linear run. The reordering goes to the L2 side, whose
 // descriptors take several dims. Copying the elements in another order puts
 // each in the same place.
+// Whether the host can evaluate `v` when it arms a hoisted L3 transfer: `v`
+// is built only from hierarchy arguments, loop ivs and pure index arithmetic.
+static bool isHostComputable(Value v, Operation *herd) {
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    Operation *owner = arg.getOwner()->getParentOp();
+    if (isa<air::HierarchyInterface>(owner))
+      return true;
+    if (auto loop = dyn_cast<LoopLikeOpInterface>(owner))
+      return llvm::is_contained(
+          loop.getLoopInductionVars().value_or(SmallVector<Value>{}), v);
+    return false;
+  }
+  Operation *def = v.getDefiningOp();
+  if (!herd->isProperAncestor(def))
+    return true;
+  // Async IR wraps index arithmetic in air.execute: judge what it yields.
+  if (auto exec = dyn_cast<air::ExecuteOp>(def)) {
+    auto result = cast<OpResult>(v);
+    if (result.getResultNumber() == 0)
+      return false;
+    Value yielded = exec.getRegion().front().getTerminator()->getOperand(
+        result.getResultNumber() - 1);
+    return isHostComputable(yielded, herd);
+  }
+  if (!mlir::isPure(def) || def->getNumRegions())
+    return false;
+  return llvm::all_of(def->getOperands(), [&](Value operand) {
+    return isHostComputable(operand, herd);
+  });
+}
+
+// Whether `v` depends on data the core reads from memory, which the host
+// cannot know. Index arithmetic the host can replay, loop-carried or wrapped
+// in air.execute, does not count.
+static bool readsCoreData(Value v, Operation *herd,
+                          llvm::SmallPtrSetImpl<Value> &seen) {
+  if (!seen.insert(v).second)
+    return false;
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    auto loop = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp());
+    if (!loop || arg.getArgNumber() == 0)
+      return false;
+    unsigned i = arg.getArgNumber() - 1;
+    return readsCoreData(loop.getInitArgs()[i], herd, seen) ||
+           readsCoreData(loop.getYieldedValues()[i], herd, seen);
+  }
+  Operation *def = v.getDefiningOp();
+  if (!herd->isProperAncestor(def))
+    return false;
+  if (auto exec = dyn_cast<air::ExecuteOp>(def)) {
+    auto result = cast<OpResult>(v);
+    if (result.getResultNumber() == 0)
+      return false;
+    return readsCoreData(exec.getRegion().front().getTerminator()->getOperand(
+                             result.getResultNumber() - 1),
+                         herd, seen);
+  }
+  unsigned n = isa<OpResult>(v) ? cast<OpResult>(v).getResultNumber() : 0;
+  if (auto loop = dyn_cast<scf::ForOp>(def))
+    return readsCoreData(loop.getInitArgs()[n], herd, seen) ||
+           readsCoreData(loop.getYieldedValues()[n], herd, seen);
+  if (auto ifOp = dyn_cast<scf::IfOp>(def))
+    return readsCoreData(ifOp.getCondition(), herd, seen) ||
+           readsCoreData(ifOp.thenYield().getOperand(n), herd, seen) ||
+           readsCoreData(ifOp.elseYield().getOperand(n), herd, seen);
+  if (isa<memref::LoadOp, affine::AffineLoadOp>(def) || !mlir::isPure(def))
+    return true;
+  return llvm::any_of(def->getOperands(), [&](Value operand) {
+    return readsCoreData(operand, herd, seen);
+  });
+}
+
+// Split offset `v` as host + device, where device is linear in the values
+// only the core can compute. `device` is null when `v` is host-computable.
+// The device part is i64: a core's index is 32 bits, an offset into a large
+// L3 tensor may not be.
+static LogicalResult splitOffset(OpBuilder &b, Location loc, Value v,
+                                 Operation *herd, Value &host, Value &device) {
+  device = nullptr;
+  if (isHostComputable(v, herd)) {
+    host = v;
+    return success();
+  }
+  Type i64 = b.getI64Type();
+  auto apply = v.getDefiningOp<affine::AffineApplyOp>();
+  if (!apply) {
+    host = arith::ConstantIndexOp::create(b, loc, 0);
+    device = arith::IndexCastOp::create(b, loc, i64, v);
+    return success();
+  }
+  AffineMap map = apply.getAffineMap();
+  bool linear = true;
+  map.getResult(0).walk([&](AffineExpr e) {
+    if (e.getKind() == AffineExprKind::Mod ||
+        e.getKind() == AffineExprKind::FloorDiv ||
+        e.getKind() == AffineExprKind::CeilDiv)
+      linear = false;
+    if (e.getKind() == AffineExprKind::Mul) {
+      auto mul = cast<AffineBinaryOpExpr>(e);
+      if (!isa<AffineConstantExpr>(mul.getLHS()) &&
+          !isa<AffineConstantExpr>(mul.getRHS()))
+        linear = false;
+    }
+  });
+  if (!linear)
+    return failure();
+  // Zero the other side's dims and symbols in the expression; the constant
+  // term goes with the host part.
+  unsigned nDims = map.getNumDims();
+  AffineExpr zero = b.getAffineConstantExpr(0);
+  SmallVector<AffineExpr> hostDims, hostSyms, allZeroDims, allZeroSyms;
+  for (auto [i, operand] : llvm::enumerate(apply.getMapOperands())) {
+    bool onHost = isHostComputable(operand, herd);
+    AffineExpr self =
+        i < nDims ? b.getAffineDimExpr(i) : b.getAffineSymbolExpr(i - nDims);
+    (i < nDims ? hostDims : hostSyms).push_back(onHost ? self : zero);
+    (i < nDims ? allZeroDims : allZeroSyms).push_back(zero);
+  }
+  AffineExpr expr = map.getResult(0);
+  AffineExpr constTerm = simplifyAffineExpr(
+      expr.replaceDimsAndSymbols(allZeroDims, allZeroSyms), 0, 0);
+  AffineExpr hostExpr =
+      simplifyAffineExpr(expr.replaceDimsAndSymbols(hostDims, hostSyms), nDims,
+                         map.getNumSymbols());
+  auto operands = apply.getMapOperands();
+  host = affine::makeComposedAffineApply(
+             b, loc, AffineMap::get(nDims, map.getNumSymbols(), hostExpr),
+             SmallVector<OpFoldResult>(operands.begin(), operands.end()))
+             .getResult();
+  // The device part, sum(coefficient * operand), evaluated in i64.
+  for (auto [i, operand] : llvm::enumerate(operands)) {
+    if (isHostComputable(operand, herd))
+      continue;
+    SmallVector<AffineExpr> unitDims(allZeroDims), unitSyms(allZeroSyms);
+    AffineExpr one = b.getAffineConstantExpr(1);
+    (i < nDims ? unitDims[i] : unitSyms[i - nDims]) = one;
+    auto coeff = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
+        expr.replaceDimsAndSymbols(unitDims, unitSyms) - constTerm, 0, 0));
+    if (!coeff)
+      return failure();
+    if (!coeff.getValue())
+      continue;
+    Value term = arith::MulIOp::create(
+        b, loc, arith::IndexCastOp::create(b, loc, i64, operand),
+        arith::ConstantOp::create(b, loc,
+                                  b.getI64IntegerAttr(coeff.getValue())));
+    device = device ? arith::AddIOp::create(b, loc, device, term) : term;
+  }
+  if (!device)
+    device = arith::ConstantOp::create(b, loc, b.getI64IntegerAttr(0));
+  return success();
+}
+
+// A transfer in a herd whose offset depends on a value the core computes
+// cannot be placed on a static buffer descriptor. Keep the host part on the
+// channel op, whose descriptor the core then patches and starts, and put an
+// air.channel.issue in the herd carrying the device part as an element offset.
+// The descriptor is the shim's for an L3 put, the memtile's for an L2 put,
+// and the core's own for an L1 get; on the last two only a constant can stay.
+static LogicalResult splitDeviceIssued(air::ChannelInterface op,
+                                       int64_t issueId) {
+  auto herd = op->getParentOfType<air::HerdOp>();
+  if (!herd)
+    return success();
+  auto put = dyn_cast<air::ChannelPutOp>(op.getOperation());
+  auto get = dyn_cast<air::ChannelGetOp>(op.getOperation());
+  auto memrefType = dyn_cast<MemRefType>(op.getMemref().getType());
+  if (!memrefType)
+    return success();
+  bool l3 = air::isL3(memrefType), l2 = air::isL2(memrefType);
+  if (!(put && (l3 || l2)) && !(get && air::isL1(memrefType)))
+    return success();
+  ValueRange dynOffsets =
+      put ? put.getDynamicSrcOffsets() : get.getDynamicDstOffsets();
+  llvm::SmallPtrSet<Value, 16> seen;
+  if (llvm::none_of(dynOffsets,
+                    [&](Value v) { return readsCoreData(v, herd, seen); }))
+    return success();
+  ValueRange dynSizes =
+      put ? put.getDynamicSrcSizes() : get.getDynamicDstSizes();
+  ValueRange dynStrides =
+      put ? put.getDynamicSrcStrides() : get.getDynamicDstStrides();
+  for (Value v : llvm::concat<Value>(dynSizes, dynStrides))
+    if (!isHostComputable(v, herd))
+      return op->emitOpError(
+          "sizes and strides of a transfer cannot depend on a value computed "
+          "in the herd; only its offset can");
+  // The host arms an L3 put once per issue, but would fold a rolled loop of
+  // them into one task repeated for every iteration.
+  if (put && l3)
+    for (Operation *p = op->getParentOp(); p != herd; p = p->getParentOp())
+      if (isa<scf::ForOp>(p))
+        return op->emitOpError(
+            "an L3 transfer whose offset a core computes cannot be in a loop "
+            "in the herd; unroll the loop");
+  // Every start patches the one descriptor, so a start must not land while
+  // the previous one is queued: the core receives each transfer, in the same
+  // block, before it can start the next.
+  if (put && l2) {
+    bool received = false;
+    for (Operation *o = op->getNextNode(); o && !received;
+         o = o->getNextNode()) {
+      auto get = dyn_cast<air::ChannelGetOp>(o);
+      if (get && get.getChanName() == put.getChanName()) {
+        received = true;
+        break;
+      }
+      bool again = false;
+      o->walk([&](air::ChannelInterface c) {
+        again |= c.getChanName() == put.getChanName();
+      });
+      if (again)
+        break;
+    }
+    if (!received)
+      return op->emitOpError(
+          "an L2 transfer whose offset a core computes must be received by "
+          "that core, in the same block, before it starts another");
+  }
+
+  OpBuilder b(op);
+  Location loc = op->getLoc();
+  SmallVector<OpFoldResult> strides =
+      put ? put.getMixedSrcStrides() : get.getMixedDstStrides();
+  if (strides.empty()) {
+    SmallVector<int64_t> layout;
+    int64_t unusedOffset;
+    if (failed(memrefType.getStridesAndOffset(layout, unusedOffset)))
+      return op->emitOpError("has a memref with a non-strided layout");
+    for (int64_t s : layout)
+      strides.push_back(b.getIndexAttr(s));
+  }
+
+  Value deviceElems = nullptr;
+  auto offsets = put ? put.getDynamicSrcOffsetsMutable()
+                     : get.getDynamicDstOffsetsMutable();
+  unsigned dynIdx = 0;
+  SmallVector<OpFoldResult> mixed =
+      put ? put.getMixedSrcOffsets() : get.getMixedDstOffsets();
+  for (auto [dim, offset] : llvm::enumerate(mixed)) {
+    auto v = dyn_cast<Value>(offset);
+    if (!v)
+      continue;
+    Value host, device;
+    if (failed(splitOffset(b, loc, v, herd, host, device)))
+      return op->emitOpError(
+          "offset depends on a value computed in the herd, but is not a host "
+          "part plus a linear function of the core's values");
+    // A memtile or core descriptor takes no run-time value from the host.
+    if (!l3 && device && !getConstantIntValue(host)) {
+      auto apply = host.getDefiningOp<affine::AffineApplyOp>();
+      if (!apply || !apply.getAffineMap().isSingleConstant())
+        return op->emitOpError(
+            "offset adds a core-computed value to one that is not a "
+            "constant; only an L3 transfer can take both");
+      host = arith::ConstantIndexOp::create(
+          b, loc, apply.getAffineMap().getSingleConstantResult());
+    }
+    offsets[dynIdx++].set(host);
+    if (!device)
+      continue;
+    Value stride = getValueOrCreateConstantIndexOp(b, loc, strides[dim]);
+    if (!isHostComputable(stride, herd))
+      return op->emitOpError(
+          "a device-computed offset needs host-computable strides");
+    Value term = arith::MulIOp::create(
+        b, loc, device,
+        arith::IndexCastOp::create(b, loc, b.getI64Type(), stride));
+    deviceElems =
+        deviceElems ? arith::AddIOp::create(b, loc, deviceElems, term) : term;
+  }
+
+  op->setAttr("air.device_issue", b.getI64IntegerAttr(issueId));
+  auto issue = [&]() {
+    air::ChannelIssueOp::create(
+        b, loc, /*async_token=*/Type(), ValueRange{},
+        FlatSymbolRefAttr::get(b.getContext(), op.getChanName()),
+        op.getIndices(), deviceElems,
+        /*length=*/Value(), b.getI64IntegerAttr(issueId));
+  };
+  // Wrapped in air.execute so the dependency passes order it.
+  auto async = cast<air::AsyncOpInterface>(op.getOperation());
+  if (async.getAsyncToken()) {
+    auto exec =
+        air::ExecuteOp::create(b, loc, air::AsyncTokenType::get(b.getContext()),
+                               async.getAsyncDependencies());
+    {
+      OpBuilder::InsertionGuard guard(b);
+      b.setInsertionPointToStart(b.createBlock(&exec.getRegion()));
+      issue();
+      air::ExecuteTerminatorOp::create(b, loc);
+    }
+    // The transfer starts once the core has issued it.
+    async.addAsyncDependency(exec.getAsyncToken());
+  } else {
+    issue();
+  }
+  return success();
+}
+
+// A segment's L2 transfer whose outermost size is a run-time value of the
+// launch cannot be placed on a memtile descriptor either. Keep the largest
+// size on the channel op, whose descriptor the host then sets and starts
+// through control packets, with an air.channel.issue carrying the size.
+static LogicalResult splitHostIssued(air::ChannelInterface op,
+                                     int64_t issueId) {
+  auto seg = op->getParentOfType<air::SegmentOp>();
+  if (!seg || op->getParentOfType<air::HerdOp>())
+    return success();
+  auto memrefType = dyn_cast<MemRefType>(op.getMemref().getType());
+  if (!memrefType)
+    return success();
+  // An L3 length normally goes on the shim descriptor through the scratchpad;
+  // a launch asks for control packets instead with air.host_issue_lengths.
+  auto launch = seg->getParentOfType<air::LaunchOp>();
+  bool l3 = air::isL3(memrefType) && launch &&
+            launch->hasAttr("air.host_issue_lengths");
+  if (!air::isL2(memrefType) && !l3)
+    return success();
+  auto put = dyn_cast<air::ChannelPutOp>(op.getOperation());
+  auto get = dyn_cast<air::ChannelGetOp>(op.getOperation());
+  SmallVector<OpFoldResult> sizes =
+      put ? put.getMixedSrcSizes() : get.getMixedDstSizes();
+  int dyn = -1;
+  for (auto [i, size] : llvm::enumerate(sizes)) {
+    if (getConstantIntValue(size))
+      continue;
+    if (dyn >= 0 || i != 0)
+      return op->emitOpError(
+          "only the outermost size of a transfer can be a run-time value");
+    dyn = i;
+  }
+  if (dyn < 0)
+    return success();
+  if (static_cast<int64_t>(sizes.size()) != memrefType.getRank())
+    return op->emitOpError("a run-time size needs one size per dimension of "
+                           "the buffer, the largest being the buffer's");
+  if (l3 && !put)
+    return op->emitOpError("the host sets the length of an L3 put, not a get");
+
+  OpBuilder lb(op);
+  Value length = cast<Value>(sizes[0]);
+  // The op keeps the largest size; the host sets the one it runs with.
+  auto dynSizes =
+      put ? put.getDynamicSrcSizesMutable() : get.getDynamicDstSizesMutable();
+  dynSizes.erase(0);
+  SmallVector<int64_t> statics(put ? put.getStaticSrcSizes()
+                                   : get.getStaticDstSizes());
+  statics[0] = memrefType.getDimSize(0);
+  auto staticAttr = DenseI64ArrayAttr::get(op->getContext(), statics);
+  if (put)
+    put.setStaticSrcSizesAttr(staticAttr);
+  else
+    get.setStaticDstSizesAttr(staticAttr);
+  op->setAttr("air.device_issue", lb.getI64IntegerAttr(issueId));
+  auto issue = air::ChannelIssueOp::create(
+      lb, op->getLoc(), /*async_token=*/Type(), ValueRange{},
+      FlatSymbolRefAttr::get(op->getContext(), op.getChanName()),
+      op.getIndices(), /*offset=*/Value(), length,
+      lb.getI64IntegerAttr(issueId));
+  // The most the length can be: the host keeps a control packet per value.
+  issue->setAttr("air.length_bound",
+                 lb.getI64IntegerAttr(memrefType.getDimSize(0)));
+  return success();
+}
+
 static void putL3SideInMemoryOrder(air::DmaMemcpyNdOp dma) {
   auto srcTy = dyn_cast<BaseMemRefType>(dma.getSrcMemref().getType());
   auto dstTy = dyn_cast<BaseMemRefType>(dma.getDstMemref().getType());
@@ -1793,6 +2159,181 @@ static void putL3SideInMemoryOrder(air::DmaMemcpyNdOp dma) {
       [&](ArrayRef<int64_t> v) { dma.setStaticDstSizes(v); });
   set(srcIsL3 ? l2t : l3t, dma.getDynamicDstStridesMutable(),
       [&](ArrayRef<int64_t> v) { dma.setStaticDstStrides(v); });
+}
+
+static LogicalResult traceExternalDependencies(func::FuncOp f) {
+  bool ok = true;
+  air::dependencyTracer depTracer;
+  f.walk<WalkOrder::PreOrder,
+         ForwardDominanceIterator<>>([&](air::MemcpyInterface memcpy_op) {
+    if (!memcpy_op->hasAttr("loop-carried-dep"))
+      return WalkResult::advance();
+    auto LoopCarriedDepAttr =
+        memcpy_op->getAttrOfType<StringAttr>("loop-carried-dep");
+    if (LoopCarriedDepAttr.str() != "external" &&
+        LoopCarriedDepAttr.str() != "internalGetPut")
+      return WalkResult::advance();
+
+    // Start tracing dependency only if this put/get op is async
+    auto async_op =
+        dyn_cast_if_present<air::AsyncOpInterface>(memcpy_op.getOperation());
+    if (!async_op)
+      return WalkResult::advance();
+
+    // Connect async dependency of external put/get scf parallel
+    SmallVector<air::partialMemref, 1> sink_op_memref_reads;
+    SmallVector<air::partialMemref, 1> sink_op_memref_writes;
+    SmallVector<Value, 1> sink_op_scalar_ins;
+    SmallVector<Value, 1> sink_op_scalar_outs;
+
+    air::WaitAllOp sink_wait_all_op = nullptr;
+    for (auto parent = memcpy_op->getParentOp(); !isa<func::FuncOp>(parent);
+         parent = parent->getParentOp()) {
+      if (parent->getAttrOfType<StringAttr>("loop-carried-dep") &&
+          parent->getAttrOfType<StringAttr>("loop-carried-dep")
+                  .getValue()
+                  .str() == "hoistedLoop") {
+        if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
+          if (scf_par.getInitVals().size() &&
+              scf_par.getInitVals()[0].getDefiningOp()) {
+            sink_wait_all_op = dyn_cast_if_present<air::WaitAllOp>(
+                scf_par.getInitVals()[0].getDefiningOp());
+          }
+        } else if (auto scf_for = dyn_cast_if_present<scf::ForOp>(parent)) {
+          if (scf_for.getInitArgs().size() &&
+              scf_for.getInitArgs()[0].getDefiningOp()) {
+            sink_wait_all_op = dyn_cast_if_present<air::WaitAllOp>(
+                scf_for.getInitArgs()[0].getDefiningOp());
+          }
+        }
+      }
+    }
+
+    depTracer.getPartialMemrefFromOp(
+        memcpy_op.getOperation(), sink_op_memref_reads, sink_op_memref_writes,
+        sink_op_scalar_ins, sink_op_scalar_outs);
+
+    if (sink_op_memref_reads.empty() && sink_op_memref_writes.empty()) {
+      memcpy_op->emitOpError("cannot read memref from channel op.");
+      return WalkResult::skip();
+    }
+
+    if (sink_wait_all_op) {
+      // Detect RAW deps
+      if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+              sink_op_memref_reads, sink_wait_all_op, "RAW")))
+        ok = false;
+      // Detect WAW and WAR deps
+      if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+              sink_op_memref_writes, sink_wait_all_op, "WAW/WAR")))
+        ok = false;
+
+      // Rebuild loop-carried dependency in scf loop nest
+      air::clearAsyncDependenciesOfAsyncOp(memcpy_op);
+      depTracer.reconnectLoopCarriedDependencyFromOp(memcpy_op.getOperation());
+    }
+
+    // Trace dependency of external put/get within scf loop
+    if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+            sink_op_memref_reads,
+            dyn_cast_if_present<air::AsyncOpInterface>(
+                memcpy_op.getOperation()),
+            "RAW")))
+      ok = false;
+    if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+            sink_op_memref_writes,
+            dyn_cast_if_present<air::AsyncOpInterface>(
+                memcpy_op.getOperation()),
+            "WAW/WAR")))
+      ok = false;
+    // Detect tile index deps
+    depTracer.traceTileIndices(
+        sink_op_memref_reads, sink_op_memref_writes, sink_op_scalar_ins,
+        sink_op_scalar_outs,
+        dyn_cast_if_present<air::AsyncOpInterface>(memcpy_op.getOperation()));
+    return WalkResult::advance();
+  });
+  return success(ok);
+}
+
+// A hoisted copy of a ping-pong core loop carries the core's token pairs. The
+// host side needs only program order: carry one token.
+static void carryOneToken(scf::ForOp loop) {
+  if (loop.getNumResults() < 2 ||
+      !llvm::all_of(loop.getResultTypes(), llvm::IsaPred<air::AsyncTokenType>))
+    return;
+  OpBuilder b(loop);
+  Location loc = loop.getLoc();
+  auto tokTy = air::AsyncTokenType::get(loop.getContext());
+  Value init =
+      air::WaitAllOp::create(b, loc, tokTy, loop.getInitArgs()).getAsyncToken();
+  auto merged =
+      scf::ForOp::create(b, loc, loop.getLowerBound(), loop.getUpperBound(),
+                         loop.getStep(), ValueRange{init});
+  Block *from = loop.getBody(), *to = merged.getBody();
+  from->getArgument(0).replaceAllUsesWith(merged.getInductionVar());
+  for (BlockArgument arg : loop.getRegionIterArgs())
+    arg.replaceAllUsesWith(merged.getRegionIterArgs()[0]);
+  to->getOperations().splice(to->end(), from->getOperations());
+  auto yield = cast<scf::YieldOp>(to->getTerminator());
+  b.setInsertionPoint(yield);
+  Value next = air::WaitAllOp::create(b, loc, tokTy, yield.getOperands())
+                   .getAsyncToken();
+  yield->setOperands(next);
+  for (Value r : loop.getResults())
+    r.replaceAllUsesWith(merged.getResult(0));
+  loop.erase();
+}
+
+LogicalResult hoistDeviceIssuedTransfers(Operation *root) {
+  SmallVector<air::ChannelInterface> ops;
+  root->walk([&](air::ChannelInterface op) {
+    if (op->hasAttr("air.device_issue") && op->getParentOfType<air::HerdOp>() &&
+        !isInMatchingHierarchy(op))
+      ops.push_back(op);
+  });
+  if (ops.empty())
+    return success();
+  MLIRContext *ctx = root->getContext();
+  llvm::DenseSet<Attribute> ids;
+  for (air::ChannelInterface op : ops)
+    ids.insert(op->getAttr("air.device_issue"));
+  for (air::ChannelInterface op : ops) {
+    // The issue stays in the herd: once apart, the lowering orders the two
+    // with locks.
+    auto async = cast<air::AsyncOpInterface>(op.getOperation());
+    for (Value dep : llvm::to_vector(async.getAsyncDependencies())) {
+      auto exec = dep.getDefiningOp<air::ExecuteOp>();
+      if (exec && !exec.getBody().getOps<air::ChannelIssueOp>().empty())
+        air::eraseAsyncDependencyFromAsyncOp(async, dep);
+    }
+    op->setAttr("loop-carried-dep", StringAttr::get(ctx, "external"));
+  }
+  RewritePatternSet patterns(ctx);
+  patterns.add<AIRHoistExternalAIRChannelPattern<air::HerdOp>,
+               AIRHoistExternalAIRChannelPattern<air::SegmentOp>>(ctx);
+  (void)applyPatternsGreedily(root, std::move(patterns));
+  LogicalResult traced = success();
+  root->walk([&](func::FuncOp f) {
+    if (failed(traceExternalDependencies(f)))
+      traced = failure();
+  });
+  SmallVector<scf::ForOp> loops;
+  root->walk([&](scf::ForOp loop) {
+    if (!loop->getParentOfType<air::HerdOp>() &&
+        llvm::any_of(loop.getOps<air::ChannelInterface>(), [&](auto op) {
+          return ids.contains(op->getAttr("air.device_issue"));
+        }))
+      loops.push_back(loop);
+  });
+  for (scf::ForOp loop : loops)
+    carryOneToken(loop);
+  air::enforceChannelFifoOrder(root);
+  root->walk([&](Operation *op) {
+    op->removeAttr("loop-carried-dep");
+    op->removeAttr("hoist");
+  });
+  return traced;
 }
 
 struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
@@ -1924,7 +2465,43 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
                       StringAttr::get(context, "internalGetPut"));
     }
 
+    // A core-received L1 get stays in its herd; the other transfers a core
+    // starts are external.
+    SmallVector<air::ChannelInterface> issued(externalChannelOps.begin(),
+                                              externalChannelOps.end());
+    for (auto f : funcOps)
+      f.walk([&](air::ChannelGetOp get) {
+        if (isInMatchingHierarchy(get) && get->getParentOfType<air::HerdOp>())
+          issued.push_back(get);
+      });
+    int64_t nextIssueId = 0;
+    for (auto getput : issued) {
+      if (failed(splitDeviceIssued(getput, nextIssueId++))) {
+        signalPassFailure();
+        return;
+      }
+    }
+    // Segment L2 transfers the host sizes at run time.
+    SmallVector<air::ChannelInterface> segmentOps;
+    for (auto f : funcOps)
+      f.walk([&](air::ChannelInterface op) {
+        if (op->getParentOfType<air::SegmentOp>() &&
+            !op->getParentOfType<air::HerdOp>())
+          segmentOps.push_back(op);
+      });
+    for (auto op : segmentOps) {
+      if (failed(splitHostIssued(op, nextIssueId++))) {
+        signalPassFailure();
+        return;
+      }
+    }
+
     for (auto getput : externalChannelOps) {
+      // A transfer a core starts stays next to its issue until
+      // air-opt-memtile-dma-bds.
+      if (getput->hasAttr("air.device_issue") &&
+          getput->getParentOfType<air::HerdOp>())
+        continue;
       getput->setAttr("loop-carried-dep", StringAttr::get(context, "external"));
       RewritePatternSet hoistChannelPatterns(context);
       hoistChannelPatterns
@@ -2193,99 +2770,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
   }
 
   void updateDependencyOnFunction(func::FuncOp f) {
-    air::dependencyTracer depTracer;
-    f.walk<WalkOrder::PreOrder,
-           ForwardDominanceIterator<>>([&](air::MemcpyInterface memcpy_op) {
-      if (!memcpy_op->hasAttr("loop-carried-dep"))
-        return WalkResult::advance();
-      auto LoopCarriedDepAttr =
-          memcpy_op->getAttrOfType<StringAttr>("loop-carried-dep");
-      if (LoopCarriedDepAttr.str() != "external" &&
-          LoopCarriedDepAttr.str() != "internalGetPut")
-        return WalkResult::advance();
-
-      // Start tracing dependency only if this put/get op is async
-      auto async_op =
-          dyn_cast_if_present<air::AsyncOpInterface>(memcpy_op.getOperation());
-      if (!async_op)
-        return WalkResult::advance();
-
-      // Connect async dependency of external put/get scf parallel
-      SmallVector<air::partialMemref, 1> sink_op_memref_reads;
-      SmallVector<air::partialMemref, 1> sink_op_memref_writes;
-      SmallVector<Value, 1> sink_op_scalar_ins;
-      SmallVector<Value, 1> sink_op_scalar_outs;
-
-      air::WaitAllOp sink_wait_all_op = nullptr;
-      for (auto parent = memcpy_op->getParentOp(); !isa<func::FuncOp>(parent);
-           parent = parent->getParentOp()) {
-        if (parent->getAttrOfType<StringAttr>("loop-carried-dep") &&
-            parent->getAttrOfType<StringAttr>("loop-carried-dep")
-                    .getValue()
-                    .str() == "hoistedLoop") {
-          if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
-            if (scf_par.getInitVals().size() &&
-                scf_par.getInitVals()[0].getDefiningOp()) {
-              sink_wait_all_op = dyn_cast_if_present<air::WaitAllOp>(
-                  scf_par.getInitVals()[0].getDefiningOp());
-            }
-          } else if (auto scf_for = dyn_cast_if_present<scf::ForOp>(parent)) {
-            if (scf_for.getInitArgs().size() &&
-                scf_for.getInitArgs()[0].getDefiningOp()) {
-              sink_wait_all_op = dyn_cast_if_present<air::WaitAllOp>(
-                  scf_for.getInitArgs()[0].getDefiningOp());
-            }
-          }
-        }
-      }
-
-      depTracer.getPartialMemrefFromOp(
-          memcpy_op.getOperation(), sink_op_memref_reads, sink_op_memref_writes,
-          sink_op_scalar_ins, sink_op_scalar_outs);
-
-      if (sink_op_memref_reads.empty() && sink_op_memref_writes.empty()) {
-        memcpy_op->emitOpError("cannot read memref from channel op.");
-        return WalkResult::skip();
-      }
-
-      if (sink_wait_all_op) {
-        // Detect RAW deps
-        if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
-                sink_op_memref_reads, sink_wait_all_op, "RAW")))
-          signalPassFailure();
-        // Detect WAW and WAR deps
-        if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
-                sink_op_memref_writes, sink_wait_all_op, "WAW/WAR")))
-          signalPassFailure();
-
-        // Rebuild loop-carried dependency in scf loop nest
-        air::clearAsyncDependenciesOfAsyncOp(memcpy_op);
-        depTracer.reconnectLoopCarriedDependencyFromOp(
-            memcpy_op.getOperation());
-      }
-
-      // Trace dependency of external put/get within scf loop
-      if (failed(
-              depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-                  sink_op_memref_reads,
-                  dyn_cast_if_present<air::AsyncOpInterface>(
-                      memcpy_op.getOperation()),
-                  "RAW")))
-        signalPassFailure();
-      if (failed(
-              depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-                  sink_op_memref_writes,
-                  dyn_cast_if_present<air::AsyncOpInterface>(
-                      memcpy_op.getOperation()),
-                  "WAW/WAR")))
-        signalPassFailure();
-      // Detect tile index deps
-      depTracer.traceTileIndices(
-          sink_op_memref_reads, sink_op_memref_writes, sink_op_scalar_ins,
-          sink_op_scalar_outs,
-          dyn_cast_if_present<air::AsyncOpInterface>(memcpy_op.getOperation()));
-      return WalkResult::advance();
-    });
+    if (failed(traceExternalDependencies(f)))
+      signalPassFailure();
   }
 };
 

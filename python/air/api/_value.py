@@ -19,6 +19,7 @@ Three rules shape this module:
 """
 
 from ._index import coerce_index
+from .types import require_signless
 
 __all__ = ["Token", "Tensor", "TensorSlice", "Buffer", "BufferSlice", "BufferExpr"]
 
@@ -831,6 +832,46 @@ class BufferSlice(_StridedView):
         """
         return list(self.offsets)
 
+    def as_index(self):
+        """Read this one-element region on the core, as an ``index`` value.
+
+        This is what lets an L3 slice take its offset from data the core
+        computed -- ``W[topk[i]]`` -- which the compiler lowers to a transfer
+        the host arms and the core starts.
+        """
+        from ._trace import current_herd
+
+        if self.shape != ():
+            raise TypeError(
+                f"only a single element can be used as an index; this region "
+                f"has shape {self.shape}"
+            )
+        self.buffer._require_compute("read")
+        if current_herd(required=False) is None:
+            raise TypeError(
+                "an L1 element can only be used as an index inside the herd "
+                "that owns it: only its core can read it"
+            )
+        if self.dtype.is_float:
+            raise TypeError(
+                f"an index has to be an integer; this buffer is {self.dtype.name}"
+            )
+        self._require_buffer_walk("as an index")
+        require_signless(self.dtype, "an L1 element used as an index")
+        from air.dialects.arith import constant, index_cast
+        from air.dialects.memref import load as memref_load
+        from air.ir import IndexType
+        from ._index import materialize_index
+
+        indices = []
+        for offset in self.base:
+            value = materialize_index(offset)
+            if isinstance(value, int):
+                value = constant(IndexType.get(), value)
+            indices.append(value)
+        element = memref_load(self.buffer.value, indices)
+        return index_cast(IndexType.get(), element)
+
     def _as_leaf(self):
         """This region as an elementwise leaf, or a TypeError saying why not."""
         self.buffer._require_compute("read")
@@ -841,16 +882,20 @@ class BufferSlice(_StridedView):
         # the buffer: a reshape changes the rank, a transpose permutes the
         # strides, and in either case an index into the region is not an index
         # into the buffer.
+        self._require_buffer_walk("elementwise")
+        return BufferExpr.leaf(self)
+
+    def _require_buffer_walk(self, how):
+        """Raise unless an index into this region is an index into the buffer."""
         if list(self.strides) != list(self.buffer.strides):
             raise TypeError(
-                f"cannot read {self!r} elementwise: it is a reshaped or "
+                f"cannot read {self!r} {how}: it is a reshaped or "
                 "transposed view, so it walks the buffer with strides "
                 f"{list(self.strides)} rather than its own "
                 f"{list(self.buffer.strides)}, and an index into the view is "
                 "not an index into the buffer. A plain region -- gu[1, :], or a "
-                "subscript of one -- reads elementwise."
+                f"subscript of one -- reads {how}."
             )
-        return BufferExpr.leaf(self)
 
     def _arith(self, other, op, reflected=False):
         expr = self._as_leaf()

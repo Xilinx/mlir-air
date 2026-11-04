@@ -40,6 +40,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
@@ -70,6 +71,22 @@ bool air::isL1(BaseMemRefType memrefTy) {
 bool air::isL2(BaseMemRefType memrefTy) {
   return memrefTy.getMemorySpaceAsInt() ==
          static_cast<unsigned>(MemorySpace::L2);
+}
+
+// Control-packet stream words carry odd parity in bit 31.
+static uint32_t withOddParity(uint32_t word) {
+  return llvm::popcount(word) % 2 == 0 ? word | (1u << 31) : word;
+}
+
+uint32_t air::ctrlPacketHeader(int col, int row, uint32_t pktId) {
+  return withOddParity((static_cast<uint32_t>(col) << 21) |
+                       (static_cast<uint32_t>(row) << 16) | pktId);
+}
+
+uint32_t air::ctrlPacketWord(uint32_t replyId, bool read, uint32_t words,
+                             uint32_t addr) {
+  return withOddParity(replyId << 24 | (read ? 1u : 0u) << 22 |
+                       (words - 1) << 20 | addr);
 }
 
 bool air::isL3(BaseMemRefType memrefTy) {

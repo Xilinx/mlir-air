@@ -123,3 +123,31 @@ module @legacy {
     return
   }
 }
+
+// -----
+
+// One destination takes a run-time number of packets, so the volumes cannot
+// say partition from replication. The put naming a `dest` upstream still
+// does: the channel is a demux, and gets its ids.
+// CHECK-LABEL: @runtime_volume
+// CHECK-DAG: air.channel @fanout [1, 1] {broadcast_shape = [1 : index, 2 : index], channel_type = "npu_dma_packet", packet_ids = [31 : i32, 30 : i32]}
+module @runtime_volume {
+  air.channel @hop [1] {channel_type = "npu_dma_packet"}
+  air.channel @fanout [1, 1] {broadcast_shape = [1 : index, 2 : index], channel_type = "npu_dma_packet"}
+  func.func @f(%d : index, %n : index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %src = memref.alloc() : memref<512xbf16, 2 : i32>
+    %hub = memref.alloc() : memref<512xbf16, 1 : i32>
+    %d0 = memref.alloc() : memref<512xbf16, 2 : i32>
+    %d1 = memref.alloc() : memref<512xbf16, 2 : i32>
+    air.channel.put @hop[%c0] (%src[] [] []) dest(%d) : (memref<512xbf16, 2 : i32>)
+    air.channel.get @hop[%c0] (%hub[] [] []) : (memref<512xbf16, 1 : i32>)
+    air.channel.put @fanout[%c0, %c0] (%hub[] [] []) : (memref<512xbf16, 1 : i32>)
+    air.channel.get @fanout[%c0, %c0] (%d0[] [] []) : (memref<512xbf16, 2 : i32>)
+    scf.for %i = %c0 to %n step %c1 {
+      air.channel.get @fanout[%c0, %c1] (%d1[] [] []) : (memref<512xbf16, 2 : i32>)
+    }
+    return
+  }
+}

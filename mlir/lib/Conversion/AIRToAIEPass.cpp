@@ -11,6 +11,7 @@
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Transform/AIRDependencyScheduleOpt.h"
+#include "air/Transform/AIRDmaToChannel.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 #include <numeric>
@@ -4711,6 +4712,396 @@ static LogicalResult diagnoseComputeOutsideHerd(ModuleOp module) {
   return failure(result.wasInterrupted());
 }
 
+//===----------------------------------------------------------------------===//
+// L3 transfers a core starts (air.device_issue)
+//===----------------------------------------------------------------------===//
+//
+// air-dma-to-channel splits a transfer whose offset a core computes into the
+// channel op, whose BD is set up without being started, and an
+// air.channel.issue in the herd. The core patches the BD's address and queues
+// it through control packets to the tile that owns the BD. A shim BD's DDR
+// address is only known at run time, so the core reads it back first; a
+// memtile or core-tile BD points at a pinned buffer, so the core writes it.
+
+// The lowest DMA channel `dir` on `tile` no DMA program or flow uses.
+static int freeTileDmaChannel(AIE::DeviceOp device, Value tile,
+                              AIE::DMAChannelDir dir) {
+  llvm::DenseSet<int> used;
+  bool out = dir == AIE::DMAChannelDir::MM2S;
+  device.walk([&](Operation *op) {
+    if (auto start = dyn_cast<AIE::DMAStartOp>(op)) {
+      auto mem = start->getParentOfType<AIE::MemOp>();
+      if (mem && mem.getTile() == tile && start.getChannelDir() == dir)
+        used.insert(start.getChannelIndex());
+    } else if (auto flow = dyn_cast<AIE::FlowOp>(op)) {
+      if (out && flow.getSource() == tile &&
+          flow.getSourceBundle() == AIE::WireBundle::DMA)
+        used.insert(flow.getSourceChannel());
+      if (!out && flow.getDest() == tile &&
+          flow.getDestBundle() == AIE::WireBundle::DMA)
+        used.insert(flow.getDestChannel());
+    } else if (auto src = dyn_cast<AIE::PacketSourceOp>(op)) {
+      if (out && src.getTile() == tile &&
+          src.getBundle() == AIE::WireBundle::DMA)
+        used.insert(src.getChannel());
+    } else if (auto dst = dyn_cast<AIE::PacketDestOp>(op)) {
+      if (!out && dst.getTile() == tile &&
+          dst.getBundle() == AIE::WireBundle::DMA)
+        used.insert(dst.getChannel());
+    }
+  });
+  for (int ch = 0; ch < 2; ch++)
+    if (!used.contains(ch))
+      return ch;
+  return -1;
+}
+
+static int freeTileLockId(AIE::DeviceOp device, AIE::TileOp tile) {
+  llvm::DenseSet<int> used;
+  device.walk([&](AIE::LockOp lock) {
+    if (lock.getTile() == tile.getResult() && lock.getLockID())
+      used.insert(*lock.getLockID());
+  });
+  const auto &tm = device.getTargetModel();
+  for (int id = 0, n = tm.getNumLocks(tile.getCol(), tile.getRow()); id < n;
+       id++)
+    if (!used.contains(id))
+      return id;
+  return -1;
+}
+
+// What an issuing core is given: two control buffers, their locks, the
+// semaphore the host releases once per armed BD, and a control and a reply
+// packet flow per shim tile it starts transfers on.
+struct DeviceIssueCore {
+  AIE::BufferOp out, in;
+  AIE::LockOp outProd, outCons, inProd, inCons, armed;
+  // Released once the runtime sequence has written the core's on-chip
+  // descriptors (memtile, core tile); `started` records that it was taken.
+  AIE::LockOp ready;
+  AIE::BufferOp started;
+  int mm2s = -1, s2mm = -1;
+  llvm::DenseMap<Value, std::pair<int, int>> targetPackets;
+};
+
+// Set up `core` to send control packets. A core that only patches on-chip
+// descriptors writes and never reads, so it needs no reply channel.
+static FailureOr<DeviceIssueCore> setUpDeviceIssueCore(AIE::CoreOp core,
+                                                       bool onChip) {
+  auto device = core->getParentOfType<AIE::DeviceOp>();
+  auto tile = cast<AIE::TileOp>(core.getTile().getDefiningOp());
+  DeviceIssueCore ic;
+  ic.mm2s = freeTileDmaChannel(device, tile, AIE::DMAChannelDir::MM2S);
+  if (!onChip)
+    ic.s2mm = freeTileDmaChannel(device, tile, AIE::DMAChannelDir::S2MM);
+  if (ic.mm2s < 0 || (!onChip && ic.s2mm < 0))
+    return core->emitOpError(
+        onChip ? "starts a transfer, which needs one free MM2S channel on its "
+                 "tile for control packets"
+               : "starts an L3 transfer, which needs one free MM2S and one "
+                 "free S2MM channel on its tile for control packets");
+
+  // Right after the tile, so the tile's aie.mem, wherever it is, sees them.
+  OpBuilder b(core);
+  b.setInsertionPointAfter(tile);
+  Location loc = core.getLoc();
+  std::string suffix =
+      std::to_string(tile.getCol()) + "_" + std::to_string(tile.getRow());
+  auto buffer = [&](int64_t n, StringRef name, ElementsAttr init = nullptr) {
+    auto ty = MemRefType::get({n}, b.getI32Type(), AffineMap(),
+                              b.getI32IntegerAttr(2));
+    return AIE::BufferOp::create(b, loc, ty, tile, b.getStringAttr(name),
+                                 /*address=*/nullptr, init,
+                                 /*mem_bank=*/nullptr);
+  };
+  ic.out = buffer(4, "__air_issue_ctrl_out_" + suffix);
+  if (!onChip)
+    ic.in = buffer(2, "__air_issue_ctrl_in_" + suffix);
+  auto lock = [&](int init, StringRef name) -> AIE::LockOp {
+    int id = freeTileLockId(device, tile);
+    if (id < 0)
+      return nullptr;
+    return AIE::LockOp::create(b, loc, tile, b.getI32IntegerAttr(id),
+                               b.getI32IntegerAttr(init),
+                               b.getStringAttr(name));
+  };
+  ic.outProd = lock(1, "__air_issue_out_prod_" + suffix);
+  ic.outCons = lock(0, "__air_issue_out_cons_" + suffix);
+  if (onChip) {
+    ic.ready = lock(0, "__air_issue_ready_" + suffix);
+    ic.started = buffer(
+        1, "__air_issue_started_" + suffix,
+        DenseElementsAttr::get(RankedTensorType::get({1}, b.getI32Type()),
+                               ArrayRef<int32_t>{0}));
+    if (!ic.outProd || !ic.outCons || !ic.ready)
+      return core->emitOpError(
+          "starts a transfer, which needs three free locks on its tile");
+    // Every iteration of the core waits for the descriptors once.
+    Block &entry = core.getBody().front();
+    Block *iter = &entry;
+    if (auto br = dyn_cast<cf::BranchOp>(entry.getTerminator()))
+      iter = br.getDest();
+    OpBuilder rb = OpBuilder::atBlockBegin(iter);
+    memref::StoreOp::create(
+        rb, loc, arith::ConstantIntOp::create(rb, loc, rb.getI32Type(), 0),
+        ic.started,
+        ValueRange{arith::ConstantIndexOp::create(rb, loc, 0).getResult()});
+  } else {
+    ic.inProd = lock(1, "__air_issue_in_prod_" + suffix);
+    ic.inCons = lock(0, "__air_issue_in_cons_" + suffix);
+    ic.armed = lock(0, "__air_device_issue_lock_" + suffix);
+    if (!ic.outProd || !ic.outCons || !ic.inProd || !ic.inCons || !ic.armed)
+      return core->emitOpError(
+          "starts an L3 transfer, which needs five free locks on its tile");
+  }
+
+  AIE::MemOp mem = nullptr;
+  device.walk([&](AIE::MemOp m) {
+    if (m.getTile() == tile.getResult())
+      mem = m;
+  });
+  if (!mem) {
+    b.setInsertionPoint(core);
+    mem = AIE::MemOp::create(b, loc, b.getIndexType(), tile);
+    b.setInsertionPointToStart(b.createBlock(&mem.getBody()));
+    AIE::EndOp::create(b, loc);
+  }
+  Block *endBlock = nullptr;
+  for (Block &blk : mem.getBody())
+    if (isa<AIE::EndOp>(blk.getTerminator()))
+      endBlock = &blk;
+  endBlock->getTerminator()->erase();
+  Region &region = mem.getBody();
+  auto bd = [&](Block *blk, AIE::BufferOp buf, AIE::LockOp acq, AIE::LockOp rel,
+                int len, Block *next) {
+    b.setInsertionPointToEnd(blk);
+    AIE::UseLockOp::create(b, loc, acq, AIE::LockAction::AcquireGreaterEqual,
+                           1);
+    AIE::DMABDOp::create(b, loc, buf, 0, len);
+    AIE::UseLockOp::create(b, loc, rel, AIE::LockAction::Release, 1);
+    AIE::NextBDOp::create(b, loc, next);
+  };
+  Block *done = new Block();
+  if (onChip) {
+    // MM2S sends 3-word writes: the address word, then the queue.
+    Block *wr = new Block();
+    for (Block *blk : {wr, done})
+      region.push_back(blk);
+    b.setInsertionPointToEnd(endBlock);
+    AIE::DMAStartOp::create(b, loc, AIE::DMAChannelDir::MM2S, ic.mm2s,
+                            /*repeat_count=*/0, /*pad_value=*/0,
+                            /*out_of_order=*/false, wr, done);
+    bd(wr, ic.out, ic.outCons, ic.outProd, 3, wr);
+  } else {
+    // MM2S cycles read (2 words), write address (4), queue (3); S2MM takes
+    // the 2-word replies.
+    Block *rd = new Block(), *wr = new Block(), *pu = new Block();
+    Block *s2 = new Block(), *in = new Block();
+    for (Block *blk : {rd, wr, pu, s2, in, done})
+      region.push_back(blk);
+    b.setInsertionPointToEnd(endBlock);
+    AIE::DMAStartOp::create(b, loc, AIE::DMAChannelDir::MM2S, ic.mm2s,
+                            /*repeat_count=*/0, /*pad_value=*/0,
+                            /*out_of_order=*/false, rd, s2);
+    bd(rd, ic.out, ic.outCons, ic.outProd, 2, wr);
+    bd(wr, ic.out, ic.outCons, ic.outProd, 4, pu);
+    bd(pu, ic.out, ic.outCons, ic.outProd, 3, rd);
+    b.setInsertionPointToEnd(s2);
+    AIE::DMAStartOp::create(b, loc, AIE::DMAChannelDir::S2MM, ic.s2mm,
+                            /*repeat_count=*/0, /*pad_value=*/0,
+                            /*out_of_order=*/false, in, done);
+    bd(in, ic.in, ic.inProd, ic.inCons, 2, in);
+  }
+  b.setInsertionPointToEnd(done);
+  AIE::EndOp::create(b, loc);
+  return ic;
+}
+
+// The patch runs in program order, so what waited on the issue's token waits
+// on what the issue waited on.
+static void eraseIssue(air::ChannelIssueOp issue) {
+  if (Value token = issue.getAsyncToken(); token && !token.use_empty()) {
+    OpBuilder b(issue);
+    auto wait = air::WaitAllOp::create(b, issue.getLoc(), token.getType(),
+                                       issue.getAsyncDependencies());
+    token.replaceAllUsesWith(wait.getAsyncToken());
+  }
+  issue.erase();
+}
+
+// Replace `issue` with the core's side of starting BD `bdId` on MM2S
+// `channel` of a shim tile, through packet `ctrlPkt` and reply `replyPkt`.
+static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
+                             int channel, uint32_t bdId, uint32_t ctrlPkt,
+                             uint32_t replyPkt, Type elemType) {
+  auto device = issue->getParentOfType<AIE::DeviceOp>();
+  auto tile = cast<AIE::TileOp>(
+      issue->getParentOfType<AIE::CoreOp>().getTile().getDefiningOp());
+  const auto &tm = device.getTargetModel();
+  Location loc = issue.getLoc();
+
+  // Tile-local register offsets, the same in every shim NOC tile.
+  int shimCol = 0;
+  while (!tm.isShimNOCTile(shimCol, 0))
+    shimCol++;
+  uint32_t localMask = (1u << tm.getRowShift()) - 1;
+  uint32_t bdAddr = tm.getDmaBdAddress(shimCol, 0, bdId) & localMask;
+  uint32_t queueAddr = tm.getLocalDmaControlAddress(shimCol, 0, channel,
+                                                    AIE::DMAChannelDir::MM2S) +
+                       4;
+  uint32_t hdr = air::ctrlPacketHeader(tile.getCol(), tile.getRow(), ctrlPkt);
+
+  OpBuilder b(issue);
+  auto i32 = [&](uint32_t v) -> Value {
+    return arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(v));
+  };
+  auto i64 = [&](uint64_t v) -> Value {
+    return arith::ConstantOp::create(b, loc, b.getI64IntegerAttr(v));
+  };
+  auto idx = [&](int64_t v) -> Value {
+    return arith::ConstantIndexOp::create(b, loc, v);
+  };
+  auto send = [&](ArrayRef<Value> words) {
+    AIE::UseLockOp::create(b, loc, ic.outProd,
+                           AIE::LockAction::AcquireGreaterEqual, 1);
+    memref::StoreOp last;
+    for (auto [i, w] : llvm::enumerate(words))
+      last = memref::StoreOp::create(b, loc, w, ic.out, ValueRange{idx(i)});
+    AIE::UseLockOp::create(b, loc, ic.outCons, AIE::LockAction::Release, 1);
+    return last;
+  };
+
+  // Wait for the host to arm the BD, then read its address (words 1-2).
+  AIE::UseLockOp::create(b, loc, ic.armed, AIE::LockAction::AcquireGreaterEqual,
+                         1);
+  send({i32(hdr),
+        i32(air::ctrlPacketWord(replyPkt, /*read=*/true, 2, bdAddr + 4))});
+  AIE::UseLockOp::create(b, loc, ic.inCons,
+                         AIE::LockAction::AcquireGreaterEqual, 1);
+  Value lo = memref::LoadOp::create(b, loc, ic.in, ValueRange{idx(0)});
+  Value w2 = memref::LoadOp::create(b, loc, ic.in, ValueRange{idx(1)});
+  AIE::UseLockOp::create(b, loc, ic.inProd, AIE::LockAction::Release, 1);
+
+  // Word 2 keeps its packet fields; its low 16 bits are the address's top.
+  Value hi = arith::AndIOp::create(b, loc, w2, i32(0xFFFF));
+  Value base = arith::OrIOp::create(
+      b, loc,
+      arith::ShLIOp::create(
+          b, loc, arith::ExtUIOp::create(b, loc, b.getI64Type(), hi), i64(32)),
+      arith::ExtUIOp::create(b, loc, b.getI64Type(), lo));
+  Value elems = issue.getOffset();
+  if (elems.getType().isIndex())
+    elems = arith::IndexCastOp::create(b, loc, b.getI64Type(), elems);
+  else if (elems.getType() != b.getI64Type())
+    elems = arith::ExtSIOp::create(b, loc, b.getI64Type(), elems);
+  unsigned bytes = elemType.getIntOrFloatBitWidth() / 8;
+  Value addr = arith::AddIOp::create(
+      b, loc, base, arith::MulIOp::create(b, loc, elems, i64(bytes)));
+  Value newLo = arith::TruncIOp::create(b, loc, b.getI32Type(), addr);
+  Value newHi = arith::OrIOp::create(
+      b, loc, arith::AndIOp::create(b, loc, w2, i32(0xFFFF0000)),
+      arith::TruncIOp::create(b, loc, b.getI32Type(),
+                              arith::ShRUIOp::create(b, loc, addr, i64(32))));
+
+  send({i32(hdr),
+        i32(air::ctrlPacketWord(ctrlPkt, /*read=*/false, 2, bdAddr + 4)), newLo,
+        newHi});
+  auto push =
+      send({i32(hdr),
+            i32(air::ctrlPacketWord(ctrlPkt, /*read=*/false, 1, queueAddr)),
+            i32((1u << 31) | bdId)});
+  // The task's repeat count is only known once airrt-to-npu shapes its BD;
+  // it finds the queue word's store by this tag and adds the count.
+  push->setAttr("air.device_issue", issue.getIssueIdAttr());
+  eraseIssue(issue);
+}
+
+// Replace `issue` with the core's side of starting BD `bdId` on `channel` of
+// a memtile or core tile, of the layout at (col, row). The core writes the
+// word holding the BD's address: `word` with `issue`'s offset added to the
+// address field. The buffer has a fixed address, so nothing is read back.
+static void lowerOnChipIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
+                             int col, int row, AIE::DMAChannelDir dir,
+                             int channel, uint32_t bdId, uint32_t ctrlPkt,
+                             uint32_t word, Type elemType) {
+  auto device = issue->getParentOfType<AIE::DeviceOp>();
+  auto tile = cast<AIE::TileOp>(
+      issue->getParentOfType<AIE::CoreOp>().getTile().getDefiningOp());
+  const auto &tm = device.getTargetModel();
+  Location loc = issue.getLoc();
+  uint32_t localMask = (1u << tm.getRowShift()) - 1;
+  AIE::DmaBdField field = tm.getDmaBdLayout(col, row)->bufferOffset;
+  uint32_t wordAddr =
+      (tm.getDmaBdAddress(col, row, bdId, channel, dir) & localMask) +
+      4 * field.word;
+  uint32_t queueAddr = tm.getLocalDmaControlAddress(col, row, channel, dir) + 4;
+  uint32_t hdr = air::ctrlPacketHeader(tile.getCol(), tile.getRow(), ctrlPkt);
+
+  OpBuilder b(issue);
+  auto i32 = [&](uint32_t v) -> Value {
+    return arith::ConstantOp::create(b, loc, b.getI32IntegerAttr(v));
+  };
+  auto idx = [&](int64_t v) -> Value {
+    return arith::ConstantIndexOp::create(b, loc, v);
+  };
+  auto send = [&](ArrayRef<Value> words) {
+    AIE::UseLockOp::create(b, loc, ic.outProd,
+                           AIE::LockAction::AcquireGreaterEqual, 1);
+    for (auto [i, w] : llvm::enumerate(words))
+      memref::StoreOp::create(b, loc, w, ic.out, ValueRange{idx(i)});
+    AIE::UseLockOp::create(b, loc, ic.outCons, AIE::LockAction::Release, 1);
+  };
+
+  // The first issue waits for the runtime sequence to write the descriptors.
+  Value started = arith::CmpIOp::create(
+      b, loc, arith::CmpIPredicate::ne,
+      memref::LoadOp::create(b, loc, ic.started, ValueRange{idx(0)}), i32(0));
+  auto wait = scf::IfOp::create(b, loc, started, /*withElseRegion=*/true);
+  b.setInsertionPointToStart(wait.elseBlock());
+  AIE::UseLockOp::create(b, loc, ic.ready, AIE::LockAction::AcquireGreaterEqual,
+                         1);
+  memref::StoreOp::create(b, loc, i32(1), ic.started, ValueRange{idx(0)});
+  b.setInsertionPointAfter(wait);
+
+  // The address field counts 32-bit words.
+  Value elems = issue.getOffset();
+  if (elems.getType().isIndex())
+    elems = arith::IndexCastOp::create(b, loc, b.getI64Type(), elems);
+  else if (elems.getType() != b.getI64Type())
+    elems = arith::ExtSIOp::create(b, loc, b.getI64Type(), elems);
+  unsigned bytes = elemType.getIntOrFloatBitWidth() / 8;
+  Value delta = arith::TruncIOp::create(
+      b, loc, b.getI32Type(),
+      arith::ShRUIOp::create(
+          b, loc,
+          arith::MulIOp::create(
+              b, loc, elems,
+              arith::ConstantOp::create(b, loc, b.getI64IntegerAttr(bytes))),
+          arith::ConstantOp::create(b, loc, b.getI64IntegerAttr(2))));
+  Value patched = arith::AddIOp::create(
+      b, loc, i32(word),
+      arith::ShLIOp::create(b, loc, delta, i32(field.shift)));
+  send({i32(hdr),
+        i32(air::ctrlPacketWord(ctrlPkt, /*read=*/false, 1, wordAddr)),
+        patched});
+  send({i32(hdr),
+        i32(air::ctrlPacketWord(ctrlPkt, /*read=*/false, 1, queueAddr)),
+        i32(bdId)});
+  eraseIssue(issue);
+}
+
+// The L2 side of a memtile transfer: the buffer its BD moves.
+static Value memtileSideMemref(Operation *op) {
+  if (auto ch = dyn_cast<air::ChannelInterface>(op))
+    return ch.getMemref();
+  if (auto m = dyn_cast<air::MemcpyInterface>(op))
+    for (Value v : {m.getSrcMemref(), m.getDstMemref()})
+      if (auto t = v ? dyn_cast<BaseMemRefType>(v.getType()) : nullptr)
+        if (air::isL2(t))
+          return v;
+  return nullptr;
+}
+
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 
   uint64_t BufferId = 0;
@@ -4945,6 +5336,277 @@ public:
                               destBundle, destChannel);
     AIE::EndOp::create(builder, builder.getUnknownLoc());
     return pktFlow;
+  }
+
+  // Start, from its core, every L3 put a herd addresses with a value it
+  // computes (see lowerDeviceIssue). The put is the host's half: it gets a
+  // pinned shim BD and the core lock the host releases once it is armed.
+  LogicalResult
+  lowerDeviceIssuedPuts(AIE::DeviceOp device,
+                        ArrayRef<air::MemcpyInterface> shimMemcpyIfOps,
+                        ArrayRef<air::LaunchOp> launches) {
+    llvm::DenseMap<int64_t, air::ChannelPutOp> arms;
+    for (auto op : shimMemcpyIfOps)
+      if (auto put = dyn_cast<air::ChannelPutOp>(op.getOperation()))
+        if (auto id = put->getAttrOfType<IntegerAttr>("air.device_issue")) {
+          auto [it, isNew] = arms.try_emplace(id.getInt(), put);
+          if (!isNew && it->second != put)
+            return put->emitOpError("shares its air.device_issue id with "
+                                    "another L3 transfer");
+        }
+    // Host issues cloned in with the launch's transfers are lowered on the
+    // host side; their copies here are dead.
+    SmallVector<air::ChannelIssueOp> issues;
+    device.walk([&](air::ChannelIssueOp op) {
+      if (op->getParentOfType<AIE::CoreOp>())
+        issues.push_back(op);
+      else
+        op.erase();
+    });
+    // Descriptors a core or the host patches on a memtile or core tile, by
+    // issue id.
+    llvm::DenseMap<int64_t, AIEX::DMAConfigureTaskOp> templates;
+    device.walk([&](AIEX::DMAConfigureTaskOp chain) {
+      if (auto id = chain->getAttrOfType<IntegerAttr>("air.device_issue"))
+        templates[id.getInt()] = chain;
+    });
+    if (issues.empty() && templates.empty() && arms.empty())
+      return success();
+
+    // Every tile gets a controller id, and each shim's task-complete tokens
+    // are routed out under it, so no flow here may take one.
+    const auto &tm = device.getTargetModel();
+    auto controllerIds = tm.getTileToControllerIdMap(true);
+    auto freePacketId = [&]() {
+      int id = 1;
+      while (claimedPacketIDs.count(id) ||
+             llvm::any_of(controllerIds,
+                          [&](auto &kv) { return kv.second == id; }))
+        ++id;
+      claimedPacketIDs.insert(id);
+      return id;
+    };
+
+    // The ids cores start, read before any issue is lowered (and erased).
+    llvm::DenseSet<int64_t> coreIssued;
+    for (air::ChannelIssueOp issue : issues)
+      coreIssued.insert(issue.getIssueId());
+
+    // A core patches either on-chip descriptors, which it writes, or shim
+    // ones, whose DDR address it has to read first; not both.
+    llvm::DenseMap<Operation *, bool> onChipCore;
+    for (air::ChannelIssueOp issue : issues) {
+      auto core = issue->getParentOfType<AIE::CoreOp>();
+      bool onChip = templates.count(issue.getIssueId());
+      auto [it, isNew] = onChipCore.try_emplace(core, onChip);
+      if (!isNew && it->second != onChip)
+        return issue->emitOpError(
+            "is started by a core that also starts L3 transfers; a core "
+            "starts either kind, not both");
+    }
+
+    llvm::DenseMap<Operation *, DeviceIssueCore> cores;
+    llvm::DenseMap<Value, int> nextShimBd;
+    llvm::DenseMap<std::pair<Value, int>, int> nextOnChipBd;
+    for (air::ChannelIssueOp issue : issues) {
+      int64_t id = issue.getIssueId();
+      if (AIEX::DMAConfigureTaskOp chain = templates.lookup(id)) {
+        auto tmpl = *chain.getBody().getOps<AIE::DMABDOp>().begin();
+        auto buf = cast<AIE::BufferOp>(tmpl.getBuffer().getDefiningOp());
+        Value target = buf.getTile();
+        bool memtile = cast<AIE::TileLike>(target.getDefiningOp()).isMemTile();
+        // Register offsets are the same in every tile of a kind.
+        int col = 0, row = 0;
+        if (auto t = target.getDefiningOp<AIE::TileOp>()) {
+          col = t.getCol();
+          row = t.getRow();
+        } else {
+          while (row < tm.rows() && !tm.isMemTile(col, row))
+            row++;
+        }
+        int chan = chain->getAttrOfType<IntegerAttr>("air.device_issue_channel")
+                       .getInt();
+        auto dir = static_cast<AIE::DMAChannelDir>(
+            chain->getAttrOfType<IntegerAttr>("air.device_issue_dir").getInt());
+        if (tmpl.getPadDimensions())
+          return issue->emitOpError(
+              "starts a padded transfer; its descriptor's address word also "
+              "holds the padding");
+        auto core = issue->getParentOfType<AIE::CoreOp>();
+        if (!cores.count(core)) {
+          auto ic = setUpDeviceIssueCore(core, /*onChip=*/true);
+          if (failed(ic))
+            return failure();
+          cores[core] = *ic;
+        }
+        DeviceIssueCore &ic = cores[core];
+        auto tile = cast<AIE::TileOp>(core.getTile().getDefiningOp());
+        auto [it, isNew] = ic.targetPackets.try_emplace(target);
+        if (isNew) {
+          it->second = {freePacketId(), -1};
+          OpBuilder b(device.getBody()->getTerminator());
+          createPacketFlowOp(b, it->second.first, tile, AIE::WireBundle::DMA,
+                             ic.mm2s, target, AIE::WireBundle::TileControl, 0);
+        }
+
+        // Templates take the highest BDs a channel reaches: memtile channels
+        // split theirs by parity. Unrolled copies of an issue share one.
+        if (!tmpl.getBdId()) {
+          int top = memtile ? (chan % 2 ? 47 : 23) : 15;
+          int &next =
+              nextOnChipBd.try_emplace({target, memtile ? chan % 2 : 0}, top)
+                  .first->second;
+          tmpl.setBdIdAttr(OpBuilder(tmpl).getI32IntegerAttr(next--));
+        }
+        uint32_t bdId = *tmpl.getBdId();
+        OpBuilder ab(tmpl);
+        chain->setAttr("air.device_issue_lock",
+                       ab.getStringAttr(ic.ready.getSymName()->str()));
+        // The core waits once per iteration; a dispatch runs the launch
+        // once per trip of the loops around it.
+        int64_t iterations = 0;
+        for (air::LaunchOp launch : launches) {
+          int64_t trips = 1;
+          for (Operation *p = launch->getParentOp(); p && !isa<func::FuncOp>(p);
+               p = p->getParentOp())
+            if (auto loop = dyn_cast<scf::ForOp>(p)) {
+              auto t = air::getStaticScfForTripCountAsInt(loop);
+              if (!t)
+                return issue->emitOpError(
+                    "patches an on-chip descriptor under a launch repeated a "
+                    "run-time number of times");
+              trips *= *t;
+            }
+          iterations += trips;
+        }
+        chain->setAttr("air.device_issue_iterations",
+                       ab.getI64IntegerAttr(std::max<int64_t>(iterations, 1)));
+
+        // The word holding the address, as the runtime sequence writes it: a
+        // memtile addresses its own memory in its middle window.
+        const AIE::DmaBdLayout *layout = tm.getDmaBdLayout(col, row);
+        int64_t addr = *buf.getAddress() + tmpl.getOffsetInBytes();
+        if (memtile)
+          addr += tm.getMemTileSize();
+        uint32_t word = layout->bufferOffset.place(addr / 4);
+        if (layout->bufferLength.word == layout->bufferOffset.word)
+          word |= layout->bufferLength.place(tmpl.getLenInBytes() / 4);
+        lowerOnChipIssue(issue, ic, col, row, dir, chan, bdId, it->second.first,
+                         word,
+                         cast<MemRefType>(buf.getType()).getElementType());
+        continue;
+      }
+      air::ChannelPutOp arm = arms.lookup(id);
+      if (!arm)
+        return issue->emitOpError("has no host-side put to start");
+      // One armed BD per put; a second issuer would queue one never armed.
+      if (arm->hasAttr("air.device_issue_bd"))
+        return issue->emitOpError(
+            "starts an L3 transfer another issue also starts");
+      auto metadata = arm->getAttrOfType<ArrayAttr>("metadataArray");
+      auto slot = air::getIndexToMetadataArrayFromChannelIndices(arm);
+      if (!metadata || !slot || *slot < 0 ||
+          static_cast<size_t>(*slot) >= metadata.size())
+        return arm->emitOpError("has no shim allocation for its channel index");
+      auto name =
+          cast<DictionaryAttr>(metadata[*slot]).getAs<StringAttr>("base");
+      auto alloc = air::lookupBySymName<AIE::ShimDMAAllocationOp>(
+          device, name.getValue());
+      if (!alloc || alloc.getChannelDir() != AIE::DMAChannelDir::MM2S)
+        return arm->emitOpError("has no MM2S shim allocation in the device");
+      Value shim = alloc.getTile();
+
+      auto core = issue->getParentOfType<AIE::CoreOp>();
+      if (!cores.count(core)) {
+        auto ic = setUpDeviceIssueCore(core, /*onChip=*/false);
+        if (failed(ic))
+          return failure();
+        cores[core] = *ic;
+      }
+      DeviceIssueCore &ic = cores[core];
+      auto tile = cast<AIE::TileOp>(core.getTile().getDefiningOp());
+
+      auto [it, isNew] = ic.targetPackets.try_emplace(shim);
+      if (isNew) {
+        it->second = {freePacketId(), freePacketId()};
+        OpBuilder b(core);
+        createPacketFlowOp(b, it->second.first, tile, AIE::WireBundle::DMA,
+                           ic.mm2s, shim, AIE::WireBundle::TileControl, 0);
+        b.setInsertionPoint(core);
+        createPacketFlowOp(b, it->second.second, shim,
+                           AIE::WireBundle::TileControl, 0, tile,
+                           AIE::WireBundle::DMA, ic.s2mm);
+        // Pin the controller id aiecc would assign: the host programs it into
+        // the channel for the core's tokens (airrt-to-npu).
+        Operation *shimOp = shim.getDefiningOp();
+        if (!shimOp->hasAttr("controller_id"))
+          shimOp->setAttr("controller_id",
+                          AIE::PacketInfoAttr::get(
+                              device.getContext(), 0,
+                              controllerIds.lookup({tile.getCol(), 0})));
+      }
+
+      // Arms take the highest BDs of their shim; the host's tasks get the low
+      // ones.
+      int &next =
+          nextShimBd
+              .try_emplace(shim, tm.getNumBDs(AIE::AIETileType::ShimNOCTile))
+              .first->second;
+      uint32_t bdId = --next;
+      lowerDeviceIssue(
+          issue, ic, alloc.getChannelIndex(), bdId, it->second.first,
+          it->second.second,
+          cast<MemRefType>(arm.getMemref().getType()).getElementType());
+
+      OpBuilder b(arm);
+      arm->setAttr("air.device_issue_bd", b.getI32IntegerAttr(bdId));
+      arm->setAttr("air.device_issue_lock",
+                   b.getStringAttr("__air_device_issue_lock_" +
+                                   std::to_string(tile.getCol()) + "_" +
+                                   std::to_string(tile.getRow())));
+    }
+    // L3 puts the host starts (no core issue names them): a pinned shim BD
+    // the runtime sequence configures, then patches by control packets.
+    for (auto &[id, arm] : arms) {
+      if (coreIssued.contains(id) || templates.count(id))
+        continue;
+      auto metadata = arm->getAttrOfType<ArrayAttr>("metadataArray");
+      auto slot = air::getIndexToMetadataArrayFromChannelIndices(arm);
+      if (!metadata || !slot || *slot < 0 ||
+          static_cast<size_t>(*slot) >= metadata.size())
+        return arm->emitOpError("has no shim allocation for its channel index");
+      auto name =
+          cast<DictionaryAttr>(metadata[*slot]).getAs<StringAttr>("base");
+      auto alloc = air::lookupBySymName<AIE::ShimDMAAllocationOp>(
+          device, name.getValue());
+      if (!alloc)
+        return arm->emitOpError("has no shim allocation in the device");
+      int &next = nextShimBd
+                      .try_emplace(alloc.getTile(),
+                                   tm.getNumBDs(AIE::AIETileType::ShimNOCTile))
+                      .first->second;
+      OpBuilder b(arm);
+      arm->setAttr("air.device_issue_bd", b.getI32IntegerAttr(--next));
+      arm->setAttr("air.host_issue", b.getUnitAttr());
+    }
+
+    // Templates the host starts: no core gave them a BD.
+    for (auto &[id, chain] : templates) {
+      auto tmpl = *chain.getBody().getOps<AIE::DMABDOp>().begin();
+      if (tmpl.getBdId())
+        continue;
+      Value target =
+          cast<AIE::BufferOp>(tmpl.getBuffer().getDefiningOp()).getTile();
+      bool memtile = cast<AIE::TileLike>(target.getDefiningOp()).isMemTile();
+      int chan = chain->getAttrOfType<IntegerAttr>("air.device_issue_channel")
+                     .getInt();
+      int top = memtile ? (chan % 2 ? 47 : 23) : 15;
+      int &next =
+          nextOnChipBd.try_emplace({target, memtile ? chan % 2 : 0}, top)
+              .first->second;
+      tmpl.setBdIdAttr(OpBuilder(tmpl).getI32IntegerAttr(next--));
+    }
+    return success();
   }
 
   // Assign a pkt_id for a shim (or trace) packet flow: monotonic global
@@ -7542,6 +8204,23 @@ public:
     } else
       dma_memcpys_sorted = dma_memcpys;
 
+    // The chain-lock ping-pong twin alternates a buffer between two instances,
+    // so every channel moving it has to alternate too. One that chains it with
+    // other transfers in a task does not, and the buffer stays single.
+    llvm::DenseSet<Value> singleSlot;
+    for (auto &[dma_chan, memcpy_ops] : dma_memcpys_sorted) {
+      for (auto &[rep, task_ops] : air::getRepeatCounts(memcpy_ops))
+        if (task_ops.size() != 1)
+          for (Operation *op : task_ops)
+            if (Value m = memtileSideMemref(op))
+              singleSlot.insert(m);
+      // A descriptor a core patches points at one buffer.
+      for (Operation *op : memcpy_ops)
+        if (op->hasAttr("air.device_issue"))
+          if (Value m = memtileSideMemref(op))
+            singleSlot.insert(m);
+    }
+
     // The first block
     Block *channel_head = nullptr;
     Block *end_bb = nullptr;
@@ -7549,6 +8228,92 @@ public:
     for (auto &[dma_chan, memcpy_ops] : dma_memcpys_sorted) {
       AIE::DMAChannelDir dir = dma_chan.first;
       int chan = dma_chan.second;
+
+      // A transfer whose descriptor a core patches and starts: no chain starts
+      // it. The runtime sequence writes it, so it needs its channel alone.
+      if constexpr (!std::is_same_v<dmaAllocatorTy, air::ShimDMAAllocator>) {
+        if (llvm::any_of(memcpy_ops, [](Operation *op) {
+              return op->hasAttr("air.device_issue");
+            })) {
+          // Unrolled copies of one transfer are one descriptor, started
+          // once per copy.
+          Attribute id = memcpy_ops.front()->getAttr("air.device_issue");
+          if (llvm::any_of(memcpy_ops, [&](Operation *op) {
+                return op->getAttr("air.device_issue") != id;
+              }))
+            return memcpy_ops.front()->emitOpError(
+                "is started by a core at run time, so it needs a DMA channel "
+                "of its own");
+          auto memcpyOp = cast<air::MemcpyInterface>(memcpy_ops.front());
+          auto bufferOp =
+              dmaAlloc.getBuffer(BufferId,
+                                 dyn_cast<AIE::TileOp>(tile.getOperation())
+                                     ? cast<AIE::TileOp>(tile.getOperation())
+                                     : nullptr,
+                                 memcpyOp);
+          if (failed(bufferOp))
+            return memcpyOp->emitOpError("failed to get buffer.");
+          // The core writes the descriptor's address itself, so the buffer
+          // gets a fixed one, at the top of the tile's memory.
+          AIE::BufferOp buf = bufferOp.value();
+          if (!buf.getAddress()) {
+            int64_t top = tile.isMemTile() ? targetModel.getMemTileSize()
+                                           : targetModel.getLocalMemorySize();
+            mem->template getParentOfType<AIE::DeviceOp>().walk(
+                [&](AIE::BufferOp b) {
+                  if (b.getTile() == buf.getTile() && b.getAddress())
+                    top = std::min<int64_t>(top, *b.getAddress());
+                });
+            int64_t addr = (top - buf.getAllocationSize()) & ~int64_t(63);
+            if (addr < 0)
+              return memcpyOp->emitOpError(
+                  "is started by a core at run time, and its buffer does not "
+                  "fit at the top of the tile's memory");
+            buf.setAddressAttr(
+                IntegerAttr::get(IntegerType::get(buf.getContext(), 32), addr));
+          }
+          auto locks = dmaAlloc.getLockForDMA(
+              memcpyOp, tile, bufferOp->getOperation(), lockRaceConditionFix,
+              lockRaceConditionFixV2);
+          if (failed(locks))
+            return memcpyOp->emitOpError("failed to get lock for dma.");
+          // The descriptor is a task in a runtime sequence of its own: no
+          // configuration starts it; airrt-to-npu moves it into the real one.
+          auto device = mem->template getParentOfType<AIE::DeviceOp>();
+          AIE::RuntimeSequenceOp seq = nullptr;
+          device.walk([&](AIE::RuntimeSequenceOp s) {
+            if (s.getSymName() == "__air_issue_templates")
+              seq = s;
+          });
+          OpBuilder cb(device.getBody()->getTerminator());
+          if (!seq) {
+            seq = AIE::RuntimeSequenceOp::create(
+                cb, loc, "__air_issue_templates", nullptr, nullptr, nullptr,
+                nullptr);
+            cb.createBlock(&seq.getBody());
+          }
+          cb.setInsertionPointToEnd(&seq.getBody().front());
+          auto chain = AIEX::DMAConfigureTaskOp::create(
+              cb, loc, cb.getIndexType(), tile->getResult(0), dir, chan,
+              /*issue_token=*/false, /*repeat_count=*/0,
+              /*repeat_count_val=*/Value(), /*packet=*/nullptr,
+              /*out_of_order=*/false);
+          Block *blk = cb.createBlock(&chain.getBody());
+          auto bd = generateDmaBd<bufferOpTy>(
+              loc, dir, locks.value(), tile, targetModel, blk, memcpyOp,
+              bufferOp.value(), chan, lockRaceConditionFixV2);
+          if (failed(bd))
+            return memcpyOp->emitOpError("failed to generate dma bd.");
+          auto tb = OpBuilder::atBlockEnd(blk);
+          AIE::EndOp::create(tb, loc);
+          chain->setAttr("air.device_issue", id);
+          chain->setAttr("air.device_issue_channel",
+                         tb.getI32IntegerAttr(chan));
+          chain->setAttr("air.device_issue_dir",
+                         tb.getI32IntegerAttr(static_cast<int32_t>(dir)));
+          continue;
+        }
+      }
 
       // One entry per BD task, in program order: the repeat count the task runs
       // at, and the transfers it chains. A repeat count can recur -- two loops
@@ -7808,7 +8573,8 @@ public:
                 // when the producer emits a single token. Keep refeed buffers
                 // single-buffer.
                 if (cls->pp_slots == 1 &&
-                    air::getRefeedCount(primaryBuf.getOperation()) <= 1) {
+                    air::getRefeedCount(primaryBuf.getOperation()) <= 1 &&
+                    !singleSlot.contains(memtileSideMemref(memcpyOp))) {
                   AIE::BufferOp twin = allocateBufferOp(
                       this->BufferId, primaryBuf.getType(), tile,
                       /*attr=*/nullptr, /*x=*/-1, /*y=*/-1);
@@ -9637,6 +10403,9 @@ public:
                                               isSegmentUnrolled))) {
           return failure();
         }
+        if (failed(
+                lowerDeviceIssuedPuts(device, shimMemcpyIfOps, targetLaunches)))
+          return failure();
       }
 
       else if (clUseObjFifo) {
@@ -9994,6 +10763,13 @@ public:
     // Before anything is emitted: an op no AIE core can run would otherwise
     // be lowered into IR that looks fine and cannot execute.
     if (failed(diagnoseComputeOutsideHerd(module))) {
+      signalPassFailure();
+      return;
+    }
+
+    // Transfers cores start that air-opt-memtile-dma-bds did not hoist (a
+    // pipeline without it) leave their herds here.
+    if (failed(air::hoistDeviceIssuedTransfers(module))) {
       signalPassFailure();
       return;
     }

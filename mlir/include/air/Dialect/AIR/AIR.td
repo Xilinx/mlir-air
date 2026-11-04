@@ -1236,6 +1236,43 @@ def air_TranslateOp : air_Op<"translate",
   let hasFolder = 1;
 }
 
+def air_ChannelIssueOp
+    : air_Op<"channel.issue", [air_AsyncOpInterface, AttrSizedOperandSegments,
+                               MemoryEffects<[MemWrite]>]>,
+      Arguments<(ins Variadic<air_AsyncToken>:$async_dependencies,
+          FlatSymbolRefAttr:$chan_name, Variadic<Index>:$indices,
+          Optional<AnySignlessIntegerOrIndex>:$offset, Optional<Index>:$length,
+          I64Attr:$issue_id)>,
+      Results<(outs Optional<air_AsyncToken>:$async_token)> {
+  let summary = "Start a transfer whose parameters are known only at run time";
+  let description = [{
+    The run-time half of a channel transfer whose offset or length is a value
+    the compiler cannot place on its buffer descriptor: one a core computes,
+    or a run-time scalar of the launch. The static half is the channel op
+    tagged `air.device_issue = issue_id`; it moves the data. This op patches
+    that transfer's buffer descriptor and starts it, through control packets.
+
+    Where the op sits says who issues it: inside an `air.herd`, that herd's
+    core; anywhere else, the host.
+
+    - `offset`: elements to add to the static offset of the paired op.
+    - `length`: the run-time extent of the paired op's outermost dimension.
+
+    ```mlir
+    // The core starts the paired put on @wexp, `%elems` elements further in.
+    air.channel.issue @wexp[] offset(%elems : i64) {issue_id = 1 : i64}
+    ```
+  }];
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($async_token), $async_dependencies)
+    $chan_name `[` ($indices^)? `]`
+    (`offset` `(` $offset^ `:` type($offset) `)`)?
+    (`length` `(` $length^ `)`)?
+    attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 // AIR custom op, as a handle for a user-provided AIE kernel
 
 def air_CustomOp : air_Op<"custom", [air_AsyncOpInterface,

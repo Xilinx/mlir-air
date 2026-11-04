@@ -17,6 +17,7 @@ from air.dialects import air as _air_dialect  # noqa: F401
 import functools
 import numpy as np
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -187,6 +188,93 @@ def get_shared_device(index: int = 0):
     return device
 
 
+class _HostSide:
+    """What a dispatch passes besides the caller's buffers.
+
+    A sequence that patches descriptors at run time takes a table of control
+    packets as its last buffer (air_ctrl_table.bin). Its runtime scalars reach
+    the device as scratchpad parameters (ELF) or in the instruction stream
+    (xclbin); a caller passes them as Python ints, in argument order.
+    """
+
+    # AIR names an address or length parameter after the sequence argument it
+    # is affine in, with the coefficients as a suffix.
+    _ARG = re.compile(r"_arg(off|len)_(\d+)(?:_x(-?\d+)_([mp])(\d+))?$")
+
+    def __init__(self, host_dir):
+        self.table = None
+        self.sources = {}
+        self.bounds = []
+        if not host_dir:
+            return
+        table = os.path.join(host_dir, "air_ctrl_table.bin")
+        if os.path.isfile(table):
+            self.table = np.fromfile(table, dtype=np.int32)
+        bounds = os.path.join(host_dir, "air_ctrl_bounds.txt")
+        if os.path.isfile(bounds):
+            with open(bounds) as f:
+                self.bounds = [tuple(map(int, ln.split())) for ln in f if ln.split()]
+        sources = os.path.join(host_dir, "air_params.txt")
+        if os.path.isfile(sources):
+            with open(sources) as f:
+                for line in f:
+                    if line.split():
+                        name, arg, scale, addend = line.split()
+                        self.sources[name] = (int(arg), int(scale), int(addend))
+
+    def split(self, args):
+        """(buffers to bind in order, {argument index: scalar})."""
+        buffers = [a for a in args if isinstance(a, np.ndarray)]
+        scalars = {
+            i: int(a) for i, a in enumerate(args) if not isinstance(a, np.ndarray)
+        }
+        # The table holds one entry per length; any other picks a wrong one.
+        for arg, scale, addend, most in self.bounds:
+            if arg not in scalars:
+                raise AirBackendError(
+                    f"argument {arg} sets a transfer length and must be an int"
+                )
+            length = scale * scalars[arg] + addend
+            if not 1 <= length <= most:
+                raise AirBackendError(
+                    f"argument {arg} = {scalars[arg]} sets a transfer length of "
+                    f"{length}; it must be between 1 and {most}"
+                )
+        if self.table is not None:
+            buffers.append(self.table)
+        return buffers, scalars
+
+    def parameters(self, params_txt, scalars):
+        """(name, value) for every scratchpad parameter of the ELF."""
+        with open(params_txt) as f:
+            lines = [ln.split() for ln in f if ln.split()]
+        values = []
+        for line in lines[1 : 1 + int(lines[0][0])]:
+            name = line[0]
+            if name in self.sources:
+                arg, scale, addend = self.sources[name]
+            else:
+                m = self._ARG.search(name)
+                if not m:
+                    raise AirBackendError(f"no rule for scratchpad parameter {name}")
+                arg = int(m.group(2))
+                scale = int(m.group(3) or 1)
+                addend = int(m.group(5) or 0) * (-1 if m.group(4) == "m" else 1)
+            if arg not in scalars:
+                raise AirBackendError(
+                    f"scratchpad parameter {name} is set from argument {arg}, "
+                    "which was not passed as an int"
+                )
+            values.append((name, scale * scalars[arg] + addend))
+        return values
+
+    @staticmethod
+    def results(args, outputs):
+        """The caller's arguments with each buffer replaced by its result."""
+        it = iter(outputs)
+        return tuple(next(it) if isinstance(a, np.ndarray) else a for a in args)
+
+
 class XRTCompileArtifact:
     """A class encompassing information on the artifacts produced by compilation for the NPU/XRT"""
 
@@ -196,6 +284,7 @@ class XRTCompileArtifact:
         kernel,
         insts,
         txn_header=None,
+        host_dir=None,
     ):
         """
         Constructor for an XRTCompileArtifact
@@ -213,6 +302,10 @@ class XRTCompileArtifact:
         self.kernel = kernel
         self.insts = insts
         self.txn_header = txn_header
+        # Files the host needs besides the binary, read now: a later build
+        # rewrites the directory.
+        self.host_dir = host_dir
+        self.host = _HostSide(host_dir)
 
 
 @functools.lru_cache(maxsize=1)
@@ -644,6 +737,10 @@ class XRTBackend(AirBackend):
             # builds leave other files for a person to inspect, so they are
             # always rebuilt. So are Chess builds: TOOLCHAIN does not cover
             # Chess.
+            # What the host passes besides the user's buffers. Cleared first so
+            # a build without it does not pick up a previous one's.
+            host_dir = os.path.join("air_project", "host")
+            shutil.rmtree(host_dir, ignore_errors=True)
             outputs = [output_binary]
             if self.emit_txn_cpp:
                 outputs.append(os.path.join("air_project", "npu.air.txn.h"))
@@ -657,7 +754,7 @@ class XRTBackend(AirBackend):
                 aircc_exe,
                 peano_package_dir,
                 outputs,
-                optional_dirs=[os.path.join("air_project", "cdo_seg")],
+                optional_dirs=[os.path.join("air_project", "cdo_seg"), host_dir],
                 cacheable=self.output_format in ("xclbin", "elf", "pdi")
                 and peano_package_dir != ""
                 and not self.debug_ir
@@ -713,7 +810,13 @@ class XRTBackend(AirBackend):
             # exist.
             insts = None
 
-        return XRTCompileArtifact(output_binary, elf_kernel, insts, txn_header)
+        return XRTCompileArtifact(
+            output_binary,
+            elf_kernel,
+            insts,
+            txn_header,
+            host_dir=os.path.join("air_project", "host"),
+        )
 
     def compile_from_torch_mlir(
         self,
@@ -846,7 +949,10 @@ class XRTBackend(AirBackend):
             self.bo_instr = None  # Not needed for ELF
             self.instr_v = None
 
-            def invoker(*args):
+            host = artifact.host
+
+            def invoker(*caller_args):
+                args, scalars = host.split(caller_args)
                 sizes_in_bytes = [a.size * a.itemsize for a in args]
                 # Use xrt.ext.bo for ELF mode (simpler, no group_id needed)
                 bos = [xrt.ext.bo(self.device, s) for s in sizes_in_bytes]
@@ -872,6 +978,15 @@ class XRTBackend(AirBackend):
                 run = xrt.run(self.kernel)
                 for i, bo in enumerate(bos):
                     run.set_arg(i, bo)
+                if scalars:
+                    from aie.utils.hostruntime.xrtruntime.parameter_scratchpad import (
+                        ParameterScratchpad,
+                    )
+
+                    params = ParameterScratchpad(run, "params.txt")
+                    for name, value in host.parameters("params.txt", scalars):
+                        params.write(name, np.int32(value))
+                    params.sync()
                 if self.n_perf_iters > 0:
                     # Time only run.start()+wait2(), averaged over n_perf_iters
                     # after n_warmup_iters warmup runs (buffer sync excluded).
@@ -890,23 +1005,85 @@ class XRTBackend(AirBackend):
 
                 for i in range(len(args)):
                     bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-                return tuple(
+                return host.results(
+                    caller_args,
                     [
                         np.frombuffer(bo_maps[i].tobytes(), dtype=args[i].dtype)
                         for i in range(len(args))
-                    ]
+                    ],
                 )
+
+        elif artifact.insts is None and artifact.txn_header:
+            # The instruction stream is assembled per dispatch from the scalars.
+            from .txn_builder import TxnBuilder
+
+            self.xclbin = xrt.xclbin(artifact.output_binary)
+            self.device.register_xclbin(self.xclbin)
+            self.context = xrt.hw_context(self.device, self.xclbin.get_uuid())
+            kernels = self.xclbin.get_kernels()
+            try:
+                xkernel = [k for k in kernels if artifact.kernel in k.get_name()][0]
+            except IndexError:
+                raise AirBackendError(
+                    f"Kernel '{artifact.kernel}' not found in '{artifact.output_binary}'"
+                )
+            self.kernel = xrt.kernel(self.context, xkernel.get_name())
+            txn = TxnBuilder(artifact.txn_header)
+            if len(txn.function_names) != 1:
+                raise AirBackendError(
+                    f"{artifact.txn_header} builds {txn.function_names}; expected one"
+                )
+            host = artifact.host
+
+            def invoker(*caller_args):
+                args, scalars = host.split(caller_args)
+                words = txn(
+                    txn.function_names[0], *[scalars[i] for i in sorted(scalars)]
+                )
+                bo_instr = xrt.bo(
+                    self.device, words.nbytes, xrt.bo.cacheable, self.kernel.group_id(1)
+                )
+                np.frombuffer(bo_instr.map(), dtype=np.uint32)[:] = words
+                bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+                bos = []
+                for i, a in enumerate(args):
+                    if a.dtype == bfloat16:
+                        a = a.view(np.int16)
+                    bo = xrt.bo(
+                        self.device,
+                        a.nbytes,
+                        xrt.bo.host_only,
+                        self.kernel.group_id(i + 3),
+                    )
+                    np.frombuffer(bo.map(), dtype=np.uint8)[:] = np.frombuffer(
+                        np.ascontiguousarray(a).tobytes(), dtype=np.uint8
+                    )
+                    bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+                    bos.append(bo)
+
+                def dispatch():
+                    _check_run_state(self.kernel(3, bo_instr, len(words), *bos).wait())
+
+                if self.n_perf_iters > 0:
+                    for _ in range(self.n_warmup_iters):
+                        dispatch()
+                    t0 = time.perf_counter()
+                    for _ in range(self.n_perf_iters):
+                        dispatch()
+                    t1 = time.perf_counter()
+                    self.last_latency_us = (t1 - t0) / self.n_perf_iters * 1e6
+                else:
+                    dispatch()
+                outputs = []
+                for a, bo in zip(args, bos):
+                    bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
+                    outputs.append(
+                        np.frombuffer(bytes(bo.map())[: a.nbytes], dtype=a.dtype)
+                    )
+                return host.results(caller_args, outputs)
 
         else:
             # xclbin loading path - original implementation
-            if artifact.insts is None and artifact.txn_header:
-                raise AirBackendError(
-                    "This artifact was built with emit_txn_cpp, so its instruction "
-                    "stream is assembled per dispatch and there is no insts.bin to "
-                    f"load. Build it from {artifact.txn_header} with "
-                    "air.backend.txn_builder.TxnBuilder and drive the kernel "
-                    "directly."
-                )
             if not artifact.insts or not os.path.isfile(artifact.insts):
                 raise AirBackendError(
                     f"Cannot load XRTCompileArtifact because {artifact.insts} insts file does not exist"
