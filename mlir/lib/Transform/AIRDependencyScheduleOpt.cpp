@@ -7411,6 +7411,90 @@ private:
   }
 };
 
+// The buffers read and written by an op of a loop body, used to decide which
+// of the body's ops may be placed in different loops.
+//
+// An op is a data mover if it only moves data through channels or DMAs:
+// channel and DMA ops, and loops containing only those and index arithmetic.
+// Any other op, such as a herd or an execute that computes, is treated as
+// reading and writing every memref it uses.
+struct LoopBodyAccess {
+  llvm::DenseSet<Value> reads, writes;
+  bool mover = true;
+  bool host = false; // touches L3
+
+  static LoopBodyAccess of(Operation *op) {
+    LoopBodyAccess acc;
+    auto add = [&](Value memref, llvm::DenseSet<Value> &set) {
+      Value root = air::resolveBufferRoot(memref);
+      set.insert(root);
+      if (auto ty = dyn_cast<BaseMemRefType>(root.getType()))
+        acc.host |= air::isL3(ty);
+    };
+    op->walk([&](Operation *o) {
+      if (auto copy = dyn_cast<air::MemcpyInterface>(o)) {
+        if (Value src = copy.getSrcMemref())
+          add(src, acc.reads);
+        if (Value dst = copy.getDstMemref())
+          add(dst, acc.writes);
+        return;
+      }
+      if (!isa<scf::ForOp, scf::ParallelOp, scf::YieldOp, scf::ReduceOp,
+               scf::ReduceReturnOp, air::WaitAllOp>(o) &&
+          !air::isPure(o))
+        acc.mover = false;
+    });
+    if (!acc.mover)
+      op->walk([&](Operation *o) {
+        for (Value v : o->getOperands())
+          if (isa<BaseMemRefType>(v.getType()) &&
+              !op->isAncestor(v.getParentBlock()->getParentOp())) {
+            add(v, acc.reads);
+            add(v, acc.writes);
+          }
+      });
+    return acc;
+  }
+
+  static bool intersects(const llvm::DenseSet<Value> &a,
+                         const llvm::DenseSet<Value> &b) {
+    return llvm::any_of(a, [&](Value v) { return b.contains(v); });
+  }
+  // True if one of the two reads a buffer the other writes.
+  static bool readWrite(const LoopBodyAccess &a, const LoopBodyAccess &b) {
+    return intersects(a.writes, b.reads) || intersects(a.reads, b.writes);
+  }
+  static bool writeWrite(const LoopBodyAccess &a, const LoopBodyAccess &b) {
+    return intersects(a.writes, b.writes);
+  }
+  // True if both are data movers that do not access L3 memory.
+  static bool onChipMovers(const LoopBodyAccess &a, const LoopBodyAccess &b) {
+    return a.mover && b.mover && !a.host && !b.host;
+  }
+  // True if the hardware keeps the order between `a` and `b` when they are in
+  // different loops: one reads an on-chip buffer that the other writes, and
+  // that buffer's locks order the two DMAs. Locks do not order two writers of
+  // the same buffer.
+  static bool lockOrdered(const LoopBodyAccess &a, const LoopBodyAccess &b) {
+    return onChipMovers(a, b) && readWrite(a, b) && !writeWrite(a, b);
+  }
+};
+
+// Returns the tokens `op` waits for: its async dependencies, plus the tokens
+// that ops in its regions use from above.
+static llvm::SetVector<Value> tokensWaitedOn(Operation *op) {
+  llvm::SetVector<Value> tokens;
+  for (Value dep : getAsyncDependenciesFromOp(op))
+    tokens.insert(dep);
+  llvm::SetVector<Value> above;
+  for (Region &region : op->getRegions())
+    getUsedValuesDefinedAbove(region, above);
+  for (Value v : above)
+    if (isa<air::AsyncTokenType>(v.getType()))
+      tokens.insert(v);
+  return tokens;
+}
+
 struct IsolateAsyncDmaLoopNestInSCFForPattern
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
@@ -7444,9 +7528,11 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     // Identify target child ops for hoisting.
     SmallVector<llvm::SetVector<Operation *>> target_ops_sets;
 
-    identifyTargetOpsInSCFFor(f, for_op, target_ops_sets);
+    SmallVector<std::pair<Operation *, Operation *>> lockOrdered;
+    identifyTargetOpsInSCFFor(f, for_op, target_ops_sets, lockOrdered);
     if (target_ops_sets.size() < 2)
       return failure();
+    dropCrossLoopDependencies(rewriter, for_op, target_ops_sets, lockOrdered);
 
     // Mark the allocs to hoist only now that we know this loop will be split,
     // so every marked alloc sits under this loop and the seeding walk below is
@@ -7509,9 +7595,12 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
 private:
   // Build a set of child ops from the body of one scf.for op, each of which is
   // to be hoisted into a new loop.
+  // `lockOrdered` receives, as (source, sink) pairs, the dependency edges left
+  // out of the partition because the hardware keeps their order.
   void identifyTargetOpsInSCFFor(
       func::FuncOp f, scf::ForOp for_op,
-      SmallVector<llvm::SetVector<Operation *>> &target_ops_sets) const {
+      SmallVector<llvm::SetVector<Operation *>> &target_ops_sets,
+      SmallVector<std::pair<Operation *, Operation *>> &lockOrdered) const {
     int for_op_token_count = 0;
     for (auto v : for_op->getResults())
       if (isa<air::AsyncTokenType>(v.getType()))
@@ -7611,37 +7700,98 @@ private:
             return true;
       return false;
     };
-    // Async dependencies among this body's ops, closed transitively. Every op
-    // on a dependency path from one body op to another is dominated by the
-    // first, so the path stays in this body.
+    // Build the graph of ops that must stay in the same loop. The loops
+    // created by the split are not ordered against each other, neither within
+    // an iteration nor across iterations, so two ops may only be separated if
+    // nothing orders them or if their order is kept by other means:
+    //
+    // - Endpoints of the same channel slot stay together, since only tokens
+    //   order the slot's FIFO.
+    // - A dependency edge keeps its ops together unless the source is a loop
+    //   and the edge is lock-ordered (see LoopBodyAccess::lockOrdered).
+    // - If either op is not a data mover, a buffer conflict between them keeps
+    //   them together even without an edge, since nothing else would order
+    //   them across iterations.
+    //
+    // Two data movers that access L3 memory are kept together only by edges.
+    // A conflict between them across iterations would need an analysis of the
+    // regions each iteration accesses.
     Block *body = for_op.getBody();
-    air::TypedDirectedAdjacencyMap<Operation *> bodyGraph;
-    llvm::DenseMap<Operation *, air::DirectedAdjacencyMap::VertexId> vertex;
-    for (Operation &o : body->getOperations()) {
-      if (!isAsyncOp(&o))
-        continue;
-      auto v = bodyGraph.addVertex();
-      bodyGraph[v] = &o;
-      vertex[&o] = v;
-    }
-    for (Operation &o : body->getOperations())
-      for (Value dep : getAsyncDependenciesFromOp(&o))
-        if (auto src = vertex.find(dep.getDefiningOp()); src != vertex.end())
-          if (auto dst = vertex.find(&o); dst != vertex.end())
-            bodyGraph.addEdge(src->second, dst->second);
-    auto closure = bodyGraph.getClosure();
-    auto dependsOn = [&](Operation *a, Operation *b) {
-      return closure[vertex[a]][vertex[b]];
+    llvm::SmallPtrSet<Operation *, 16> candidates(candidate_ops.begin(),
+                                                  candidate_ops.end());
+    llvm::DenseMap<Operation *, LoopBodyAccess> access;
+    for (auto op : candidate_ops)
+      access[op] = LoopBodyAccess::of(op);
+    // Collects the candidates a token depends on, looking through the body's
+    // other async ops such as wait_all and allocs.
+    std::function<void(Value, llvm::SetVector<Operation *> &,
+                       llvm::SmallPtrSetImpl<Operation *> &)>
+        sourcesOf = [&](Value token, llvm::SetVector<Operation *> &out,
+                        llvm::SmallPtrSetImpl<Operation *> &seen) {
+          Operation *def = token.getDefiningOp();
+          if (!def || def->getBlock() != body)
+            return;
+          if (candidates.contains(def)) {
+            out.insert(def);
+            return;
+          }
+          if (seen.insert(def).second)
+            for (Value dep : getAsyncDependenciesFromOp(def))
+              sourcesOf(dep, out, seen);
+        };
+    auto sameChannel = [&](Operation *a, Operation *b) {
+      auto chanA = dyn_cast<air::ChannelInterface>(a);
+      auto chanB = dyn_cast<air::ChannelInterface>(b);
+      if (!chanA || !chanB || chanA.getChanName() != chanB.getChanName())
+        return false;
+      if (chanA.getIndices().size() != chanB.getIndices().size())
+        return true;
+      for (unsigned i = 0; i < chanA.getIndices().size(); i++) {
+        auto a0 = getConstantIntValue(chanA.getIndices()[i]);
+        auto b0 = getConstantIntValue(chanB.getIndices()[i]);
+        if (a0 && b0 && *a0 != *b0)
+          return false;
+      }
+      return true;
     };
     llvm::MapVector<Operation *, SmallVector<Operation *>> depGraph;
+    for (auto op : candidate_ops)
+      depGraph[op] = SmallVector<Operation *>{};
     for (auto sinkOp : candidate_ops) {
-      depGraph[sinkOp] = SmallVector<Operation *>{};
-      for (auto sourceOp : candidate_ops)
-        if (sourceOp != sinkOp &&
-            (areAsyncDependent(sourceOp, sinkOp, dependsOn) ||
-             haveChannelResourceDep(sourceOp, sinkOp)))
+      llvm::SetVector<Operation *> sources;
+      llvm::SmallPtrSet<Operation *, 8> seen;
+      for (Value dep : tokensWaitedOn(sinkOp))
+        sourcesOf(dep, sources, seen);
+      for (auto sourceOp : sources) {
+        if (sourceOp == sinkOp)
+          continue;
+        // Only an edge from a loop is dropped: an op waiting for a loop that
+        // fills a buffer it reads, or reads a buffer it writes. A transfer and
+        // the transfer that forwards its buffer stay together, because the
+        // lowering derives the buffer's lock counts from the loop body they
+        // share.
+        if (isa<LoopLikeOpInterface>(sourceOp) &&
+            LoopBodyAccess::lockOrdered(access[sourceOp], access[sinkOp]))
+          lockOrdered.push_back({sourceOp, sinkOp});
+        else
           depGraph[sinkOp].push_back(sourceOp);
+      }
+      for (auto sourceOp : candidate_ops) {
+        if (sourceOp == sinkOp)
+          continue;
+        const auto &a = access[sourceOp], &b = access[sinkOp];
+        bool conflict =
+            (!a.mover || !b.mover) && (LoopBodyAccess::readWrite(a, b) ||
+                                       LoopBodyAccess::writeWrite(a, b));
+        if (conflict || sameChannel(sourceOp, sinkOp) ||
+            haveChannelResourceDep(sourceOp, sinkOp))
+          depGraph[sinkOp].push_back(sourceOp);
+      }
     }
+    // partitionGraph expects an undirected graph.
+    for (auto &[sink, sources] : llvm::to_vector(depGraph))
+      for (auto source : sources)
+        depGraph[source].push_back(sink);
     // Partition the graph.
     target_ops_sets = partitionGraph(depGraph);
     // Sort ops in each partition based on their order in block.
@@ -7655,6 +7805,106 @@ private:
     };
     for (auto &setVec : target_ops_sets)
       sortSetVectorByOpOrder(setVec);
+  }
+
+  // Removes lock-ordered dependencies between ops placed in different loops.
+  // The new loops cannot use each other's tokens, and keeping the edge would
+  // make hoisting clone the source into the sink's loop. The sink's token
+  // operands are rebuilt as a wait_all of the tokens that remain valid in its
+  // loop.
+  void dropCrossLoopDependencies(
+      PatternRewriter &rewriter, scf::ForOp for_op,
+      SmallVector<llvm::SetVector<Operation *>> &target_ops_sets,
+      SmallVector<std::pair<Operation *, Operation *>> &lockOrdered) const {
+    Block *body = for_op.getBody();
+    llvm::DenseMap<Operation *, unsigned> loopOf;
+    for (auto [i, set] : llvm::enumerate(target_ops_sets))
+      for (auto op : set)
+        loopOf[op] = i;
+    llvm::SetVector<Operation *> sinks;
+    for (auto [source, sink] : lockOrdered)
+      if (loopOf.lookup(source) != loopOf.lookup(sink))
+        sinks.insert(sink);
+    // Collects the tokens reachable from `token` that `sink`'s loop can still
+    // wait for, excluding tokens of ops placed in other loops.
+    std::function<void(Value, unsigned, llvm::SetVector<Value> &,
+                       llvm::SmallPtrSetImpl<Operation *> &)>
+        keep = [&](Value token, unsigned loop, llvm::SetVector<Value> &out,
+                   llvm::SmallPtrSetImpl<Operation *> &seen) {
+          Operation *def = token.getDefiningOp();
+          if (!def || def->getBlock() != body) {
+            out.insert(token);
+            return;
+          }
+          if (auto it = loopOf.find(def); it != loopOf.end()) {
+            if (it->second == loop) {
+              out.insert(token);
+              return;
+            }
+            // An op placed in another loop: keep the tokens it depends on,
+            // which include the loop's iteration token.
+          }
+          if (seen.insert(def).second)
+            for (Value dep : getAsyncDependenciesFromOp(def))
+              keep(dep, loop, out, seen);
+        };
+    for (auto sink : sinks) {
+      unsigned loop = loopOf.lookup(sink);
+      // Rewrite tokens that ops in the sink's regions use from the body.
+      llvm::SetVector<Value> above;
+      for (Region &region : sink->getRegions())
+        getUsedValuesDefinedAbove(region, above);
+      for (Value token : above) {
+        if (!isa<air::AsyncTokenType>(token.getType()))
+          continue;
+        llvm::SetVector<Value> kept;
+        llvm::SmallPtrSet<Operation *, 8> seen;
+        keep(token, loop, kept, seen);
+        if (kept.size() == 1 && kept.front() == token)
+          continue;
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(sink);
+        auto wait = air::WaitAllOp::create(
+            rewriter, sink->getLoc(),
+            air::AsyncTokenType::get(sink->getContext()), kept.takeVector());
+        rewriter.replaceUsesWithIf(
+            token, wait.getAsyncToken(), [&](OpOperand &use) {
+              return sink->isProperAncestor(use.getOwner());
+            });
+      }
+      // Rebuild an async op's dependency list as a whole. Other sinks, such as
+      // loops, take tokens as operands, which are rewritten one at a time.
+      if (auto async = dyn_cast<air::AsyncOpInterface>(sink)) {
+        llvm::SetVector<Value> kept;
+        llvm::SmallPtrSet<Operation *, 8> seen;
+        for (Value token : async.getAsyncDependencies())
+          keep(token, loop, kept, seen);
+        rewriter.modifyOpInPlace(sink, [&]() {
+          for (int i = async.getAsyncDependencies().size() - 1; i >= 0; i--)
+            async.eraseAsyncDependency(i);
+          for (Value token : kept)
+            async.addAsyncDependency(token);
+        });
+        continue;
+      }
+      for (OpOperand &use : sink->getOpOperands()) {
+        Value token = use.get();
+        if (!isa<air::AsyncTokenType>(token.getType()))
+          continue;
+        llvm::SetVector<Value> kept;
+        llvm::SmallPtrSet<Operation *, 8> seen;
+        keep(token, loop, kept, seen);
+        if (kept.size() == 1 && kept.front() == token)
+          continue;
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(sink);
+        auto wait = air::WaitAllOp::create(
+            rewriter, sink->getLoc(),
+            air::AsyncTokenType::get(sink->getContext()), kept.takeVector());
+        rewriter.modifyOpInPlace(sink,
+                                 [&]() { use.set(wait.getAsyncToken()); });
+      }
+    }
   }
 
   // Mark the in-loop allocs feeding this loop's target ops so they get hoisted
