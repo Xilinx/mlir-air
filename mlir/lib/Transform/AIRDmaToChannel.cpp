@@ -1849,17 +1849,29 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
         return op->emitOpError(
             "an L3 transfer whose offset a core computes cannot be in a loop "
             "in the herd; unroll the loop");
-  // The core's next start must not overtake this one's descriptor: it waits
-  // for the data, so it has to be the one receiving it.
+  // Every start patches the one descriptor, so a start must not land while
+  // the previous one is queued: the core receives each transfer, in the same
+  // block, before it can start the next.
   if (put && l2) {
-    bool receives = false;
-    herd.walk([&](air::ChannelGetOp g) {
-      receives |= g.getChanName() == put.getChanName();
-    });
-    if (!receives)
+    bool received = false;
+    for (Operation *o = op->getNextNode(); o && !received;
+         o = o->getNextNode()) {
+      auto get = dyn_cast<air::ChannelGetOp>(o);
+      if (get && get.getChanName() == put.getChanName()) {
+        received = true;
+        break;
+      }
+      bool again = false;
+      o->walk([&](air::ChannelInterface c) {
+        again |= c.getChanName() == put.getChanName();
+      });
+      if (again)
+        break;
+    }
+    if (!received)
       return op->emitOpError(
           "an L2 transfer whose offset a core computes must be received by "
-          "that core");
+          "that core, in the same block, before it starts another");
   }
 
   OpBuilder b(op);

@@ -313,3 +313,67 @@ module {
     return
   }
 }
+
+// -----
+
+// A core that starts two L2 transfers before receiving the first would patch
+// the one descriptor while the first start is still queued.
+
+module {
+  air.channel @row2 []
+  func.func @l2_put_burst() {
+    air.launch () in () {
+      air.segment @seg {
+        %c1 = arith.constant 1 : index
+        %l2 = memref.alloc() : memref<8x256xi32, 1 : i32>
+        air.herd @fwd tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%w=%l2) : memref<8x256xi32, 1 : i32> {
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          %c4 = arith.constant 4 : index
+          %topk = memref.alloc() : memref<16xi32, 2 : i32>
+          %buf = memref.alloc() : memref<256xi32, 2 : i32>
+          scf.for %i = %c0 to %c4 step %c1_0 {
+            %v = memref.load %topk[%i] : memref<16xi32, 2 : i32>
+            %e = arith.index_cast %v : i32 to index
+            // expected-error@+1 {{an L2 transfer whose offset a core computes must be received by that core, in the same block, before it starts another}}
+            air.channel.put @row2[] (%w[%e, %c0] [1, 256] [256, 1]) : (memref<8x256xi32, 1 : i32>)
+          }
+          scf.for %i = %c0 to %c4 step %c1_0 {
+            air.channel.get @row2[] (%buf[] [] []) : (memref<256xi32, 2 : i32>)
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Another core receives the transfer: the issuing core cannot tell when the
+// descriptor is free again.
+
+module {
+  air.channel @row3 []
+  func.func @l2_put_other_receiver() {
+    air.launch () in () {
+      air.segment @seg {
+        %c1 = arith.constant 1 : index
+        %l2 = memref.alloc() : memref<8x256xi32, 1 : i32>
+        air.herd @fwd tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%w=%l2) : memref<8x256xi32, 1 : i32> {
+          %c0 = arith.constant 0 : index
+          %topk = memref.alloc() : memref<16xi32, 2 : i32>
+          %v = memref.load %topk[%c0] : memref<16xi32, 2 : i32>
+          %e = arith.index_cast %v : i32 to index
+          // expected-error@+1 {{an L2 transfer whose offset a core computes must be received by that core, in the same block, before it starts another}}
+          air.channel.put @row3[] (%w[%e, %c0] [1, 256] [256, 1]) : (memref<8x256xi32, 1 : i32>)
+        }
+        air.herd @recv tile (%tx, %ty) in (%sx=%c1, %sy=%c1) {
+          %buf = memref.alloc() : memref<256xi32, 2 : i32>
+          air.channel.get @row3[] (%buf[] [] []) : (memref<256xi32, 2 : i32>)
+        }
+      }
+    }
+    return
+  }
+}
