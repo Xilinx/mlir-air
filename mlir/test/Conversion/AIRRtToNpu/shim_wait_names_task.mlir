@@ -196,12 +196,14 @@ module {
 // -----
 
 // A wait inside a rolled loop body waits on the transfer issued in the same
-// iteration.
+// iteration, then frees it: the BD ids of a task in a rolled loop come from a
+// runtime pool that only a free returns them to.
 // CHECK-LABEL: aie.runtime_sequence @rolled_loop
 // CHECK: scf.for
 // CHECK: %[[T:.*]] = aiex.dma_configure_task_for @rl_out
 // CHECK: aiex.dma_start_task(%[[T]])
 // CHECK-NEXT: aiex.dma_await_task(%[[T]])
+// CHECK-NEXT: aiex.dma_free_task(%[[T]])
 // CHECK-NEXT: }
 module {
   aie.device(npu2) {
@@ -236,6 +238,7 @@ module {
 // CHECK: case 0 {
 // CHECK: %[[T:.*]] = aiex.dma_configure_task_for @sa_out
 // CHECK: aiex.dma_await_task(%[[T]])
+// CHECK-NEXT: aiex.dma_free_task(%[[T]])
 // CHECK-NEXT: scf.yield
 module {
   aie.device(npu2) {

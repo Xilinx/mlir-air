@@ -1223,6 +1223,22 @@ def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "Modul
   let description = [{
     This pass isolates loops containing dma memcpy ops into perfectly nested loops, by 
     hoisting them out of their previous parent loop.
+
+    The ops of a loop body are partitioned into groups, and each group gets a
+    loop of its own. The new loops are not ordered against each other, so two
+    ops are kept in the same group when:
+
+    - they access the same channel slot;
+    - a dependency token orders them, unless the source is a loop, both ops
+      only move data through channels without accessing L3 memory, and one
+      reads an L1 or L2 buffer that the other writes. The buffer's locks then
+      keep their order across loops;
+    - one of them is not a data mover (for example a herd, or an execute that
+      computes) and both access a buffer that at least one writes.
+
+    When a dependency is dropped this way, the op that waited on it keeps the
+    other tokens it depended on, including the loop's iteration token. Loops
+    that read back L3 memory they write are not split.
   }];
   let options = [
     Option<"clScope", "scope", "std::string",
