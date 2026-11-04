@@ -7483,6 +7483,22 @@ struct LoopBodyAccess {
   }
 };
 
+// Returns true if `op` is one channel or DMA endpoint: a single transfer, or an
+// scf.for whose body holds exactly one transfer and no scf.parallel or
+// hierarchy op.
+static bool isSingleEndpoint(Operation *op) {
+  unsigned transfers = 0;
+  bool other = false;
+  op->walk([&](Operation *o) {
+    if (isa<air::MemcpyInterface>(o))
+      transfers++;
+    else if (isa<scf::ParallelOp, air::HierarchyInterface>(o))
+      other = true;
+  });
+  return !other && transfers == 1 &&
+         (isa<air::MemcpyInterface>(op) || isa<scf::ForOp>(op));
+}
+
 // Returns true if `sink` or an op nested in it uses a result of `source` that
 // is not an async token. Only a token can be dropped when the two are split.
 static bool usesNonTokenResult(Operation *source, Operation *sink) {
@@ -7782,12 +7798,13 @@ private:
         if (sourceOp == sinkOp)
           continue;
         // Only an edge from a loop is dropped: an op waiting for a loop that
-        // fills a buffer it reads, or reads a buffer it writes. A transfer and
-        // the transfer that forwards its buffer stay together, because the
-        // lowering derives the buffer's lock counts from the loop body they
-        // share.
-        if (isa<LoopLikeOpInterface>(sourceOp) &&
-            !usesNonTokenResult(sourceOp, sinkOp) &&
+        // fills a buffer it reads, or reads a buffer it writes. Both sides
+        // must be a single endpoint. With several writers or readers of the
+        // buffer (a gather by scf.parallel, a transfer and the one forwarding
+        // it), the lowering derives the buffer's lock counts from the loop
+        // body they share.
+        if (isa<LoopLikeOpInterface>(sourceOp) && isSingleEndpoint(sourceOp) &&
+            isSingleEndpoint(sinkOp) && !usesNonTokenResult(sourceOp, sinkOp) &&
             LoopBodyAccess::lockOrdered(access[sourceOp], access[sinkOp]))
           lockOrdered.push_back({sourceOp, sinkOp});
         else

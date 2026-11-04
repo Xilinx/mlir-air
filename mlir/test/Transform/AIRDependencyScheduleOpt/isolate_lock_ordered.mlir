@@ -155,22 +155,22 @@ module {
 
 // -----
 
-// E: the puts depend on the fill loop through a use inside an scf.parallel,
-// not through the parallel's init. The dependency is still seen, the two are
-// split, the use inside the parallel is rewritten, and the get is not cloned
-// into the puts' loop.
+// E: the put depends on the fill loop through a use inside its own loop, not
+// through that loop's init. The dependency is still seen, the two are split,
+// the use inside the loop is rewritten, and the get is not cloned into the
+// put's loop.
 // CHECK-LABEL: func.func @nested_use
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: air.channel.get{{.*}}@fill
 // CHECK-NOT: air.channel.get{{.*}}@fill
 // CHECK: scf.for {{.*}} iter_args(%[[IT:.*]] = %{{.*}})
-// CHECK: scf.parallel
+// CHECK: scf.for
 // CHECK: air.channel.put async [%[[IT]]]  @out
 
 module {
   air.channel @fill [1, 1]
-  air.channel @out [1, 4]
+  air.channel @out [1, 1]
   func.func @nested_use() {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%a, %b) in (%sa=%c1, %sb=%c1) {
@@ -190,14 +190,10 @@ module {
             scf.yield %f : !air.async.token
           }
           %w = air.wait_all async [%it]
-          %p = scf.parallel (%i) = (%c0) to (%c4) step (%c1_0) init (%w) -> !air.async.token {
+          %p = scf.for %i = %c0 to %c4 step %c1_0 iter_args(%t = %w) -> (!air.async.token) {
             %off = arith.muli %i, %c16 : index
-            %put = air.channel.put async [%g] @out[%c0, %i] (%buf[%off] [%c16] [%c1_0]) : (memref<64xbf16, 1>)
-            scf.reduce(%put : !air.async.token) {
-            ^bb0(%l: !air.async.token, %r: !air.async.token):
-              %j = air.wait_all async [%l, %r]
-              scf.reduce.return %j : !air.async.token
-            }
+            %put = air.channel.put async [%g] @out[%c0, %c0] (%buf[%off] [%c16] [%c1_0]) : (memref<64xbf16, 1>)
+            scf.yield %put : !air.async.token
           }
           %y = air.wait_all async [%g, %p]
           scf.yield %y : !air.async.token
@@ -384,6 +380,52 @@ module {
             %q = air.channel.put async [%t] @out[%c0, %c0] (%buf[] [] []) : (memref<64xbf16, 1>)
             scf.yield %q : !air.async.token
           }
+          scf.yield %p : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// J: four cores write parts of an L2 buffer through an scf.parallel, and a put
+// sends the whole buffer on. The buffer has several writers, so the gather and
+// the put stay in one loop.
+// CHECK-LABEL: func.func @gather_then_put
+// CHECK: scf.for
+// CHECK: scf.parallel
+// CHECK: air.channel.get{{.*}}@gather
+// CHECK-NOT: scf.for
+// CHECK: air.channel.put{{.*}}@out
+
+module {
+  air.channel @gather [1, 4]
+  air.channel @out [1, 1]
+  func.func @gather_then_put() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%a, %b) in (%sa=%c1, %sb=%c1) {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %c16 = arith.constant 16 : index
+        %t0, %buf = air.execute -> (memref<64xbf16, 1>) {
+          %m = memref.alloc() : memref<64xbf16, 1>
+          air.execute_terminator %m : memref<64xbf16, 1>
+        }
+        %2 = scf.for %k = %c0 to %c4 step %c1_0 iter_args(%it = %t0) -> (!air.async.token) {
+          %g = scf.parallel (%i) = (%c0) to (%c4) step (%c1_0) init (%it) -> !air.async.token {
+            %off = arith.muli %i, %c16 : index
+            %get = air.channel.get async [%it] @gather[%c0, %i] (%buf[%off] [%c16] [%c1_0]) : (memref<64xbf16, 1>)
+            scf.reduce(%get : !air.async.token) {
+            ^bb0(%l: !air.async.token, %r: !air.async.token):
+              %j = air.wait_all async [%l, %r]
+              scf.reduce.return %j : !air.async.token
+            }
+          }
+          %p = air.channel.put async [%g] @out[%c0, %c0] (%buf[] [] []) : (memref<64xbf16, 1>)
           scf.yield %p : !air.async.token
         }
       }
