@@ -36,6 +36,7 @@
 #define SMOLLM3_3B 13
 #define OLMO2_1B 14
 #define OPENELM_1B 15
+#define GPT_OSS_20B 16
 
 #ifndef MODEL_TYPE
 #define MODEL_TYPE LLAMA_3_2_1B
@@ -44,6 +45,7 @@
 #include "../models/gemma3-4b.h"
 #include "../models/gemma4-e2b.h"
 #include "../models/gemma4-e4b.h"
+#include "../models/gpt-oss-20b.h"
 #include "../models/granite3.3-2b.h"
 #include "../models/lfm2-1.2b.h"
 #include "../models/llama3.1-8b.h"
