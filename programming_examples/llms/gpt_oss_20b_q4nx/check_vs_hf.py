@@ -191,6 +191,17 @@ def run_ref(w, ids, decode_steps):
     return out
 
 
+def agrees(steps, hf_steps, k=5):
+    """Greedy runs agree while they share a history. Each feeds back its own
+    token, so the first mismatch is the last step both saw the same input:
+    there, HF's token must be a near tie in ours."""
+    for a, b in zip(steps, hf_steps):
+        want = int(b.argmax())
+        if int(a.argmax()) != want:
+            return want in a.topk(k).indices.tolist() and cos(a, b) > 0.99
+    return True
+
+
 def check_forward(prompt, decode_steps):
     from transformers import AutoModelForCausalLM, AutoTokenizer, Mxfp4Config
 
@@ -225,8 +236,7 @@ def check_forward(prompt, decode_steps):
             print(
                 f"  step {i}: top1 {int(a.argmax())} vs HF {int(b.argmax())}  cos {cos(a, b):.5f}"
             )
-        # each step is fed its own greedy token, so compare only up to the first divergence
-        ok &= toks[0] == int(hf_steps[0].argmax())
+        ok &= agrees(steps, hf_steps)
     print("FORWARD", "PASS" if ok else "FAIL")
     return ok
 

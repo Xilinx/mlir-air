@@ -705,21 +705,18 @@ def main():
                 c = cos_sim(x, xr)
                 ok &= c > 0.99
                 msg = f"L={t + 1}: last wave out cos {c:.5f}"
-                if not a.no_lm:
-                    if head is None:
-                        head = w.lm_head()
-                    lr = g.rmsnorm(xr[None], w.final_norm())[0] @ head.T
-                    cl = cos_sim(logits, lr)
-                    ok &= cl > 0.99
-                    msg += (
-                        f", logits cos {cl:.5f} top1 {int(logits.argmax())}"
-                        f" vs {int(lr.argmax())}"
-                    )
+                if a.no_lm:
+                    print(f"{msg} ({dt*1e3:.0f} ms)")
+                    # no logits to pick the next token from
+                    if t + 1 >= len(ids):
+                        break
+                    continue
+                if head is None:
+                    head = w.lm_head()
+                want = g.rmsnorm(xr[None], w.final_norm())[0] @ head.T
                 print(f"{msg} ({dt*1e3:.0f} ms)")
-                if t + 1 >= len(ids):
-                    break
-                continue
-            want = ref.forward([seq[t]])
+            else:
+                want = ref.forward([seq[t]])
             if t + 1 >= len(ids):
                 nxt = int(logits.argmax())
                 c = cos_sim(logits, want)
@@ -730,7 +727,7 @@ def main():
                 ok &= nxt == int(want.argmax()) and c > 0.99
                 seq.append(nxt)
                 out.append(nxt)
-            else:
+            elif full:
                 print(f"L={t + 1}: prompt ({dt*1e3:.0f} ms)")
     if out:
         print(f"{a.prompt!r} -> {tok.decode(out)!r}")
