@@ -361,7 +361,10 @@ class DensePrefill(Engine):
         bias = self.bias[L] if e.qkv_bias else None
         qn, kn = nm.get("q_norm"), nm.get("k_norm")
         if e.qk_norm_rows:
-            # one RMSNorm over all heads' q (k) columns, before rope
+            # one RMSNorm over all heads' q (k) columns, before rope. On a
+            # copy: host writes to the GEMM's output buffer would land in the
+            # device's next output to it.
+            qkv = np.array(qkv[:t])
             for c0, c1, w in ((0, dq, qn), (dq, dq + dk, kn)):
                 qkv[:t, c0:c1] = H.rms(np.asarray(qkv[:t, c0:c1], np.float32), w, eps)
             qn = kn = None
