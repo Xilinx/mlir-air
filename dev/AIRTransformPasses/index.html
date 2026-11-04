@@ -4216,6 +4216,21 @@ scf.for loop.</p>
 <p><em>Hoist dma ops into perfectly nested loop</em></p>
 <p>This pass isolates loops containing dma memcpy ops into perfectly nested loops, by 
 hoisting them out of their previous parent loop.</p>
+<p>The ops of a loop body are partitioned into groups, and each group gets a
+loop of its own. The new loops are not ordered against each other, so two
+ops are kept in the same group when:</p>
+<ul>
+<li>they access the same channel slot;</li>
+<li>a dependency token orders them, unless the source is a loop, both ops
+  only move data through channels without accessing L3 memory, and one
+  reads an L1 or L2 buffer that the other writes. The buffer's locks then
+  keep their order across loops;</li>
+<li>one of them is not a data mover (for example a herd, or an execute that
+  computes) and both access a buffer that at least one writes.</li>
+</ul>
+<p>When a dependency is dropped this way, the op that waited on it keeps the
+other tokens it depended on, including the loop's iteration token. Loops
+that read back L3 memory they write are not split.</p>
 <h4 id="options_10">Options<a class="headerlink" href="#options_10" title="Permanent link">&para;</a></h4>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>-scope : AIR hierarchy scope to perform loop splitting under. Must be one of [func, segment, launch].
 </code></pre></div>
