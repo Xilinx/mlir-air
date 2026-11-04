@@ -6986,6 +6986,31 @@ private:
       for (Value dep : air::getAsyncDependenciesFromOp(b))
         if (Value moved = movedTokens.lookup(dep))
           remap.map(dep, moved);
+      // The clone of b reads b's operands and those of the effect-free
+      // producers cloned with it. Each must be available where the clone
+      // goes. This fails when b's nest also computes what b waits for, as on
+      // a core running a's loop and then b's: the clone would read a token
+      // that is only defined later.
+      SetVector<Operation *> slice;
+      (void)getBackwardSlice(b.getOperation(), &slice);
+      auto available = [&](Value v) {
+        Operation *def = v.getDefiningOp();
+        return remap.contains(v) || dom.properlyDominates(v, a) ||
+               (def && slice.contains(def) && air::isEffectFree(def)) ||
+               (dryRun && dryMovedTokens.contains(v));
+      };
+      // Operands defined in a region enclosing a were hoisted above a by
+      // hoistAllocAbove.
+      if (!llvm::all_of(b->getOperands(), [&](Value v) {
+            Operation *def = v.getDefiningOp();
+            return available(v) || (def && def->getParentRegion()->isAncestor(
+                                               a->getParentRegion()));
+          }))
+        return false;
+      for (Operation *op : slice)
+        if (air::isEffectFree(op) &&
+            !llvm::all_of(op->getOperands(), available))
+          return false;
     } else if (!remapLoopIntoNestOf(rewriter, remap, a, bOp, dryRun)) {
       return false;
     }
