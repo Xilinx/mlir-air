@@ -107,7 +107,8 @@ def lite_weights(rt):
         assert _cos(e, emb.float().numpy()) > 0.9999
         emb.copy_(torch.from_numpy(e).to(emb.dtype))
     return dict(
-        package=f"{W3.LITE_REPO}@{W3.LITE_REVISION}",
+        package_repo=W3.LITE_REPO,
+        package_revision=W3.LITE_REVISION,
         bundle_sha256=sha256(q.path),
         weights="bundle Q4K/Q8 exact dequant -> bf16; embedding = lm_head Q8",
         min_weight_cosine=worst,
