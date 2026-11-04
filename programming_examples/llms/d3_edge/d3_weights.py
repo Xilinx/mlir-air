@@ -65,7 +65,7 @@ def model_dir(model, weights=None):
             root = Path(snapshot_download(repo, revision=rev, allow_patterns=pats))
         _check(root / EDGE_WEIGHTS, EDGE_SHA256)
         return root
-    pats = None if weights else PACKAGE_FILES
+    pats = PACKAGE_FILES + (["*.safetensors"] if weights else [])
     return Path(snapshot_download(repo, revision=rev, allow_patterns=pats))
 
 
