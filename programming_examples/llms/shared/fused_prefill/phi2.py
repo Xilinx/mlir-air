@@ -186,6 +186,27 @@ class Phi2Prefill(AffinePrefill):
         dh, adh, dq = e.dh, e.attn_dh, e.heads * e.dh
         cs, sn = self._rope(op, r0, t)
         rope = (cs, sn, self.rot)
+        nk = e.kv_heads * adh
+        kb = np.zeros((t, nk), bfloat16)
+        vb = np.zeros((t, nk), bfloat16)
+        H.head_post(
+            qkv, t, dq, e.kv_heads, dh, bias, None, self.eps, rope, 1.0, kb, adh, nk
+        )
+        H.head_post(
+            qkv, t, 2 * dq, e.kv_heads, dh, bias, None, self.eps, None, 1.0, vb, adh, nk
+        )
+        for a in (kb, vb):
+            place(a.reshape(t, e.kv_heads, adh).transpose(1, 0, 2), 0, dh)
+        # In Phi-2's last layers every key shares a component large enough
+        # that raw scores reach 1e6 while a row's scores differ by thousands:
+        # past what bf16 scores and bfp16 operands resolve. The attention reads
+        # each key less the prompt's first key, which takes q.k0 off every
+        # score of a row and leaves the softmax as it was. The decode gets the
+        # keys themselves.
+        self.kv[L][0].append(kb)
+        self.kv[L][1].append(vb)
+        k0 = self.kv[L][0][0][:1].astype(np.float32)
+        kd = (kb.astype(np.float32) - k0).astype(bfloat16)
         ch = self.attn_chunk(kvb["op"], c)
         h0 = 0
         for p in ch["parts"]:
@@ -211,19 +232,6 @@ class Phi2Prefill(AffinePrefill):
                 qm[:, t:] = 0
             self.q_write(p, qm)
             h0 += hg
-        nk = e.kv_heads * adh
-        kb = np.zeros((t, nk), bfloat16)
-        vb = np.zeros((t, nk), bfloat16)
-        H.head_post(
-            qkv, t, dq, e.kv_heads, dh, bias, None, self.eps, rope, 1.0, kb, adh, nk
-        )
-        H.head_post(
-            qkv, t, 2 * dq, e.kv_heads, dh, bias, None, self.eps, None, 1.0, vb, adh, nk
-        )
-        for a in (kb, vb):
-            place(a.reshape(t, e.kv_heads, adh).transpose(1, 0, 2), 0, dh)
-        self.kv[L][0].append(kb)
-        self.kv[L][1].append(vb)
         h0 = 0
         for p in kvb["parts"]:
             g = self.cfg.attn[p["a"]]
@@ -231,6 +239,6 @@ class Phi2Prefill(AffinePrefill):
             nblk = p["m"].shape[1]
             nb = -(-t // g.lkp)
             for h in range(g.kv_heads):
-                self.kv_write(kb, vb, (h0 + h) * adh, t, g, p["m"][h, b0])
+                self.kv_write(kd, vb, (h0 + h) * adh, t, g, p["m"][h, b0])
                 p["bo"].sync(TO, nb * rec * 2, (h * nblk + b0) * rec * 2)
             h0 += g.kv_heads
