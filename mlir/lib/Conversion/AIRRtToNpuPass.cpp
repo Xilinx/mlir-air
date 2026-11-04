@@ -4335,7 +4335,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   // Frees each task configured inside a runtime loop or condition right after
-  // its await, unless a free of it already follows in the same block.
+  // its await, unless a free of it already follows the await, in the same
+  // block or after an op enclosing the await.
   // aie-lower-dynamic-bd-pool draws the BD ids of such tasks from a runtime
   // pool that only dma_free_task returns them to; an await there only
   // synchronizes. The await guarantees the task has completed, so the free is
@@ -4347,10 +4348,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       Operation *cfg = task.getDefiningOp();
       if (!cfg || isa<AIE::RuntimeSequenceOp, func::FuncOp>(cfg->getParentOp()))
         return;
-      for (Operation *u : task.getUsers())
-        if (isa<AIEX::DMAFreeTaskOp>(u) && u->getBlock() == await->getBlock() &&
-            await->isBeforeInBlock(u))
+      for (Operation *u : task.getUsers()) {
+        if (!isa<AIEX::DMAFreeTaskOp>(u))
+          continue;
+        Operation *anc = u->getBlock()->findAncestorOpInBlock(*await);
+        if (anc && anc->isBeforeInBlock(u))
           return;
+      }
       OpBuilder after(await->getBlock(), std::next(await->getIterator()));
       AIEX::DMAFreeTaskOp::create(after, await.getLoc(), task);
     });
