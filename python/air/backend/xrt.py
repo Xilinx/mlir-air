@@ -302,8 +302,10 @@ class XRTCompileArtifact:
         self.kernel = kernel
         self.insts = insts
         self.txn_header = txn_header
-        # Files the host needs besides the binary (see _HostSide).
+        # Files the host needs besides the binary, read now: a later build
+        # rewrites the directory.
         self.host_dir = host_dir
+        self.host = _HostSide(host_dir)
 
 
 @functools.lru_cache(maxsize=1)
@@ -947,7 +949,7 @@ class XRTBackend(AirBackend):
             self.bo_instr = None  # Not needed for ELF
             self.instr_v = None
 
-            host = _HostSide(artifact.host_dir)
+            host = artifact.host
 
             def invoker(*caller_args):
                 args, scalars = host.split(caller_args)
@@ -1031,7 +1033,7 @@ class XRTBackend(AirBackend):
                 raise AirBackendError(
                     f"{artifact.txn_header} builds {txn.function_names}; expected one"
                 )
-            host = _HostSide(artifact.host_dir)
+            host = artifact.host
 
             def invoker(*caller_args):
                 args, scalars = host.split(caller_args)

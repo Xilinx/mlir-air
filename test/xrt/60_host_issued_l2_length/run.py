@@ -10,7 +10,10 @@
 # table of control packets that set its length and start it.
 
 import argparse
+import os
+import tempfile
 
+import filelock
 import numpy as np
 
 from air import api as air
@@ -82,15 +85,17 @@ if __name__ == "__main__":
         instance_name="host_issue_l2",
         emit_txn_cpp=args.output_format == "xclbin",
     )
-    run = backend.load(backend.compile(mlir_module))
-    ok = True
-    for L in [int(v) for v in args.L.split(",")]:
-        y = run(kv, np.zeros((NB, BLK), np.int32), L)[1].reshape(NB, BLK)
-        want = np.zeros((NB, BLK), np.int32)
-        want[:L] = kv[:L]
-        good = np.array_equal(y, want)
-        ok &= good
-        print(f"L={L}: {'ok' if good else 'MISMATCH'}")
-    backend.unload()
+    art = backend.compile(mlir_module)
+    with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
+        run = backend.load(art)
+        ok = True
+        for L in [int(v) for v in args.L.split(",")]:
+            y = run(kv, np.zeros((NB, BLK), np.int32), L)[1].reshape(NB, BLK)
+            want = np.zeros((NB, BLK), np.int32)
+            want[:L] = kv[:L]
+            good = np.array_equal(y, want)
+            ok &= good
+            print(f"L={L}: {'ok' if good else 'MISMATCH'}")
+        backend.unload()
     print("PASS!" if ok else "failed.")
     exit(0 if ok else -1)

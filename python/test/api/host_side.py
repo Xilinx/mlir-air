@@ -17,7 +17,7 @@ import tempfile
 
 import numpy as np
 
-from air.backend.xrt import _HostSide
+from air.backend.xrt import XRTCompileArtifact, _HostSide
 
 with tempfile.TemporaryDirectory() as d:
     host = os.path.join(d, "host")
@@ -62,6 +62,18 @@ with tempfile.TemporaryDirectory() as d:
             side.split((x, y, bad))
         except Exception as e:
             print(e)
+
+# An artifact keeps the files of its own build after the next one rewrites
+# the directory.
+# CHECK: kept 12
+with tempfile.TemporaryDirectory() as d:
+    host = os.path.join(d, "host")
+    os.makedirs(host)
+    table = os.path.join(host, "air_ctrl_table.bin")
+    np.arange(12, dtype=np.int32).tofile(table)
+    art = XRTCompileArtifact("a.elf", "k", None, host_dir=host)
+    os.remove(table)
+    print("kept", art.host.table.size)
 
 # No host directory: buffers pass through unchanged.
 # CHECK: plain 2

@@ -13,7 +13,7 @@ transfer to the host and lets the core start it.
 """
 
 from air import api as air
-from air.api.types import bf16, i32
+from air.api.types import bf16, i32, ui8
 
 NE, E = 32, 256
 
@@ -119,6 +119,33 @@ def view_index():
     try:
         launch.mlir()
     except TypeError as e:
+        print(e)
+
+
+# CHECK-LABEL: TEST: unsigned_index
+# CHECK: an L1 element used as an index
+@run
+def unsigned_index():
+    W = air.tensor([NE, E], bf16)
+    wexp = air.channel("Wexp4", size=[1])
+    with air.launch(name="moe4") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    with air.herd([range(1)], name="router", shape=(1,)) as r:
+
+                        @r.body
+                        def _(tx):
+                            topk = air.alloc([4], ui8, scope=r.private())
+                            wexp.put(W[topk[0], :], indices=[0])
+
+    try:
+        launch.mlir()
+    except NotImplementedError as e:
         print(e)
 
 
