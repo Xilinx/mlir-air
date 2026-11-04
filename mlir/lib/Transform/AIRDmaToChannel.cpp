@@ -1934,9 +1934,8 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
       issue();
       air::ExecuteTerminatorOp::create(b, loc);
     }
-    // A get the core issues itself starts only once its descriptor is set.
-    if (get)
-      async.addAsyncDependency(exec.getAsyncToken());
+    // The transfer starts once the core has issued it.
+    async.addAsyncDependency(exec.getAsyncToken());
   } else {
     issue();
   }
@@ -2127,6 +2126,181 @@ static void putL3SideInMemoryOrder(air::DmaMemcpyNdOp dma) {
       [&](ArrayRef<int64_t> v) { dma.setStaticDstStrides(v); });
 }
 
+static LogicalResult traceExternalDependencies(func::FuncOp f) {
+  bool ok = true;
+  air::dependencyTracer depTracer;
+  f.walk<WalkOrder::PreOrder,
+         ForwardDominanceIterator<>>([&](air::MemcpyInterface memcpy_op) {
+    if (!memcpy_op->hasAttr("loop-carried-dep"))
+      return WalkResult::advance();
+    auto LoopCarriedDepAttr =
+        memcpy_op->getAttrOfType<StringAttr>("loop-carried-dep");
+    if (LoopCarriedDepAttr.str() != "external" &&
+        LoopCarriedDepAttr.str() != "internalGetPut")
+      return WalkResult::advance();
+
+    // Start tracing dependency only if this put/get op is async
+    auto async_op =
+        dyn_cast_if_present<air::AsyncOpInterface>(memcpy_op.getOperation());
+    if (!async_op)
+      return WalkResult::advance();
+
+    // Connect async dependency of external put/get scf parallel
+    SmallVector<air::partialMemref, 1> sink_op_memref_reads;
+    SmallVector<air::partialMemref, 1> sink_op_memref_writes;
+    SmallVector<Value, 1> sink_op_scalar_ins;
+    SmallVector<Value, 1> sink_op_scalar_outs;
+
+    air::WaitAllOp sink_wait_all_op = nullptr;
+    for (auto parent = memcpy_op->getParentOp(); !isa<func::FuncOp>(parent);
+         parent = parent->getParentOp()) {
+      if (parent->getAttrOfType<StringAttr>("loop-carried-dep") &&
+          parent->getAttrOfType<StringAttr>("loop-carried-dep")
+                  .getValue()
+                  .str() == "hoistedLoop") {
+        if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
+          if (scf_par.getInitVals().size() &&
+              scf_par.getInitVals()[0].getDefiningOp()) {
+            sink_wait_all_op = dyn_cast_if_present<air::WaitAllOp>(
+                scf_par.getInitVals()[0].getDefiningOp());
+          }
+        } else if (auto scf_for = dyn_cast_if_present<scf::ForOp>(parent)) {
+          if (scf_for.getInitArgs().size() &&
+              scf_for.getInitArgs()[0].getDefiningOp()) {
+            sink_wait_all_op = dyn_cast_if_present<air::WaitAllOp>(
+                scf_for.getInitArgs()[0].getDefiningOp());
+          }
+        }
+      }
+    }
+
+    depTracer.getPartialMemrefFromOp(
+        memcpy_op.getOperation(), sink_op_memref_reads, sink_op_memref_writes,
+        sink_op_scalar_ins, sink_op_scalar_outs);
+
+    if (sink_op_memref_reads.empty() && sink_op_memref_writes.empty()) {
+      memcpy_op->emitOpError("cannot read memref from channel op.");
+      return WalkResult::skip();
+    }
+
+    if (sink_wait_all_op) {
+      // Detect RAW deps
+      if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+              sink_op_memref_reads, sink_wait_all_op, "RAW")))
+        ok = false;
+      // Detect WAW and WAR deps
+      if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+              sink_op_memref_writes, sink_wait_all_op, "WAW/WAR")))
+        ok = false;
+
+      // Rebuild loop-carried dependency in scf loop nest
+      air::clearAsyncDependenciesOfAsyncOp(memcpy_op);
+      depTracer.reconnectLoopCarriedDependencyFromOp(memcpy_op.getOperation());
+    }
+
+    // Trace dependency of external put/get within scf loop
+    if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+            sink_op_memref_reads,
+            dyn_cast_if_present<air::AsyncOpInterface>(
+                memcpy_op.getOperation()),
+            "RAW")))
+      ok = false;
+    if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+            sink_op_memref_writes,
+            dyn_cast_if_present<air::AsyncOpInterface>(
+                memcpy_op.getOperation()),
+            "WAW/WAR")))
+      ok = false;
+    // Detect tile index deps
+    depTracer.traceTileIndices(
+        sink_op_memref_reads, sink_op_memref_writes, sink_op_scalar_ins,
+        sink_op_scalar_outs,
+        dyn_cast_if_present<air::AsyncOpInterface>(memcpy_op.getOperation()));
+    return WalkResult::advance();
+  });
+  return success(ok);
+}
+
+// A hoisted copy of a ping-pong core loop carries the core's token pairs. The
+// host side needs only program order: carry one token.
+static void carryOneToken(scf::ForOp loop) {
+  if (loop.getNumResults() < 2 ||
+      !llvm::all_of(loop.getResultTypes(), llvm::IsaPred<air::AsyncTokenType>))
+    return;
+  OpBuilder b(loop);
+  Location loc = loop.getLoc();
+  auto tokTy = air::AsyncTokenType::get(loop.getContext());
+  Value init =
+      air::WaitAllOp::create(b, loc, tokTy, loop.getInitArgs()).getAsyncToken();
+  auto merged =
+      scf::ForOp::create(b, loc, loop.getLowerBound(), loop.getUpperBound(),
+                         loop.getStep(), ValueRange{init});
+  Block *from = loop.getBody(), *to = merged.getBody();
+  from->getArgument(0).replaceAllUsesWith(merged.getInductionVar());
+  for (BlockArgument arg : loop.getRegionIterArgs())
+    arg.replaceAllUsesWith(merged.getRegionIterArgs()[0]);
+  to->getOperations().splice(to->end(), from->getOperations());
+  auto yield = cast<scf::YieldOp>(to->getTerminator());
+  b.setInsertionPoint(yield);
+  Value next = air::WaitAllOp::create(b, loc, tokTy, yield.getOperands())
+                   .getAsyncToken();
+  yield->setOperands(next);
+  for (Value r : loop.getResults())
+    r.replaceAllUsesWith(merged.getResult(0));
+  loop.erase();
+}
+
+LogicalResult hoistDeviceIssuedTransfers(Operation *root) {
+  SmallVector<air::ChannelInterface> ops;
+  root->walk([&](air::ChannelInterface op) {
+    if (op->hasAttr("air.device_issue") && op->getParentOfType<air::HerdOp>() &&
+        !isInMatchingHierarchy(op))
+      ops.push_back(op);
+  });
+  if (ops.empty())
+    return success();
+  MLIRContext *ctx = root->getContext();
+  llvm::DenseSet<Attribute> ids;
+  for (air::ChannelInterface op : ops)
+    ids.insert(op->getAttr("air.device_issue"));
+  for (air::ChannelInterface op : ops) {
+    // The issue stays in the herd: once apart, the lowering orders the two
+    // with locks.
+    auto async = cast<air::AsyncOpInterface>(op.getOperation());
+    for (Value dep : llvm::to_vector(async.getAsyncDependencies())) {
+      auto exec = dep.getDefiningOp<air::ExecuteOp>();
+      if (exec && !exec.getBody().getOps<air::ChannelIssueOp>().empty())
+        air::eraseAsyncDependencyFromAsyncOp(async, dep);
+    }
+    op->setAttr("loop-carried-dep", StringAttr::get(ctx, "external"));
+  }
+  RewritePatternSet patterns(ctx);
+  patterns.add<AIRHoistExternalAIRChannelPattern<air::HerdOp>,
+               AIRHoistExternalAIRChannelPattern<air::SegmentOp>>(ctx);
+  (void)applyPatternsGreedily(root, std::move(patterns));
+  LogicalResult traced = success();
+  root->walk([&](func::FuncOp f) {
+    if (failed(traceExternalDependencies(f)))
+      traced = failure();
+  });
+  SmallVector<scf::ForOp> loops;
+  root->walk([&](scf::ForOp loop) {
+    if (!loop->getParentOfType<air::HerdOp>() &&
+        llvm::any_of(loop.getOps<air::ChannelInterface>(), [&](auto op) {
+          return ids.contains(op->getAttr("air.device_issue"));
+        }))
+      loops.push_back(loop);
+  });
+  for (scf::ForOp loop : loops)
+    carryOneToken(loop);
+  air::enforceChannelFifoOrder(root);
+  root->walk([&](Operation *op) {
+    op->removeAttr("loop-carried-dep");
+    op->removeAttr("hoist");
+  });
+  return traced;
+}
+
 struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
   DmaToChannelPass() = default;
@@ -2288,6 +2462,11 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     }
 
     for (auto getput : externalChannelOps) {
+      // A transfer a core starts stays next to its issue until
+      // air-opt-memtile-dma-bds.
+      if (getput->hasAttr("air.device_issue") &&
+          getput->getParentOfType<air::HerdOp>())
+        continue;
       getput->setAttr("loop-carried-dep", StringAttr::get(context, "external"));
       RewritePatternSet hoistChannelPatterns(context);
       hoistChannelPatterns
@@ -2556,99 +2735,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
   }
 
   void updateDependencyOnFunction(func::FuncOp f) {
-    air::dependencyTracer depTracer;
-    f.walk<WalkOrder::PreOrder,
-           ForwardDominanceIterator<>>([&](air::MemcpyInterface memcpy_op) {
-      if (!memcpy_op->hasAttr("loop-carried-dep"))
-        return WalkResult::advance();
-      auto LoopCarriedDepAttr =
-          memcpy_op->getAttrOfType<StringAttr>("loop-carried-dep");
-      if (LoopCarriedDepAttr.str() != "external" &&
-          LoopCarriedDepAttr.str() != "internalGetPut")
-        return WalkResult::advance();
-
-      // Start tracing dependency only if this put/get op is async
-      auto async_op =
-          dyn_cast_if_present<air::AsyncOpInterface>(memcpy_op.getOperation());
-      if (!async_op)
-        return WalkResult::advance();
-
-      // Connect async dependency of external put/get scf parallel
-      SmallVector<air::partialMemref, 1> sink_op_memref_reads;
-      SmallVector<air::partialMemref, 1> sink_op_memref_writes;
-      SmallVector<Value, 1> sink_op_scalar_ins;
-      SmallVector<Value, 1> sink_op_scalar_outs;
-
-      air::WaitAllOp sink_wait_all_op = nullptr;
-      for (auto parent = memcpy_op->getParentOp(); !isa<func::FuncOp>(parent);
-           parent = parent->getParentOp()) {
-        if (parent->getAttrOfType<StringAttr>("loop-carried-dep") &&
-            parent->getAttrOfType<StringAttr>("loop-carried-dep")
-                    .getValue()
-                    .str() == "hoistedLoop") {
-          if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
-            if (scf_par.getInitVals().size() &&
-                scf_par.getInitVals()[0].getDefiningOp()) {
-              sink_wait_all_op = dyn_cast_if_present<air::WaitAllOp>(
-                  scf_par.getInitVals()[0].getDefiningOp());
-            }
-          } else if (auto scf_for = dyn_cast_if_present<scf::ForOp>(parent)) {
-            if (scf_for.getInitArgs().size() &&
-                scf_for.getInitArgs()[0].getDefiningOp()) {
-              sink_wait_all_op = dyn_cast_if_present<air::WaitAllOp>(
-                  scf_for.getInitArgs()[0].getDefiningOp());
-            }
-          }
-        }
-      }
-
-      depTracer.getPartialMemrefFromOp(
-          memcpy_op.getOperation(), sink_op_memref_reads, sink_op_memref_writes,
-          sink_op_scalar_ins, sink_op_scalar_outs);
-
-      if (sink_op_memref_reads.empty() && sink_op_memref_writes.empty()) {
-        memcpy_op->emitOpError("cannot read memref from channel op.");
-        return WalkResult::skip();
-      }
-
-      if (sink_wait_all_op) {
-        // Detect RAW deps
-        if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
-                sink_op_memref_reads, sink_wait_all_op, "RAW")))
-          signalPassFailure();
-        // Detect WAW and WAR deps
-        if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
-                sink_op_memref_writes, sink_wait_all_op, "WAW/WAR")))
-          signalPassFailure();
-
-        // Rebuild loop-carried dependency in scf loop nest
-        air::clearAsyncDependenciesOfAsyncOp(memcpy_op);
-        depTracer.reconnectLoopCarriedDependencyFromOp(
-            memcpy_op.getOperation());
-      }
-
-      // Trace dependency of external put/get within scf loop
-      if (failed(
-              depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-                  sink_op_memref_reads,
-                  dyn_cast_if_present<air::AsyncOpInterface>(
-                      memcpy_op.getOperation()),
-                  "RAW")))
-        signalPassFailure();
-      if (failed(
-              depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-                  sink_op_memref_writes,
-                  dyn_cast_if_present<air::AsyncOpInterface>(
-                      memcpy_op.getOperation()),
-                  "WAW/WAR")))
-        signalPassFailure();
-      // Detect tile index deps
-      depTracer.traceTileIndices(
-          sink_op_memref_reads, sink_op_memref_writes, sink_op_scalar_ins,
-          sink_op_scalar_outs,
-          dyn_cast_if_present<air::AsyncOpInterface>(memcpy_op.getOperation()));
-      return WalkResult::advance();
-    });
+    if (failed(traceExternalDependencies(f)))
+      signalPassFailure();
   }
 };
 

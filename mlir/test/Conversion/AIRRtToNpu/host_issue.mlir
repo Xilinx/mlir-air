@@ -8,12 +8,14 @@
 // RUN: air-opt %s -split-input-file -airrt-to-npu | FileCheck %s
 
 // A descriptor a core patches on a memtile: the sequence writes
-// it first, from @__air_issue_templates, then lets the core go.
+// it first, from @__air_issue_templates, then lets the core go, once per
+// iteration of the core this dispatch runs.
 
 // CHECK-LABEL: aie.runtime_sequence @device_issue_l2
 // CHECK: aiex.dma_configure_task(%{{.*}}, MM2S, 0)
 // CHECK: {bd_id = 23 : i32}
-// CHECK: aiex.set_lock(%__air_issue_ready_0_2, %{{.*}}) {air.device_issue}
+// CHECK: %[[N:.*]] = arith.constant 3 : i32
+// CHECK: aiex.set_lock(%__air_issue_ready_0_2, %[[N]]) {air.device_issue}
 // CHECK-NOT: __air_issue_templates
 #loop_annotation = #llvm.loop_annotation<mustProgress = true>
 module {
@@ -196,7 +198,7 @@ module {
         aie.dma_bd(%buf5 : memref<8x256xi32, 1 : i32> offset = 0 len = 256) {bd_id = 23 : i32}
         aie.use_lock(%lock_0_1, Release, %c1_i32)
         aie.end
-      } {air.device_issue = 2 : i64, air.device_issue_channel = 0 : i32, air.device_issue_dir = 1 : i32, air.device_issue_lock = "__air_issue_ready_0_2"}
+      } {air.device_issue = 2 : i64, air.device_issue_channel = 0 : i32, air.device_issue_dir = 1 : i32, air.device_issue_iterations = 3 : i64, air.device_issue_lock = "__air_issue_ready_0_2"}
     }
     aie.shim_dma_allocation @air_YOut(%shim_noc_tile_0_0, S2MM, 0)
     aie.shim_dma_allocation @air_WIn(%shim_noc_tile_0_0, MM2S, 0)

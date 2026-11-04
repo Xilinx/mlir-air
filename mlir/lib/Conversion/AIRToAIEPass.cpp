@@ -11,6 +11,7 @@
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Transform/AIRDependencyScheduleOpt.h"
+#include "air/Transform/AIRDmaToChannel.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 #include <numeric>
@@ -4835,6 +4836,16 @@ static FailureOr<DeviceIssueCore> setUpDeviceIssueCore(AIE::CoreOp core,
     if (!ic.outProd || !ic.outCons || !ic.ready)
       return core->emitOpError(
           "starts a transfer, which needs three free locks on its tile");
+    // Every iteration of the core waits for the descriptors once.
+    Block &entry = core.getBody().front();
+    Block *iter = &entry;
+    if (auto br = dyn_cast<cf::BranchOp>(entry.getTerminator()))
+      iter = br.getDest();
+    OpBuilder rb = OpBuilder::atBlockBegin(iter);
+    memref::StoreOp::create(
+        rb, loc, arith::ConstantIntOp::create(rb, loc, rb.getI32Type(), 0),
+        ic.started,
+        ValueRange{arith::ConstantIndexOp::create(rb, loc, 0).getResult()});
   } else {
     ic.inProd = lock(1, "__air_issue_in_prod_" + suffix);
     ic.inCons = lock(0, "__air_issue_in_cons_" + suffix);
@@ -5332,7 +5343,8 @@ public:
   // pinned shim BD and the core lock the host releases once it is armed.
   LogicalResult
   lowerDeviceIssuedPuts(AIE::DeviceOp device,
-                        ArrayRef<air::MemcpyInterface> shimMemcpyIfOps) {
+                        ArrayRef<air::MemcpyInterface> shimMemcpyIfOps,
+                        ArrayRef<air::LaunchOp> launches) {
     llvm::DenseMap<int64_t, air::ChannelPutOp> arms;
     for (auto op : shimMemcpyIfOps)
       if (auto put = dyn_cast<air::ChannelPutOp>(op.getOperation()))
@@ -5450,6 +5462,25 @@ public:
         OpBuilder ab(tmpl);
         chain->setAttr("air.device_issue_lock",
                        ab.getStringAttr(ic.ready.getSymName()->str()));
+        // The core waits once per iteration; a dispatch runs the launch
+        // once per trip of the loops around it.
+        int64_t iterations = 0;
+        for (air::LaunchOp launch : launches) {
+          int64_t trips = 1;
+          for (Operation *p = launch->getParentOp(); p && !isa<func::FuncOp>(p);
+               p = p->getParentOp())
+            if (auto loop = dyn_cast<scf::ForOp>(p)) {
+              auto t = air::getStaticScfForTripCountAsInt(loop);
+              if (!t)
+                return issue->emitOpError(
+                    "patches an on-chip descriptor under a launch repeated a "
+                    "run-time number of times");
+              trips *= *t;
+            }
+          iterations += trips;
+        }
+        chain->setAttr("air.device_issue_iterations",
+                       ab.getI64IntegerAttr(std::max<int64_t>(iterations, 1)));
 
         // The word holding the address, as the runtime sequence writes it: a
         // memtile addresses its own memory in its middle window.
@@ -10372,7 +10403,8 @@ public:
                                               isSegmentUnrolled))) {
           return failure();
         }
-        if (failed(lowerDeviceIssuedPuts(device, shimMemcpyIfOps)))
+        if (failed(
+                lowerDeviceIssuedPuts(device, shimMemcpyIfOps, targetLaunches)))
           return failure();
       }
 
@@ -10731,6 +10763,13 @@ public:
     // Before anything is emitted: an op no AIE core can run would otherwise
     // be lowered into IR that looks fine and cannot execute.
     if (failed(diagnoseComputeOutsideHerd(module))) {
+      signalPassFailure();
+      return;
+    }
+
+    // Transfers cores start that air-opt-memtile-dma-bds did not hoist (a
+    // pipeline without it) leave their herds here.
+    if (failed(air::hoistDeviceIssuedTransfers(module))) {
       signalPassFailure();
       return;
     }

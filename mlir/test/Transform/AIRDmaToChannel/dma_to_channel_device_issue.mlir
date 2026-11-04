@@ -8,20 +8,20 @@
 // RUN: air-opt %s -air-dma-to-channel -canonicalize -cse -split-input-file -verify-diagnostics | FileCheck %s
 
 // An L3 put whose offset uses a value the core loads from L1 is split: the
-// host part is hoisted onto the put, and an air.channel.issue in the herd
-// carries the device part as an i64 element offset.
+// put keeps the host part, and an air.channel.issue before it carries the
+// device part as an i64 element offset. The put stays in the herd, after its
+// issue, until air-opt-memtile-dma-bds hoists it.
 
 // CHECK-DAG: #[[HOSTMAP:.*]] = affine_map<()[s0] -> (s0 * 32768 + 7)>
 // CHECK-LABEL: func.func @split
-// CHECK: air.launch (%[[L:.*]]) in
-// CHECK: %[[HOST:.*]] = affine.apply #[[HOSTMAP]]()[%[[L]]]
-// CHECK: air.channel.put @cin[{{.*}}] (%{{.*}}[%[[HOST]]] [1024] [1]) {air.device_issue = 0 : i64}
-// CHECK: air.herd @router
+// CHECK: air.herd @router {{.*}} args({{.*}}, %[[L:.*]]=%{{.*}}) : memref<65536xi32>, index
 // CHECK: %[[V:.*]] = memref.load
 // CHECK: %[[E:.*]] = arith.index_cast %[[V]] : i32 to index
+// CHECK: %[[HOST:.*]] = affine.apply #[[HOSTMAP]]()[%[[L]]]
 // CHECK: %[[E64:.*]] = arith.index_cast %[[E]] : index to i64
 // CHECK: %[[DEV:.*]] = arith.muli %[[E64]], %c1024_i64 : i64
 // CHECK: air.channel.issue @cin[%{{.*}}, %{{.*}}] offset(%[[DEV]] : i64) {issue_id = 0 : i64}
+// CHECK-NEXT: air.channel.put @cin[{{.*}}] (%{{.*}}[%[[HOST]]] [1024] [1]) {air.device_issue = 0 : i64}
 // CHECK: air.herd @mvm
 // CHECK: air.channel.get @cin
 module {
@@ -57,11 +57,11 @@ module {
 // strides into one element offset.
 
 // CHECK-LABEL: func.func @strided
-// CHECK: air.channel.put @cin2[{{.*}}] (%{{.*}}[0, 0] [4, 256] [256, 1]) {air.device_issue = 0 : i64}
 // CHECK: air.herd @router
 // CHECK: %[[E:.*]] = arith.index_cast %{{.*}} : index to i64
 // CHECK: %[[DEV:.*]] = arith.muli %[[E]], %c256_i64 : i64
 // CHECK: air.channel.issue @cin2[%{{.*}}, %{{.*}}] offset(%[[DEV]] : i64)
+// CHECK-NEXT: air.channel.put @cin2[{{.*}}] (%{{.*}}[0, 0] [4, 256] [256, 1]) {air.device_issue = 0 : i64}
 module {
   air.channel @cin2 [1, 1]
   func.func @strided(%arg0: memref<64x256xi32>) {
@@ -142,12 +142,11 @@ module {
 // memtile descriptor keeps only the constant part.
 
 // CHECK-LABEL: func.func @l2_put
-// CHECK: air.segment
-// CHECK: air.channel.put @row[] (%{{.*}}[0, 0] [1, 256] [256, 1]) {air.device_issue = {{[0-9]+}} : i64}
 // CHECK: air.herd @fwd
 // CHECK: %[[E:.*]] = arith.index_cast %{{.*}} : index to i64
 // CHECK: %[[DEV:.*]] = arith.muli %[[E]], %c256_i64 : i64
 // CHECK: air.channel.issue @row[] offset(%[[DEV]] : i64)
+// CHECK-NEXT: air.channel.put @row[] (%{{.*}}[0, 0] [1, 256] [256, 1]) {air.device_issue = {{[0-9]+}} : i64}
 // CHECK: air.channel.get @row[]
 module {
   air.channel @row []

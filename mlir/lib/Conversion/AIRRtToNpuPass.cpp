@@ -5231,20 +5231,26 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       for (Block *body : bodies) {
         OpBuilder b(body, body->begin());
         IRMapping map;
-        llvm::SetVector<StringAttr> locks;
+        // Each core may start one iteration per launch iteration of this
+        // dispatch, once the descriptors are written.
+        llvm::MapVector<StringAttr, int64_t> locks;
         for (Operation &op : holder.getBody().front()) {
           b.clone(op, map);
-          if (auto lock = op.getAttrOfType<StringAttr>("air.device_issue_lock"))
-            locks.insert(lock);
+          if (auto lock =
+                  op.getAttrOfType<StringAttr>("air.device_issue_lock")) {
+            auto n =
+                op.getAttrOfType<IntegerAttr>("air.device_issue_iterations");
+            locks[lock] = std::max(locks.lookup(lock), n ? n.getInt() : 1);
+          }
         }
-        for (StringAttr name : locks) {
+        for (auto &[name, iterations] : locks) {
           auto lock =
               air::lookupBySymName<AIE::LockOp>(device, name.getValue());
           if (!lock)
             return holder->emitOpError("has no core lock ") << name;
-          Value one = arith::ConstantIntOp::create(b, holder.getLoc(),
-                                                   b.getI32Type(), 1);
-          AIEX::SetLockOp::create(b, holder.getLoc(), lock.getResult(), one)
+          Value count = arith::ConstantIntOp::create(
+              b, holder.getLoc(), b.getI32Type(), iterations);
+          AIEX::SetLockOp::create(b, holder.getLoc(), lock.getResult(), count)
               ->setAttr("air.device_issue", b.getUnitAttr());
         }
       }
