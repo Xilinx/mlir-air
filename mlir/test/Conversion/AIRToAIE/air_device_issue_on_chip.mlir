@@ -16,6 +16,8 @@
 // CHECK: %[[READY:.*]] = aie.lock(%[[T:.*]], {{.*}}) {init = 0 : i32, sym_name = "__air_issue_ready_0_2"}
 // CHECK: aie.dma_bd(%__air_issue_ctrl_out_0_2 : memref<4xi32, 2 : i32> offset = 0 len = 3)
 // CHECK: aie.core
+// Every iteration of the core waits for the descriptors once.
+// CHECK: memref.store %c0_i32, %__air_issue_started_0_2
 // CHECK: aie.use_lock(%[[READY]], AcquireGreaterEqual
 // CHECK: arith.addi %{{.*}}, %c260096_i32
 // CHECK: memref.store %c-2130050332_i32, %__air_issue_ctrl_out_0_2
@@ -26,7 +28,7 @@
 // CHECK: aie.runtime_sequence @__air_issue_templates()
 // CHECK: aiex.dma_configure_task(%{{.*}}, MM2S, 0)
 // CHECK: aie.dma_bd({{.*}} offset = 0 len = 256) {bd_id = 23 : i32}
-// CHECK: } {air.device_issue = 2 : i64, air.device_issue_channel = 0 : i32, air.device_issue_dir = 1 : i32, air.device_issue_lock = "__air_issue_ready_0_2"}
+// CHECK: } {air.device_issue = 2 : i64, air.device_issue_channel = 0 : i32, air.device_issue_dir = 1 : i32, air.device_issue_iterations = 1 : i64, air.device_issue_lock = "__air_issue_ready_0_2"}
 // CHECK: aie.packet_source<%[[T]], DMA : 1>
 // CHECK-NEXT: aie.packet_dest<%{{.*}}, TileControl : 0>
 module {
