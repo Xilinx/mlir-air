@@ -18,6 +18,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -342,7 +343,10 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
         wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
         clonedOps.push_back(wa_op);
       }
-    } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
+    } else if (!air::isEffectFree(&o) && !isa<air::WaitAllOp>(o)) {
+      // Ops with memory effects are not repeated in the hoisted code.
+      // Effect-free ops are cloned even when they are not speculatable (e.g.
+      // arith.divsi), since the hoisted ops may use their results.
       if (air::isAsyncOp(&o)) {
         auto wa_op = air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
         wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));

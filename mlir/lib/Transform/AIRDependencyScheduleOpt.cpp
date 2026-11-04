@@ -6930,7 +6930,7 @@ private:
                            .getAsyncToken());
         return true;
       }
-      if (isa<air::AsyncTokenType>(v.getType()) || !air::isPure(def))
+      if (isa<air::AsyncTokenType>(v.getType()) || !air::isEffectFree(def))
         return false;
       for (Value operand : def->getOperands())
         if (!mapValue(operand))

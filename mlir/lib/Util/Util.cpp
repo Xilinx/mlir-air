@@ -3191,6 +3191,10 @@ bool air::isPure(Operation *op) {
   return result;
 }
 
+bool air::isEffectFree(Operation *op) {
+  return air::isPure(op) || mlir::isMemoryEffectFree(op);
+}
+
 void air::getUsedConstsDefinedAbove(MutableArrayRef<Region> region,
                                     SmallVector<Value, 4> &constants) {
   llvm::SetVector<Value> region_args;
@@ -3469,7 +3473,7 @@ Operation *air::cloneOpAndOperands(RewriterBase &rewriter, IRMapping &remap,
   (void)getBackwardSlice(op, &backwardSlice, bsOptions);
   // 2) Clone producers if not already mapped.
   for (auto b : backwardSlice)
-    if (air::isPure(b))
+    if (air::isEffectFree(b))
       rewriter.clone(*b, remap);
   // 3) Finally clone the target op itself.
   auto new_op = rewriter.clone(*op, remap);
