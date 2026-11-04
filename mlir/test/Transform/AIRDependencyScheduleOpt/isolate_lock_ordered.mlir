@@ -295,3 +295,99 @@ module {
     return
   }
 }
+
+// -----
+
+// H: the loop around the put takes an index from the fill loop as well as its
+// token. A non-token value orders them, so they stay in one loop.
+// CHECK-LABEL: func.func @non_token_result
+// CHECK: scf.for
+// CHECK: %[[F:.*]]:2 = scf.for
+// CHECK: air.channel.get{{.*}}@fill
+// CHECK-NOT: air.channel.get
+// CHECK: scf.for {{.*}} = %[[F]]#1
+// CHECK: air.channel.put{{.*}}@out
+// CHECK-NOT: air.channel.get{{.*}}@fill
+
+module {
+  air.channel @fill [1, 1]
+  air.channel @out [1, 1]
+  func.func @non_token_result() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%a, %b) in (%sa=%c1, %sb=%c1) {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c4 = arith.constant 4 : index
+        %c32 = arith.constant 32 : index
+        %t0, %buf = air.execute -> (memref<64xbf16, 1>) {
+          %m = memref.alloc() : memref<64xbf16, 1>
+          air.execute_terminator %m : memref<64xbf16, 1>
+        }
+        %2 = scf.for %k = %c0 to %c4 step %c1_0 iter_args(%it = %t0) -> (!air.async.token) {
+          %f:2 = scf.for %h = %c0 to %c2 step %c1_0 iter_args(%t = %it, %n = %c0) -> (!air.async.token, index) {
+            %off = arith.muli %h, %c32 : index
+            %g = air.channel.get async [%t] @fill[%c0, %c0] (%buf[%off] [%c32] [%c1_0]) : (memref<64xbf16, 1>)
+            %n1 = arith.addi %n, %c1_0 : index
+            scf.yield %g, %n1 : !air.async.token, index
+          }
+          %p = scf.for %h = %f#1 to %c2 step %c1_0 iter_args(%t = %f#0) -> (!air.async.token) {
+            %q = air.channel.put async [%t] @out[%c0, %c0] (%buf[] [] []) : (memref<64xbf16, 1>)
+            scf.yield %q : !air.async.token
+          }
+          scf.yield %p : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// I: the fill loop also carries an index initialized outside the loop body.
+// When the put's loop is split from it, only tokens go into the put loop's
+// rebuilt dependencies.
+// CHECK-LABEL: func.func @index_init_arg
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: air.channel.get{{.*}}@fill
+// CHECK: scf.for {{.*}} iter_args(%[[IT:.*]] = %{{.*}}) -> (!air.async.token)
+// CHECK: air.channel.put async [%[[IT]]]  @out
+
+module {
+  air.channel @fill [1, 1]
+  air.channel @out [1, 1]
+  func.func @index_init_arg() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%a, %b) in (%sa=%c1, %sb=%c1) {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c4 = arith.constant 4 : index
+        %c32 = arith.constant 32 : index
+        %t0, %buf = air.execute -> (memref<64xbf16, 1>) {
+          %m = memref.alloc() : memref<64xbf16, 1>
+          air.execute_terminator %m : memref<64xbf16, 1>
+        }
+        %2 = scf.for %k = %c0 to %c4 step %c1_0 iter_args(%it = %t0) -> (!air.async.token) {
+          %f:2 = scf.for %h = %c0 to %c2 step %c1_0 iter_args(%t = %it, %n = %c0) -> (!air.async.token, index) {
+            %off = arith.muli %n, %c32 : index
+            %g = air.channel.get async [%t] @fill[%c0, %c0] (%buf[%off] [%c32] [%c1_0]) : (memref<64xbf16, 1>)
+            %n1 = arith.addi %n, %c1_0 : index
+            scf.yield %g, %n1 : !air.async.token, index
+          }
+          %w = air.wait_all async [%f#0]
+          %p = scf.for %h = %c0 to %c1_0 step %c1_0 iter_args(%t = %w) -> (!air.async.token) {
+            %q = air.channel.put async [%t] @out[%c0, %c0] (%buf[] [] []) : (memref<64xbf16, 1>)
+            scf.yield %q : !air.async.token
+          }
+          scf.yield %p : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}

@@ -7483,6 +7483,19 @@ struct LoopBodyAccess {
   }
 };
 
+// Returns true if `sink` or an op nested in it uses a result of `source` that
+// is not an async token. Only a token can be dropped when the two are split.
+static bool usesNonTokenResult(Operation *source, Operation *sink) {
+  for (Value result : source->getResults()) {
+    if (isa<air::AsyncTokenType>(result.getType()))
+      continue;
+    for (Operation *user : result.getUsers())
+      if (sink->isAncestor(user))
+        return true;
+  }
+  return false;
+}
+
 // Returns the tokens `op` waits for: its async dependencies, plus the tokens
 // that ops in its regions use from above.
 static llvm::SetVector<Value> tokensWaitedOn(Operation *op) {
@@ -7774,6 +7787,7 @@ private:
         // lowering derives the buffer's lock counts from the loop body they
         // share.
         if (isa<LoopLikeOpInterface>(sourceOp) &&
+            !usesNonTokenResult(sourceOp, sinkOp) &&
             LoopBodyAccess::lockOrdered(access[sourceOp], access[sinkOp]))
           lockOrdered.push_back({sourceOp, sinkOp});
         else
@@ -7849,7 +7863,8 @@ private:
           }
           if (seen.insert(def).second)
             for (Value dep : getAsyncDependenciesFromOp(def))
-              keep(dep, loop, out, seen);
+              if (isa<air::AsyncTokenType>(dep.getType()))
+                keep(dep, loop, out, seen);
         };
     for (auto sink : sinks) {
       unsigned loop = loopOf.lookup(sink);
