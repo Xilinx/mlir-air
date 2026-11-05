@@ -439,7 +439,8 @@ static Value peelStaticAddends(Value v, OpBuilder &builder, Location loc,
 static BlockArgument affineInSequenceArg(Value v, int64_t &scale,
                                          int64_t &addend,
                                          bool widenOnly = false,
-                                         bool funcArg = false) {
+                                         bool funcArg = false,
+                                         std::optional<bool> selectArm = {}) {
   scale = 1;
   addend = 0;
   auto width = [](Type t) -> unsigned {
@@ -454,6 +455,11 @@ static BlockArgument affineInSequenceArg(Value v, int64_t &scale,
           width(def->getResult(0).getType()) < width(src.getType()))
         return nullptr;
       v = src;
+      continue;
+    }
+    // With `selectArm`, follow that arm of a select.
+    if (auto sel = dyn_cast<arith::SelectOp>(def); sel && selectArm) {
+      v = *selectArm ? sel.getTrueValue() : sel.getFalseValue();
       continue;
     }
     if (!llvm::isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(def))
@@ -569,6 +575,24 @@ static StringAttr declareBlockArgLengthParameter(ModuleOp module, Value length,
   return name;
 }
 
+// Each (argument, scale, addend, most) in `air.ctrl_bounds` asks the host to
+// keep `scale * argument + addend` within [1, most]: a runtime size that the
+// descriptor cannot hold the transfer to by itself.
+static void appendHostBounds(ModuleOp module, ArrayRef<int64_t> bounds) {
+  SmallVector<int64_t> all;
+  if (auto prev = module->getAttrOfType<DenseI64ArrayAttr>("air.ctrl_bounds"))
+    all.append(prev.asArrayRef().begin(), prev.asArrayRef().end());
+  for (size_t i = 0; i + 3 < bounds.size(); i += 4) {
+    bool seen = false;
+    for (size_t j = 0; j + 3 < all.size() && !seen; j += 4)
+      seen = ArrayRef(all).slice(j, 4) == bounds.slice(i, 4);
+    if (!seen)
+      all.append(bounds.begin() + i, bounds.begin() + i + 4);
+  }
+  module->setAttr("air.ctrl_bounds",
+                  DenseI64ArrayAttr::get(module.getContext(), all));
+}
+
 // A runtime run count `scale * arg + addend` becomes a repeat parameter holding
 // one less than it, the field the task queue takes. Returns its name, or null
 // if the count is not of that form.
@@ -652,6 +676,29 @@ static Value findLoopSelectCondition(Value v, int depth = 0) {
   return Value();
 }
 
+// Bounds a runtime size the host sets: `size` must be affine in one sequence
+// argument, or pick between two such terms by a select. Returns failure if it
+// is neither.
+static LogicalResult boundHostSize(ModuleOp module, Value size, int64_t most) {
+  if (!module)
+    return failure();
+  SmallVector<std::optional<bool>> arms = {std::nullopt};
+  if (findLoopSelectCondition(size))
+    arms = {true, false};
+  SmallVector<int64_t> bounds;
+  for (std::optional<bool> arm : arms) {
+    int64_t scale, addend;
+    BlockArgument arg = affineInSequenceArg(
+        size, scale, addend, /*widenOnly=*/true, /*funcArg=*/true, arm);
+    if (!arg)
+      return failure();
+    bounds.append(
+        {static_cast<int64_t>(arg.getArgNumber()), scale, addend, most});
+  }
+  appendHostBounds(module, bounds);
+  return success();
+}
+
 // `v` with every select on `cond` replaced by its `arm` operand, cloning only
 // the ops between them at the builder's insertion point.
 static Value resolveSelect(Value v, Value cond, bool arm, OpBuilder &b,
@@ -702,8 +749,9 @@ static void parameterizeRuntimeBD(ModuleOp module, xilinx::AIE::DMABDOp bd) {
       return;
   }
   if (len) {
-    StringAttr lenParam =
-        declareBlockArgLengthParameter(module, len, b, unit, base);
+    StringAttr lenParam = declareBlockArgLengthParameter(
+        module, len, b, unit, base,
+        /*atLeastOne=*/bd.getIteration().has_value());
     if (!lenParam)
       return;
     bd.getLenMutable().clear();
@@ -1215,7 +1263,14 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         } else if (dim == 0) {
           // The outermost dim re-runs the descriptor, which the task's
           // repeat_count takes as an operand; a nonzero stride steps its
-          // iteration dimension between runs.
+          // iteration dimension between runs. A repeat inside a stepping one
+          // would need a second repeat count.
+          if (thisStride != 0)
+            for (unsigned i = 1; i < mixedLengths.size(); i++)
+              if (*getConstantIntValue(mixedStrides[i]) == 0 &&
+                  *getConstantIntValue(mixedLengths[i]) != 1)
+                return op->emitOpError("runtime outer size that steps, with a "
+                                       "repeat inside it, is not supported");
           dynOuterSize = dynVal;
         } else {
           return op->emitOpError("runtime-valued DMA size in dimension ")
@@ -1279,24 +1334,29 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     int64_t maxRuns = 256;
     if (dynOuterSize && staticStrides[0] != 0) {
       maxRuns = std::min<int64_t>(
-          maxRuns, int64_t(1) << AIE::getTargetModel(device).getDmaBdIterBits(
-                       AIE::AIETileType::ShimNOCTile));
+          maxRuns, air::getDmaBdLimits(op, air::MemorySpace::L3).maxIterWrap);
       auto memTy = dyn_cast<MemRefType>(op.getMemref().getType());
       if (!memTy || !memTy.hasStaticShape())
         return op->emitOpError("a runtime outer size that steps through its "
                                "buffer needs a static buffer");
-      // A runtime offset is bounded below by 0 only.
+      // A runtime offset only moves the runs further in; the bound takes the
+      // static part.
       int64_t span = 1;
       for (int i = 1; i < 4; i++)
         span += (staticSizes[i] - 1) * staticStrides[i];
-      maxRuns = std::min<int64_t>(maxRuns, (memTy.getNumElements() -
-                                            (dynOffset ? 0 : totalOffset) -
-                                            span) / staticStrides[0] +
-                                               1);
+      maxRuns = std::min<int64_t>(
+          maxRuns,
+          (memTy.getNumElements() - totalOffset - span) / staticStrides[0] + 1);
       if (maxRuns < 1)
         return op->emitOpError("runtime outer size: one run overruns the "
                                "buffer");
       staticSizes[0] = maxRuns;
+      // Past maxRuns the iteration wraps and re-reads the first run.
+      if (failed(boundHostSize(op->getParentOfType<ModuleOp>(), dynOuterSize,
+                               maxRuns)))
+        return op->emitOpError("a runtime outer size that steps through its "
+                               "buffer must be affine in one sequence "
+                               "argument, for the host to bound it");
     }
     if (dynOuterSize) {
       auto i32 = rewriter.getI32Type();
@@ -1398,6 +1458,22 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         dynLen && iterSize > 1
             ? AIE::BDIterationAttr::get(ctx, iterSize, iterStride, 0)
             : nullptr;
+    // The descriptor bounds its length but not the runs its iteration adds.
+    if (iteration) {
+      auto memTy = dyn_cast<MemRefType>(op.getMemref().getType());
+      if (!memTy || !memTy.hasStaticShape())
+        return op->emitOpError("a runtime length under a stepping dimension "
+                               "needs a static buffer");
+      int64_t most =
+          memTy.getNumElements() - totalOffset - (iterSize - 1) * iterStride;
+      if (most < 1)
+        return op->emitOpError("runtime length: its iteration overruns the "
+                               "buffer");
+      if (failed(boundHostSize(op->getParentOfType<ModuleOp>(), dynLen, most)))
+        return op->emitOpError("a runtime length under a stepping dimension "
+                               "must be affine in one sequence argument, for "
+                               "the host to bound it");
+    }
     Value dynOffsetI32 = narrowToI32(addStaticOffset(dynOffset));
 
     // A full ELF has no queue word to compute the count into: the host writes
@@ -5307,8 +5383,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                  "table; only one is supported");
       module->setAttr("air.ctrl_table",
                       DenseI32ArrayAttr::get(module.getContext(), table));
-      module->setAttr("air.ctrl_bounds",
-                      DenseI64ArrayAttr::get(module.getContext(), bounds));
+      appendHostBounds(module, bounds);
     }
     for (auto &[issue, base, name] : reads) {
       OpBuilder b(issue);

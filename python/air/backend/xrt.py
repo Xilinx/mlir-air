@@ -228,16 +228,17 @@ class _HostSide:
         scalars = {
             i: int(a) for i, a in enumerate(args) if not isinstance(a, np.ndarray)
         }
-        # The table holds one entry per length; any other picks a wrong one.
+        # A length the table has no entry for, or a count past the runs a
+        # descriptor holds, moves the wrong data.
         for arg, scale, addend, most in self.bounds:
             if arg not in scalars:
                 raise AirBackendError(
-                    f"argument {arg} sets a transfer length and must be an int"
+                    f"argument {arg} sets a transfer size and must be an int"
                 )
             length = scale * scalars[arg] + addend
             if not 1 <= length <= most:
                 raise AirBackendError(
-                    f"argument {arg} = {scalars[arg]} sets a transfer length of "
+                    f"argument {arg} = {scalars[arg]} sets a transfer size of "
                     f"{length}; it must be between 1 and {most}"
                 )
         if self.table is not None:

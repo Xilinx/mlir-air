@@ -771,7 +771,8 @@ static LogicalResult writeHostSidecars(ModuleOp moduleOp) {
         })))
       return failure();
   }
-  // Per host-issued length: arg, scale, addend, and the most the table holds.
+  // Per runtime size the host keeps in range: arg, scale, addend, and the
+  // most it may be.
   if (auto bounds =
           moduleOp->getAttrOfType<DenseI64ArrayAttr>("air.ctrl_bounds")) {
     if (failed(write("air_ctrl_bounds.txt", [&](raw_ostream &os) {

@@ -19,6 +19,7 @@ import numpy as np
 
 from air import api as air
 from air.api.types import i32
+from air.backend.abc import AirBackendError
 from air.backend.xrt import XRTBackend
 
 NB, R, C = 8, 4, 64
@@ -123,6 +124,13 @@ if __name__ == "__main__":
             good = np.array_equal(y, expected(args.mode, x, n, b0))
             ok &= good
             print(f"n={n} b0={b0}: {'ok' if good else 'MISMATCH'}")
+        # one more block than the buffer holds is refused before dispatch
+        try:
+            run(x, np.zeros(out, np.int32), NB + 1, 0)
+            print(f"n={NB + 1}: NOT REFUSED")
+            ok = False
+        except AirBackendError as e:
+            print(f"n={NB + 1}: refused ({e})")
         backend.unload()
     print("PASS!" if ok else "failed.")
     exit(0 if ok else -1)
