@@ -157,6 +157,45 @@ def runtime_extent():
     print(launch.mlir())
 
 
+# CHECK-LABEL: TEST: runtime_slice_size
+# A slice whose size is known only at run time is a channel endpoint with that
+# size as an operand, on whichever axis it is: here the middle one, under an
+# outer axis that steps. Nothing else can take such a region.
+# CHECK: reshape needs a region of static sizes
+# CHECK: air.channel.put @Blocks[] (%{{.*}}[0, %{{.*}}, 0] [8, %{{.*}}, 64] [2048, 64, 1]) : (memref<8x32x64xi32>)
+@run
+def runtime_slice_size():
+    KV = air.tensor([8, 32, 64], i32)
+    B0 = air.tensor([], i32, name="b0")
+    NB = air.tensor([], i32, name="nb")
+    blocks = air.channel("Blocks")
+
+    with air.launch(name="rt_slice", repeat=1) as launch:
+
+        @launch.body
+        def _(w):
+            b0, nb = air.rtp(B0.value), air.rtp(NB.value)
+            with air.segment(name="seg", params=[b0, nb]) as seg:
+
+                @seg.body
+                def _():
+                    first = b0.as_index()
+                    region = KV[:, first : first + nb.as_index(), :]
+                    blocks.put(region)
+                    try:
+                        region.reshape([8, -1])
+                    except ValueError as e:
+                        print(str(e).split(";")[0])
+                    with air.herd([range(1)], name="h", shape=(1,), params=[]) as h:
+
+                        @h.body
+                        def _(tx):
+                            buf = air.alloc([64], i32, scope=h.private())
+                            blocks.get(buf)
+
+    print(launch.mlir())
+
+
 # CHECK-LABEL: TEST: channel_array
 # size= makes the channel an array, and indices= selects one of its members.
 # The herd coordinate is a legitimate index, so the subscript is dynamic.

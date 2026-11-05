@@ -111,13 +111,13 @@ def _():
 
 
 # CHECK-LABEL: TEST: dynamic_tile_size
-# CHECK: ValueError: slice size along dim 0 is not a compile-time constant
+# CHECK: ValueError: load: this region{{.*}}known only at run time, which only a channel put or get can carry
 @expect(ValueError, "dynamic_tile_size")
 def _():
     def body(h, tx, ty, A, B, C):
         a = air.alloc([64, 64], bf16, scope=h.private())
-        # The stop bound moves with the tile coordinate, so the extent is not
-        # a constant and the DMA would need a dynamic size.
+        # The stop bound moves with the tile coordinate, so the size is known
+        # only at run time, which a load cannot take.
         air.ops.load(a, A[tx : tx * 2 + 64, 0:64])
 
     _trace(body)

@@ -460,6 +460,8 @@ class Channel:
             # value defined outside the region".
             endpoint = _endpoint(obj, f"channel.{direction}", "argument")
             offsets, sizes, strides = endpoint.pattern or ([], [], [])
+            # a slice of run-time size carries it as an index expression
+            sizes = [s if isinstance(s, int) else s.materialize() for s in sizes]
             if extent is not None:
                 from ._index import coerce_index
 
@@ -591,7 +593,8 @@ class Channel:
         ``extent`` replaces the size of an L3 region's, or an L2 buffer's,
         outermost axis with a value known only at run time: a rank-0 tensor
         argument, or an index computed inside the launch. The region's own size
-        on that axis is the most it may move.
+        on that axis is the most it may move. A slice whose size is itself known
+        only at run time (``X[:, a : a + n]``) needs no extent.
         """
         _reject_unsupported(unsupported)
         return self._emit(obj, indices, dependency, "put", dest=dest, extent=extent)

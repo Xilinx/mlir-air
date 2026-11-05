@@ -55,8 +55,8 @@ with tempfile.TemporaryDirectory() as d:
     print("results", [type(o).__name__ for o in out])
 
     # A length the table has no entry for is refused before dispatch.
-    # CHECK: argument 2 = 0 sets a transfer length of 0; it must be between 1 and 8
-    # CHECK: argument 2 = 9 sets a transfer length of 9; it must be between 1 and 8
+    # CHECK: argument 2 = 0 sets a transfer size of 0; it must be between 1 and 8
+    # CHECK: argument 2 = 9 sets a transfer size of 9; it must be between 1 and 8
     for bad in (0, 9):
         try:
             side.split((x, y, bad))
