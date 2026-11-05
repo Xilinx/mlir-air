@@ -60,7 +60,7 @@ def main():
         "compile-decode-elf",
         "DECODE_MODEL=gemma4-e4b",
         "MODEL_TYPE=GEMMA4_E4B",
-        "VOCAB_CHUNK_I2=5",
+        "VOCAB_CHUNK_I2=30",
         f"LBUILD={CAPACITY}",
         f"UNI_DEC={gw.NUM_LAYERS}",
         f"KV_SRC={kv_src}",

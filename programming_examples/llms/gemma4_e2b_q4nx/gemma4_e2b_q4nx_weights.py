@@ -83,7 +83,7 @@ VARIANTS = {
         REPO="FastFlowLM/Gemma4-E4B-IT-NPU2",
         DECODE_MODEL="gemma4-e4b",
         MODEL_TYPE="GEMMA4_E4B",
-        VOCAB_CHUNK_I2=5,
+        VOCAB_CHUNK_I2=30,
     ),
 }
 VARIANT = os.environ.get("GEMMA4_VARIANT", "e2b")

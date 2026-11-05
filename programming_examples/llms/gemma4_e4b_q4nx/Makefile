@@ -21,7 +21,7 @@ INFER_DRIVER   := $(srcdir)/gemma4_e4b_q4nx_inference.py
 BUILD_DIR := build_peano
 
 # The decode engine's build of this model, passed on every engine make line.
-DEC_MODEL := DECODE_MODEL=gemma4-e4b MODEL_TYPE=GEMMA4_E4B VOCAB_CHUNK_I2=5
+DEC_MODEL := DECODE_MODEL=gemma4-e4b MODEL_TYPE=GEMMA4_E4B VOCAB_CHUNK_I2=30
 
 # Padded prefill length of the per-op prefill ELFs; changing it is a rebuild.
 CTX ?= 2048
