@@ -58,7 +58,7 @@ _CHECK_W_ELEMS = [
     ("llama-3.2-3b", "9", 28, 1004666880),
     ("gemma3-4b", "5", 34, 1213644800),
     ("gemma4-e2b", "27", 35, 704102400),
-    ("gemma4-e4b", "5", 42, 1426636800),
+    ("gemma4-e4b", "30", 42, 1436876800),
 ]
 # The split models. Their parts summing to w_elems checks the part that can
 # actually be wrong: that the per-group `min(G, UNI_DEC - g*G)` covers exactly
@@ -106,7 +106,7 @@ _CHECK_KV_SPLITS = [
     ("qwen3-4b", "30", 36, 32768, [1207959552, 1207959552]),
     ("qwen3-4b", "30", 36, 16384, None),
     ("gemma4-e2b", "27", 35, 131072, [2147483648, 2147483648]),
-    ("gemma4-e4b", "5", 42, 65536, [1744830464, 1610612736]),
+    ("gemma4-e4b", "30", 42, 65536, [1744830464, 1610612736]),
     ("lfm2-1.2b", "16", 16, 131072, [1073807360, 1073741824]),
 ]
 _CHECK_WANT = dict(
