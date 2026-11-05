@@ -6,10 +6,11 @@
 The download patterns live here so the size this reports is what the
 "Download LLM Weights" workflow fetches. Exits 1 when the total is over --budget-gb.
 With --prune-cache, instead delete the local HF cache's model revisions the list
-no longer names.
+no longer names, and the files IGNORE names in the revisions it keeps.
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -29,8 +30,17 @@ ALLOW = [
 ]
 # Files no loader reads, which would otherwise cost disk or, failing to fetch on
 # the runner's flaky link, mark the snapshot incomplete: Llama's original/ dir,
-# licence blurbs, and Mistral's consolidated.safetensors (a copy of the shards).
-IGNORE = ["original/*", "LICENSE*", "USE_POLICY*", "consolidated*.safetensors"]
+# licence blurbs, Mistral's consolidated.safetensors (a copy of the shards), and
+# the audio and vision towers FastFlowLM bundles carry for FastFlowLM's own
+# runtime (the examples read model.q4nx).
+IGNORE = [
+    "original/*",
+    "LICENSE*",
+    "USE_POLICY*",
+    "consolidated*.safetensors",
+    "audio_weight.q4nx",
+    "vision_weight.q4nx",
+]
 # Repos whose pinned snapshot carries the HF implementation Transformers loads;
 # the example's offline snapshot_download asks for every *.py of it.
 EXTRA_ALLOW = {
@@ -60,11 +70,12 @@ def read_models(path):
 
 
 def prune_cache(entries, dry_run):
-    """Keep each listed pin, and the revision `main` points at for an unpinned entry."""
+    """Keep each listed pin, and the revision `main` points at for an unpinned
+    entry; in those, delete the files IGNORE names."""
     wanted = {}
     for _, repo, revision in entries:
         wanted.setdefault(repo, set()).add(revision)
-    doomed = []
+    keeps, doomed = {}, []
     for repo in sorted(scan_cache_dir().repos, key=lambda r: r.repo_id):
         if repo.repo_type != "model":
             continue
@@ -84,20 +95,78 @@ def prune_cache(entries, dry_run):
                     print(f"skip {repo.repo_id}: no cached revision is `main`")
                     continue
                 keep |= main
+        keeps[repo.repo_id] = keep
         for r in repo.revisions:
             if r.commit_hash not in keep:
                 print(f"prune {repo.repo_id}@{r.commit_hash} ({r.size_on_disk_str})")
                 doomed.append(r.commit_hash)
+    # Revisions first, while every snapshot is intact: a dangling link drops
+    # its repo from the cache scan.
     if not doomed:
-        print("nothing to prune")
-        return 0
-    strategy = scan_cache_dir().delete_revisions(*doomed)
-    print(
-        f"{'would free' if dry_run else 'freeing'} {strategy.expected_freed_size_str}"
-    )
-    if not dry_run:
-        strategy.execute()
+        print("no revision to prune")
+    else:
+        strategy = scan_cache_dir().delete_revisions(*doomed)
+        print(
+            f"{'would free' if dry_run else 'freeing'} "
+            f"{strategy.expected_freed_size_str} of revisions"
+        )
+        if not dry_run:
+            strategy.execute()
+    cache = scan_cache_dir()
+    ignored = []
+    for repo in cache.repos:
+        if repo.repo_id in keeps:
+            ignored += ignored_files(repo, keeps[repo.repo_id])
+    freed = prune_files(Path(cache.cache_dir), ignored, dry_run)
+    print(f"{'would free' if dry_run else 'freed'} {freed / 2**30:.2f} GiB of files")
     return 0
+
+
+def _repo_blob(link):
+    """The repo's blob a snapshot link points at, unresolved: in a cache that
+    shares content across repos, that blob is itself a link into the store."""
+    return Path(os.path.normpath(link.parent / os.readlink(link)))
+
+
+def ignored_files(repo, keep):
+    """(repo, file, snapshot link, repo blob, whether the blob may go) of the
+    files IGNORE names in the revisions `keep` of cached `repo`. A blob may
+    go when no other file of those revisions links to it."""
+    out, used = [], {}
+    for r in repo.revisions:
+        if r.commit_hash not in keep:
+            continue
+        for f in r.files:
+            rel = str(f.file_path.relative_to(r.snapshot_path))
+            hit = any(filter_repo_objects([rel], allow_patterns=IGNORE))
+            blob = _repo_blob(f.file_path)
+            used.setdefault(blob, set()).add(hit)
+            if hit:
+                out.append((repo.repo_id, rel, f.file_path, blob))
+    return [(*o, used[o[3]] == {True}) for o in out]
+
+
+def prune_files(hub, files, dry_run):
+    """Delete the snapshot links in `files` (ignored_files), the repo blobs no
+    kept file links to, and the content they hold once no repo blob in the
+    cache `hub` resolves to it; the bytes freed, each content counted once."""
+    going = set()
+    for repo, rel, link, blob, blob_goes in files:
+        print(f"prune {repo}: {rel}")
+        if blob_goes:
+            going.add(blob)
+    content = {b.resolve() for b in going}
+    linked = {b.resolve() for b in hub.glob("*/blobs/*") if b not in going}
+    freed_content = [c for c in content if c not in linked and c.exists()]
+    freed = sum(c.stat().st_size for c in freed_content)
+    if not dry_run:
+        for repo, rel, link, blob, blob_goes in files:
+            link.unlink(missing_ok=True)
+        for b in going:
+            b.unlink(missing_ok=True)
+        for c in freed_content:
+            c.unlink(missing_ok=True)
+    return freed
 
 
 def main():
