@@ -29,6 +29,7 @@
 # cache is read back whole (MAXL keys) every layer; sliding layers keep a linear
 # cache and mask to their last 128 keys, as fused_decode does.
 import argparse
+import functools
 import os
 import sys
 import tempfile
@@ -52,6 +53,7 @@ sys.path.insert(0, str(HERE.parents[1] / "fused_decode"))
 
 import common  # noqa: E402
 import gpt_oss_20b_q4nx_weights as g  # noqa: E402
+import prefill  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
@@ -601,6 +603,30 @@ class NpuDecoder:
         self.params = ParameterScratchpad(self.run, str(params))
         self.writers = param_writers(params, {"L": len(ARGS) - 1})
 
+    def seed_kv(self, kv):
+        """Write the prompt's K and V, kv[layer] = (k, v) [KV heads, n, DH],
+        into the cache at positions 0..n-1."""
+        n = kv[0][0].shape[1]
+        assert n <= self.maxl
+        cache = self.map["KV"].view(bfloat16).reshape(-1, 4, self.maxl, SLAB)
+        for j, (k, v) in enumerate(kv):
+            for half in range(2):
+                for r, t in ((2 * half, k), (2 * half + 1, v)):
+                    heads = t[half * 4 : half * 4 + 4].permute(1, 0, 2).reshape(n, SLAB)
+                    cache[j, r, :n] = _bf16(heads).view(bfloat16).reshape(n, SLAB)
+        self.bo["KV"].sync(self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+
+    @functools.lru_cache(maxsize=None)
+    def experts(self, j):
+        """Layer j's expert blocks as a buffer, for the prefill dequant, and
+        their biases."""
+        import prefill_dequant
+
+        n = g.N_EXPERTS * g.EXPERT_BYTES
+        blocks = self.map["WE"][j * n : (j + 1) * n].reshape(-1, NCB, R, g.BLOCK_BYTES)
+        bo = self.xrt.bo(self.bo["WE"], n, j * n)
+        return bo, prefill_dequant.biases(blocks)
+
     def step(self, token, L):
         """Decode `token` at position L-1; returns (hidden out, logits)."""
         xrt = self.xrt
@@ -683,6 +709,12 @@ def main():
     ap.add_argument(
         "--no-ref", action="store_true", help="time only: no CPU reference check"
     )
+    ap.add_argument(
+        "--no-prefill", action="store_true", help="the prompt goes through decode"
+    )
+    ap.add_argument(
+        "--warm", action="store_true", help="prefill once untimed before timing"
+    )
     ap.add_argument("--bench", type=int, default=0, help="time N dispatches")
     ap.add_argument(
         "--bench-ctx", type=int, default=0, help="context of the timed dispatches"
@@ -721,7 +753,27 @@ def main():
             )
             return 0
         seq, out, times = list(ids), [], []
-        for t in range(len(ids) + a.steps - 1):
+        # FLM prefills prompts of MIN_PREFILL tokens or more and decodes
+        # shorter ones; the last prompt token takes a decode step, whose LM
+        # head gives the first token
+        first, t_prefill = 0, 0.0
+        if full and not a.no_prefill and prefill.MIN_PREFILL <= len(ids) <= a.maxl:
+            ops = prefill.NpuOps(str(a.build_dir / "prefill"), experts=npu.experts)
+            ops.preload(w)
+            for j in range(len(layers)):
+                npu.experts(j)
+            pf = prefill.Prefill(w, ops)
+            if a.warm:
+                pf.forward(ids[:-1], lm=False)
+            prefill.TIMES.clear()
+            t0 = time.perf_counter()
+            _, kv = pf.forward(ids[:-1], lm=False)
+            npu.seed_kv(kv)
+            t_prefill = time.perf_counter() - t0
+            first = len(ids) - 1
+            steps = ", ".join(f"{k} {v:.2f}s" for k, v in prefill.TIMES.items())
+            print(f"prefill of {first} tokens: {t_prefill:.3f}s ({steps})")
+        for t in range(first, min(len(ids) + a.steps - 1, a.maxl)):
             t0 = time.perf_counter()
             x, logits = npu.step(seq[t], t + 1)
             dt = time.perf_counter() - t0
@@ -738,7 +790,7 @@ def main():
                         head = w.lm_head()
                     want = g.rmsnorm(xr[None], w.final_norm())[0] @ head.T
             elif ref is not None:
-                want = ref.forward([seq[t]])
+                want = ref.forward(seq[: t + 1] if t == first else [seq[t]])
             if t + 1 < len(ids):
                 if ref is not None and full:
                     print(f"L={t + 1}: prompt ({dt*1e3:.0f} ms)")
@@ -750,17 +802,19 @@ def main():
             if want is not None:
                 c = cos_sim(logits, want)
                 msg += f" vs ref {int(want.argmax())}  logits cos {c:.5f}"
-                ok &= nxt == int(want.argmax()) and c > 0.99
+                # a prefilled cache carries the NPU GEMMs' bfp16 products
+                ok &= nxt == int(want.argmax()) and c > (0.98 if first else 0.99)
             print(f"{msg} ({dt*1e3:.0f} ms)")
             seq.append(nxt)
             out.append(nxt)
     if out:
         print(f"{tok.decode(ids)!r} -> {tok.decode(out)!r}")
-        # the prompt goes through the decode loop: the first token is ready
-        # after its last step
-        gen = np.array(times[len(ids) :]) * 1e3
+        # the first token is ready after the prompt's last decode step
+        n_prompt = len(ids) - first
+        gen = np.array(times[n_prompt:]) * 1e3
         print(f"Inference: prompt_len={len(ids)}, n_tokens={len(out)}")
-        print(f"Time to first token (TTFT): {sum(times[: len(ids)]):.3f}s")
+        ttft = t_prefill + sum(times[:n_prompt])
+        print(f"Time to first token (TTFT): {ttft:.3f}s")
         if len(gen):
             med = float(np.median(gen))
             print(
