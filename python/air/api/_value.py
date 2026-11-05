@@ -301,6 +301,14 @@ class _StridedView:
         """Build another region of the same thing. Implemented by each slice."""
         raise NotImplementedError
 
+    def _require_static(self, what):
+        if not all(isinstance(s, int) for s in self.sizes):
+            raise ValueError(
+                f"{what} needs a region of static sizes; this one's sizes "
+                f"{self.sizes} are known only at run time, which only a "
+                "channel put or get can carry"
+            )
+
     def reshape(self, *shape):
         """This region's elements at a different rank, as a view.
 
@@ -309,6 +317,7 @@ class _StridedView:
         walk is unchanged, only re-described. Raises rather than copying when
         no view exists -- see :func:`_reshape_pattern`.
         """
+        self._require_static("reshape")
         if len(shape) == 1 and not isinstance(shape[0], int):
             shape = tuple(shape[0])
         offsets, sizes, strides = _reshape_pattern(
@@ -333,6 +342,7 @@ class _StridedView:
         reshape and a transpose of the whole memtile buffer, and only then a
         pick of one (row, block) out of it.
         """
+        self._require_static("subscripting a region")
         key = _normalize_key(key, len(self.sizes), "region")
         offsets, sizes, dropped = [], [], []
         for dim, (sub, extent) in enumerate(zip(key, self.sizes)):
@@ -364,6 +374,7 @@ class _StridedView:
         on the right, new leading axes and axes of extent 1 repeat with stride
         0, every other axis must match. Nothing is copied, and like numpy's
         the result is read-only -- a transfer cannot write it."""
+        self._require_static("broadcast_to")
         if len(shape) == 1 and not isinstance(shape[0], int):
             shape = tuple(shape[0])
         if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in shape):
@@ -424,6 +435,7 @@ class _StridedView:
         descriptor visits the same elements in a different order. Takes a full
         permutation, as numpy does.
         """
+        self._require_static("transpose")
         if len(axes) == 1 and not isinstance(axes[0], int):
             axes = tuple(axes[0])
         axes = [int(a) for a in axes]
@@ -534,10 +546,9 @@ def _resolve_subscript(sub, extent, dim):
         stop = coerce_index(extent if sub.stop is None else sub.stop)
         size = (stop - start).as_const()
         if size is None:
-            raise ValueError(
-                f"slice size along dim {dim} is not a compile-time constant "
-                f"({stop} - {start}); air.api needs static tile sizes"
-            )
+            # Known only at run time: such a region is a channel endpoint,
+            # whose transfer carries the size as an operand.
+            return start, stop - start, False
         if size <= 0:
             raise ValueError(f"empty slice along dim {dim} (size {size})")
         return start, size, False

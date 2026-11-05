@@ -185,6 +185,16 @@ class _Endpoint:
 
 
 def _endpoint(obj, direction, role):
+    sizes = getattr(obj, "sizes", None)
+    if (
+        sizes is not None
+        and not direction.startswith("channel.")
+        and not all(isinstance(s, int) for s in sizes)
+    ):
+        raise ValueError(
+            f"{direction}: this region's sizes {list(sizes)} are known only at "
+            "run time, which only a channel put or get can carry"
+        )
     if getattr(obj, "readonly", False) and (
         role == "destination" or direction == "channel.get"
     ):
