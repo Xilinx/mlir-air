@@ -61,7 +61,7 @@ profile-decode:
 
 profile-prefill:
 	$(DECODE) --maxl $$(( ($(CTX) + 31) / 16 * 16 )) --prompt-len $(CTX) \
-		--steps 2 --no-ref --build-dir build_ctx$(CTX)
+		--steps 2 --no-ref --warm --build-dir build_ctx$(CTX)
 
 prefill:
 	$(PYTHON) $(srcdir)/prefill_gemm.py --build-dir build_prefill_ops

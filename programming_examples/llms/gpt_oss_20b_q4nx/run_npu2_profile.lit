@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 //
 // GPT-OSS-20B TTFT and decode throughput, captured into
-// gpt_oss_20b_q4nx.perf.json by bench/extract_perf.py. There is no prefill:
-// TTFT is the prompt going through the decode loop.
+// gpt_oss_20b_q4nx.perf.json by bench/extract_perf.py. The prompt is too short
+// to prefill: TTFT is the prompt going through the decode loop.
 //
 // REQUIRES: ryzen_ai_npu2, peano, hfweights_fastflowlm_gpt_oss_20b_npu2
 //
