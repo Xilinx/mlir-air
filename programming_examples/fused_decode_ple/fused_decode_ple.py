@@ -354,8 +354,9 @@ _MODELS = {
     # in whether the layer streams k/v.
     #   I2P = [M, K, 2*INTER, K]/512 = [6144, 2560, 20480, 2560]/512 = [12, 5, 40, 5]
     #   J2P = [K, DQ, K, INTER]/512  = [2560, 4096, 2560, 10240]/512 = [5, 8, 5, 20]
-    # LM head chunking as gemma3-4b (also K=2560): 8240 rowblocks = 16*515,
-    # K/PAYLOAD = 5 must divide VOCAB_I2 and 2*VOCAB_I2 <= 63, so VOCAB_I2=5.
+    # LM head: K/PAYLOAD = 5 must divide VOCAB_I2 and 2*VOCAB_I2 <= 63. The
+    # K-padded vocab (8240 rowblocks = 16*5*103) admits only VOCAB_I2=5 then,
+    # so the vocab is padded to whole chunks instead (VOCAB_PAD_TO_CHUNK).
     "gemma4-e4b": dict(
         K=2560,
         M=6144,  # DQ+DK+DV at the FULL layer = 4096 + 2*512 + 2*512
@@ -380,7 +381,8 @@ _MODELS = {
         INTER_NARROW=10240,
         VOCAB_SIZE=262144,
         UNI_DEC=42,
-        UNI_LM=103,  # vocab chunks per LM head (VOCAB_CHUNK_I2=5)
+        UNI_LM=18,  # vocab chunks per LM head (VOCAB_CHUNK_I2=30)
+        VOCAB_PAD_TO_CHUNK=True,
         # The PLE gate core's K-wide buffers do not fit L1 beside the default
         # stack at K=2560.
         DECODE_STACK=8192,
@@ -1512,6 +1514,13 @@ VOCAB_FULL_ROWBLKS = VOCAB_SIZE_PADDED_FULL // ROW_BLOCK  # 4032
 VOCAB_I2 = int(_os.environ.get("VOCAB_CHUNK_I2", "18"))
 VOCAB_ROWBLKS = VOCAB_I2 * (NCX * NCY) * PAIR_ROWS  # rowblocks per chunk/dispatch
 VOCAB_SIZE_PADDED = VOCAB_ROWBLKS * ROW_BLOCK  # logits per chunk (device drain size)
+# VOCAB_PAD_TO_CHUNK: round the vocab up to whole chunks rather than require the
+# chunk to divide it. Each chunk is an LM-head wave with its own barrier, so a
+# vocab whose only legal chunk is small pays for many waves; the padding rows
+# are zero weights whose logits the host drops.
+if MODEL.get("VOCAB_PAD_TO_CHUNK"):
+    VOCAB_FULL_ROWBLKS = -(-VOCAB_FULL_ROWBLKS // VOCAB_ROWBLKS) * VOCAB_ROWBLKS
+    VOCAB_SIZE_PADDED_FULL = VOCAB_FULL_ROWBLKS * ROW_BLOCK
 assert VOCAB_FULL_ROWBLKS % VOCAB_ROWBLKS == 0, "chunk must divide the full vocab"
 N_VOCAB_CHUNKS = VOCAB_FULL_ROWBLKS // VOCAB_ROWBLKS  # host dispatches (9)
 VOCAB_J2 = J2P[0]  # 4 (K=MODEL_DIM=2048 -> NBJ=8 col-blocks)
