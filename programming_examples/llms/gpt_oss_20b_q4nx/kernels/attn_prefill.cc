@@ -30,9 +30,8 @@ constexpr float scale = 0.125f;
 constexpr bf16 exp_scale = (bf16)1.4426950408889634f;
 constexpr int PREV = lq * lk, NEW = PREV + lq;
 
-alignas(aie::vector_decl_align) int idx_array[16] = {15, 14, 13, 12, 11, 10,
-                                                     9,  8,  7,  6,  5,  4,
-                                                     3,  2,  1,  0};
+alignas(aie::vector_decl_align) int idx_array[16] = {
+    15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
 
 inline aie::accum<accfloat, 16>
 mac_elem_16_accuracy_safe(aie::vector<float, 16> a, aie::vector<float, 16> b,
@@ -86,8 +85,7 @@ void calculate_c(float *c, bf16 *prev_m_local, bf16 *new_m_local) {
   for (int i = 0; i < lq; i++) {
     bf16 inner_correct = aie::sub(*(prev_m_local + i), *(new_m_local + i));
     inner_correct = aie::mul(inner_correct, exp_scale);
-    aie::vector<bf16, lk> correct_vec =
-        aie::broadcast<bf16, lk>(inner_correct);
+    aie::vector<bf16, lk> correct_vec = aie::broadcast<bf16, lk>(inner_correct);
     aie::accum<accfloat, lk> correct_acc;
     correct_acc.from_vector(correct_vec);
     correct_vec = aie::exp2<bf16>(correct_acc.template to_vector<float>());
@@ -276,10 +274,14 @@ void _attn_qk(T_out *__restrict pS, T_in *__restrict pQ, T_in *__restrict pK) {
       auto mout1 = aie::interleave_zip(C10.template to_vector<T_out>(),
                                        C11.template to_vector<T_out>(), 8);
 
-      auto mout2 = aie::mul(mout0.first, (T_out)scale).template to_vector<T_out>(0);
-      auto mout3 = aie::mul(mout0.second, (T_out)scale).template to_vector<T_out>(0);
-      auto mout4 = aie::mul(mout1.first, (T_out)scale).template to_vector<T_out>(0);
-      auto mout5 = aie::mul(mout1.second, (T_out)scale).template to_vector<T_out>(0);
+      auto mout2 =
+          aie::mul(mout0.first, (T_out)scale).template to_vector<T_out>(0);
+      auto mout3 =
+          aie::mul(mout0.second, (T_out)scale).template to_vector<T_out>(0);
+      auto mout4 =
+          aie::mul(mout1.first, (T_out)scale).template to_vector<T_out>(0);
+      auto mout5 =
+          aie::mul(mout1.second, (T_out)scale).template to_vector<T_out>(0);
 
       aie::store_v(pS1, mout2);
       pS1 += MMUL::size_C;
@@ -367,8 +369,8 @@ void apf_qk(bf16 *__restrict q, bf16 *__restrict k, bf16 *__restrict s,
 }
 
 // After a block's K steps: the block's softmax and the rescale of l and y.
-void apf_softmax(bf16 *__restrict s, bf16 *__restrict mm,
-                 float *__restrict cl, float *__restrict y) {
+void apf_softmax(bf16 *__restrict s, bf16 *__restrict mm, float *__restrict cl,
+                 float *__restrict y) {
   for (int r = 0; r < lq; r++) {
     aie::vector<bf16, lk> m_vec = aie::load_v<lk>(mm + r * lk);
     mm[NEW + r] = aie::reduce_max(m_vec);

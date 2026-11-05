@@ -30,7 +30,8 @@ constexpr int R = 8, S = 8, T = 8, KC = 32, N = 128;
 constexpr int MB = MM_M / R, KB = KC / S, NB = N / T;
 using MMUL = aie::mmul<R, S, T, bfloat16, bfloat16, accauto>;
 
-template <int V> aie::vector<bfloat16, V> sigmoid(aie::vector<bfloat16, V> x) {
+template <int V>
+aie::vector<bfloat16, V> sigmoid(aie::vector<bfloat16, V> x) {
   auto half = aie::broadcast<bfloat16, V>(0.5f);
   auto one = aie::broadcast<bfloat16, V>(1.0f);
   aie::accum<accfloat, V> xh = aie::mul(x, half);
