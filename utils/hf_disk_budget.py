@@ -10,6 +10,7 @@ no longer names, and the files IGNORE names in the revisions it keeps.
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -74,7 +75,7 @@ def prune_cache(entries, dry_run):
     wanted = {}
     for _, repo, revision in entries:
         wanted.setdefault(repo, set()).add(revision)
-    doomed, ignored = [], []
+    keeps, doomed = {}, []
     for repo in sorted(scan_cache_dir().repos, key=lambda r: r.repo_id):
         if repo.repo_type != "model":
             continue
@@ -94,12 +95,13 @@ def prune_cache(entries, dry_run):
                     print(f"skip {repo.repo_id}: no cached revision is `main`")
                     continue
                 keep |= main
+        keeps[repo.repo_id] = keep
         for r in repo.revisions:
             if r.commit_hash not in keep:
                 print(f"prune {repo.repo_id}@{r.commit_hash} ({r.size_on_disk_str})")
                 doomed.append(r.commit_hash)
-        ignored += ignored_files(repo, keep)
-    freed = prune_files(ignored, dry_run)
+    # Revisions first, while every snapshot is intact: a dangling link drops
+    # its repo from the cache scan.
     if not doomed:
         print("no revision to prune")
     else:
@@ -110,14 +112,26 @@ def prune_cache(entries, dry_run):
         )
         if not dry_run:
             strategy.execute()
-    print(f"{'would free' if dry_run else 'freed'} {freed / 2**30:.1f} GiB of files")
+    cache = scan_cache_dir()
+    ignored = []
+    for repo in cache.repos:
+        if repo.repo_id in keeps:
+            ignored += ignored_files(repo, keeps[repo.repo_id])
+    freed = prune_files(Path(cache.cache_dir), ignored, dry_run)
+    print(f"{'would free' if dry_run else 'freed'} {freed / 2**30:.2f} GiB of files")
     return 0
 
 
+def _repo_blob(link):
+    """The repo's blob a snapshot link points at, unresolved: in a cache that
+    shares content across repos, that blob is itself a link into the store."""
+    return Path(os.path.normpath(link.parent / os.readlink(link)))
+
+
 def ignored_files(repo, keep):
-    """(snapshot path, blob path, size) of the files IGNORE names in the
-    revisions `keep` of cached `repo`, with whether the blob may go: no other
-    file of the repo's kept revisions links to it."""
+    """(repo, file, snapshot link, repo blob, whether the blob may go) of the
+    files IGNORE names in the revisions `keep` of cached `repo`. A blob may
+    go when no other file of those revisions links to it."""
     out, used = [], {}
     for r in repo.revisions:
         if r.commit_hash not in keep:
@@ -125,37 +139,33 @@ def ignored_files(repo, keep):
         for f in r.files:
             rel = str(f.file_path.relative_to(r.snapshot_path))
             hit = any(filter_repo_objects([rel], allow_patterns=IGNORE))
-            used.setdefault(f.blob_path, set()).add(hit)
+            blob = _repo_blob(f.file_path)
+            used.setdefault(blob, set()).add(hit)
             if hit:
-                out.append(
-                    (repo.repo_id, rel, f.file_path, f.blob_path, f.size_on_disk)
-                )
+                out.append((repo.repo_id, rel, f.file_path, blob))
     return [(*o, used[o[3]] == {True}) for o in out]
 
 
-def prune_files(files, dry_run):
-    """Delete the snapshot links in `files` (ignored_files) and the blobs no
-    kept file links to; the bytes freed. A repo's blob may itself link into a
-    content store the cache shares across repos; that content goes when no
-    repo's blob links to it any more."""
-    freed, stored = 0, []
-    for repo, rel, link, blob, size, blob_goes in files:
-        print(f"prune {repo}: {rel} ({size / 2**30:.2f} GiB)")
+def prune_files(hub, files, dry_run):
+    """Delete the snapshot links in `files` (ignored_files), the repo blobs no
+    kept file links to, and the content they hold once no repo blob in the
+    cache `hub` resolves to it; the bytes freed, each content counted once."""
+    going = set()
+    for repo, rel, link, blob, blob_goes in files:
+        print(f"prune {repo}: {rel}")
         if blob_goes:
-            freed += size
-        if dry_run:
-            continue
-        link.unlink(missing_ok=True)
-        if blob_goes:
-            if blob.is_symlink():
-                stored.append(blob.resolve())
-            blob.unlink(missing_ok=True)
-    if stored:
-        hub = Path(scan_cache_dir().cache_dir)
-        linked = {b.resolve() for b in hub.glob("*/blobs/*") if b.is_symlink()}
-        for content in stored:
-            if content not in linked:
-                content.unlink(missing_ok=True)
+            going.add(blob)
+    content = {b.resolve() for b in going}
+    linked = {b.resolve() for b in hub.glob("*/blobs/*") if b not in going}
+    freed_content = [c for c in content if c not in linked and c.exists()]
+    freed = sum(c.stat().st_size for c in freed_content)
+    if not dry_run:
+        for repo, rel, link, blob, blob_goes in files:
+            link.unlink(missing_ok=True)
+        for b in going:
+            b.unlink(missing_ok=True)
+        for c in freed_content:
+            c.unlink(missing_ok=True)
     return freed
 
 
