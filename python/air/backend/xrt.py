@@ -244,11 +244,12 @@ class _HostSide:
             buffers.append(self.table)
         return buffers, scalars
 
-    def parameters(self, params_txt, scalars):
-        """(name, value) for every scratchpad parameter of the ELF."""
+    def rules(self, params_txt):
+        """(name, argument, scale, addend) of every scratchpad parameter of the
+        ELF: it holds scale * argument + addend."""
         with open(params_txt) as f:
             lines = [ln.split() for ln in f if ln.split()]
-        values = []
+        rules = []
         for line in lines[1 : 1 + int(lines[0][0])]:
             name = line[0]
             if name in self.sources:
@@ -260,6 +261,13 @@ class _HostSide:
                 arg = int(m.group(2))
                 scale = int(m.group(3) or 1)
                 addend = int(m.group(5) or 0) * (-1 if m.group(4) == "m" else 1)
+            rules.append((name, arg, scale, addend))
+        return rules
+
+    def parameters(self, params_txt, scalars):
+        """(name, value) for every scratchpad parameter of the ELF."""
+        values = []
+        for name, arg, scale, addend in self.rules(params_txt):
             if arg not in scalars:
                 raise AirBackendError(
                     f"scratchpad parameter {name} is set from argument {arg}, "
