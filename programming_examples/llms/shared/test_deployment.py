@@ -117,7 +117,7 @@ class AffineDeploymentTests(unittest.TestCase):
         )
 
     def test_fused_prefill_layernorm_and_gelu(self):
-        """hostops.c's ln_tile and bias_gelu_tile against numpy."""
+        """hostops.c's ln_tile, bias_gelu_tile and sub_row_bf16 against numpy."""
         H = self._fused_prefill("hostops")
         D = self._fused_prefill("device")
         phi2 = self._fused_prefill("phi2")
@@ -163,6 +163,11 @@ class AffineDeploymentTests(unittest.TestCase):
         v = g[:, :n].astype(np.float32) + b
         gelu = 0.5 * v * (1 + np.tanh(np.sqrt(2 / np.pi) * (v + 0.044715 * v**3)))
         np.testing.assert_allclose(untile(t), gelu, rtol=1e-2, atol=1e-2)
+        k = (rng.standard_normal((t, n)) * 300).astype(bfloat16)
+        out = np.empty_like(k)
+        H.sub_row(k, w, out)
+        want = (k.astype(np.float32) - w).astype(bfloat16)
+        np.testing.assert_array_equal(out.view(np.uint16), want.view(np.uint16))
 
     def test_checkpoint_to_canonical_q4(self):
         from ml_dtypes import bfloat16

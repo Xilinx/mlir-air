@@ -34,6 +34,7 @@ def load(build_dir):
     _lib.add_rms_tile.argtypes = [_p, _p, _i, _p, _f, _i, _i, _p, _i, _i, _p]
     _lib.add_rms_tile_s.argtypes = _lib.add_rms_tile.argtypes + [_f]
     _lib.ln_tile.argtypes = [_p, _i, _i, _p, _p, _f, _i, _i, _p]
+    _lib.sub_row_bf16.argtypes = [_p, _i, _i, _p, _p]
     _lib.bias_gelu_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p]
     _l = ctypes.c_long
     _lib.head_post.argtypes = [_p, _i, _i, _i, _i, _i, _p, _p, _f, _p, _p, _i, _f]
@@ -226,6 +227,13 @@ def add_rms_tile(x, c, t, post, eps, w, dst, tm, tk, scale=1.0):
         _lib.add_rms_tile_s(*args, scale)
     if a is not None:
         _to_bfp(a, t, dst)
+
+
+def sub_row(src, row, dst):
+    """dst = bf16(src - row): src, dst bf16 [t, n] (C order), row [n]."""
+    t, n = src.shape
+    row = _c(row)
+    _lib.sub_row_bf16(src.ctypes.data, t, n, row.ctypes.data, dst.ctypes.data)
 
 
 def ln_tile(x, w, b, eps, dst, tm, tk):

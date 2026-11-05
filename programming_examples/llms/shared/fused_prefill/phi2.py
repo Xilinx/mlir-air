@@ -205,8 +205,8 @@ class Phi2Prefill(AffinePrefill):
         # keys themselves.
         self.kv[L][0].append(kb)
         self.kv[L][1].append(vb)
-        k0 = self.kv[L][0][0][:1].astype(np.float32)
-        kd = (kb.astype(np.float32) - k0).astype(bfloat16)
+        kd = np.empty_like(kb)
+        H.sub_row(kb, self.kv[L][0][0][0].astype(np.float32), kd)
         ch = self.attn_chunk(kvb["op"], c)
         h0 = 0
         for p in ch["parts"]:

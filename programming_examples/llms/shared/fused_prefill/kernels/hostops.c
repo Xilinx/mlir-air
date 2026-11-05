@@ -237,6 +237,18 @@ void add_rms_tile(float *x, const uint16_t *c, int ldc, const float *post,
   add_rms_tile_s(x, c, ldc, post, eps, t, n, w, TM, TK, dst, 1.f);
 }
 
+// dst [t, n] bf16 = bf16(src - row), src bf16 [t, n], row f32 [n]
+void sub_row_bf16(const uint16_t *src, int t, int n, const float *row,
+                  uint16_t *dst) {
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int r = 0; r < t; r++) {
+    const uint16_t *s = src + (long)r * n;
+    uint16_t *d = dst + (long)r * n;
+    for (int j = 0; j < n; j++)
+      d[j] = f2bf(bf2f(s[j]) - row[j]);
+  }
+}
+
 // dst (tiled A, K = n) = bf16(layernorm(x) * w + b)
 void ln_tile(const float *x, int t, int n, const float *w, const float *b,
              float eps, int TM, int TK, uint16_t *dst) {
