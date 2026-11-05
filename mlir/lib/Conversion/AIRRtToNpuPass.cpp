@@ -539,17 +539,52 @@ static StringAttr declareBlockArgOffsetParameter(ModuleOp module, Value offset,
 // `length_parameter` adds `arg * unit` elements at dispatch: the host writes
 // the argument itself, so one parameter per argument serves every unit.
 // Returns the parameter's name, or null if the length is not of that form.
+// With `atLeastOne`, a length of no base keeps one unit static instead, the
+// parameter holding `arg - 1`: a BD with an iteration takes no zero length.
 static StringAttr declareBlockArgLengthParameter(ModuleOp module, Value length,
                                                  OpBuilder &builder,
-                                                 int64_t &unit, int64_t &base) {
+                                                 int64_t &unit, int64_t &base,
+                                                 bool atLeastOne = false) {
   if (!module)
     return nullptr;
   BlockArgument blockArg =
       affineInSequenceArg(length, unit, base, /*widenOnly=*/true);
   if (!blockArg || unit <= 0 || base < 0)
     return nullptr;
-  auto name = builder.getStringAttr("__air_param_arglen_" +
-                                    std::to_string(blockArg.getArgNumber()));
+  std::string suffix;
+  if (atLeastOne && base == 0) {
+    base = unit;
+    suffix = "_x1_m1";
+  }
+  auto name = builder.getStringAttr(
+      "__air_param_arglen_" + std::to_string(blockArg.getArgNumber()) + suffix);
+  if (!module.lookupSymbol(name)) {
+    OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    xilinx::AIEX::ScratchpadParameterOp::create(
+        builder, module.getLoc(), name, TypeAttr::get(builder.getI32Type()),
+        /*state_table_idx=*/nullptr, /*kind=*/nullptr, /*min_value=*/nullptr,
+        /*max_value=*/nullptr, /*joint_bounds=*/nullptr);
+  }
+  return name;
+}
+
+// A runtime run count `scale * arg + addend` becomes a repeat parameter holding
+// one less than it, the field the task queue takes. Returns its name, or null
+// if the count is not of that form.
+static StringAttr declareBlockArgRepeatParameter(ModuleOp module, Value runs,
+                                                 OpBuilder &builder) {
+  int64_t scale, addend;
+  BlockArgument blockArg =
+      affineInSequenceArg(runs, scale, addend, /*widenOnly=*/true);
+  if (!module || !blockArg || scale <= 0)
+    return nullptr;
+  addend -= 1;
+  std::string suffix = "_x" + std::to_string(scale) +
+                       (addend < 0 ? "_m" : "_p") +
+                       std::to_string(addend < 0 ? -addend : addend);
+  auto name = builder.getStringAttr(
+      "__air_param_argrep_" + std::to_string(blockArg.getArgNumber()) + suffix);
   if (!module.lookupSymbol(name)) {
     OpBuilder::InsertionGuard g(builder);
     builder.setInsertionPointToStart(module.getBody());
@@ -1112,6 +1147,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // transfer is one linear run: contiguous row-major below the runtime
     // dimension and inert above it. Then no descriptor dimension is needed and
     // the length is that size scaled by the extent below it.
+    // The iteration of a runtime-length BD: its repeats step by iterStride.
+    int64_t iterSize = 1, iterStride = 0;
+    unsigned iterDim = 0;
     Value dynLen;       // runtime transfer length, in elements (i64)
     Value dynOuterSize; // runtime repeat count (zero outer stride)
     Value dynOffset;    // runtime start offset, in elements (i64)
@@ -1128,6 +1166,16 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
             "more than one runtime-valued DMA size is not supported");
       if (!dynDims.empty()) {
         unsigned dim = dynDims.front();
+        // Unit dimensions are inert: with only those outside it, the runtime
+        // one is the outermost.
+        if (llvm::all_of(
+                ArrayRef(mixedLengths).take_front(dim),
+                [](OpFoldResult s) { return isConstantIntValue(s, 1); })) {
+          for (auto *list : {&mixedLengths, &mixedStrides, &mixedOffsets})
+            std::rotate(list->begin(), list->begin() + dim,
+                        list->begin() + dim + 1);
+          dim = 0;
+        }
         Value dynVal = cast<Value>(mixedLengths[dim]);
         int64_t below = 1;
         bool contiguous = true;
@@ -1140,11 +1188,21 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         }
         // A dimension outside the run-time one with stride 0 only repeats the
         // transfer; the repeat count covers it, so it does not break the
-        // contiguous run.
-        for (unsigned i = 0; i < dim; i++)
-          if (*getConstantIntValue(mixedLengths[i]) != 1 &&
-              *getConstantIntValue(mixedStrides[i]) != 0)
-            contiguous = false;
+        // contiguous run. The outermost other one may step: the BD's iteration
+        // moves each repeat along.
+        for (unsigned i = 0; i < dim; i++) {
+          int64_t sz = *getConstantIntValue(mixedLengths[i]);
+          int64_t st = *getConstantIntValue(mixedStrides[i]);
+          if (sz == 1 || st == 0)
+            continue;
+          if (iterSize == 1) {
+            iterSize = sz;
+            iterStride = st;
+            iterDim = i;
+            continue;
+          }
+          contiguous = false;
+        }
         int64_t thisStride = *getConstantIntValue(mixedStrides[dim]);
         if (contiguous && thisStride == below) {
           dynLen = below == 1 ? dynVal
@@ -1154,9 +1212,10 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
                                         rewriter, op.getLoc(),
                                         rewriter.getI64IntegerAttr(below)))
                                     .getResult();
-        } else if (dim == 0 && thisStride == 0) {
-          // A pure repeat: the outermost dim re-runs the same descriptor, which
-          // the task's repeat_count takes as an operand.
+        } else if (dim == 0) {
+          // The outermost dim re-runs the descriptor, which the task's
+          // repeat_count takes as an operand; a nonzero stride steps its
+          // iteration dimension between runs.
           dynOuterSize = dynVal;
         } else {
           return op->emitOpError("runtime-valued DMA size in dimension ")
@@ -1188,17 +1247,14 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
 
     // Entry i of each list is dimension 3-i, outermost first. Runtime offsets
     // are counted as 0 here; they are in dynOffset.
-    SmallVector<int64_t> staticOffsets = constify(
-        getMixedValues(adaptor.getStaticOffsets(), adaptor.getOffsets(), ctx),
-        /*defaultValue=*/0, nullptr);
-    SmallVector<int64_t> staticSizes = constify(
-        getMixedValues(adaptor.getStaticLengths(), adaptor.getLengths(), ctx),
-        /*defaultValue=*/1, nullptr);
+    SmallVector<int64_t> staticOffsets =
+        constify(mixedOffsets, /*defaultValue=*/0, nullptr);
+    SmallVector<int64_t> staticSizes =
+        constify(mixedLengths, /*defaultValue=*/1, nullptr);
     // The innermost transfer length is at least one element.
     staticSizes[3] = std::max((int64_t)1, staticSizes[3]);
-    SmallVector<int64_t> staticStrides = constify(
-        getMixedValues(adaptor.getStaticStrides(), adaptor.getStrides(), ctx),
-        /*defaultValue=*/0, nullptr);
+    SmallVector<int64_t> staticStrides =
+        constify(mixedStrides, /*defaultValue=*/0, nullptr);
 
     // Calculate total offset in elements
     // For npu.dma_memcpy_nd, the offset is computed as:
@@ -1215,9 +1271,33 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     // repeat_count = 0 means execute once, repeat_count = 3 means execute 4
     // times
     int64_t repeatCount = std::max((int64_t)0, staticSizes[0] - 1);
-    // A pure-repeat runtime outer size drives the task's repeat_count operand;
-    // the descriptor itself stays constant. mlir-aie wants (n - 1).
+    // A runtime outer size drives the task's repeat_count operand; the
+    // descriptor itself stays constant. mlir-aie wants (n - 1). Its iteration
+    // dimension, if it steps, wraps at the most runs that stay in the buffer
+    // and that the BD's iteration size field holds.
     Value repeatCountVal;
+    int64_t maxRuns = 256;
+    if (dynOuterSize && staticStrides[0] != 0) {
+      maxRuns = std::min<int64_t>(
+          maxRuns, int64_t(1) << AIE::getTargetModel(device).getDmaBdIterBits(
+                       AIE::AIETileType::ShimNOCTile));
+      auto memTy = dyn_cast<MemRefType>(op.getMemref().getType());
+      if (!memTy || !memTy.hasStaticShape())
+        return op->emitOpError("a runtime outer size that steps through its "
+                               "buffer needs a static buffer");
+      // A runtime offset is bounded below by 0 only.
+      int64_t span = 1;
+      for (int i = 1; i < 4; i++)
+        span += (staticSizes[i] - 1) * staticStrides[i];
+      maxRuns = std::min<int64_t>(maxRuns, (memTy.getNumElements() -
+                                            (dynOffset ? 0 : totalOffset) -
+                                            span) / staticStrides[0] +
+                                               1);
+      if (maxRuns < 1)
+        return op->emitOpError("runtime outer size: one run overruns the "
+                               "buffer");
+      staticSizes[0] = maxRuns;
+    }
     if (dynOuterSize) {
       auto i32 = rewriter.getI32Type();
       Value n =
@@ -1261,6 +1341,10 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         dimLayouts.push_back(dimLayout);
       }
     }
+    // A runtime-length BD has no dimensions: an inner stepping dimension runs
+    // as repeats of its iteration.
+    if (dynLen && iterDim > 0)
+      repeatCount = (repeatCount + 1) * iterSize - 1;
 
     AIE::BDDimLayoutArrayAttr dimsAttr =
         AIE::BDDimLayoutArrayAttr::get(ctx, dimLayouts);
@@ -1310,7 +1394,24 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       return arith::AddIOp::create(rewriter, op.getLoc(), v, addend);
     };
     Value dynLenI32 = narrowToI32(dynLen);
+    AIE::BDIterationAttr iteration =
+        dynLen && iterSize > 1
+            ? AIE::BDIterationAttr::get(ctx, iterSize, iterStride, 0)
+            : nullptr;
     Value dynOffsetI32 = narrowToI32(addStaticOffset(dynOffset));
+
+    // A full ELF has no queue word to compute the count into: the host writes
+    // it to the scratchpad, and the task's own count is the most it may be.
+    StringAttr repeatParam;
+    if (outputElf && repeatCountVal && !issueBd) {
+      repeatParam = declareBlockArgRepeatParameter(
+          op->getParentOfType<ModuleOp>(), dynOuterSize, rewriter);
+      if (!repeatParam)
+        return op->emitOpError("a runtime repeat count in a full ELF must be "
+                               "affine in a runtime sequence argument");
+      repeatCount = maxRuns - 1;
+      repeatCountVal = Value();
+    }
 
     // Create DMAConfigureTaskForOp with proper repeat_count from highest
     // dimension
@@ -1372,9 +1473,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
             op->getParentOfType<ModuleOp>(), dynOffset, rewriter, offResidual);
       }
       if (!seqOffset || offParam)
-        lenParam =
-            declareBlockArgLengthParameter(op->getParentOfType<ModuleOp>(),
-                                           dynLen, rewriter, lenUnit, lenBase);
+        lenParam = declareBlockArgLengthParameter(
+            op->getParentOfType<ModuleOp>(), dynLen, rewriter, lenUnit, lenBase,
+            /*atLeastOne=*/iterSize > 1);
     }
     if (lenParam) {
       Value offset = dynOffsetI32;
@@ -1390,8 +1491,7 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*pad_dimensions=*/nullptr, /*bd_id_val=*/nullptr,
           /*bd_id=*/nullptr, pktAttr,
           /*out_of_order_id=*/nullptr,
-          /*burst_length=*/nullptr, /*axcache=*/nullptr,
-          /*iteration=*/nullptr,
+          /*burst_length=*/nullptr, /*axcache=*/nullptr, iteration,
           offParam ? FlatSymbolRefAttr::get(offParam) : nullptr,
           /*offset_state_table_idx=*/nullptr, FlatSymbolRefAttr::get(lenParam),
           rewriter.getI32IntegerAttr(lenUnit),
@@ -1411,8 +1511,7 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*pad_dimensions=*/nullptr, /*bd_id_val=*/nullptr,
           /*bd_id=*/nullptr, pktAttr,
           /*out_of_order_id=*/nullptr,
-          /*burst_length=*/nullptr, /*axcache=*/nullptr,
-          /*iteration=*/nullptr,
+          /*burst_length=*/nullptr, /*axcache=*/nullptr, iteration,
           /*offset_parameter=*/nullptr,
           /*offset_state_table_idx=*/nullptr, /*length_parameter=*/nullptr,
           /*length_unit=*/nullptr, /*length_state_table_idx=*/nullptr,
@@ -1536,9 +1635,10 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
                                  [&] { push.getValueMutable().assign(v); });
       }
     } else {
-      // Create DMAStartTaskOp
-      AIEX::DMAStartTaskOp::create(rewriter, op.getLoc(),
-                                   configTaskOp.getResult());
+      auto start = AIEX::DMAStartTaskOp::create(rewriter, op.getLoc(),
+                                                configTaskOp.getResult());
+      if (repeatParam)
+        start.setRepeatParameterAttr(FlatSymbolRefAttr::get(repeatParam));
     }
 
     // The task stands for the transfer: the wait_alls naming the transfer's
@@ -2415,6 +2515,11 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   SmallVector<OpFoldResult> wrap_list = dma.getMixedLengths();
   SmallVector<OpFoldResult> stride_list = dma.getMixedStrides();
   if (air::isContiguousRowMajorOrRepeated(wrap_list, stride_list))
+    return false;
+  // A run-time size makes a linear BD too (its iteration may step it), which
+  // the DMA lowering checks itself.
+  if (llvm::any_of(wrap_list,
+                   [](OpFoldResult w) { return !getConstantIntValue(w); }))
     return false;
   air::DmaBdLimits limits = air::getDmaBdLimits(dma, air::MemorySpace::L3);
   for (unsigned i = 0; i < wrap_list.size(); i++) {

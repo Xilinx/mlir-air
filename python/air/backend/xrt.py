@@ -197,9 +197,9 @@ class _HostSide:
     (xclbin); a caller passes them as Python ints, in argument order.
     """
 
-    # AIR names an address or length parameter after the sequence argument it
-    # is affine in, with the coefficients as a suffix.
-    _ARG = re.compile(r"_arg(off|len)_(\d+)(?:_x(-?\d+)_([mp])(\d+))?$")
+    # AIR names an address, length or repeat parameter after the sequence
+    # argument it is affine in, with the coefficients as a suffix.
+    _ARG = re.compile(r"_arg(off|len|rep)_(\d+)(?:_x(-?\d+)_([mp])(\d+))?$")
 
     def __init__(self, host_dir):
         self.table = None
