@@ -1,8 +1,8 @@
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
-// GPT-OSS-20B TTFT vs prompt length. There is no prefill: the prompt goes
-// through the decode loop, one token per dispatch.
+// GPT-OSS-20B TTFT vs prompt length: the prompt prefilled, then the first
+// token from a decode step.
 //
 // REQUIRES: ryzen_ai_npu2, peano, hfweights_fastflowlm_gpt_oss_20b_npu2
 //
