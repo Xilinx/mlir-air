@@ -155,6 +155,79 @@ func.func @herd_without_shared_arg(%shared: memref<32xbf16, 2>) {
 
 // -----
 
+// A put only reads the shared herd argument it sends from, so it does not
+// race the handshake around it. Labeled.
+
+// CHECK-LABEL: @puts_from_shared_herd_arg
+// CHECK: memref.alloc() {hoist_alloc = true} : memref<64xbf16, 2>
+// CHECK: } {unroll = 2 : i32}
+air.channel @c5 [1, 1]
+air.channel @c6 [1, 1]
+func.func private @local2(memref<64xbf16, 2>)
+func.func @puts_from_shared_herd_arg(%shared: memref<32xbf16, 1>) {
+  %c1 = arith.constant 1 : index
+  air.herd @h tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%s=%shared) : memref<32xbf16, 1> {
+    %h0 = arith.constant 0 : index
+    %h1 = arith.constant 1 : index
+    %h8 = arith.constant 8 : index
+    %t = air.wait_all async
+    %r = scf.for %i = %h0 to %h8 step %h1 iter_args(%tok = %t) -> (!air.async.token) {
+      %tok0, %buf = air.execute [%tok] -> (memref<64xbf16, 2>) {
+        %alloc = memref.alloc() : memref<64xbf16, 2>
+        air.execute_terminator %alloc : memref<64xbf16, 2>
+      }
+      %p = air.channel.put async [%tok] @c6[] (%s[] [] []) : (memref<32xbf16, 1>)
+      %g = air.channel.get async [%tok0, %p] @c5[] (%buf[] [] []) : (memref<64xbf16, 2>)
+      %tok1 = air.execute [%g] {
+        func.call @local2(%buf) : (memref<64xbf16, 2>) -> ()
+      }
+      %tok2 = air.execute [%tok1] {
+        memref.dealloc %buf : memref<64xbf16, 2>
+      }
+      scf.yield %tok2 : !air.async.token
+    }
+  }
+  return
+}
+
+// -----
+
+// The same with a shared L1 argument, whose put stays in the herd. Labeled.
+
+// CHECK-LABEL: @puts_from_shared_l1_herd_arg
+// CHECK: memref.alloc() {hoist_alloc = true} : memref<64xbf16, 2>
+// CHECK: } {unroll = 2 : i32}
+air.channel @c7 [1, 1]
+air.channel @c8 [1, 1]
+func.func private @local3(memref<64xbf16, 2>)
+func.func @puts_from_shared_l1_herd_arg(%shared: memref<32xbf16, 2>) {
+  %c1 = arith.constant 1 : index
+  air.herd @h tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%s=%shared) : memref<32xbf16, 2> {
+    %h0 = arith.constant 0 : index
+    %h1 = arith.constant 1 : index
+    %h8 = arith.constant 8 : index
+    %t = air.wait_all async
+    %r = scf.for %i = %h0 to %h8 step %h1 iter_args(%tok = %t) -> (!air.async.token) {
+      %tok0, %buf = air.execute [%tok] -> (memref<64xbf16, 2>) {
+        %alloc = memref.alloc() : memref<64xbf16, 2>
+        air.execute_terminator %alloc : memref<64xbf16, 2>
+      }
+      %p = air.channel.put async [%tok] @c8[] (%s[] [] []) : (memref<32xbf16, 2>)
+      %g = air.channel.get async [%tok0, %p] @c7[] (%buf[] [] []) : (memref<64xbf16, 2>)
+      %tok1 = air.execute [%g] {
+        func.call @local3(%buf) : (memref<64xbf16, 2>) -> ()
+      }
+      %tok2 = air.execute [%tok1] {
+        memref.dealloc %buf : memref<64xbf16, 2>
+      }
+      scf.yield %tok2 : !air.async.token
+    }
+  }
+  return
+}
+
+// -----
+
 // Labeling a loop unrolls its body by 2, which duplicates a nested loop and
 // whatever that loop allocates per trip. So an unsafe inner loop disqualifies
 // the outer candidate as well. Rejecting only the inner one would instead

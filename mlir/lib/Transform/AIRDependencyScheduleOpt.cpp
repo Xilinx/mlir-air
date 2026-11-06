@@ -2066,9 +2066,10 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
             unsafe = true;
           continue;
         }
+        // A channel put only reads its source.
         auto blockArg = dyn_cast<BlockArgument>(operand);
         if (blockArg && isa<air::HerdOp>(blockArg.getOwner()->getParentOp()) &&
-            !isa<MemoryEffectOpInterface>(op))
+            !isa<MemoryEffectOpInterface, air::ChannelPutOp>(op))
           unsafe = true;
       }
       return unsafe ? WalkResult::interrupt() : WalkResult::advance();
@@ -5331,6 +5332,12 @@ public:
     // The index is a pass member, so drop anything left from a previous
     // function on this pass instance rather than trusting the scope guard.
     invalidateChannelIndex();
+    // A core patches and starts a descriptor of one of these channels by
+    // name, so each keeps its own.
+    auto startedByCores = air::getChannelsStartedByCores(f);
+    llvm::erase_if(channelOps, [&](air::ChannelOp c) {
+      return startedByCores.contains(c.getSymName());
+    });
     if (channelOps.empty())
       return;
     if (clSequentialLoops) {
@@ -8148,6 +8155,15 @@ struct ShrinkMemrefSizesByAccessPattern
     SmallVector<air::ChannelPutOp> puts;
     SmallVector<Operation *> users;
     if (getAllChanUsers(memref, users, dealloc, rewriter).failed())
+      return failure();
+
+    // A core adds a run-time offset computed with the buffer's strides.
+    auto startedByCores =
+        air::getChannelsStartedByCores(alloc->getParentOfType<func::FuncOp>());
+    if (llvm::any_of(users, [&](Operation *user) {
+          auto chan = dyn_cast<air::ChannelInterface>(user);
+          return chan && startedByCores.contains(chan.getChanName());
+        }))
       return failure();
 
     // Analyze data access pattern.
