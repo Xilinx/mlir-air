@@ -24,7 +24,7 @@ from ml_dtypes import bfloat16
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
-from attention_graph import GemmaAttention, SHARDS, Q_PER_KV  # noqa: E402
+from attention_graph import GemmaAttention, Q_PER_KV, TOKENS_PER_SHARD  # noqa: E402
 
 EXAMPLES = HERE.parents[2]
 DH, KV, TOK = 512, 2, 8
@@ -62,7 +62,7 @@ def namespace():
     from air.dialects import arith
     from air.dialects.scf import for_, yield_, index_switch, IfOp
 
-    return SimpleNamespace(**{k: v for k, v in locals().items()})
+    return SimpleNamespace(BATCH=TOK, **{k: v for k, v in locals().items()})
 
 
 def module(cap, window):
@@ -197,7 +197,9 @@ def run(out, cap, prefixes, window):
         inst = tb(fn, p + 1)
         ib.write(inst, 0)
         ib.sync(TO)
-        qf = q.reshape(SHARDS, 2, KV, Q_PER_KV, DH).transpose(0, 1, 3, 2, 4)
+        qf = q.reshape(
+            TOK // TOKENS_PER_SHARD, TOKENS_PER_SHARD, KV, Q_PER_KV, DH
+        ).transpose(0, 1, 3, 2, 4)
         kvc = np.concatenate([k.reshape(-1), v.reshape(-1)])
         # the output starts as NaN, so a row the graph never writes fails
         for bo, a in zip(bos, (qf, kvc, np.full(sizes[2], 0x7FC1, np.uint16))):
@@ -235,12 +237,15 @@ def run(out, cap, prefixes, window):
 
 
 def main():
+    global TOK
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--capacity", type=int, default=1024)
     ap.add_argument("--window", type=int, default=0)
     ap.add_argument("--prefixes", type=int, nargs="+", default=[0, 7, 100, 505, 1000])
+    ap.add_argument("--batch", type=int, default=TOK)
     a = ap.parse_args()
+    TOK = a.batch
     out = a.output.resolve()
     build(out, a.capacity, a.window)
     rows = run(out, a.capacity, a.prefixes, a.window)

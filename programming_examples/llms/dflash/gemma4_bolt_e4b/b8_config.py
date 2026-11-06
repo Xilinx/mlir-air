@@ -66,10 +66,18 @@ class Config:
     layers: int = NUM_LAYERS
     batch: int = 8
     stack_bytes: int = 6080
+    # 1: the batch is consecutive tokens of one sequence. batch: one token of
+    # each of `batch` independent sequences, each with its own KV cache and
+    # position.
+    sequences: int = 1
 
     def __post_init__(self):
-        if self.batch != 8:
-            raise ValueError("the Gemma4 decoder is built for eight tokens")
+        if self.batch not in (2, 8):
+            raise ValueError("the Gemma4 decoder is built for two or eight tokens")
+        if self.sequences not in (1, self.batch) or (
+            self.sequences > 1 and self.batch != 2
+        ):
+            raise ValueError("independent sequences are built for a batch of two")
         if not 1 <= self.layers <= NUM_LAYERS:
             raise ValueError("layer count exceeds the model")
         if self.capacity < 16 or self.capacity % 16:
@@ -78,6 +86,8 @@ class Config:
     @property
     def build_length(self):
         """One dynamic template covers every position in this capacity."""
+        if self.sequences > 1:
+            return self.capacity
         return self.capacity - self.batch + 1
 
 
@@ -253,6 +263,7 @@ def abi(config, fd):
             "w_offsets": weight_offsets(config, fd),
             "kv_layer": fd.KV_LAYER,
             "kv_slabs": kv_slabs(config.layers),
+            "kv_sequence": kv_slabs(config.layers) * fd.KV_LAYER,
             "phases": list(PHASES),
         },
         "elements": {
@@ -260,8 +271,10 @@ def abi(config, fd):
             "w": weight_offsets(config, fd)[-1]
             + fd.UNI_LM * fd.VOCAB_W_BLOCKS * fd.BLOCK_BF16,
             "rms": final_offset + k,
-            "y": q_scratch + b * Q_HEADS * DH,
-            "kv": kv_slabs(config.layers) * fd.KV_LAYER,
+            # independent sequences: the last token's attention frame reads
+            # one token's rows past the end
+            "y": q_scratch + (b + (config.sequences > 1)) * Q_HEADS * DH,
+            "kv": config.sequences * kv_slabs(config.layers) * fd.KV_LAYER,
             "pli": config.layers * b * PLE_PAD,
         },
         "offsets": {
@@ -271,7 +284,7 @@ def abi(config, fd):
             "q_scratch": q_scratch,
         },
         "rms_layout": "[input | pre_ffn | post_attn | post_ffn | post_ple | unused x16]",
-        "kv_layout": "[slab, K rows then V rows, position, KV heads x 512]",
+        "kv_layout": "[sequence, slab, K rows then V rows, position, KV heads x 512]",
         "logits_layout": "[vocabulary chunk, token, within-chunk vocabulary]",
         "hidden_layout": "[layer boundary, token, hidden]; boundary 0 is the input",
     }
@@ -293,6 +306,7 @@ def load_layout(config, length=None):
     ns.update(vars(ph))
     ns.update(
         BATCH=b,
+        SEQUENCES=config.sequences,
         CAPACITY=config.capacity,
         LAYERS=config.layers,
         KV_SLABS=kv_slabs(config.layers),

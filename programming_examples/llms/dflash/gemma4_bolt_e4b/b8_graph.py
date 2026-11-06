@@ -87,6 +87,14 @@ def build_module(layout, attention):
             [xblk_mm_l1, wblk_l1, yacc_mm_l1, wscr_mm_l1],
             "proj_qmm.o",
         )
+        # independent sequences: the mask of rows that have a token
+        mm_acc_m = None
+        if L.SEQUENCES > 1:
+            mm_acc_m = fn(
+                "proj_qmm_mm_acc_m",
+                [xblk_mm_l1, wblk_l1, yacc_mm_l1, wscr_mm_l1, i32],
+                "proj_qmm.o",
+            )
         mm_flush = fn(
             "proj_qmm_mm_flush_token", [yacc_mm_l1, ypair_mm_l1, i32, i32], "proj_qmm.o"
         )
@@ -214,12 +222,28 @@ def build_module(layout, attention):
                 (g * _cpg + lc, pp) for lc in range(_cpg) for pp in range(L.PAIRS_PC)
             ]
 
-        @L.FuncOp.from_py_func(x_l3, w_l3, rms_l3, y_l3, kv_l3, pli_l3, i32)
+        # one length per sequence: a sequence's tokens sit at positions
+        # [length - 1, length - 1 + its tokens)
+        _NSEQ = L.SEQUENCES
+        _KVSEQ = L.ABI["geometry"]["kv_sequence"]
+
+        # Independent sequences also take each one's append row and a mask of
+        # the sequences that have a token this step. An idle sequence attends
+        # one key and appends to a row the host keeps out of its context, and
+        # the projections skip its row.
+        _NSCAL = _NSEQ if _NSEQ == 1 else 2 * _NSEQ + 1
+
+        @L.FuncOp.from_py_func(
+            x_l3, w_l3, rms_l3, y_l3, kv_l3, pli_l3, *([i32] * _NSCAL)
+        )
         def gemma4_b8_decode(*_fa):
             def launch_body(*_la):
                 X, W, RMS, Y, KVC, PLI = _la[4:10]
-                L_rt = _la[10]
-                iv = _la[11]
+                L_rts = list(_la[10 : 10 + _NSEQ])
+                L_rt = L_rts[0]
+                A_rts = list(_la[10 + _NSEQ : 10 + 2 * _NSEQ]) if _NSEQ > 1 else []
+                M_rt = [_la[10 + 2 * _NSEQ]] if _NSEQ > 1 else []
+                iv = _la[10 + _NSCAL]
 
                 def _lb(slab):
                     return L.arith.muli(iv, idx(slab))
@@ -227,9 +251,10 @@ def build_module(layout, attention):
                 def _add(base, extra):
                     return L.arith.addi(base, idx(extra)) if extra else base
 
-                def _slot(base, extra=0):
-                    """base + (L - 1) rows of one KV row: this call's first slot."""
-                    pos = L.arith.subi(L_rt, c32(1))
+                def _slot(base, extra=0, row=None):
+                    """base + (L - 1) rows of one KV row: this call's first slot,
+                    or the given row."""
+                    pos = L.arith.subi(L_rt, c32(1)) if row is None else row
                     off = L.arith.muli(pos, c32(attention_row()))
                     return _add(
                         L.arith.addi(base, L.arith.index_cast(idx_t, off)), extra
@@ -411,15 +436,25 @@ def build_module(layout, attention):
                         else:
                             _by_arm(_kinds, _f, _wbase)
                         if p == 0:
+                            # the tokens' appends, B rows of one sequence or
+                            # one row each to its own sequence's cache
+                            _rows = B // _NSEQ
                             for kind, extra in (("appendK", 0), ("appendV", _vreg)):
-                                L.ChannelGet(
-                                    kind,
-                                    KVC,
-                                    indices=[idx(0)],
-                                    offsets=[_slot(_kapp, extra)],
-                                    sizes=[B * attention_row()],
-                                    strides=[1],
-                                )
+                                for _s in range(_NSEQ):
+                                    L.ChannelGet(
+                                        kind,
+                                        KVC,
+                                        indices=[idx(0)],
+                                        offsets=[
+                                            _slot(
+                                                _add(_kapp, _s * _KVSEQ),
+                                                extra,
+                                                A_rts[_s] if A_rts else None,
+                                            )
+                                        ],
+                                        sizes=[_rows * attention_row()],
+                                        strides=[1],
+                                    )
                             qoff = L.ABI["offsets"]["q_scratch"]
                             # rope's q, written in the shards' frame order:
                             # [token][KV head][q head % 4] in, frame order out
@@ -436,13 +471,18 @@ def build_module(layout, attention):
                                 ],
                             )
                             att.put_query(Y, idx(qoff))
-                            att.put_kv(
-                                KVC,
-                                _krd,
-                                _add(_krd, _vreg),
-                                L_rt,
-                                L.arith.select(_full, c32(0), c32(L.SLIDING_WINDOW_G)),
-                            )
+                            for _s in range(_NSEQ):
+                                _kb = _add(_krd, _s * _KVSEQ)
+                                att.put_kv(
+                                    KVC,
+                                    _kb,
+                                    _add(_kb, _vreg),
+                                    L_rts[_s],
+                                    L.arith.select(
+                                        _full, c32(0), c32(L.SLIDING_WINDOW_G)
+                                    ),
+                                    seq=_s,
+                                )
                     L.ChannelGet(
                         "layerOut",
                         X,
@@ -461,8 +501,10 @@ def build_module(layout, attention):
                     default_body_builder=lambda op: _uni_dec(),
                 )
 
-                @L.segment(name="seg", operands=[iv, L_rt])
-                def seg(_seg_iv, _seg_L):
+                @L.segment(name="seg", operands=[iv] + L_rts + M_rt)
+                def seg(_seg_iv, *_seg_ops):
+                    _seg_Ls = _seg_ops[:_NSEQ]
+                    _seg_M = list(_seg_ops[_NSEQ:])
                     _cmp = L.arith.cmpi(
                         L.arith.CmpIPredicate.slt, _seg_iv, idx(L.UNI_DEC)
                     )
@@ -692,7 +734,7 @@ def build_module(layout, attention):
                         idx(L.FULL_PERIOD - 1),
                     )
                     _window = L.arith.select(_full, c32(0), c32(L.SLIDING_WINDOW_G))
-                    att.emit(_seg_L, _arm, _window)
+                    att.emit(_seg_Ls, _arm, _window)
 
                     # ---- attention output to the o projection ----
                     def _omtb():
@@ -859,7 +901,7 @@ def build_module(layout, attention):
                         )
 
                     def _core_blk(base_cx):
-                        def body(tx, ty, _sx, _sy, arm):
+                        def body(tx, ty, _sx, _sy, arm, *mask):
                             gcx = L.arith.addi(idx(base_cx), tx)
                             gcy = ty
                             i2c = [idx(v) for v in L.I2P]
@@ -900,7 +942,15 @@ def build_module(layout, attention):
                                             L.ChannelGet(
                                                 "wL2ToL1", a_w, indices=[gcx, gcy]
                                             )
-                                            L.CallOp(mm_acc, [a_x, a_w, a_acc, scratch])
+                                            if mask:
+                                                L.CallOp(
+                                                    mm_acc_m,
+                                                    [a_x, a_w, a_acc, scratch, mask[0]],
+                                                )
+                                            else:
+                                                L.CallOp(
+                                                    mm_acc, [a_x, a_w, a_acc, scratch]
+                                                )
                                             L.DeallocOp(a_w)
                                             L.yield_([])
                                         L.DeallocOp(a_x)
@@ -999,7 +1049,9 @@ def build_module(layout, attention):
                     for blk_i in range(L.NCX // 2):
                         base_cx = blk_i * 2
                         blk_h = L.herd(
-                            name=f"proj_blk{blk_i}", sizes=[2, 4], operands=[_arm]
+                            name=f"proj_blk{blk_i}",
+                            sizes=[2, 4],
+                            operands=[_arm] + _seg_M,
                         )(_core_blk(base_cx))
                         blk_h.attributes["link_with"] = L.StringAttr.get("proj_qmm.o")
                         blk_h.attributes["x_loc"] = L.IntegerAttr.get(
