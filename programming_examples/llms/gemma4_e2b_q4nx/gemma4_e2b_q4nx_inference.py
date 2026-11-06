@@ -149,6 +149,40 @@ def _wcache_path(uni_dec, fingerprint):
     )
 
 
+def _npz_member(z, name):
+    """Array `name` of the open npz `z`, unread: (file at its data, shape,
+    dtype). The caller closes the file."""
+    import numpy as np
+
+    f = z.zip.open(name + ".npy")
+    version = np.lib.format.read_magic(f)
+    read = (
+        np.lib.format.read_array_header_1_0
+        if version == (1, 0)
+        else np.lib.format.read_array_header_2_0
+    )
+    shape, fortran, dtype = read(f)
+    if fortran:
+        f.close()
+        raise RuntimeError(f"{name} is Fortran-ordered in the weight cache")
+    return f, shape, dtype
+
+
+def _npz_member_to_bo(z, name, bo, chunk=64 << 20):
+    """Copy array `name` of the npz `z` into `bo` from offset 0, `chunk` bytes
+    at a time, so the array is never all in host memory besides the BO."""
+    import numpy as np
+
+    f, shape, dtype = _npz_member(z, name)
+    with f:
+        nbytes = int(np.prod(shape)) * dtype.itemsize
+        off = 0
+        while off < nbytes:
+            buf = f.read(min(chunk, nbytes - off))
+            bo.write(np.frombuffer(buf, np.uint8), off)
+            off += len(buf)
+
+
 def _ensure_wcache(model, fd, uni_dec, qm, verbose=True):
     """Return the packed decode weight cache, building it once if absent.
 
@@ -268,10 +302,14 @@ class FusedDecoder:
         self.final_norm = np.asarray(self.qm.globals()["final_norm"], bfloat16)
 
         z = _ensure_wcache(model, fd, self.UNI, self.qm, verbose)
-        W = z["W"]
-        if W.size != self.n_w:
+        # Not loaded: `W` is most of the model, and loading it before copying it
+        # into its BO held it twice -- 2.7 GB more at the peak on E4B.
+        f, w_shape, _ = _npz_member(z, "W")
+        f.close()
+        if int(np.prod(w_shape)) != self.n_w:
             raise RuntimeError(
-                f"weight cache holds {W.size} elements, the build wants {self.n_w}"
+                f"weight cache holds {int(np.prod(w_shape))} elements, "
+                f"the build wants {self.n_w}"
             )
         self.QNORM = [z["QNORM"][i].view(bfloat16) for i in range(self.UNI)]
         self.KNORM = [z["KNORM"][i].view(bfloat16) for i in range(self.UNI)]
@@ -341,7 +379,7 @@ class FusedDecoder:
             self.px_bo,
         ) = bos
 
-        self.w_bo.write(W if W.dtype == np.int16 else W.view(np.int16), 0)
+        _npz_member_to_bo(z, "W", self.w_bo)
         self.w_bo.sync(TO)
         # RMS: norms and final_norm are constants, the rope region is rewritten per
         # token. Written whole once so the per-token patch is only the rope slice.
