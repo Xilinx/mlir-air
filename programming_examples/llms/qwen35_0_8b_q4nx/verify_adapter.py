@@ -120,6 +120,12 @@ class NpuRunner:
             top1_token=int(logits.argmax()),
         )
 
+    def prefill_logits(self, prompt_tokens: np.ndarray, logits_from: int):
+        """Logits of the prompt's rows from logits_from on, from one prefill
+        (accuracy.py --path prefill, lm_eval_npu.py loglikelihood)."""
+        ids = [int(t) for t in prompt_tokens]
+        return np.asarray(self.m.fp.prefill(ids, logits_from=logits_from), np.float32)
+
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:
         assert current_pos == self.m.pos, (current_pos, self.m.pos)
         logits = np.asarray(self.m.decode(int(input_token)), np.float32)
