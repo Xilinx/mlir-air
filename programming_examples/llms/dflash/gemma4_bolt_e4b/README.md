@@ -69,20 +69,24 @@ make full80             # Optional: sixteen prompts from each dataset
 make benchmark          # DFlash-only Full80
 ```
 
-## Two independent sequences
+## Two requests at once
 
-`build_target.py --batch 2 --sequences 2` builds the same target for two
-independent sequences: each dispatch takes one token of each, and each
-sequence has its own KV cache and position. A step can leave a sequence out;
-its row then costs no projection work and its cache is not touched.
+The target's `Config` says how many requests (independent conversations, each
+with its own KV cache and position) a dispatch serves and how many consecutive
+tokens of each: DFlash verifies eight tokens of one request
+(`requests=1, tokens_per_request=8`, the default). With `requests=2,
+tokens_per_request=1` the same target decodes one token of each of two
+requests per dispatch, reading the weights once for both. A step can leave a
+request out; its row then costs no projection work and its cache is not
+touched, so a step with one request costs what a one-token decoder does.
 
 ```sh
-make compile-sequences  # PREFILL_CTX positions per sequence
-make verify-sequences   # each step's logits against each sequence's float32 forward
+make compile-requests  # PREFILL_CTX positions per request
+make verify-requests   # each step's logits against each request's float32 forward
 ```
 
 `GemmaTarget.step(tokens, positions, active)` drives it. See
-[the mapping](docs/mapping.md#two-independent-sequences).
+[the mapping](docs/mapping.md#two-requests-at-once).
 
 There is no BF16 checkpoint of this model, so the model check compares the
 NPU's tokens with a float32 forward of the target package's own weights

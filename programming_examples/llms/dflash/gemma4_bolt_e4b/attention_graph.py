@@ -20,10 +20,10 @@ Q_PER_KV = 4
 
 
 class GemmaAttention:
-    """One sequence (SEQUENCES == 1): the batch's tokens share one cache, two
-    tokens to a shard. Independent sequences: a shard, a K/V stream and a
-    length per sequence; a shard's frame holds its one token's four query
-    heads, and the second token's rows are ignored."""
+    """One request (REQUESTS == 1): the batch's tokens share one cache, two
+    tokens to a shard. Several requests, one token each: a shard, a K/V
+    stream and a length per request; a shard's frame holds its token's four
+    query heads, and the second token's rows are ignored."""
 
     def __init__(
         self,
@@ -36,11 +36,11 @@ class GemmaAttention:
     ):
         self.f, self.dh, self.kv = f, dh, kv_heads
         self.batch = f.BATCH
-        self.seqs = getattr(f, "SEQUENCES", 1)
-        self.shards = self.seqs if self.seqs > 1 else f.BATCH // TOKENS_PER_SHARD
+        self.reqs = getattr(f, "REQUESTS", 1)
+        self.shards = self.reqs if self.reqs > 1 else f.BATCH // TOKENS_PER_SHARD
         # tokens a K/V stream serves, and Q frames at the head of each
-        self.stream_tokens = 1 if self.seqs > 1 else f.BATCH
-        self.stream_frames = 1 if self.seqs > 1 else self.shards
+        self.stream_tokens = 1 if self.reqs > 1 else f.BATCH
+        self.stream_frames = 1 if self.reqs > 1 else self.shards
         self.out_cols = out_cols
         self.cols, self.ring_cols = cols, ring_cols
         self.bf = f.BF16Type.get()
@@ -65,13 +65,13 @@ class GemmaAttention:
         self.finish = self.function(
             "g8_finish", [self.mem(n, self.fp), self.mem(16, self.fp), self.mem(n)]
         )
-        for st in range(self.seqs):
+        for st in range(self.reqs):
             f.channel_decl(self.stream("inK", st), size=[1])
             f.channel_decl(self.stream("inV", st), size=[1])
         for h in range(kv_heads):
             for name in ("pk", "pv"):
-                if self.seqs > 1:
-                    f.channel_decl(f"{name}{h}", size=[1, self.seqs])
+                if self.reqs > 1:
+                    f.channel_decl(f"{name}{h}", size=[1, self.reqs])
                 else:
                     f.Channel(
                         f"{name}{h}", size=[1, 1], broadcast_shape=[1, self.shards]
@@ -81,8 +81,8 @@ class GemmaAttention:
             f.channel_decl(f"po{h}", size=[1, self.shards])
             f.channel_decl(f"oj{h}", size=[1])
 
-    def stream(self, name, seq):
-        return name if self.seqs == 1 else f"{name}{seq}"
+    def stream(self, name, request):
+        return name if self.reqs == 1 else f"{name}{request}"
 
     def mem(self, n, dtype=None, space=None):
         return self.f.MemRefType.get(
@@ -130,11 +130,11 @@ class GemmaAttention:
     # ---- launch side: shim transfers ----
 
     def put_query(self, buf, offset):
-        """The Q frames, in frame order at `offset` of `buf`. Independent
-        sequences: sequence s's frame starts at its token's rows, so its
-        second half is the next token's (or padding) and is ignored."""
+        """The Q frames, in frame order at `offset` of `buf`. Several
+        requests: request r's frame starts at its token's rows, so its second
+        half is the next token's (or padding) and is ignored."""
         f = self.f
-        if self.seqs == 1:
+        if self.reqs == 1:
             f.ChannelPut(
                 "inK",
                 buf,
@@ -143,7 +143,7 @@ class GemmaAttention:
                 strides=[self.ix(1)],
             )
             return
-        for st in range(self.seqs):
+        for st in range(self.reqs):
             f.ChannelPut(
                 self.stream("inK", st),
                 buf,
@@ -168,16 +168,16 @@ class GemmaAttention:
         )
         return f.arith.index_cast(idx_t, f.arith.divui(first, self.ci(8)))
 
-    def put_kv(self, kv, k_offset, v_offset, length, window, seq=0):
+    def put_kv(self, kv, k_offset, v_offset, length, window, request=0):
         """Whole KV rows of the blocks [first_block, blocks): K after the Q
-        frames, and V, on sequence `seq`'s streams. window: i32 as in emit."""
+        frames, and V, on `request`'s streams. window: i32 as in emit."""
         f = self.f
         b0 = self.first_block(length, window)
         nb = f.arith.subi(self.blocks(length), b0)
         skip = f.arith.muli(b0, self.ix(8 * self.rw))
         for name, off in (("inK", k_offset), ("inV", v_offset)):
             f.ChannelPut(
-                self.stream(name, seq),
+                self.stream(name, request),
                 kv,
                 offsets=[self.ix(0), f.arith.addi(off, skip)],
                 sizes=[nb, self.ix(8 * self.rw)],
@@ -187,14 +187,14 @@ class GemmaAttention:
     # ---- segment side ----
 
     def emit(self, lengths, arm, window):
-        """lengths: one i32 per sequence. window: i32, the keys a token sees
+        """lengths: one i32 per request. window: i32, the keys a token sees
         back from itself, 0 for all."""
         f, ix, ci = self.f, self.ix, self.ci
         if not isinstance(lengths, (list, tuple)):
             lengths = [lengths]
 
         def rings():
-            for st in range(self.seqs):
+            for st in range(self.reqs):
                 cols = self.ring_cols[st]
                 for name, col in (("K", cols[0]), ("V", cols[1])):
                     ring(st, name, col)
@@ -233,10 +233,10 @@ class GemmaAttention:
                     y = f.AllocOp(self.mem(n, self.fp), [], [])
                     m = f.AllocOp(self.mem(16, self.fp), [], [])
                     ls = f.AllocOp(self.mem(16, self.fp), [], [])
-                    if self.seqs > 1:
-                        # this shard's sequence: its own length
+                    if self.reqs > 1:
+                        # this shard's request: its own length
                         L = Ls[0]
-                        for st in range(1, self.seqs):
+                        for st in range(1, self.reqs):
                             L = f.arith.select(
                                 f.arith.cmpi(f.arith.CmpIPredicate.eq, ty, ix(st)),
                                 Ls[st],
@@ -266,7 +266,7 @@ class GemmaAttention:
                                 f.arith.cmpi(
                                     f.arith.CmpIPredicate.eq,
                                     fr,
-                                    ix(0) if self.seqs > 1 else ty,
+                                    ix(0) if self.reqs > 1 else ty,
                                 ),
                                 [],
                                 has_else=False,
@@ -284,7 +284,7 @@ class GemmaAttention:
                             f.yield_([])
                         f.yield_([])
                     f.CallOp(self.finish, [y, ls, kb])
-                    if self.seqs > 1:
+                    if self.reqs > 1:
                         # the token's four heads; the frame's other half is
                         # padding
                         f.ChannelPut(

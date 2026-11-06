@@ -87,9 +87,9 @@ def build_module(layout, attention):
             [xblk_mm_l1, wblk_l1, yacc_mm_l1, wscr_mm_l1],
             "proj_qmm.o",
         )
-        # independent sequences: the mask of rows that have a token
+        # several requests: the mask of rows that have a token
         mm_acc_m = None
-        if L.SEQUENCES > 1:
+        if L.REQUESTS > 1:
             mm_acc_m = fn(
                 "proj_qmm_mm_acc_m",
                 [xblk_mm_l1, wblk_l1, yacc_mm_l1, wscr_mm_l1, i32],
@@ -222,16 +222,16 @@ def build_module(layout, attention):
                 (g * _cpg + lc, pp) for lc in range(_cpg) for pp in range(L.PAIRS_PC)
             ]
 
-        # one length per sequence: a sequence's tokens sit at positions
+        # one length per request: a request's tokens sit at positions
         # [length - 1, length - 1 + its tokens)
-        _NSEQ = L.SEQUENCES
-        _KVSEQ = L.ABI["geometry"]["kv_sequence"]
+        _NREQ = L.REQUESTS
+        _KVREQ = L.ABI["geometry"]["kv_request"]
 
-        # Independent sequences also take each one's append row and a mask of
-        # the sequences that have a token this step. An idle sequence attends
+        # Several requests also take each one's append row and a mask of
+        # the requests that have a token this step. An idle request attends
         # one key and appends to a row the host keeps out of its context, and
         # the projections skip its row.
-        _NSCAL = _NSEQ if _NSEQ == 1 else 2 * _NSEQ + 1
+        _NSCAL = _NREQ if _NREQ == 1 else 2 * _NREQ + 1
 
         @L.FuncOp.from_py_func(
             x_l3, w_l3, rms_l3, y_l3, kv_l3, pli_l3, *([i32] * _NSCAL)
@@ -239,10 +239,10 @@ def build_module(layout, attention):
         def gemma4_b8_decode(*_fa):
             def launch_body(*_la):
                 X, W, RMS, Y, KVC, PLI = _la[4:10]
-                L_rts = list(_la[10 : 10 + _NSEQ])
+                L_rts = list(_la[10 : 10 + _NREQ])
                 L_rt = L_rts[0]
-                A_rts = list(_la[10 + _NSEQ : 10 + 2 * _NSEQ]) if _NSEQ > 1 else []
-                M_rt = [_la[10 + 2 * _NSEQ]] if _NSEQ > 1 else []
+                A_rts = list(_la[10 + _NREQ : 10 + 2 * _NREQ]) if _NREQ > 1 else []
+                M_rt = [_la[10 + 2 * _NREQ]] if _NREQ > 1 else []
                 iv = _la[10 + _NSCAL]
 
                 def _lb(slab):
@@ -436,18 +436,18 @@ def build_module(layout, attention):
                         else:
                             _by_arm(_kinds, _f, _wbase)
                         if p == 0:
-                            # the tokens' appends, B rows of one sequence or
-                            # one row each to its own sequence's cache
-                            _rows = B // _NSEQ
+                            # the tokens' appends, B rows of one request or
+                            # one row each to its own request's cache
+                            _rows = B // _NREQ
                             for kind, extra in (("appendK", 0), ("appendV", _vreg)):
-                                for _s in range(_NSEQ):
+                                for _s in range(_NREQ):
                                     L.ChannelGet(
                                         kind,
                                         KVC,
                                         indices=[idx(0)],
                                         offsets=[
                                             _slot(
-                                                _add(_kapp, _s * _KVSEQ),
+                                                _add(_kapp, _s * _KVREQ),
                                                 extra,
                                                 A_rts[_s] if A_rts else None,
                                             )
@@ -471,8 +471,8 @@ def build_module(layout, attention):
                                 ],
                             )
                             att.put_query(Y, idx(qoff))
-                            for _s in range(_NSEQ):
-                                _kb = _add(_krd, _s * _KVSEQ)
+                            for _s in range(_NREQ):
+                                _kb = _add(_krd, _s * _KVREQ)
                                 att.put_kv(
                                     KVC,
                                     _kb,
@@ -481,7 +481,7 @@ def build_module(layout, attention):
                                     L.arith.select(
                                         _full, c32(0), c32(L.SLIDING_WINDOW_G)
                                     ),
-                                    seq=_s,
+                                    request=_s,
                                 )
                     L.ChannelGet(
                         "layerOut",
@@ -503,8 +503,8 @@ def build_module(layout, attention):
 
                 @L.segment(name="seg", operands=[iv] + L_rts + M_rt)
                 def seg(_seg_iv, *_seg_ops):
-                    _seg_Ls = _seg_ops[:_NSEQ]
-                    _seg_M = list(_seg_ops[_NSEQ:])
+                    _seg_Ls = _seg_ops[:_NREQ]
+                    _seg_M = list(_seg_ops[_NREQ:])
                     _cmp = L.arith.cmpi(
                         L.arith.CmpIPredicate.slt, _seg_iv, idx(L.UNI_DEC)
                     )

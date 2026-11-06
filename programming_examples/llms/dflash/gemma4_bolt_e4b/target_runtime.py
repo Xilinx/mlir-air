@@ -65,12 +65,12 @@ class GemmaTarget:
         self.dir = Path(artifact)
         man = json.loads((self.dir / "manifest.json").read_text())
         self.abi = man["abi"]
-        self.cfg = b8_config.Config(**man["config"])
+        self.cfg = b8_config.Config.from_dict(man["config"])
         self.layers = self.cfg.layers
         self.batch, self.capacity = self.cfg.batch, self.cfg.capacity
-        self.sequences = self.cfg.sequences
+        self.requests = self.cfg.requests
         self.config = SimpleNamespace(
-            role="target", causal=True, taps=True, **man["config"]
+            role="target", causal=True, taps=True, **vars(self.cfg), batch=self.batch
         )
         self.f = b8_config.load_layout(self.cfg)
         if model is None or isinstance(model, (str, Path)):
@@ -84,7 +84,7 @@ class GemmaTarget:
         self.tb = TxnBuilder(str(self.dir / "decode.txn.h"))
         (self.fn,) = self.tb.function_names
         ins = self.tb(
-            self.fn, *self._scalars([self.cfg.build_length - 1] * self.sequences)
+            self.fn, *self._scalars([self.cfg.build_length - 1] * self.requests)
         )
         self.ib = xrt.bo(
             self.dev, ins.nbytes * 2, xrt.bo.cacheable, self.kern.group_id(1)
@@ -92,7 +92,7 @@ class GemmaTarget:
         # step() builds the next dispatch's instructions while one runs
         self._ibs = [self.ib] + (
             [xrt.bo(self.dev, ins.nbytes * 2, xrt.bo.cacheable, self.kern.group_id(1))]
-            if self.sequences > 1
+            if self.requests > 1
             else []
         )
         self._ready = {}
@@ -136,14 +136,15 @@ class GemmaTarget:
         if verbose:
             print(f"target weights loaded in {time.perf_counter() - t0:.1f}s")
 
-    def seed_kv(self, k, v, position, sequence=0):
+    def seed_kv(self, k, v, position, request=0):
         """A prompt's first `position` positions of K/V ([owners, n, KV_ROW],
         see the module docstring), into the decoder's spread head layout, in
-        `sequence`'s cache."""
-        tokens = self.batch // self.sequences
-        if not 0 <= position <= self.capacity - tokens:
+        `request`'s cache."""
+        # several requests keep each cache's last row for idle appends
+        room = self.capacity - self.cfg.tokens_per_request - (self.requests > 1)
+        if not 0 <= position <= room:
             raise ValueError("Prefill leaves no room for a whole verification block")
-        seq_base = sequence * self.abi["geometry"]["kv_sequence"]
+        req_base = request * self.abi["geometry"]["kv_request"]
         ks, vs = unpack_prefill_kv(k, v)
         cap = self.capacity
         for L in range(min(self.layers, b8_config.KV_OWNERS)):
@@ -151,7 +152,7 @@ class GemmaTarget:
             heads = b8_config.KV_HEADS
             kk = W._spread(ks[L][:position].T, heads, dh).T
             vv = W._spread(vs[L][:position].T, heads, dh, front=True).T
-            base = seq_base + L * self.abi["geometry"]["kv_layer"]
+            base = req_base + L * self.abi["geometry"]["kv_layer"]
             self._write("kv", kk.astype(bfloat16), base)
             self._write("kv", vv.astype(bfloat16), base + cap * KV_ROW)
 
@@ -196,13 +197,15 @@ class GemmaTarget:
         )
 
     def _scalars(self, positions, active=None):
-        """The dispatch's scalars: each sequence's length, then (independent
-        sequences) its append row and the mask of sequences with a token. An
-        idle sequence attends one key and appends to the cache's last row,
+        """The dispatch's scalars: each request's length, then (several
+        requests) its append row and the mask of requests with a token. An
+        idle request attends one key and appends to its cache's last row,
         which no context reaches."""
-        if self.sequences == 1:
+        if self.requests == 1:
             return (positions[0] + 1,)
-        active = [True] * self.sequences if active is None else list(active)
+        active = [True] * self.requests if active is None else list(active)
+        if len(positions) != self.requests or len(active) != self.requests:
+            raise ValueError("a position and an active flag per request")
         Ls = [p + 1 if a else 1 for p, a in zip(positions, active)]
         rows = [p if a else self.capacity - 1 for p, a in zip(positions, active)]
         mask = sum(1 << s for s, a in enumerate(active) if a)
@@ -223,25 +226,32 @@ class GemmaTarget:
         return self._ready[scalars]
 
     def step(self, tokens, positions, active=None, upcoming=None):
-        """One token of each independent sequence: tokens[s] at positions[s]
-        of sequence s's cache; a sequence not in `active` sits the step out
-        (its token and position are ignored). Returns logits [sequences,
-        vocab], the idle rows meaningless.
+        """One token of each request: tokens[r] at positions[r] of request
+        r's cache; a request not in `active` sits the step out (its token and
+        position are ignored). Returns logits [requests, vocab], the idle
+        rows meaningless.
 
         upcoming: the next step's (positions, active), if known: its
         instruction stream is built while this one runs."""
-        if self.sequences == 1:
-            raise ValueError("this artifact is one sequence; use verify")
-        ids = [int(t) for t in tokens]
-        ps = [int(p) for p in positions]
-        if len(ids) != self.batch or not all(0 <= p < self.capacity - 1 for p in ps):
-            raise ValueError("a token per sequence, below the cache's last row")
-        if active is not None and not any(active):
-            raise ValueError("no sequence has a token")
+        if self.requests == 1:
+            raise ValueError("this artifact serves one request; use verify")
+        on = [True] * self.requests if active is None else [bool(x) for x in active]
+        if (
+            len(tokens) != self.batch
+            or len(positions) != self.batch
+            or len(on) != self.batch
+        ):
+            raise ValueError("a token, a position and an active flag per request")
+        if not any(on):
+            raise ValueError("no request has a token")
+        # an idle request's token and position are never read
+        ids = [int(t) if a else 0 for t, a in zip(tokens, on)]
+        ps = [int(p) if a else 0 for p, a in zip(positions, on)]
+        if not all(0 <= p < self.capacity - 1 for p in ps):
+            raise ValueError("a position below the cache's last row")
         start = time.perf_counter()
-        Ls = self._scalars(ps, active)
+        Ls = self._scalars(ps, on)
         ib, n_ins = self._insts(Ls)
-        on = [True] * len(ids) if active is None else [bool(x) for x in active]
         emb = self.embed(ids) * gw.EMBED_SCALE
         self._write("x", emb.astype(bfloat16))
         # an idle row's per-layer inputs are never used
@@ -256,9 +266,12 @@ class GemmaTarget:
         )
         dispatched = time.perf_counter()
         run = self.kern(3, ib, n_ins, *[self.bo[n] for n in self.names], *Ls)
-        if upcoming is not None:
-            self._insts(self._scalars(*upcoming), avoid=ib)
-        st = run.wait(30000)
+        try:
+            if upcoming is not None:
+                self._insts(self._scalars(*upcoming), avoid=ib)
+        finally:
+            # whatever happened, the dispatch reads these buffers until done
+            st = run.wait(30000)
         device = time.perf_counter() - dispatched
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decoder dispatch at {ps}: {st}")

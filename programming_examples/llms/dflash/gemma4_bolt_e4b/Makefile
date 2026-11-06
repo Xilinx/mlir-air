@@ -34,7 +34,7 @@ PREFILL = --prefill npu --prefill-context $(PREFILL_CTX) --prefill-artifacts $(P
 MODEL_PAIR = --target $(BUILD_DIR)/target --draft $(BUILD_DIR)/draft --prepass $(BUILD_DIR)/prepass
 
 .NOTPARALLEL:
-.PHONY: help download weights compile compile-target compile-draft compile-prepass compile-prefill compile-baseline compile-sequences verify-sequences run chat verify verify-state verify-model profile full20 full80 benchmark-data benchmark clean
+.PHONY: help download weights compile compile-target compile-draft compile-prepass compile-prefill compile-baseline compile-requests verify-requests run chat verify verify-state verify-model profile full20 full80 benchmark-data benchmark clean
 help:
 	@echo 'Nemotron-3.5-Bolt-E4B DFlash B8 on NPU2 (use the normal AIR environment)'
 	@echo 'make download         Seed the pinned checkpoints for offline runs'
@@ -47,8 +47,8 @@ help:
 	@echo 'make profile          Fixed-prompt NPU prefill + DFlash performance JSON'
 	@echo 'make full20           Nightly B1 + DFlash study, 4 prompts per dataset'
 	@echo 'make full80           Optional B1 + DFlash study, 16 prompts per dataset'
-	@echo 'make compile-sequences  Target for two independent sequences'
-	@echo 'make verify-sequences   Its checks against the float32 reference'
+	@echo 'make compile-requests Target for two requests, one token each'
+	@echo 'make verify-requests  Its checks against the float32 reference'
 	@echo 'make clean            Remove this example build directory'
 
 download:
@@ -71,14 +71,15 @@ compile-prepass:
 compile-prefill:
 	$(PYTHON) $(srcdir)/npu_prefill.py --cache-dir $(PREFILL_DIR)
 
-# The target for two independent sequences, one token each per dispatch.
-SEQUENCES_DIR = $(BUILD_DIR)/sequences
-compile-sequences:
-	$(PYTHON) $(srcdir)/build_target.py --output $(SEQUENCES_DIR) --batch 2 --sequences 2 --capacity $(PREFILL_CTX) --check-existing
+# The target for two independent requests, one token of each per dispatch.
+REQUESTS_DIR = $(BUILD_DIR)/requests
+compile-requests:
+	$(PYTHON) $(srcdir)/build_target.py --output $(REQUESTS_DIR) --requests 2 --tokens-per-request 1 --capacity $(PREFILL_CTX) --check-existing
 
-verify-sequences:
-	$(NPU_RUN) $(srcdir)/tests/check_sequences.py --artifact $(SEQUENCES_DIR) --output $(VERIFY_DIR)/sequences.json
-	$(NPU_RUN) $(srcdir)/tests/check_attention.py --batch 2 --output $(VERIFY_DIR)/attention_b2
+verify-requests:
+	$(NPU_RUN) $(srcdir)/tests/check_requests.py --artifact $(REQUESTS_DIR) --output $(VERIFY_DIR)/requests.json
+	$(NPU_RUN) $(srcdir)/tests/check_attention.py --requests 2 --output $(VERIFY_DIR)/attention_requests
+	$(NPU_RUN) $(srcdir)/tests/check_attention.py --requests 2 --window 512 --output $(VERIFY_DIR)/attention_requests_sliding
 
 compile-baseline:
 	$(PYTHON) $(srcdir)/build_baseline.py --output $(BUILD_DIR)/baseline
