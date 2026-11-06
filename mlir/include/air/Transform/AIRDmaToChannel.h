@@ -21,11 +21,6 @@ namespace air {
 
 std::unique_ptr<mlir::Pass> createDmaToChannelPass();
 
-// Hoist the transfers cores start (air.device_issue), which
-// air-dma-to-channel leaves in their herds next to their air.channel.issue,
-// to the level of their memory, as it hoists every other transfer.
-LogicalResult hoistDeviceIssuedTransfers(Operation *root);
-
 SmallVector<Operation *> cloneOpsInBlock(Block *blk, OpBuilder &builder,
                                          IRMapping &remap);
 SmallVector<Operation *> cloneAffineIfUsingRemap(OpBuilder builder,

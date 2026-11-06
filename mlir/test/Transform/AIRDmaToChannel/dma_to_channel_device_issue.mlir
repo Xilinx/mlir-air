@@ -8,20 +8,20 @@
 // RUN: air-opt %s -air-dma-to-channel -canonicalize -cse -split-input-file -verify-diagnostics | FileCheck %s
 
 // An L3 put whose offset uses a value the core loads from L1 is split: the
-// put keeps the host part, and an air.channel.issue before it carries the
-// device part as an i64 element offset. The put stays in the herd, after its
-// issue, until air-opt-memtile-dma-bds hoists it.
+// host part is hoisted onto the put, and an air.channel.issue in the herd
+// carries the device part as an i64 element offset.
 
 // CHECK-DAG: #[[HOSTMAP:.*]] = affine_map<()[s0] -> (s0 * 32768 + 7)>
 // CHECK-LABEL: func.func @split
-// CHECK: air.herd @router {{.*}} args({{.*}}, %[[L:.*]]=%{{.*}}) : memref<65536xi32>, index
+// CHECK: air.launch (%[[L:.*]]) in
+// CHECK: %[[HOST:.*]] = affine.apply #[[HOSTMAP]]()[%[[L]]]
+// CHECK: air.channel.put @cin[{{.*}}] (%{{.*}}[%[[HOST]]] [1024] [1]) {air.device_issue = 0 : i64}
+// CHECK: air.herd @router
 // CHECK: %[[V:.*]] = memref.load
 // CHECK: %[[E:.*]] = arith.index_cast %[[V]] : i32 to index
-// CHECK: %[[HOST:.*]] = affine.apply #[[HOSTMAP]]()[%[[L]]]
 // CHECK: %[[E64:.*]] = arith.index_cast %[[E]] : index to i64
 // CHECK: %[[DEV:.*]] = arith.muli %[[E64]], %c1024_i64 : i64
 // CHECK: air.channel.issue @cin[%{{.*}}, %{{.*}}] offset(%[[DEV]] : i64) {issue_id = 0 : i64}
-// CHECK-NEXT: air.channel.put @cin[{{.*}}] (%{{.*}}[%[[HOST]]] [1024] [1]) {air.device_issue = 0 : i64}
 // CHECK: air.herd @mvm
 // CHECK: air.channel.get @cin
 module {
@@ -57,11 +57,11 @@ module {
 // strides into one element offset.
 
 // CHECK-LABEL: func.func @strided
+// CHECK: air.channel.put @cin2[{{.*}}] (%{{.*}}[0, 0] [4, 256] [256, 1]) {air.device_issue = 0 : i64}
 // CHECK: air.herd @router
 // CHECK: %[[E:.*]] = arith.index_cast %{{.*}} : index to i64
 // CHECK: %[[DEV:.*]] = arith.muli %[[E]], %c256_i64 : i64
 // CHECK: air.channel.issue @cin2[%{{.*}}, %{{.*}}] offset(%[[DEV]] : i64)
-// CHECK-NEXT: air.channel.put @cin2[{{.*}}] (%{{.*}}[0, 0] [4, 256] [256, 1]) {air.device_issue = 0 : i64}
 module {
   air.channel @cin2 [1, 1]
   func.func @strided(%arg0: memref<64x256xi32>) {
@@ -142,11 +142,12 @@ module {
 // memtile descriptor keeps only the constant part.
 
 // CHECK-LABEL: func.func @l2_put
+// CHECK: air.segment
+// CHECK: air.channel.put @row[] (%{{.*}}[0, 0] [1, 256] [256, 1]) {air.device_issue = {{[0-9]+}} : i64}
 // CHECK: air.herd @fwd
 // CHECK: %[[E:.*]] = arith.index_cast %{{.*}} : index to i64
 // CHECK: %[[DEV:.*]] = arith.muli %[[E]], %c256_i64 : i64
 // CHECK: air.channel.issue @row[] offset(%[[DEV]] : i64)
-// CHECK-NEXT: air.channel.put @row[] (%{{.*}}[0, 0] [1, 256] [256, 1]) {air.device_issue = {{[0-9]+}} : i64}
 // CHECK: air.channel.get @row[]
 module {
   air.channel @row []
@@ -163,6 +164,47 @@ module {
           %e = arith.index_cast %v : i32 to index
           air.channel.put @row[] (%w[%e, %c0] [1, 256] [256, 1]) : (memref<8x256xi32, 1 : i32>)
           air.channel.get @row[] (%buf[] [] []) : (memref<256xi32, 2 : i32>)
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The same put in a core loop leaves the herd in a loop of its own, one put
+// per trip; the core's loop keeps only the issue.
+
+// CHECK-LABEL: func.func @l2_put_loop
+// CHECK: air.segment
+// CHECK: scf.for
+// CHECK-NEXT: air.channel.put @row4[] (%{{.*}}[0, 0] [1, 256] [256, 1]) {air.device_issue = {{[0-9]+}} : i64}
+// CHECK: air.herd @fwd
+// CHECK: scf.for
+// CHECK-NOT: air.channel.put
+// CHECK: air.channel.issue @row4[] offset(%{{.*}} : i64)
+// CHECK-NEXT: air.channel.get @row4[]
+module {
+  air.channel @row4 []
+  func.func @l2_put_loop() {
+    air.launch () in () {
+      air.segment @seg {
+        %c1 = arith.constant 1 : index
+        %l2 = memref.alloc() : memref<8x256xi32, 1 : i32>
+        air.herd @fwd tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%w=%l2) : memref<8x256xi32, 1 : i32> {
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          %c4 = arith.constant 4 : index
+          %topk = memref.alloc() : memref<16xi32, 2 : i32>
+          scf.for %i = %c0 to %c4 step %c1_0 {
+            %buf = memref.alloc() : memref<256xi32, 2 : i32>
+            %v = memref.load %topk[%i] : memref<16xi32, 2 : i32>
+            %e = arith.index_cast %v : i32 to index
+            air.channel.put @row4[] (%w[%e, %c0] [1, 256] [256, 1]) : (memref<8x256xi32, 1 : i32>)
+            air.channel.get @row4[] (%buf[] [] []) : (memref<256xi32, 2 : i32>)
+            memref.dealloc %buf : memref<256xi32, 2 : i32>
+          }
         }
       }
     }

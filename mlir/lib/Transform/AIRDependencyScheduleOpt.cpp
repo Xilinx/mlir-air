@@ -8,7 +8,6 @@
 
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Dialect/AIR/AIRDialect.h"
-#include "air/Transform/AIRDmaToChannel.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/DirectedAdjacencyMap.h"
 #include "air/Util/Util.h"
@@ -2067,10 +2066,9 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
             unsafe = true;
           continue;
         }
-        // A channel put only reads its source.
         auto blockArg = dyn_cast<BlockArgument>(operand);
         if (blockArg && isa<air::HerdOp>(blockArg.getOwner()->getParentOp()) &&
-            !isa<MemoryEffectOpInterface, air::ChannelPutOp>(op))
+            !isa<MemoryEffectOpInterface>(op))
           unsafe = true;
       }
       return unsafe ? WalkResult::interrupt() : WalkResult::advance();
@@ -10881,12 +10879,6 @@ public:
     }
     if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device))) {
       func.emitOpError("AIE1 architecture does not come with memtiles.");
-      signalPassFailure();
-      return;
-    }
-    // The transfers cores start leave their herds here, after the async
-    // passes and before any pass shapes the descriptors that move them.
-    if (failed(air::hoistDeviceIssuedTransfers(func))) {
       signalPassFailure();
       return;
     }
