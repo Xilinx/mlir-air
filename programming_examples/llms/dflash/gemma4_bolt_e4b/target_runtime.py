@@ -65,11 +65,12 @@ class GemmaTarget:
         self.dir = Path(artifact)
         man = json.loads((self.dir / "manifest.json").read_text())
         self.abi = man["abi"]
-        self.cfg = b8_config.Config(**man["config"])
+        self.cfg = b8_config.Config.from_dict(man["config"])
         self.layers = self.cfg.layers
         self.batch, self.capacity = self.cfg.batch, self.cfg.capacity
+        self.requests = self.cfg.requests
         self.config = SimpleNamespace(
-            role="target", causal=True, taps=True, **man["config"]
+            role="target", causal=True, taps=True, **vars(self.cfg), batch=self.batch
         )
         self.f = b8_config.load_layout(self.cfg)
         if model is None or isinstance(model, (str, Path)):
@@ -82,10 +83,19 @@ class GemmaTarget:
         self.kern = xrt.kernel(self.ctx, "MLIR_AIE")
         self.tb = TxnBuilder(str(self.dir / "decode.txn.h"))
         (self.fn,) = self.tb.function_names
-        ins = self.tb(self.fn, self.cfg.build_length)
+        ins = self.tb(
+            self.fn, *self._scalars([self.cfg.build_length - 1] * self.requests)
+        )
         self.ib = xrt.bo(
             self.dev, ins.nbytes * 2, xrt.bo.cacheable, self.kern.group_id(1)
         )
+        # step() builds the next dispatch's instructions while one runs
+        self._ibs = [self.ib] + (
+            [xrt.bo(self.dev, ins.nbytes * 2, xrt.bo.cacheable, self.kern.group_id(1))]
+            if self.requests > 1
+            else []
+        )
+        self._ready = {}
         self.TO = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         self.FROM = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE
         el = self.abi["elements"]
@@ -126,11 +136,15 @@ class GemmaTarget:
         if verbose:
             print(f"target weights loaded in {time.perf_counter() - t0:.1f}s")
 
-    def seed_kv(self, k, v, position):
+    def seed_kv(self, k, v, position, request=0):
         """A prompt's first `position` positions of K/V ([owners, n, KV_ROW],
-        see the module docstring), into the decoder's spread head layout."""
-        if not 0 <= position <= self.capacity - self.batch:
+        see the module docstring), into the decoder's spread head layout, in
+        `request`'s cache."""
+        # several requests keep each cache's last row for idle appends
+        room = self.capacity - self.cfg.tokens_per_request - (self.requests > 1)
+        if not 0 <= position <= room:
             raise ValueError("Prefill leaves no room for a whole verification block")
+        req_base = request * self.abi["geometry"]["kv_request"]
         ks, vs = unpack_prefill_kv(k, v)
         cap = self.capacity
         for L in range(min(self.layers, b8_config.KV_OWNERS)):
@@ -138,7 +152,7 @@ class GemmaTarget:
             heads = b8_config.KV_HEADS
             kk = W._spread(ks[L][:position].T, heads, dh).T
             vv = W._spread(vs[L][:position].T, heads, dh, front=True).T
-            base = L * self.abi["geometry"]["kv_layer"]
+            base = req_base + L * self.abi["geometry"]["kv_layer"]
             self._write("kv", kk.astype(bfloat16), base)
             self._write("kv", vv.astype(bfloat16), base + cap * KV_ROW)
 
@@ -176,18 +190,105 @@ class GemmaTarget:
         device = time.perf_counter() - dispatched
         if not str(st).endswith("COMPLETED"):
             raise RuntimeError(f"decoder dispatch at p={p}: {st}")
-        g = self.abi["geometry"]
+        return SimpleNamespace(
+            logits=self._logits(),
+            wall_seconds=time.perf_counter() - start,
+            device_wait_seconds=device,
+        )
+
+    def _scalars(self, positions, active=None):
+        """The dispatch's scalars: each request's length, then (several
+        requests) its append row and the mask of requests with a token. An
+        idle request attends one key and appends to its cache's last row,
+        which no context reaches."""
+        if self.requests == 1:
+            return (positions[0] + 1,)
+        active = [True] * self.requests if active is None else list(active)
+        if len(positions) != self.requests or len(active) != self.requests:
+            raise ValueError("a position and an active flag per request")
+        Ls = [p + 1 if a else 1 for p, a in zip(positions, active)]
+        rows = [p if a else self.capacity - 1 for p, a in zip(positions, active)]
+        mask = sum(1 << s for s, a in enumerate(active) if a)
+        return tuple(Ls + rows + [mask])
+
+    def _insts(self, scalars, avoid=None):
+        """The instruction stream for these scalars, in an instruction BO
+        other than `avoid` (the one a running dispatch reads). Returns
+        (bo, words)."""
+        if scalars in self._ready and self._ready[scalars][0] is not avoid:
+            return self._ready[scalars]
+        bo = self._ibs[1] if avoid is self._ibs[0] else self._ibs[0]
+        ins = self.tb(self.fn, *scalars)
+        bo.write(ins, 0)
+        bo.sync(self.TO)
+        self._ready = {k: v for k, v in self._ready.items() if v[0] is not bo}
+        self._ready[scalars] = (bo, ins.size)
+        return self._ready[scalars]
+
+    def step(self, tokens, positions, active=None, upcoming=None):
+        """One token of each request: tokens[r] at positions[r] of request
+        r's cache; a request not in `active` sits the step out (its token and
+        position are ignored). Returns logits [requests, vocab], the idle
+        rows meaningless.
+
+        upcoming: the next step's (positions, active), if known: its
+        instruction stream is built while this one runs."""
+        if self.requests == 1:
+            raise ValueError("this artifact serves one request; use verify")
+        on = [True] * self.requests if active is None else [bool(x) for x in active]
+        if (
+            len(tokens) != self.batch
+            or len(positions) != self.batch
+            or len(on) != self.batch
+        ):
+            raise ValueError("a token, a position and an active flag per request")
+        if not any(on):
+            raise ValueError("no request has a token")
+        # an idle request's token and position are never read
+        ids = [int(t) if a else 0 for t, a in zip(tokens, on)]
+        ps = [int(p) if a else 0 for p, a in zip(positions, on)]
+        if not all(0 <= p < self.capacity - 1 for p in ps):
+            raise ValueError("a position below the cache's last row")
+        start = time.perf_counter()
+        Ls = self._scalars(ps, on)
+        ib, n_ins = self._insts(Ls)
+        emb = self.embed(ids) * gw.EMBED_SCALE
+        self._write("x", emb.astype(bfloat16))
+        # an idle row's per-layer inputs are never used
+        pli = np.zeros((self.layers, len(ids), b8_config.PLE_PAD), bfloat16)
+        live = [s for s in range(len(ids)) if on[s]]
+        pli[:, live] = self.pli([ids[s] for s in live], emb[live])
+        self._write("pli", pli)
+        self._write(
+            "rms",
+            self.rope([p if a else 0 for p, a in zip(ps, on)]),
+            self.abi["offsets"]["rope"],
+        )
+        dispatched = time.perf_counter()
+        run = self.kern(3, ib, n_ins, *[self.bo[n] for n in self.names], *Ls)
+        try:
+            if upcoming is not None:
+                self._insts(self._scalars(*upcoming), avoid=ib)
+        finally:
+            # whatever happened, the dispatch reads these buffers until done
+            st = run.wait(30000)
+        device = time.perf_counter() - dispatched
+        if not str(st).endswith("COMPLETED"):
+            raise RuntimeError(f"decoder dispatch at {ps}: {st}")
+        return SimpleNamespace(
+            logits=self._logits(),
+            wall_seconds=time.perf_counter() - start,
+            device_wait_seconds=device,
+        )
+
+    def _logits(self):
+        B, g = self.batch, self.abi["geometry"]
         n = g["vocab_chunks"] * B * g["vocab_chunk_width"]
         off = self.abi["offsets"]["logits"]
         self.bo["y"].sync(self.FROM, n * 2, off * 2)
         lg = np.frombuffer(self.bo["y"].map(), bfloat16, count=n, offset=off * 2)
         lg = lg.reshape(g["vocab_chunks"], B, g["vocab_chunk_width"])
-        lg = lg.transpose(1, 0, 2).reshape(B, -1)[:, : g["vocab"]].astype(np.float32)
-        return SimpleNamespace(
-            logits=lg,
-            wall_seconds=time.perf_counter() - start,
-            device_wait_seconds=device,
-        )
+        return lg.transpose(1, 0, 2).reshape(B, -1)[:, : g["vocab"]].astype(np.float32)
 
     def boundaries(self, which):
         """{boundary: [batch, hidden] float32} of the last verify call."""

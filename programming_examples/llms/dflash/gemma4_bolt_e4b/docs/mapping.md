@@ -37,6 +37,22 @@ head; each shard computes two tokens' four query heads, eight rows of an
 tiles. The softmax's running max moves only when a score passes it by a fixed
 margin, so the output's rescale is rare.
 
+## Two requests at once
+
+`Config(requests=2, tokens_per_request=1)` keeps the graph and gives each of
+the dispatch's two tokens its own request:
+
+- the projection cores take two rows with a bf16 GEMV that dequantizes each
+  weight block once (`common/kernels/proj_batch.cc`, `PROJ_MM_BATCH=2`), in
+  place of the eight-row mmul;
+- each request has its own KV cache (`kv_request` elements apart), its own K
+  and V streams and its own attention shard per KV head; a shard's frame
+  carries its token's four query heads;
+- the dispatch takes each request's length and append row, and a mask of the
+  requests with a token. An idle request attends one key, appends to its
+  cache's last row, which no context reaches, and the projections skip its
+  row.
+
 ## Drafter
 
 The drafter is `dflash/qwen3_4b`'s B8 drafter graph at the draft's geometry

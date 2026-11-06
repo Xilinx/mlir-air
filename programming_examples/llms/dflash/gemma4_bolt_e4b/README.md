@@ -69,6 +69,25 @@ make full80             # Optional: sixteen prompts from each dataset
 make benchmark          # DFlash-only Full80
 ```
 
+## Two requests at once
+
+The target's `Config` says how many requests (independent conversations, each
+with its own KV cache and position) a dispatch serves and how many consecutive
+tokens of each: DFlash verifies eight tokens of one request
+(`requests=1, tokens_per_request=8`, the default). With `requests=2,
+tokens_per_request=1` the same target decodes one token of each of two
+requests per dispatch, reading the weights once for both. A step can leave a
+request out; its row then costs no projection work and its cache is not
+touched, so a step with one request costs what a one-token decoder does.
+
+```sh
+make compile-requests  # PREFILL_CTX positions per request
+make verify-requests   # each step's logits against each request's float32 forward
+```
+
+`GemmaTarget.step(tokens, positions, active)` drives it. See
+[the mapping](docs/mapping.md#two-requests-at-once).
+
 There is no BF16 checkpoint of this model, so the model check compares the
 NPU's tokens with a float32 forward of the target package's own weights
 (`reference_b8.py`) rather than with Hugging Face. See

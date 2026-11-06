@@ -64,21 +64,42 @@ DEST_NAMES = ("rope", "rms", "glu", "rms", "glu", "rms")
 class Config:
     capacity: int = 4096
     layers: int = NUM_LAYERS
-    batch: int = 8
+    # Requests (independent conversations, each with its own KV cache and
+    # position) per dispatch, and consecutive tokens of each: DFlash verifies
+    # eight tokens of one request; two requests decode one token each.
+    requests: int = 1
+    tokens_per_request: int = 8
     stack_bytes: int = 6080
 
     def __post_init__(self):
-        if self.batch != 8:
-            raise ValueError("the Gemma4 decoder is built for eight tokens")
+        if (self.requests, self.tokens_per_request) not in ((1, 8), (1, 2), (2, 1)):
+            raise ValueError(
+                "built for one request of eight or two tokens, or two requests "
+                "of one token"
+            )
         if not 1 <= self.layers <= NUM_LAYERS:
             raise ValueError("layer count exceeds the model")
         if self.capacity < 16 or self.capacity % 16:
             raise ValueError("KV capacity must be a positive multiple of 16")
 
     @property
+    def batch(self):
+        """Tokens per dispatch."""
+        return self.requests * self.tokens_per_request
+
+    @classmethod
+    def from_dict(cls, d):
+        """A manifest's config; ones written before requests existed name
+        only `batch`, one request of that many tokens."""
+        d = dict(d)
+        if "batch" in d:
+            d["tokens_per_request"] = d.pop("batch")
+        return cls(**d)
+
+    @property
     def build_length(self):
         """One dynamic template covers every position in this capacity."""
-        return self.capacity - self.batch + 1
+        return self.capacity - self.tokens_per_request + 1
 
 
 def kv_slabs(layers):
@@ -253,6 +274,7 @@ def abi(config, fd):
             "w_offsets": weight_offsets(config, fd),
             "kv_layer": fd.KV_LAYER,
             "kv_slabs": kv_slabs(config.layers),
+            "kv_request": kv_slabs(config.layers) * fd.KV_LAYER,
             "phases": list(PHASES),
         },
         "elements": {
@@ -260,8 +282,10 @@ def abi(config, fd):
             "w": weight_offsets(config, fd)[-1]
             + fd.UNI_LM * fd.VOCAB_W_BLOCKS * fd.BLOCK_BF16,
             "rms": final_offset + k,
-            "y": q_scratch + b * Q_HEADS * DH,
-            "kv": kv_slabs(config.layers) * fd.KV_LAYER,
+            # several requests: the last one's attention frame reads one
+            # token's rows past the end
+            "y": q_scratch + (b + (config.requests > 1)) * Q_HEADS * DH,
+            "kv": config.requests * kv_slabs(config.layers) * fd.KV_LAYER,
             "pli": config.layers * b * PLE_PAD,
         },
         "offsets": {
@@ -271,7 +295,7 @@ def abi(config, fd):
             "q_scratch": q_scratch,
         },
         "rms_layout": "[input | pre_ffn | post_attn | post_ffn | post_ple | unused x16]",
-        "kv_layout": "[slab, K rows then V rows, position, KV heads x 512]",
+        "kv_layout": "[request, slab, K rows then V rows, position, KV heads x 512]",
         "logits_layout": "[vocabulary chunk, token, within-chunk vocabulary]",
         "hidden_layout": "[layer boundary, token, hidden]; boundary 0 is the input",
     }
@@ -293,6 +317,7 @@ def load_layout(config, length=None):
     ns.update(vars(ph))
     ns.update(
         BATCH=b,
+        REQUESTS=config.requests,
         CAPACITY=config.capacity,
         LAYERS=config.layers,
         KV_SLABS=kv_slabs(config.layers),

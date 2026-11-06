@@ -62,10 +62,11 @@ def compile_kernels(out, fd):
         "-D__AIE_API_AIE_ADF_HPP__",
         "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
         f"-DGLU_SLICE_EXPECTED={fd.GLU_SLICE}",
-        "-DPROJ_MM_BATCH=8",
+        f"-DPROJ_MM_BATCH={fd.BATCH}",
         # GLU slices arrive [round][token][PAYLOAD]
         "-DGLU_BATCH_WAVE_LAYOUT=1",
-        "-DGLU_BATCH=8",
+        f"-DGLU_BATCH={fd.BATCH}",
+        f"-DNORM_CACHE_ROWS={fd.BATCH}",
         "-DDECODE_ROUND_NEAREST",
         "-I" + str(Path(os.environ["MLIR_AIE_INSTALL_DIR"]) / "include"),
         "-I" + str(FUSED / "kernels"),
@@ -88,15 +89,29 @@ def main():
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--layers", type=int, default=b8_config.NUM_LAYERS)
     ap.add_argument("--capacity", type=int, default=4096)
+    ap.add_argument(
+        "--requests", type=int, default=1, help="independent requests per dispatch"
+    )
+    ap.add_argument(
+        "--tokens-per-request",
+        type=int,
+        default=8,
+        help="consecutive tokens of each request per dispatch",
+    )
     ap.add_argument("--check-existing", action="store_true")
     a = ap.parse_args()
-    cfg = b8_config.Config(capacity=a.capacity, layers=a.layers)
+    cfg = b8_config.Config(
+        capacity=a.capacity,
+        layers=a.layers,
+        requests=a.requests,
+        tokens_per_request=a.tokens_per_request,
+    )
     out = a.output.resolve()
     ident = identity()
     if out.exists() and a.check_existing:
         check_existing(out, ident)
         saved = json.loads((out / "manifest.json").read_text())["config"]
-        if saved != b8_config.load_layout(cfg).ABI["config"]:
+        if b8_config.Config.from_dict(saved) != cfg:
             raise ValueError("Build configuration differs; choose a fresh BUILD_DIR")
         print("up to date", out)
         return

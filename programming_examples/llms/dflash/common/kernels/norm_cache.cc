@@ -4,7 +4,8 @@
 #ifndef NORM_CACHE_ROWS
 #define NORM_CACHE_ROWS 8
 #endif
-static_assert(NORM_CACHE_ROWS == 4 || NORM_CACHE_ROWS == 8);
+static_assert(NORM_CACHE_ROWS == 2 || NORM_CACHE_ROWS == 4 ||
+              NORM_CACHE_ROWS == 8);
 // Regroup two [row8,128] normalized chunks into [row8,256].
 extern "C" void b16_normalized_cache_chunk(bfloat16 *restrict out,
                                            const bfloat16 *restrict slab,
