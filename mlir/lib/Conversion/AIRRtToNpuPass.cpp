@@ -1684,6 +1684,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       } else {
         configTaskOp->setAttr("air.device_issue_lock",
                               op->getAttr("air.device_issue_lock"));
+        // A core that starts it in a loop starts it this many times.
+        if (auto n = op->getAttr("air.device_issue_count"))
+          configTaskOp->setAttr("air.device_issue_count", n);
       }
       // The core's task-queue word carries the repeat count the BD was shaped
       // with here (bits 16-23), as a host start's would.
@@ -5526,10 +5529,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         auto c = [&](int64_t v) -> Value {
           return arith::ConstantIntOp::create(b, t.getLoc(), b.getI32Type(), v);
         };
-        AIEX::NpuSyncOp::create(b, t.getLoc(), c(tile.getCol()),
-                                c(tile.getRow()),
-                                c(static_cast<int64_t>(alloc.getChannelDir())),
-                                c(alloc.getChannelIndex()), c(1), c(1));
+        // One completion token per start.
+        int64_t starts = 1;
+        if (auto n = t->getAttrOfType<IntegerAttr>("air.device_issue_count"))
+          starts = n.getInt();
+        for (int64_t i = 0; i < starts; ++i)
+          AIEX::NpuSyncOp::create(
+              b, t.getLoc(), c(tile.getCol()), c(tile.getRow()),
+              c(static_cast<int64_t>(alloc.getChannelDir())),
+              c(alloc.getChannelIndex()), c(1), c(1));
         AIEX::DMAFreeTaskOp::create(b, t.getLoc(), t.getResult());
       }
       tasks.clear();

@@ -4783,6 +4783,10 @@ struct DeviceIssueCore {
   // descriptors (memtile, core tile); `started` records that it was taken.
   AIE::LockOp ready;
   AIE::BufferOp started;
+  // An L3 transfer the core starts more than once per run (in a loop, or in
+  // unrolled copies of one): whether this run has taken the host's arm, and
+  // the BD's address as armed.
+  llvm::DenseMap<int64_t, std::pair<AIE::BufferOp, AIE::BufferOp>> reused;
   int mm2s = -1, s2mm = -1;
   llvm::DenseMap<Value, std::pair<int, int>> targetPackets;
 };
@@ -4936,7 +4940,7 @@ static void eraseIssue(air::ChannelIssueOp issue) {
 // `channel` of a shim tile, through packet `ctrlPkt` and reply `replyPkt`.
 static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
                              int channel, uint32_t bdId, uint32_t ctrlPkt,
-                             uint32_t replyPkt, Type elemType) {
+                             uint32_t replyPkt, Type elemType, bool reused) {
   auto device = issue->getParentOfType<AIE::DeviceOp>();
   auto tile = cast<AIE::TileOp>(
       issue->getParentOfType<AIE::CoreOp>().getTile().getDefiningOp());
@@ -4974,9 +4978,56 @@ static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
     return last;
   };
 
-  // Wait for the host to arm the BD, then read its address (words 1-2).
-  AIE::UseLockOp::create(b, loc, ic.armed, AIE::LockAction::AcquireGreaterEqual,
-                         1);
+  // A transfer started more than once per run is armed once per run, and
+  // the address read back after its first start is the last one's: the
+  // first start of a run takes the arm and keeps the base it reads.
+  Value fresh;
+  AIE::BufferOp kept;
+  if (reused) {
+    auto &[taken, base] = ic.reused[issue.getIssueId()];
+    if (!taken) {
+      OpBuilder tb(tile);
+      tb.setInsertionPointAfter(tile);
+      auto buf = [&](int64_t n, StringRef what) {
+        auto ty = MemRefType::get({n}, b.getI32Type(), AffineMap(),
+                                  b.getI32IntegerAttr(2));
+        return AIE::BufferOp::create(
+            tb, loc, ty, tile,
+            tb.getStringAttr("__air_issue_" + what.str() + "_" +
+                             std::to_string(tile.getCol()) + "_" +
+                             std::to_string(tile.getRow()) + "_" +
+                             std::to_string(issue.getIssueId())),
+            /*address=*/nullptr, /*initial_value=*/nullptr,
+            /*mem_bank=*/nullptr);
+      };
+      taken = buf(1, "taken");
+      base = buf(2, "base");
+      // Cleared at the start of every run of the core.
+      auto core = issue->getParentOfType<AIE::CoreOp>();
+      Block &entry = core.getBody().front();
+      Block *iter = &entry;
+      if (auto br = dyn_cast<cf::BranchOp>(entry.getTerminator()))
+        iter = br.getDest();
+      OpBuilder rb = OpBuilder::atBlockBegin(iter);
+      memref::StoreOp::create(
+          rb, loc, arith::ConstantIntOp::create(rb, loc, rb.getI32Type(), 0),
+          taken,
+          ValueRange{arith::ConstantIndexOp::create(rb, loc, 0).getResult()});
+    }
+    kept = base;
+    fresh = arith::CmpIOp::create(
+        b, loc, arith::CmpIPredicate::eq,
+        memref::LoadOp::create(b, loc, taken, ValueRange{idx(0)}), i32(0));
+    auto arm = scf::IfOp::create(b, loc, fresh, /*withElseRegion=*/false);
+    OpBuilder ab = OpBuilder::atBlockBegin(arm.thenBlock());
+    AIE::UseLockOp::create(ab, loc, ic.armed,
+                           AIE::LockAction::AcquireGreaterEqual, 1);
+    memref::StoreOp::create(ab, loc, i32(1), taken, ValueRange{idx(0)});
+  } else {
+    // Wait for the host to arm the BD, then read its address (words 1-2).
+    AIE::UseLockOp::create(b, loc, ic.armed,
+                           AIE::LockAction::AcquireGreaterEqual, 1);
+  }
   send({i32(hdr),
         i32(air::ctrlPacketWord(replyPkt, /*read=*/true, 2, bdAddr + 4))});
   AIE::UseLockOp::create(b, loc, ic.inCons,
@@ -4987,6 +5038,16 @@ static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
 
   // Word 2 keeps its packet fields; its low 16 bits are the address's top.
   Value hi = arith::AndIOp::create(b, loc, w2, i32(0xFFFF));
+  if (fresh) {
+    lo = arith::SelectOp::create(
+        b, loc, fresh, lo,
+        memref::LoadOp::create(b, loc, kept, ValueRange{idx(0)}));
+    hi = arith::SelectOp::create(
+        b, loc, fresh, hi,
+        memref::LoadOp::create(b, loc, kept, ValueRange{idx(1)}));
+    memref::StoreOp::create(b, loc, lo, kept, ValueRange{idx(0)});
+    memref::StoreOp::create(b, loc, hi, kept, ValueRange{idx(1)});
+  }
   Value base = arith::OrIOp::create(
       b, loc,
       arith::ShLIOp::create(
@@ -5502,8 +5563,12 @@ public:
       air::ChannelPutOp arm = arms.lookup(id);
       if (!arm)
         return issue->emitOpError("has no host-side put to start");
-      // One armed BD per put; a second issuer would queue one never armed.
-      if (arm->hasAttr("air.device_issue_bd"))
+      // One armed BD per put. A put started from a loop may be started by
+      // copies of its issue (an unrolled loop): they share the BD. Any other
+      // second issuer would queue one never armed.
+      bool reused = arm->hasAttr("air.device_issue_count");
+      auto armedBd = arm->getAttrOfType<IntegerAttr>("air.device_issue_bd");
+      if (armedBd && !reused)
         return issue->emitOpError(
             "starts an L3 transfer another issue also starts");
       auto metadata = arm->getAttrOfType<ArrayAttr>("metadataArray");
@@ -5555,11 +5620,11 @@ public:
           nextShimBd
               .try_emplace(shim, tm.getNumBDs(AIE::AIETileType::ShimNOCTile))
               .first->second;
-      uint32_t bdId = --next;
+      uint32_t bdId = armedBd ? armedBd.getInt() : --next;
       lowerDeviceIssue(
           issue, ic, alloc.getChannelIndex(), bdId, it->second.first,
           it->second.second,
-          cast<MemRefType>(arm.getMemref().getType()).getElementType());
+          cast<MemRefType>(arm.getMemref().getType()).getElementType(), reused);
 
       OpBuilder b(arm);
       arm->setAttr("air.device_issue_bd", b.getI32IntegerAttr(bdId));
