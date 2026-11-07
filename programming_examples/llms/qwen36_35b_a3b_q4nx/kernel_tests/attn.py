@@ -19,6 +19,9 @@ from air import api as air
 from air.api import bf16, f32, i32
 from air.backend.xrt import XRTBackend
 
+# a check's bound on the relative L2 error
+TOL = 0.08
+
 DH, QH = W.DH, W.NQ // W.NKV
 S_BLK = ((QH * 16 + 16 + 63) // 64) * 64
 BLK = 16 * DH
@@ -123,11 +126,12 @@ if __name__ == "__main__":
         s = q.astype(np.float64) @ k[:L].astype(np.float64).T * W.DH**-0.5
         p = np.exp(s - s.max(1, keepdims=True))
         want = (p / p.sum(1, keepdims=True)) @ v[:L].astype(np.float64)
-        g = o.astype(np.float64)
-        c = float(g.ravel() @ want.ravel() / np.linalg.norm(g) / np.linalg.norm(want))
-        e = np.abs(g - want).max() / np.abs(want).max()
-        good = c > 0.999
+        c, l2, e = common.compare(o, want)
+        good = c > 0.999 and l2 < TOL
         ok &= good
-        print(f"L={L}: corr {c:.6f} max rel err {e:.2e} {'ok' if good else 'BAD'}")
+        print(
+            f"L={L}: corr {c:.6f} rel L2 {l2:.2e} max rel err {e:.2e}"
+            f" {'ok' if good else 'BAD'}"
+        )
     print("PASS!" if ok else "failed.")
     raise SystemExit(0 if ok else 1)

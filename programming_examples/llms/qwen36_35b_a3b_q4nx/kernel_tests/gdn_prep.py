@@ -20,6 +20,9 @@ from air import api as air
 from air.api import bf16, f32, i32
 from air.backend.xrt import XRTBackend
 
+# a check's bound on the relative L2 error
+TOL = 0.03
+
 HD, NV, NK = W.DK, W.NVH, W.NK
 NCH = W.QKV // HD  # conv chunks of 128 channels
 SLOT = HD + 32
@@ -150,11 +153,12 @@ if __name__ == "__main__":
     want = dict(k=rep(k), v=v.numpy(), q=rep(q), alpha=alpha.numpy(), beta=beta.numpy())
     ok = True
     for n in ("q", "k", "v", "alpha", "beta"):
-        g_, w_ = got[n].ravel().astype(np.float64), want[n].ravel().astype(np.float64)
-        c = g_ @ w_ / np.linalg.norm(g_) / np.linalg.norm(w_)
-        e = np.abs(g_ - w_).max() / np.abs(w_).max()
-        good = c > 0.999
+        c, l2, e = common.compare(got[n], want[n])
+        good = c > 0.999 and l2 < TOL
         ok &= good
-        print(f"{n:5s} corr {c:.6f}  max rel err {e:.2e}  {'ok' if good else 'BAD'}")
+        print(
+            f"{n:5s} corr {c:.6f}  rel L2 {l2:.2e}  max rel err {e:.2e}"
+            f"  {'ok' if good else 'BAD'}"
+        )
     print("PASS!" if ok else "failed.")
     raise SystemExit(0 if ok else 1)

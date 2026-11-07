@@ -117,8 +117,8 @@ void acc_zero(float *__restrict acc, int n) {
 
 // shared_gate in two steps, so h can be sent on before s arrives:
 // g[0] = h . w, then s *= sigmoid(g[0])
-void shared_gate_dot(bf16 *__restrict h, bf16 *__restrict w,
-                     bf16 *__restrict g, int n) {
+void shared_gate_dot(bf16 *__restrict h, bf16 *__restrict w, bf16 *__restrict g,
+                     int n) {
   aie::accum<accfloat, V> acc = aie::zeros<accfloat, V>();
   for (int i = 0; i < n; i += V)
     acc = aie::mac(acc, aie::load_v<V>(h + i), aie::load_v<V>(w + i));

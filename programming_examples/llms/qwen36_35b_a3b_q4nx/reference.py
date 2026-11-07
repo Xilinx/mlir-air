@@ -163,10 +163,8 @@ def main():
     ap.add_argument("--prompt", default="The capital of France is")
     ap.add_argument("--steps", type=int, default=8)
     a = ap.parse_args()
-    from tokenizers import Tokenizer
-
     w = W.Qwen36Q4nx()
-    tok = Tokenizer.from_file(str(w.path.parent / "tokenizer.json"))
+    tok = w.tokenizer()
     ids = tok.encode(a.prompt).ids
     ref = Reference(w)
     t0 = time.time()

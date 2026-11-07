@@ -21,7 +21,12 @@ def hf_config(w):
         Qwen3_5MoeTextConfig,
     )
 
-    cfg = json.load(open(w.path.parent / "config.json"))
+    path = w.path.parent / "config.json"
+    if not path.is_file():
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(W.REPO, "config.json", revision=W.REVISION)
+    cfg = json.load(open(path))
     c = Qwen3_5MoeTextConfig(**cfg.get("text_config", cfg))
     c._attn_implementation = "eager"
     return c
@@ -103,7 +108,8 @@ def check(w, cfg, l, x, steps):
         got = ref.layer(l, chunk)
         ref.pos = pos = pos + n
         c = cos(got, h[0])
-        worst = min(worst, c)
+        # a NaN would never lower the minimum
+        worst = min(worst, c) if np.isfinite(c) else -1.0
         kind = "attention" if W.is_attention(l) else "GDN"
         print(f"layer {l} ({kind}) tokens {pos - n}..{pos - 1}: cos {c:.7f}")
     return worst

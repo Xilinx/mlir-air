@@ -23,6 +23,9 @@ from air.api import bf16, f32, i32
 from air.backend.xrt import XRTBackend
 from reference import rmsnorm
 
+# a check's bound on the relative L2 error
+TOL = 0.02
+
 D, I, K = W.D, W.I_EXP, W.TOP_K
 
 
@@ -125,11 +128,13 @@ def build_stream():
 
 
 def check(name, got, want, thr=0.9999):
-    g_, w_ = np.asarray(got, np.float64).ravel(), np.asarray(want, np.float64).ravel()
-    c = g_ @ w_ / np.linalg.norm(g_) / np.linalg.norm(w_)
-    e = np.abs(g_ - w_).max() / np.abs(w_).max()
-    print(f"{name:10s} corr {c:.7f} max rel err {e:.2e} {'ok' if c > thr else 'BAD'}")
-    return c > thr
+    c, l2, e = common.compare(got, want)
+    good = c > thr and l2 < TOL
+    print(
+        f"{name:10s} corr {c:.7f} rel L2 {l2:.2e} max rel err {e:.2e}"
+        f" {'ok' if good else 'BAD'}"
+    )
+    return good
 
 
 def run(module, name, *args):

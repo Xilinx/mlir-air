@@ -18,6 +18,9 @@ from air import api as air
 from air.api import bf16, i32
 from air.backend.xrt import XRTBackend
 
+# a check's bound on the relative L2 error
+TOL = 0.03
+
 N = W.NVH * W.DV  # = NQ * DH
 
 
@@ -83,11 +86,12 @@ if __name__ == "__main__":
     want_g = (normed * torch.from_numpy(nw.astype(np.float32))).flatten() * F.silu(t[2])
     ok = True
     for n, g, wnt in (("attention", out[0], want_a), ("gdn", out[1], want_g)):
-        g_, w_ = g.astype(np.float64), wnt.double().numpy()
-        c = g_ @ w_ / np.linalg.norm(g_) / np.linalg.norm(w_)
-        e = np.abs(g_ - w_).max() / np.abs(w_).max()
-        good = c > 0.999
+        c, l2, e = common.compare(g, wnt.double().numpy())
+        good = c > 0.999 and l2 < TOL
         ok &= good
-        print(f"{n}: corr {c:.6f} max rel err {e:.2e} {'ok' if good else 'BAD'}")
+        print(
+            f"{n}: corr {c:.6f} rel L2 {l2:.2e} max rel err {e:.2e}"
+            f" {'ok' if good else 'BAD'}"
+        )
     print("PASS!" if ok else "failed.")
     raise SystemExit(0 if ok else 1)

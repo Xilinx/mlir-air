@@ -61,3 +61,17 @@ def compile_kernel(name, extra=(), engine=False):
         f"{name}.o",
     ]
     subprocess.run(cmd, check=True)
+
+
+def compare(got, want):
+    """(cosine, relative L2 error, max error over max |want|) of got against
+    want; the L2 error bounds the scale that the cosine does not see."""
+    import numpy as np
+
+    g = np.asarray(got, np.float64).ravel()
+    w = np.asarray(want, np.float64).ravel()
+    return (
+        float(g @ w / np.linalg.norm(g) / np.linalg.norm(w)),
+        float(np.linalg.norm(g - w) / np.linalg.norm(w)),
+        float(np.abs(g - w).max() / np.abs(w).max()),
+    )

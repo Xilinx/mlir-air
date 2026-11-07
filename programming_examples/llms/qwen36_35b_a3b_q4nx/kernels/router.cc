@@ -63,9 +63,10 @@ void router_mvm(bfloat16 *__restrict blk, bfloat16 *__restrict x_full,
                 logits + rb * BLOCK_ROWS + h * HALF);
 }
 
-// index[0:TOP_K] = the experts of the TOP_K largest logits, largest first
-// (ties to the lower expert), offset by base; score[0:TOP_K] = their softmax.
-// logits is reordered in place.
+// index[0:TOP_K] = the experts of the TOP_K largest logits, largest first,
+// offset by base; score[0:TOP_K] = their softmax. FastFlowLM's selection: a
+// swap can move a lower expert behind an equal logit. logits is reordered in
+// place.
 void router_topk(float *__restrict logits, int32_t *__restrict index,
                  float *__restrict score, int32_t base) {
   int idx[N_EXPERTS];

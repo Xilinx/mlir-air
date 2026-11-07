@@ -57,6 +57,9 @@ from air.backend.xrt import XRTBackend  # noqa: E402
 from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
 import moe_block  # noqa: E402
 
+# a check's bound on the relative L2 error
+TOL = 0.04
+
 R, RB, CB, BB = 4, 32, 256, 4736
 D, HD = W.D, 128
 NK, NV = 16, 32  # key heads, value heads
@@ -551,11 +554,7 @@ def run_debug(art, inputs):
 
 
 def corr(a, b):
-    a, b = np.asarray(a, np.float64).ravel(), np.asarray(b, np.float64).ravel()
-    return (
-        a @ b / np.linalg.norm(a) / np.linalg.norm(b),
-        np.abs(a - b).max() / np.abs(b).max(),
-    )
+    return common.compare(a, b)
 
 
 def main():
@@ -632,9 +631,9 @@ def main():
         ("layer out", out.astype(np.float32), want),
     ]
     for name, got, ref_v in checks:
-        c, e = corr(got.astype(np.float32), ref_v)
-        print(f"{name}: corr {c:.6f} max rel err {e:.2e}")
-        ok &= c > 0.999
+        c, l2, e = corr(got.astype(np.float32), ref_v)
+        print(f"{name}: corr {c:.6f} rel L2 {l2:.2e} max rel err {e:.2e}")
+        ok &= c > 0.999 and l2 < TOL
     print("PASS!" if ok else "failed.")
     return 0 if ok else 1
 

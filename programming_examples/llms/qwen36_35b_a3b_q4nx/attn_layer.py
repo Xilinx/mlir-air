@@ -73,6 +73,9 @@ from gdn_layer import (  # noqa: E402
 )
 from rope import rope_weights  # noqa: E402
 
+# a check's bound on the relative L2 error
+TOL = 0.06
+
 ASM = 2
 DH, NQ, NKV = W.DH, W.NQ, W.NKV
 DQ, DK = NQ * DH, NKV * DH
@@ -573,9 +576,9 @@ def main():
         ("new v", kv2[1, L - 1].astype(np.float32), v1[-1].reshape(-1).numpy()),
         ("layer out", out.astype(np.float32), want),
     ):
-        c, e = corr(got, ref_v)
-        print(f"{name}: corr {c:.6f} max rel err {e:.2e}")
-        ok &= c > 0.999
+        c, l2, e = corr(got, ref_v)
+        print(f"{name}: corr {c:.6f} rel L2 {l2:.2e} max rel err {e:.2e}")
+        ok &= c > 0.999 and l2 < TOL
     print("PASS!" if ok else "failed.")
     return 0 if ok else 1
 

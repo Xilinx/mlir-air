@@ -37,6 +37,9 @@ from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
 
+# a check's bound on the relative L2 error
+TOL = 0.015
+
 D, VOCAB = W.D, W.VOCAB
 NCOL, NROW, RB, KB = 8, 4, 32, W.D // 256
 BB = 8704  # a Q8_0 block: 32 rows x 256 columns
@@ -174,12 +177,12 @@ def main():
     xf = x.astype(np.float32)
     xn = xf / np.sqrt(np.mean(xf * xf) + W.EPS) * nw.astype(np.float32)
     want = w.lm_head @ xn.astype(bfloat16).astype(np.float32)
-    c, e = G.corr(got, want)
-    print(f"logits: corr {c:.6f} max rel err {e:.2e}")
+    c, l2, e = G.corr(got, want)
+    print(f"logits: corr {c:.6f} rel L2 {l2:.2e} max rel err {e:.2e}")
     print(
         "top5 dev", np.argsort(-got)[:5].tolist(), "ref", np.argsort(-want)[:5].tolist()
     )
-    ok = c > 0.9999 and np.argmax(got) == np.argmax(want)
+    ok = c > 0.9999 and l2 < TOL and np.argmax(got) == np.argmax(want)
     print("PASS!" if ok else "failed.")
     return 0 if ok else 1
 

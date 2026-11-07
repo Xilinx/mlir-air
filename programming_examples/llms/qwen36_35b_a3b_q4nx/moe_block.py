@@ -51,6 +51,9 @@ from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
 from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
 
+# a check's bound on the relative L2 error
+TOL = 0.1
+
 R, RB, CB, BB = 4, 32, 256, 4736
 D, I, E, K = W.D, W.I_EXP, W.N_EXPERTS, W.TOP_K
 NCB_X, NCB_H = D // CB, I // CB  # col blocks of x (8) and of a GLU output (2)
@@ -352,7 +355,9 @@ def bench(art, inputs, n):
         for _ in range(n):
             t0 = time.perf_counter()
             run.start()
-            run.wait(120000)
+            st = run.wait(120000)
+            if st is not None and st != xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED:
+                raise RuntimeError(f"dispatch ended in {st}")
             times.append(time.perf_counter() - t0)
     t = np.array(times[1:]) * 1e3
     p10, p50, p90 = np.percentile(t, [10, 50, 90])
@@ -415,11 +420,9 @@ def main():
     refs = [("exact softmax", want[0]), ("hw exp2 softmax", want_hw)]
     for name, wv in refs:
         wv = wv.double().numpy()
-        c = g @ wv / np.linalg.norm(g) / np.linalg.norm(wv)
-        print(
-            f"vs {name}: corr {c:.6f} max rel err {np.abs(g - wv).max() / np.abs(wv).max():.2e}"
-        )
-        ok &= c > 0.999
+        c, l2, e = common.compare(g, wv)
+        print(f"vs {name}: corr {c:.6f} rel L2 {l2:.2e} max rel err {e:.2e}")
+        ok &= c > 0.999 and l2 < TOL
     print("experts", idx[0].tolist())
     print("PASS!" if ok else "failed.")
     return 0 if ok else 1
