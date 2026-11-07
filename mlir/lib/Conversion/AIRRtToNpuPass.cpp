@@ -3897,6 +3897,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
     awaitInChannelOrder(module);
     releaseAwaitedTasks(module);
+    releaseCoresBeforeWaits(module);
 
     // Repair dominance after the reordering above. Every hoist here moves a
     // configure task or an RTP write past other ops, and a runtime access
@@ -4021,6 +4022,40 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       return std::nullopt;
     return air::accessesIntersect(pa->offsets, pa->sizes, pa->strides,
                                   pb->offsets, pb->sizes, pb->strides);
+  }
+
+  // A wait the bursts below add can land ahead of the release of the cores
+  // that start transfers, and wait for one of theirs. Move each release (its
+  // token words and the lock) up to the first wait after the tasks it arms.
+  void releaseCoresBeforeWaits(ModuleOp module) {
+    SmallVector<AIEX::SetLockOp> releases;
+    module.walk([&](AIEX::SetLockOp rel) {
+      if (rel->hasAttr("air.device_issue"))
+        releases.push_back(rel);
+    });
+    for (auto rel : releases) {
+      Operation *first = rel;
+      while (auto *prev = first->getPrevNode()) {
+        if (!isa<AIEX::NpuMaskWrite32Op, arith::ConstantOp>(prev))
+          break;
+        first = prev;
+      }
+      Operation *wait = nullptr;
+      for (Operation *o = first->getPrevNode(); o; o = o->getPrevNode()) {
+        if (auto t = dyn_cast<AIEX::DMAConfigureTaskForOp>(o))
+          if (t->hasAttr("air.device_issue_lock"))
+            break;
+        if (isa<AIEX::DMAAwaitTaskOp, AIEX::NpuSyncOp>(o))
+          wait = o;
+      }
+      if (!wait)
+        continue;
+      SmallVector<Operation *> group;
+      for (Operation *o = first; o != rel->getNextNode(); o = o->getNextNode())
+        group.push_back(o);
+      for (Operation *o : group)
+        o->moveBefore(wait);
+    }
   }
 
   // Lay out a launch's shim tasks so the control program never waits on a task
@@ -5570,19 +5605,33 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         continue;
       }
       OpBuilder b(&op);
-      if (failed(flush(b)))
-        return failure();
+      llvm::StringSet<> channels;
+      bool waits = false;
+      op.walk([&](Operation *o) {
+        if (auto t = dyn_cast<AIEX::DMAConfigureTaskForOp>(o))
+          channels.insert(t.getAlloc().getLeafReference().getValue());
+        waits |= isa<AIEX::NpuSyncOp, AIEX::DMAAwaitTaskOp>(o);
+      });
+      auto onChannels = [&](const Tasks &tasks) {
+        return llvm::any_of(tasks, [&](AIEX::DMAConfigureTaskForOp t) {
+          return channels.contains(t.getAlloc().getLeafReference().getValue());
+        });
+      };
+      // Tasks the cores start are armed and their cores released before
+      // anything that may wait on their transfers, and before a host task on
+      // one of their channels. Host tasks on other channels go ahead:
+      // releasing the cores batch by batch would make each batch wait for the
+      // last. A task the host starts itself is armed at once.
+      if (waits || llvm::any_of(pending, [&](auto &kv) {
+            return !kv.second.empty() &&
+                   (kv.first.getValue().empty() || onChannels(kv.second));
+          }))
+        if (failed(flush(b)))
+          return failure();
       // A host task queued behind core-started ones on the same channel waits
       // for them; otherwise it would overtake them in the channel's queue.
-      llvm::StringSet<> channels;
-      op.walk([&](AIEX::DMAConfigureTaskForOp t) {
-        channels.insert(t.getAlloc().getLeafReference().getValue());
-      });
       for (auto &[lockName, tasks] : outstanding)
-        if (llvm::any_of(tasks, [&](AIEX::DMAConfigureTaskForOp t) {
-              return channels.contains(
-                  t.getAlloc().getLeafReference().getValue());
-            }))
+        if (onChannels(tasks))
           retire(b, tasks);
     }
     OpBuilder b(device.getContext());
