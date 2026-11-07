@@ -3297,9 +3297,26 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
         }
       }
     }
+    // A shim feeding a memtile placed on a column takes that column when its
+    // shim is free: the shortest route, where the placer would otherwise
+    // pack shims from column 0.
+    IntegerAttr shimCol;
+    auto otherMem = dyn_cast_or_null<AIE::LogicalTileOp>(otherSideOp);
+    if (otherMem && otherMem.getTileType() == AIE::AIETileType::MemTile &&
+        otherMem.getCol()) {
+      int c = *otherMem.getCol();
+      bool taken = llvm::any_of(device.getBody()->getOps<AIE::LogicalTileOp>(),
+                                [&](AIE::LogicalTileOp lt) {
+                                  return lt.getTileType() ==
+                                             AIE::AIETileType::ShimNOCTile &&
+                                         lt.getCol() == c;
+                                });
+      if (!taken && device.getTargetModel().isShimNOCTile(c, 0))
+        shimCol = b.getI32IntegerAttr(c);
+    }
     tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
                                         AIE::AIETileType::ShimNOCTile,
-                                        /*col=*/IntegerAttr(),
+                                        /*col=*/shimCol,
                                         /*row=*/IntegerAttr());
   }
 
