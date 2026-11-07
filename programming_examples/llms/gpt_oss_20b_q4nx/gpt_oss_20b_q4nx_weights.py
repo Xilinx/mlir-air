@@ -185,7 +185,8 @@ class GptOssQ4nx:
         down_b), biases read from the blocks the kernel reads them from."""
         key = (layer, e)
         if key not in self._expert_cache:
-            if len(self._expert_cache) >= 64:
+            # one layer's experts: a prompt-at-once forward reads no more
+            if len(self._expert_cache) >= N_EXPERTS:
                 self._expert_cache.clear()
             name = f"model.layers.{layer}.ffn_gate_up_down_exps.weight"
             t = self._f.get_slice(name)[e].view(torch.uint8)  # [69, 23, 4, 2560]

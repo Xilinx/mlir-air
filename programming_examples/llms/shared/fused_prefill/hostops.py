@@ -28,6 +28,8 @@ def load(build_dir):
     _lib.add_rms.argtypes = [_p, _p, _i, _i, _p, _f, _p]
     _lib.rope.argtypes = [_p, _i, _i, _i, _i, _p, _p]
     _lib.glu_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _i, _p]
+    _lib.oss_glu_tile.argtypes = [_p, _i, _p, _p, _i, _i, _i, _i, _p]
+    _lib.scatter_add_rows.argtypes = [_p, _i, _p, _i, _p, _p, _p, _i, _i]
     _lib.mul_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p]
     _lib.q_pack.argtypes = [_p, _i, _i, _i, _i, _f, _p]
     _lib.rms_tile.argtypes = [_p, _i, _i, _p, _f, _i, _i, _p]
@@ -164,6 +166,42 @@ def glu_tile(g, u, t, n, dst, tm, tk):
         a.ctypes.data,
     )
     _to_bfp(a, t, dst)
+
+
+def oss_glu_tile(gu, gb, ub, t, n, dst, tm, tk):
+    """dst (A of K = n) = gpt-oss's clamped SwiGLU of gu bf16 [R, ld], gate
+    and up in turns of 128 columns, with their biases gb, ub [n]."""
+    a = _bf16_tiles(dst, tm, tk)
+    _lib.oss_glu_tile(
+        gu.ctypes.data,
+        gu.shape[1],
+        _c(gb).ctypes.data,
+        _c(ub).ctypes.data,
+        t,
+        n,
+        tm,
+        tk,
+        a.ctypes.data,
+    )
+    _to_bfp(a, t, dst)
+
+
+def scatter_add_rows(out, y, rows, w, b, n):
+    """out[rows[i], :n] += w[i] * (y[i, :n] + b): out float32 [*, ld] (C
+    order), y bf16 [t, ld], rows (distinct) and w [t], b [n]."""
+    rows = np.ascontiguousarray(rows, np.int64)
+    w, b = _c(w), _c(b)
+    _lib.scatter_add_rows(
+        out.ctypes.data,
+        out.shape[1],
+        y.ctypes.data,
+        y.shape[1],
+        rows.ctypes.data,
+        w.ctypes.data,
+        b.ctypes.data,
+        len(rows),
+        n,
+    )
 
 
 def mul_tile(g, p, dst, tm, tk):

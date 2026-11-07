@@ -141,4 +141,54 @@ void dq4_bfp16(uint8_t *__restrict packed, uint8_t *__restrict out) {
     }
 }
 
+#ifdef GEMM_MXFP4
+// One K step of MXFP4 weights as the gpt-oss bundle stores them: two blocks of
+// 32 output columns n by 128 k, 2560 bytes each,
+//   uint8 e8m0[4 k groups][32 n], 384 bytes not read here (the bias),
+//   nibbles [2 stripes of 16 n][64 byte columns][16]: bytes 0..7 of a byte
+//   column are k column 2c, bytes 8..15 column 2c + 1, rows 2j (low) and
+//   2j + 1 (high) in byte j,
+// -> B, built as bfp16 directly. A bfp16 block row is 8 int8 mantissas m and
+// an exponent byte x, the values m 2^(x - 133); twice an e2m1 value is an
+// integer r in [-12, 12] (the magnitude m is r below 4, 2m - 4 below 6, 4m -
+// 16 above), so with x = e8m0 + 5 the block holds the MXFP4 values exactly.
+// The nibbles run along n and a block row along k: an unzip by eights splits
+// four byte columns [8 k][16 n] into a stripe's two halves and a transpose
+// turns each round. A block's stripes are B's column block pairs in turn.
+static_assert(DIM_N == 64 && DIM_K == 128, "a K step is two MXFP4 blocks");
+
+void dqmx_bfp16(uint8_t *__restrict packed, uint8_t *__restrict out) {
+  constexpr int BLK = 2560, DATA = 512, STRIPE = 16;
+  constexpr uint32_t X = 0x05050505u;
+  const aie::vector<int8, 128> c4 = aie::broadcast<int8, 128>(4);
+  const aie::vector<int8, 128> c6 = aie::broadcast<int8, 128>(6);
+  aie::block_vector_output_buffer_stream<bfp16ebs8, 64> os((bfp16ebs8 *)out);
+  // one trip per 8 k of a stripe: block b, stripe s, k group g, 8 columns q
+  for (int i = 0; i < 64; i++)
+    chess_prepare_for_pipelining {
+      const int b = i >> 5, s = (i >> 4) & 1, g = (i >> 2) & 3, q = i & 3;
+      const uint8_t *blk = packed + b * BLK;
+      // the stripe's 16 row exponents, 4 to a word; e8m0 <= 250
+      const uint32_t *e = (const uint32_t *)(blk + g * 32 + s * STRIPE);
+      const v2int32 x0 = {(int)(e[0] + X), (int)(e[1] + X)};
+      const v2int32 x1 = {(int)(e[2] + X), (int)(e[3] + X)};
+      const uint8_t *d =
+          blk + DATA + s * (DIM_K * STRIPE / 2) + g * 256 + q * 64;
+      aie::vector<int8, 128> v = aie::vector_cast<int8>(
+          aie::unpack(aie::load_v<128>((const uint4 *)d)));
+      aie::vector<int8, 128> m = aie::bit_and(int8(7), v);
+      aie::vector<int8, 128> t4 = aie::sub(aie::max(m, c4), c4);
+      aie::vector<int8, 128> t6 = aie::sub(aie::max(m, c6), c6);
+      aie::vector<int8, 128> r = aie::add(aie::add(m, t4), aie::add(t6, t6));
+      r = aie::select(r, aie::neg(r), aie::ge(v, int8(8)));
+      auto [lo, hi] = aie::interleave_unzip(r.template extract<64>(0),
+                                            r.template extract<64>(1), 8);
+      v64bfp16ebs8 b0 = {aie::transpose(lo, 8, 8), x0};
+      v64bfp16ebs8 b1 = {aie::transpose(hi, 8, 8), x1};
+      os << aie::block_vector<bfp16ebs8, 64>(b0);
+      os << aie::block_vector<bfp16ebs8, 64>(b1);
+    }
+}
+#endif
+
 } // extern "C"

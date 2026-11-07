@@ -30,6 +30,7 @@
 # cache and mask to their last 128 keys, as fused_decode does.
 import argparse
 import functools
+import json
 import os
 import sys
 import tempfile
@@ -563,7 +564,9 @@ class NpuDecoder:
             X=g.D * 2,
             WD=nl * WD_LAYER,
             WL=LM_RG * NCB * R * g.BLOCK_BYTES,
-            WE=nl * g.N_EXPERTS * g.EXPERT_BYTES,
+            # and two row groups the fused prefill's last down GEMM reads past
+            WE=nl * g.N_EXPERTS * g.EXPERT_BYTES
+            + 2 * g.EXPERT_BYTES // g.EXPERT_ROW_GROUPS,
             M=(nl * MISC_LEN + g.D) * 2,
             RP=maxl * DH * 2,
             KV=nl * 4 * maxl * SLAB * 2,
@@ -715,6 +718,18 @@ def main():
     ap.add_argument(
         "--warm", action="store_true", help="prefill once untimed before timing"
     )
+    ap.add_argument(
+        "--fused-dir",
+        type=Path,
+        default=os.environ.get("FUSED_PREFILL_DIR") or None,
+        help="prefill on this fused prefill build (fused_build.py), not per-op",
+    )
+    ap.add_argument(
+        "--first-token",
+        type=Path,
+        help="a file holding the reference's first token (prefill_fused.py "
+        "--token-out), checked without the CPU reference in memory",
+    )
     ap.add_argument("--bench", type=int, default=0, help="time N dispatches")
     ap.add_argument(
         "--bench-ctx", type=int, default=0, help="context of the timed dispatches"
@@ -734,8 +749,18 @@ def main():
 
     tok = Tokenizer.from_file(str(g.flm_model_dir() / "tokenizer.json"))
     ids = prompt_ids(tok, a.prompt, a.prompt_len)
-    w = g.GptOssQ4nx()
     full = layers == list(range(g.N_LAYERS))
+    # FLM prefills prompts of MIN_PREFILL tokens or more and decodes shorter
+    # ones; the fused prefill takes prompts up to the length it was built for
+    use_prefill = full and not a.no_prefill and not a.bench
+    use_prefill &= prefill.MIN_PREFILL <= len(ids) <= a.maxl
+    use_fused = use_prefill and a.fused_dir is not None
+    if use_fused:
+        manifest = a.fused_dir / "manifest.json"
+        if not manifest.is_file():
+            sys.exit(f"{a.fused_dir}: no fused prefill build (fused_build.py)")
+        use_fused = len(ids) - 1 <= json.loads(manifest.read_text())["max_len"]
+    w = g.GptOssQ4nx()
     ref = None
     if not a.no_ref:
         ref = g.Reference(w) if full else ChainRef(w, layers)
@@ -753,11 +778,24 @@ def main():
             )
             return 0
         seq, out, times = list(ids), [], []
-        # FLM prefills prompts of MIN_PREFILL tokens or more and decodes
-        # shorter ones; the last prompt token takes a decode step, whose LM
-        # head gives the first token
+        # the last prompt token takes a decode step, whose LM head gives the
+        # first token
         first, t_prefill = 0, 0.0
-        if full and not a.no_prefill and prefill.MIN_PREFILL <= len(ids) <= a.maxl:
+        if use_fused:
+            import prefill_fused
+
+            pf = prefill_fused.GptOssFused(a.fused_dir, w, we=(npu.bo["WE"], 0))
+            if a.warm:
+                pf.prefill(ids[:-1])
+            pf.by_op.clear()
+            t0 = time.perf_counter()
+            kv = pf.prefill(ids[:-1])
+            npu.seed_kv(kv)
+            t_prefill = time.perf_counter() - t0
+            first = len(ids) - 1
+            steps = ", ".join(f"{k} {v:.2f}s" for k, v in sorted(pf.by_op.items()))
+            print(f"prefill of {first} tokens: {t_prefill:.3f}s (fused; {steps})")
+        elif use_prefill:
             ops = prefill.NpuOps(str(a.build_dir / "prefill"), experts=npu.experts)
             ops.preload(w)
             for j in range(len(layers)):
@@ -804,6 +842,10 @@ def main():
                 msg += f" vs ref {int(want.argmax())}  logits cos {c:.5f}"
                 # a prefilled cache carries the NPU GEMMs' bfp16 products
                 ok &= nxt == int(want.argmax()) and c > (0.98 if first else 0.99)
+            if a.first_token and not out:
+                want_tok = int(a.first_token.read_text())
+                msg += f" vs reference first token {want_tok}"
+                ok &= nxt == want_tok
             print(f"{msg} ({dt*1e3:.0f} ms)")
             seq.append(nxt)
             out.append(nxt)

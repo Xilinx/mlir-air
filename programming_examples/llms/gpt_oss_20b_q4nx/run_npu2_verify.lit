@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 //
 // GPT-OSS-20B verify: the MoE block against its CPU pipeline, the 24-layer
-// decode's greedy tokens against the CPU reference, and that reference against
-// HF transformers (openai/gpt-oss-20b).
+// decode's greedy tokens against the CPU reference, the fused prefill's last
+// logits against it, the decode's first token after that prefill against the
+// reference's, and that reference against HF transformers (openai/gpt-oss-20b).
 //
 // REQUIRES: ryzen_ai_npu2, peano, hfweights_fastflowlm_gpt_oss_20b_npu2, hfweights_openai_gpt_oss_20b
 //
@@ -14,5 +15,10 @@
 // CHECK: MoE out vs emulated pipeline
 // CHECK: PASS!
 // CHECK: Time to first token (TTFT)
+// CHECK: PASS!
+// CHECK: tokens: logits cos
+// CHECK: PASS!
+// CHECK: prefill of {{[0-9]+}} tokens: {{.*}}(fused
+// CHECK: vs reference first token
 // CHECK: PASS!
 // CHECK: FORWARD PASS
