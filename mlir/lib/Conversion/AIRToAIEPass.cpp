@@ -11,7 +11,6 @@
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Transform/AIRDependencyScheduleOpt.h"
-#include "air/Transform/AIRDmaToChannel.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 #include <numeric>
@@ -10767,9 +10766,17 @@ public:
       return;
     }
 
-    // Transfers cores start that air-opt-memtile-dma-bds did not hoist (a
-    // pipeline without it) leave their herds here.
-    if (failed(air::hoistDeviceIssuedTransfers(module))) {
+    // The host arms the descriptor of a put a core starts, so the put
+    // belongs with the memory it reads, not in the core.
+    auto inHerd = module.walk([](air::ChannelPutOp put) {
+      if (!put->hasAttr("air.device_issue") ||
+          !put->getParentOfType<air::HerdOp>())
+        return WalkResult::advance();
+      put->emitOpError("is started by a core, so it must sit outside the herd, "
+                       "at the level of the memory it reads");
+      return WalkResult::interrupt();
+    });
+    if (inHerd.wasInterrupted()) {
       signalPassFailure();
       return;
     }

@@ -2195,6 +2195,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     return apply;
   };
 
+  auto startedByCores = air::getChannelsStartedByCores(func);
   for (auto allocOp : allocOps) {
     // Opt-out: a `air.no_split` attribute on the alloc (or its enclosing
     // air.execute wrapper) tells the pass to leave this L2 buffer intact. Used
@@ -2239,6 +2240,12 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     };
     if (llvm::any_of(memref.getUsers(), [&](Operation *user) {
           return !isPartitionableUser(user);
+        }))
+      continue;
+    // A core adds a run-time offset to a descriptor over the whole buffer.
+    if (llvm::any_of(memref.getUsers(), [&](Operation *user) {
+          auto chan = dyn_cast<air::ChannelInterface>(user);
+          return chan && startedByCores.contains(chan.getChanName());
         }))
       continue;
     // Maps of MM2S and S2MM channels and their sub-channels.

@@ -219,6 +219,9 @@ DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 
 // Get channel declaration through channel symbol
 ChannelOp getChannelDeclarationThroughSymbol(ChannelInterface op);
+// Names of the channels whose transfers a core starts at run time: those an
+// air.channel.issue inside a herd names.
+llvm::DenseSet<StringRef> getChannelsStartedByCores(Operation *root);
 // Single-buffer count-free re-broadcast count (see AIRDialect.h
 // attrs::RefeedCount): N re-sends of one resident buffer per production. Reads
 // the count off `op` (per-emission override) falling back to its channel

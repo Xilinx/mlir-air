@@ -853,6 +853,15 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
   return air::ChannelOp();
 }
 
+llvm::DenseSet<StringRef> air::getChannelsStartedByCores(Operation *root) {
+  llvm::DenseSet<StringRef> names;
+  root->walk([&](air::ChannelIssueOp issue) {
+    if (issue->getParentOfType<air::HerdOp>())
+      names.insert(issue.getChanName());
+  });
+  return names;
+}
+
 int64_t air::getRefeedCount(Operation *op) {
   if (!op)
     return 1;

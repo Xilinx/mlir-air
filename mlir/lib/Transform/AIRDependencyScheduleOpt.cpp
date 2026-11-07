@@ -8,7 +8,6 @@
 
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Dialect/AIR/AIRDialect.h"
-#include "air/Transform/AIRDmaToChannel.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/DirectedAdjacencyMap.h"
 #include "air/Util/Util.h"
@@ -5333,6 +5332,12 @@ public:
     // The index is a pass member, so drop anything left from a previous
     // function on this pass instance rather than trusting the scope guard.
     invalidateChannelIndex();
+    // A core patches and starts a descriptor of one of these channels by
+    // name, so each keeps its own.
+    auto startedByCores = air::getChannelsStartedByCores(f);
+    llvm::erase_if(channelOps, [&](air::ChannelOp c) {
+      return startedByCores.contains(c.getSymName());
+    });
     if (channelOps.empty())
       return;
     if (clSequentialLoops) {
@@ -8152,6 +8157,15 @@ struct ShrinkMemrefSizesByAccessPattern
     if (getAllChanUsers(memref, users, dealloc, rewriter).failed())
       return failure();
 
+    // A core adds a run-time offset computed with the buffer's strides.
+    auto startedByCores =
+        air::getChannelsStartedByCores(alloc->getParentOfType<func::FuncOp>());
+    if (llvm::any_of(users, [&](Operation *user) {
+          auto chan = dyn_cast<air::ChannelInterface>(user);
+          return chan && startedByCores.contains(chan.getChanName());
+        }))
+      return failure();
+
     // Analyze data access pattern.
     SmallVector<int64_t> overall_access_bounds =
         air::getDataAccessShapeFromMemcpyOp(memref, users);
@@ -10881,12 +10895,6 @@ public:
     }
     if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device))) {
       func.emitOpError("AIE1 architecture does not come with memtiles.");
-      signalPassFailure();
-      return;
-    }
-    // The transfers cores start leave their herds here, after the async
-    // passes and before any pass shapes the descriptors that move them.
-    if (failed(air::hoistDeviceIssuedTransfers(func))) {
       signalPassFailure();
       return;
     }
