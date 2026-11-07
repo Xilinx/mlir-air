@@ -10516,18 +10516,41 @@ static std::optional<SmallVector<int64_t>> constantIndices(ValueRange indices) {
   return out;
 }
 
+// The shim DMA channel (column, direction, index) air-to-aie gave a host
+// transfer, if it has one.
+static std::optional<std::tuple<int64_t, int64_t, int64_t>>
+shimChannelOf(Operation *op) {
+  auto meta = op->getAttrOfType<ArrayAttr>("metadataArray");
+  auto entry = meta && !meta.empty() ? dyn_cast<DictionaryAttr>(meta[0])
+                                     : DictionaryAttr();
+  auto base = entry ? entry.getAs<StringAttr>("base") : StringAttr();
+  auto module = op->getParentOfType<ModuleOp>();
+  if (!base || !module)
+    return std::nullopt;
+  for (auto device : module.getOps<AIE::DeviceOp>())
+    if (auto alloc =
+            AIE::ShimDMAAllocationOp::getForSymbol(device, base.getValue()))
+      if (auto tile = alloc.getTile().getDefiningOp<AIE::TileOp>())
+        return std::make_tuple(int64_t(tile.getCol()),
+                               int64_t(alloc.getChannelDir()),
+                               int64_t(alloc.getChannelIndex()));
+  return std::nullopt;
+}
+
 // Returns true if `op` can stay between two puts of a chain while their
 // sends move to the last one: it has no memory effects, or it is a put on a
-// different channel, or on the same channel at constant indices that differ
-// from `first`'s.
+// different channel that is not queued on the same shim DMA channel, or on the
+// same channel at constant indices that differ from `first`'s.
 static bool mayCross(Operation *op, air::ChannelPutOp first) {
   if (isMemoryEffectFree(op))
     return true;
   auto put = dyn_cast<air::ChannelPutOp>(op);
   if (!put)
     return false;
-  if (put.getChanName() != first.getChanName())
-    return true;
+  if (put.getChanName() != first.getChanName()) {
+    auto shim = shimChannelOf(first);
+    return !shim || shim != shimChannelOf(put);
+  }
   auto a = constantIndices(first.getIndices());
   auto b = constantIndices(put.getIndices());
   return a && b && *a != *b;
