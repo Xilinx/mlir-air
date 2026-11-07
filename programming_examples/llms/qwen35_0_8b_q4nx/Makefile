@@ -8,6 +8,8 @@
 #   make compile         the prefill device and the decode ELF of every capacity
 #   make run             greedy generation of PROMPT at capacity C
 #   make verify          top-5 token gate against HF BF16 (the CI gate)
+#   make accuracy        PPL + KL divergence against HF BF16 on wikitext-2 (C=2048)
+#   make tasks           GSM8K / MMLU on the NPU and on HF BF16 (C=2048)
 #   make profile         TTFT + decode throughput (bench/extract_perf.py lines)
 #   make reference       CPU BF16 reference of the gate prompts
 #   make gate            the model gate for one configuration (P, C); gate-all
@@ -58,7 +60,7 @@ FDG := $(srcdir)/../../fused_decode_gdn
         bench-all clean
 
 help:
-	@sed -n '4,21p' $(srcdir)/Makefile
+	@sed -n '4,23p' $(srcdir)/Makefile
 
 compile: compile-fused-prefill compile-decode
 
@@ -141,3 +143,12 @@ gate-all bench-all fullfit-all:
 
 clean:
 	rm -rf $(BUILD) $(srcdir)/__pycache__
+
+## `make accuracy` (teacher-forced PPL + KL divergence against HF BF16 on
+## wikitext-2) and `make tasks` (GSM8K / MMLU scores on the NPU and on HF
+## BF16), verify/accuracy.mk. Their 2048-token sequences need the decode of
+## capacity C=2048 (`make compile CAPACITIES=2048`).
+ACC_MODEL := $(MODEL_CHOICE)
+ACC_DIR := $(srcdir)/..
+
+include $(srcdir)/../verify/accuracy.mk

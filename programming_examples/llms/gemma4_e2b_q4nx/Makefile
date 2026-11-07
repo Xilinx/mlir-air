@@ -172,6 +172,8 @@ help:
 	@echo "  make layer-gate-shared  Score KV-SHARED layers ($(GATE_PAIRS)), two-layer builds"
 	@echo "  make verify-topk        Shared top-k gate vs the bf16 HF reference (capped)"
 	@echo "  make verify-full        Same, over the whole prompt file"
+	@echo "  make accuracy           PPL + KL divergence vs the bf16 HF reference on wikitext-2 (RUN_LBUILD=2048)"
+	@echo "  make tasks              GSM8K / MMLU on the NPU and on the bf16 HF reference (RUN_LBUILD=2048)"
 	@echo "  make diagnosis          Single-prompt lens through the shared runner"
 	@echo ""
 	@echo "On the host (no NPU, no Peano, no aie-opt):"
@@ -483,3 +485,13 @@ clean:
 	rm -f $(srcdir)/*.npz $(srcdir)/decode_L*.xclbin $(srcdir)/decode_L*.insts.bin $(srcdir)/decode_L*.rt_rounds $(srcdir)/decode_L*.rt_window $(srcdir)/decode_L*.rt_pair $(srcdir)/decode_scratchpad.* 2>/dev/null || true
 	rm -rf $(srcdir)/_q4nx_cache_seq* $(CURDIR)/_q4nx_cache_seq* $(srcdir)/build_peano $(FUSED_DIR) 2>/dev/null || true
 	@echo "Gemma4 caches and the PLE decode build removed."
+
+## `make accuracy` (teacher-forced PPL + KL divergence against the bf16 HF
+## reference on wikitext-2) and `make tasks` (GSM8K / MMLU scores on the NPU
+## and on that reference), verify/accuracy.mk, through the verify adapter.
+## Their 2048-token sequences need the fused prefill and a decode built for
+## them (`make compile-fused-prefill compile-decode-elf RUN_LBUILD=2048`).
+ACC_MODEL := $(MODEL_CHOICE)
+ACC_DIR := $(srcdir)/..
+
+include $(srcdir)/../verify/accuracy.mk

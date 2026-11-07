@@ -233,9 +233,10 @@ class Qwen35Prefill(Engine):
     def _t(self, k, t0):
         self.times[k] = self.times.get(k, 0.0) + time.perf_counter() - t0
 
-    def prefill(self, ids):
-        """The last row's logits (float32 [vocab]); keeps the state the
-        decode takes (decode_state)."""
+    def prefill(self, ids, logits_from=None):
+        """The last row's logits (float32 [vocab]), or with `logits_from` the
+        [n - logits_from, vocab] logits of every row from there on, through
+        the same NPU head; keeps the state the decode takes (decode_state)."""
         t0 = time.perf_counter()
         self.resume()
         ids = [int(t) for t in np.asarray(ids).reshape(-1)]
@@ -254,17 +255,30 @@ class Qwen35Prefill(Engine):
                 self._gdn_all(L, x, chunks, ffn)
             ffn.drain()
         t0 = time.perf_counter()
-        xn = H.rms(x[-1:], self.w["norm"], EPS)
-        a = np.concatenate([xn, xn], 1)  # the Q8 head's [x | x]
-        z = np.concatenate(
-            [
-                self.mm(f"head.{i}", a)[0, : n1 - n0]
-                for i, (n0, n1) in enumerate(S.HEAD_PIECES)
-            ]
-        )
+        if logits_from is None:
+            z = self._logits(x[-1:])[0]
+        else:
+            rows = x[logits_from:]
+            # The head takes at most one chunk (D.M rows) per dispatch.
+            z = np.concatenate(
+                [self._logits(rows[r : r + D.M]) for r in range(0, len(rows), D.M)]
+            )
         self._t("head", t0)
         self.n = n
         return z
+
+    def _logits(self, x):
+        """[t, vocab] logits of rows x [t, d], t <= D.M: the final norm and
+        the Q8 lm_head."""
+        xn = H.rms(x, self.w["norm"], EPS)
+        a = np.concatenate([xn, xn], 1)  # the Q8 head's [x | x]
+        return np.concatenate(
+            [
+                self.mm(f"head.{i}", a)[:, : n1 - n0]
+                for i, (n0, n1) in enumerate(S.HEAD_PIECES)
+            ],
+            axis=1,
+        )
 
     def decode_state(self):
         """The prompt's state as the decode takes it, (kv, conv,

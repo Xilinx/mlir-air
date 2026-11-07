@@ -137,7 +137,8 @@ class NpuRunner:
         from gemma4_e2b_q4nx_inference import FusedDecoder
 
         self.prefiller = fused_prefill.load(gw.MODEL_DIR.name, Q4NX_MODEL_SOURCE)
-        if self.prefiller is None:
+        self.fused = self.prefiller is not None
+        if not self.fused:
             self.prefiller = Gemma4Q4nxPrefill(
                 seq_len=_SEQ_LEN, cache_dir=os.environ.get("Q4NX_CACHE_DIR") or None
             )
@@ -181,6 +182,21 @@ class NpuRunner:
             logits_at_pred=logits,
             top1_token=first,
         )
+
+    def prefill_logits(self, prompt_tokens: np.ndarray, logits_from: int):
+        """Logits of the prompt's rows from logits_from on, from one prefill
+        (accuracy.py --path prefill, lm_eval_npu.py loglikelihood). Only the
+        fused prefill produces them; the per-op prefill computes the last row
+        alone."""
+        if not self.fused:
+            raise NotImplementedError(
+                "the prefill path needs the fused prefill (make compile-fused-prefill)"
+            )
+        self.prefiller.clear_context()
+        ids = [int(t) for t in prompt_tokens]
+        logits = self.prefiller.prefill(ids, logits_from=logits_from)
+        self.prefiller.suspend()  # free its hw_context for the decoder
+        return np.asarray(logits, np.float32)
 
     def decode_step(self, input_token: int, current_pos: int) -> DecodeStepRecord:
         # `current_pos` is the absolute position of `input_token` (the runner

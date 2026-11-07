@@ -139,18 +139,20 @@ class FusedPrefill(Engine):
             run=ctx.run(ib, len(ins), [bw, bx, by]),
         )
 
-    def _lm_head(self, last):
+    def _lm_head(self, h):
+        """[t, vocab] logits of the normed rows h [t, D]: t <= D.M on the GEMM
+        head, t = 1 on the GEMV head."""
         if LM_GEMM:
-            last = np.asarray(last, np.float32).reshape(1, -1)
+            h = np.asarray(h, np.float32).reshape(-1, gw.D)
             return np.concatenate(
-                [self.mm(f"lm.{i}", last)[0] for i in range(len(self.lm))]
+                [self.mm(f"lm.{i}", h) for i in range(len(self.lm))], axis=1
             ).astype(np.float32)
         lm = self.lm
-        np.copyto(lm["xm"], last.reshape(-1), casting="unsafe")
+        np.copyto(lm["xm"], h.reshape(-1), casting="unsafe")
         lm["bx"].sync(TO)
         self._go(lm["run"], "lm", lm["by"])
         lm["by"].sync(FROM)
-        return lm_gemv.unpack_y(lm["ym"].astype(np.float32))
+        return lm_gemv.unpack_y(lm["ym"].astype(np.float32))[None]
 
     def _rope(self, L, r0, t):
         key = (gw.head_dim(L), r0, t)
@@ -173,8 +175,10 @@ class FusedPrefill(Engine):
         vs.append(v.reshape(v.shape[0], -1))
         self.kv_append(self.kvb[L], r0, k, v)
 
-    def prefill(self, ids, soft_embeds=None, soft_positions=None):
-        """`soft_embeds` [k, D] (a vision tower's output) replace the token
+    def prefill(self, ids, soft_embeds=None, soft_positions=None, logits_from=None):
+        """The last token's logits, or with `logits_from` the [n - logits_from,
+        vocab] logits of every row from there on, through the same NPU head.
+        `soft_embeds` [k, D] (a vision tower's output) replace the token
         embeddings at `soft_positions`, where `ids` must hold the pad token.
         As in Gemma4Model.forward, the per-layer token table is looked up with
         those pad ids, while the per-layer projection reads the embeddings
@@ -214,8 +218,20 @@ class FusedPrefill(Engine):
         for L in range(gw.NUM_LAYERS):
             self._layer_all(L, x, pli, chunks, ropes)
         self.current_context_length = n
-        last = gw._rmsnorm(x[-1:], self.glob["final_norm"])
-        logits = self._lm_head(last)
+        if logits_from is None:
+            return self._logits(x[-1:])[0]
+        rows = x[logits_from:]
+        # The GEMM head takes at most one chunk (D.M rows) per dispatch, the
+        # GEMV head one row.
+        step = D.M if LM_GEMM else 1
+        return np.concatenate(
+            [self._logits(rows[r : r + step]) for r in range(0, len(rows), step)]
+        )
+
+    def _logits(self, x):
+        """[t, vocab] logits of rows x [t, D]: the final norm, the LM head and
+        the softcap."""
+        logits = self._lm_head(gw._rmsnorm(x, self.glob["final_norm"]))
         if gw.FINAL_LOGIT_SOFTCAP:
             logits = gw.FINAL_LOGIT_SOFTCAP * np.tanh(logits / gw.FINAL_LOGIT_SOFTCAP)
         return logits
