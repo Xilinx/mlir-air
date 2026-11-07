@@ -287,3 +287,33 @@ def a_sequential_bound_may_come_from_an_enclosing_loop():
                     air.ops.store(b, OUT)
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: a_sequential_bound_may_divide_an_enclosing_loop_variable
+# A floor division of a loop variable is still the same on every core.
+# CHECK: scf.for %[[LX:.*]] = %c0{{.*}} to %c4
+# CHECK: affine.apply #{{.*}}[%[[LX]]]
+# CHECK: scf.for %{{.*}} = %c0{{.*}} to %{{[0-9]+}} step
+@run
+def a_sequential_bound_may_divide_an_enclosing_loop_variable():
+    from air.api.types import bf16
+
+    A = air.tensor([64], bf16)
+    OUT = air.tensor([64], bf16)
+
+    with air.launch(name="divbound") as launch:
+
+        @launch.body
+        def _():
+            with air.herd(range(1), shape=(1,)) as h:
+
+                @h.body
+                def _(tx):
+                    b = air.alloc([64], bf16, scope=h.private())
+                    air.ops.load(b, A)
+                    for lx in air.sequential(0, 4):
+                        for _blk in air.sequential(0, (lx // 2 + 1) * 8):
+                            pass
+                    air.ops.store(b, OUT)
+
+    print(launch.mlir())

@@ -98,6 +98,11 @@ class DerivedLeaf:
     def leaves(self):
         return self.expr.leaves()
 
+    @property
+    def spatial(self):
+        """Differs between cores if anything it is built from does."""
+        return any(leaf.spatial for leaf in self.leaves())
+
     def _affine(self, symbol_of):
         from air.ir import AffineExpr, AffineConstantExpr
 
