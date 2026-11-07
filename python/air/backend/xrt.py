@@ -370,6 +370,7 @@ class XRTBackend(AirBackend):
         use_lock_race_condition_fix_v2: bool = False,
         use_lock_race_condition_fix_auto: bool | None = None,
         coalesce_shim_dma: bool = False,
+        allow_deadlock_prone_routing: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
         output_format: str = "xclbin",
@@ -402,6 +403,7 @@ class XRTBackend(AirBackend):
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
             use_lock_race_condition_fix_auto: pick a lock race fix per shared L2 buffer (see aircc --use-lock-race-condition-fix-auto). None (default) leaves the choice to aircc; True or False sets it.
+            allow_deadlock_prone_routing: route flows aiecc's static check cannot prove drain; for designs whose transfer order rules the cycle out.
             coalesce_shim_dma: configure aircc to coalesce consecutive contiguous shim DMA transfers on the same channel (marked air.preserve_shim_dma_order) into a single wide transfer, reducing host-issued DMA task triplets. Opt-in: only enable for feeds verified numerically equivalent when coalesced.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
@@ -466,6 +468,7 @@ class XRTBackend(AirBackend):
         self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
         self.use_lock_race_condition_fix_auto = use_lock_race_condition_fix_auto
         self.coalesce_shim_dma = coalesce_shim_dma
+        self.allow_deadlock_prone_routing = allow_deadlock_prone_routing
         self.trace_offset = trace_offset
         self.trace_size = trace_size
         self.currently_loaded = False
@@ -640,6 +643,9 @@ class XRTBackend(AirBackend):
 
             if self.omit_while_true_loop:
                 aircc_options += ["--omit-while-true-loop"]
+
+            if self.allow_deadlock_prone_routing:
+                aircc_options += ["--allow-deadlock-prone-routing"]
 
             if self.omit_pingpong:
                 # Handle both bool (True -> "all") and string ("L1", "L2", "all")
