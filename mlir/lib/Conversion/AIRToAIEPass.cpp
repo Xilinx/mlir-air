@@ -1723,8 +1723,12 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       continue;
     }
 
-    // Step 3: Insert locks at the determined scope
-    if (lockScope) {
+    // Step 3: Insert locks at the determined scope. A core whose accesses
+    // are one run per iteration is bracketed around that run: holding the
+    // buffer from the top of the loop body would also hold up the transfers
+    // its peer needs from this core before it can fill the buffer.
+    bool oneRun = adjacentRuns(accessingOps).size() == 1;
+    if (lockScope && !oneRun) {
       // Place at start/end of the outermost enclosing scf.for body
       auto forOp = cast<scf::ForOp>(lockScope);
       OpBuilder builder(forOp);
