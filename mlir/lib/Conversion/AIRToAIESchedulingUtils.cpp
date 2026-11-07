@@ -4099,9 +4099,21 @@ void air::reorderL3PacketPutsByFlowOrder(
     putsByChan[chan.getSymNameAttr()].push_back(put);
   });
 
-  SmallVector<air::ChannelPutOp> sortedPuts;
+  // Only flows that share a receiver core with another were reordered by
+  // sortPacketShimFlowsByReceiverOrder. The rest keep their program order,
+  // which is what orders them against each other.
+  llvm::DenseMap<AIE::CoreOp, unsigned> flowsPerCore;
+  for (auto &f : memcpy_flows)
+    if (isPacketShimFlow(f))
+      if (auto core = uniqueReceiverCore(f))
+        flowsPerCore[core]++;
+
+  SmallVector<std::pair<air::ChannelPutOp, AIE::CoreOp>> sortedPuts;
   for (auto &f : memcpy_flows) {
     if (!isPacketShimFlow(f))
+      continue;
+    auto core = uniqueReceiverCore(f);
+    if (!core || flowsPerCore[core] < 2)
       continue;
     auto chan = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op);
     if (!chan)
@@ -4110,14 +4122,15 @@ void air::reorderL3PacketPutsByFlowOrder(
     if (it == putsByChan.end())
       continue;
     for (auto put : it->second)
-      sortedPuts.push_back(put);
+      sortedPuts.push_back({put, core});
   }
 
-  // Per-block prev anchors handle launch clones (e.g. main + lightweight
-  // reset device for load_pdi); each clone gets its own moveAfter chain.
-  DenseMap<Block *, Operation *> prevByBlock;
-  for (auto put : sortedPuts) {
-    Block *blk = put->getBlock();
+  // One moveAfter chain per block and receiver: launch clones (e.g. main +
+  // lightweight reset device for load_pdi) each get their own, and so does
+  // every core's group of flows.
+  DenseMap<std::pair<Block *, Operation *>, Operation *> prevByBlock;
+  for (auto [put, core] : sortedPuts) {
+    std::pair<Block *, Operation *> blk = {put->getBlock(), core};
     auto it = prevByBlock.find(blk);
     if (it == prevByBlock.end()) {
       prevByBlock[blk] = put;
