@@ -7680,7 +7680,8 @@ public:
 
   /// Walks ops in the block and finds the last reader/writer. Returns the last
   /// operation in the same block that accesses `destBuffer`.
-  Operation *findLastReadOrWriteOp(Operation *memcpyOp, Value destBuffer) {
+  Operation *findLastReadOrWriteOp(Operation *memcpyOp, Value destBuffer,
+                                   bool ignoreFree = false) {
     // Ensure the given operation is an air memcpy operation
     auto memcpyOpIf = dyn_cast_if_present<air::MemcpyInterface>(memcpyOp);
     if (!memcpyOpIf)
@@ -7698,7 +7699,7 @@ public:
     // channel's DMA fill its next buffer. That is the buffer being released
     // only when the core's gets on the channel fill distinct buffers in turn,
     // as the DMA does; otherwise the dealloc still counts as an access.
-    bool freeIsAccess = !getsFillDistinctBuffers(memcpyOp);
+    bool freeIsAccess = !ignoreFree && !getsFillDistinctBuffers(memcpyOp);
     Operation *lastAccessOp = nullptr, *lastFreeOp = nullptr;
     SetVector<Value> bufferViews;
     bufferViews.insert(destBuffer);
@@ -7722,6 +7723,8 @@ public:
       for (Region &region : op->getRegions())
         region.walk([&](Operation *o) { visit(o, op); });
     }
+    if (ignoreFree)
+      return lastAccessOp;
     return lastAccessOp ? lastAccessOp : lastFreeOp;
   }
 
@@ -8049,10 +8052,17 @@ public:
       builder.setInsertionPoint(nextWriter);
       AIE::UseLockOp::create(builder, nextWriter->getLoc(), relLockOp,
                              AIE::LockAction::Release, lockRelValue);
-    } else if (auto lastAccessOp = findLastReadOrWriteOp(memcpyOpIf, alloc)) {
+    } else if (auto lastAccessOp = findLastReadOrWriteOp(
+                   memcpyOpIf, alloc, /*ignoreFree=*/!tileInbound.value())) {
       // Lifetime ends after the last read/write access to buffer.
       builder.setInsertionPointAfter(lastAccessOp);
       AIE::UseLockOp::create(builder, lastAccessOp->getLoc(), relLockOp,
+                             AIE::LockAction::Release, lockRelValue);
+    } else if (!tileInbound.value()) {
+      // A sent buffer is the DMA's once nothing here touches it again; its
+      // dealloc does not, and may sit after the loop that sends it.
+      builder.setInsertionPointAfter(memcpyOpIf);
+      AIE::UseLockOp::create(builder, memcpyOpIf->getLoc(), relLockOp,
                              AIE::LockAction::Release, lockRelValue);
     } else {
       // Lifetime ends at end of block.
