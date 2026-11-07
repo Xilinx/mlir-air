@@ -86,8 +86,8 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK: ^bb2:
 // CHECK:   aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, %{{.*}})
 // CHECK:   aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, %{{.*}})
-// CHECK:   aie.use_lock(%[[VAL_2]], Release, %{{.*}})
 // CHECK:   aie.use_lock(%[[VAL_5]], Release, %{{.*}})
+// CHECK:   aie.use_lock(%[[VAL_2]], Release, %{{.*}})
 // CHECK:   aie.end
 // CHECK: aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
 // CHECK: aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
@@ -151,8 +151,8 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:  ^bb2:
 // CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, %{{.*}})
 // CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, %{{.*}})
-// CHECK:           aie.use_lock(%[[VAL_2]], Release, %{{.*}})
 // CHECK:           aie.use_lock(%[[VAL_5]], Release, %{{.*}})
+// CHECK:           aie.use_lock(%[[VAL_2]], Release, %{{.*}})
 // CHECK:           aie.end
 // CHECK:         }
 
