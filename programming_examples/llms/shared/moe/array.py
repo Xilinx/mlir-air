@@ -29,13 +29,17 @@ HDR = 2  # packet header words in front of a packet put's region
 class Phase:
     """One projection on the array: ``npairs`` pairs of weight blocks, input
     width ``xw``, ``ncb`` column blocks per row group, ``step(x, w, acc, cb)``
-    the kernel of one block, and the consumer ``dest`` of its rows."""
+    the kernel of one block, and the consumer ``dest`` of its rows. The input
+    goes to the core's x buffer ``xbuf``; ``fresh=False`` reuses what an
+    earlier phase left there."""
 
     xw: int
     npairs: object
     ncb: int
     step: Callable
     dest: int
+    xbuf: int = 0
+    fresh: bool = True
 
 
 class MvmArray:
@@ -49,13 +53,21 @@ class MvmArray:
         col0=2,
         row0=2,
         assemble_col=1,
+        acc_words=None,
+        columns=None,
     ):
         assert rows % 2 == 0, "a column's two shim channels split its rows"
         self.row_block, self.block_bytes = row_block, block_bytes
         self.cols, self.rows = cols, rows
         self.col0, self.row0, self.assemble_col = col0, row0, assemble_col
+        # the physical column of each array column; a herd per contiguous run
+        self.columns = list(columns or range(col0, col0 + cols))
+        assert len(self.columns) == cols
         self.coly = rows * row_block  # one column's rows of a round
         self.round = cols * self.coly
+        # a core's float32 accumulator between blocks: one row block unless
+        # the block kernel carries more (Q4_K: its scale and min paths)
+        self.acc_words = acc_words or row_block
 
     def channels(self, n_dests):
         """The array's channels; ``n_dests`` consumers share its egress."""
@@ -92,7 +104,7 @@ class MvmArray:
         half = self.rows // 2
         for i in range(self.cols):
             lw = [
-                self._l2(seg, [self.block_bytes], self.col0 + i, ui8)
+                self._l2(seg, [self.block_bytes], self.columns[i], ui8)
                 for _ in range(self.rows)
             ]
             for b in air.sequential(0, nblk):
@@ -107,7 +119,7 @@ class MvmArray:
         rb = self.row_block
         for rd in air.sequential(0, nrd):
             for i in range(self.cols):
-                grp = self._l2(seg, [HDR + self.coly], self.col0 + i)
+                grp = self._l2(seg, [HDR + self.coly], self.columns[i])
                 for r in range(self.rows):
                     off = 0 if r == 0 else HDR + r * rb
                     sz = HDR + rb if r == 0 else rb
@@ -122,42 +134,72 @@ class MvmArray:
             self.out_y.put(ml, indices=[0, 0])
             air.dealloc(ml)
 
-    def herd(self, xw, flush, phases, params=(), name="mvm"):
+    def herd(self, xw, flush, phases, params=(), name="mvm", layers=None):
         """The array's cores. ``phases()`` yields the Phases in order; it runs
         in the herd body, so a count may read a herd parameter.
-        ``flush(acc, y)`` writes a row block at y + 16, after its header."""
+        ``flush(acc, y)`` writes a row block at y + 16, after its header.
+        ``xw`` is the width of the x buffer, or a list of widths, one buffer
+        each. With ``layers``, the cores loop that many times over
+        ``phases(j)``, j the loop index: one program for layers whose counts
+        and consumers differ, as long as their transfers do not."""
+        runs = []
+        for i, c in enumerate(self.columns):
+            if runs and c == runs[-1][1] + runs[-1][2]:
+                runs[-1][2] += 1
+            else:
+                runs.append([i, c, 1])
+        for base, c, n in runs:
+            self._herd(xw, flush, phases, params, name, base, c, n, layers)
+
+    def _herd(self, xw, flush, phases, params, name, base, col, n, layers):
         rb = self.row_block
+        if base or n != self.cols:
+            name = f"{name}{base}"
         with air.herd(
-            [range(self.cols), range(self.rows)],
+            [range(n), range(self.rows)],
             name=name,
-            shape=(self.cols, self.rows),
-            at=(self.col0, self.row0),
+            shape=(n, self.rows),
+            at=(col, self.row0),
             params=list(params),
         ) as he:
 
             @he.body
             def _(tx, ty):
+                tx = tx + base if base else tx
                 p = he.private()
                 # two weight buffers, filled alternately: the DMA brings one
                 # block in while the kernel reads the other
                 wab = [air.alloc([self.block_bytes], ui8, scope=p) for _ in range(2)]
-                x = air.alloc([xw], bf16, scope=p)
-                yacc = air.alloc([rb], f32, scope=p)
+                xs = [
+                    air.alloc([w], bf16, scope=p)
+                    for w in (xw if isinstance(xw, (list, tuple)) else [xw])
+                ]
+                yacc = air.alloc([self.acc_words], f32, scope=p)
                 y = air.alloc([16 + rb], bf16, scope=p)
 
-                for ph in phases():
-                    # blocks two at a time; every phase has an even count,
-                    # so each starts on buffer 0
-                    self.x_b.get(x[0 : ph.xw], indices=[tx, ty])
-                    for k in air.sequential(0, ph.npairs):
-                        for half, wb in enumerate(wab):
-                            cb = (k * 2 + half) % ph.ncb
-                            self.w_l1.get(wb, indices=[tx, ty])
-                            ph.step(x, wb, yacc, cb)
-                            with air.ops.branch(cb == ph.ncb - 1):
-                                flush(yacc, y)
-                                self.out_a.put(
-                                    y[16 - HDR : 16 + rb],
-                                    indices=[tx, ty],
-                                    dest=ph.dest,
-                                )
+                if layers:
+                    for j in air.sequential(0, layers):
+                        self._phases(phases(j), xs, wab, yacc, y, flush, tx, ty)
+                else:
+                    self._phases(phases(), xs, wab, yacc, y, flush, tx, ty)
+
+    def _phases(self, phases, xs, wab, yacc, y, flush, tx, ty):
+        rb = self.row_block
+        for ph in phases:
+            # blocks two at a time; every phase has an even count, so each
+            # starts on buffer 0
+            x = xs[ph.xbuf]
+            if ph.fresh:
+                self.x_b.get(x[0 : ph.xw], indices=[tx, ty])
+            for k in air.sequential(0, ph.npairs):
+                for half, wb in enumerate(wab):
+                    cb = (k * 2 + half) % ph.ncb
+                    self.w_l1.get(wb, indices=[tx, ty])
+                    ph.step(x, wb, yacc, cb)
+                    with air.ops.branch(cb == ph.ncb - 1):
+                        flush(yacc, y)
+                        self.out_a.put(
+                            y[16 - HDR : 16 + rb],
+                            indices=[tx, ty],
+                            dest=ph.dest,
+                        )

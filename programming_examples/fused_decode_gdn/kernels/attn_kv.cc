@@ -984,6 +984,7 @@ void attn_merge(bf16 *__restrict p0, bf16 *__restrict p1, bf16 *__restrict o) {
 // (sizes [QH, DH/8, 8], strides [8, QH*8, 1]). The mixer's output is already
 // natural (q_head, dh), so writing it straight would come out scrambled by
 // exactly that pattern; undoing it here is a fixed 512-element shuffle.
+#ifndef ATTN_NO_CONV_O_PASS
 void conv_o_pass(bf16 *__restrict mix, bf16 *__restrict o, int cu, int arm) {
   aie_round_nearest_even();
   // Qwen3.5 (fused_decode_gdn): arm 1 = Gated DeltaNet wave, o is replaced by
@@ -1008,4 +1009,5 @@ void conv_o_pass(bf16 *__restrict mix, bf16 *__restrict o, int cu, int arm) {
           aie::mul(aie::load_v<32>(o + d * 32), sv).template to_vector<bf16>());
   }
 }
+#endif
 }
