@@ -7701,14 +7701,16 @@ public:
     // as the DMA does; otherwise the dealloc still counts as an access.
     bool freeIsAccess = !ignoreFree && !getsFillDistinctBuffers(memcpyOp);
     Operation *lastAccessOp = nullptr, *lastFreeOp = nullptr;
+    // every view of the buffer, wherever it is made: one made before the
+    // memcpy still reaches the buffer after it
     SetVector<Value> bufferViews;
     bufferViews.insert(destBuffer);
+    for (unsigned i = 0; i < bufferViews.size(); i++)
+      for (Operation *user : bufferViews[i].getUsers())
+        if (auto view = dyn_cast<ViewLikeOpInterface>(user))
+          if (view.getViewSource() == bufferViews[i])
+            bufferViews.insert(view->getResult(0));
     auto visit = [&](Operation *o, Operation *top) {
-      // Save buffer views.
-      if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(o)) {
-        if (llvm::is_contained(bufferViews, view.getViewSource()))
-          bufferViews.insert(view->getResult(0));
-      }
       if (!isReadOrWriteToBuffer(o, bufferViews))
         return;
       if (isa<memref::DeallocOp>(o) && !freeIsAccess)
