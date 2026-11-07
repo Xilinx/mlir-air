@@ -233,6 +233,13 @@ static cl::opt<bool> useLockRaceConditionFixV2(
              "use-lock-race-condition-fix."),
     cl::init(false), cl::cat(airCompilerOptions));
 
+static cl::opt<bool> allowDeadlockProneRouting(
+    "allow-deadlock-prone-routing",
+    cl::desc("Pass aiecc --allow-deadlock-prone-routing: route flows the "
+             "static check cannot prove drain, for designs whose transfer "
+             "order rules the cycle out"),
+    cl::init(false), cl::cat(airCompilerOptions));
+
 static cl::opt<bool> useLockRaceConditionFixAuto(
     "use-lock-race-condition-fix-auto",
     cl::desc("Pick a lock race fix per shared L2 buffer: "
@@ -1426,6 +1433,8 @@ static LogicalResult runAieCompilation() {
     aieccCmd.push_back(xbridge ? "--xbridge" : "--xbridge=false");
   }
   aieccCmd.push_back("--tmpdir=" + tmpDir.getValue());
+  if (allowDeadlockProneRouting)
+    aieccCmd.push_back("--allow-deadlock-prone-routing");
 
   // Output format options. The mlir-aie v1.4.0 aiecc is a declarative
   // driver: each artifact is requested with --get-<name> and named with
