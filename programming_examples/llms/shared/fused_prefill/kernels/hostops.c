@@ -18,9 +18,10 @@ static inline uint16_t f2bf(float f) {
   return (uint16_t)((u + 0x7FFFu + ((u >> 16) & 1u)) >> 16);
 }
 
-// x [t, K] f32 -> dst [HR][K/TK][TM][TK] bf16, the GEMM's A layout
+// x [t, K] f32 -> dst [HR][K/TK][TM][TK] bf16, the GEMM's A layout; a K
+// that is not a whole number of steps is zero-padded to one
 void tile_a(const float *x, int t, int K, int TM, int TK, uint16_t *dst) {
-  int ks = K / TK;
+  int ks = (K + TK - 1) / TK;
 #pragma omp parallel for num_threads(NT) schedule(static)
   for (int r = 0; r < t; r++) {
     int ty = r / TM, i = r % TM;
@@ -29,7 +30,7 @@ void tile_a(const float *x, int t, int K, int TM, int TK, uint16_t *dst) {
       uint16_t *d = dst + (((long)ty * ks + s) * TM + i) * TK;
       const float *xs = src + s * TK;
       for (int k = 0; k < TK; k++)
-        d[k] = f2bf(xs[k]);
+        d[k] = s * TK + k < K ? f2bf(xs[k]) : 0;
     }
   }
 }
@@ -175,13 +176,85 @@ static inline uint16_t *a_row(uint16_t *dst, int r, int s, int ks, int TM,
   return dst + (((long)(r / TM) * ks + s) * TM + r % TM) * TK;
 }
 
+// a K that is not a whole number of steps is zero-padded to one
 static void tile_row(const float *x, int K, int r, int TM, int TK,
                      uint16_t *dst) {
-  int ks = K / TK;
+  int ks = (K + TK - 1) / TK;
   for (int s = 0; s < ks; s++) {
     uint16_t *d = a_row(dst, r, s, ks, TM, TK);
     for (int k = 0; k < TK; k++)
-      d[k] = f2bf(x[s * TK + k]);
+      d[k] = s * TK + k < K ? f2bf(x[s * TK + k]) : 0;
+  }
+}
+
+// e^x, to ~1e-5 relative, in operations the loops around it vectorize (no
+// libm call, floorf or fminf): 2^(x log2 e) as 2^i times a degree-6 Taylor
+// polynomial of 2^f
+static inline float exp_fast(float x) {
+  x = x < -87.f ? -87.f : x > 88.f ? 88.f : x;
+  float t = x * 1.44269504f;
+  int32_t i = (int32_t)t;
+  i -= t < (float)i; // floor: the conversion truncates
+  float f = t - (float)i;
+  float p = 1.5403530e-4f;
+  p = p * f + 1.3333558e-3f;
+  p = p * f + 9.6181291e-3f;
+  p = p * f + 5.5504109e-2f;
+  p = p * f + 2.4022651e-1f;
+  p = p * f + 6.9314718e-1f;
+  p = p * f + 1.f;
+  union {
+    int32_t i;
+    float f;
+  } s = {(i + 127) << 23};
+  return p * s.f;
+}
+
+// one run of gpt-oss's clamped SwiGLU, its own function so the restrict
+// pointers let it vectorize (with -fno-trapping-math, which lets the clamps
+// become selects)
+static void oss_glu_run(const uint16_t *restrict gs,
+                        const uint16_t *restrict us, const float *restrict gb,
+                        const float *restrict ub, int len,
+                        float *restrict out) {
+  for (int c = 0; c < len; c++) {
+    float g = bf2f(gs[c]) + gb[c];
+    float u = bf2f(us[c]) + ub[c];
+    g = g < 7.f ? g : 7.f;
+    u = u < -7.f ? -7.f : u > 7.f ? 7.f : u;
+    out[c] = g / (1.f + exp_fast(-1.702f * g)) * (u + 1.f);
+  }
+}
+
+// gpt-oss's clamped SwiGLU from its gate | up GEMM, gu bf16 [t, ldg] holding
+// gate and up in turns of 128 columns: with g = min(gate + gb, 7) and u =
+// clamp(up + ub, -7, 7), dst (tiled A, K = n zero-padded to whole steps) =
+// bf16(g sigmoid(1.702 g) (u + 1))
+void oss_glu_tile(const uint16_t *gu, int ldg, const float *gb, const float *ub,
+                  int t, int n, int TM, int TK, uint16_t *dst) {
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int r = 0; r < t; r++) {
+    float row[n];
+    const uint16_t *src = gu + (long)r * ldg;
+    for (int j0 = 0; j0 < n; j0 += 128)
+      oss_glu_run(src + 2 * j0, src + 2 * j0 + 128, gb + j0, ub + j0,
+                  n - j0 < 128 ? n - j0 : 128, row + j0);
+    tile_row(row, n, r, TM, TK, dst);
+  }
+}
+
+// out[rows[i]] += w[i] (y[i] + b) for i < t: y bf16 [t, ldy] (columns [0,
+// n)), out f32 [*, ldo]; the rows are distinct (an expert's tokens)
+void scatter_add_rows(float *out, int ldo, const uint16_t *y, int ldy,
+                      const int64_t *rows, const float *w, const float *b,
+                      int t, int n) {
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int i = 0; i < t; i++) {
+    float *o = out + rows[i] * ldo;
+    const uint16_t *yi = y + (long)i * ldy;
+    const float wi = w[i];
+    for (int j = 0; j < n; j++)
+      o[j] += wi * (bf2f(yi[j]) + b[j]);
   }
 }
 

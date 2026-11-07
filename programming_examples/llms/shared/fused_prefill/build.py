@@ -179,6 +179,7 @@ def build_kernels(out, cfg):
             f"-DDIM_M={m}",
             f"-DDIM_N={n}",
             f"-DDIM_K={k}",
+            *(["-DGEMM_MXFP4"] if cfg.mxfp4 else []),
         ],
         [cc, *f, "-c", kern / "gemv_q4.cc", "-o", out / "gemv_q4.o"],
     ]
@@ -204,7 +205,8 @@ def build_kernels(out, cfg):
                 f"-DLK={lkp}",
                 f"-DSUM_LANES={D.sum_lanes(dh)}",
                 *(["-DATTN_SPLIT_SCORES"] if sp else []),
-                *(["-DATTN_NONCAUSAL"] if suf.endswith("n") else []),
+                *(["-DATTN_NONCAUSAL"] if "n" in suf[1:] else []),
+                *(["-DATTN_SINKS"] if suf.endswith("k") else []),
                 *[f"-D{fn}={fn}{suf}" for fn in ("attn_init", "attn_blk", "attn_fin")],
             ]
         )
@@ -214,6 +216,8 @@ def build_kernels(out, cfg):
             "-O3",
             "-march=native",
             "-ffp-contract=off",
+            # IEEE results unchanged; lets comparisons in loops become selects
+            "-fno-trapping-math",
             "-fopenmp",
             "-shared",
             "-fPIC",

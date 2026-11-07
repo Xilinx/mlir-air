@@ -74,6 +74,9 @@ class Attn(NamedTuple):
     # every query sees every key before the op's run-time key count, which
     # the op takes as a fourth scalar (attn_bfp16.cc, ATTN_NONCAUSAL)
     noncausal: bool = False
+    # each head's softmax has one more logit, with no value: the host writes
+    # it after each core's q tile (SINK, attn_bfp16.cc ATTN_SINKS)
+    sinks: bool = False
 
 
 # a window no prompt reaches, which makes the window mask causal
@@ -87,6 +90,9 @@ class Config(NamedTuple):
     # op's heads evenly; by default each group is its own op
     ops: dict = None
     windows: dict = None  # attention op -> sliding window in tokens
+    # GEMMs whose weights are MXFP4 blocks as the gpt-oss bundle stores them
+    # (wq=2, gemm_bfp16.cc dqmx_bfp16), read where they lie
+    mxfp4: bool = False
 
 
 def attn_ops(cfg):
@@ -111,7 +117,7 @@ def kv_rec(g):
 
 def attn_suffix(g):
     """The kernel symbols' and object's suffix of group g."""
-    return f"_d{g.dh}" + ("n" if g.noncausal else "")
+    return f"_d{g.dh}" + ("n" if g.noncausal else "") + ("k" if g.sinks else "")
 
 
 def sum_lanes(dh):
@@ -120,16 +126,24 @@ def sum_lanes(dh):
     return 8 if dh <= 128 else 1
 
 
+# bf16 elements after a core's q tile holding its head's sink: the logit as
+# a score (bf16), then its weight against that score (f32), padded to 64 bytes
+SINK = 32
+
+
 def q_tile(g):
-    """bf16 elements of one core's q tile, bfp16."""
-    return g.lkp * g.dh * 9 // 16
+    """bf16 elements of one core's q tile, bfp16, and its sink if any."""
+    return g.lkp * g.dh * 9 // 16 + (SINK if g.sinks else 0)
 
 
-def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps):
+def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, ncb):
+    """wq: 0 bf16 weights, 1 int4, 2 MXFP4 (a device built with mx). An MXFP4
+    weight is row groups of ncb blocks pairs: two 32-row blocks per K step make
+    a packet, which is how the bundle lays out a 64-column panel's steps."""
     ksteps = k // TK
     P = 1 + pair
-    zero, mmul, mmul_pkt, cast, cast_act, dq = kern
-    npk = 1 if wq else 2  # B packets per K step: int4, or bfp16 in K halves
+    zero, mmul, mmul_pkt, cast, cast_act, dq, dqmx = kern
+    npk = 2 if wq == 0 else 1  # B packets per K step: bfp16 in K halves, else 1
     a_in = air.channel("gAIn", size=[HR])
     b_in = air.channel("gBIn", size=[GNC])
     a2l1 = air.channel("gA2L1", size=[1, HR], broadcast_shape=[GNC, HR])
@@ -149,11 +163,22 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps):
         # One put per round and column, so a packet's start goes in the
         # buffer offset: as a BD stride, GNC packets of a long K overflow
         # the shim BD's stride field.
-        Bp = B.reshape(rounds * GNC, L)
-        for r in range(rounds):
-            for tx in range(GNC):
-                i = r * GNC + tx
-                b_in.put(Bp[i : i + 1, 0:L], indices=[tx])
+        if wq == 2:
+            # panel p is half p % 2 of row group p // 2, its K steps a block
+            # pair apart; the steps past ncb read the next group's, against
+            # A's zero columns
+            for r in range(rounds):
+                for tx in range(GNC):
+                    p = r * GNC + tx
+                    g0 = p // 2 * ncb
+                    h = p % 2
+                    b_in.put(B[g0 : g0 + ksteps, h : h + 1, 0:QB], indices=[tx])
+        else:
+            Bp = B.reshape(rounds * GNC, L)
+            for r in range(rounds):
+                for tx in range(GNC):
+                    i = r * GNC + tx
+                    b_in.put(Bp[i : i + 1, 0:L], indices=[tx])
         for tx in range(GNC):
             c_out.get(
                 C.reshape(P, M, rounds, GNC, TN)[
@@ -164,16 +189,23 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps):
 
     puts.append(shim)
     # computed in the launch, so the segment body does not depend on the shape
-    kq = air.rtp(wave * 0 + (ksteps // 4) * wq * (1 - pair))
-    kp = air.rtp(wave * 0 + (ksteps // 2) * wq * pair)
-    kb = air.rtp(wave * 0 + (ksteps // 4) * (1 - wq) * (1 - pair))
-    kbp = air.rtp(wave * 0 + (ksteps // 2) * (1 - wq) * pair)
+    w4, wb, wm = (int(wq == v) for v in (1, 0, 2))
+    kq = air.rtp(wave * 0 + (ksteps // 4) * w4 * (1 - pair))
+    kp = air.rtp(wave * 0 + (ksteps // 2) * w4 * pair)
+    kb = air.rtp(wave * 0 + (ksteps // 4) * wb * (1 - pair))
+    kbp = air.rtp(wave * 0 + (ksteps // 2) * wb * pair)
     nr = air.rtp(wave * 0 + rounds)
     actp = air.rtp(wave * 0 + act)
     plain = air.rtp(wave * 0 + (1 - act))
     actp2 = air.rtp(wave * 0 + act * pair)
     plain2 = air.rtp(wave * 0 + (1 - act) * pair)
     rtps += [kq, kp, kb, kbp, nr, actp, plain, actp2, plain2]
+    loops = [kq, kp, kb, kbp]
+    if mx:
+        kmx = air.rtp(wave * 0 + (ksteps // 4) * wm * (1 - pair))
+        kmxp = air.rtp(wave * 0 + (ksteps // 2) * wm * pair)
+        rtps += [kmx, kmxp]
+        loops += [kmx, kmxp]
 
     def body(seg):
         a_l2 = [
@@ -213,7 +245,8 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps):
             shape=(GNC, HR),
             link_with=MM_OBJ,
             at=(GCOL0, 2),
-            params=[kq, kp, kb, kbp, nr, actp, plain, actp2, plain2],
+            # in the segment's order
+            params=[kq, kp, kb, kbp, nr, actp, plain, actp2, plain2, *loops[4:]],
         ) as hd:
 
             @hd.body
@@ -227,26 +260,28 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps):
                 for _r in air.sequential(nr):
                     zero(acc)
                     zero(acc2)
-                    # int4 packets are dequantized; bf16 weights come as bfp16
-                    # in two packets per K step. With pair, each K step takes
-                    # two chunks' A tiles against one B. Of the four loops all
-                    # but one are zero-trip, and each trip gets the four A
-                    # buffers in the same order, which is the BD chain
+                    # int4 and MXFP4 packets are dequantized; bf16 weights
+                    # come as bfp16 in two packets per K step. With pair, each
+                    # K step takes two chunks' A tiles against one B. Of the
+                    # loops all but one are zero-trip, and each trip gets the
+                    # four A buffers in the same order, which is the BD chain
                     # air-to-aie builds (#2040).
-                    for _k in air.sequential(kq):
-                        for i in range(4):
-                            a2l1.get(a_l1[i], indices=[tx, ty])
-                            b2l1.get(b_l1[i % 2], indices=[tx, ty])
-                            dq(b_l1[i % 2], bdq)
-                            mmul(a_l1[i], bdq, acc)
-                    for _k in air.sequential(kp):
-                        for pp in range(2):
-                            b2l1.get(b_l1[pp], indices=[tx, ty])
-                            dq(b_l1[pp], bdq)
-                            a2l1.get(a_l1[2 * pp], indices=[tx, ty])
-                            mmul(a_l1[2 * pp], bdq, acc)
-                            a2l1.get(a_l1[2 * pp + 1], indices=[tx, ty])
-                            mmul(a_l1[2 * pp + 1], bdq, acc2)
+                    for kn, dqf in ((kq, dq), (kmx, dqmx)) if mx else ((kq, dq),):
+                        for _k in air.sequential(kn):
+                            for i in range(4):
+                                a2l1.get(a_l1[i], indices=[tx, ty])
+                                b2l1.get(b_l1[i % 2], indices=[tx, ty])
+                                dqf(b_l1[i % 2], bdq)
+                                mmul(a_l1[i], bdq, acc)
+                    for kn, dqf in ((kp, dq), (kmxp, dqmx)) if mx else ((kp, dq),):
+                        for _k in air.sequential(kn):
+                            for pp in range(2):
+                                b2l1.get(b_l1[pp], indices=[tx, ty])
+                                dqf(b_l1[pp], bdq)
+                                a2l1.get(a_l1[2 * pp], indices=[tx, ty])
+                                mmul(a_l1[2 * pp], bdq, acc)
+                                a2l1.get(a_l1[2 * pp + 1], indices=[tx, ty])
+                                mmul(a_l1[2 * pp + 1], bdq, acc2)
                     for _k in air.sequential(kb):
                         for i in range(4):
                             a2l1.get(a_l1[i], indices=[tx, ty])
@@ -453,9 +488,15 @@ def _attention(name, gs, wave, puts, externs, rtps):
                     # q block from the round index: a per-core counter updated
                     # in this loop crashes air-fuse-alloc-dealloc (#2041)
                     for r in air.sequential(nr):
-                        init(gp, ml)
-                        qb = qb0 + (r % QR) * NQT + ty
-                        q2l1.get(q_bfp, indices=[ty])
+                        if g.sinks:
+                            # the sink comes with q and starts the softmax
+                            q2l1.get(q_bfp, indices=[ty])
+                            init(gp, ml, q_bfp)
+                            qb = qb0 + (r % QR) * NQT + ty
+                        else:
+                            init(gp, ml)
+                            qb = qb0 + (r % QR) * NQT + ty
+                            q2l1.get(q_bfp, indices=[ty])
                         for blk in air.sequential(nk2):
                             for pp in range(2):
                                 kv2l1.get(k_l1[pp], indices=[tx, ty])
@@ -483,7 +524,8 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
 
     op 'g': (k, n, act, wq, pair), C[128 p, n] = A[128 p, k] @ W for p chunks
             (2 with pair, else 1), with the activation drain if act and int4
-            weight packets if wq (bf16 otherwise)
+            weight packets if wq is 1, MXFP4 row groups of k / 128 block
+            pairs if 2 (cfg.mxfp4), bf16 if 0
     op <attention op>: (heads, nkv, q0, k0), attention for one chunk; a
             noncausal op's keys are its nkv blocks, and with own it takes
             the key count as a fourth run-time scalar nk
@@ -495,7 +537,7 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
     drive = ({"g"} if op == "g" else set(attn_ops(cfg)[op])) if own else None
     # with own, an attention op takes (nkv, q0, k0) at run time
     runtime = own and op != "g"
-    g = dict(k=4 * TK, n=NR, act=0, wq=1, pair=0, rounds=1)
+    g = dict(k=4 * TK, n=NR, act=0, wq=1, pair=0, rounds=1, ncb=0)
     at = {
         a: dict(
             nkv=2,
@@ -509,7 +551,10 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
     if op == "g":
         k, n, act, wq, pair = shape
         assert n % NR == 0, n
-        g.update(k=k_pad(k), n=n, act=act, wq=wq, pair=pair, rounds=n // NR)
+        assert wq != 2 or (cfg.mxfp4 and k % TK == 0), (k, wq)
+        g.update(
+            k=k_pad(k), n=n, act=act, wq=wq, pair=pair, rounds=n // NR, ncb=k // TK
+        )
     else:
         heads, nkv, q0, k0 = shape
         groups = attn_ops(cfg)[op]
@@ -533,10 +578,19 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
         mm[1],
         mm[2],
         air.extern("dq4_bfp16", link_with=GEMM_OBJ),
+        air.extern("dqmx_bfp16", link_with=GEMM_OBJ) if cfg.mxfp4 else None,
     )
+    if g["wq"] == 2:
+        assert QB == 2 * 2560, QB  # a packet is two MXFP4 blocks of 32 x 128
+        # block pairs [group * ncb + step][2 halves], up to the last group's
+        # K steps, which read past its ncb
+        bshape = [(g["n"] // (2 * TN) - 1) * g["ncb"] + g["k"] // TK, 2, QB]
+    else:
+        bshape = [g["n"] // TN, g["k"] // TK * (2 if g["wq"] == 0 else 1), QB]
+    # declared in the kernel's argument order
     gt = (
         air.tensor([HR, g["k"] // TK, 1 + g["pair"], A_BFP], i8),
-        air.tensor([g["n"] // TN, g["k"] // TK * (1 if g["wq"] else 2), QB], i8),
+        air.tensor(bshape, i8),
         air.tensor([(1 + g["pair"]) * M, g["n"]], bf16),
     )
     att = {}
@@ -581,6 +635,8 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
                         kern,
                         puts,
                         rtps,
+                        cfg.mxfp4,
+                        g["ncb"],
                     )
                 )
             for names in cols.values():

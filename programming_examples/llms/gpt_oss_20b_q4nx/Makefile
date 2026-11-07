@@ -7,17 +7,24 @@
 # (FastFlowLM/GPT-OSS-20B-NPU2; GPT_OSS_FLM_DIR names a local copy).
 #
 #   make compile         Build the decode ELF
+#   make compile-fused-prefill  Build the fused prefill device into FUSED_DIR
 #   make run             Greedy decode of PROMPT, checked against the CPU reference
-#   make verify          MoE block, decode vs the CPU reference, reference vs HF
+#   make prefill-fused   The fused prefill of PROMPT repeated to LONG_LEN tokens
+#                        vs the CPU reference
+#   make run-long        run after a LONG_LEN-token prompt is prefilled (holds the
+#                        decode's weights and the CPU reference at once)
+#   make verify          MoE block, run, prefill-fused, reference vs HF
 #   make profile         TTFT and decode tok/s, no reference check
 #   make profile-decode  Decode tok/s at each of CONTEXTS (one build each)
 #   make profile-prefill TTFT of a CTX-token prompt
-#   make prefill         The prefill's NPU ops, then the prefill vs the CPU reference
+#   make prefill         The per-op prefill's NPU ops, then it vs the CPU reference
 #   make kernels         Every kernel test
 #
-# A long prompt is prefilled as FastFlowLM does it, with per-op ELFs on the
-# whole array and the prompt length a run-time scalar, and its KV handed to the
-# decode; a short one goes through the decode loop.
+# A prompt of MIN_PREFILL tokens or more is prefilled on the shared fused
+# prefill device (fused_spec.py, prefill_fused.py): one PDI for every op, so a
+# dispatch costs its insts rather than a full ELF's. Its KV goes to the decode.
+# FUSED_PREFILL_DIR= prefills with FastFlowLM's per-op ELFs instead
+# (prefill.py). A shorter prompt goes through the decode loop.
 #
 # The 24-layer decode keeps every weight resident: it needs a memlock limit
 # above the bundle's size (ulimit -l).
@@ -35,19 +42,44 @@ PROMPT   ?= The capital of France is
 CONTEXTS ?= 1024,4096,8192
 CTX      ?= 512
 BUILD_DIR ?= build_decode
+LONG_LEN ?= 128
 
-.PHONY: compile run verify profile profile-decode profile-prefill prefill bench \
-	block kernels clean
+# The fused prefill build, under the invoking directory; decode.py prefills on
+# the build in FUSED_PREFILL_DIR, and with FUSED_PREFILL_DIR= on per-op ELFs.
+FUSED_DIR ?= $(CURDIR)/_fused_prefill
+override FUSED_DIR := $(abspath $(FUSED_DIR))
+FUSED_JOBS ?= 4
+FUSED_PREFILL_DIR ?= $(FUSED_DIR)
+export FUSED_PREFILL_DIR
+# the targets that prefill build it once; compile-fused-prefill rebuilds it
+FUSED_DEP := $(if $(FUSED_PREFILL_DIR),$(FUSED_DIR)/manifest.json)
+
+.PHONY: compile compile-fused-prefill run run-long verify profile profile-decode \
+	profile-prefill prefill prefill-fused bench block kernels clean
 
 compile:
 	$(DECODE) --compile-only --maxl $(MAXL) --build-dir $(BUILD_DIR)
+
+compile-fused-prefill $(FUSED_DIR)/manifest.json:
+	$(PYTHON) $(srcdir)/fused_build.py $(FUSED_DIR) -j $(FUSED_JOBS)
 
 run:
 	$(DECODE) --maxl $(MAXL) --steps $(STEPS) --prompt "$(PROMPT)" \
 		--build-dir $(BUILD_DIR)
 
-verify: block run
+# PROMPT repeated to LONG_LEN tokens: prefilled, then decoded, each token
+# checked against the CPU reference
+run-long: $(FUSED_DEP)
+	$(DECODE) --maxl $$(( ($(LONG_LEN) + $(STEPS) + 15) / 16 * 16 )) \
+		--steps $(STEPS) --prompt "$(PROMPT)" --prompt-len $(LONG_LEN) \
+		--build-dir build_long
+
+verify: block run prefill-fused
 	$(PYTHON) $(srcdir)/check_vs_hf.py forward --prompt "$(PROMPT)"
+
+prefill-fused: $(FUSED_DIR)/manifest.json
+	$(PYTHON) $(srcdir)/prefill_fused.py $(FUSED_DIR) --prompt "$(PROMPT)" \
+		--prompt-len $(LONG_LEN)
 
 profile:
 	$(DECODE) --maxl $(MAXL) --steps $(N_TOKENS) --prompt "$(PROMPT)" --no-ref \
@@ -59,7 +91,7 @@ profile-decode:
 		$(DECODE) --maxl $$c --bench $(BENCH) --bench-ctx $$c \
 			--build-dir build_ctx$$c || exit 1; done
 
-profile-prefill:
+profile-prefill: $(FUSED_DEP)
 	$(DECODE) --maxl $$(( ($(CTX) + 31) / 16 * 16 )) --prompt-len $(CTX) \
 		--steps 2 --no-ref --warm --build-dir build_ctx$(CTX)
 
@@ -87,5 +119,5 @@ kernels:
 	$(PYTHON) $(srcdir)/attn_block.py
 
 clean:
-	rm -rf $(BUILD_DIR) build_ctx* build_prefill* air_project *.o *.elf *.xclbin \
-		*.bin
+	rm -rf $(BUILD_DIR) build_ctx* build_prefill* build_long $(FUSED_DIR) \
+		air_project *.o *.elf *.xclbin *.bin

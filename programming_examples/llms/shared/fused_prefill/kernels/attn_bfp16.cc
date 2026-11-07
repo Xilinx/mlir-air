@@ -17,6 +17,10 @@
 // Built with ATTN_NONCAUSAL, every query sees every key before w, the
 // number of keys (tokens): blocks at or past it are skipped and the block
 // holding it masked from w on.
+// Built with ATTN_SINKS, each head's softmax has one more logit with no value:
+// the host writes it after the core's q tile, as a score m0 in q k
+// units (bf16) and its weight l0 = 2^((sink - m0) SCALE) (f32), and the
+// running max and sums start from them.
 
 #include <aie_api/aie.hpp>
 
@@ -173,12 +177,21 @@ extern "C" {
 
 // ml: the running max (bf16 [LQ]), then from ML_SUMS the running sums
 // (float [LQ][SUM_LANES])
+#ifdef ATTN_SINKS
+void attn_init(bfloat16 *o, float *ml, bfloat16 *q) {
+  const char *sink = (const char *)q + LQ * DH * 9 / 8;
+  const bfloat16 m0 = *(const bfloat16 *)sink;
+  const float l0 = *(const float *)(sink + 4);
+#else
 void attn_init(bfloat16 *o, float *ml) {
+  const bfloat16 m0 = LOWEST;
+  const float l0 = 0.0f;
+#endif
   for (int i = 0; i < LQ * DH; i += 64)
     aie::store_v(o + i, aie::zeros<bfloat16, 64>());
-  aie::store_v((bfloat16 *)ml, aie::broadcast<bfloat16, LQ>(LOWEST));
+  aie::store_v((bfloat16 *)ml, aie::broadcast<bfloat16, LQ>(m0));
   for (int i = 0; i < LQ * SUM_LANES; i += 16)
-    aie::store_v(ml + ML_SUMS + i, aie::zeros<float, 16>());
+    aie::store_v(ml + ML_SUMS + i, aie::broadcast<float, 16>(l0));
 }
 
 void attn_blk(bfloat16 *qb16, bfloat16 *k, bfloat16 *v, bfloat16 *o, float *ml,
