@@ -169,6 +169,73 @@ class AffineDeploymentTests(unittest.TestCase):
         want = (k.astype(np.float32) - w).astype(bfloat16)
         np.testing.assert_array_equal(out.view(np.uint16), want.view(np.uint16))
 
+    def test_fused_prefill_moe_host_ops(self):
+        """hostops.c's oss_glu_tile, scatter_add_rows and tile_a with a K that
+        is not a whole number of steps, against numpy."""
+        H = self._fused_prefill("hostops")
+        D = self._fused_prefill("device")
+        from ml_dtypes import bfloat16
+
+        if shutil.which("gcc") is None:
+            self.skipTest("no gcc")
+        kern = Path(H.__file__).parent / "kernels/hostops.c"
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(
+                ["gcc", "-O3", "-march=native", "-ffp-contract=off"]
+                + ["-fno-trapping-math", "-fopenmp", "-shared", "-fPIC"]
+                + [str(kern), "-o", f"{tmp}/libhostops.so", "-lm"],
+                check=True,
+            )
+            H.load(tmp)
+        # gpt-oss's width: 22 whole groups of 128 columns and half of one,
+        # and a row count that leaves the last row tile partial
+        TM, TK, t, n = D.TM, D.TK, 40, 2880
+        ks = -(-n // TK)
+        rng = np.random.default_rng(2)
+
+        def untile(tiles, rows):
+            a = tiles.transpose(0, 2, 1, 3).reshape(-1, ks * TK)[:rows]
+            return a.view(bfloat16).astype(np.float32)
+
+        # gate and up in turns of 128 columns, wide enough to cross both
+        # clamps (|x| > 7) in either direction
+        gu = (rng.standard_normal((t, 2 * ks * TK)) * 6).astype(bfloat16)
+        gb, ub = (rng.standard_normal(n).astype(np.float32) for _ in range(2))
+        tiles = np.full((-(-D.M // TM), ks, TM, TK), 0x7FC0, np.uint16)
+        H._lib.oss_glu_tile(
+            gu.ctypes.data,
+            gu.shape[1],
+            gb.ctypes.data,
+            ub.ctypes.data,
+            t,
+            n,
+            TM,
+            TK,
+            tiles.ctypes.data,
+        )
+        g = gu.astype(np.float32).reshape(t, ks, 2, TK)
+        gate = np.minimum(g[:, :, 0].reshape(t, -1)[:, :n] + gb, 7)
+        up = np.clip(g[:, :, 1].reshape(t, -1)[:, :n] + ub, -7, 7)
+        self.assertTrue((g[:, :, 0].reshape(t, -1)[:, :n] + gb > 7).any())
+        self.assertTrue((np.abs(g[:, :, 1].reshape(t, -1)[:, :n] + ub) > 7).any())
+        want = gate / (1 + np.exp(-1.702 * gate)) * (up + 1)
+        got = untile(tiles, t)
+        np.testing.assert_allclose(got[:, :n], want, rtol=1e-2, atol=1e-2)
+        np.testing.assert_array_equal(got[:, n:], 0)
+        x = rng.standard_normal((t, n)).astype(np.float32)
+        H._lib.tile_a(x.ctypes.data, t, n, TM, TK, tiles.ctypes.data)
+        got = untile(tiles, t)
+        np.testing.assert_array_equal(got[:, :n], x.astype(bfloat16).astype(np.float32))
+        np.testing.assert_array_equal(got[:, n:], 0)
+        out = rng.standard_normal((3 * t, n)).astype(np.float32)
+        want = out.copy()
+        rows = rng.permutation(3 * t)[:t]
+        wt = rng.random(t).astype(np.float32)
+        y = rng.standard_normal((t, n + 64)).astype(bfloat16)
+        H.scatter_add_rows(out, y, rows, wt, gb, n)
+        want[rows] += wt[:, None] * (y[:, :n].astype(np.float32) + gb)
+        np.testing.assert_allclose(out, want, rtol=1e-6, atol=1e-6)
+
     def test_checkpoint_to_canonical_q4(self):
         from ml_dtypes import bfloat16
 

@@ -340,7 +340,11 @@ class GptOssFused(DensePrefill):
 
     def _start(self, st, wbo):
         st["run"].set_arg(4, wbo)
-        st["c"].sync(TO, 64, 0)
+        # each chunk's first output line, as Engine._go and gemm_start do:
+        # unflushed, it can read back with the previous dispatch's bytes
+        chunk = D.M * st["npd"] * 2
+        for c in range(len(st["am"])):
+            st["c"].sync(TO, 64, c * chunk)
         st["t0"] = time.perf_counter()
         st["run"].r.start()
 
@@ -430,6 +434,7 @@ def main():
     ap.add_argument("build_dir", help="the fused prefill build (fused_build.py)")
     ap.add_argument("--prompt", default="The capital of France is")
     ap.add_argument("--prompt-len", type=int, default=128, help="repeat to N tokens")
+    ap.add_argument("--token-out", help="write the reference's next token here")
     args = ap.parse_args()
 
     tok = Tokenizer.from_file(str(g.flm_model_dir() / "tokenizer.json"))
@@ -450,6 +455,8 @@ def main():
     cos = torch.nn.functional.cosine_similarity(got, want, dim=0)
     a, b = int(got.argmax()), int(want.argmax())
     print(f"{len(ids)} tokens: logits cos {cos:.5f}; next token {a} vs ref {b}")
+    if args.token_out:
+        Path(args.token_out).write_text(f"{b}\n")
     ok = a == b and cos > 0.98
     print("PASS!" if ok else "failed.")
     return 0 if ok else 1

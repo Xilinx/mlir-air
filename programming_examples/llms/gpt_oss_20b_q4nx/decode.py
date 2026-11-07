@@ -30,6 +30,7 @@
 # cache and mask to their last 128 keys, as fused_decode does.
 import argparse
 import functools
+import json
 import os
 import sys
 import tempfile
@@ -723,6 +724,12 @@ def main():
         default=os.environ.get("FUSED_PREFILL_DIR") or None,
         help="prefill on this fused prefill build (fused_build.py), not per-op",
     )
+    ap.add_argument(
+        "--first-token",
+        type=Path,
+        help="a file holding the reference's first token (prefill_fused.py "
+        "--token-out), checked without the CPU reference in memory",
+    )
     ap.add_argument("--bench", type=int, default=0, help="time N dispatches")
     ap.add_argument(
         "--bench-ctx", type=int, default=0, help="context of the timed dispatches"
@@ -742,11 +749,18 @@ def main():
 
     tok = Tokenizer.from_file(str(g.flm_model_dir() / "tokenizer.json"))
     ids = prompt_ids(tok, a.prompt, a.prompt_len)
-    long_prompt = prefill.MIN_PREFILL <= len(ids) <= a.maxl
-    if long_prompt and a.fused_dir and not (a.fused_dir / "manifest.json").is_file():
-        sys.exit(f"{a.fused_dir}: no fused prefill build (fused_build.py)")
-    w = g.GptOssQ4nx()
     full = layers == list(range(g.N_LAYERS))
+    # FLM prefills prompts of MIN_PREFILL tokens or more and decodes shorter
+    # ones; the fused prefill takes prompts up to the length it was built for
+    use_prefill = full and not a.no_prefill and not a.bench
+    use_prefill &= prefill.MIN_PREFILL <= len(ids) <= a.maxl
+    use_fused = use_prefill and a.fused_dir is not None
+    if use_fused:
+        manifest = a.fused_dir / "manifest.json"
+        if not manifest.is_file():
+            sys.exit(f"{a.fused_dir}: no fused prefill build (fused_build.py)")
+        use_fused = len(ids) - 1 <= json.loads(manifest.read_text())["max_len"]
+    w = g.GptOssQ4nx()
     ref = None
     if not a.no_ref:
         ref = g.Reference(w) if full else ChainRef(w, layers)
@@ -764,12 +778,10 @@ def main():
             )
             return 0
         seq, out, times = list(ids), [], []
-        # FLM prefills prompts of MIN_PREFILL tokens or more and decodes
-        # shorter ones; the last prompt token takes a decode step, whose LM
-        # head gives the first token
+        # the last prompt token takes a decode step, whose LM head gives the
+        # first token
         first, t_prefill = 0, 0.0
-        use_prefill = full and not a.no_prefill and long_prompt
-        if use_prefill and a.fused_dir:
+        if use_fused:
             import prefill_fused
 
             pf = prefill_fused.GptOssFused(a.fused_dir, w, we=(npu.bo["WE"], 0))
@@ -830,6 +842,10 @@ def main():
                 msg += f" vs ref {int(want.argmax())}  logits cos {c:.5f}"
                 # a prefilled cache carries the NPU GEMMs' bfp16 products
                 ok &= nxt == int(want.argmax()) and c > (0.98 if first else 0.99)
+            if a.first_token and not out:
+                want_tok = int(a.first_token.read_text())
+                msg += f" vs reference first token {want_tok}"
+                ok &= nxt == want_tok
             print(f"{msg} ({dt*1e3:.0f} ms)")
             seq.append(nxt)
             out.append(nxt)

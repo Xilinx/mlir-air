@@ -11,9 +11,12 @@
 #   make run             Greedy decode of PROMPT, checked against the CPU reference
 #   make prefill-fused   The fused prefill of PROMPT repeated to LONG_LEN tokens
 #                        vs the CPU reference
+#   make decode-prefilled  That prompt prefilled into the decode, its first token
+#                        vs the one prefill-fused's reference chose
 #   make run-long        run after a LONG_LEN-token prompt is prefilled (holds the
 #                        decode's weights and the CPU reference at once)
-#   make verify          MoE block, run, prefill-fused, reference vs HF
+#   make verify          MoE block, run, prefill-fused, decode-prefilled,
+#                        reference vs HF
 #   make profile         TTFT and decode tok/s, no reference check
 #   make profile-decode  Decode tok/s at each of CONTEXTS (one build each)
 #   make profile-prefill TTFT of a CTX-token prompt
@@ -51,19 +54,24 @@ override FUSED_DIR := $(abspath $(FUSED_DIR))
 FUSED_JOBS ?= 4
 FUSED_PREFILL_DIR ?= $(FUSED_DIR)
 export FUSED_PREFILL_DIR
-# the targets that prefill build it once; compile-fused-prefill rebuilds it
-FUSED_DEP := $(if $(FUSED_PREFILL_DIR),$(FUSED_DIR)/manifest.json)
+# the build the decode uses, made once for the targets that may prefill;
+# compile-fused-prefill rebuilds FUSED_DIR
+FUSED_DEP := $(if $(FUSED_PREFILL_DIR),$(abspath $(FUSED_PREFILL_DIR))/manifest.json)
 
 .PHONY: compile compile-fused-prefill run run-long verify profile profile-decode \
-	profile-prefill prefill prefill-fused bench block kernels clean
+	profile-prefill prefill prefill-fused decode-prefilled bench block kernels \
+	clean
 
 compile:
 	$(DECODE) --compile-only --maxl $(MAXL) --build-dir $(BUILD_DIR)
 
-compile-fused-prefill $(FUSED_DIR)/manifest.json:
+compile-fused-prefill:
 	$(PYTHON) $(srcdir)/fused_build.py $(FUSED_DIR) -j $(FUSED_JOBS)
 
-run:
+%/manifest.json:
+	$(PYTHON) $(srcdir)/fused_build.py $* -j $(FUSED_JOBS)
+
+run: $(FUSED_DEP)
 	$(DECODE) --maxl $(MAXL) --steps $(STEPS) --prompt "$(PROMPT)" \
 		--build-dir $(BUILD_DIR)
 
@@ -74,14 +82,22 @@ run-long: $(FUSED_DEP)
 		--steps $(STEPS) --prompt "$(PROMPT)" --prompt-len $(LONG_LEN) \
 		--build-dir build_long
 
-verify: block run prefill-fused
+verify: block run decode-prefilled
 	$(PYTHON) $(srcdir)/check_vs_hf.py forward --prompt "$(PROMPT)"
 
 prefill-fused: $(FUSED_DIR)/manifest.json
 	$(PYTHON) $(srcdir)/prefill_fused.py $(FUSED_DIR) --prompt "$(PROMPT)" \
-		--prompt-len $(LONG_LEN)
+		--prompt-len $(LONG_LEN) --token-out $(CURDIR)/first_token.txt
 
-profile:
+# the decode's resident weights, the fused prefill's KV handed to it; the
+# reference token comes from prefill-fused, so the two never share memory
+decode-prefilled: prefill-fused
+	FUSED_PREFILL_DIR=$(FUSED_DIR) $(DECODE) \
+		--maxl $$(( ($(LONG_LEN) + $(STEPS) + 15) / 16 * 16 )) --steps $(STEPS) \
+		--prompt "$(PROMPT)" --prompt-len $(LONG_LEN) --no-ref \
+		--first-token $(CURDIR)/first_token.txt --build-dir build_long
+
+profile: $(FUSED_DEP)
 	$(DECODE) --maxl $(MAXL) --steps $(N_TOKENS) --prompt "$(PROMPT)" --no-ref \
 		--build-dir $(BUILD_DIR)
 
@@ -120,4 +136,4 @@ kernels:
 
 clean:
 	rm -rf $(BUILD_DIR) build_ctx* build_prefill* build_long $(FUSED_DIR) \
-		air_project *.o *.elf *.xclbin *.bin
+		first_token.txt air_project *.o *.elf *.xclbin *.bin
