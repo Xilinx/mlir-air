@@ -142,3 +142,72 @@ module {
     }
   }
 }
+
+// -----
+
+// Two symbols for one channel: left in order.
+// CHECK-LABEL: aie.runtime_sequence @aliased_channel
+// CHECK: scf.if
+// CHECK: scf.if
+module {
+  aie.device(npu2) {
+    %t0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @col0(%t0, MM2S, 0)
+    aie.shim_dma_allocation @col0_alias(%t0, MM2S, 0)
+    aie.runtime_sequence @aliased_channel(%a: memref<256xi32>, %n: i32) {
+      %c0 = arith.constant 0 : i32
+      %p = arith.cmpi sgt, %n, %c0 : i32
+      scf.if %p {
+        %x0 = aiex.dma_configure_task_for @col0 {
+          aie.dma_bd(%a : memref<256xi32> offset = 0 len = 64)
+          aie.end
+        }
+        aiex.dma_start_task(%x0)
+      }
+      scf.if %p {
+        %y0 = aiex.dma_configure_task_for @col0_alias {
+          aie.dma_bd(%a : memref<256xi32> offset = 64 len = 64)
+          aie.end
+        }
+        aiex.dma_start_task(%y0)
+      }
+    }
+  }
+}
+
+// -----
+
+// Conditions alike but for a type: left in order.
+// CHECK-LABEL: aie.runtime_sequence @other_type
+// CHECK: scf.if
+// CHECK: scf.if
+module {
+  aie.device(npu2) {
+    %t0 = aie.tile(0, 0)
+    %t1 = aie.tile(1, 0)
+    aie.shim_dma_allocation @col0(%t0, MM2S, 0)
+    aie.shim_dma_allocation @col1(%t1, MM2S, 0)
+    aie.runtime_sequence @other_type(%a: memref<256xi32>, %n: i64) {
+      %n32 = arith.trunci %n : i64 to i32
+      %n8 = arith.trunci %n : i64 to i8
+      %c32 = arith.constant 0 : i32
+      %c8 = arith.constant 0 : i8
+      %p0 = arith.cmpi sgt, %n32, %c32 : i32
+      %p1 = arith.cmpi sgt, %n8, %c8 : i8
+      scf.if %p0 {
+        %x0 = aiex.dma_configure_task_for @col0 {
+          aie.dma_bd(%a : memref<256xi32> offset = 0 len = 64)
+          aie.end
+        }
+        aiex.dma_start_task(%x0)
+      }
+      scf.if %p1 {
+        %y0 = aiex.dma_configure_task_for @col1 {
+          aie.dma_bd(%a : memref<256xi32> offset = 64 len = 64)
+          aie.end
+        }
+        aiex.dma_start_task(%y0)
+      }
+    }
+  }
+}

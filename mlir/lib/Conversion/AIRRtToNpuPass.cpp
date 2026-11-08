@@ -4778,23 +4778,43 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           device(cfg), cfg.getAlloc().getLeafReference().getValue());
       return alloc && alloc.getChannelDir() == AIE::DMAChannelDir::MM2S;
     };
-    auto channelOf = [](AIEX::DMAConfigureTaskForOp cfg) {
-      return cfg.getAlloc().getLeafReference().getValue();
+    // The hardware channel a task runs on: tile, direction and index, as
+    // two allocation symbols may name the same channel.
+    auto channelOf = [&](AIEX::DMAConfigureTaskForOp cfg) -> int64_t {
+      auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(
+          device(cfg), cfg.getAlloc().getLeafReference().getValue());
+      auto tile = cast<AIE::TileOp>(alloc.getTile().getDefiningOp());
+      return ((int64_t(tile.getCol()) * 64 + tile.getRow()) * 2 +
+              int64_t(alloc.getChannelDir() == AIE::DMAChannelDir::MM2S)) *
+                 64 +
+             alloc.getChannelIndex();
     };
-    // The channels of `ops`, if they are all feed tasks, their starts,
-    // awaits and frees, or pure.
+    // The channels of `ops`, if they are all feed tasks configured among
+    // them, those tasks' starts, awaits and frees, or pure.
     auto feedChannels = [&](iterator_range<Block::iterator> ops,
-                            llvm::SmallDenseSet<StringRef> &chans) -> bool {
+                            llvm::SmallDenseSet<int64_t> &chans) -> bool {
+      llvm::SmallPtrSet<Operation *, 16> cfgs;
       for (Operation &o : ops) {
         if (auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o)) {
           if (!isFeed(cfg))
             return false;
           chans.insert(channelOf(cfg));
+          cfgs.insert(cfg);
           continue;
         }
-        if (isa<AIEX::DMAStartTaskOp, AIEX::DMAAwaitTaskOp, AIEX::DMAFreeTaskOp,
-                scf::YieldOp>(&o) ||
-            isMemoryEffectFree(&o))
+        Value task;
+        if (auto st = dyn_cast<AIEX::DMAStartTaskOp>(&o))
+          task = st.getTask();
+        else if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(&o))
+          task = aw.getTask();
+        else if (auto fr = dyn_cast<AIEX::DMAFreeTaskOp>(&o))
+          task = fr.getTask();
+        if (task) {
+          if (!cfgs.contains(task.getDefiningOp()))
+            return false;
+          continue;
+        }
+        if (isa<scf::YieldOp>(&o) || isMemoryEffectFree(&o))
           continue;
         return false;
       }
@@ -4810,7 +4830,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (!dx || !dy || depth > 6 || !isMemoryEffectFree(dx) ||
           dx->getName() != dy->getName() || dx->getAttrs() != dy->getAttrs() ||
           dx->getNumOperands() != dy->getNumOperands() || dx->getNumRegions() ||
-          dy->getNumRegions() ||
+          dy->getNumRegions() || x.getType() != y.getType() ||
           cast<OpResult>(x).getResultNumber() !=
               cast<OpResult>(y).getResultNumber())
         return false;
@@ -4819,7 +4839,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           return false;
       return true;
     };
-    auto feedIf = [&](scf::IfOp i, llvm::SmallDenseSet<StringRef> &chans) {
+    auto feedIf = [&](scf::IfOp i, llvm::SmallDenseSet<int64_t> &chans) {
       return i.getNumResults() == 0 &&
              (i.getElseRegion().empty() ||
               llvm::hasSingleElement(i.elseBlock()->getOperations())) &&
@@ -4833,7 +4853,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           changed = false;
           for (Operation &o : *blk) {
             auto a = dyn_cast<scf::IfOp>(&o);
-            llvm::SmallDenseSet<StringRef> chA, chB;
+            llvm::SmallDenseSet<int64_t> chA, chB;
             if (!a || !feedIf(a, chA))
               continue;
             // The next if on the same condition, past feeds only: an await
@@ -4850,13 +4870,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                   b = i;
                 break;
               }
-              if (!feedChannels(llvm::make_range(n->getIterator(),
-                                                 std::next(n->getIterator())),
-                                chB))
-                break;
             }
             if (!b ||
-                llvm::any_of(chA, [&](StringRef c) { return chB.contains(c); }))
+                !feedChannels(llvm::make_range(firstBetween->getIterator(),
+                                               b->getIterator()),
+                              chB) ||
+                llvm::any_of(chA, [&](int64_t c) { return chB.contains(c); }))
               continue;
             // The ops between, ahead of a.
             SmallVector<Operation *> between;
