@@ -10517,24 +10517,43 @@ static std::optional<SmallVector<int64_t>> constantIndices(ValueRange indices) {
 }
 
 // The shim DMA channel (column, direction, index) air-to-aie gave a host
-// transfer, if it has one.
-static std::optional<std::tuple<int64_t, int64_t, int64_t>>
-shimChannelOf(Operation *op) {
+// transfer: none if it has no allocation, failure if it has one whose channel
+// cannot be told yet (an unplaced shim tile with no column hint).
+using ShimChannel = std::tuple<int64_t, int64_t, int64_t>;
+static FailureOr<std::optional<ShimChannel>>
+shimChannelOf(air::ChannelPutOp op) {
   auto meta = op->getAttrOfType<ArrayAttr>("metadataArray");
-  auto entry = meta && !meta.empty() ? dyn_cast<DictionaryAttr>(meta[0])
-                                     : DictionaryAttr();
+  if (!meta || meta.empty())
+    return std::optional<ShimChannel>();
+  // the entry lowering picks for the put's bundle indices
+  if (!constantIndices(op.getIndices()))
+    return failure();
+  auto i = air::getIndexToMetadataArrayFromChannelIndices(op);
+  if (!i || *i < 0 || (size_t)*i >= meta.size())
+    return failure();
+  auto entry = dyn_cast<DictionaryAttr>(meta[*i]);
   auto base = entry ? entry.getAs<StringAttr>("base") : StringAttr();
   auto module = op->getParentOfType<ModuleOp>();
   if (!base || !module)
-    return std::nullopt;
-  for (auto device : module.getOps<AIE::DeviceOp>())
-    if (auto alloc =
-            AIE::ShimDMAAllocationOp::getForSymbol(device, base.getValue()))
-      if (auto tile = alloc.getTile().getDefiningOp<AIE::TileOp>())
-        return std::make_tuple(int64_t(tile.getCol()),
-                               int64_t(alloc.getChannelDir()),
-                               int64_t(alloc.getChannelIndex()));
-  return std::nullopt;
+    return failure();
+  for (auto device : module.getOps<AIE::DeviceOp>()) {
+    auto alloc =
+        AIE::ShimDMAAllocationOp::getForSymbol(device, base.getValue());
+    if (!alloc)
+      continue;
+    Operation *tile = alloc.getTile().getDefiningOp();
+    std::optional<int> col;
+    if (auto t = dyn_cast_if_present<AIE::TileOp>(tile))
+      col = t.getCol();
+    else if (auto lt = dyn_cast_if_present<AIE::LogicalTileOp>(tile))
+      col = lt.tryGetCol();
+    if (!col)
+      return failure();
+    return std::optional<ShimChannel>(
+        ShimChannel(*col, int64_t(alloc.getChannelDir()),
+                    int64_t(alloc.getChannelIndex())));
+  }
+  return failure();
 }
 
 // Returns true if `op` can stay between two puts of a chain while their
@@ -10548,8 +10567,10 @@ static bool mayCross(Operation *op, air::ChannelPutOp first) {
   if (!put)
     return false;
   if (put.getChanName() != first.getChanName()) {
-    auto shim = shimChannelOf(first);
-    return !shim || shim != shimChannelOf(put);
+    auto a = shimChannelOf(first), b = shimChannelOf(put);
+    if (failed(a) || failed(b))
+      return false;
+    return !*a || !*b || **a != **b;
   }
   auto a = constantIndices(first.getIndices());
   auto b = constantIndices(put.getIndices());
