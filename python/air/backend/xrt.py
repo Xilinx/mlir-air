@@ -370,7 +370,6 @@ class XRTBackend(AirBackend):
         use_lock_race_condition_fix_v2: bool = False,
         use_lock_race_condition_fix_auto: bool | None = None,
         coalesce_shim_dma: bool = False,
-        allow_deadlock_prone_routing: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
         output_format: str = "xclbin",
@@ -386,6 +385,7 @@ class XRTBackend(AirBackend):
         n_perf_iters: int = 0,
         n_warmup_iters: int = 10,
         device=None,
+        allow_deadlock_prone_routing: bool = False,
     ):
         """Constructor for XRTBackend
 
@@ -403,7 +403,6 @@ class XRTBackend(AirBackend):
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
             use_lock_race_condition_fix_auto: pick a lock race fix per shared L2 buffer (see aircc --use-lock-race-condition-fix-auto). None (default) leaves the choice to aircc; True or False sets it.
-            allow_deadlock_prone_routing: route flows aiecc's static check cannot prove drain; for designs whose transfer order rules the cycle out.
             coalesce_shim_dma: configure aircc to coalesce consecutive contiguous shim DMA transfers on the same channel (marked air.preserve_shim_dma_order) into a single wide transfer, reducing host-issued DMA task triplets. Opt-in: only enable for feeds verified numerically equivalent when coalesced.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
@@ -436,6 +435,7 @@ class XRTBackend(AirBackend):
                 backends must coexist, so unload() releases only this backend's
                 hardware context and leaves buffers allocated against the
                 shared device valid.
+            allow_deadlock_prone_routing: route flows aiecc's static check cannot prove drain; for designs whose transfer order rules the cycle out.
         """
         super().__init__()
         self.verbose = verbose
