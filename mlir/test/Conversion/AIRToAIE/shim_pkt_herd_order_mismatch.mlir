@@ -29,6 +29,7 @@
 // pkt_id counters reset between cases.
 
 // RUN: air-opt %s --split-input-file -air-to-aie='row-offset=2 col-offset=0 device=npu2' 2>&1 | FileCheck %s
+// RUN: air-opt %s --split-input-file -air-to-aie='row-offset=2 col-offset=0 device=npu2' 2>&1 >/dev/null | FileCheck %s --check-prefix=WARN
 
 // =============================================================================
 // Case 1: two packet flows, herd source order is the REVERSE of launch-decl
@@ -437,6 +438,122 @@ module {
           %g1 = air.channel.get async [%g0] @in_d[%hc0, %hc0] (%buf_d[] [] []) {id = 8 : i32} : (memref<64xbf16, 2>)
           %dealloc_d = air.execute [%g1] {
             memref.dealloc %buf_d : memref<64xbf16, 2>
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// =============================================================================
+// Case 7: two herds, each taking two packet inputs in turn, the launch
+// interleaving the herds' inputs in an order each herd already receives
+// them in. Nothing moves.
+// =============================================================================
+
+// CHECK-LABEL: func.func @case7_groups_in_order
+// CHECK:       air.channel.put{{.*}}@ca{{.*}}id = 1
+// CHECK-NEXT:  air.channel.put{{.*}}@da{{.*}}id = 2
+// CHECK-NEXT:  air.channel.put{{.*}}@cb{{.*}}id = 3
+// CHECK-NEXT:  air.channel.put{{.*}}@db{{.*}}id = 4
+
+module {
+  air.channel @ca [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @cb [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @da [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @db [1, 1] {channel_type = "npu_dma_packet"}
+
+  func.func @case7_groups_in_order(%arg0: memref<64xbf16>, %arg1: memref<64xbf16>) {
+    %0 = air.launch async () in () args(%a=%arg0, %b=%arg1) : memref<64xbf16>, memref<64xbf16> attributes {id = 1 : i32} {
+      %c0 = arith.constant 0 : index
+      %p1 = air.channel.put async @ca[%c0, %c0] (%a[] [] []) {id = 1 : i32} : (memref<64xbf16>)
+      %p2 = air.channel.put async @da[%c0, %c0] (%b[] [] []) {id = 2 : i32} : (memref<64xbf16>)
+      %p3 = air.channel.put async @cb[%c0, %c0] (%a[] [] []) {id = 3 : i32} : (memref<64xbf16>)
+      %p4 = air.channel.put async @db[%c0, %c0] (%b[] [] []) {id = 4 : i32} : (memref<64xbf16>)
+      %seg = air.segment @groups_seg async attributes {id = 2 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
+        %c1_s = arith.constant 1 : index
+        %herd_c = air.herd @herd_c async tile (%tx, %ty) in (%htx=%c1_s, %hty=%c1_s) attributes {id = 3 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
+          %hc0 = arith.constant 0 : index
+          %async_c, %buf_c = air.execute -> (memref<64xbf16, 2>) {
+            %alloc = memref.alloc() : memref<64xbf16, 2>
+            air.execute_terminator %alloc : memref<64xbf16, 2>
+          }
+          %g0 = air.channel.get async [%async_c] @ca[%hc0, %hc0] (%buf_c[] [] []) {id = 5 : i32} : (memref<64xbf16, 2>)
+          %g1 = air.channel.get async [%g0] @cb[%hc0, %hc0] (%buf_c[] [] []) {id = 6 : i32} : (memref<64xbf16, 2>)
+          %dealloc_c = air.execute [%g1] {
+            memref.dealloc %buf_c : memref<64xbf16, 2>
+          }
+        }
+        %herd_d = air.herd @herd_d async tile (%tx, %ty) in (%htx=%c1_s, %hty=%c1_s) attributes {id = 4 : i32, x_loc = 1 : i64, y_loc = 2 : i64} {
+          %hc0 = arith.constant 0 : index
+          %async_d, %buf_d = air.execute -> (memref<64xbf16, 2>) {
+            %alloc = memref.alloc() : memref<64xbf16, 2>
+            air.execute_terminator %alloc : memref<64xbf16, 2>
+          }
+          %g0 = air.channel.get async [%async_d] @da[%hc0, %hc0] (%buf_d[] [] []) {id = 7 : i32} : (memref<64xbf16, 2>)
+          %g1 = air.channel.get async [%g0] @db[%hc0, %hc0] (%buf_d[] [] []) {id = 8 : i32} : (memref<64xbf16, 2>)
+          %dealloc_d = air.execute [%g1] {
+            memref.dealloc %buf_d : memref<64xbf16, 2>
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// =============================================================================
+// Case 8: herd_e takes @ea before @eb, but the launch puts @eb first and a
+// put for another herd waits on @eb's token before @ea is put. Moving @eb's
+// put after @ea's would leave that token used before it is defined, so the
+// puts stay where they are and the pass warns.
+// =============================================================================
+
+// WARN: warning: packet put kept before
+// CHECK-LABEL: func.func @case8_token_user_between
+// CHECK:       air.channel.put{{.*}}@eb{{.*}}id = 1
+// CHECK-NEXT:  air.channel.put{{.*}}@fa{{.*}}id = 2
+// CHECK-NEXT:  air.channel.put{{.*}}@ea{{.*}}id = 3
+
+module {
+  air.channel @ea [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @eb [1, 1] {channel_type = "npu_dma_packet"}
+  air.channel @fa [1, 1] {channel_type = "npu_dma_packet"}
+
+  func.func @case8_token_user_between(%arg0: memref<64xbf16>, %arg1: memref<64xbf16>) {
+    %0 = air.launch async () in () args(%a=%arg0, %b=%arg1) : memref<64xbf16>, memref<64xbf16> attributes {id = 1 : i32} {
+      %c0 = arith.constant 0 : index
+      %pb = air.channel.put async @eb[%c0, %c0] (%a[] [] []) {id = 1 : i32} : (memref<64xbf16>)
+      %px = air.channel.put async [%pb] @fa[%c0, %c0] (%b[] [] []) {id = 2 : i32} : (memref<64xbf16>)
+      %pa = air.channel.put async @ea[%c0, %c0] (%a[] [] []) {id = 3 : i32} : (memref<64xbf16>)
+      %seg = air.segment @user_seg async attributes {id = 2 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
+        %c1_s = arith.constant 1 : index
+        %herd_e = air.herd @herd_e async tile (%tx, %ty) in (%htx=%c1_s, %hty=%c1_s) attributes {id = 3 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
+          %hc0 = arith.constant 0 : index
+          %async_e, %buf_e = air.execute -> (memref<64xbf16, 2>) {
+            %alloc = memref.alloc() : memref<64xbf16, 2>
+            air.execute_terminator %alloc : memref<64xbf16, 2>
+          }
+          %g0 = air.channel.get async [%async_e] @ea[%hc0, %hc0] (%buf_e[] [] []) {id = 4 : i32} : (memref<64xbf16, 2>)
+          %g1 = air.channel.get async [%g0] @eb[%hc0, %hc0] (%buf_e[] [] []) {id = 5 : i32} : (memref<64xbf16, 2>)
+          %dealloc_e = air.execute [%g1] {
+            memref.dealloc %buf_e : memref<64xbf16, 2>
+          }
+        }
+        %herd_f = air.herd @herd_f async tile (%tx, %ty) in (%htx=%c1_s, %hty=%c1_s) attributes {id = 6 : i32, x_loc = 1 : i64, y_loc = 2 : i64} {
+          %hc0 = arith.constant 0 : index
+          %async_f, %buf_f = air.execute -> (memref<64xbf16, 2>) {
+            %alloc = memref.alloc() : memref<64xbf16, 2>
+            air.execute_terminator %alloc : memref<64xbf16, 2>
+          }
+          %g0 = air.channel.get async [%async_f] @fa[%hc0, %hc0] (%buf_f[] [] []) {id = 7 : i32} : (memref<64xbf16, 2>)
+          %dealloc_f = air.execute [%g0] {
+            memref.dealloc %buf_f : memref<64xbf16, 2>
           }
         }
       }
