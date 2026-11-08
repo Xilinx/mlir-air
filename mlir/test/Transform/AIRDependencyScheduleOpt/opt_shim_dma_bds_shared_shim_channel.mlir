@@ -64,3 +64,95 @@ module {
     return
   }
 }
+
+// -----
+
+// @a's bundle entry [1, 0] is queued on MM2S 1, as @b is; its entry [0, 0] is
+// on MM2S 0. The @a puts at [1, 0] do not fold across the @b put.
+
+// CHECK-LABEL: func.func @bundle_entry
+// CHECK: air.channel.put {{.*}}@a[%c1{{.*}}, %c0{{.*}}]
+// CHECK: air.channel.put {{.*}}@b[]
+// CHECK: air.channel.put {{.*}}@a[%c1{{.*}}, %c0{{.*}}]
+
+module {
+  aie.device(npu2) {
+    %shim = aie.tile(5, 0)
+    aie.shim_dma_allocation @air_a0(%shim, MM2S, 0)
+    aie.shim_dma_allocation @air_a1(%shim, MM2S, 1)
+    aie.shim_dma_allocation @air_b(%shim, MM2S, 1)
+  }
+  air.channel @a [2, 1]
+  air.channel @b [1, 1]
+  func.func @bundle_entry(%x: memref<*xbf16>, %y: memref<*xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c512 = arith.constant 512 : index
+    %0 = air.wait_all async
+    %p = air.channel.put async [%0] @a[%c1, %c0] (%x[%c0] [%c512] [%c1]) {metadataArray = [{base = "air_a0", index = 0 : i32}, {base = "air_a1", index = 1 : i32}]} : (memref<*xbf16>)
+    %q = air.channel.put async [%0] @b[] (%y[%c0] [%c512] [%c1]) {metadataArray = [{base = "air_b", index = 0 : i32}]} : (memref<*xbf16>)
+    %r = air.channel.put async [%p] @a[%c1, %c0] (%x[%c512] [%c512] [%c1]) {metadataArray = [{base = "air_a0", index = 0 : i32}, {base = "air_a1", index = 1 : i32}]} : (memref<*xbf16>)
+    return
+  }
+}
+
+// -----
+
+// Before placement: @a and @b share MM2S 0 of a shim tile placed at a
+// column hint. The @a puts do not fold.
+
+// CHECK-LABEL: func.func @logical_shim
+// CHECK: air.channel.put {{.*}}@a[]
+// CHECK: air.channel.put {{.*}}@b[]
+// CHECK: air.channel.put {{.*}}@a[]
+
+module {
+  aie.device(npu2) {
+    %shim = aie.logical_tile<ShimNOCTile>(5, ?)
+    aie.shim_dma_allocation @air_a(%shim, MM2S, 0)
+    aie.shim_dma_allocation @air_b(%shim, MM2S, 0)
+  }
+  air.channel @a [1, 1]
+  air.channel @b [1, 1]
+  func.func @logical_shim(%x: memref<*xbf16>, %y: memref<*xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c512 = arith.constant 512 : index
+    %0 = air.wait_all async
+    %p = air.channel.put async [%0] @a[] (%x[%c0] [%c512] [%c1]) {metadataArray = [{base = "air_a", index = 0 : i32}]} : (memref<*xbf16>)
+    %q = air.channel.put async [%0] @b[] (%y[%c0] [%c512] [%c1]) {metadataArray = [{base = "air_b", index = 0 : i32}]} : (memref<*xbf16>)
+    %r = air.channel.put async [%p] @a[] (%x[%c512] [%c512] [%c1]) {metadataArray = [{base = "air_a", index = 0 : i32}]} : (memref<*xbf16>)
+    return
+  }
+}
+
+// -----
+
+// With no column to place the shim tile at, the channels cannot be told
+// apart, so the @a puts keep their order around @b.
+
+// CHECK-LABEL: func.func @unplaced_shim
+// CHECK: air.channel.put {{.*}}@a[]
+// CHECK: air.channel.put {{.*}}@b[]
+// CHECK: air.channel.put {{.*}}@a[]
+
+module {
+  aie.device(npu2) {
+    %shim_a = aie.logical_tile<ShimNOCTile>(?, ?)
+    %shim_b = aie.logical_tile<ShimNOCTile>(?, ?)
+    aie.shim_dma_allocation @air_a(%shim_a, MM2S, 0)
+    aie.shim_dma_allocation @air_b(%shim_b, MM2S, 0)
+  }
+  air.channel @a [1, 1]
+  air.channel @b [1, 1]
+  func.func @unplaced_shim(%x: memref<*xbf16>, %y: memref<*xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c512 = arith.constant 512 : index
+    %0 = air.wait_all async
+    %p = air.channel.put async [%0] @a[] (%x[%c0] [%c512] [%c1]) {metadataArray = [{base = "air_a", index = 0 : i32}]} : (memref<*xbf16>)
+    %q = air.channel.put async [%0] @b[] (%y[%c0] [%c512] [%c1]) {metadataArray = [{base = "air_b", index = 0 : i32}]} : (memref<*xbf16>)
+    %r = air.channel.put async [%p] @a[] (%x[%c512] [%c512] [%c1]) {metadataArray = [{base = "air_a", index = 0 : i32}]} : (memref<*xbf16>)
+    return
+  }
+}
