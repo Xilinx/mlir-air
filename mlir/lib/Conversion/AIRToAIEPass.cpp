@@ -1730,9 +1730,9 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     // buffer. A run in a nested loop or branch keeps the loop-body scope, so
     // the buffer still changes hands once per iteration.
     auto runs = adjacentRuns(accessingOps);
-    bool oneRun = lockScope && runs.size() == 1 &&
-                  runs.front().first->getBlock() ==
-                      cast<scf::ForOp>(lockScope).getBody();
+    bool oneRun =
+        lockScope && runs.size() == 1 &&
+        runs.front().first->getBlock() == cast<scf::ForOp>(lockScope).getBody();
     if (lockScope && !oneRun) {
       // Place at start/end of the outermost enclosing scf.for body
       auto forOp = cast<scf::ForOp>(lockScope);
