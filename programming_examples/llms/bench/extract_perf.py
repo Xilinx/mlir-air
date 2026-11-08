@@ -34,6 +34,10 @@ TOKS_RE = re.compile(r"\(([\d.]+)\s*tok/s\)")
 DECODE_MS_RE = re.compile(r"End-to-end \(per token\)\s+([\d.]+)\s*ms")
 TOKS_LABEL_RE = re.compile(r"Tokens/second:\s*([\d.]+)")
 
+# Speech-to-text drivers print "Real-time factor: X.XXXX", the request's time
+# over the audio's duration.
+RTF_RE = re.compile(r"Real-time factor:\s*([\d.]+)")
+
 # Context length = prefill sequence length the decode ran against (KV-cache
 # depth), which tok/s depends on. Every inference driver prints
 # "... Inference: prompt_len=N, n_tokens=...".
@@ -75,6 +79,11 @@ def _context_len(text):
     return int(m.group(1)) if m else None
 
 
+def _real_time_factor(text):
+    m = RTF_RE.search(text)
+    return float(m.group(1)) if m else None
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("input", nargs="?", help="profile stdout file (default: stdin)")
@@ -96,6 +105,14 @@ def main():
     else:
         text = sys.stdin.read()
 
+    metrics = {
+        "ttft_ms": _ttft_ms(text),
+        "decode_tokens_per_sec": _decode_tok_s(text),
+        "context_len": _context_len(text),
+    }
+    rtf = _real_time_factor(text)
+    if rtf is not None:
+        metrics["real_time_factor"] = rtf
     data = {
         "model": args.model,
         "timestamp_utc": datetime.datetime.now(datetime.timezone.utc)
@@ -104,11 +121,7 @@ def main():
         .replace("+00:00", "Z"),
         "runner": args.runner,
         "verify_status": args.verify_status,
-        "metrics": {
-            "ttft_ms": _ttft_ms(text),
-            "decode_tokens_per_sec": _decode_tok_s(text),
-            "context_len": _context_len(text),
-        },
+        "metrics": metrics,
         "toolchain": {
             "mlir_air_sha": args.mlir_air_sha,
             "mlir_aie_hash": args.mlir_aie_hash,

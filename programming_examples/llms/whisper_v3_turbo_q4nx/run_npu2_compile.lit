@@ -1,0 +1,15 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Whisper large-v3-turbo Q4NX compile-only smoke test: builds the shared
+// fused_prefill device of whisper_spec.py and the encoder's attention ELF of
+// whisper_attn.py through the AIR -> AIE -> aiecc -> Peano pipeline. No NPU
+// dispatch and no weight data.
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// RUN: mkdir -p test_npu2_compile
+// RUN: cd test_npu2_compile
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: Compilation passed.
