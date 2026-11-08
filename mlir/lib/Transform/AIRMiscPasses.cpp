@@ -308,9 +308,9 @@ public:
       SmallVector<Value, 4> herdIds;
       for (BlockArgument arg : herd.getIds())
         herdIds.push_back(Value(arg));
-      SmallVector<int64_t, 4> herdSizes = {(int64_t)herd.getNumCols(),
-                                           (int64_t)herd.getNumRows()};
-      herdSizes.resize(herdIds.size(), 1);
+      SmallVector<int64_t, 4> herdSizes;
+      for (size_t d = 0; d < herdIds.size(); ++d)
+        herdSizes.push_back(d ? herd.getNumRows() : herd.getNumCols());
 
       // Find which herd dimension (if any) this channel index corresponds to.
       int64_t herdDimIdx = -1;
