@@ -179,6 +179,11 @@ def _npz_member_to_bo(z, name, bo, chunk=64 << 20):
         off = 0
         while off < nbytes:
             buf = f.read(min(chunk, nbytes - off))
+            if not buf:
+                raise RuntimeError(
+                    f"{name} in the weight cache is truncated: {off} of {nbytes} "
+                    f"bytes. Delete the cache and re-run to repack it."
+                )
             bo.write(np.frombuffer(buf, np.uint8), off)
             off += len(buf)
 
