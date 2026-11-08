@@ -4129,20 +4129,35 @@ void air::reorderL3PacketPutsByFlowOrder(
   // lightweight reset device for load_pdi) each get their own, and so does
   // every core's group of flows.
   DenseMap<std::pair<Block *, Operation *>, Operation *> prevByBlock;
-  for (auto [put, core] : sortedPuts) {
-    std::pair<Block *, Operation *> blk = {put->getBlock(), core};
+  for (auto &entry : sortedPuts) {
+    air::ChannelPutOp put = entry.first;
+    std::pair<Block *, Operation *> blk = {put->getBlock(), entry.second};
     auto it = prevByBlock.find(blk);
     if (it == prevByBlock.end()) {
       prevByBlock[blk] = put;
+      continue;
+    }
+    Operation *prev = it->second;
+    prevByBlock[blk] = put;
+    // already after its flow-order predecessor: other receivers' puts
+    // between them keep their places
+    if (prev->isBeforeInBlock(put))
+      continue;
+    // an op between the two that uses the put's token would precede it
+    if (llvm::any_of(put->getUsers(), [&](Operation *user) {
+          Operation *u = put->getBlock()->findAncestorOpInBlock(*user);
+          return u && !prev->isBeforeInBlock(u);
+        })) {
+      put->emitWarning("packet put kept before ")
+          << *prev << ": an op before that uses its token";
       continue;
     }
     // Move the put after its flow-order predecessor, carrying its wrap-and-
     // stride operand slice (e.g. an arith.addi computing a per-iteration DDR
     // offset) so SSA dominance holds. A put whose slice contains a side-
     // effecting op is left in place rather than reordered unsafely.
-    (void)air::moveWithPureBackwardSlice(put.getOperation(), it->second,
+    (void)air::moveWithPureBackwardSlice(put.getOperation(), prev,
                                          /*after=*/true);
-    prevByBlock[blk] = put;
   }
 }
 
