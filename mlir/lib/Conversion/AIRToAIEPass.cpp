@@ -1674,6 +1674,50 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     return runs;
   };
 
+  // How many times `op` runs per iteration of `scope`: the product of the
+  // static trip counts of the loops between them, none if a run-time loop or
+  // another region (but an air.execute) lies between.
+  auto timesPerIteration = [](Operation *op,
+                              Operation *scope) -> std::optional<int64_t> {
+    int64_t n = 1;
+    for (Operation *p = op->getParentOp(); p && p != scope;
+         p = p->getParentOp()) {
+      // an air.execute runs its body once
+      if (isa<air::ExecuteOp>(p))
+        continue;
+      auto forOp = dyn_cast<scf::ForOp>(p);
+      if (!forOp)
+        return std::nullopt;
+      auto lb = getConstantIntValue(forOp.getLowerBound());
+      auto ub = getConstantIntValue(forOp.getUpperBound());
+      auto step = getConstantIntValue(forOp.getStep());
+      if (!lb || !ub || !step || *step <= 0)
+        return std::nullopt;
+      n *= std::max<int64_t>(0, llvm::divideCeil(*ub - *lb, *step));
+    }
+    return n;
+  };
+  // Every core's accesses one run: then each run is bracketed on its own,
+  // unless two runs are known to run a different number of times per
+  // iteration of their loops, which would hand the buffer over more often on
+  // one side than the other.
+  bool perRun = !hoistAllToCoreBody;
+  std::optional<int64_t> runTimes;
+  for (auto &info : coreInfos) {
+    if (!perRun || info.accessingOps.empty())
+      continue;
+    auto runs = adjacentRuns(info.accessingOps);
+    if (!info.lockScope || runs.size() != 1) {
+      perRun = false;
+      continue;
+    }
+    auto n = timesPerIteration(runs.front().first, info.lockScope);
+    if (n && runTimes && *n != *runTimes)
+      perRun = false;
+    if (n)
+      runTimes = n;
+  }
+
   for (auto &info : coreInfos) {
     auto coreOp = info.coreOp;
     auto &accessingOps = info.accessingOps;
@@ -1723,17 +1767,11 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       continue;
     }
 
-    // Step 3: Insert locks at the determined scope. A core whose accesses
-    // are one run directly in the scope's loop body is bracketed around that
-    // run: holding the buffer from the top of the loop body would also hold
-    // up the transfers its peer needs from this core before it can fill the
-    // buffer. A run in a nested loop or branch keeps the loop-body scope, so
-    // the buffer still changes hands once per iteration.
-    auto runs = adjacentRuns(accessingOps);
-    bool oneRun =
-        lockScope && runs.size() == 1 &&
-        runs.front().first->getBlock() == cast<scf::ForOp>(lockScope).getBody();
-    if (lockScope && !oneRun) {
+    // Step 3: Insert locks at the determined scope, or around the core's one
+    // run (perRun): holding the buffer from the top of the loop body would
+    // also hold up the transfers its peer needs from this core before it can
+    // fill the buffer.
+    if (lockScope && !perRun) {
       // Place at start/end of the outermost enclosing scf.for body
       auto forOp = cast<scf::ForOp>(lockScope);
       OpBuilder builder(forOp);
