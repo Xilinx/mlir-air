@@ -111,7 +111,7 @@ jobs:
 
           # Download patterns are shared with the PR disk-budget check.
           sys.path.insert(0, "utils")
-          from hf_disk_budget import IGNORE, allow_patterns
+          from hf_disk_budget import IGNORE, allow_patterns, split_repo
 
           # Single source of truth for the model list.
           models = [s.strip()
@@ -123,6 +123,7 @@ jobs:
           rc = 0
           for m in models:
               repo, separator, revision = m.partition("@")
+              repo_id, repo_type = split_repo(repo)
               ok = False
               # The runner's HF egress resets connections intermittently.
               # snapshot_download resumes already-fetched files, so each attempt
@@ -133,7 +134,8 @@ jobs:
               for attempt in range(1, ATTEMPTS + 1):
                   try:
                       snapshot_download(
-                          repo, revision=revision if separator else None,
+                          repo_id, repo_type=repo_type,
+                          revision=revision if separator else None,
                           allow_patterns=allow_patterns(repo),
                           ignore_patterns=IGNORE,
                           max_workers=1,

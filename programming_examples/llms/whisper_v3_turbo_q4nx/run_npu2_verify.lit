@@ -1,0 +1,18 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Whisper large-v3-turbo Q4NX verify gate: top-5 token check, NPU vs HF BF16
+// openai/whisper-large-v3-turbo at its pinned revision, greedy until EOS on
+// the first LibriSpeech clips of hf-internal-testing/librispeech_asr_dummy
+// (pinned revision); `make verify-full` for every clip. NPU weights come from
+// FastFlowLM's model.q4nx (FastFlowLM/Whisper-V3-Turbo-NPU2, pinned revision
+// and sha256). See gate.py.
+//
+// REQUIRES: ryzen_ai_npu2, peano, hfweights_fastflowlm_whisper_v3_turbo_npu2, hfweights_openai_whisper_large_v3_turbo, hfweights_hf_internal_testing_librispeech_asr_dummy
+//
+// RUN: mkdir -p test_npu2_verify
+// RUN: cd test_npu2_verify
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile compile PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile verify | FileCheck %s
+// CHECK: [verify] PASS

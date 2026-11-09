@@ -1083,6 +1083,40 @@ void apply_causal_mask(bfloat16 *g, int32_t q_block_idx, int32_t kv_block_idx) {
   }
 }
 
+// Mask key columns [lim, lkp) of a QK score block in-place: those keys are
+// padding past the last real one. Same column-major 8x8 tiled G layout as
+// apply_causal_mask, so each 8-column block is lqp * 8 contiguous elements.
+void apply_key_mask(bfloat16 *g, int32_t lim) {
+  SET_ROUNDING();
+  uint16_t neg_inf_u16 = (uint16_t)0xff80;
+  bfloat16 neg_inf_val = *(bfloat16 *)&neg_inf_u16;
+  constexpr int BlkDim = 8;
+  constexpr int VecLen = 32;
+  aie::vector<bfloat16, VecLen> neg_inf_vec =
+      aie::broadcast<bfloat16, VecLen>(neg_inf_val);
+  int first = lim / BlkDim;
+  int keep = lim % BlkDim;
+  if (keep) {
+    // the block holding the last real key: lanes at or past `keep` in each
+    // 8-lane row
+    uint32_t bits = 0;
+    for (int l = 0; l < VecLen; l++)
+      if (l % BlkDim >= keep)
+        bits |= 1u << l;
+    aie::mask<VecLen> sel(bits);
+    bfloat16 *p = g + first * (lqp * BlkDim);
+    for (int i = 0; i < lqp * BlkDim; i += VecLen)
+      aie::store_v(p + i,
+                   aie::select(aie::load_v<VecLen>(p + i), neg_inf_vec, sel));
+    first++;
+  }
+  for (int cb = first; cb < lkp / BlkDim; cb++) {
+    bfloat16 *p = g + cb * (lqp * BlkDim);
+    for (int i = 0; i < lqp * BlkDim; i += VecLen)
+      aie::store_v(p + i, neg_inf_vec);
+  }
+}
+
 // Apply a sliding-window causal mask to QK scores in-place: keep only
 // global_q_row - window < global_kv_col <= global_q_row. `window_blocks` is the
 // window measured in lqp-sized blocks (window = window_blocks * lqp), which is

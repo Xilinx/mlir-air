@@ -57,6 +57,12 @@ mapping; [measured results](shared/AFFINE_Q4_RESULTS.md) cover all 19 native poi
 | [Phi-2](phi2_2_7b_q4nx/) | 32 | LayerNorm, parallel residual, GELU, biases, partial RoPE | first two above |
 | [Mistral-7B-Instruct-v0.3](mistral7b_v03_q4nx/) | 32 | GQA, independent head | all four above |
 
+### Speech-to-text
+
+| Example | HF checkpoint | Encoder / decoder layers | Architecture details |
+| --- | --- | --- | --- |
+| [Whisper large-v3-turbo Q4NX](whisper_v3_turbo_q4nx/) | `FastFlowLM/Whisper-V3-Turbo-NPU2` | 32 / 4 | encoder-decoder: 2 convs over a 30 s log-mel window, noncausal encoder, decoder with cross-attention; LayerNorm, erf GELU, biases; Q4NX weights |
+
 Most transformer examples use RMSNorm + SwiGLU FFN + RoPE; Phi-2 uses
 LayerNorm + GELU and Gemma uses GELU. **LFM2-1.2B is the
 exception to "decoder-only transformer"**: only 6 of its 16 layers are
@@ -171,6 +177,7 @@ llms/
 ├── qwen3_1_7b/         # Qwen3-1.7B    (QK-norm, head_dim=128)
 ├── qwen3_4b/           # Qwen3-4B      (QK-norm, decoupled q_dim=4096)
 ├── qwen3_8b_q4nx/      # Q4NX 4-bit Qwen3-8B (fused decode, split weight BOs)
+├── whisper_v3_turbo_q4nx/  # Q4NX Whisper large-v3-turbo (speech to text)
 ├── shared/
 │   ├── infra/          # KernelCache, profiling, external-kernel compilation,
 │   │                   #   backend presets, MLIR text-stitching (incl. stitch_elf)

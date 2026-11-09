@@ -3,6 +3,9 @@
 # SPDX-License-Identifier: MIT
 """Size the HF weights the nightly runner caches, from programming_examples/llms/hf_models.txt.
 
+An entry is a model repo id, or `datasets/<id>` for a dataset repo (the
+dataset's path on the Hub), optionally followed by `@revision`.
+
 The download patterns live here so the size this reports is what the
 "Download LLM Weights" workflow fetches. Exits 1 when the total is over --budget-gb.
 With --prune-cache, instead delete the local HF cache's model revisions the list
@@ -50,12 +53,24 @@ EXTRA_ALLOW = {
     "vllm-sr/d3-lite": ["*.py"],
 }
 
+# Dataset repos: the examples read their data files.
+DATASET_ALLOW = ["*.parquet", "*.json"]
+
 DEFAULT_LIST = (
     Path(__file__).resolve().parents[1] / "programming_examples/llms/hf_models.txt"
 )
 
 
+def split_repo(repo):
+    """(repo id, repo type) of an hf_models.txt repo."""
+    if repo.startswith("datasets/"):
+        return repo[len("datasets/") :], "dataset"
+    return repo, "model"
+
+
 def allow_patterns(repo):
+    if split_repo(repo)[1] == "dataset":
+        return DATASET_ALLOW
     return ALLOW + EXTRA_ALLOW.get(repo, [])
 
 
@@ -74,12 +89,12 @@ def prune_cache(entries, dry_run):
     entry; in those, delete the files IGNORE names."""
     wanted = {}
     for _, repo, revision in entries:
-        wanted.setdefault(repo, set()).add(revision)
+        wanted.setdefault(split_repo(repo), set()).add(revision)
     keeps, doomed = {}, []
     for repo in sorted(scan_cache_dir().repos, key=lambda r: r.repo_id):
-        if repo.repo_type != "model":
+        if repo.repo_type not in ("model", "dataset"):
             continue
-        pins = wanted.get(repo.repo_id)
+        pins = wanted.get((repo.repo_id, repo.repo_type))
         if pins is None:
             keep = set()
         else:
@@ -95,7 +110,7 @@ def prune_cache(entries, dry_run):
                     print(f"skip {repo.repo_id}: no cached revision is `main`")
                     continue
                 keep |= main
-        keeps[repo.repo_id] = keep
+        keeps[(repo.repo_id, repo.repo_type)] = keep
         for r in repo.revisions:
             if r.commit_hash not in keep:
                 print(f"prune {repo.repo_id}@{r.commit_hash} ({r.size_on_disk_str})")
@@ -115,8 +130,9 @@ def prune_cache(entries, dry_run):
     cache = scan_cache_dir()
     ignored = []
     for repo in cache.repos:
-        if repo.repo_id in keeps:
-            ignored += ignored_files(repo, keeps[repo.repo_id])
+        key = (repo.repo_id, repo.repo_type)
+        if key in keeps:
+            ignored += ignored_files(repo, keeps[key])
     freed = prune_files(Path(cache.cache_dir), ignored, dry_run)
     print(f"{'would free' if dry_run else 'freed'} {freed / 2**30:.2f} GiB of files")
     return 0
@@ -184,7 +200,10 @@ def main():
     total = 0
     rows = []
     for entry, repo, revision in read_models(args.models):
-        info = api.model_info(repo, revision=revision, files_metadata=True)
+        repo_id, repo_type = split_repo(repo)
+        info = (api.dataset_info if repo_type == "dataset" else api.model_info)(
+            repo_id, revision=revision, files_metadata=True
+        )
         files = list(
             filter_repo_objects(
                 info.siblings,
