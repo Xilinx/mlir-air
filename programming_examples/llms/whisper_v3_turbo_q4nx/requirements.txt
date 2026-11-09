@@ -1,0 +1,22 @@
+# Additional Python packages for the Whisper large-v3-turbo Q4NX example.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, pyxrt, etc.). Install with:
+#     pip install -r requirements.txt
+
+# The model.q4nx bundle, generation_config.json, the gate's clips and the
+# BF16 reference checkpoint, from the Hub at their pinned revisions.
+huggingface_hub
+
+# The log-mel front end (WhisperFeatureExtractor) and the BF16 reference.
+transformers
+
+# The CPU BF16 reference.
+torch
+
+# Decoding token ids to text.
+tokenizers
+
+# Reading audio files and the gate's LibriSpeech parquet.
+soundfile
+pyarrow

@@ -56,6 +56,7 @@ def _flat_rows(recs, run_id):
             "ttft_ms": m.get("ttft_ms"),
             "decode_tokens_per_sec": m.get("decode_tokens_per_sec"),
             "context_len": m.get("context_len"),
+            "real_time_factor": m.get("real_time_factor"),
             "verify_status": d.get("verify_status", ""),
         }
 

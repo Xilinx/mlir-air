@@ -395,6 +395,58 @@ void bias_gelu_tile(const uint16_t *g, int ldg, const float *bias, int t, int n,
   }
 }
 
+// erf(x) by Abramowitz and Stegun 7.1.26 (absolute error <= 1.5e-7)
+static inline float verf(float x) {
+  float a = fabsf(x);
+  float t = 1.f / (1.f + 0.3275911f * a);
+  float p = 1.061405429f;
+  p = p * t - 1.453152027f;
+  p = p * t + 1.421413741f;
+  p = p * t - 0.284496736f;
+  p = p * t + 0.254829592f;
+  float y = 1.f - p * t * vexp(-a * a);
+  return x < 0.f ? -y : y;
+}
+
+// bias_gelu_tile with gelu in its erf form, 0.5 v (1 + erf(v / sqrt(2)))
+void bias_gelu_erf_tile(const uint16_t *g, int ldg, const float *bias, int t,
+                        int n, int TM, int TK, uint16_t *dst) {
+  int ks = n / TK;
+  const float c = 0.7071067812f; // 1 / sqrt(2)
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int r = 0; r < t; r++) {
+    int ty = r / TM, i = r % TM;
+    for (int s = 0; s < ks; s++) {
+      uint16_t *d = dst + (((long)ty * ks + s) * TM + i) * TK;
+      const uint16_t *gs = g + (long)r * ldg + s * TK;
+      const float *bs = bias + s * TK;
+      float y[TK];
+      for (int k = 0; k < TK; k++) {
+        float v = bf2f(gs[k]) + bs[k];
+        y[k] = 0.5f * v * (1.f + verf(v * c));
+      }
+      for (int k = 0; k < TK; k++)
+        d[k] = f2bf(y[k]);
+    }
+  }
+}
+
+// dst bf16 [t, ldd] = bf16(gelu(g + bias)), g bf16 [t, ldg], gelu in its
+// erf form, columns [0, n)
+void bias_gelu_erf_rows(const uint16_t *g, int ldg, const float *bias, int t,
+                        int n, uint16_t *dst, int ldd) {
+  const float c = 0.7071067812f; // 1 / sqrt(2)
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int r = 0; r < t; r++) {
+    const uint16_t *gs = g + (long)r * ldg;
+    uint16_t *d = dst + (long)r * ldd;
+    for (int k = 0; k < n; k++) {
+      float v = bf2f(gs[k]) + bias[k];
+      d[k] = f2bf(0.5f * v * (1.f + verf(v * c)));
+    }
+  }
+}
+
 // nh heads of dh at column col0 of src bf16 [t, ld]: + bias, rms with norm
 // (if given), half-split rotary on the first rot dims, * scale, to bf16
 // dst[h * hs + r * rs + i]

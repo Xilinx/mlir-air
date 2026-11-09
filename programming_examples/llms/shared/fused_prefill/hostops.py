@@ -38,6 +38,8 @@ def load(build_dir):
     _lib.ln_tile.argtypes = [_p, _i, _i, _p, _p, _f, _i, _i, _p]
     _lib.sub_row_bf16.argtypes = [_p, _i, _i, _p, _p]
     _lib.bias_gelu_tile.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p]
+    _lib.bias_gelu_erf_tile.argtypes = _lib.bias_gelu_tile.argtypes
+    _lib.bias_gelu_erf_rows.argtypes = [_p, _i, _p, _i, _i, _p, _i]
     _l = ctypes.c_long
     _lib.head_post.argtypes = [_p, _i, _i, _i, _i, _i, _p, _p, _f, _p, _p, _i, _f]
     _lib.head_post.argtypes += [_p, _l, _l]
@@ -290,6 +292,23 @@ def bias_gelu_tile(g, bias, t, n, dst, tm, tk):
         g.ctypes.data, g.shape[1], _ptr(bias), t, n, tm, tk, a.ctypes.data
     )
     _to_bfp(a, t, dst)
+
+
+def bias_gelu_erf_tile(g, bias, t, n, dst, tm, tk):
+    """bias_gelu_tile with the erf form of gelu."""
+    a = _bf16_tiles(dst, tm, tk)
+    _lib.bias_gelu_erf_tile(
+        g.ctypes.data, g.shape[1], _ptr(bias), t, n, tm, tk, a.ctypes.data
+    )
+    _to_bfp(a, t, dst)
+
+
+def bias_gelu_erf_rows(g, bias, t, n, dst):
+    """dst[:t, :n] = bf16(gelu_erf(g + bias)); g and dst bf16 [R, ld] (C
+    order rows), bias float32 [n]."""
+    _lib.bias_gelu_erf_rows(
+        g.ctypes.data, g.shape[1], _ptr(bias), t, n, dst.ctypes.data, dst.shape[1]
+    )
 
 
 def head_post(src, t, col0, nh, dh, bias, norm, eps, rope, scale, dst, hs, rs):

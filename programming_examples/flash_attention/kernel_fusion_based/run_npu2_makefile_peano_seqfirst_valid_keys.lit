@@ -1,0 +1,13 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+// REQUIRES: ryzen_ai_npu2, peano
+// The q_in_segment schedule with --valid-keys: keys at or past the count are
+// padding and get no weight (apply_key_mask on the last key block). 500 of
+// 512 keys leaves 52 real keys in the last 64-key block, so the mask splits
+// an 8-column block as well as dropping whole ones. Checked against the NumPy
+// reference with the same keys masked.
+// RUN: mkdir -p test_npu2_peano_seqfirst_valid_keys
+// RUN: cd test_npu2_peano_seqfirst_valid_keys
+// RUN: make -f %S/Makefile clean PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile run SCRIPT=attn_npu2_seqfirst.py EXTRA_PY_FLAGS="--q-in-segment --valid-keys 500" PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PASS!

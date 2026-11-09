@@ -1,0 +1,5 @@
+# `make` writes everything under build/ (the device, the attention ELF) and
+# out/ (the reference, gate and timing records), so `make clean` removes both.
+build/
+out/
+__pycache__/

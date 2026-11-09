@@ -317,8 +317,10 @@ def build_launch(
     fused_merge=False,
     heads_rows=1,
     q_launch=1,
+    valid_keys=None,
 ):
-    """heads_rows / q_launch: q_in_segment only, see _build_launch_q_in_segment.
+    """heads_rows / q_launch / valid_keys: q_in_segment only, see
+    _build_launch_q_in_segment.
 
     fused_merge: q_in_segment only. Use the merge_gp / merge_gp_div kernels
     (compile attn_npu2.o with -DQK_PRETRANSPOSE -DFUSED_MERGE) for the cascade merge and the
@@ -344,8 +346,8 @@ def build_launch(
     assert not (v_cols and (q_in_segment or fused_qkv)), "v_cols is for separate Q/K"
     if not q_in_segment:
         assert (
-            heads_rows == 1 and q_launch == 1
-        ), "heads_rows / q_launch need q_in_segment"
+            heads_rows == 1 and q_launch == 1 and valid_keys is None
+        ), "heads_rows / q_launch / valid_keys need q_in_segment"
     if q_in_segment:
         return _build_launch_q_in_segment(
             lk=lk,
@@ -365,6 +367,7 @@ def build_launch(
             fused_merge=fused_merge,
             heads_rows=heads_rows,
             q_launch=q_launch,
+            valid_keys=valid_keys,
         )
     if q_bcast:
         return _build_launch_q_bcast(
@@ -934,6 +937,7 @@ def _build_launch_q_in_segment(
     fused_merge=False,
     heads_rows=1,
     q_launch=1,
+    valid_keys=None,
 ):
     """The same FlashAttention design with the q-block loop inside the segment.
 
@@ -952,6 +956,10 @@ def _build_launch_q_in_segment(
 
     q_launch: split the q blocks over that many launch iterations, which bounds
     the shim BDs the output gathers hold per iteration.
+
+    valid_keys: keys at or past it are padding and get no weight
+    (apply_key_mask on the last K block of the last cascade stage); they must
+    all fall in that block.
 
     Supported: non-causal, ``dk == dv == lkp``, MHA or GQA, ``fused_qkv``,
     ``n_images``. Not supported (asserted): causal, head_dim > lkp.
@@ -983,6 +991,10 @@ def _build_launch_q_in_segment(
     chunks_per_stage = num_chunks // NS
     lk_per_stage = lkp * chunks_per_stage
     g_flat = tile_size_q * lkp
+    key_lim = None
+    if valid_keys is not None and valid_keys < lk:
+        assert lk - lkp < valid_keys, "the padding keys must all be in the last block"
+        key_lim = valid_keys - (lk - lkp)
 
     (
         zero_fill_g,
@@ -1009,6 +1021,11 @@ def _build_launch_q_in_segment(
 
     matmul_a_b_z = (
         air.extern("matmul_a_b_bf16_z", link_with=KERNEL) if fused_merge else None
+    )
+    apply_key_mask = (
+        air.extern("apply_key_mask", link_with=KERNEL, scalars=[i32])
+        if key_lim is not None
+        else None
     )
 
     (
@@ -1167,6 +1184,15 @@ def _build_launch_q_in_segment(
                                         matmul_a_b(q_saved, qk, g.reshape(g_flat))
                                     else:
                                         matmul_a_b_z(q_saved, qk, g.reshape(g_flat))
+                                    if apply_key_mask is not None:
+                                        for r in range(Hr):
+                                            with ops.branch(ty == r * NS + NS - 1):
+                                                with ops.branch(
+                                                    chunk == chunks_per_stage - 1
+                                                ):
+                                                    apply_key_mask(
+                                                        g.reshape(g_flat), key_lim
+                                                    )
                                     get_into(v2l1, v_l1)
                                     s_tmp = air.alloc(
                                         [tile_size_q, 1], bf16, scope=h.private()
@@ -1675,6 +1701,14 @@ def parse_args():
         help="If >0, time the kernel over this many iters and report latency "
         "and achieved TFLOP/s alongside the correctness check",
     )
+    parser.add_argument(
+        "--valid-keys",
+        type=int,
+        default=None,
+        dest="valid_keys",
+        help="Keys at or past this count are padding and get no weight "
+        "(q_in_segment only; they must all be in the last key block).",
+    )
     parser.add_argument("--heads-rows", type=int, default=1, dest="heads_rows")
     parser.add_argument("--q-launch", type=int, default=1, dest="q_launch")
     parser.add_argument("--n-images", type=int, default=1, dest="n_images")
@@ -1730,6 +1764,7 @@ def main():
         heads_rows=args.heads_rows,
         q_launch=args.q_launch,
         fused_merge=args.fused_merge,
+        valid_keys=args.valid_keys,
     )
     mlir_module = launch.build(target="npu2")
     if args.print_module_only:
@@ -1752,6 +1787,14 @@ def main():
     input_q = rng.standard_normal((n_img * lq, num_heads * dk)).astype(bfloat16)
     input_k = rng.standard_normal((n_img * lk, num_kv_heads * dk)).astype(bfloat16)
     input_v = rng.standard_normal((n_img * lk, num_kv_heads * dv)).astype(bfloat16)
+    if args.valid_keys is not None:
+        # Padding keys that would dominate every softmax they leak into, so a
+        # missing or partial mask fails the check instead of hiding under the
+        # tolerance.
+        for img in range(n_img):
+            pad = slice(img * lk + args.valid_keys, (img + 1) * lk)
+            input_k[pad] = bfloat16(4.0)
+            input_v[pad] = bfloat16(50.0)
 
     inv_sqrt_dk = 1.0 / sqrt(dk)
     expected = np.zeros((n_img * lq, num_heads * dv), dtype=bfloat16)
@@ -1766,6 +1809,8 @@ def main():
             if causal:
                 mask = np.triu(np.ones(scores.shape, dtype=bool), k=1)
                 scores = np.where(mask, -1e9, scores)
+            if args.valid_keys is not None:
+                scores[:, args.valid_keys :] = -1e9
             mx = np.max(scores, axis=-1, keepdims=True)
             p = np.exp(scores - mx)
             p = p / np.sum(p, axis=-1, keepdims=True)

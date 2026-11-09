@@ -573,6 +573,12 @@ _VERIFY_LEGEND = (
 # broken LLM into the VLA table is a worse failure than maintaining one name.
 _VLA_MODELS = frozenset({"smolvla", "smolvla_all"})
 
+# Speech-to-text models: an encoder over a fixed audio window, then a short
+# token stream. Their context is set by the audio, not by a prompt length, so
+# they get their own table with the real-time factor next to TTFT and decode.
+# Listed for the same reason as _VLA_MODELS.
+_SPEECH_MODELS = frozenset({"whisper_v3_turbo_q4nx"})
+
 # Decision models: one prefill per question and no decode, so the prefill table
 # carries their whole measurement (its TTFT is the latency of one decision) and
 # their verify status. Listed for the same reason as _VLA_MODELS.
@@ -644,18 +650,22 @@ LLM_HF_MODELS = {
     "qwen35_0_8b_q4nx": "FastFlowLM/Qwen3.5-0.8B-NPU2",
     "smollm2_1_7b": "HuggingFaceTB/SmolLM2-1.7B",
     "smolvla": "lerobot/smolvla_base",
+    "whisper_v3_turbo_q4nx": "openai/whisper-large-v3-turbo",
 }
 
 # Pinned so each link shows the code that was reimplemented, not whatever
 # that file has become since.
-_FLM_SRC = (
+_FLM_BLOB = (
     "https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974"
-    "/src/common/AutoModel/modeling_{}.cpp"
+    "/src/common/"
 )
+_FLM_SRC = _FLM_BLOB + "AutoModel/modeling_{}.cpp"
 
 # Per record: the upstream model's HF name, the weight format, and the
 # FastFlowLM modeling file the design reimplements (None if it is not a
-# FastFlowLM reimplementation). Records missing here render under their own key.
+# FastFlowLM reimplementation): an AutoModel name, or a path under src/common/
+# for a model outside AutoModel. Records missing here render under their own
+# key.
 LLM_DISPLAY = {
     "d3_edge": ("d3-edge", "bf16", "qwen3_5vl"),
     "d3_lite_q4nx": ("d3-lite", "Q4NX", "qwen3_5vl"),
@@ -691,6 +701,11 @@ LLM_DISPLAY = {
     "gemma4_bolt_e4b_dflash_b8": ("Nemotron-3.5-Bolt-E4B", "Q4NX", None),
     "smolvla": ("smolvla_base", None, None),
     "smolvla_all": ("smolvla_base, all stages on NPU", None, None),
+    "whisper_v3_turbo_q4nx": (
+        "whisper-large-v3-turbo",
+        "Q4NX",
+        "whisper/modeling_whisper.cpp",
+    ),
 }
 
 
@@ -780,7 +795,8 @@ def _llm_model_cell(model, base_url):
     cell = f'<a class="air-nowrap" href="{base_url}llms/{model_dir}/">{name}</a>'
     links = []
     if flm:
-        links.append(f'<a href="{_FLM_SRC.format(flm)}">FLM</a>')
+        url = _FLM_BLOB + flm if "/" in flm else _FLM_SRC.format(flm)
+        links.append(f'<a href="{url}">FLM</a>')
     hf_id = LLM_HF_MODELS.get(model_dir)
     if hf_id:
         links.append(f'<a href="https://huggingface.co/{hf_id}">HF</a>')
@@ -1529,6 +1545,7 @@ def load_llm_history(path):
                 "ttft_ms": r.get("ttft_ms"),
                 "decode_tokens_per_sec": r.get("decode_tokens_per_sec"),
                 "context_len": r.get("context_len"),
+                "real_time_factor": r.get("real_time_factor"),
             },
             "toolchain": {
                 "mlir_air_sha": r.get("air_sha", ""),
@@ -1809,6 +1826,45 @@ token stream, so there is no decode throughput and no context to sweep.
 """
 
 
+def render_speech_benchmark(recs, base_url=""):
+    """The speech-to-text section, or "" when no speech model has a row.
+
+    TTFT is from the audio to the first token: the log-mel, the encoder over
+    the audio window and the decoder's prompt. The real-time factor is the
+    whole transcription's time over the audio's duration.
+    """
+    rows = [d for d in recs if d.get("model") in _SPEECH_MODELS]
+    if not rows:
+        return ""
+
+    def cell(v):
+        return "—" if v is None else v
+
+    body = "\n".join(
+        f'| {_llm_model_cell(d.get("model", ""), base_url)} '
+        f"| {hardware_label(_hardware(d))} "
+        f'| {cell((m := d.get("metrics", {})).get("ttft_ms"))} '
+        f'| {cell(m.get("decode_tokens_per_sec"))} '
+        f'| {cell(m.get("real_time_factor"))} '
+        f'| {(d.get("timestamp_utc") or "")[:10] or "—"} '
+        f'| {_VERIFY_CELL.get(d.get("verify_status", ""), "")} |'
+        for d in _by_model(rows)
+    )
+    return f"""\
+### Speech-to-text
+
+Each request transcribes one audio clip of at most 30 s. **TTFT** is from the
+audio to the first token; **Decode** is the generation throughput after it;
+**Real-time factor** is the request's time over the audio's duration (lower is
+faster).
+
+| Model | Hardware | TTFT (ms) | Decode (tok/s) | Real-time factor | Measured | Verify |
+|:------|:---------|----------:|---------------:|-----------------:|:---------|:------:|
+{body}
+
+"""
+
+
 def render_llm_benchmark(
     perf_path,
     base_url="",
@@ -1888,7 +1944,7 @@ def render_llm_benchmark(
         # columns do not apply to it. See _VLA_MODELS.
         name = d.get("model")
         key = (name, _hardware(d))
-        if name in _VLA_MODELS or key in spec or key in image:
+        if name in _VLA_MODELS or name in _SPEECH_MODELS or key in spec or key in image:
             continue
         # A per-configuration row's metrics are on its module's curves.
         curve_key = (_CONFIG_PREFILL.get(name, (name,))[0], _hardware(d))
@@ -1952,6 +2008,7 @@ def render_llm_benchmark(
     )
     _spec_table = render_spec_decode(spec_decode_recs, base_url=base_url)
     _vla_table = render_vla_benchmark(recs, base_url=base_url)
+    _speech_table = render_speech_benchmark(recs, base_url=base_url)
 
     # The single-point table is for models that have no curve yet. Once every
     # model is swept it has no rows, and a header with an empty body renders as
@@ -1981,7 +2038,7 @@ End-to-end LLM inference performance on NPU2. Each row names the hardware it was
 
 {_scalar_table}{_sweep_table}
 {_prefill_table}{_image_table}
-{_spec_table}{_vla_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
+{_spec_table}{_vla_table}{_speech_table}\U0001f4c8 [Performance history over time]({perf_history_link}) — per-nightly TTFT and decode throughput plotted per model.
 
 _{provenance}_
 
@@ -2101,9 +2158,9 @@ hide:
 ---
 <!-- This file is auto-generated by generate_readme.py. Do not edit manually. -->
 
-# LLMs and VLAs on NPU
+# LLMs, VLAs and speech-to-text on NPU
 
-End-to-end inference of decoder-only LLMs, with text or image + text input, and vision-language-action (VLA) policies on the AMD NPU2 via MLIR-AIR, with bf16 and 4-bit (Q4NX, Q4_0) weights. Models with an FLM link reimplement AMD NPU LLM designs originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team, using the higher-level abstractions of the MLIR-AIR dialect; the link points to the original FastFlowLM code. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
+End-to-end inference of decoder-only LLMs, with text or image + text input, vision-language-action (VLA) policies and speech-to-text models on the AMD NPU2 via MLIR-AIR, with bf16 and 4-bit (Q4NX, Q4_0) weights. Models with an FLM link reimplement AMD NPU LLM designs originally developed by the [FastFlowLM](https://github.com/ROCm/FastFlowLM) team, using the higher-level abstractions of the MLIR-AIR dialect; the link points to the original FastFlowLM code. Coverage and performance below are refreshed nightly. Per-model details and source are in [`programming_examples/llms/`]({base_url}llms/).
 {llm_section}"""
 
     # section == "full" (legacy single-page dashboard)
