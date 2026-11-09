@@ -1684,6 +1684,9 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       } else {
         configTaskOp->setAttr("air.device_issue_lock",
                               op->getAttr("air.device_issue_lock"));
+        // A core that starts it in a loop starts it this many times.
+        if (auto n = op->getAttr("air.device_issue_count"))
+          configTaskOp->setAttr("air.device_issue_count", n);
       }
       // The core's task-queue word carries the repeat count the BD was shaped
       // with here (bits 16-23), as a host start's would.
@@ -1693,15 +1696,20 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       auto issueId = op->hasAttr("air.host_issue")
                          ? Attribute()
                          : op->getAttr("air.device_issue");
-      memref::StoreOp push;
+      // every copy of the issue (an unrolled loop) pushes its own word
+      SmallVector<memref::StoreOp> pushes;
       op->getParentOfType<ModuleOp>().walk([&](memref::StoreOp st) {
         if (issueId && st->getAttr("air.device_issue") == issueId)
-          push = st;
+          pushes.push_back(st);
       });
-      auto word = push ? getConstantIntValue(push.getValue()) : std::nullopt;
-      if (!word && issueId)
+      if (issueId && pushes.empty())
         return op->emitOpError("no core-side queue word for this transfer");
-      if (repeatCount) {
+      for (memref::StoreOp push : pushes) {
+        auto word = getConstantIntValue(push.getValue());
+        if (!word)
+          return op->emitOpError("no core-side queue word for this transfer");
+        if (!repeatCount)
+          continue;
         OpBuilder::InsertionGuard g(rewriter);
         rewriter.setInsertionPoint(push);
         Value v = arith::ConstantOp::create(
@@ -3897,6 +3905,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
     awaitInChannelOrder(module);
     releaseAwaitedTasks(module);
+    releaseCoresBeforeWaits(module);
 
     // Repair dominance after the reordering above. Every hoist here moves a
     // configure task or an RTP write past other ops, and a runtime access
@@ -4021,6 +4030,73 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       return std::nullopt;
     return air::accessesIntersect(pa->offsets, pa->sizes, pa->strides,
                                   pb->offsets, pb->sizes, pb->strides);
+  }
+
+  // A wait the bursts below add can land ahead of the release of the cores
+  // that start transfers, and wait for one of theirs. Move each release (its
+  // token words and the lock), and the core's arms after that wait, up to the
+  // first wait after the core's first arm. A wait counts where an op holds one
+  // in its regions, too.
+  void releaseCoresBeforeWaits(ModuleOp module) {
+    SmallVector<AIEX::SetLockOp> releases;
+    module.walk([&](AIEX::SetLockOp rel) {
+      if (rel->hasAttr("air.device_issue"))
+        releases.push_back(rel);
+    });
+    auto waits = [](Operation *o) {
+      if (isa<AIEX::DMAAwaitTaskOp, AIEX::NpuSyncOp>(o))
+        return true;
+      return o->getNumRegions() &&
+             o->walk([](Operation *in) {
+                return isa<AIEX::DMAAwaitTaskOp, AIEX::NpuSyncOp>(in)
+                           ? WalkResult::interrupt()
+                           : WalkResult::advance();
+              }).wasInterrupted();
+    };
+    for (auto rel : releases) {
+      auto lock = rel.getLock().getDefiningOp<AIE::LockOp>();
+      StringRef lockName = lock && lock.getSymName() ? *lock.getSymName() : "";
+      Operation *first = rel;
+      while (auto *prev = first->getPrevNode()) {
+        if (!isa<AIEX::NpuMaskWrite32Op, arith::ConstantOp>(prev))
+          break;
+        first = prev;
+      }
+      // the ops since the core's previous release
+      Operation *start = first;
+      for (Operation *o = first->getPrevNode(); o; o = o->getPrevNode()) {
+        auto r = dyn_cast<AIEX::SetLockOp>(o);
+        if (r && r->hasAttr("air.device_issue") && r.getLock() == rel.getLock())
+          break;
+        start = o;
+      }
+      // the first wait after the core's first arm, and its arms after it
+      Operation *firstArm = nullptr, *wait = nullptr;
+      SmallVector<Operation *> laterArms;
+      for (Operation *o = start; o != first; o = o->getNextNode()) {
+        auto t = dyn_cast<AIEX::DMAConfigureTaskForOp>(o);
+        auto l = t ? t->getAttrOfType<StringAttr>("air.device_issue_lock")
+                   : StringAttr();
+        if (l && l.getValue() == lockName) {
+          if (!firstArm)
+            firstArm = o;
+          else if (wait)
+            laterArms.push_back(o);
+          continue;
+        }
+        if (firstArm && !wait && waits(o))
+          wait = o;
+      }
+      if (!wait)
+        continue;
+      for (Operation *arm : laterArms)
+        arm->moveBefore(wait);
+      SmallVector<Operation *> group;
+      for (Operation *o = first; o != rel->getNextNode(); o = o->getNextNode())
+        group.push_back(o);
+      for (Operation *o : group)
+        o->moveBefore(wait);
+    }
   }
 
   // Lay out a launch's shim tasks so the control program never waits on a task
@@ -5526,10 +5602,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         auto c = [&](int64_t v) -> Value {
           return arith::ConstantIntOp::create(b, t.getLoc(), b.getI32Type(), v);
         };
-        AIEX::NpuSyncOp::create(b, t.getLoc(), c(tile.getCol()),
-                                c(tile.getRow()),
-                                c(static_cast<int64_t>(alloc.getChannelDir())),
-                                c(alloc.getChannelIndex()), c(1), c(1));
+        // One completion token per start.
+        int64_t starts = 1;
+        if (auto n = t->getAttrOfType<IntegerAttr>("air.device_issue_count"))
+          starts = n.getInt();
+        for (int64_t i = 0; i < starts; ++i)
+          AIEX::NpuSyncOp::create(
+              b, t.getLoc(), c(tile.getCol()), c(tile.getRow()),
+              c(static_cast<int64_t>(alloc.getChannelDir())),
+              c(alloc.getChannelIndex()), c(1), c(1));
         AIEX::DMAFreeTaskOp::create(b, t.getLoc(), t.getResult());
       }
       tasks.clear();
@@ -5570,19 +5651,33 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         continue;
       }
       OpBuilder b(&op);
-      if (failed(flush(b)))
-        return failure();
+      llvm::StringSet<> channels;
+      bool waits = false;
+      op.walk([&](Operation *o) {
+        if (auto t = dyn_cast<AIEX::DMAConfigureTaskForOp>(o))
+          channels.insert(t.getAlloc().getLeafReference().getValue());
+        waits |= isa<AIEX::NpuSyncOp, AIEX::DMAAwaitTaskOp>(o);
+      });
+      auto onChannels = [&](const Tasks &tasks) {
+        return llvm::any_of(tasks, [&](AIEX::DMAConfigureTaskForOp t) {
+          return channels.contains(t.getAlloc().getLeafReference().getValue());
+        });
+      };
+      // Tasks the cores start are armed and their cores released before
+      // anything that may wait on their transfers, and before a host task on
+      // one of their channels. Host tasks on other channels go ahead:
+      // releasing the cores batch by batch would make each batch wait for the
+      // last. A task the host starts itself is armed at once.
+      if (waits || llvm::any_of(pending, [&](auto &kv) {
+            return !kv.second.empty() &&
+                   (kv.first.getValue().empty() || onChannels(kv.second));
+          }))
+        if (failed(flush(b)))
+          return failure();
       // A host task queued behind core-started ones on the same channel waits
       // for them; otherwise it would overtake them in the channel's queue.
-      llvm::StringSet<> channels;
-      op.walk([&](AIEX::DMAConfigureTaskForOp t) {
-        channels.insert(t.getAlloc().getLeafReference().getValue());
-      });
       for (auto &[lockName, tasks] : outstanding)
-        if (llvm::any_of(tasks, [&](AIEX::DMAConfigureTaskForOp t) {
-              return channels.contains(
-                  t.getAlloc().getLeafReference().getValue());
-            }))
+        if (onChannels(tasks))
           retire(b, tasks);
     }
     OpBuilder b(device.getContext());

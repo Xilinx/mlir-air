@@ -330,6 +330,15 @@ module {
 
 // -----
 
+// An L3 put the core starts from a loop with a static trip count keeps one
+// host put, armed once and counted four times, and the core issues it on
+// every iteration.
+
+// CHECK-LABEL: func.func @l3_in_loop
+// CHECK: air.channel.put @cin5[{{.*}}] (%{{.*}}[0] [1024] [1]) {air.device_issue = 0 : i64, air.device_issue_count = 4 : i64}
+// CHECK: air.herd @router
+// CHECK: scf.for
+// CHECK: air.channel.issue @cin5[%{{.*}}, %{{.*}}] offset(%{{.*}} : i64) {issue_id = 0 : i64}
 module {
   air.channel @cin5 [1, 1]
   func.func @l3_in_loop(%arg0: memref<65536xi32>) {
@@ -346,8 +355,72 @@ module {
             %v = memref.load %topk[%i] : memref<16xi32, 2 : i32>
             %e = arith.index_cast %v : i32 to index
             %off = arith.muli %e, %c1024 : index
-            // expected-error@+1 {{an L3 transfer whose offset a core computes cannot be in a loop in the herd; unroll the loop}}
             air.channel.put @cin5[%tx, %ty] (%w[%off] [%c1024] [%c1_0]) : (memref<65536xi32>)
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The host waits for each start, so a loop with a run-time trip count cannot
+// hold one.
+
+module {
+  air.channel @cin6 [1, 1]
+  func.func @l3_in_run_time_loop(%arg0: memref<65536xi32>, %arg1: index) {
+    air.launch () in () args(%a0=%arg0, %n=%arg1) : memref<65536xi32>, index {
+      air.segment @seg args(%s0=%a0, %sn=%n) : memref<65536xi32>, index {
+        %c1 = arith.constant 1 : index
+        air.herd @router tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%w=%s0, %hn=%sn) : memref<65536xi32>, index {
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          %c1024 = arith.constant 1024 : index
+          %topk = memref.alloc() : memref<16xi32, 2 : i32>
+          scf.for %i = %c0 to %hn step %c1_0 {
+            %v = memref.load %topk[%i] : memref<16xi32, 2 : i32>
+            %e = arith.index_cast %v : i32 to index
+            %off = arith.muli %e, %c1024 : index
+            // expected-error@+1 {{an L3 transfer whose offset a core computes can be in a loop in the herd only if the loop's trip count is static}}
+            air.channel.put @cin6[%tx, %ty] (%w[%off] [%c1024] [%c1_0]) : (memref<65536xi32>)
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A start under a condition in a counted loop: the host cannot know how many
+// starts to wait for.
+
+module {
+  air.channel @cin7 [1, 1]
+  func.func @l3_in_loop_under_condition(%arg0: memref<65536xi32>) {
+    air.launch () in () args(%a0=%arg0) : memref<65536xi32> {
+      air.segment @seg args(%s0=%a0) : memref<65536xi32> {
+        %c1 = arith.constant 1 : index
+        air.herd @router tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%w=%s0) : memref<65536xi32> {
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          %c2 = arith.constant 2 : index
+          %c4 = arith.constant 4 : index
+          %c1024 = arith.constant 1024 : index
+          %topk = memref.alloc() : memref<16xi32, 2 : i32>
+          scf.for %i = %c0 to %c4 step %c1_0 {
+            %odd = arith.cmpi ult, %i, %c2 : index
+            scf.if %odd {
+              %v = memref.load %topk[%i] : memref<16xi32, 2 : i32>
+              %e = arith.index_cast %v : i32 to index
+              %off = arith.muli %e, %c1024 : index
+              // expected-error@+1 {{an L3 transfer whose offset a core computes cannot be started from a loop under a condition: the number of starts is not known}}
+              air.channel.put @cin7[%tx, %ty] (%w[%off] [%c1024] [%c1_0]) : (memref<65536xi32>)
+            }
           }
         }
       }

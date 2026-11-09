@@ -253,10 +253,10 @@ public:
 
   // Helper: Build broadcast affine set constraints (extracted from lambda)
   static void makeBroadcastAffineSetConstraints(
-      size_t dimCount, int64_t specializeDim, int64_t specializeIdx,
-      int64_t numCols, MLIRContext *ctx, SmallVectorImpl<AffineExpr> &exprs,
+      ArrayRef<int64_t> dimSizes, int64_t specializeDim, int64_t specializeIdx,
+      MLIRContext *ctx, SmallVectorImpl<AffineExpr> &exprs,
       SmallVectorImpl<bool> &eqFlags) {
-    for (size_t d = 0; d < dimCount; ++d) {
+    for (size_t d = 0; d < dimSizes.size(); ++d) {
       if ((int64_t)d == specializeDim) {
         exprs.push_back(getAffineSymbolExpr(d, ctx) -
                         getAffineConstantExpr(specializeIdx, ctx));
@@ -267,7 +267,7 @@ public:
       // requirement)
       exprs.push_back(getAffineSymbolExpr(d, ctx));
       eqFlags.push_back(false);
-      exprs.push_back(numCols - 1 - getAffineSymbolExpr(d, ctx));
+      exprs.push_back(dimSizes[d] - 1 - getAffineSymbolExpr(d, ctx));
       eqFlags.push_back(false);
     }
   }
@@ -304,10 +304,13 @@ public:
         continue;
       }
 
-      // Collect herd IDs.
+      // Collect herd IDs and the extent of each.
       SmallVector<Value, 4> herdIds;
       for (BlockArgument arg : herd.getIds())
         herdIds.push_back(Value(arg));
+      SmallVector<int64_t, 4> herdSizes;
+      for (size_t d = 0; d < herdIds.size(); ++d)
+        herdSizes.push_back(d ? herd.getNumRows() : herd.getNumCols());
 
       // Find which herd dimension (if any) this channel index corresponds to.
       int64_t herdDimIdx = -1;
@@ -344,9 +347,8 @@ public:
         for (int64_t i = 0; i < numSegments; ++i) {
           SmallVector<AffineExpr, 4> exprs;
           SmallVector<bool, 4> eqFlags;
-          makeBroadcastAffineSetConstraints(herdIds.size(), herdDimIdx, i,
-                                            herd.getNumCols(), ctx, exprs,
-                                            eqFlags);
+          makeBroadcastAffineSetConstraints(herdSizes, herdDimIdx, i, ctx,
+                                            exprs, eqFlags);
           auto intSet = IntegerSet::get(0, herdIds.size(), exprs, eqFlags);
           SmallVector<Value, 4> setArgs = herdIds;
           if (i == 0) {

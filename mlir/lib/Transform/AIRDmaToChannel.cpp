@@ -1864,14 +1864,34 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
       return op->emitOpError(
           "sizes and strides of a transfer cannot depend on a value computed "
           "in the herd; only its offset can");
-  // The host arms an L3 put once per issue, but would fold a rolled loop of
-  // them into one task repeated for every iteration.
+  // An L3 put a core starts in a loop keeps one descriptor: the host arms it
+  // once per run of the herd, and the core patches and starts it on every
+  // iteration. The host waits for each start, so their number must be known.
+  scf::ForOp outerLoop;
+  int64_t issueCount = 1;
+  Operation *guard = nullptr;
   if (put && l3)
-    for (Operation *p = op->getParentOp(); p != herd; p = p->getParentOp())
-      if (isa<scf::ForOp>(p))
+    for (Operation *p = op->getParentOp(); p != herd; p = p->getParentOp()) {
+      if (isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp>(p))
+        guard = p;
+      auto loop = dyn_cast<scf::ForOp>(p);
+      if (!loop)
+        continue;
+      auto lb = getConstantIntValue(loop.getLowerBound());
+      auto ub = getConstantIntValue(loop.getUpperBound());
+      auto st = getConstantIntValue(loop.getStep());
+      if (!lb || !ub || !st || *st <= 0)
         return op->emitOpError(
-            "an L3 transfer whose offset a core computes cannot be in a loop "
-            "in the herd; unroll the loop");
+            "an L3 transfer whose offset a core computes can be in a loop in "
+            "the herd only if the loop's trip count is static");
+      issueCount *= std::max<int64_t>(0, llvm::divideCeil(*ub - *lb, *st));
+      outerLoop = loop;
+    }
+  // the host waits for every start it counts
+  if (outerLoop && guard)
+    return op->emitOpError(
+        "an L3 transfer whose offset a core computes cannot be started from a "
+        "loop under a condition: the number of starts is not known");
   // Every start patches the one descriptor, so a start must not land while
   // the previous one is queued: the core receives each transfer, in the same
   // block, before it can start the next.
@@ -1959,8 +1979,9 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
   };
   // Wrapped in air.execute so the dependency passes order it.
   auto async = cast<air::AsyncOpInterface>(op.getOperation());
+  air::ExecuteOp exec;
   if (async.getAsyncToken()) {
-    auto exec =
+    exec =
         air::ExecuteOp::create(b, loc, air::AsyncTokenType::get(b.getContext()),
                                async.getAsyncDependencies());
     {
@@ -1975,6 +1996,44 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
   } else {
     issue();
   }
+  if (!outerLoop)
+    return success();
+
+  // One descriptor for every iteration: the put leaves the loops, and what
+  // in them waited on it waits on the issue instead.
+  op->setAttr("air.device_issue_count", b.getI64IntegerAttr(issueCount));
+  if (exec) {
+    async.getAsyncToken().replaceAllUsesWith(exec.getAsyncToken());
+    air::clearAsyncDependenciesOfAsyncOp(op.getOperation());
+  }
+  IRMapping map;
+  OpBuilder pre(outerLoop);
+  std::function<LogicalResult(Value)> pull = [&](Value v) -> LogicalResult {
+    if (map.contains(v))
+      return success();
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return outerLoop->isAncestor(
+                 cast<BlockArgument>(v).getOwner()->getParentOp())
+                 ? failure()
+                 : success();
+    if (!outerLoop->isAncestor(def))
+      return success();
+    if (!mlir::isPure(def) || def->getNumRegions())
+      return failure();
+    for (Value o : def->getOperands())
+      if (failed(pull(o)))
+        return failure();
+    pre.clone(*def, map);
+    return success();
+  };
+  for (OpOperand &o : op->getOpOperands()) {
+    if (failed(pull(o.get())))
+      return op->emitOpError("the host part of the transfer is computed in "
+                             "the loop around it");
+    o.set(map.lookupOrDefault(o.get()));
+  }
+  op->moveBefore(outerLoop);
   return success();
 }
 

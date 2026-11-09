@@ -10516,21 +10516,73 @@ static std::optional<SmallVector<int64_t>> constantIndices(ValueRange indices) {
   return out;
 }
 
+// The shim DMA channel (column, direction, index) air-to-aie gave a host
+// transfer: none if it has no allocation, failure if it has one whose channel
+// cannot be told yet (an unplaced shim tile with no column hint).
+using ShimChannel = std::tuple<int64_t, int64_t, int64_t>;
+static FailureOr<std::optional<ShimChannel>>
+shimChannelOf(air::ChannelPutOp op) {
+  auto meta = op->getAttrOfType<ArrayAttr>("metadataArray");
+  if (!meta || meta.empty())
+    return std::optional<ShimChannel>();
+  // the entry lowering picks for the put's bundle indices
+  if (!constantIndices(op.getIndices()))
+    return failure();
+  auto i = air::getIndexToMetadataArrayFromChannelIndices(op);
+  if (!i || *i < 0 || (size_t)*i >= meta.size())
+    return failure();
+  auto entry = dyn_cast<DictionaryAttr>(meta[*i]);
+  auto base = entry ? entry.getAs<StringAttr>("base") : StringAttr();
+  auto module = op->getParentOfType<ModuleOp>();
+  if (!base || !module)
+    return failure();
+  // the symbol is the device's: devices that name it differently cannot
+  // tell which one the put is in
+  std::optional<ShimChannel> found;
+  for (auto device : module.getOps<AIE::DeviceOp>()) {
+    auto alloc =
+        AIE::ShimDMAAllocationOp::getForSymbol(device, base.getValue());
+    if (!alloc)
+      continue;
+    Operation *tile = alloc.getTile().getDefiningOp();
+    std::optional<int> col;
+    if (auto t = dyn_cast_if_present<AIE::TileOp>(tile))
+      col = t.getCol();
+    else if (auto lt = dyn_cast_if_present<AIE::LogicalTileOp>(tile))
+      col = lt.tryGetCol();
+    if (!col)
+      return failure();
+    ShimChannel ch(*col, int64_t(alloc.getChannelDir()),
+                   int64_t(alloc.getChannelIndex()));
+    if (found && *found != ch)
+      return failure();
+    found = ch;
+  }
+  if (!found)
+    return failure();
+  return found;
+}
+
 // Returns true if `op` can stay between two puts of a chain while their
-// sends move to the last one: it has no memory effects, or it is a put on a
-// different channel, or on the same channel at constant indices that differ
-// from `first`'s.
+// sends move to the last one: it has no memory effects, or it is a put on
+// another channel or bundle entry (constant indices that differ from
+// `first`'s) that is not queued on the same shim DMA channel.
 static bool mayCross(Operation *op, air::ChannelPutOp first) {
   if (isMemoryEffectFree(op))
     return true;
   auto put = dyn_cast<air::ChannelPutOp>(op);
   if (!put)
     return false;
-  if (put.getChanName() != first.getChanName())
-    return true;
-  auto a = constantIndices(first.getIndices());
-  auto b = constantIndices(put.getIndices());
-  return a && b && *a != *b;
+  if (put.getChanName() == first.getChanName()) {
+    auto a = constantIndices(first.getIndices());
+    auto b = constantIndices(put.getIndices());
+    if (!a || !b || *a == *b)
+      return false;
+  }
+  auto a = shimChannelOf(first), b = shimChannelOf(put);
+  if (failed(a) || failed(b))
+    return false;
+  return !*a || !*b || **a != **b;
 }
 
 // Returns the put that follows `put` in the chain started by `first`, or
