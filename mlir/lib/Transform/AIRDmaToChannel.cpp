@@ -1869,8 +1869,11 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
   // iteration. The host waits for each start, so their number must be known.
   scf::ForOp outerLoop;
   int64_t issueCount = 1;
+  Operation *guard = nullptr;
   if (put && l3)
     for (Operation *p = op->getParentOp(); p != herd; p = p->getParentOp()) {
+      if (isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp>(p))
+        guard = p;
       auto loop = dyn_cast<scf::ForOp>(p);
       if (!loop)
         continue;
@@ -1884,6 +1887,11 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
       issueCount *= std::max<int64_t>(0, llvm::divideCeil(*ub - *lb, *st));
       outerLoop = loop;
     }
+  // the host waits for every start it counts
+  if (outerLoop && guard)
+    return op->emitOpError(
+        "an L3 transfer whose offset a core computes cannot be started from a "
+        "loop under a condition: the number of starts is not known");
   // Every start patches the one descriptor, so a start must not land while
   // the previous one is queued: the core receives each transfer, in the same
   // block, before it can start the next.

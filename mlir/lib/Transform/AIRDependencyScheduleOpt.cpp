@@ -10536,6 +10536,9 @@ shimChannelOf(air::ChannelPutOp op) {
   auto module = op->getParentOfType<ModuleOp>();
   if (!base || !module)
     return failure();
+  // the symbol is the device's: devices that name it differently cannot
+  // tell which one the put is in
+  std::optional<ShimChannel> found;
   for (auto device : module.getOps<AIE::DeviceOp>()) {
     auto alloc =
         AIE::ShimDMAAllocationOp::getForSymbol(device, base.getValue());
@@ -10549,32 +10552,37 @@ shimChannelOf(air::ChannelPutOp op) {
       col = lt.tryGetCol();
     if (!col)
       return failure();
-    return std::optional<ShimChannel>(
-        ShimChannel(*col, int64_t(alloc.getChannelDir()),
-                    int64_t(alloc.getChannelIndex())));
+    ShimChannel ch(*col, int64_t(alloc.getChannelDir()),
+                   int64_t(alloc.getChannelIndex()));
+    if (found && *found != ch)
+      return failure();
+    found = ch;
   }
-  return failure();
+  if (!found)
+    return failure();
+  return found;
 }
 
 // Returns true if `op` can stay between two puts of a chain while their
-// sends move to the last one: it has no memory effects, or it is a put on a
-// different channel that is not queued on the same shim DMA channel, or on the
-// same channel at constant indices that differ from `first`'s.
+// sends move to the last one: it has no memory effects, or it is a put on
+// another channel or bundle entry (constant indices that differ from
+// `first`'s) that is not queued on the same shim DMA channel.
 static bool mayCross(Operation *op, air::ChannelPutOp first) {
   if (isMemoryEffectFree(op))
     return true;
   auto put = dyn_cast<air::ChannelPutOp>(op);
   if (!put)
     return false;
-  if (put.getChanName() != first.getChanName()) {
-    auto a = shimChannelOf(first), b = shimChannelOf(put);
-    if (failed(a) || failed(b))
+  if (put.getChanName() == first.getChanName()) {
+    auto a = constantIndices(first.getIndices());
+    auto b = constantIndices(put.getIndices());
+    if (!a || !b || *a == *b)
       return false;
-    return !*a || !*b || **a != **b;
   }
-  auto a = constantIndices(first.getIndices());
-  auto b = constantIndices(put.getIndices());
-  return a && b && *a != *b;
+  auto a = shimChannelOf(first), b = shimChannelOf(put);
+  if (failed(a) || failed(b))
+    return false;
+  return !*a || !*b || **a != **b;
 }
 
 // Returns the put that follows `put` in the chain started by `first`, or

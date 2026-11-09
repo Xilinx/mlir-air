@@ -1696,15 +1696,20 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       auto issueId = op->hasAttr("air.host_issue")
                          ? Attribute()
                          : op->getAttr("air.device_issue");
-      memref::StoreOp push;
+      // every copy of the issue (an unrolled loop) pushes its own word
+      SmallVector<memref::StoreOp> pushes;
       op->getParentOfType<ModuleOp>().walk([&](memref::StoreOp st) {
         if (issueId && st->getAttr("air.device_issue") == issueId)
-          push = st;
+          pushes.push_back(st);
       });
-      auto word = push ? getConstantIntValue(push.getValue()) : std::nullopt;
-      if (!word && issueId)
+      if (issueId && pushes.empty())
         return op->emitOpError("no core-side queue word for this transfer");
-      if (repeatCount) {
+      for (memref::StoreOp push : pushes) {
+        auto word = getConstantIntValue(push.getValue());
+        if (!word)
+          return op->emitOpError("no core-side queue word for this transfer");
+        if (!repeatCount)
+          continue;
         OpBuilder::InsertionGuard g(rewriter);
         rewriter.setInsertionPoint(push);
         Value v = arith::ConstantOp::create(

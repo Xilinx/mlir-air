@@ -5636,6 +5636,14 @@ public:
       }
       DeviceIssueCore &ic = cores[core];
       auto tile = cast<AIE::TileOp>(core.getTile().getDefiningOp());
+      std::string lockName = "__air_device_issue_lock_" +
+                             std::to_string(tile.getCol()) + "_" +
+                             std::to_string(tile.getRow());
+      // the BD's arm waits on one core's lock: only that core's copies share it
+      auto armedLock = arm->getAttrOfType<StringAttr>("air.device_issue_lock");
+      if (armedBd && armedLock && armedLock.getValue() != lockName)
+        return issue->emitOpError(
+            "starts an L3 transfer another core also starts");
 
       auto [it, isNew] = ic.targetPackets.try_emplace(shim);
       if (isNew) {
@@ -5671,10 +5679,7 @@ public:
 
       OpBuilder b(arm);
       arm->setAttr("air.device_issue_bd", b.getI32IntegerAttr(bdId));
-      arm->setAttr("air.device_issue_lock",
-                   b.getStringAttr("__air_device_issue_lock_" +
-                                   std::to_string(tile.getCol()) + "_" +
-                                   std::to_string(tile.getRow())));
+      arm->setAttr("air.device_issue_lock", b.getStringAttr(lockName));
     }
     // L3 puts the host starts (no core issue names them): a pinned shim BD
     // the runtime sequence configures, then patches by control packets.
