@@ -29,6 +29,8 @@ mask; its cross-attention reads the 1500 cross keys. The final LayerNorm's
 output feeds the bundle's Q4 lm_head (a copy of the tied embedding) in pieces.
 """
 
+import sys
+import types
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
@@ -37,15 +39,30 @@ import numpy as np
 import pyxrt as xrt
 from ml_dtypes import bfloat16
 
-from air_examples.llms.shared.fused_prefill import device as D
-from air_examples.llms.shared.fused_prefill import hostops as H
-from air_examples.llms.shared.fused_prefill import packing as P
-from air_examples.llms.shared.fused_prefill.engine import FROM, TO, Engine, view
+sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path__ = [
+    str(Path(__file__).resolve().parents[2])
+]
+from air_examples.llms.shared.fused_prefill import device as D  # noqa: E402
+from air_examples.llms.shared.fused_prefill import hostops as H  # noqa: E402
+from air_examples.llms.shared.fused_prefill import packing as P  # noqa: E402
+from air_examples.llms.shared.fused_prefill.engine import (
+    FROM,
+    TO,
+    Engine,
+    view,
+)  # noqa: E402
 
-from . import whisper_spec as S
-from .whisper_attn import EncoderAttention
-from .whisper_weights import D as DM, DEC_LAYERS, ENC_LAYERS, FF, H as HEADS, DH
-from .whisper_weights import MAX_TOKENS, N_FRAMES
+from . import whisper_spec as S  # noqa: E402
+from .whisper_attn import EncoderAttention  # noqa: E402
+from .whisper_weights import (
+    D as DM,
+    DEC_LAYERS,
+    ENC_LAYERS,
+    FF,
+    H as HEADS,
+    DH,
+)  # noqa: E402
+from .whisper_weights import MAX_TOKENS, N_FRAMES  # noqa: E402
 
 EPS = 1e-5
 N_CTX = S.FRAMES
