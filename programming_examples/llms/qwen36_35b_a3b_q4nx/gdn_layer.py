@@ -530,26 +530,30 @@ def run_debug(art, inputs):
     buffer back."""
     import pyxrt as xrt
 
-    dev = xrt.device(0)
-    ctx = xrt.hw_context(dev, xrt.elf(art.output_binary))
-    kern = xrt.ext.kernel(ctx, art.kernel)
-    bos = []
-    for t in inputs:
-        b = np.ascontiguousarray(t).view(np.uint8).ravel()
-        bo = xrt.ext.bo(dev, b.nbytes)
-        np.frombuffer(bo.map(), np.uint8)[:] = b
-        bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-        bos.append(bo)
-    run = xrt.run(kern)
-    for i, bo in enumerate(bos):
-        run.set_arg(i, bo)
+    # the context is made and released under the lock, like the dispatch
     with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
+        dev = xrt.device(0)
+        ctx = xrt.hw_context(dev, xrt.elf(art.output_binary))
+        kern = xrt.ext.kernel(ctx, art.kernel)
+        bos = []
+        for t in inputs:
+            b = np.ascontiguousarray(t).view(np.uint8).ravel()
+            bo = xrt.ext.bo(dev, b.nbytes)
+            np.frombuffer(bo.map(), np.uint8)[:] = b
+            bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+            bos.append(bo)
+        run = xrt.run(kern)
+        for i, bo in enumerate(bos):
+            run.set_arg(i, bo)
         run.start()
         print("dispatch:", run.wait(20000))
-    out = []
-    for t, bo in zip(inputs, bos):
-        bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-        out.append(np.frombuffer(bo.map(), t.dtype)[: t.size].reshape(t.shape).copy())
+        out = []
+        for t, bo in zip(inputs, bos):
+            bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
+            out.append(
+                np.frombuffer(bo.map(), t.dtype)[: t.size].reshape(t.shape).copy()
+            )
+        del run, kern, ctx
     return out
 
 

@@ -337,21 +337,22 @@ def bench(art, inputs, n):
 
     import pyxrt as xrt
 
-    dev = xrt.device(0)
-    ctx = xrt.hw_context(dev, xrt.elf(art.output_binary))
-    kern = xrt.ext.kernel(ctx, art.kernel)
-    bos = []
-    for t in inputs:
-        b = t.view(np.uint8).ravel()
-        bo = xrt.ext.bo(dev, b.nbytes)
-        np.frombuffer(bo.map(), np.uint8)[:] = b
-        bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-        bos.append(bo)
-    run = xrt.run(kern)
-    for i, bo in enumerate(bos):
-        run.set_arg(i, bo)
     times = []
+    # the context is made and released under the lock, like the dispatches
     with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
+        dev = xrt.device(0)
+        ctx = xrt.hw_context(dev, xrt.elf(art.output_binary))
+        kern = xrt.ext.kernel(ctx, art.kernel)
+        bos = []
+        for t in inputs:
+            b = t.view(np.uint8).ravel()
+            bo = xrt.ext.bo(dev, b.nbytes)
+            np.frombuffer(bo.map(), np.uint8)[:] = b
+            bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+            bos.append(bo)
+        run = xrt.run(kern)
+        for i, bo in enumerate(bos):
+            run.set_arg(i, bo)
         for _ in range(n):
             t0 = time.perf_counter()
             run.start()
@@ -359,6 +360,7 @@ def bench(art, inputs, n):
             if st is not None and st != xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED:
                 raise RuntimeError(f"dispatch ended in {st}")
             times.append(time.perf_counter() - t0)
+        del run, kern, ctx
     t = np.array(times[1:]) * 1e3
     p10, p50, p90 = np.percentile(t, [10, 50, 90])
     print(

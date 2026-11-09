@@ -815,15 +815,14 @@ class Q36Decoder:
         the state is not carried (the same inputs every time)."""
         self._set(x, L)
         t = []
-        with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
-            for _ in range(n + 1):
-                t0 = time.perf_counter()
-                self.run.start()
-                self.run.wait(120000)
-                t1 = time.perf_counter()
-                self.lrun.start()
-                self.lrun.wait(120000)
-                t.append((t1 - t0, time.perf_counter() - t1))
+        for _ in range(n + 1):
+            t0 = time.perf_counter()
+            self.run.start()
+            self.run.wait(120000)
+            t1 = time.perf_counter()
+            self.lrun.start()
+            self.lrun.wait(120000)
+            t.append((t1 - t0, time.perf_counter() - t1))
         t = np.array(t[1:]) * 1e3
         print(
             f"L={L}, {n} tokens: layers {np.median(t[:, 0]):.3f} ms + LM head"
@@ -900,31 +899,35 @@ def main():
     nw = np.asarray(w.final_norm()).astype(bfloat16)
     y = np.zeros((LM.NCOL, LM.ROUNDS, LM.NROW * LM.RB), bfloat16)
     lm_args = [nw, LM.pack_weights(w), y]
-    npu = Q36Decoder(arts, args, lm_args, a.waves, pw, qkn, arts[2])
-    del we, wd, args, lm_args
-    print(f"weights loaded in {time.time() - t0:.0f}s")
+    # the device is held from the first context to the last dispatch
+    lock = filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock"))
+    with lock:
+        npu = Q36Decoder(arts, args, lm_args, a.waves, pw, qkn, arts[2])
+        del we, wd, args, lm_args
+        print(f"weights loaded in {time.time() - t0:.0f}s")
 
-    def embed(t):
-        return np.asarray(w.embed([t])[0]).astype(bfloat16)
+        def embed(t):
+            return np.asarray(w.embed([t])[0]).astype(bfloat16)
 
-    # the prompt goes through the decode one token at a time
-    ref = None if a.no_ref else Reference(w, layers=layers)
-    toks, ok = list(ids), True
-    for i in range(len(ids) + a.gen - 1):
-        got = npu.step(embed(toks[i]), i + 1)
-        nxt = int(np.argmax(got))
-        if ref is not None:
-            want = ref.forward([toks[i]]).float().numpy()
-            ok &= nxt == int(np.argmax(want))
-            print(
-                f"L={i + 1}: next {nxt} (reference {int(np.argmax(want))}),"
-                f" logits corr {G.corr(got, want)[0]:.4f}"
-            )
-        if i + 1 >= len(ids):
-            toks.append(nxt)
-    print(repr(a.prompt), "->", repr(tok.decode(toks[len(ids) :])))
-    if a.bench:
-        npu.bench(embed(toks[-1]), a.bench_l or len(toks), a.bench)
+        # the prompt goes through the decode one token at a time
+        ref = None if a.no_ref else Reference(w, layers=layers)
+        toks, ok = list(ids), True
+        for i in range(len(ids) + a.gen - 1):
+            got = npu.step(embed(toks[i]), i + 1)
+            nxt = int(np.argmax(got))
+            if ref is not None:
+                want = ref.forward([toks[i]]).float().numpy()
+                ok &= nxt == int(np.argmax(want))
+                print(
+                    f"L={i + 1}: next {nxt} (reference {int(np.argmax(want))}),"
+                    f" logits corr {G.corr(got, want)[0]:.4f}"
+                )
+            if i + 1 >= len(ids):
+                toks.append(nxt)
+        print(repr(a.prompt), "->", repr(tok.decode(toks[len(ids) :])))
+        if a.bench:
+            npu.bench(embed(toks[-1]), a.bench_l or len(toks), a.bench)
+        del npu
     if ref is not None:
         print("PASS!" if ok else "failed.")
     return 0 if ok else 1
