@@ -34,6 +34,7 @@ def main():
     from air_examples.llms.whisper_v3_turbo_q4nx.whisper_npu import (
         Decoding,
         WhisperNpu,
+        npu_lock,
         transcribe,
     )
     from air_examples.llms.whisper_v3_turbo_q4nx.whisper_weights import Q4nx
@@ -43,27 +44,12 @@ def main():
     ap.add_argument("--clips", type=int, default=inputs.N_VERIFY)
     ap.add_argument("--out")
     a = ap.parse_args()
-    npu = WhisperNpu(a.build, Q4nx())
     dec = Decoding()
     clips = inputs.clips(a.clips)
-
-    def request(audio):
-        t = {}
-        out = transcribe(npu, audio, dec, times=t)
-        t.update(tokens=len(out), audio=len(audio) / 16000)
-        return t
-
-    t0 = time.perf_counter()
-    while time.perf_counter() - t0 < WARMUP_S:
-        for _, audio, _ in clips:
-            request(audio)
-    warm = time.perf_counter() - t0
-    samples, rounds, t0 = [], 0, time.perf_counter()
-    while rounds < MIN_ROUNDS or time.perf_counter() - t0 < MEASURE_S:
-        for cid, audio, _ in clips:
-            samples.append(dict(id=cid, **request(audio)))
-        rounds += 1
-    measured = time.perf_counter() - t0
+    with npu_lock():
+        warm, measured, rounds, samples = measure(
+            WhisperNpu(a.build, Q4nx()), clips, dec, transcribe
+        )
 
     def mean(k):
         return float(np.mean([s[k] for s in samples]))
@@ -89,6 +75,28 @@ def main():
                 dict(warmup_s=warm, measured_s=measured, rounds=rounds, samples=samples)
             )
         )
+
+
+def measure(npu, clips, dec, transcribe):
+    """(warm-up seconds, measured seconds, rounds, per-request samples)."""
+
+    def request(audio):
+        t = {}
+        out = transcribe(npu, audio, dec, times=t)
+        t.update(tokens=len(out), audio=len(audio) / 16000)
+        return t
+
+    t0 = time.perf_counter()
+    while time.perf_counter() - t0 < WARMUP_S:
+        for _, audio, _ in clips:
+            request(audio)
+    warm = time.perf_counter() - t0
+    samples, rounds, t0 = [], 0, time.perf_counter()
+    while rounds < MIN_ROUNDS or time.perf_counter() - t0 < MEASURE_S:
+        for cid, audio, _ in clips:
+            samples.append(dict(id=cid, **request(audio)))
+        rounds += 1
+    return warm, time.perf_counter() - t0, rounds, samples
 
 
 if __name__ == "__main__":

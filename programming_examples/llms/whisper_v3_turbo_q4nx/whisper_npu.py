@@ -30,6 +30,7 @@ output feeds the bundle's Q4 lm_head (a copy of the tied embedding) in pieces.
 """
 
 from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -401,6 +402,24 @@ class WhisperNpu(Engine):
 GEN_REPO = "openai/whisper-large-v3-turbo"
 GEN_REVISION = "41f01f3fe87f28c78e2fbf8b568835947dd65ed9"
 MAX_NEW = 128
+SAMPLE_RATE = 16000
+# one encoder window
+MAX_SAMPLES = 30 * SAMPLE_RATE
+# held while a process uses the NPU, as the other AIR examples do
+NPU_LOCK = "/tmp/mlir-air-npu.lock"
+
+
+@contextmanager
+def npu_lock(path=NPU_LOCK):
+    """Wait for the NPU lock and hold it for the block."""
+    import fcntl
+
+    with open(path, "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 class Decoding:
@@ -445,7 +464,7 @@ def log_mel(audio):
     from transformers import WhisperFeatureExtractor
 
     fe = WhisperFeatureExtractor(feature_size=128)
-    return fe(audio, sampling_rate=16000, return_tensors="np").input_features[0]
+    return fe(audio, sampling_rate=SAMPLE_RATE, return_tensors="np").input_features[0]
 
 
 def transcribe(npu, audio, dec, max_new=MAX_NEW, on_step=None, times=None):
@@ -457,6 +476,11 @@ def transcribe(npu, audio, dec, max_new=MAX_NEW, on_step=None, times=None):
     the first token and to the last."""
     import time
 
+    if len(audio) > MAX_SAMPLES:
+        raise ValueError(
+            f"{len(audio) / SAMPLE_RATE:.1f} s of audio: at most "
+            f"{MAX_SAMPLES // SAMPLE_RATE} s (one window) is supported"
+        )
     t0 = time.perf_counter()
     x0 = npu.front(log_mel(audio))
     t1 = time.perf_counter()
@@ -487,7 +511,7 @@ def transcribe(npu, audio, dec, max_new=MAX_NEW, on_step=None, times=None):
 def tokenizer(weights):
     from tokenizers import Tokenizer
 
-    return Tokenizer.from_file(str(weights.path.parent / "tokenizer.json"))
+    return Tokenizer.from_file(str(weights.tokenizer_path()))
 
 
 def main():
@@ -505,15 +529,18 @@ def main():
     ap.add_argument("--task", default="transcribe", choices=("transcribe", "translate"))
     a = ap.parse_args()
     w = Q4nx()
-    npu = WhisperNpu(a.build, w)
     tok, dec = tokenizer(w), Decoding(a.language, a.task)
-    for f in a.audio:
-        audio, sr = sf.read(f, dtype="float32", always_2d=True)
-        audio = audio.mean(1)
-        if sr != 16000:
-            raise ValueError(f"{f}: {sr} Hz; resample to 16 kHz first")
-        t0 = time.perf_counter()
-        out = transcribe(npu, audio, dec)
-        dt = time.perf_counter() - t0
-        print(f"{f}: {tok.decode([t for t in out if t < dec.eos])}")
-        print(f"  {len(audio) / sr:.1f} s audio, {len(out)} tokens, {dt * 1e3:.0f} ms")
+    with npu_lock():
+        npu = WhisperNpu(a.build, w)
+        for f in a.audio:
+            audio, sr = sf.read(f, dtype="float32", always_2d=True)
+            audio = audio.mean(1)
+            if sr != SAMPLE_RATE:
+                raise ValueError(f"{f}: {sr} Hz; resample to {SAMPLE_RATE} Hz first")
+            t0 = time.perf_counter()
+            out = transcribe(npu, audio, dec)
+            dt = time.perf_counter() - t0
+            print(f"{f}: {tok.decode([t for t in out if t < dec.eos])}")
+            print(
+                f"  {len(audio) / sr:.1f} s audio, {len(out)} tokens, {dt * 1e3:.0f} ms"
+            )

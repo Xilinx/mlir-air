@@ -46,10 +46,12 @@ def compare(npu_toks, npu_top, ref_toks, ref_top):
 def main():
     from air_examples.llms.whisper_v3_turbo_q4nx import inputs
     from air_examples.llms.whisper_v3_turbo_q4nx.whisper_npu import (
+        GEN_REPO,
+        GEN_REVISION,
         Decoding,
         WhisperNpu,
+        npu_lock,
         tokenizer,
-        transcribe,
     )
     from air_examples.llms.whisper_v3_turbo_q4nx.whisper_weights import Q4nx
 
@@ -60,14 +62,44 @@ def main():
     ap.add_argument("--clips", type=int, default=None)
     a = ap.parse_args()
     ref = json.loads((Path(a.reference) / "reference.json").read_text())
-    if ref["dataset_revision"] != inputs.REVISION:
-        sys.exit(f"[verify] FAIL: reference is of {ref['dataset_revision']}")
+    # the reference must be of the pinned checkpoint, in BF16, on the pinned
+    # clips: a stale reference.json is not reused silently
+    want = dict(
+        model=GEN_REPO,
+        revision=GEN_REVISION,
+        precision="bf16",
+        dataset=inputs.DATASET,
+        dataset_revision=inputs.REVISION,
+    )
+    stale = {k: ref.get(k) for k, v in want.items() if ref.get(k) != v}
+    if stale:
+        sys.exit(f"[verify] FAIL: reference is not {want}: {stale}; rerun reference.py")
     refs = {r["id"]: r for r in ref["clips"]}
+    clips = inputs.clips(a.clips)
+    if not clips:
+        sys.exit("[verify] FAIL: no clips selected")
     w = Q4nx()
-    npu = WhisperNpu(a.build, w)
     tok, dec = tokenizer(w), Decoding()
-    results, fails, matched = [], 0, 0
-    for cid, audio, _ in inputs.clips(a.clips):
+    with npu_lock():
+        results = run(WhisperNpu(a.build, w), clips, refs, tok, dec)
+    fails = sum(r["verdict"] != "PASS" for r in results)
+    matched = sum(r["divergence"] is None for r in results)
+    od = Path(a.out)
+    od.mkdir(parents=True, exist_ok=True)
+    (od / "gate.json").write_text(
+        json.dumps(dict(reference=ref["model"], results=results))
+    )
+    n = len(results)
+    print(f"[gate] {n - fails}/{n} clips pass, {matched}/{n} token-exact")
+    print("[verify] PASS" if fails == 0 else "[verify] FAIL")
+    sys.exit(1 if fails else 0)
+
+
+def run(npu, clips, refs, tok, dec):
+    from air_examples.llms.whisper_v3_turbo_q4nx.whisper_npu import transcribe
+
+    results = []
+    for cid, audio, _ in clips:
         if cid not in refs:
             sys.exit(f"[verify] FAIL: no reference for {cid}; rerun reference.py")
         r = refs[cid]
@@ -80,8 +112,6 @@ def main():
         out = transcribe(npu, audio, dec, on_step=on_step)
         dt = time.perf_counter() - t0
         verdict, d = compare(out, tops, r["tokens"], r["top"])
-        fails += verdict != "PASS"
-        matched += d is None
         results.append(
             dict(id=cid, verdict=verdict, divergence=d, tokens=out, ms=dt * 1e3)
         )
@@ -90,15 +120,7 @@ def main():
         if d is not None:
             print(f"    npu: {tok.decode([t for t in out if t < dec.eos])}")
             print(f"    ref: {tok.decode([t for t in r['tokens'] if t < dec.eos])}")
-    od = Path(a.out)
-    od.mkdir(parents=True, exist_ok=True)
-    (od / "gate.json").write_text(
-        json.dumps(dict(reference=ref["model"], results=results))
-    )
-    n = len(results)
-    print(f"[gate] {n - fails}/{n} clips pass, {matched}/{n} token-exact")
-    print("[verify] PASS" if fails == 0 else "[verify] FAIL")
-    sys.exit(1 if fails else 0)
+    return results
 
 
 if __name__ == "__main__":

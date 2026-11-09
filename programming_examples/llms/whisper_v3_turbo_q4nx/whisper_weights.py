@@ -106,6 +106,16 @@ class Q4nx:
         q = nib.transpose(0, 2, 4, 1, 3).reshape(rows, k)
         return q, scale, mn
 
+    def tokenizer_path(self):
+        """The bundle's tokenizer.json: beside model.q4nx when it is there,
+        else from the Hub at REVISION."""
+        beside = self.path.parent / "tokenizer.json"
+        if beside.is_file():
+            return beside
+        from huggingface_hub import hf_hub_download
+
+        return Path(hf_hub_download(REPO, "tokenizer.json", revision=REVISION))
+
     def dequant(self, name, rows, k):
         q, s, m = self.q4(name, rows, k)
         s = np.repeat(s.astype(np.float32), G, 1)
