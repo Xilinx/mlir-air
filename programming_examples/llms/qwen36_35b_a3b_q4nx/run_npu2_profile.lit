@@ -1,0 +1,13 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Qwen3.6-35B-A3B time per token at a 1024-token context: the 40-layer
+// dispatch and the LM head's.
+//
+// REQUIRES: ryzen_ai_npu2, peano, hfweights_fastflowlm_qwen3_6_35b_a3b_npu2
+//
+// RUN: mkdir -p test_peano_profile
+// RUN: cd test_peano_profile
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile profile CTX=1024 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: L=1024, 20 tokens: layers {{[0-9.]+}} ms + LM head {{[0-9.]+}} ms
