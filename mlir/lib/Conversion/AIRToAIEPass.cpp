@@ -1674,6 +1674,50 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     return runs;
   };
 
+  // How many times `op` runs per iteration of `scope`: the product of the
+  // static trip counts of the loops between them, none if a run-time loop or
+  // another region (but an air.execute) lies between.
+  auto timesPerIteration = [](Operation *op,
+                              Operation *scope) -> std::optional<int64_t> {
+    int64_t n = 1;
+    for (Operation *p = op->getParentOp(); p && p != scope;
+         p = p->getParentOp()) {
+      // an air.execute runs its body once
+      if (isa<air::ExecuteOp>(p))
+        continue;
+      auto forOp = dyn_cast<scf::ForOp>(p);
+      if (!forOp)
+        return std::nullopt;
+      auto lb = getConstantIntValue(forOp.getLowerBound());
+      auto ub = getConstantIntValue(forOp.getUpperBound());
+      auto step = getConstantIntValue(forOp.getStep());
+      if (!lb || !ub || !step || *step <= 0)
+        return std::nullopt;
+      n *= std::max<int64_t>(0, llvm::divideCeil(*ub - *lb, *step));
+    }
+    return n;
+  };
+  // Every core's accesses one run: then each run is bracketed on its own,
+  // unless two runs are known to run a different number of times per
+  // iteration of their loops, which would hand the buffer over more often on
+  // one side than the other.
+  bool perRun = !hoistAllToCoreBody;
+  std::optional<int64_t> runTimes;
+  for (auto &info : coreInfos) {
+    if (!perRun || info.accessingOps.empty())
+      continue;
+    auto runs = adjacentRuns(info.accessingOps);
+    if (!info.lockScope || runs.size() != 1) {
+      perRun = false;
+      continue;
+    }
+    auto n = timesPerIteration(runs.front().first, info.lockScope);
+    if (n && runTimes && *n != *runTimes)
+      perRun = false;
+    if (n)
+      runTimes = n;
+  }
+
   for (auto &info : coreInfos) {
     auto coreOp = info.coreOp;
     auto &accessingOps = info.accessingOps;
@@ -1723,8 +1767,11 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       continue;
     }
 
-    // Step 3: Insert locks at the determined scope
-    if (lockScope) {
+    // Step 3: Insert locks at the determined scope, or around the core's one
+    // run (perRun): holding the buffer from the top of the loop body would
+    // also hold up the transfers its peer needs from this core before it can
+    // fill the buffer.
+    if (lockScope && !perRun) {
       // Place at start/end of the outermost enclosing scf.for body
       auto forOp = cast<scf::ForOp>(lockScope);
       OpBuilder builder(forOp);
@@ -7680,7 +7727,8 @@ public:
 
   /// Walks ops in the block and finds the last reader/writer. Returns the last
   /// operation in the same block that accesses `destBuffer`.
-  Operation *findLastReadOrWriteOp(Operation *memcpyOp, Value destBuffer) {
+  Operation *findLastReadOrWriteOp(Operation *memcpyOp, Value destBuffer,
+                                   bool ignoreFree = false) {
     // Ensure the given operation is an air memcpy operation
     auto memcpyOpIf = dyn_cast_if_present<air::MemcpyInterface>(memcpyOp);
     if (!memcpyOpIf)
@@ -7698,16 +7746,18 @@ public:
     // channel's DMA fill its next buffer. That is the buffer being released
     // only when the core's gets on the channel fill distinct buffers in turn,
     // as the DMA does; otherwise the dealloc still counts as an access.
-    bool freeIsAccess = !getsFillDistinctBuffers(memcpyOp);
+    bool freeIsAccess = !ignoreFree && !getsFillDistinctBuffers(memcpyOp);
     Operation *lastAccessOp = nullptr, *lastFreeOp = nullptr;
+    // every view of the buffer, wherever it is made: one made before the
+    // memcpy still reaches the buffer after it
     SetVector<Value> bufferViews;
     bufferViews.insert(destBuffer);
+    for (unsigned i = 0; i < bufferViews.size(); i++)
+      for (Operation *user : bufferViews[i].getUsers())
+        if (auto view = dyn_cast<ViewLikeOpInterface>(user))
+          if (view.getViewSource() == bufferViews[i])
+            bufferViews.insert(view->getResult(0));
     auto visit = [&](Operation *o, Operation *top) {
-      // Save buffer views.
-      if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(o)) {
-        if (llvm::is_contained(bufferViews, view.getViewSource()))
-          bufferViews.insert(view->getResult(0));
-      }
       if (!isReadOrWriteToBuffer(o, bufferViews))
         return;
       if (isa<memref::DeallocOp>(o) && !freeIsAccess)
@@ -7722,6 +7772,8 @@ public:
       for (Region &region : op->getRegions())
         region.walk([&](Operation *o) { visit(o, op); });
     }
+    if (ignoreFree)
+      return lastAccessOp;
     return lastAccessOp ? lastAccessOp : lastFreeOp;
   }
 
@@ -8049,10 +8101,17 @@ public:
       builder.setInsertionPoint(nextWriter);
       AIE::UseLockOp::create(builder, nextWriter->getLoc(), relLockOp,
                              AIE::LockAction::Release, lockRelValue);
-    } else if (auto lastAccessOp = findLastReadOrWriteOp(memcpyOpIf, alloc)) {
+    } else if (auto lastAccessOp = findLastReadOrWriteOp(
+                   memcpyOpIf, alloc, /*ignoreFree=*/!tileInbound.value())) {
       // Lifetime ends after the last read/write access to buffer.
       builder.setInsertionPointAfter(lastAccessOp);
       AIE::UseLockOp::create(builder, lastAccessOp->getLoc(), relLockOp,
+                             AIE::LockAction::Release, lockRelValue);
+    } else if (!tileInbound.value()) {
+      // A sent buffer is the DMA's once nothing here touches it again; its
+      // dealloc does not, and may sit after the loop that sends it.
+      builder.setInsertionPointAfter(memcpyOpIf);
+      AIE::UseLockOp::create(builder, memcpyOpIf->getLoc(), relLockOp,
                              AIE::LockAction::Release, lockRelValue);
     } else {
       // Lifetime ends at end of block.

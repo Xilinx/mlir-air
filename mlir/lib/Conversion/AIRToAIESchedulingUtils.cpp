@@ -3297,9 +3297,26 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
         }
       }
     }
+    // A shim feeding a memtile placed on a column takes that column when its
+    // shim is free: the shortest route, where the placer would otherwise
+    // pack shims from column 0.
+    IntegerAttr shimCol;
+    auto otherMem = dyn_cast_or_null<AIE::LogicalTileOp>(otherSideOp);
+    if (otherMem && otherMem.getTileType() == AIE::AIETileType::MemTile &&
+        otherMem.getCol()) {
+      int c = *otherMem.getCol();
+      bool taken = llvm::any_of(device.getBody()->getOps<AIE::LogicalTileOp>(),
+                                [&](AIE::LogicalTileOp lt) {
+                                  return lt.getTileType() ==
+                                             AIE::AIETileType::ShimNOCTile &&
+                                         lt.getCol() == c;
+                                });
+      if (!taken && device.getTargetModel().isShimNOCTile(c, 0))
+        shimCol = b.getI32IntegerAttr(c);
+    }
     tileLT = AIE::LogicalTileOp::create(b, device.getLoc(),
                                         AIE::AIETileType::ShimNOCTile,
-                                        /*col=*/IntegerAttr(),
+                                        /*col=*/shimCol,
                                         /*row=*/IntegerAttr());
   }
 
@@ -4099,9 +4116,21 @@ void air::reorderL3PacketPutsByFlowOrder(
     putsByChan[chan.getSymNameAttr()].push_back(put);
   });
 
-  SmallVector<air::ChannelPutOp> sortedPuts;
+  // Only flows that share a receiver core with another were reordered by
+  // sortPacketShimFlowsByReceiverOrder. The rest keep their program order,
+  // which is what orders them against each other.
+  llvm::DenseMap<AIE::CoreOp, unsigned> flowsPerCore;
+  for (auto &f : memcpy_flows)
+    if (isPacketShimFlow(f))
+      if (auto core = uniqueReceiverCore(f))
+        flowsPerCore[core]++;
+
+  SmallVector<std::pair<air::ChannelPutOp, AIE::CoreOp>> sortedPuts;
   for (auto &f : memcpy_flows) {
     if (!isPacketShimFlow(f))
+      continue;
+    auto core = uniqueReceiverCore(f);
+    if (!core || flowsPerCore[core] < 2)
       continue;
     auto chan = dyn_cast_if_present<air::ChannelOp>(f.air_flow_op);
     if (!chan)
@@ -4110,26 +4139,42 @@ void air::reorderL3PacketPutsByFlowOrder(
     if (it == putsByChan.end())
       continue;
     for (auto put : it->second)
-      sortedPuts.push_back(put);
+      sortedPuts.push_back({put, core});
   }
 
-  // Per-block prev anchors handle launch clones (e.g. main + lightweight
-  // reset device for load_pdi); each clone gets its own moveAfter chain.
-  DenseMap<Block *, Operation *> prevByBlock;
-  for (auto put : sortedPuts) {
-    Block *blk = put->getBlock();
+  // One moveAfter chain per block and receiver: launch clones (e.g. main +
+  // lightweight reset device for load_pdi) each get their own, and so does
+  // every core's group of flows.
+  DenseMap<std::pair<Block *, Operation *>, Operation *> prevByBlock;
+  for (auto &entry : sortedPuts) {
+    air::ChannelPutOp put = entry.first;
+    std::pair<Block *, Operation *> blk = {put->getBlock(), entry.second};
     auto it = prevByBlock.find(blk);
     if (it == prevByBlock.end()) {
       prevByBlock[blk] = put;
+      continue;
+    }
+    Operation *prev = it->second;
+    prevByBlock[blk] = put;
+    // already after its flow-order predecessor: other receivers' puts
+    // between them keep their places
+    if (prev->isBeforeInBlock(put))
+      continue;
+    // an op between the two that uses the put's token would precede it
+    if (llvm::any_of(put->getUsers(), [&](Operation *user) {
+          Operation *u = put->getBlock()->findAncestorOpInBlock(*user);
+          return u && !prev->isBeforeInBlock(u);
+        })) {
+      put->emitWarning("packet put kept before ")
+          << *prev << ": an op before that uses its token";
       continue;
     }
     // Move the put after its flow-order predecessor, carrying its wrap-and-
     // stride operand slice (e.g. an arith.addi computing a per-iteration DDR
     // offset) so SSA dominance holds. A put whose slice contains a side-
     // effecting op is left in place rather than reordered unsafely.
-    (void)air::moveWithPureBackwardSlice(put.getOperation(), it->second,
+    (void)air::moveWithPureBackwardSlice(put.getOperation(), prev,
                                          /*after=*/true);
-    prevByBlock[blk] = put;
   }
 }
 

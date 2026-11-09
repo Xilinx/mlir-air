@@ -10,6 +10,7 @@
 // RUN: aircc --help 2>&1 | FileCheck %s
 
 // CHECK: AIR Compiler Options:
+// CHECK-DAG: --allow-deadlock-prone-routing
 // CHECK-DAG: --device
 // CHECK-DAG: --output-format
 // CHECK-DAG: --debug-ir

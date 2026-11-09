@@ -385,6 +385,7 @@ class XRTBackend(AirBackend):
         n_perf_iters: int = 0,
         n_warmup_iters: int = 10,
         device=None,
+        allow_deadlock_prone_routing: bool = False,
     ):
         """Constructor for XRTBackend
 
@@ -434,6 +435,7 @@ class XRTBackend(AirBackend):
                 backends must coexist, so unload() releases only this backend's
                 hardware context and leaves buffers allocated against the
                 shared device valid.
+            allow_deadlock_prone_routing: route flows aiecc's static check cannot prove drain; for designs whose transfer order rules the cycle out.
         """
         super().__init__()
         self.verbose = verbose
@@ -466,6 +468,7 @@ class XRTBackend(AirBackend):
         self.use_lock_race_condition_fix_v2 = use_lock_race_condition_fix_v2
         self.use_lock_race_condition_fix_auto = use_lock_race_condition_fix_auto
         self.coalesce_shim_dma = coalesce_shim_dma
+        self.allow_deadlock_prone_routing = allow_deadlock_prone_routing
         self.trace_offset = trace_offset
         self.trace_size = trace_size
         self.currently_loaded = False
@@ -640,6 +643,9 @@ class XRTBackend(AirBackend):
 
             if self.omit_while_true_loop:
                 aircc_options += ["--omit-while-true-loop"]
+
+            if self.allow_deadlock_prone_routing:
+                aircc_options += ["--allow-deadlock-prone-routing"]
 
             if self.omit_pingpong:
                 # Handle both bool (True -> "all") and string ("L1", "L2", "all")
