@@ -130,3 +130,111 @@ module {
     return
   }
 }
+
+// -----
+
+// Parts as big as the buffer over the instances, 64 rows here, would start
+// at rows 32 and 96, and the second would run past the buffer's end: each
+// slice is its own part instead.
+
+// CHECK-LABEL: func.func @near_end
+// CHECK-COUNT-2: memref.alloc() : memref<32x64xbf16, 1 : i32>
+// CHECK-NOT: memref.alloc() : memref<{{.*}}, 1 : i32>
+
+module {
+  air.channel @chan_l3 []
+  air.channel @chan_a [2, 1]
+  func.func @near_end(%arg0: memref<128x64xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1) args(%arg7=%arg0) : memref<128x64xbf16> {
+      %1 = air.channel.put async @chan_l3[] (%arg7[] [] []) : (memref<128x64xbf16>)
+      %2 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %async_token, %results = air.execute -> (memref<128x64xbf16, 1 : i32>) {
+          %alloc = memref.alloc() : memref<128x64xbf16, 1 : i32>
+          air.execute_terminator %alloc : memref<128x64xbf16, 1 : i32>
+        }
+        %3 = air.channel.get async [%async_token] @chan_l3[] (%results[] [] []) : (memref<128x64xbf16, 1 : i32>)
+        %c32 = arith.constant 32 : index
+        %c96 = arith.constant 96 : index
+        %4 = air.channel.put async [%3] @chan_a[%c0, %c0] (%results[%c32, %c0] [32, 64] [64, 1]) : (memref<128x64xbf16, 1 : i32>)
+        %5 = air.channel.put async [%3] @chan_a[%c1_0, %c0] (%results[%c96, %c0] [32, 64] [64, 1]) : (memref<128x64xbf16, 1 : i32>)
+        %8 = air.herd @herd_0 async tile (%tx, %ty) in (%sx=%c2, %sy=%c1_0) {
+          %async_token_1, %results_2 = air.execute -> (memref<32x64xbf16, 2 : i32>) {
+            %alloc = memref.alloc() : memref<32x64xbf16, 2 : i32>
+            air.execute_terminator %alloc : memref<32x64xbf16, 2 : i32>
+          }
+          %9 = air.channel.get async [%async_token_1] @chan_a[%tx, %ty] (%results_2[] [] []) : (memref<32x64xbf16, 2 : i32>)
+          %async_token_3 = air.execute [%9] {
+            memref.dealloc %results_2 : memref<32x64xbf16, 2 : i32>
+          }
+        }
+        %async_token_4 = air.execute [%4, %5, %8] {
+          memref.dealloc %results : memref<128x64xbf16, 1 : i32>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The instances' transfers in reverse order: the parts still follow the
+// buffer's order, part i taking L3's rows from 64 i (later passes, padding
+// the last block, place a part by its index).
+
+// CHECK-LABEL: func.func @reversed
+// CHECK: air.channel.put {{.*}}@[[CH:[a-z_0-9]+]][%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] (%{{.*}}[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] [%c64
+// CHECK: air.channel.put {{.*}}@[[CH]][%c1{{[_0-9]*}}, %c0{{[_0-9]*}}] (%{{.*}}[%c64{{[_0-9]*}}, %c0{{[_0-9]*}}] [%c64
+// CHECK: air.channel.get {{.*}}@[[CH]][%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] (%[[P0:[a-z_0-9]+]][
+// CHECK: air.channel.get {{.*}}@[[CH]][%c1{{[_0-9]*}}, %c0{{[_0-9]*}}] (%[[P1:[a-z_0-9]+]][
+// CHECK: @chan_a[%c1{{[_0-9]*}}, %c0{{[_0-9]*}}] (%[[P1]][0,
+// CHECK: @chan_a[%c1{{[_0-9]*}}, %c0{{[_0-9]*}}] (%[[P1]][32,
+// CHECK: @chan_a[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] (%[[P0]][0,
+// CHECK: @chan_a[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] (%[[P0]][32,
+
+module {
+  air.channel @chan_l3 []
+  air.channel @chan_a [2, 1]
+  func.func @reversed(%arg0: memref<128x64xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1) args(%arg7=%arg0) : memref<128x64xbf16> {
+      %1 = air.channel.put async @chan_l3[] (%arg7[] [] []) : (memref<128x64xbf16>)
+      %2 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %async_token, %results = air.execute -> (memref<128x64xbf16, 1 : i32>) {
+          %alloc = memref.alloc() : memref<128x64xbf16, 1 : i32>
+          air.execute_terminator %alloc : memref<128x64xbf16, 1 : i32>
+        }
+        %3 = air.channel.get async [%async_token] @chan_l3[] (%results[] [] []) : (memref<128x64xbf16, 1 : i32>)
+        %c64 = arith.constant 64 : index
+        %c96 = arith.constant 96 : index
+        %c32 = arith.constant 32 : index
+        %4 = air.channel.put async [%3] @chan_a[%c1_0, %c0] (%results[%c64, %c0] [32, 64] [64, 1]) : (memref<128x64xbf16, 1 : i32>)
+        %5 = air.channel.put async [%4] @chan_a[%c1_0, %c0] (%results[%c96, %c0] [32, 64] [64, 1]) : (memref<128x64xbf16, 1 : i32>)
+        %6 = air.channel.put async [%3] @chan_a[%c0, %c0] (%results[%c0, %c0] [32, 64] [64, 1]) : (memref<128x64xbf16, 1 : i32>)
+        %7 = air.channel.put async [%6] @chan_a[%c0, %c0] (%results[%c32, %c0] [32, 64] [64, 1]) : (memref<128x64xbf16, 1 : i32>)
+        %8 = air.herd @herd_0 async tile (%tx, %ty) in (%sx=%c2, %sy=%c1_0) {
+          %async_token_1, %results_2 = air.execute -> (memref<32x64xbf16, 2 : i32>) {
+            %alloc = memref.alloc() : memref<32x64xbf16, 2 : i32>
+            air.execute_terminator %alloc : memref<32x64xbf16, 2 : i32>
+          }
+          %9 = air.channel.get async [%async_token_1] @chan_a[%tx, %ty] (%results_2[] [] []) : (memref<32x64xbf16, 2 : i32>)
+          %10 = air.channel.get async [%9] @chan_a[%tx, %ty] (%results_2[] [] []) : (memref<32x64xbf16, 2 : i32>)
+          %async_token_3 = air.execute [%10] {
+            memref.dealloc %results_2 : memref<32x64xbf16, 2 : i32>
+          }
+        }
+        %async_token_4 = air.execute [%5, %7, %8] {
+          memref.dealloc %results : memref<128x64xbf16, 1 : i32>
+        }
+      }
+    }
+    return
+  }
+}

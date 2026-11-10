@@ -125,6 +125,36 @@ struct AIRToAIEConversionOptions {
 // Herd operands normally arrive through air.launch/segment/herd nesting rather
 // than directly, so the walk resolves each hierarchy block argument to the
 // operand it is tied to and keeps going.
+// Where `view`, a view of an L1 buffer, starts in it, in elements, when it
+// selects a contiguous run of the buffer: a chain of casts, reshapes and
+// subviews whose layout keeps its offset from the buffer, ending in the
+// canonical strides of its shape. A memref.view is not one: its byte shift
+// is no part of its result's layout.
+static std::optional<int64_t> getContiguousViewOffset(Value view) {
+  for (Value v = view; !v.getDefiningOp<AIE::BufferOp>();) {
+    Operation *def = v.getDefiningOp();
+    if (!isa_and_present<memref::SubViewOp, memref::ExpandShapeOp,
+                         memref::CollapseShapeOp, memref::CastOp,
+                         memref::ReinterpretCastOp>(def))
+      return std::nullopt;
+    v = def->getOperand(0);
+  }
+  auto ty = dyn_cast<MemRefType>(view.getType());
+  SmallVector<int64_t> strides;
+  int64_t offset = 0;
+  if (!ty || !ty.hasStaticShape() ||
+      failed(ty.getStridesAndOffset(strides, offset)) ||
+      ShapedType::isDynamic(offset))
+    return std::nullopt;
+  int64_t expected = 1;
+  for (int i = ty.getRank() - 1; i >= 0; i--) {
+    if (ty.getDimSize(i) != 1 && strides[i] != expected)
+      return std::nullopt;
+    expected *= ty.getDimSize(i);
+  }
+  return offset;
+}
+
 static bool isRuntimeHerdOperand(Value koperand) {
   Value v = koperand;
   while (true) {
@@ -8865,13 +8895,14 @@ public:
     int64_t offset = air::get1DOffset(offsets, strides);
     // A transfer through a view of the buffer (a subview, maybe behind a
     // reshape) starts where the view does.
-    if (auto viewTy = dyn_cast<MemRefType>(memref.getType());
-        viewTy && memref.getDefiningOp<ViewLikeOpInterface>()) {
-      SmallVector<int64_t> viewStrides;
-      int64_t viewOffset = 0;
-      if (succeeded(viewTy.getStridesAndOffset(viewStrides, viewOffset)) &&
-          ShapedType::isStatic(viewOffset))
-        offset += viewOffset;
+    if (isa_and_present<ViewLikeOpInterface, CastOpInterface>(
+            memref.getDefiningOp())) {
+      auto viewOffset = getContiguousViewOffset(memref);
+      if (!viewOffset)
+        return memcpyOp->emitOpError(
+            "moves a view of its buffer that a BD cannot address: it must "
+            "select a contiguous run of the buffer at a static offset");
+      offset += *viewOffset;
     }
 
     Value length =

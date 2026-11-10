@@ -5993,10 +5993,26 @@ private:
         if (!bFor || aNest[i] == bNest[i + extra] ||
             !bFor->getParentOfType<air::HerdOp>())
           continue;
-        Value bMemref = cast<air::ChannelInterface>(b).getMemref();
-        if (llvm::any_of(bMemref.getUsers(), [&](Operation *user) {
-              return user != b && bFor->isAncestor(user);
-            }))
+        // Its uses through views count too, of the buffer or of any other
+        // view of it.
+        Value root = cast<air::ChannelInterface>(b).getMemref();
+        while (auto view = root.getDefiningOp<ViewLikeOpInterface>())
+          root = view.getViewSource();
+        SmallVector<Value> aliases = {root};
+        bool usedInLoop = false;
+        while (!aliases.empty() && !usedInLoop) {
+          Value v = aliases.pop_back_val();
+          for (Operation *user : v.getUsers()) {
+            if (auto view = dyn_cast<ViewLikeOpInterface>(user);
+                view && view.getViewSource() == v) {
+              aliases.append(user->result_begin(), user->result_end());
+              continue;
+            }
+            if (user != b && bFor->isAncestor(user))
+              usedInLoop = true;
+          }
+        }
+        if (usedInLoop)
           return false;
       }
       return true;

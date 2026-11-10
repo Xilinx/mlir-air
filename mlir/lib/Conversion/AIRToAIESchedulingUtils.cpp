@@ -640,8 +640,9 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
     return std::make_pair(-1, -1);
   // A compute tile's buffer that transfers on several channels move in turn
   // (an input tile that later holds the output, say), with the core between
-  // them: each channel's DMA keeps its own count with the core, and the
-  // other channels' transfers are no part of it.
+  // them: each channel's DMA keeps its own count with the core, and neither
+  // the other channels' transfers nor the core's accesses are part of it.
+  // Each of the channel's transfers is one handoff with the core.
   StringRef dmaChan;
   if (auto chanOp = dyn_cast_if_present<air::ChannelInterface>(dmaOp)) {
     llvm::SmallSet<StringRef, 2> chans;
@@ -654,9 +655,11 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
   int read_counter = 0;
   int write_counter = 0;
   for (auto user : buffer_memref.getUsers()) {
-    if (auto c = dyn_cast<air::ChannelInterface>(user))
-      if (!dmaChan.empty() && c.getChanName() != dmaChan)
+    if (!dmaChan.empty()) {
+      auto c = dyn_cast<air::ChannelInterface>(user);
+      if (!c || c.getChanName() != dmaChan)
         continue;
+    }
     if (auto memcpyOp = dyn_cast_if_present<air::MemcpyInterface>(user)) {
       if (buffer_memref == memcpyOp.getSrcMemref())
         read_counter++;

@@ -102,6 +102,24 @@ module attributes {transform.with_named_sequence} {
 
 // -----
 
+// An empty target has no element count to divide the largest's.
+func.func @empty(%x: f32) {
+  %a = memref.alloc() : memref<0xf32, 2>
+  %b = memref.alloc() : memref<4x8xf32, 2>
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %allocs = transform.structured.match ops{["memref.alloc"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    // expected-error @below {{targets must have static, non-empty shapes and identity layouts}}
+    %one = transform.air.share_alloc %allocs : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
 // The first target is kept, though later in the block: the buffer has its
 // shape, and the earlier alloc becomes the reshape.
 // CHECK-LABEL: @keep_first_target

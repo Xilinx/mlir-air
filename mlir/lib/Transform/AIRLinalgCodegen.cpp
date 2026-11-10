@@ -3667,11 +3667,12 @@ transform::ShareAllocOp::apply(transform::TransformRewriter &rewriter,
       rewriter.moveOpBefore(kept, a);
   MemRefType keptTy = kept.getType();
   auto plain = [](MemRefType t) {
-    return t.hasStaticShape() && t.getLayout().isIdentity() && t.getRank() > 0;
+    return t.hasStaticShape() && t.getLayout().isIdentity() &&
+           t.getRank() > 0 && t.getNumElements() > 0;
   };
   if (!plain(keptTy))
-    return emitDefiniteFailure()
-           << "targets must have static shapes and identity layouts";
+    return emitDefiniteFailure() << "targets must have static, non-empty "
+                                    "shapes and identity layouts";
   for (auto a : ArrayRef(allocs).drop_front()) {
     MemRefType t = a.getType();
     if (!plain(t) || t.getElementType() != keptTy.getElementType() ||

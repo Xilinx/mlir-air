@@ -2652,15 +2652,17 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
         if (!llvm::any_of(parts, [&](auto p) { return p.first == start; }))
           parts.push_back(instSpan.second);
       }
+      // In the buffer's order: later passes (padding a boundary block, say)
+      // read a part's place from its position.
+      llvm::sort(parts);
       int64_t dimSize = air::getTensorShape(memref.getType())[*splitDim];
       if (known && !parts.empty() && dimSize % parts.size() == 0) {
         int64_t partSize = dimSize / parts.size();
-        SmallVector<int64_t> starts;
-        for (auto &part : parts)
-          starts.push_back(part.first);
-        llvm::sort(starts);
-        for (unsigned x = 0; x + 1 < starts.size(); x++)
-          if (starts[x + 1] - starts[x] < partSize)
+        // Parts must not overlap, nor run past the buffer.
+        if (parts.front().first < 0 || parts.back().first + partSize > dimSize)
+          known = false;
+        for (unsigned x = 0; x + 1 < parts.size(); x++)
+          if (parts[x + 1].first - parts[x].first < partSize)
             known = false;
         for (auto &[inst, span] : spans)
           if (span.second - span.first > partSize)

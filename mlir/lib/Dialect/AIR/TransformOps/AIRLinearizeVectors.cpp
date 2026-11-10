@@ -318,6 +318,10 @@ static Value traceLanes(Value v, SmallVector<int64_t> &lanes) {
       continue;
     }
     if (auto sh = dyn_cast_if_present<vector::ShuffleOp>(def)) {
+      // A shuffle of n-D vectors picks whole leading-dimension slices; its
+      // mask does not index lanes.
+      if (sh.getV1VectorType().getRank() != 1)
+        return v;
       int64_t n1 = sh.getV1VectorType().getNumElements();
       ArrayRef<int64_t> mask = sh.getMask();
       bool fromV1 =
