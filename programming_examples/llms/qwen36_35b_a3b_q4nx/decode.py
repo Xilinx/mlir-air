@@ -171,7 +171,7 @@ def build_module(waves, maxl):
     rw_in = ch("RwIn")
     q_bc = ch("QBc", size=[1], broadcast_shape=[NCU])
     k_out, v_out = ch("KOut", **pkt), ch("VOut", **pkt)
-    kv_rd = ch("KVRd")
+    k_rd, v_rd = ch("KRd"), ch("VRd")
     k_cu, v_cu = ch("KCu", size=[NCU]), ch("VCu", size=[NCU])
     arr.channels(n_dests=5)
 
@@ -225,10 +225,10 @@ def build_module(waves, maxl):
                         og_ch.get(og)
                         o_in.put(dnw3)
                         o_in.put(og)
-                    kvm = l2([2, 16, DK], 3)
-                    km, vm = kvm[0, :, :], kvm[1, :, :]
+                    km, vm = l2([16, DK], 3), l2([16, DK], 3)
                     for _b in wave_loop(nb):
-                        kv_rd.get(kvm)
+                        k_rd.get(km)
+                        v_rd.get(vm)
                         for u in range(NCU):
                             kh = km.reshape(16, DK // 8, 8)[
                                 :, u * DH // 8 : (u + 1) * DH // 8, :
@@ -679,12 +679,8 @@ def build_module(waves, maxl):
                             pos = Lp.as_index() - 1
                             k_out.get(KV[w, 0, pos, :])
                             v_out.get(KV[w, 1, pos, :])
-                            # back in 16-position blocks, K then V of each
-                            kv_rd.put(
-                                KV.reshape(waves, 2, nb, 16, DK)[
-                                    w : w + 1, :, :, :, :
-                                ].transpose(0, 2, 1, 3, 4)
-                            )
+                            k_rd.put(KV[w, 0, :, :])
+                            v_rd.put(KV[w, 1, :, :])
 
         launch.body(body)
 
