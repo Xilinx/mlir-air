@@ -3875,13 +3875,17 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
     auto padBefore =
         op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
     auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
+    // Read before the replacement erases `op`.
+    Value dest;
+    if constexpr (std::is_same_v<OpT, air::ChannelPutOp>)
+      dest = op.getDest();
     auto new_op = rewriter.replaceOpWithNewOp<OpT>(
         op, tys, deps, op.getChanName(), op.getIndices(), op.getMemref(),
         offsets, sizes, strides,
         /*pad_before=*/padBefore, /*pad_after=*/padAfter);
     new_op->setAttrs(attrs);
     if constexpr (std::is_same_v<OpT, air::ChannelPutOp>)
-      if (Value dest = op.getDest())
+      if (dest)
         new_op.getDestMutable().assign(dest);
 
     return success();
