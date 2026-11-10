@@ -14,6 +14,7 @@
 #   make verify          Each stage alone, prefill-fused, the decode, and the
 #                        reference against HF transformers' Qwen3.5-MoE layers
 #   make profile         Time per token at context CTX, no reference
+#   make profile-decode  Decode tok/s at each of CONTEXTS (one build each)
 #   make profile-prefill TTFT of a CTX-token prompt
 #   make kernels         Every kernel test
 #
@@ -24,11 +25,13 @@
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 PYTHON ?= python3
 DECODE := $(PYTHON) $(srcdir)/decode.py
+comma := ,
 
 MAXL      ?= 64
 GEN       ?= 8
 PROMPT    ?= The capital of France
 CTX       ?= 1024
+CONTEXTS  ?= 1024,4096
 BENCH     ?= 20
 BUILD_DIR ?= build_decode
 LONG_LEN  ?= 300
@@ -42,7 +45,7 @@ STAGES    := moe_block gdn_layer attn_layer lm_head
 KERNELS   := q4k_mvm router gdn_prep gdn_decode gate rope attn ffn
 
 .PHONY: compile compile-fused-prefill run prefill-fused verify profile \
-	profile-prefill kernels clean
+	profile-decode profile-prefill kernels clean
 
 compile:
 	mkdir -p $(BUILD_DIR) && cd $(BUILD_DIR) && \
@@ -73,6 +76,13 @@ verify:
 profile:
 	mkdir -p build_ctx$(CTX) && cd build_ctx$(CTX) && \
 		$(DECODE) --maxl $(CTX) --gen 2 --no-ref --bench $(BENCH) --bench-l $(CTX)
+
+# The context is compiled in: one build per point, each at its own maxl.
+profile-decode:
+	for c in $(subst $(comma), ,$(CONTEXTS)); do \
+		mkdir -p build_ctx$$c && (cd build_ctx$$c && \
+			$(DECODE) --maxl $$c --gen 2 --no-ref --bench $(BENCH) --bench-l $$c) \
+			|| exit 1; done
 
 profile-prefill: $(FUSED_DEP)
 	mkdir -p build_ctx$(CTX) && cd build_ctx$(CTX) && \

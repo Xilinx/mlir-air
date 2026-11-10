@@ -860,9 +860,15 @@ class Q36Decoder:
             self.lrun.wait(120000)
             t.append((t1 - t0, time.perf_counter() - t1))
         t = np.array(t[1:]) * 1e3
+        tot = t.sum(1)
+        med = float(np.median(tot))
         print(
             f"L={L}, {n} tokens: layers {np.median(t[:, 0]):.3f} ms + LM head"
-            f" {np.median(t[:, 1]):.3f} ms = {np.median(t.sum(1)):.3f} ms median"
+            f" {np.median(t[:, 1]):.3f} ms = {med:.3f} ms median"
+        )
+        print(
+            f"[bench] decode ctx={L} median {med:.2f} ms min {tot.min():.2f} ms "
+            f"({1e3 / med:.2f} tok/s)"
         )
 
 
@@ -938,8 +944,9 @@ def main():
     layers = list(range(pw * a.waves))
     assert len(ids) + a.gen <= a.maxl
     # FLM prefills the whole prompt and takes the first token from the LM head
-    # on its last row; the fused prefill takes prompts up to its build's length
-    fused = a.fused_dir is not None and len(layers) == W.N_LAYERS
+    # on its last row; the fused prefill takes prompts up to its build's length.
+    # A bench times the decode alone.
+    fused = a.fused_dir is not None and len(layers) == W.N_LAYERS and not a.bench
     if fused:
         import prefill as P
 

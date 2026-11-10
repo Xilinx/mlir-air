@@ -36,3 +36,9 @@ mistralai/Mistral-7B-Instruct-v0.3@c170c708c41dac9275d15a8fff4eca08d52bab71
 # loader pins, and the HF checkpoint `make verify` compares the CPU reference to.
 FastFlowLM/GPT-OSS-20B-NPU2@v0.9.20-merge-lm-head
 openai/gpt-oss-20b
+
+# Qwen3.6-35B-A3B (llms/qwen36_35b_a3b_q4nx): FastFlowLM's bundle at the
+# revision its loader pins. `make verify` checks its CPU reference against HF
+# transformers' Qwen3.5-MoE layers fed these same weights, so no bf16
+# checkpoint is needed.
+FastFlowLM/Qwen3.6-35B-A3B-NPU2@18adb6adc1338ba29711e58b787df609fc55cd3a
