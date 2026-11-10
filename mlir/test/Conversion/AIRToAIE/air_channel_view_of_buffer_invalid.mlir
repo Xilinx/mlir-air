@@ -7,7 +7,7 @@
 
 // RUN: not air-opt %s -air-to-aie='device=npu2 row-offset=2' 2>&1 | FileCheck %s
 
-// CHECK: error: 'air.channel.put' op moves a subview of its buffer that a BD cannot address
+// CHECK: error: 'air.channel.put' op moves a view of its buffer that a BD cannot address
 
 // A strided subview: every other element. One contiguous BD on the buffer
 // cannot move it.

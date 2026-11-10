@@ -88,25 +88,27 @@ struct AIRToAIEConversionOptions {
 };
 
 // Where a transfer through `view`, a view of an L1 buffer, starts in the
-// buffer, in elements. Only a subview moves the start. A chain with one is
-// accepted when it selects a contiguous run of the buffer at a static offset:
-// subviews, reshapes and casts, ending in the canonical strides of its shape.
-// 0 for a chain without a subview; failure for one a BD cannot address.
-static FailureOr<int64_t> getViewStartInBuffer(Value view) {
-  bool subview = false, layoutKept = true;
+// buffer, in elements. A subview or a reinterpret_cast can move the start. A
+// chain with one is accepted when it selects a contiguous run of the buffer at
+// a static offset: subviews, reinterpret_casts, reshapes and casts, which keep
+// the view's offset from the buffer in its layout, ending in the canonical
+// strides of its shape. 0 for a chain with neither, or a view of another
+// buffer than `buffer` (the other end of a two-ended copy); failure for one
+// a BD cannot address.
+static FailureOr<int64_t> getViewStartInBuffer(Value view, Operation *buffer) {
+  bool moved = false, layoutKept = true;
+  Operation *root = nullptr;
   for (Value v = view; Operation *def = v.getDefiningOp();) {
-    if (isa<AIE::BufferOp>(def))
-      break;
+    root = def;
     if (!isa<ViewLikeOpInterface, CastOpInterface>(def))
       break;
-    subview |= isa<memref::SubViewOp>(def);
-    // These keep the view's offset from the buffer in its layout.
+    moved |= isa<memref::SubViewOp, memref::ReinterpretCastOp>(def);
     layoutKept &=
-        isa<memref::SubViewOp, memref::ExpandShapeOp, memref::CollapseShapeOp,
-            memref::CastOp, memref::ReinterpretCastOp>(def);
+        isa<memref::SubViewOp, memref::ReinterpretCastOp, memref::ExpandShapeOp,
+            memref::CollapseShapeOp, memref::CastOp>(def);
     v = def->getOperand(0);
   }
-  if (!subview)
+  if (!moved || root != buffer)
     return 0;
   auto ty = dyn_cast<MemRefType>(view.getType());
   SmallVector<int64_t> strides;
@@ -8898,12 +8900,13 @@ public:
 
     int64_t len = getMemcpySizesAsInt(memref, sizes);
     int64_t offset = air::get1DOffset(offsets, strides);
-    // A transfer through a subview of the buffer (maybe behind a reshape)
-    // starts where the subview does.
-    auto viewStart = getViewStartInBuffer(memref);
+    // A transfer through a subview of this BD's buffer (maybe behind a
+    // reshape) starts where the subview does. (The other end of a two-ended
+    // copy is another BD's.)
+    auto viewStart = getViewStartInBuffer(memref, bufferOp.getOperation());
     if (failed(viewStart))
       return memcpyOp->emitOpError(
-          "moves a subview of its buffer that a BD cannot address: it must "
+          "moves a view of its buffer that a BD cannot address: it must "
           "select a contiguous run of the buffer at a static offset");
     offset += *viewStart;
 
