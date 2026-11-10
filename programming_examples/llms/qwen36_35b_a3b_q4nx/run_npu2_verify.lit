@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 //
 // Qwen3.6-35B-A3B verify: the MoE block, a GDN layer, an attention layer and
-// the LM head each against the CPU reference; the 40-layer decode's greedy
-// tokens against the reference; the reference's layers against HF
-// transformers' fed the same weights.
+// the LM head each against the CPU reference; the fused prefill's last logits
+// against it; the prompt prefilled into the 40-layer decode, its greedy tokens
+// against the reference; the reference's layers against HF transformers' fed
+// the same weights.
 //
 // REQUIRES: ryzen_ai_npu2, peano, hfweights_fastflowlm_qwen3_6_35b_a3b_npu2
 //
@@ -16,6 +17,9 @@
 // CHECK: PASS!
 // CHECK: PASS!
 // CHECK: PASS!
+// CHECK: tokens: logits cos
+// CHECK: PASS!
+// CHECK: prefill of {{[0-9]+}} tokens
 // CHECK: ' is Paris
 // CHECK: PASS!
 // CHECK: PASS!

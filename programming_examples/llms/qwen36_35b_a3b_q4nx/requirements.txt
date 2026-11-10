@@ -1,0 +1,20 @@
+# Additional Python packages for the Qwen3.6-35B-A3B Q4NX example.
+#
+# These are *on top of* the mlir-air base environment (which already provides
+# numpy, ml_dtypes, pyxrt, etc.). Install with:
+#     pip install -r requirements.txt
+
+# Download the model.q4nx bundle, its tokenizer and config from the Hub at
+# their pinned revision.
+huggingface_hub
+tokenizers
+
+# The CPU reference, the rotary table and the host side of the prefill.
+torch
+
+# `make verify` checks the CPU reference against transformers' Qwen3.5-MoE
+# layers (qwen3_5_moe) fed the bundle's weights.
+transformers
+
+# Serialises the NPU between concurrent runs.
+filelock

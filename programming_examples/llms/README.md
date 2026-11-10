@@ -37,6 +37,7 @@ The remaining models were developed directly in MLIR-AIR.
 | **Qwen3.5-0.8B Q4NX** | `FastFlowLM/Qwen3.5-0.8B-NPU2` | 24 | 1024 / 256 / 3584 | GQA 8Q/2KV | **hybrid Gated DeltaNet-attention** — 18 of 24 layers are Gated DeltaNet linear attention (FP32 recurrent state); gated attention with QK-norm, partial RoPE 64/256; Q4K + Q8 weights, tied head, vocab 248320; decode on the `fused_decode_gdn` fork | prefill + decode |
 | **d3-edge** | `vllm-sr/d3-edge` | 12 | 1024 / 256 / 3584 | GQA 8Q/2KV, **noncausal** | Qwen3.5-0.8B-derived decision model: one forward pass per System One question, 255-way FP32 readout of the last row instead of an LM head; noncausal full attention (`attn_bfp16` noncausal mode), 6 of 12 layers Gated DeltaNet; BF16 weights; [d3_edge](d3_edge/) | prefill only |
 | **d3-lite Q4NX** | `FastFlowLM/D3-Lite-NPU2` | 24 | 1024 / 256 / 3584 | GQA 8Q/2KV, **noncausal** | as d3-edge, 18 of 24 layers Gated DeltaNet; Q4K + Q8 weights of FastFlowLM's package; [d3_lite_q4nx](d3_lite_q4nx/) | prefill only |
+| **Qwen3.6-35B-A3B Q4NX** | `FastFlowLM/Qwen3.6-35B-A3B-NPU2` | 40 | 2048 / 256 / 512 per expert | GQA 16Q/2KV | **MoE**: 256 experts, top 8, plus a shared expert; hybrid Gated DeltaNet-attention (30 of 40 layers Gated DeltaNet, 32 value / 16 key heads); Q4_K weights, Q8 LM head, vocab 248320; [qwen36_35b_a3b_q4nx](qwen36_35b_a3b_q4nx/) | prefill + decode |
 
 ### Affine-Q4 deployments with BFP16 prefill
 
@@ -177,6 +178,7 @@ llms/
 ├── qwen3_1_7b/         # Qwen3-1.7B    (QK-norm, head_dim=128)
 ├── qwen3_4b/           # Qwen3-4B      (QK-norm, decoupled q_dim=4096)
 ├── qwen3_8b_q4nx/      # Q4NX 4-bit Qwen3-8B (fused decode, split weight BOs)
+├── qwen36_35b_a3b_q4nx/  # Q4NX Qwen3.6-35B-A3B MoE (one-dispatch decode, fused prefill)
 ├── whisper_v3_turbo_q4nx/  # Q4NX Whisper large-v3-turbo (speech to text)
 ├── shared/
 │   ├── infra/          # KernelCache, profiling, external-kernel compilation,
