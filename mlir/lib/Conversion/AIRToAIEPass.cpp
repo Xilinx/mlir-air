@@ -8804,8 +8804,10 @@ public:
         useSharedL1LockCounts
             ? std::pair<int64_t, int64_t>(*sharedLockCount, *sharedLockCount)
         : useChainLockCounts ? std::make_pair<int64_t, int64_t>(1, 1)
-        : lockCount
-            ? std::make_pair(*lockCount, *lockCount)
+        : lockCount          ? std::make_pair(*lockCount, *lockCount)
+        : !tile.isMemTile()
+            ? air::getLockValuePair(targetModel, bufferOp->getResult(0),
+                                    memcpyOp.getOperation())
             : air::getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
       lockAqValue = UsesSemaphoreLocks ? aie2LockVal.first : 0;
@@ -8861,6 +8863,16 @@ public:
 
     int64_t len = getMemcpySizesAsInt(memref, sizes);
     int64_t offset = air::get1DOffset(offsets, strides);
+    // A transfer through a view of the buffer (a subview, maybe behind a
+    // reshape) starts where the view does.
+    if (auto viewTy = dyn_cast<MemRefType>(memref.getType());
+        viewTy && memref.getDefiningOp<ViewLikeOpInterface>()) {
+      SmallVector<int64_t> viewStrides;
+      int64_t viewOffset = 0;
+      if (succeeded(viewTy.getStridesAndOffset(viewStrides, viewOffset)) &&
+          ShapedType::isStatic(viewOffset))
+        offset += viewOffset;
+    }
 
     Value length =
         arith::ConstantIndexOp::create(b, memcpyOp.getLoc(), len)->getResult(0);

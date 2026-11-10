@@ -1798,6 +1798,48 @@ scf::ForOp getScfForFromVal(Value val) {
   return scf::ForOp();
 }
 
+// The offset at which `op` starts on the split dimension, in its first trip
+// of the scf.for its offset walks with: the part of the buffer it belongs to.
+std::optional<int> getSplitPartitionKey(air::ChannelInterface op,
+                                        int offsetDim) {
+  Value offsetVal = air::getOffsetsAsValues(op)[offsetDim];
+  if (auto offset = getConstantIntValue(offsetVal))
+    return *offset;
+  // Variadic offset (induction variable to an scf.for).
+  auto forOp = getScfForFromVal(offsetVal);
+  if (!forOp)
+    return std::nullopt;
+  auto lb = getConstantIntValue(forOp.getLowerBound());
+  if (!lb)
+    return std::nullopt;
+  // Get any existing affine map operating on the target split dimension.
+  auto offsetDefOp = offsetVal.getDefiningOp();
+  affine::AffineApplyOp apply;
+  if (auto applyOp = dyn_cast_if_present<affine::AffineApplyOp>(offsetDefOp))
+    apply = applyOp;
+  else if (auto execOp = dyn_cast_if_present<air::ExecuteOp>(offsetDefOp))
+    apply = dyn_cast_if_present<affine::AffineApplyOp>(
+        execOp.getChildOps().front());
+  if (!apply)
+    return *lb;
+  SmallVector<std::optional<int64_t>> sym_ints;
+  SmallVector<std::optional<int64_t>> dim_ints;
+  for (auto oper : apply.getSymbolOperands()) {
+    if (auto constVal = getConstantIntValue(oper))
+      sym_ints.push_back(constVal);
+    else
+      sym_ints.push_back(lb);
+  }
+  for (auto oper : apply.getDimOperands()) {
+    if (auto constVal = getConstantIntValue(oper))
+      dim_ints.push_back(constVal);
+    else
+      dim_ints.push_back(lb);
+  }
+  return air::evaluateConstantsInMap(apply.getAffineMap(), sym_ints, dim_ints,
+                                     op->getContext());
+}
+
 // Partition L2 memref.
 void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
     SmallVector<air::ChannelPutOp> &puts, SmallVector<air::ChannelGetOp> &gets,
@@ -1830,57 +1872,16 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
 
   // Get map of channel ops
   auto getChanOpPartitionsMap =
-      [ctx](std::map<int, SmallVector<air::ChannelInterface>> &chanOpPartitions,
-            SmallVector<int> &keys, int offsetDim, air::ChannelInterface op) {
-        auto offset =
-            getConstantIntValue(air::getOffsetsAsValues(op)[offsetDim]);
-        int offset_key = -1;
-        if (offset)
-          offset_key = *offset; // Const offset.
-        else { // Variadic offset (induction variable to an scf.for).
-          auto forOp = getScfForFromVal(air::getOffsetsAsValues(op)[offsetDim]);
-          if (!forOp)
-            return;
-          auto lb = getConstantIntValue(forOp.getLowerBound());
-          if (!lb)
-            return;
-          // Get any existing affine map operating on the target split
-          // dimension.
-          auto offsetDefOp =
-              air::getOffsetsAsValues(op)[offsetDim].getDefiningOp();
-          affine::AffineApplyOp apply;
-          if (auto applyOp =
-                  dyn_cast_if_present<affine::AffineApplyOp>(offsetDefOp)) {
-            apply = applyOp;
-          } else if (auto execOp =
-                         dyn_cast_if_present<air::ExecuteOp>(offsetDefOp)) {
-            apply = dyn_cast_if_present<affine::AffineApplyOp>(
-                execOp.getChildOps().front());
-          }
-          if (apply) {
-            SmallVector<std::optional<int64_t>> sym_ints;
-            SmallVector<std::optional<int64_t>> dim_ints;
-            for (auto oper : apply.getSymbolOperands()) {
-              if (auto constVal = getConstantIntValue(oper))
-                sym_ints.push_back(constVal);
-              else
-                sym_ints.push_back(lb);
-            }
-            for (auto oper : apply.getDimOperands()) {
-              if (auto constVal = getConstantIntValue(oper))
-                dim_ints.push_back(constVal);
-              else
-                dim_ints.push_back(lb);
-            }
-            auto key_opt = air::evaluateConstantsInMap(apply.getAffineMap(),
-                                                       sym_ints, dim_ints, ctx);
-            if (!key_opt)
-              return;
-            offset_key = *key_opt;
-          } else {
-            offset_key = *lb;
-          }
-        }
+      [&](std::map<int, SmallVector<air::ChannelInterface>> &chanOpPartitions,
+          SmallVector<int> &keys, int offsetDim, air::ChannelInterface op) {
+        // A part's start, where the analysis gave one; else the op's own.
+        auto &[dim, map, partOffset, size, stride] = opToSplitInfoMap[op];
+        std::optional<int> key = getSplitPartitionKey(op, offsetDim);
+        if (!map && partOffset)
+          key = *partOffset;
+        if (!key)
+          return;
+        int offset_key = *key;
         if (offset_key < 0)
           return;
         push_back_if_unique<int>(keys, offset_key);
@@ -1904,6 +1905,9 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
 
   OpBuilder builder(allocOp);
   SmallVector<scf::ForOp> mutatedScfForOps;
+  // Ops sharing one offset (the K steps of one instance) share its apply:
+  // cancel the key out of it once.
+  llvm::SmallPtrSet<Operation *, 8> rebasedApplies;
   for (auto key : keys) {
     SmallVector<int64_t> newMemrefShape;
     for (unsigned i = 0; i < air::getTensorShape(ty).size(); i++) {
@@ -1913,13 +1917,16 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       auto &[splitInfoDimOnOffsets, splitAffineMap, splitOffset, splitSize,
              splitStride] = opToSplitInfoMap[op];
       int offsetDim = splitInfoDimOnOffsets;
+      // Get post-splitting size at split_dim from allocOp attributes. That
+      // size is in the memref's terms, whatever the rank of the op's access
+      // pattern.
+      if (splitSize) {
+        newMemrefShape[memrefDim] = *splitSize;
+        break;
+      }
       if (air::getSizesAsValues(op).size() != newMemrefShape.size())
         continue;
-
-      // Get post-splitting size at split_dim from allocOp attributes.
-      if (splitSize)
-        newMemrefShape[memrefDim] = *splitSize;
-      else {
+      {
         auto offset =
             getConstantIntValue(air::getOffsetsAsValues(op)[offsetDim]);
         if (offset)
@@ -1994,9 +2001,9 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       auto offsetEntry = mixedOffsets[offsetDim];
       auto offsetVal = dyn_cast_if_present<Value>(offsetEntry);
       Operation *defOp = offsetVal ? offsetVal.getDefiningOp() : nullptr;
-      if (getConstantIntValue(offsetEntry)) {
-        // Const offset. Reset offset to 0.
-        mixedOffsets[offsetDim] = builder.getIndexAttr(0);
+      if (auto constOffset = getConstantIntValue(offsetEntry)) {
+        // Const offset. Rebase it onto the part.
+        mixedOffsets[offsetDim] = builder.getIndexAttr(*constOffset - key);
         op.setMixedOffsets(mixedOffsets);
       } else if (defOp) {
         // Variadic offset. Reset const operands of apply to 0.
@@ -2022,11 +2029,13 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
           return;
         }
         // Set map's expressions to cancel out each key's offset
-        auto applyExpr = apply.getMap().getResult(0);
-        applyExpr = applyExpr - key;
-        apply.setMap(AffineMap::get(apply.getDimOperands().size(),
-                                    apply.getSymbolOperands().size(),
-                                    applyExpr));
+        if (rebasedApplies.insert(apply).second) {
+          auto applyExpr = apply.getMap().getResult(0);
+          applyExpr = applyExpr - key;
+          apply.setMap(AffineMap::get(apply.getDimOperands().size(),
+                                      apply.getSymbolOperands().size(),
+                                      applyExpr));
+        }
       }
 
       // Update strides (contiguous, row-major) after memref tiling.
@@ -2067,6 +2076,10 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
 std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
     SetVector<air::ChannelInterface> putgets, SmallVector<int> memrefShape) {
   std::optional<int> memrefDim = std::nullopt;
+  // The dims in which every pair of instances differs. A dim only some pairs
+  // differ in, like a K step two instances share, does not tell the
+  // instances' parts apart.
+  std::optional<llvm::SmallSetVector<int, 4>> everyPair;
   for (unsigned i = 0; i < putgets.size() - 1; i++) {
     for (unsigned j = i + 1; j < putgets.size(); j++) {
       air::ChannelInterface ci = putgets[i];
@@ -2085,23 +2098,33 @@ std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
         continue;
       auto offsetZip = llvm::zip_equal(air::getOffsetsAsValues(ci),
                                        air::getOffsetsAsValues(cj));
-      auto d =
-          llvm::find_if(offsetZip, [](std::tuple<Value, Value> offsetPair) {
-            auto [o1, o2] = offsetPair;
-            auto defO1 = o1.getDefiningOp();
-            auto defO2 = o2.getDefiningOp();
-            if (defO1 && defO2) {
-              if (air::isEquivalentTo(defO1, defO2))
-                return false;
-              else
-                return true;
-            }
+      auto differs = [](std::tuple<Value, Value> offsetPair) {
+        auto [o1, o2] = offsetPair;
+        auto defO1 = o1.getDefiningOp();
+        auto defO2 = o2.getDefiningOp();
+        if (defO1 && defO2) {
+          if (air::isEquivalentTo(defO1, defO2))
             return false;
-          });
+          else
+            return true;
+        }
+        return false;
+      };
+      auto d = llvm::find_if(offsetZip, differs);
       if (d != offsetZip.end())
         memrefDim = std::distance(offsetZip.begin(), d);
+      llvm::SmallSetVector<int, 4> dims;
+      for (auto [pos, offsetPair] : llvm::enumerate(offsetZip))
+        if (differs(offsetPair))
+          dims.insert(pos);
+      if (!everyPair)
+        everyPair = dims;
+      else
+        everyPair->remove_if([&](int pos) { return !dims.contains(pos); });
     }
   }
+  if (everyPair && !everyPair->empty())
+    memrefDim = everyPair->front();
   // Match offset dims with memref dims.
   if (!memrefDim)
     return std::nullopt;
@@ -2470,13 +2493,41 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       auto apply = getAffineMapOnMemrefSplitDim(ci, offsetDim);
       if (!apply)
         return *step; // The offset is the induction variable itself.
-      if (!llvm::is_contained(apply.getMapOperands(), forOp.getInductionVar()))
+      Value iv = forOp.getInductionVar();
+      if (!llvm::is_contained(apply.getMapOperands(), iv))
         return std::nullopt;
-      auto coefficient =
-          air::getAffineApplyCoefficient(apply, forOp.getInductionVar());
-      if (!coefficient)
+      if (auto coefficient = air::getAffineApplyCoefficient(apply, iv))
+        return *coefficient * *step;
+      // Not linear in the IV, but maybe in the trip: `iv floordiv 4` over a
+      // step-4 loop advances one slice a trip. Write the IV as lb + step * trip
+      // and read the trip's coefficient.
+      auto lb = getConstantIntValue(forOp.getLowerBound());
+      if (!lb)
         return std::nullopt;
-      return *coefficient * *step;
+      AffineMap map = apply.getAffineMap();
+      MLIRContext *mapCtx = map.getContext();
+      unsigned numDims = map.getNumDims();
+      SmallVector<AffineExpr> dims, syms;
+      for (auto [pos, operand] : llvm::enumerate(apply.getMapOperands())) {
+        AffineExpr e = pos < numDims
+                           ? getAffineDimExpr(pos, mapCtx)
+                           : getAffineSymbolExpr(pos - numDims, mapCtx);
+        if (operand == iv)
+          e = e * *step + *lb;
+        (pos < numDims ? dims : syms).push_back(e);
+      }
+      map = simplifyAffineMap(
+          map.replaceDimsAndSymbols(dims, syms, numDims, map.getNumSymbols()));
+      std::vector<SmallVector<int64_t, 8>> flat;
+      if (map.getNumResults() != 1 ||
+          failed(getFlattenedAffineExprs(map, &flat)) ||
+          flat[0].size() != map.getNumInputs() + 1)
+        return std::nullopt;
+      int64_t perTrip = 0;
+      for (auto [pos, operand] : llvm::enumerate(apply.getMapOperands()))
+        if (operand == iv)
+          perTrip += flat[0][pos];
+      return perTrip;
     };
 
     for (unsigned i = 0; i < putgets.size(); i++) {
@@ -2542,10 +2593,117 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
 
       infoEntryTy newEntry = {*offsetDimOpt, applyMap, splitDimOffset,
                               splitDimSize, splitDimStrideFactor};
-      infoEntryMap[*splitDim].push_back(newEntry);
       opToSplitInfoMap[putgets[i]] = newEntry;
+      infoEntryMap[*splitDim].push_back(newEntry);
     }
 
+    // The part of the buffer a channel instance moves: from the lowest
+    // offset any of its transfers starts at to the highest one ends at. One
+    // consumer may take several slices one after the other (a core's two row
+    // blocks, its K steps), and those belong to one part. One entry per part:
+    // the single side is tiled into one piece per entry.
+    {
+      using InstanceKey = std::pair<StringRef, SmallVector<int64_t>>;
+      SmallVector<std::pair<InstanceKey, std::pair<int64_t, int64_t>>> spans;
+      bool known = true;
+      for (auto ci : putgets) {
+        auto it = opToSplitInfoMap.find(ci);
+        if (it == opToSplitInfoMap.end())
+          continue;
+        int offsetDim = std::get<0>(it->second);
+        // A walk that skips slices gathers a part from L3 with a stride; its
+        // parts are what the stride factor makes them.
+        if (std::get<4>(it->second)) {
+          known = false;
+          break;
+        }
+        auto key = getSplitPartitionKey(ci, offsetDim);
+        std::optional<int64_t> extent = std::get<3>(it->second);
+        if (!getScfForFromVal(air::getOffsetsAsValues(ci)[offsetDim]))
+          extent = getConstantIntValue(air::getSizesAsValues(ci)[offsetDim]);
+        SmallVector<int64_t> indices;
+        for (Value v : ci.getIndices()) {
+          auto c = getConstantIntValue(v);
+          if (!c)
+            known = false;
+          indices.push_back(c ? *c : -1);
+        }
+        if (!key || !extent || !known) {
+          known = false;
+          break;
+        }
+        InstanceKey inst = {ci.getChanName(), indices};
+        auto span =
+            llvm::find_if(spans, [&](auto &s) { return s.first == inst; });
+        if (span == spans.end())
+          spans.push_back({inst, {*key, *key + *extent}});
+        else
+          span->second = {
+              std::min<int64_t>(span->second.first, *key),
+              std::max<int64_t>(span->second.second, *key + *extent)};
+      }
+      // Parts: one per distinct start, of equal size, the buffer divided
+      // among them. The extents above count only the split dimension's own
+      // offset; an access pattern may also step over it from an outer
+      // dimension, so they bound a part from below.
+      SmallVector<std::pair<int64_t, int64_t>> parts;
+      for (auto &instSpan : spans) {
+        int64_t start = instSpan.second.first;
+        if (!llvm::any_of(parts, [&](auto p) { return p.first == start; }))
+          parts.push_back(instSpan.second);
+      }
+      int64_t dimSize = air::getTensorShape(memref.getType())[*splitDim];
+      if (known && !parts.empty() && dimSize % parts.size() == 0) {
+        int64_t partSize = dimSize / parts.size();
+        SmallVector<int64_t> starts;
+        for (auto &part : parts)
+          starts.push_back(part.first);
+        llvm::sort(starts);
+        for (unsigned x = 0; x + 1 < starts.size(); x++)
+          if (starts[x + 1] - starts[x] < partSize)
+            known = false;
+        for (auto &[inst, span] : spans)
+          if (span.second - span.first > partSize)
+            known = false;
+        for (auto &[inst, span] : spans)
+          span.second = span.first + partSize;
+        for (auto &part : parts)
+          part.second = part.first + partSize;
+      } else {
+        known = false;
+      }
+      if (known && !parts.empty() && (int)parts.size() <= tilingFactor) {
+        auto &entries = infoEntryMap[*splitDim];
+        entries.clear();
+        for (auto ci : putgets) {
+          auto it = opToSplitInfoMap.find(ci);
+          if (it == opToSplitInfoMap.end())
+            continue;
+          SmallVector<int64_t> indices;
+          for (Value v : ci.getIndices())
+            indices.push_back(*getConstantIntValue(v));
+          auto span =
+              llvm::find_if(spans, [&](auto &s) {
+                return s.first == InstanceKey{ci.getChanName(), indices};
+              })->second;
+          auto &[offsetDim, map, offset, size, stride] = it->second;
+          // The part's start is its key; no map applies to it.
+          map = AffineMap();
+          offset = span.first;
+          size = span.second - span.first;
+        }
+        for (auto part : parts)
+          for (auto ci : putgets) {
+            auto it = opToSplitInfoMap.find(ci);
+            if (it != opToSplitInfoMap.end() &&
+                std::get<2>(it->second) == part.first) {
+              entries.push_back(it->second);
+              break;
+            }
+          }
+        tilingFactor = parts.size();
+      }
+    }
     // Get output map.
     if (getChanCount(MM2SChannels) > 1 && getChanCount(S2MMChannels) > 1) {
       targetMemrefsToInfoMap[allocOp] = {"MM2SAndS2MMChannels", tilingFactor,

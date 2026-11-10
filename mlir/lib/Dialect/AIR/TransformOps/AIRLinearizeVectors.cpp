@@ -566,6 +566,30 @@ struct SinkNarrowF32BelowShuffle : public OpRewritePattern<vector::ShuffleOp> {
   }
 };
 
+// A rank-1 `shape_cast(transpose(...))` of shuffles of a smaller rank-1
+// value (a value per row, spread over its row): one shuffle of that value.
+// AIE2P lowers a 64-lane transpose to many shuffles.
+struct TransposedSpreadToShuffle
+    : public OpRewritePattern<vector::ShapeCastOp> {
+  using OpRewritePattern<vector::ShapeCastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::ShapeCastOp op,
+                                PatternRewriter &rewriter) const override {
+    VectorType rt = op.getResultVectorType();
+    if (rt.getRank() != 1 ||
+        !op.getSource().getDefiningOp<vector::TransposeOp>())
+      return failure();
+    SmallVector<int64_t> lanes;
+    Value base = traceLanes(op.getResult(), lanes);
+    auto bt = dyn_cast<VectorType>(base.getType());
+    if (base == op.getResult() || !bt || bt.getRank() != 1 ||
+        bt.getNumElements() >= rt.getNumElements())
+      return failure();
+    rewriter.replaceOpWithNewOp<vector::ShuffleOp>(op, base, base, lanes);
+    return success();
+  }
+};
+
 // A vector.extract_strided_slice of a register (not of an insert it would
 // fold with) that is not a half of it, as a vector.shuffle: the AIE lowering
 // extracts only register halves; LLVM lowers the shuffle.
@@ -1166,7 +1190,7 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
     target->walk([&](Operation *op) {
       if (isa<arith::AndIOp, vector::TransferReadOp, arith::AddFOp,
               arith::SubFOp, arith::MulFOp, arith::ExtFOp, arith::TruncFOp,
-              vector::FMAOp, vector::ShuffleOp>(op))
+              vector::FMAOp, vector::ShuffleOp, vector::ShapeCastOp>(op))
         ands.push_back(op);
     });
     RewritePatternSet unpackPatterns(ctx);
@@ -1176,6 +1200,7 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
     unpackPatterns.add<MulAddToFMA>(ctx, getContract(), /*benefit=*/2);
     unpackPatterns.add<SinkExtFBelowShuffle>(ctx, /*benefit=*/2);
     unpackPatterns.add<SinkNarrowF32BelowShuffle>(ctx, /*benefit=*/2);
+    unpackPatterns.add<TransposedSpreadToShuffle>(ctx, /*benefit=*/3);
     vector::ExtractStridedSliceOp::getCanonicalizationPatterns(unpackPatterns,
                                                                ctx);
     vector::ShuffleOp::getCanonicalizationPatterns(unpackPatterns, ctx);

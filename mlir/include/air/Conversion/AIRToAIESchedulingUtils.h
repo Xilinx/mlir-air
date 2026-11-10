@@ -126,7 +126,8 @@ getWrapsAndStrides(ArrayRef<OpFoldResult> memcpy_sizes,
                    ArrayRef<OpFoldResult> memcpy_strides, MLIRContext *ctx);
 
 std::pair<int64_t, int64_t>
-getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref);
+getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref,
+                 Operation *dmaOp = nullptr);
 
 std::pair<int64_t, int64_t>
 getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref,

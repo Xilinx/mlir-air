@@ -631,17 +631,32 @@ air::getWrapsAndStrides(ArrayRef<OpFoldResult> memcpy_sizes,
 
 std::pair<int64_t, int64_t>
 air::getLockValuePair(const AIE::AIETargetModel &targetModel,
-                      Value buffer_memref) {
+                      Value buffer_memref, Operation *dmaOp) {
   if (!targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks))
     return std::make_pair(0, 0);
 
   // Infer semaphore lock values using buffer op
-  // TODO: What if a buffer memref is read or written by multiple channels?
   if (!llvm::isa<BaseMemRefType>(buffer_memref.getType()))
     return std::make_pair(-1, -1);
+  // A compute tile's buffer that transfers on several channels move in turn
+  // (an input tile that later holds the output, say), with the core between
+  // them: each channel's DMA keeps its own count with the core, and the
+  // other channels' transfers are no part of it.
+  StringRef dmaChan;
+  if (auto chanOp = dyn_cast_if_present<air::ChannelInterface>(dmaOp)) {
+    llvm::SmallSet<StringRef, 2> chans;
+    for (auto user : buffer_memref.getUsers())
+      if (auto c = dyn_cast<air::ChannelInterface>(user))
+        chans.insert(c.getChanName());
+    if (chans.size() > 1)
+      dmaChan = chanOp.getChanName();
+  }
   int read_counter = 0;
   int write_counter = 0;
   for (auto user : buffer_memref.getUsers()) {
+    if (auto c = dyn_cast<air::ChannelInterface>(user))
+      if (!dmaChan.empty() && c.getChanName() != dmaChan)
+        continue;
     if (auto memcpyOp = dyn_cast_if_present<air::MemcpyInterface>(user)) {
       if (buffer_memref == memcpyOp.getSrcMemref())
         read_counter++;
@@ -989,14 +1004,12 @@ AIE::BufferOp getUnderlyingBufferOp(Value buffer) {
 
   // Case 2: Defined by a cast (e.g., memref.cast)
   if (auto castOp = buffer.getDefiningOp<CastOpInterface>())
-    if (auto innerBuffer = castOp->getOperand(0).getDefiningOp<AIE::BufferOp>())
-      return innerBuffer;
+    return getUnderlyingBufferOp(castOp->getOperand(0));
 
-  // Case 3: Defined by a view-like op (e.g., memref.subview)
+  // Case 3: Defined by a view-like op (e.g., memref.subview), or a chain of
+  // them (a memref.view of a shared byte buffer, then a reshape).
   if (auto viewLikeOp = buffer.getDefiningOp<ViewLikeOpInterface>())
-    if (auto innerBuffer =
-            viewLikeOp->getOperand(0).getDefiningOp<AIE::BufferOp>())
-      return innerBuffer;
+    return getUnderlyingBufferOp(viewLikeOp->getOperand(0));
 
   // No underlying BufferOp found
   return nullptr;

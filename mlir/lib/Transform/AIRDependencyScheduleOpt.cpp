@@ -5983,9 +5983,22 @@ private:
       }
       if (extra && !opToMergeWith(a, b))
         return false;
-      for (unsigned i = 0; i < aNest.size(); i++)
+      for (unsigned i = 0; i < aNest.size(); i++) {
         if (!areEquivalentControlLoops(aNest[i], bNest[i + extra]))
           return false;
+        // On a core, b's loop runs after a's. b's op moves into a's loop and
+        // runs in its trips; if b's loop also uses b's buffer, its trips no
+        // longer see the data their own trip brought.
+        auto bFor = dyn_cast<scf::ForOp>(bNest[i + extra]->getParentOp());
+        if (!bFor || aNest[i] == bNest[i + extra] ||
+            !bFor->getParentOfType<air::HerdOp>())
+          continue;
+        Value bMemref = cast<air::ChannelInterface>(b).getMemref();
+        if (llvm::any_of(bMemref.getUsers(), [&](Operation *user) {
+              return user != b && bFor->isAncestor(user);
+            }))
+          return false;
+      }
       return true;
     };
     for (unsigned i = 0; i < a_puts.size(); i++)
@@ -6493,9 +6506,11 @@ private:
       if (aHierSym && bHierSym && aHierSym.str() == bHierSym.str())
         return true;
     } else if (isa<affine::AffineIfOp>(a) && isa<affine::AffineIfOp>(b)) {
+      // Both arms of one affine.if run on different cores: spatially
+      // parallel ops, not mergeable in time. One arm runs its ops on the same
+      // cores one after another, as one loop body does.
       if (a == b)
-        return false; // Sharing the same affine.if means spatially parallel
-                      // ops. Cannot merge by for loop (i.e. in time).
+        return aBlock == bBlock;
       auto aIf = dyn_cast_if_present<affine::AffineIfOp>(a);
       auto bIf = dyn_cast_if_present<affine::AffineIfOp>(b);
       // Merging moves b's ops under a's guard. The guards must pick the same
