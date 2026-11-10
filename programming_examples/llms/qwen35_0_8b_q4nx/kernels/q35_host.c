@@ -11,10 +11,15 @@
 #include <stdint.h>
 #include <string.h>
 
-#define NH 16   // linear-attention heads (q, k and v)
-#define DK 128  // key / value head dim
-#define NC 6144 // conv channels: q | k | v
-#define NZ 2048 // z (output gate) width
+#ifndef NV
+#define NV 16 // linear-attention value heads
+#endif
+#ifndef NK
+#define NK NV // query / key heads, each shared by NV / NK value heads
+#endif
+#define DK 128                  // key / value head dim
+#define NC ((2 * NK + NV) * DK) // conv channels: q | k | v
+#define NZ (NV * DK)            // z (output gate) width
 #define TAPS 4
 #define VB 32 // state columns per scan task
 
@@ -58,12 +63,12 @@ static inline float sigm(float x) { return 1.f / (1.f + vexp(-x)); }
 
 // One chunk of a Gated DeltaNet layer.
 //   lin  bf16 [t, ldl]: q | k | v (NC raw, before the conv), then z (NZ)
-//   ba   bf16 [t, ldb]: b (NH), then a (NH)
+//   ba   bf16 [t, ldb]: b (NV), then a (NV)
 //   hist f32 [TAPS - 1, NC]: the raw q | k | v rows before the chunk; on
 //        return the chunk's last TAPS - 1 rows (earlier ones if t < 3)
-//   conv f32 [TAPS, NC], nega f32 [NH] (-exp(A_log)), dtb f32 [NH],
+//   conv f32 [TAPS, NC], nega f32 [NV] (-exp(A_log)), dtb f32 [NV],
 //   normw f32 [DK] (the gated norm's weight)
-//   state f32 [NH][DK][DK] (k, v), carried across chunks
+//   state f32 [NV][DK][DK] (k, v), carried across chunks
 //   u    f32 scratch [t + 3, NC], y f32 scratch [t, NC]
 //   out  f32 [t, NZ]: the out_proj's input
 void gdn_chunk(const uint16_t *lin, int ldl, const uint16_t *ba, int ldb, int t,
@@ -83,7 +88,7 @@ void gdn_chunk(const uint16_t *lin, int ldl, const uint16_t *ba, int ldb, int t,
   }
   memcpy(hist, X + (long)t * NC, sizeof(float) * (TAPS - 1) * NC);
   // the gates per row and head: beta = sigmoid(b), decay exp(g)
-  float beta[t][NH], decay[t][NH];
+  float beta[t][NV], decay[t][NV];
   // conv1d + SiLU into y (rows r of the output from X rows r..r+3), q and k
   // l2-normalized (q * DK^-0.5); written to out-of-place rows of y
 #pragma omp parallel for num_threads(nt) schedule(static)
@@ -97,18 +102,18 @@ void gdn_chunk(const uint16_t *lin, int ldl, const uint16_t *ba, int ldb, int t,
       s = rbf(s);
       ur[c] = rbf(s * sigm(s));
     }
-    for (int h = 0; h < NH; h++) {
+    for (int h = 0; h < NV; h++) {
       beta[r][h] = rbf(sigm(bf2f(ba[(long)r * ldb + h])));
-      float av = bf2f(ba[(long)r * ldb + NH + h]) + dtb[h];
+      float av = bf2f(ba[(long)r * ldb + NV + h]) + dtb[h];
       float sp = av > 20.f ? av : log1pf(expf(av));
       decay[r][h] = expf(nega[h] * sp);
     }
-    for (int h = 0; h < 2 * NH; h++) { // q heads, then k heads
+    for (int h = 0; h < 2 * NK; h++) { // q heads, then k heads
       float *v = ur + h * DK, ss = 0.f;
       for (int i = 0; i < DK; i++)
         ss += v[i] * v[i];
       float inv = 1.f / sqrtf(ss + 1e-6f);
-      float sc = h < NH ? 1.f / sqrtf((float)DK) : 1.f;
+      float sc = h < NK ? 1.f / sqrtf((float)DK) : 1.f;
       for (int i = 0; i < DK; i++)
         v[i] = rbf(v[i] * inv) * sc;
     }
@@ -117,16 +122,17 @@ void gdn_chunk(const uint16_t *lin, int ldl, const uint16_t *ba, int ldb, int t,
   // the delta rule: every value column of a head's state evolves on its own,
   // so a task is a head's VB columns (16 KB, in L1); raw o into out
 #pragma omp parallel for num_threads(nt) schedule(static)
-  for (int task = 0; task < NH * (DK / VB); task++) {
+  for (int task = 0; task < NV * (DK / VB); task++) {
     int h = task / (DK / VB), c0 = task % (DK / VB) * VB;
+    int kh = h / (NV / NK);
     _mm_setcsr(_mm_getcsr() | 0x8040); // flush denormals (decaying states)
     float S[DK][VB] __attribute__((aligned(64)));
     for (int a = 0; a < DK; a++)
       memcpy(S[a], state + ((long)h * DK + a) * DK + c0, sizeof(S[a]));
     for (int r = 0; r < t; r++) {
-      const float *q = u + (long)r * NC + h * DK;
-      const float *k = u + (long)r * NC + NH * DK + h * DK;
-      const float *vv = u + (long)r * NC + 2 * NH * DK + h * DK + c0;
+      const float *q = u + (long)r * NC + kh * DK;
+      const float *k = u + (long)r * NC + NK * DK + kh * DK;
+      const float *vv = u + (long)r * NC + 2 * NK * DK + h * DK + c0;
       float eg = decay[r][h], bt = beta[r][h];
       // AVX-512, VB = 32 columns in two registers; four partial sums over
       // the rows of S break the dependency chains
@@ -173,7 +179,7 @@ void gdn_chunk(const uint16_t *lin, int ldl, const uint16_t *ba, int ldb, int t,
   // gated RMSNorm: bf16(rms(bf16(o))) * w * SiLU(z)
 #pragma omp parallel for num_threads(nt) schedule(static)
   for (int r = 0; r < t; r++)
-    for (int h = 0; h < NH; h++) {
+    for (int h = 0; h < NV; h++) {
       float *o = out + (long)r * NZ + h * DK, ss = 0.f;
       for (int i = 0; i < DK; i++) {
         o[i] = rbf(o[i]);

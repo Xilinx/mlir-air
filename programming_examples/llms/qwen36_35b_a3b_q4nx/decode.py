@@ -31,6 +31,7 @@
 # row, and the attention cores mask by it. Every attention layer reads the
 # cache back whole, maxl positions.
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -735,7 +736,9 @@ class Q36Decoder:
     Per token the host writes x, the attention layers' RoPE rows and L, and
     swaps the conv caches' and the GDN states' in and out buffers."""
 
-    def __init__(self, arts, args, lm_args, waves, pw, qkn, params):
+    def __init__(self, arts, args, lm_args, waves, pw, qkn, params, we_slack=0):
+        """we_slack: bytes past the experts (args[0]) that a reader of WE
+        other than this decode may touch."""
         import pyxrt as xrt
 
         from decode_elf import param_writers
@@ -746,10 +749,12 @@ class Q36Decoder:
         self.xrt, self.waves, self.pw, self.qkn = xrt, waves, pw, qkn
         dev = xrt.device(0)
 
-        def bo(t):
+        def bo(t, extra=0):
             b = np.ascontiguousarray(t).view(np.uint8).ravel()
-            o = xrt.ext.bo(dev, b.nbytes)
-            np.frombuffer(o.map(), np.uint8)[:] = b
+            o = xrt.ext.bo(dev, b.nbytes + extra)
+            m = np.frombuffer(o.map(), np.uint8)
+            m[: b.nbytes] = b
+            m[b.nbytes :] = 0
             o.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
             return o
 
@@ -760,7 +765,7 @@ class Q36Decoder:
             except RuntimeError:  # a repeated launch's kernel sits in the segment
                 return ctx, xrt.ext.kernel(ctx, art.kernel.replace("main:", "seg:"))
 
-        self.bos = [bo(t) for t in args]
+        self.bos = [bo(t, we_slack if i == 0 else 0) for i, t in enumerate(args)]
         self.ctx, kern = kernel(arts[0])
         self.run = xrt.run(kern)
         for i, b in enumerate(self.bos):
@@ -794,21 +799,52 @@ class Q36Decoder:
             self.run.set_arg(a, self.bos[a])
             self.run.set_arg(b, self.bos[b])
 
-    def step(self, x, L):
-        """Decode x at position L - 1; returns the logits."""
+    def _go(self, runs, L):
         import lm_head as LM
 
         xrt = self.xrt
-        self._set(x, L)
-        for r in (self.run, self.lrun):
+        for r in runs:
             r.start()
             st = r.wait(120000)
             if st != xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED:
                 raise RuntimeError(f"dispatch at L={L} ended in {st}")
-        self._swap()
         yb = self.lbos[-1]
         yb.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
         return LM.unpack_logits(np.frombuffer(yb.map(), bfloat16)).astype(np.float32)
+
+    def step(self, x, L):
+        """Decode x at position L - 1; returns the logits."""
+        self._set(x, L)
+        logits = self._go((self.run, self.lrun), L)
+        self._swap()
+        return logits
+
+    def seed(self, pf, conv_w):
+        """A prefill's state as the next token's inputs: each attention
+        layer's K and V rows, each Gated DeltaNet layer's conv cache (its
+        weights conv_w) and state."""
+        xrt, n = self.xrt, pf.n
+        kv = np.frombuffer(self.bos[6].map(), bfloat16).reshape(self.waves, 2, -1, DK)
+        cw = np.frombuffer(self.bos[4].map(), bfloat16).reshape(len(conv_w), NCH, -1)
+        s = np.frombuffer(self.bos[5].map(), np.float32)
+        s = s.reshape(len(conv_w), NV, R, HD * 32)
+        g = 0
+        for j in range(len(pf.layers)):
+            if j in pf.kv:
+                for h in range(2):
+                    kv[j // self.pw, h, :n] = np.concatenate(pf.kv[j][h])
+            else:
+                cw[g] = G.conv_cache(pf.conv[j], conv_w[g])
+                s[g] = G.state_chunks(pf.state[j])
+                g += 1
+        for i in (4, 5, 6):
+            self.bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+
+    def head(self, x, L):
+        """The LM head alone on the last layer's output x, at position L - 1."""
+        self.xmap[self.waves, self.pw - 1] = x
+        self.bos[1].sync(self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+        return self._go((self.lrun,), L)
 
     def bench(self, x, L, n):
         """n tokens at context length L, the layers' run then the LM head's;
@@ -864,6 +900,18 @@ def main():
     ap.add_argument("-p", "--print-module-only", action="store_true")
     ap.add_argument("--compile-only", action="store_true")
     ap.add_argument("--prompt", default="The capital of France")
+    ap.add_argument(
+        "--prompt-len", type=int, default=0, help="repeat the prompt to N tokens"
+    )
+    ap.add_argument(
+        "--fused-dir",
+        type=Path,
+        default=os.environ.get("FUSED_PREFILL_DIR") or None,
+        help="prefill on this fused prefill build (fused_build.py)",
+    )
+    ap.add_argument(
+        "--warm", action="store_true", help="prefill once untimed before timing"
+    )
     ap.add_argument("--gen", type=int, default=8, help="tokens to generate")
     ap.add_argument("--maxl", type=int, default=64, help="context the build holds")
     ap.add_argument("--waves", type=int, default=W.N_LAYERS // PER_WAVE)
@@ -884,9 +932,21 @@ def main():
     w = W.Qwen36Q4nx()
     tok = w.tokenizer()
     ids = tok.encode(a.prompt).ids
+    if a.prompt_len:
+        ids = (ids * (a.prompt_len // len(ids) + 1))[: a.prompt_len]
     pw = PER_WAVE
     layers = list(range(pw * a.waves))
     assert len(ids) + a.gen <= a.maxl
+    # FLM prefills the whole prompt and takes the first token from the LM head
+    # on its last row; the fused prefill takes prompts up to its build's length
+    fused = a.fused_dir is not None and len(layers) == W.N_LAYERS
+    if fused:
+        import prefill as P
+
+        manifest = a.fused_dir / "manifest.json"
+        if not manifest.is_file():
+            sys.exit(f"{a.fused_dir}: no fused prefill build (fused_build.py)")
+        fused = len(ids) <= json.loads(manifest.read_text())["max_len"]
     arts = compile_all(a.waves, a.maxl)
     t0 = time.time()
     we, wd, M, qkn, conv_w = layer_inputs(w, layers, a.waves)
@@ -902,32 +962,64 @@ def main():
     # the device is held from the first context to the last dispatch
     lock = filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock"))
     with lock:
-        npu = Q36Decoder(arts, args, lm_args, a.waves, pw, qkn, arts[2])
+        npu = Q36Decoder(
+            arts, args, lm_args, a.waves, pw, qkn, arts[2], P.WE_SLACK if fused else 0
+        )
         del we, wd, args, lm_args
         print(f"weights loaded in {time.time() - t0:.0f}s")
 
         def embed(t):
             return np.asarray(w.embed([t])[0]).astype(bfloat16)
 
-        # the prompt goes through the decode one token at a time
         ref = None if a.no_ref else Reference(w, layers=layers)
-        toks, ok = list(ids), True
-        for i in range(len(ids) + a.gen - 1):
-            got = npu.step(embed(toks[i]), i + 1)
+        toks, ok, times = list(ids), True, []
+
+        def check(i, got, new):
+            nonlocal ok
             nxt = int(np.argmax(got))
             if ref is not None:
-                want = ref.forward([toks[i]]).float().numpy()
+                want = ref.forward(new).float().numpy()
                 ok &= nxt == int(np.argmax(want))
                 print(
                     f"L={i + 1}: next {nxt} (reference {int(np.argmax(want))}),"
                     f" logits corr {G.corr(got, want)[0]:.4f}"
                 )
+            return nxt
+
+        first, t_prefill = 0, 0.0
+        if fused:
+            pf = P.Qwen36Prefill(a.fused_dir, w, layers, we=(npu.bos[0], 0))
+            if a.warm:
+                pf.prefill(ids)
+            t0 = time.perf_counter()
+            x = pf.prefill(ids)
+            npu.seed(pf, conv_w)
+            got = npu.head(x[-1].astype(bfloat16), len(ids))
+            t_prefill = time.perf_counter() - t0
+            first = len(ids)
+            print(f"prefill of {first} tokens: {t_prefill:.3f}s")
+            toks.append(check(first - 1, got, ids))
+        # without the prefill the prompt goes through the decode a token at a time
+        for i in range(first, len(ids) + a.gen - 1):
+            t0 = time.perf_counter()
+            got = npu.step(embed(toks[i]), i + 1)
+            times.append(time.perf_counter() - t0)
+            nxt = check(i, got, [toks[i]])
             if i + 1 >= len(ids):
                 toks.append(nxt)
         print(repr(a.prompt), "->", repr(tok.decode(toks[len(ids) :])))
+        n_prompt = max(0, len(ids) - first)
+        print(f"Time to first token (TTFT): {t_prefill + sum(times[:n_prompt]):.3f}s")
+        if len(times) > n_prompt:
+            gen = np.array(times[n_prompt:]) * 1e3
+            print(
+                f"Decode: median {np.median(gen):.2f} ms ({1e3 / np.median(gen):.2f} tok/s)"
+            )
         if a.bench:
             npu.bench(embed(toks[-1]), a.bench_l or len(toks), a.bench)
         del npu
+        if fused:
+            del pf
     if ref is not None:
         print("PASS!" if ok else "failed.")
     return 0 if ok else 1

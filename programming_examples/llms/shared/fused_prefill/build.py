@@ -180,6 +180,7 @@ def build_kernels(out, cfg):
             f"-DDIM_N={n}",
             f"-DDIM_K={k}",
             *(["-DGEMM_MXFP4"] if cfg.mxfp4 else []),
+            *(["-DGEMM_Q4K"] if cfg.q4k else []),
         ],
         [cc, *f, "-c", kern / "gemv_q4.cc", "-o", out / "gemv_q4.o"],
     ]

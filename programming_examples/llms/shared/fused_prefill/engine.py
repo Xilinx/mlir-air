@@ -174,16 +174,23 @@ class Engine:
         return P.pack_bf16(w, self.gemm_format)
 
     def gemm_site(self, site, k, n, packed, wq):
-        """Load one weight matrix (packed by self.pack_q4 if wq, else
-        self.pack_bf16)."""
+        """Load one weight matrix (packed by self.pack_q4 if wq is 1, by
+        self.pack_bf16 if 0; Q4_K row groups [row groups * column blocks, 4,
+        block] if 3)."""
         fp = self.fp
         npd = P.n_pad(n)
         if k not in self.abuf:
             a, am = self._a_buf(k, 1)
             self.abuf[k] = dict(a=a, am=am[:, : k // D.TK, 0], last=None)
-        # the device's K steps past k read zero packets
-        kp = packed.shape[1] * D.k_pad(k) // k
-        packed = np.pad(packed, ((0, 0), (0, kp - packed.shape[1]), (0, 0)))
+        if wq == 3:
+            # the panels past n read zero blocks
+            ncb = k // D.Q4K_COLS
+            need = (npd // (2 * D.TN) - 1) * ncb + D.k_pad(k) // (2 * D.TK)
+            packed = np.pad(packed, ((0, max(0, need - len(packed))), (0, 0), (0, 0)))
+        else:
+            # the device's K steps past k read zero packets
+            kp = packed.shape[1] * D.k_pad(k) // k
+            packed = np.pad(packed, ((0, 0), (0, kp - packed.shape[1]), (0, 0)))
         w = fp.bo(packed.nbytes, 1)
         w.write(packed.tobytes(), 0)
         w.sync(TO)

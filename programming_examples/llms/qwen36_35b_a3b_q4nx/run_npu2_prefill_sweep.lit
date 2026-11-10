@@ -1,0 +1,16 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// Qwen3.6-35B-A3B TTFT vs prompt length: the prompt prefilled on the fused
+// prefill device, then the first token from the LM head.
+//
+// REQUIRES: ryzen_ai_npu2, peano, hfweights_fastflowlm_qwen3_6_35b_a3b_npu2
+//
+// RUN: mkdir -p test_peano_prefill_sweep
+// RUN: cd test_peano_prefill_sweep
+// RUN: %PYTHON %S/../bench/sweep_prefill.py --model-name qwen36_35b_a3b_q4nx --makefile %S/Makefile --lengths 128,512,2048 --peano-dir %PEANO_INSTALL_DIR --out qwen36_35b_a3b_q4nx.prefill_sweep.json
+// RUN: FileCheck %s < qwen36_35b_a3b_q4nx.prefill_sweep.json
+// CHECK: "model": "qwen36_35b_a3b_q4nx"
+// CHECK: "axis": "prefill_len"
+// CHECK: "prefill_len": 128
+// CHECK-NEXT: "ttft_ms": {{[0-9]}}
