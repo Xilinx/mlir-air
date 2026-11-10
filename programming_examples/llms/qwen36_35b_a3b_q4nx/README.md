@@ -142,7 +142,7 @@ make kernels                  # every kernel test
 | `run_npu2_compile.lit` | the decode and LM head ELFs compile; no NPU, no weights |
 | `run_npu2_verify.lit` | `make verify` |
 | `run_npu2_profile.lit` | decode time per token at a 1024-token context |
-| `run_npu2_sweep.lit` | decode tok/s at contexts 1024 and 4096 (`make profile-decode` through `bench/sweep_decode_runtime.py`) |
+| `run_npu2_sweep.lit` | decode tok/s at contexts 1024, 4096 and 8192 (`make profile-decode` through `bench/sweep_decode_runtime.py`) |
 | `run_npu2_prefill_sweep.lit` | TTFT at 128, 512 and 2048 tokens (`bench/sweep_prefill.py`) |
 
 ## Files
@@ -164,8 +164,7 @@ make kernels                  # every kernel test
   gate needs the bf16 HF checkpoint (about 70 GB). The reference is checked
   against transformers' layers on the bundle's weights instead.
 - The decode's KV cache length (`MAXL`) is compiled in, and every attention
-  layer reads it back whole each token. A cache of 8192 positions does not
-  build: its read-back needs more than the 16 buffer descriptors of the KV
-  shim channel.
+  layer reads it back whole each token, so a larger build is slower at every
+  context.
 - Prompts up to 4096 tokens (the prefill device's KV records).
 - The Gated DeltaNet recurrence of the prefill runs on the host.
