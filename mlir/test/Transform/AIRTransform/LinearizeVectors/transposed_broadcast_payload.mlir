@@ -48,3 +48,24 @@ func.func @row_shuffle(%s: memref<8xf32>, %a: memref<8xf32>, %o: memref<8xf32>) 
   vector.transfer_write %r, %o[%c0] {in_bounds = [true]} : vector<8xf32>, memref<8xf32>
   return
 }
+
+// The values picked from a shuffle's longer second operand: lanes 4 and 5 of
+// the shuffle are lanes 2 and 3 of %w, so the spread reads those.
+
+// CHECK-LABEL: @second_operand
+// CHECK: %[[W:.*]] = vector.transfer_read {{.*}} : memref<4xf32>, vector<4xf32>
+// CHECK: vector.shuffle %[[W]], %{{[^ ]*}} [2, 2, 2, 2, 3, 3, 3, 3] : vector<4xf32>, vector<4xf32>
+func.func @second_operand(%s: memref<2xf32>, %w: memref<4xf32>, %a: memref<8xf32>, %o: memref<8xf32>) {
+  %c0 = arith.constant 0 : index
+  %p = arith.constant 0.0 : f32
+  %sv = vector.transfer_read %s[%c0], %p {in_bounds = [true]} : memref<2xf32>, vector<2xf32>
+  %wv = vector.transfer_read %w[%c0], %p {in_bounds = [true]} : memref<4xf32>, vector<4xf32>
+  %x = vector.shuffle %sv, %wv [4, 5] : vector<2xf32>, vector<4xf32>
+  %b = vector.broadcast %x : vector<2xf32> to vector<4x2xf32>
+  %t = vector.transpose %b, [1, 0] : vector<4x2xf32> to vector<2x4xf32>
+  %tf = vector.shape_cast %t : vector<2x4xf32> to vector<8xf32>
+  %av = vector.transfer_read %a[%c0], %p {in_bounds = [true]} : memref<8xf32>, vector<8xf32>
+  %r = arith.mulf %av, %tf : vector<8xf32>
+  vector.transfer_write %r, %o[%c0] {in_bounds = [true]} : vector<8xf32>, memref<8xf32>
+  return
+}
