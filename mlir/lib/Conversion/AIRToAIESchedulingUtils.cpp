@@ -3181,7 +3181,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   // Distance still matters -- picking purely the emptiest tile scatters
   // readbacks away from their producers and cost ~1.8% decode throughput on
   // llama-1b. Rank by (distance from the producer column, channels used).
-  auto spreadShimLTO = [&]() -> AIE::LogicalTileOp {
+  auto spreadShimLTO = [&](int fromCol) -> AIE::LogicalTileOp {
     AIE::LogicalTileOp best = nullptr;
     std::pair<int, int> bestKey = {std::numeric_limits<int>::max(),
                                    std::numeric_limits<int>::max()};
@@ -3198,8 +3198,8 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
       if (used >= shim_dma_channels)
         continue;
       int ltCol = ltoBucketCol(lt);
-      int dist = (ltCol < 0 || col < 0) ? shim_dma_channels
-                                        : std::abs(ltCol - (int)col);
+      int dist = (ltCol < 0 || fromCol < 0) ? shim_dma_channels
+                                            : std::abs(ltCol - fromCol);
       std::pair<int, int> key = {dist, used};
       if (key < bestKey) {
         best = lt;
@@ -3211,7 +3211,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
 
   AIE::LogicalTileOp tileLT = nullptr;
   if (isPacketFlowOp && isHostReadback)
-    tileLT = spreadShimLTO();
+    tileLT = spreadShimLTO(col);
   if (!tileLT)
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
       if ((int)channelsUsedOn(lt).size() < shim_dma_channels) {
@@ -3242,6 +3242,21 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     }
     if (best)
       tileLT = best;
+  }
+  // Every shim column already has an LTO, so another one cannot be placed:
+  // share the nearest one with a free channel.
+  if (!tileLT && !isPacketFlowOp) {
+    int shimCols = 0;
+    for (int c = 0; c < device.getTargetModel().columns(); c++)
+      if (device.getTargetModel().isShimNOCTile(c, 0))
+        shimCols++;
+    int shimLTOs = llvm::count_if(
+        device.getBody()->getOps<AIE::LogicalTileOp>(),
+        [](AIE::LogicalTileOp lt) {
+          return lt.getTileType() == AIE::AIETileType::ShimNOCTile;
+        });
+    if (shimLTOs >= shimCols)
+      tileLT = spreadShimLTO(bucketCol);
   }
   if (!tileLT) {
     OpBuilder b(device);
