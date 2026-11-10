@@ -38,17 +38,81 @@ module attributes {transform.with_named_sequence} {
 
 // -----
 
-// Another element count cannot share the buffer.
-func.func @count(%x: f32) {
-  %a = memref.alloc() : memref<4x8xf32, 2>
+// A smaller buffer takes the start of the largest, kept though later in the
+// block: a subview of its first piece of the smaller one's size.
+// CHECK-LABEL: @smaller
+// CHECK: %[[A:.*]] = memref.alloc() : memref<4x8xf32, 2>
+// CHECK-NOT: memref.alloc
+// CHECK: %[[F:.*]] = memref.collapse_shape %[[A]] {{\[}}[0, 1]] : memref<4x8xf32, 2> into memref<32xf32, 2>
+// CHECK: %[[P:.*]] = memref.expand_shape %[[F]] {{\[}}[0, 1, 2]] output_shape [2, 4, 4]
+// CHECK: %[[B:.*]] = memref.subview %[[P]][0, 0, 0] [1, 4, 4] [1, 1, 1] : memref<2x4x4xf32, 2> to memref<4x4xf32, 2>
+// CHECK: linalg.fill ins(%{{.*}}) outs(%[[B]]
+// CHECK: linalg.fill ins(%{{.*}}) outs(%[[A]]
+func.func @smaller(%x: f32) {
   %b = memref.alloc() : memref<4x4xf32, 2>
+  %a = memref.alloc() : memref<4x8xf32, 2>
+  linalg.fill ins(%x : f32) outs(%b : memref<4x4xf32, 2>)
+  linalg.fill ins(%x : f32) outs(%a : memref<4x8xf32, 2>)
   return
 }
 
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
     %allocs = transform.structured.match ops{["memref.alloc"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-    // expected-error @below {{targets must have one element type, count and memory space}}
+    %one = transform.air.share_alloc %allocs : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// An element count that does not divide the largest cannot share the buffer.
+func.func @count(%x: f32) {
+  %a = memref.alloc() : memref<4x8xf32, 2>
+  %b = memref.alloc() : memref<3x4xf32, 2>
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %allocs = transform.structured.match ops{["memref.alloc"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    // expected-error @below {{a target's element count must divide the largest's}}
+    %one = transform.air.share_alloc %allocs : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// Another element type cannot share the buffer.
+func.func @type(%x: f32) {
+  %a = memref.alloc() : memref<4x8xf32, 2>
+  %b = memref.alloc() : memref<4x8xi32, 2>
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %allocs = transform.structured.match ops{["memref.alloc"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    // expected-error @below {{targets must have one element type and memory space}}
+    %one = transform.air.share_alloc %allocs : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// An empty target has no element count to divide the largest's.
+func.func @empty(%x: f32) {
+  %a = memref.alloc() : memref<0xf32, 2>
+  %b = memref.alloc() : memref<4x8xf32, 2>
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %allocs = transform.structured.match ops{["memref.alloc"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    // expected-error @below {{targets must have static, non-empty shapes and identity layouts}}
     %one = transform.air.share_alloc %allocs : (!transform.any_op) -> !transform.any_op
     transform.yield
   }
