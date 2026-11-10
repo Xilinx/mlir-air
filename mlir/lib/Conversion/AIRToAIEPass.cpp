@@ -87,6 +87,45 @@ struct AIRToAIEConversionOptions {
   unsigned stack_size;
 };
 
+// Where a transfer through `view`, a view of an L1 buffer, starts in the
+// buffer, in elements. A subview or a reinterpret_cast can move the start. A
+// chain with one is accepted when it selects a contiguous run of the buffer at
+// a static offset: subviews, reinterpret_casts, reshapes and casts, which keep
+// the view's offset from the buffer in its layout, ending in the canonical
+// strides of its shape. 0 for a chain with neither, or a view of another
+// buffer than `buffer` (the other end of a two-ended copy); failure for one
+// a BD cannot address.
+static FailureOr<int64_t> getViewStartInBuffer(Value view, Operation *buffer) {
+  bool moved = false, layoutKept = true;
+  Operation *root = nullptr;
+  for (Value v = view; Operation *def = v.getDefiningOp();) {
+    root = def;
+    if (!isa<ViewLikeOpInterface, CastOpInterface>(def))
+      break;
+    moved |= isa<memref::SubViewOp, memref::ReinterpretCastOp>(def);
+    layoutKept &=
+        isa<memref::SubViewOp, memref::ReinterpretCastOp, memref::ExpandShapeOp,
+            memref::CollapseShapeOp, memref::CastOp>(def);
+    v = def->getOperand(0);
+  }
+  if (!moved || root != buffer)
+    return 0;
+  auto ty = dyn_cast<MemRefType>(view.getType());
+  SmallVector<int64_t> strides;
+  int64_t offset = 0;
+  if (!layoutKept || !ty || !ty.hasStaticShape() ||
+      failed(ty.getStridesAndOffset(strides, offset)) ||
+      ShapedType::isDynamic(offset))
+    return failure();
+  int64_t expected = 1;
+  for (int i = ty.getRank() - 1; i >= 0; i--) {
+    if (ty.getDimSize(i) != 1 && strides[i] != expected)
+      return failure();
+    expected *= ty.getDimSize(i);
+  }
+  return offset;
+}
+
 // --- Runtime herd parameters via the scratchpad ---------------------------
 //
 // A herd's scalar operands reach its cores through the `__air_herd_rtp` buffer,
@@ -8861,6 +8900,15 @@ public:
 
     int64_t len = getMemcpySizesAsInt(memref, sizes);
     int64_t offset = air::get1DOffset(offsets, strides);
+    // A transfer through a subview of this BD's buffer (maybe behind a
+    // reshape) starts where the subview does. (The other end of a two-ended
+    // copy is another BD's.)
+    auto viewStart = getViewStartInBuffer(memref, bufferOp.getOperation());
+    if (failed(viewStart))
+      return memcpyOp->emitOpError(
+          "moves a view of its buffer that a BD cannot address: it must "
+          "select a contiguous run of the buffer at a static offset");
+    offset += *viewStart;
 
     Value length =
         arith::ConstantIndexOp::create(b, memcpyOp.getLoc(), len)->getResult(0);
