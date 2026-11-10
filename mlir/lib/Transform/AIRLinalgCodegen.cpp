@@ -3667,19 +3667,31 @@ transform::ShareAllocOp::apply(transform::TransformRewriter &rewriter,
       rewriter.moveOpBefore(kept, a);
   MemRefType keptTy = kept.getType();
   auto plain = [](MemRefType t) {
-    return t.hasStaticShape() && t.getLayout().isIdentity() && t.getRank() > 0;
+    return t.hasStaticShape() && t.getLayout().isIdentity() &&
+           t.getRank() > 0 && t.getNumElements() > 0;
   };
   if (!plain(keptTy))
-    return emitDefiniteFailure()
-           << "targets must have static shapes and identity layouts";
+    return emitDefiniteFailure() << "targets must have static, non-empty "
+                                    "shapes and identity layouts";
   for (auto a : ArrayRef(allocs).drop_front()) {
     MemRefType t = a.getType();
     if (!plain(t) || t.getElementType() != keptTy.getElementType() ||
-        t.getMemorySpace() != keptTy.getMemorySpace() ||
-        t.getNumElements() != keptTy.getNumElements())
+        t.getMemorySpace() != keptTy.getMemorySpace())
       return emitDefiniteFailure()
-             << "targets must have one element type, count and memory space";
+             << "targets must have one element type and memory space";
   }
+  // A smaller target takes the start of a larger kept buffer.
+  for (auto a : allocs)
+    if (a.getType().getNumElements() > kept.getType().getNumElements())
+      kept = a;
+  for (auto a : allocs)
+    if (a->isBeforeInBlock(kept))
+      rewriter.moveOpBefore(kept, a);
+  keptTy = kept.getType();
+  for (auto a : allocs)
+    if (keptTy.getNumElements() % a.getType().getNumElements())
+      return emitDefiniteFailure()
+             << "a target's element count must divide the largest's";
   // The kept buffer takes the largest alignment asked for, and is freed
   // where the last of the buffers was.
   std::optional<uint64_t> align;
@@ -3706,11 +3718,39 @@ transform::ShareAllocOp::apply(transform::TransformRewriter &rewriter,
     for (memref::DeallocOp d : deallocs)
       rewriter.eraseOp(d);
   }
-  for (auto a : ArrayRef(allocs).drop_front()) {
+  for (auto a : allocs) {
+    if (a == kept)
+      continue;
     MemRefType t = a.getType();
     Value v = kept.getResult();
     rewriter.setInsertionPoint(a);
-    if (t != keptTy) {
+    if (t.getNumElements() != keptTy.getNumElements()) {
+      // The start of the kept buffer: through one dimension, split into
+      // pieces of the target's size, the first piece in the target's shape.
+      Location loc = a.getLoc();
+      int64_t n = t.getNumElements();
+      if (keptTy.getRank() > 1) {
+        SmallVector<ReassociationIndices> toFlat(1);
+        for (int64_t i = 0; i < keptTy.getRank(); i++)
+          toFlat[0].push_back(i);
+        v = memref::CollapseShapeOp::create(rewriter, loc, v, toFlat);
+      }
+      SmallVector<int64_t> pieces = {keptTy.getNumElements() / n};
+      llvm::append_range(pieces, t.getShape());
+      SmallVector<ReassociationIndices> fromFlat(1);
+      for (size_t i = 0; i < pieces.size(); i++)
+        fromFlat[0].push_back(i);
+      v = memref::ExpandShapeOp::create(rewriter, loc, pieces, v, fromFlat);
+      SmallVector<OpFoldResult> offsets(pieces.size(),
+                                        rewriter.getIndexAttr(0));
+      SmallVector<OpFoldResult> sizes = {rewriter.getIndexAttr(1)};
+      for (int64_t d : t.getShape())
+        sizes.push_back(rewriter.getIndexAttr(d));
+      SmallVector<OpFoldResult> strides(pieces.size(),
+                                        rewriter.getIndexAttr(1));
+      v = memref::SubViewOp::create(rewriter, loc, t, v, offsets, sizes,
+                                    strides);
+    } else if (t != keptTy) {
       SmallVector<int64_t> fine;
       SmallVector<ReassociationIndices> fromKept, toTarget;
       if (commonRefinement(keptTy.getShape(), t.getShape(), fine, fromKept,

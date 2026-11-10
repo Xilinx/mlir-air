@@ -543,17 +543,21 @@ def ShareAllocOp : Op<Transform_Dialect, "air.share_alloc",
   let summary = "Use one buffer for several allocations that are never live together";
   let description = [{
     The targets are `memref.alloc` ops in one block, with static identity
-    layouts, one memory space, and the same element type and element count.
-    The first target is kept, moved ahead of the others in the block, and the
-    others are replaced by it: an alloc of the same type directly, one of a
-    different shape through reshapes of the kept buffer. Where both shapes
-    merge consecutive dimensions of a common finer shape, a
-    `memref.expand_shape` of the kept buffer to that shape and a
-    `memref.collapse_shape` from it to the target's (each left out where it
-    would change nothing), so that loads and stores through them fold into
-    the kept buffer; otherwise a `memref.collapse_shape` to one dimension and
-    a `memref.expand_shape` to the target's shape. Their `memref.dealloc` ops
-    are erased.
+    layouts, one memory space and one element type, each with an element
+    count that divides the largest's. The first of the largest targets is
+    kept, moved ahead of the others in the block, and the others are replaced
+    by it: an alloc of the same type directly, one of a different shape
+    through reshapes of the kept buffer. Where both shapes merge consecutive
+    dimensions of a common finer shape, a `memref.expand_shape` of the kept
+    buffer to that shape and a `memref.collapse_shape` from it to the
+    target's (each left out where it would change nothing), so that loads and
+    stores through them fold into the kept buffer; otherwise a
+    `memref.collapse_shape` to one dimension and a `memref.expand_shape` to
+    the target's shape. A target with fewer elements takes the kept buffer's
+    first elements: a `memref.collapse_shape` of it to one dimension, a
+    `memref.expand_shape` to pieces of the target's shape, and a
+    `memref.subview` of the first piece. Their `memref.dealloc` ops are
+    erased.
 
     The transform does not check lifetimes. The caller asserts that no two of
     the buffers hold live values at the same time, as for the buffers of two
