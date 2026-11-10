@@ -318,6 +318,10 @@ static Value traceLanes(Value v, SmallVector<int64_t> &lanes) {
       continue;
     }
     if (auto sh = dyn_cast_if_present<vector::ShuffleOp>(def)) {
+      // A shuffle of n-D vectors picks whole leading-dimension slices; its
+      // mask does not index lanes.
+      if (sh.getV1VectorType().getRank() != 1)
+        return v;
       int64_t n1 = sh.getV1VectorType().getNumElements();
       ArrayRef<int64_t> mask = sh.getMask();
       bool fromV1 =
@@ -327,7 +331,7 @@ static Value traceLanes(Value v, SmallVector<int64_t> &lanes) {
       if (!fromV1 && !fromV2 && sh.getV1() != sh.getV2())
         return v;
       for (int64_t &l : lanes)
-        l = mask[l] % n1;
+        l = mask[l] < n1 ? mask[l] : mask[l] - n1;
       v = (fromV2 && !fromV1) ? sh.getV2() : sh.getV1();
       continue;
     }
@@ -562,6 +566,30 @@ struct SinkNarrowF32BelowShuffle : public OpRewritePattern<vector::ShuffleOp> {
         rewriter.create(op->getLoc(), op->getName().getIdentifier(), wide,
                         TypeRange{shuffle.getType()}, op->getAttrs());
     rewriter.replaceOp(shuffle, widened->getResults());
+    return success();
+  }
+};
+
+// A rank-1 `shape_cast(transpose(...))` of shuffles of a smaller rank-1
+// value (a value per row, spread over its row): one shuffle of that value.
+// AIE2P lowers a 64-lane transpose to many shuffles.
+struct TransposedSpreadToShuffle
+    : public OpRewritePattern<vector::ShapeCastOp> {
+  using OpRewritePattern<vector::ShapeCastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::ShapeCastOp op,
+                                PatternRewriter &rewriter) const override {
+    VectorType rt = op.getResultVectorType();
+    if (rt.getRank() != 1 ||
+        !op.getSource().getDefiningOp<vector::TransposeOp>())
+      return failure();
+    SmallVector<int64_t> lanes;
+    Value base = traceLanes(op.getResult(), lanes);
+    auto bt = dyn_cast<VectorType>(base.getType());
+    if (base == op.getResult() || !bt || bt.getRank() != 1 ||
+        bt.getNumElements() >= rt.getNumElements())
+      return failure();
+    rewriter.replaceOpWithNewOp<vector::ShuffleOp>(op, base, base, lanes);
     return success();
   }
 };
@@ -1166,7 +1194,7 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
     target->walk([&](Operation *op) {
       if (isa<arith::AndIOp, vector::TransferReadOp, arith::AddFOp,
               arith::SubFOp, arith::MulFOp, arith::ExtFOp, arith::TruncFOp,
-              vector::FMAOp, vector::ShuffleOp>(op))
+              vector::FMAOp, vector::ShuffleOp, vector::ShapeCastOp>(op))
         ands.push_back(op);
     });
     RewritePatternSet unpackPatterns(ctx);
@@ -1176,6 +1204,7 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
     unpackPatterns.add<MulAddToFMA>(ctx, getContract(), /*benefit=*/2);
     unpackPatterns.add<SinkExtFBelowShuffle>(ctx, /*benefit=*/2);
     unpackPatterns.add<SinkNarrowF32BelowShuffle>(ctx, /*benefit=*/2);
+    unpackPatterns.add<TransposedSpreadToShuffle>(ctx, /*benefit=*/3);
     vector::ExtractStridedSliceOp::getCanonicalizationPatterns(unpackPatterns,
                                                                ctx);
     vector::ShuffleOp::getCanonicalizationPatterns(unpackPatterns, ctx);
