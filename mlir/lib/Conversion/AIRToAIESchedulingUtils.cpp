@@ -989,14 +989,12 @@ AIE::BufferOp getUnderlyingBufferOp(Value buffer) {
 
   // Case 2: Defined by a cast (e.g., memref.cast)
   if (auto castOp = buffer.getDefiningOp<CastOpInterface>())
-    if (auto innerBuffer = castOp->getOperand(0).getDefiningOp<AIE::BufferOp>())
-      return innerBuffer;
+    return getUnderlyingBufferOp(castOp->getOperand(0));
 
-  // Case 3: Defined by a view-like op (e.g., memref.subview)
+  // Case 3: Defined by a view-like op (e.g., memref.subview), or a chain of
+  // them (a subview behind a reshape).
   if (auto viewLikeOp = buffer.getDefiningOp<ViewLikeOpInterface>())
-    if (auto innerBuffer =
-            viewLikeOp->getOperand(0).getDefiningOp<AIE::BufferOp>())
-      return innerBuffer;
+    return getUnderlyingBufferOp(viewLikeOp->getOperand(0));
 
   // No underlying BufferOp found
   return nullptr;
