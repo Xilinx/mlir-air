@@ -8211,17 +8211,21 @@ not qualify.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-83-1" name="__codelineno-83-1" href="#__codelineno-83-1"></a>operation ::= `transform.air.share_alloc` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>The targets are <code>memref.alloc</code> ops in one block, with static identity
-layouts, one memory space, and the same element type and element count.
-The first target is kept, moved ahead of the others in the block, and the
-others are replaced by it: an alloc of the same type directly, one of a
-different shape through reshapes of the kept buffer. Where both shapes
-merge consecutive dimensions of a common finer shape, a
-<code>memref.expand_shape</code> of the kept buffer to that shape and a
-<code>memref.collapse_shape</code> from it to the target's (each left out where it
-would change nothing), so that loads and stores through them fold into
-the kept buffer; otherwise a <code>memref.collapse_shape</code> to one dimension and
-a <code>memref.expand_shape</code> to the target's shape. Their <code>memref.dealloc</code> ops
-are erased.</p>
+layouts, one memory space and one element type, each with an element
+count that divides the largest's. The first of the largest targets is
+kept, moved ahead of the others in the block, and the others are replaced
+by it: an alloc of the same type directly, one of a different shape
+through reshapes of the kept buffer. Where both shapes merge consecutive
+dimensions of a common finer shape, a <code>memref.expand_shape</code> of the kept
+buffer to that shape and a <code>memref.collapse_shape</code> from it to the
+target's (each left out where it would change nothing), so that loads and
+stores through them fold into the kept buffer; otherwise a
+<code>memref.collapse_shape</code> to one dimension and a <code>memref.expand_shape</code> to
+the target's shape. A target with fewer elements takes the kept buffer's
+first elements: a <code>memref.collapse_shape</code> of it to one dimension, a
+<code>memref.expand_shape</code> to pieces of the target's shape, and a
+<code>memref.subview</code> of the first piece. Their <code>memref.dealloc</code> ops are
+erased.</p>
 <p>The transform does not check lifetimes. The caller asserts that no two of
 the buffers hold live values at the same time, as for the buffers of two
 loops that run one after the other.</p>
