@@ -2832,37 +2832,43 @@ def build_module():
                     # On a ShortConv wave it reads the taps as a cos/sin
                     # table and the result is discarded.
 
-                    # A HYBRID defers the whole mixer feed block into the
+                    # A HYBRID defers the mixer's state traffic into the
                     # phase loop, to the LAST mixer phase -- same reason
                     # KV_PHASE exists (see its use site). @convStOut is a
                     # shim GET on the ShortConv core's output, and that
                     # core cannot run until every mixer phase has landed;
                     # issuing it here, before the phase loop that feeds
                     # those phases' weights, deadlocks exactly as the KV
-                    # append did. Every other model emits it right here,
-                    # unchanged.
-                    def _emit_mixer_feeds():
-                        _mix_gate(
-                            lambda: _CH["ropeLUT"].put(
-                                rms_t[_rope_off : _rope_off + ROPE_LUT_LEN]
-                            ),
-                            (
-                                (lambda: None)
-                                if GDN
-                                else lambda: _CH["convW"].put(
-                                    rms_t[_rope_off : _rope_off + CONV_W_LEN]
-                                )
-                            ),
-                            # Rope AND the mixer both run on every decode
-                            # wave, so both LUTs have to arrive on every
-                            # decode wave. They read the same per-layer
-                            # rope_w slab from either end, so this is two
-                            # puts of one DDR region, not extra traffic.
-                            attn_always=HYBRID_MIXER,
-                            conv_always=HYBRID_MIXER,
-                        )
+                    # append did. The LUT puts (and @convStIn) stay here
+                    # (feed=True, drain=False): the KV append, issued
+                    # before the deferred block, waits on rope, and rope on
+                    # @ropeLUT. The GDN herd's streams go with the deferred
+                    # block. Every other model emits the whole block right
+                    # here, unchanged.
+                    def _emit_mixer_feeds(feed=True, drain=True):
+                        if feed:
+                            _mix_gate(
+                                lambda: _CH["ropeLUT"].put(
+                                    rms_t[_rope_off : _rope_off + ROPE_LUT_LEN]
+                                ),
+                                (
+                                    (lambda: None)
+                                    if GDN
+                                    else lambda: _CH["convW"].put(
+                                        rms_t[_rope_off : _rope_off + CONV_W_LEN]
+                                    )
+                                ),
+                                # Rope AND the mixer both run on every decode
+                                # wave, so both LUTs have to arrive on every
+                                # decode wave. They read the same per-layer
+                                # rope_w slab from either end, so this is two
+                                # puts of one DDR region, not extra traffic.
+                                attn_always=HYBRID_MIXER,
+                                conv_always=HYBRID_MIXER,
+                            )
                         if GDN:
-                            _gdn_feeds()
+                            if drain:
+                                _gdn_feeds()
                         elif CONV_MIXER:
                             # Conv state lives in arg4 alongside the KV cache
                             # (a conv layer has no KV, an attention layer no
@@ -2875,8 +2881,10 @@ def build_module():
 
                             def _conv_state():
                                 _slot = kvc_t[_cst : _cst + CONV_ST_LAYER]
-                                _CH["convStIn"].put(_slot)
-                                _CH["convStOut"].get(_slot)
+                                if feed:
+                                    _CH["convStIn"].put(_slot)
+                                if drain:
+                                    _CH["convStOut"].get(_slot)
 
                             # The mixer core runs unarmed, so its state
                             # read-back and write-back are issued on every
@@ -2909,7 +2917,9 @@ def build_module():
                             _CH["gdnIn"].put(_ga[_o : _o + GDN_CORE], indices=[0, b])
                             _CH["gdnOut"].get(_gb[_o : _o + GDN_CORE], indices=[0, b])
 
-                    if not HYBRID_MIXER:
+                    if HYBRID_MIXER:
+                        _emit_mixer_feeds(drain=False)
+                    else:
                         _emit_mixer_feeds()
 
                     # weights: per col, streamed in NCY-block (10240) steps matched
@@ -3156,9 +3166,10 @@ def build_module():
                                 attn_always=HYBRID_MIXER,
                             )
                         if HYBRID_MIXER and p == KV_PHASE:
-                            # Deferred to here from before the phase loop
-                            # (see _emit_mixer_feeds), and deliberately
-                            # AFTER the KV traffic above.
+                            # The mixer's state traffic, deferred to here
+                            # from before the phase loop (see
+                            # _emit_mixer_feeds), and deliberately AFTER the
+                            # KV traffic above.
                             #
                             # @convStOut is a shim GET on the ShortConv
                             # core, and that core blocks first on its four
@@ -3168,7 +3179,7 @@ def build_module():
                             # and the chain runs; issue it second and the
                             # shim waits on a core that is waiting on the
                             # shim.
-                            _emit_mixer_feeds()
+                            _emit_mixer_feeds(feed=False)
                     # per-dest host drain: dest p drains ROUNDS_PER_DEST[p] rounds into
                     # this layer's Y region (diagnostic per-layer QKV observation).
                     roff = 0
