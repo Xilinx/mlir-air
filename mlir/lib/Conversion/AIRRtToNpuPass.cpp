@@ -3906,6 +3906,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     awaitInChannelOrder(module);
     releaseAwaitedTasks(module);
     releaseCoresBeforeWaits(module);
+    interleaveSiblingFeedIfs(module);
 
     // Repair dominance after the reordering above. Every hoist here moves a
     // configure task or an RTP write past other ops, and a runtime access
@@ -4761,6 +4762,153 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // already awaiting its own tasks. So await i right before j, which costs
   // nothing since i completes first, and free the older tasks that issue no
   // token right after it, instead of holding their descriptors to the end.
+  // Two `scf.if`s of a runtime sequence on one condition, whose bodies only
+  // feed shim channels -- each its own channels -- issue one after the other:
+  // the second's tasks wait behind the first's queue-depth awaits, so the
+  // consumers of its channels idle until the first's are nearly done (two
+  // columns' runtime-length feeds, say). Merge them, their tasks alternating,
+  // each if's own order kept. Feeds between the two, on other channels, move
+  // ahead of the first.
+  void interleaveSiblingFeedIfs(ModuleOp module) {
+    auto device = [&](Operation *op) {
+      return op->getParentOfType<AIE::DeviceOp>();
+    };
+    auto isFeed = [&](AIEX::DMAConfigureTaskForOp cfg) {
+      auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(
+          device(cfg), cfg.getAlloc().getLeafReference().getValue());
+      return alloc && alloc.getChannelDir() == AIE::DMAChannelDir::MM2S;
+    };
+    // The hardware channel a task runs on: tile, direction and index, as
+    // two allocation symbols may name the same channel.
+    auto channelOf = [&](AIEX::DMAConfigureTaskForOp cfg) -> int64_t {
+      auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(
+          device(cfg), cfg.getAlloc().getLeafReference().getValue());
+      auto tile = cast<AIE::TileOp>(alloc.getTile().getDefiningOp());
+      return ((int64_t(tile.getCol()) * 64 + tile.getRow()) * 2 +
+              int64_t(alloc.getChannelDir() == AIE::DMAChannelDir::MM2S)) *
+                 64 +
+             alloc.getChannelIndex();
+    };
+    // The channels of `ops`, if they are all feed tasks configured among
+    // them, those tasks' starts, awaits and frees, or pure.
+    auto feedChannels = [&](iterator_range<Block::iterator> ops,
+                            llvm::SmallDenseSet<int64_t> &chans) -> bool {
+      llvm::SmallPtrSet<Operation *, 16> cfgs;
+      for (Operation &o : ops) {
+        if (auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o)) {
+          if (!isFeed(cfg))
+            return false;
+          chans.insert(channelOf(cfg));
+          cfgs.insert(cfg);
+          continue;
+        }
+        Value task;
+        if (auto st = dyn_cast<AIEX::DMAStartTaskOp>(&o))
+          task = st.getTask();
+        else if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(&o))
+          task = aw.getTask();
+        else if (auto fr = dyn_cast<AIEX::DMAFreeTaskOp>(&o))
+          task = fr.getTask();
+        if (task) {
+          if (!cfgs.contains(task.getDefiningOp()))
+            return false;
+          continue;
+        }
+        if (isa<scf::YieldOp>(&o) || isMemoryEffectFree(&o))
+          continue;
+        return false;
+      }
+      return true;
+    };
+    // Whether x and y are the same value: the same, or made by the same pure
+    // op from the same values.
+    std::function<bool(Value, Value, int)> same = [&](Value x, Value y,
+                                                      int depth) {
+      if (x == y)
+        return true;
+      Operation *dx = x.getDefiningOp(), *dy = y.getDefiningOp();
+      if (!dx || !dy || depth > 6 || !isMemoryEffectFree(dx) ||
+          dx->getName() != dy->getName() || dx->getAttrs() != dy->getAttrs() ||
+          dx->getNumOperands() != dy->getNumOperands() || dx->getNumRegions() ||
+          dy->getNumRegions() || x.getType() != y.getType() ||
+          cast<OpResult>(x).getResultNumber() !=
+              cast<OpResult>(y).getResultNumber())
+        return false;
+      for (auto [ox, oy] : llvm::zip(dx->getOperands(), dy->getOperands()))
+        if (!same(ox, oy, depth + 1))
+          return false;
+      return true;
+    };
+    auto feedIf = [&](scf::IfOp i, llvm::SmallDenseSet<int64_t> &chans) {
+      return i.getNumResults() == 0 &&
+             (i.getElseRegion().empty() ||
+              llvm::hasSingleElement(i.elseBlock()->getOperations())) &&
+             feedChannels(*i.thenBlock(), chans);
+    };
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      SmallVector<Block *> blocks;
+      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      for (Block *blk : blocks) {
+        for (bool changed = true; changed;) {
+          changed = false;
+          for (Operation &o : *blk) {
+            auto a = dyn_cast<scf::IfOp>(&o);
+            llvm::SmallDenseSet<int64_t> chA, chB;
+            if (!a || !feedIf(a, chA))
+              continue;
+            // The next if on the same condition, past feeds only: an await
+            // there would wait ahead of a's feeds once moved.
+            Operation *n = a->getNextNode();
+            Operation *firstBetween = n;
+            scf::IfOp b;
+            for (; n; n = n->getNextNode()) {
+              if (isa<AIEX::DMAAwaitTaskOp, AIEX::DMAFreeTaskOp>(n))
+                break;
+              if (auto i = dyn_cast<scf::IfOp>(n)) {
+                if (same(i.getCondition(), a.getCondition(), 0) &&
+                    feedIf(i, chB))
+                  b = i;
+                break;
+              }
+            }
+            if (!b ||
+                !feedChannels(llvm::make_range(firstBetween->getIterator(),
+                                               b->getIterator()),
+                              chB) ||
+                llvm::any_of(chA, [&](int64_t c) { return chB.contains(c); }))
+              continue;
+            // The ops between, ahead of a.
+            SmallVector<Operation *> between;
+            for (Operation *x = firstBetween; x != b; x = x->getNextNode())
+              between.push_back(x);
+            for (Operation *x : between)
+              x->moveBefore(a);
+            // Each body as tasks: the ops up to and including a start.
+            auto units = [](Block *body) {
+              SmallVector<SmallVector<Operation *>> us(1);
+              for (Operation &x : body->without_terminator()) {
+                us.back().push_back(&x);
+                if (isa<AIEX::DMAStartTaskOp>(&x))
+                  us.emplace_back();
+              }
+              return us;
+            };
+            auto ua = units(a.thenBlock()), ub = units(b.thenBlock());
+            Operation *yield = a.thenBlock()->getTerminator();
+            for (size_t i = 0; i < std::max(ua.size(), ub.size()); ++i)
+              for (auto *us : {&ua, &ub})
+                if (i < us->size())
+                  for (Operation *x : (*us)[i])
+                    x->moveBefore(yield);
+            b->erase();
+            changed = true;
+            break;
+          }
+        }
+      }
+    });
+  }
+
   void awaitInChannelOrder(ModuleOp module) {
     module.walk([&](AIE::RuntimeSequenceOp seq) {
       SmallVector<Block *> blocks;
