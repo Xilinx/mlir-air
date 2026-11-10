@@ -3176,12 +3176,13 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
       }
     return -1;
   };
-  // Nearest LTO to the producer that has a free channel and carries no packet
-  // readback from another decl (same-decl sub-channels may still share it).
+  // Nearest LTO to the producer that has a free channel and, for a packet
+  // request, carries no packet readback from another decl (same-decl
+  // sub-channels may still share it).
   // Distance still matters -- picking purely the emptiest tile scatters
   // readbacks away from their producers and cost ~1.8% decode throughput on
   // llama-1b. Rank by (distance from the producer column, channels used).
-  auto spreadShimLTO = [&](int fromCol) -> AIE::LogicalTileOp {
+  auto spreadShimLTO = [&](int fromCol, bool forPacket) -> AIE::LogicalTileOp {
     AIE::LogicalTileOp best = nullptr;
     std::pair<int, int> bestKey = {std::numeric_limits<int>::max(),
                                    std::numeric_limits<int>::max()};
@@ -3192,7 +3193,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
         continue;
       if (!seen.insert(lt.getOperation()).second)
         continue;
-      if (hostsOtherPacketReadback(lt))
+      if (forPacket && hostsOtherPacketReadback(lt))
         continue;
       int used = (int)channelsUsedOn(lt).size();
       if (used >= shim_dma_channels)
@@ -3211,7 +3212,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
 
   AIE::LogicalTileOp tileLT = nullptr;
   if (isPacketFlowOp && isHostReadback)
-    tileLT = spreadShimLTO(col);
+    tileLT = spreadShimLTO(col, /*forPacket=*/true);
   if (!tileLT)
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
       if ((int)channelsUsedOn(lt).size() < shim_dma_channels) {
@@ -3256,7 +3257,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
           return lt.getTileType() == AIE::AIETileType::ShimNOCTile;
         });
     if (shimLTOs >= shimCols)
-      tileLT = spreadShimLTO(bucketCol);
+      tileLT = spreadShimLTO(bucketCol, /*forPacket=*/false);
   }
   if (!tileLT) {
     OpBuilder b(device);
