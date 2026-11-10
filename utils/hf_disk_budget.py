@@ -153,6 +153,11 @@ def ignored_files(repo, keep):
         if r.commit_hash not in keep:
             continue
         for f in r.files:
+            # Only the hub's links are cache files. A snapshot can also hold
+            # files written into it, such as the __pycache__ of a repo whose
+            # Python code an example imports from the snapshot.
+            if not f.file_path.is_symlink():
+                continue
             rel = str(f.file_path.relative_to(r.snapshot_path))
             hit = any(filter_repo_objects([rel], allow_patterns=IGNORE))
             blob = _repo_blob(f.file_path)
