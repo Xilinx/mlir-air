@@ -39,6 +39,8 @@ LONG_LEN  ?= 300
 FUSED_DIR ?= $(CURDIR)/_fused_prefill
 override FUSED_DIR := $(abspath $(FUSED_DIR))
 FUSED_PREFILL_DIR ?= $(FUSED_DIR)
+# absolute, as the recipes run in their build directories; empty opts out
+override FUSED_PREFILL_DIR := $(if $(FUSED_PREFILL_DIR),$(abspath $(FUSED_PREFILL_DIR)))
 export FUSED_PREFILL_DIR
 FUSED_DEP := $(if $(FUSED_PREFILL_DIR),$(abspath $(FUSED_PREFILL_DIR))/manifest.json)
 STAGES    := moe_block gdn_layer attn_layer lm_head

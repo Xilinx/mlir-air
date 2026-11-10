@@ -1005,7 +1005,9 @@ def main():
             t_prefill = time.perf_counter() - t0
             first = len(ids)
             print(f"prefill of {first} tokens: {t_prefill:.3f}s")
-            toks.append(check(first - 1, got, ids))
+            nxt = check(first - 1, got, ids)
+            if a.gen > 0:
+                toks.append(nxt)
         # without the prefill the prompt goes through the decode a token at a time
         for i in range(first, len(ids) + a.gen - 1):
             t0 = time.perf_counter()
