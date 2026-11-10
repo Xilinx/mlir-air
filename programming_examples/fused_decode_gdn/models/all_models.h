@@ -17,6 +17,7 @@
 
 #define QWEN3_5_08B 16
 #define QWEN3_6_35B_A3B 17
+#define QWEN3_8_27B 18
 
 #ifndef MODEL_TYPE
 #define MODEL_TYPE QWEN3_5_08B
@@ -24,6 +25,7 @@
 
 #include "qwen3.5-0.8b.h"
 #include "qwen3.6-35b-a3b.h"
+#include "qwen3.8-27b.h"
 
 /// @brief RMSNorm epsilon, added to the mean square (Qwen3.5: 1e-6).
 #ifndef RMS_NORM_EPS
