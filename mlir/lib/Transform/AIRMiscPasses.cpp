@@ -2455,10 +2455,11 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     // offset is usually an affine.apply, either scaling the induction
     // variable (`s0 * 4` over a unit-step loop) or folding it in beside a herd
     // coordinate (`s0 * 8 + s1` over a loop that steps by the tile height).
-    // How far the split-dim offset moves per trip of its scf.for: step times
-    // the IV's coefficient in the offset's affine map. std::nullopt when the
-    // IV does not reach the map directly or the map is not linear in it, and
-    // the walk is then not treated as contiguous.
+    // How far the split-dim offset moves per trip of its scf.for: the trip's
+    // coefficient in the offset's affine map, the IV written as
+    // lb + step * trip. std::nullopt when the IV does not reach the map
+    // directly or the map is not linear in the trip, and the walk is then not
+    // treated as contiguous.
     auto getSplitDimAdvancePerTrip =
         [&](air::ChannelInterface ci, int offsetDim) -> std::optional<int64_t> {
       auto forOp = getScfForFromVal(air::getOffsetsAsValues(ci)[offsetDim]);
@@ -2470,13 +2471,41 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       auto apply = getAffineMapOnMemrefSplitDim(ci, offsetDim);
       if (!apply)
         return *step; // The offset is the induction variable itself.
-      if (!llvm::is_contained(apply.getMapOperands(), forOp.getInductionVar()))
+      Value iv = forOp.getInductionVar();
+      if (!llvm::is_contained(apply.getMapOperands(), iv))
         return std::nullopt;
-      auto coefficient =
-          air::getAffineApplyCoefficient(apply, forOp.getInductionVar());
-      if (!coefficient)
+      if (auto coefficient = air::getAffineApplyCoefficient(apply, iv))
+        return *coefficient * *step;
+      // Not linear in the IV, but maybe in the trip: `iv floordiv 4` over a
+      // step-4 loop advances one slice a trip. Write the IV as lb + step * trip
+      // and read the trip's coefficient.
+      auto lb = getConstantIntValue(forOp.getLowerBound());
+      if (!lb)
         return std::nullopt;
-      return *coefficient * *step;
+      AffineMap map = apply.getAffineMap();
+      MLIRContext *mapCtx = map.getContext();
+      unsigned numDims = map.getNumDims();
+      SmallVector<AffineExpr> dims, syms;
+      for (auto [pos, operand] : llvm::enumerate(apply.getMapOperands())) {
+        AffineExpr e = pos < numDims
+                           ? getAffineDimExpr(pos, mapCtx)
+                           : getAffineSymbolExpr(pos - numDims, mapCtx);
+        if (operand == iv)
+          e = e * *step + *lb;
+        (pos < numDims ? dims : syms).push_back(e);
+      }
+      map = simplifyAffineMap(
+          map.replaceDimsAndSymbols(dims, syms, numDims, map.getNumSymbols()));
+      std::vector<SmallVector<int64_t, 8>> flat;
+      if (map.getNumResults() != 1 ||
+          failed(getFlattenedAffineExprs(map, &flat)) ||
+          flat[0].size() != map.getNumInputs() + 1)
+        return std::nullopt;
+      int64_t perTrip = 0;
+      for (auto [pos, operand] : llvm::enumerate(apply.getMapOperands()))
+        if (operand == iv)
+          perTrip += flat[0][pos];
+      return perTrip;
     };
 
     for (unsigned i = 0; i < putgets.size(); i++) {
