@@ -424,26 +424,40 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
     ```
 
   }];
-  let options = [
-    Option<"clTraceSize", "trace-size", "unsigned",
-          /*default=*/"0",
-          "Trace buffer size for cores and memtiles (in bytes)">,
-    Option<"clTraceOffset", "trace-offset", "unsigned",
-          /*default=*/"0",
-          "Trace buffer offset appended to ddr_id=2">,
-    Option<"clOutputElf", "output-elf", "bool",
-          /*default=*/"false",
-          "Enable ELF output mode. When set, generates a main aie.device "
-          "wrapper with configure/run ops.">,
-    Option<"clCoalesceShimDma", "coalesce-shim-dma", "bool",
-          /*default=*/"false",
-          "Coalesce consecutive contiguous shim DMA transfers on the same "
-          "channel (marked air.preserve_shim_dma_order) into a single wide "
-          "transfer, reducing the number of host-issued DMA task "
-          "configure/start/await triplets. Opt-in: this reorders a channel's "
-          "paced feeds ahead of the sibling-channel interleave, so enable it "
-          "only for feeds verified numerically equivalent when coalesced.">
-  ];
+  let options =
+      [Option<"clTraceSize", "trace-size", "unsigned",
+              /*default=*/"0",
+              "Trace buffer size for cores and memtiles (in bytes)">,
+       Option<"clTraceOffset", "trace-offset", "unsigned",
+              /*default=*/"0", "Trace buffer offset appended to ddr_id=2">,
+       Option<"clOutputElf", "output-elf", "bool",
+              /*default=*/"false",
+              "Enable ELF output mode. When set, generates a main aie.device "
+              "wrapper with configure/run ops.">,
+       Option<
+           "clUnrollFeedLoops", "unroll-feed-loops", "bool",
+           /*default=*/"false",
+           "Unroll the host loops with a constant trip count (up to 256) "
+           "that free feeds without awaiting them, and free those feeds at "
+           "the end of their trip; in a loop that stays, await a feed before "
+           "its free. A free in a loop body otherwise hands its descriptor to "
+           "the next iteration's configure while the feed may still be "
+           "queued.">,
+       Option<"clMergeContiguousFeeds", "merge-contiguous-feeds", "bool",
+              /*default=*/"false",
+              "After constant host loops are unrolled, merge a channel's "
+              "unawaited linear feeds that continue one another in host memory "
+              "into one task (a phase-by-phase weight stream, say, which would "
+              "otherwise fill the shim task queue).">,
+       Option<
+           "clCoalesceShimDma", "coalesce-shim-dma", "bool",
+           /*default=*/"false",
+           "Coalesce consecutive contiguous shim DMA transfers on the same "
+           "channel (marked air.preserve_shim_dma_order) into a single wide "
+           "transfer, reducing the number of host-issued DMA task "
+           "configure/start/await triplets. Opt-in: this reorders a channel's "
+           "paced feeds ahead of the sibling-channel interleave, so enable it "
+           "only for feeds verified numerically equivalent when coalesced.">];
   let dependentDialects = ["xilinx::AIEX::AIEXDialect",
                            "mlir::affine::AffineDialect"];
 }

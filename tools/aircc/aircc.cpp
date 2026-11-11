@@ -259,6 +259,20 @@ static bool lockRaceFixAutoEnabled() {
   return !useLockRaceConditionFix && !useLockRaceConditionFixV2;
 }
 
+static cl::opt<bool> unrollFeedLoops(
+    "unroll-feed-loops",
+    cl::desc("Unroll constant host loops that free feeds without awaiting "
+             "them (frees at the end of each trip); in loops that stay, await "
+             "a feed before its free."),
+    cl::init(false), cl::cat(airCompilerOptions));
+
+static cl::opt<bool> mergeContiguousFeeds(
+    "merge-contiguous-feeds",
+    cl::desc("After constant host loops are unrolled, merge a channel's "
+             "unawaited linear feeds that continue one another in host memory "
+             "into one task."),
+    cl::init(false), cl::cat(airCompilerOptions));
+
 static cl::opt<bool> coalesceShimDma(
     "coalesce-shim-dma",
     cl::desc("Coalesce consecutive contiguous shim DMA transfers on the same "
@@ -1350,6 +1364,9 @@ static LogicalResult runAieCompilation() {
     bool outputElf = (outputFormat == OF_elf);
     os << " output-elf=" << (outputElf ? "true" : "false");
     os << " coalesce-shim-dma=" << (coalesceShimDma ? "true" : "false");
+    os << " unroll-feed-loops=" << (unrollFeedLoops ? "true" : "false");
+    os << " merge-contiguous-feeds="
+       << (mergeContiguousFeeds ? "true" : "false");
     os << "}";
   }
 

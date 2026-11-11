@@ -3435,6 +3435,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // affine.for nests are the launch/segment scaffolding, which still has to
     // go for the airrt ops to sit directly in the sequence.
     unrollAffineFors(module);
+    waitForBranchTransfers(module);
     dropAirrtEventResults(module);
     dropAirrtEventIterArgs(module);
 
@@ -3904,69 +3905,20 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       return;
     }
     awaitInChannelOrder(module);
+    // A loop body cloned whole must be in order: a use the hoists above put
+    // ahead of its definition would keep the first trip's value.
+    repairDominance(module);
+    if (clUnrollFeedLoops)
+      protectLoopFeedDescriptors(module);
+    if (clMergeContiguousFeeds)
+      mergeContiguousFeeds(module);
     releaseAwaitedTasks(module);
+    if (clUnrollFeedLoops)
+      freeAwaitedTopLevelTasks(module);
     releaseCoresBeforeWaits(module);
     interleaveSiblingFeedIfs(module);
 
-    // Repair dominance after the reordering above. Every hoist here moves a
-    // configure task or an RTP write past other ops, and a runtime access
-    // pattern brings along the small arith chain that narrows a sequence
-    // argument into the BD's i32 length or offset. That chain is pure and
-    // rooted at block arguments, so re-materializing it at the moved use is
-    // sound -- and is the only option, since the hoists are ordering decisions
-    // that cannot be undone. A chain reaching anything impure is left alone and
-    // will be caught by the verifier rather than silently miscompiled.
-    module.walk([&](AIE::RuntimeSequenceOp seq) {
-      if (seq.getBody().empty())
-        return;
-      // Same reason as the hoist above: rolled, the ops that moved are in the
-      // loop body, not the sequence's entry block.
-      SmallVector<Block *> blocks;
-      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
-      for (Block *blkPtr : blocks) {
-        Block &blk = *blkPtr;
-        llvm::DenseSet<Operation *> seen;
-        // Clone `v`'s defining chain immediately before `user`, returning the
-        // re-materialized value, or null if any step is not safely clonable.
-        std::function<Value(Value, Operation *)> rematerialize =
-            [&](Value v, Operation *user) -> Value {
-          Operation *def = v.getDefiningOp();
-          if (!def || def->getBlock() != &blk || seen.contains(def))
-            return v;
-          if (!isMemoryEffectFree(def) || def->getNumResults() != 1)
-            return Value();
-          SmallVector<Value> operands;
-          for (Value o : def->getOperands()) {
-            Value r = rematerialize(o, user);
-            if (!r)
-              return Value();
-            operands.push_back(r);
-          }
-          OpBuilder b(user);
-          Operation *cloned = b.clone(*def);
-          cloned->setOperands(operands);
-          seen.insert(cloned);
-          return cloned->getResult(0);
-        };
-        for (Operation &o : blk) {
-          SmallVector<OpOperand *> uses;
-          for (OpOperand &u : o.getOpOperands())
-            uses.push_back(&u);
-          o.walk([&](Operation *nested) {
-            for (OpOperand &u : nested->getOpOperands())
-              uses.push_back(&u);
-          });
-          for (OpOperand *u : uses) {
-            Operation *def = u->get().getDefiningOp();
-            if (!def || def->getBlock() != &blk || seen.contains(def))
-              continue;
-            if (Value r = rematerialize(u->get(), &o))
-              u->set(r);
-          }
-          seen.insert(&o);
-        }
-      }
-    });
+    repairDominance(module);
 
     if (clOutputElf)
       versionLoopSelectedBDs(module);
@@ -4906,6 +4858,346 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           }
         }
       }
+    });
+  }
+
+  // A feed freed without an await gives its descriptor back while it may still
+  // be queued on its channel, and the run-time BD pool hands out the id
+  // returned last: the next configure on the tile rewrites the descriptor
+  // under the queued task, which then moves the next task's data (a loop's
+  // feeds swapping descriptors, or a phase loop's weight stream reading the
+  // next phase's offset). Straight-line code frees at the launch end, but in a
+  // loop body the free follows its start.
+  //
+  // A loop with a constant trip count is unrolled, and its feeds' frees go to
+  // the end of the sequence: every feed keeps its descriptor until then, as in
+  // straight-line code. (Awaiting the feed instead would block the control
+  // program on a transfer whose consumer may need feeds issued after the
+  // loop.) In a loop that stays -- a run-time trip count -- the feed is
+  // awaited before its free.
+  static bool freesUnawaited(Operation *op) {
+    bool found = false;
+    op->walk([&](AIEX::DMAFreeTaskOp free) {
+      auto cfg = free.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+      if (cfg && llvm::none_of(cfg.getResult().getUsers(), [](Operation *u) {
+            return isa<AIEX::DMAAwaitTaskOp>(u);
+          }))
+        found = true;
+    });
+    return found;
+  }
+
+  void protectLoopFeedDescriptors(ModuleOp module) {
+    constexpr int64_t maxUnrolledTrips = 256;
+    SmallVector<AIE::RuntimeSequenceOp> seqs;
+    module.walk([&](AIE::RuntimeSequenceOp seq) { seqs.push_back(seq); });
+    for (auto seq : seqs) {
+      if (seq.getBody().empty())
+        continue;
+      // Mark the frees in loops: their clones keep the mark.
+      seq.walk([&](AIEX::DMAFreeTaskOp free) {
+        if (free->getParentOfType<LoopLikeOpInterface>())
+          free->setAttr("air.loop_free", UnitAttr::get(free->getContext()));
+      });
+      int64_t nextLoopId = 1;
+      for (bool changed = true; changed;) {
+        changed = false;
+        SmallVector<scf::ForOp> loops;
+        seq.walk([&](scf::ForOp f) { loops.push_back(f); }); // innermost first
+        for (auto f : loops) {
+          auto trips = f.getStaticTripCount();
+          if (!trips || trips->getSExtValue() > maxUnrolledTrips ||
+              !freesUnawaited(f))
+            continue;
+          // Each op cloned for trip t of this loop carries (loop, t); an
+          // outer loop unrolled later overwrites it, so in the end an op
+          // names the outermost unrolled trip it belongs to. A loop unrolled
+          // after an outer one (its trip count a select on the outer index,
+          // folded only then) is inside a trip already: its ops keep it.
+          int64_t loopId = nextLoopId++;
+          bool inTrip = f->hasAttr("air.unrolled_trip");
+          auto annotate = [&](unsigned t, Operation *op, OpBuilder b) {
+            if (inTrip)
+              return;
+            op->walk([&](Operation *o) {
+              o->setAttr("air.unrolled_trip",
+                         b.getI64IntegerAttr((loopId << 20) | t));
+            });
+          };
+          Operation *parent = f->getParentOp();
+          if (trips->getZExtValue() > 1
+                  ? succeeded(
+                        loopUnrollByFactor(f, trips->getZExtValue(), annotate))
+                  : succeeded(loopUnrollFull(f))) {
+            // Fold what the trips' constants decide (a phase's tile count is
+            // a select on the phase index): the loops inside then have
+            // constant trip counts of their own.
+            SmallVector<Operation *> arith;
+            parent->walk([&](Operation *op) {
+              if (isa<arith::ArithDialect>(op->getDialect()))
+                arith.push_back(op);
+            });
+            GreedyRewriteConfig fold;
+            fold.setStrictness(GreedyRewriteStrictness::ExistingAndNewOps);
+            (void)applyOpPatternsGreedily(arith, FrozenRewritePatternSet(),
+                                          fold);
+            changed = true;
+            break;
+          }
+        }
+      }
+      // The unrolled trips' guards are constants now.
+      SmallVector<Operation *> guards;
+      seq.walk([&](Operation *op) {
+        if (isa<arith::ArithDialect>(op->getDialect()) || isa<scf::IfOp>(op))
+          guards.push_back(op);
+      });
+      RewritePatternSet patterns(seq->getContext());
+      scf::IfOp::getCanonicalizationPatterns(patterns, seq->getContext());
+      GreedyRewriteConfig config;
+      config.setStrictness(GreedyRewriteStrictness::ExistingAndNewOps);
+      (void)applyOpPatternsGreedily(guards, std::move(patterns), config);
+
+      Block &top = seq.getBody().front();
+      Operation *end = &top.back();
+      if (!end->hasTrait<OpTrait::IsTerminator>())
+        end = nullptr;
+      seq.walk([&](AIEX::DMAFreeTaskOp free) {
+        if (!free->hasAttr("air.loop_free"))
+          return;
+        free->removeAttr("air.loop_free");
+        auto cfg = free.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
+        if (!cfg || llvm::any_of(cfg.getResult().getUsers(), [](Operation *u) {
+              return isa<AIEX::DMAAwaitTaskOp>(u);
+            }))
+          return;
+        if (free->getBlock() == &top) {
+          // To the end of the outermost unrolled trip it came from (a wave of
+          // the decode, say): by then the trip's later awaits have passed, and
+          // its descriptor is not held across what follows. The trip ends
+          // after its last tagged op; the ops between (an inner unroll's index
+          // arithmetic, say) carry no tag.
+          Operation *at = end;
+          if (auto tr = free->getAttrOfType<IntegerAttr>("air.unrolled_trip")) {
+            int64_t id = tr.getInt();
+            Operation *last = free;
+            for (Operation *o = free->getNextNode(); o; o = o->getNextNode()) {
+              auto ot = o->getAttrOfType<IntegerAttr>("air.unrolled_trip");
+              if (ot && ot.getInt() != id)
+                break;
+              if (ot)
+                last = o;
+            }
+            at = last->getNextNode();
+          }
+          if (at)
+            free->moveBefore(at);
+          else
+            free->moveBefore(&top, top.end());
+          return;
+        }
+        if (cfg->getBlock() != free->getBlock())
+          return;
+        cfg.setIssueToken(true);
+        OpBuilder b(free);
+        AIEX::DMAAwaitTaskOp::create(b, free.getLoc(), cfg.getResult());
+      });
+      seq.walk([](Operation *o) { o->removeAttr("air.unrolled_trip"); });
+    }
+  }
+
+  // Repair dominance after the pass's reordering. Every hoist moves a
+  // configure task or an RTP write past other ops, and a runtime access
+  // pattern brings along the small arith chain that narrows a sequence
+  // argument into the BD's i32 length or offset. That chain is pure and
+  // rooted at block arguments, so re-materializing it at the moved use is
+  // sound -- and is the only option, since the hoists are ordering decisions
+  // that cannot be undone. A chain reaching anything impure is left alone and
+  // will be caught by the verifier rather than silently miscompiled.
+  void repairDominance(ModuleOp module) {
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      // As for the RTP hoist: rolled, the ops that moved are in the loop
+      // body, not the sequence's entry block.
+      SmallVector<Block *> blocks;
+      seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
+      for (Block *blkPtr : blocks) {
+        Block &blk = *blkPtr;
+        llvm::DenseSet<Operation *> seen;
+        // Clone `v`'s defining chain immediately before `user`, returning the
+        // re-materialized value, or null if any step is not safely clonable.
+        std::function<Value(Value, Operation *)> rematerialize =
+            [&](Value v, Operation *user) -> Value {
+          Operation *def = v.getDefiningOp();
+          if (!def || def->getBlock() != &blk || seen.contains(def))
+            return v;
+          if (!isMemoryEffectFree(def) || def->getNumResults() != 1)
+            return Value();
+          SmallVector<Value> operands;
+          for (Value o : def->getOperands()) {
+            Value r = rematerialize(o, user);
+            if (!r)
+              return Value();
+            operands.push_back(r);
+          }
+          OpBuilder b(user);
+          Operation *cloned = b.clone(*def);
+          cloned->setOperands(operands);
+          seen.insert(cloned);
+          return cloned->getResult(0);
+        };
+        for (Operation &o : blk) {
+          SmallVector<OpOperand *> uses;
+          for (OpOperand &u : o.getOpOperands())
+            uses.push_back(&u);
+          o.walk([&](Operation *nested) {
+            for (OpOperand &u : nested->getOpOperands())
+              uses.push_back(&u);
+          });
+          for (OpOperand *u : uses) {
+            Operation *def = u->get().getDefiningOp();
+            if (!def || def->getBlock() != &blk || seen.contains(def))
+              continue;
+            if (Value r = rematerialize(u->get(), &o))
+              u->set(r);
+          }
+          seen.insert(&o);
+        }
+      }
+    });
+  }
+
+  // A channel's feeds that continue one another in host memory -- a weight
+  // stream laid out in consumption order, issued as one task a phase -- are
+  // one task. The shim channel's task queue holds a few tasks and the
+  // control program waits for room before each push: a stream of more tasks
+  // than that, issued ahead of the feeds its later phases' consumers wait
+  // for, blocks the control program before those feeds go out.
+  void mergeContiguousFeeds(ModuleOp module) {
+    module.walk([&](AIE::RuntimeSequenceOp seq) {
+      if (seq.getBody().empty())
+        return;
+      auto device = seq->getParentOfType<AIE::DeviceOp>();
+      if (!device)
+        return;
+      // The shim channels that source packet flows: each task there is one
+      // packet, its end the end of a BD on the receiving side, so the tasks
+      // stay apart.
+      llvm::SmallDenseSet<std::pair<Operation *, int>> packetSources;
+      device.walk([&](AIE::PacketSourceOp src) {
+        if (src.port().bundle == AIE::WireBundle::DMA)
+          packetSources.insert(
+              {src.getTile().getDefiningOp(), src.port().channel});
+      });
+      auto isFeed = [&](AIEX::DMAConfigureTaskForOp cfg) {
+        auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(
+            device, cfg.getAlloc().getLeafReference().getValue());
+        return alloc && alloc.getChannelDir() == AIE::DMAChannelDir::MM2S &&
+               !packetSources.contains({alloc.getTile().getDefiningOp(),
+                                        (int)alloc.getChannelIndex()});
+      };
+      // The task's one linear BD with a constant range, else null.
+      auto linearBd = [](AIEX::DMAConfigureTaskForOp cfg) -> AIE::DMABDOp {
+        AIE::DMABDOp bd;
+        int n = 0;
+        cfg.getBody().walk([&](AIE::DMABDOp b) {
+          bd = b;
+          n++;
+        });
+        if (n != 1 || bd.getPacketAttr() || !bd.getConstantOffset() ||
+            !bd.getConstantLen() || !isa<BlockArgument>(bd.getBuffer()))
+          return {};
+        // linear: row-major contiguous dims (a tile's [rows, cols] too)
+        auto sizes = bd.getMixedSizes(), strides = bd.getMixedStrides();
+        if (sizes.size() != strides.size())
+          return {};
+        int64_t inner = 1;
+        for (int i = (int)sizes.size() - 1; i >= 0; i--) {
+          auto sz = getConstantIntValue(sizes[i]);
+          auto st = getConstantIntValue(strides[i]);
+          if (!sz || !st || (*sz > 1 && *st != inner))
+            return {};
+          inner *= *sz;
+        }
+        if (!sizes.empty() && inner != *bd.getConstantLen())
+          return {};
+        return bd;
+      };
+      Block &top = seq.getBody().front();
+      llvm::StringMap<AIEX::DMAConfigureTaskForOp> last;
+      SmallVector<Operation *> dead;
+      for (Operation &o : top) {
+        if (auto cfg = dyn_cast<AIEX::DMAConfigureTaskForOp>(&o)) {
+          if (!isFeed(cfg))
+            continue;
+          StringRef chan = cfg.getAlloc().getLeafReference().getValue();
+          AIE::DMABDOp bd = linearBd(cfg);
+          bool awaited =
+              llvm::any_of(cfg.getResult().getUsers(), [](Operation *u) {
+                return isa<AIEX::DMAAwaitTaskOp>(u);
+              });
+          auto it = last.find(chan);
+          if (bd && !awaited && it != last.end()) {
+            AIE::DMABDOp prev = linearBd(it->second);
+            if (prev && prev.getBuffer() == bd.getBuffer() &&
+                *prev.getConstantOffset() + *prev.getConstantLen() ==
+                    *bd.getConstantOffset()) {
+              int32_t len = *prev.getConstantLen() + *bd.getConstantLen();
+              OpBuilder b(it->second);
+              if (Value l = prev.getLen())
+                prev.getLenMutable().assign(arith::ConstantOp::create(
+                    b, prev.getLoc(), IntegerAttr::get(l.getType(), len)));
+              else
+                prev.setStaticLenAttr(b.getI32IntegerAttr(len));
+              if (!prev.getMixedSizes().empty()) {
+                prev->setAttr(prev.getStaticSizesAttrName(),
+                              b.getDenseI64ArrayAttr({len}));
+                prev->setAttr(prev.getStaticStridesAttrName(),
+                              b.getDenseI64ArrayAttr({1}));
+              }
+              for (Operation *u :
+                   llvm::make_early_inc_range(cfg.getResult().getUsers()))
+                dead.push_back(u);
+              dead.push_back(cfg);
+              continue;
+            }
+          }
+          if (bd && !awaited)
+            last[chan] = cfg;
+          else
+            last.erase(chan);
+          continue;
+        }
+        if (isa<AIEX::DMAStartTaskOp, AIEX::DMAFreeTaskOp>(&o) ||
+            isMemoryEffectFree(&o))
+          continue;
+        // An await, a loop, an RTP write...: an ordering point.
+        last.clear();
+      }
+      for (Operation *op : dead)
+        op->erase();
+    });
+  }
+
+  // Free each awaited task at the top level of the sequence right after its
+  // await, as releaseAwaitedTasks does in loops. Unrolled feed loops leave
+  // their tasks at the top level, and the run-time BD pool
+  // (aie-lower-dynamic-bd-pool), in use when the sequence keeps a run-time
+  // loop, returns a descriptor only at a free: a sequence of unrolled waves
+  // that awaits a transfer each wave would run out of descriptors.
+  void freeAwaitedTopLevelTasks(ModuleOp module) {
+    module.walk([&](AIEX::DMAAwaitTaskOp await) {
+      Value task = await.getTask();
+      Operation *cfg = task.getDefiningOp();
+      if (!cfg || !isa<AIE::RuntimeSequenceOp>(cfg->getParentOp()))
+        return;
+      if (llvm::any_of(task.getUsers(), [](Operation *u) {
+            return isa<AIEX::DMAFreeTaskOp>(u);
+          }))
+        return;
+      OpBuilder after(await->getBlock(), std::next(await->getIterator()));
+      AIEX::DMAFreeTaskOp::create(after, await.getLoc(), task);
     });
   }
 
@@ -6293,6 +6585,51 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       for (Value v : memrefs)
         v.replaceAllUsesWith(
             seq.getBody().addArgument(v.getType(), seq.getLoc()));
+    });
+  }
+
+  // A transfer in a branch of an scf.if / scf.index_switch (a per-wave feed
+  // select) has no wait outside it to name it: a branch yields an event the
+  // launch's end would wait on at best, and its result is dropped below. So
+  // wait, at the end of the branch, for the transfers of the branch that no
+  // wait in it covers yet -- a drain is awaited there, a feed's descriptors
+  // freed (AIRRtWaitAllOpConversion).
+  void waitForBranchTransfers(ModuleOp module) {
+    module.walk([&](Operation *o) {
+      if (!isa<scf::IfOp, scf::IndexSwitchOp>(o))
+        return;
+      for (Region &r : o->getRegions())
+        for (Block &blk : r) {
+          llvm::SetVector<Value> open;
+          for (Operation &op : blk)
+            if (auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op))
+              if (dma->getNumResults())
+                open.insert(dma->getResult(0));
+          if (open.empty())
+            continue;
+          // what a blocking wait in the branch waits for, through the
+          // wait_alls that join events
+          for (Operation &op : blk) {
+            auto wa = dyn_cast<airrt::WaitAllOp>(op);
+            if (!wa || wa->getNumResults())
+              continue;
+            SmallVector<Value> work(wa->getOperands());
+            llvm::SmallPtrSet<Operation *, 8> seen;
+            while (!work.empty()) {
+              Value v = work.pop_back_val();
+              open.remove(v);
+              if (auto j = v.getDefiningOp<airrt::WaitAllOp>())
+                if (seen.insert(j).second)
+                  for (Value x : j->getOperands())
+                    work.push_back(x);
+            }
+          }
+          if (open.empty())
+            continue;
+          OpBuilder b(blk.getTerminator());
+          airrt::WaitAllOp::create(b, o->getLoc(), TypeRange{},
+                                   open.getArrayRef());
+        }
     });
   }
 

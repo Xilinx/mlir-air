@@ -116,14 +116,16 @@ module {
 // -----
 
 // In place: the input reads the rows the drain later overwrites (C = A * B + C).
-// The drain is armed ahead of the input, but the input reads what was there
-// before, so nothing waits on the drain before the launch end. (Awaiting it
-// there would wait for an output that needs that input.)
+// The drain stays after the input: armed ahead of it, the drain could take a
+// producer's output before the input has read those rows, unless that
+// producer is the one the input feeds. The input reads what was there before,
+// so nothing waits on the drain before the launch end. (Awaiting it there
+// would wait for an output that needs that input.)
 
 // CHECK-LABEL: func.func @in_place
+// CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @inAlloc3
 // CHECK: %[[D:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @outAlloc3
 // CHECK-NOT: airrt.wait_all %[[D]]{{$}}
-// CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @inAlloc3
 // CHECK: airrt.wait_all {{.*}}%[[D]]{{.*}} {air.launch_end}
 
 module {

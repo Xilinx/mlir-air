@@ -2490,6 +2490,53 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       updateDependencyOnFunction(f);
     }
 
+    // A launch-level read of a host buffer after a loop whose gets write that
+    // buffer (a segment's output drained to host memory, read back by a later
+    // herd of the launch) depends on the loop. The tracing above does not look
+    // into a sibling loop's body, and with no edge the read may be moved ahead
+    // of the writes it reads.
+    for (auto f : funcOps)
+      f.walk([&](air::LaunchOp launch) {
+        auto external = [](Operation *op) {
+          return !op->getParentOfType<air::SegmentOp>() &&
+                 !op->getParentOfType<air::HerdOp>();
+        };
+        SmallVector<std::pair<Operation *, Value>> writers;
+        for (Operation &op : launch.getBody().front()) {
+          // The external puts of this op (itself, or nested in the loops it
+          // was hoisted in), after the earlier ops whose gets write its
+          // buffer. The earlier op's token dominates the nest.
+          op.walk([&](air::ChannelPutOp put) {
+            if (!external(put))
+              return;
+            SmallVector<Value> mine;
+            for (auto &[w, wm] : writers)
+              if (wm == put.getMemref() && w->getNumResults() &&
+                  isa<air::AsyncTokenType>(w->getResult(0).getType()) &&
+                  !llvm::is_contained(mine, w->getResult(0)))
+                mine.push_back(w->getResult(0));
+            if (mine.empty())
+              return;
+            bool onlyParallel = true;
+            for (Operation *p = put; p != &op; p = p->getParentOp())
+              onlyParallel &= p == put || isa<scf::ParallelOp>(p);
+            // Under one-trip parallel nests only, which fold away, the put
+            // takes the edge itself. (A put in a loop nest keeps its place
+            // through the nest's token chain, and air-to-std orders it after
+            // the drains before it; an edge on the nest would tie a loop the
+            // device side clones to the launch.)
+            if (onlyParallel)
+              for (Value v : mine)
+                if (!llvm::is_contained(put.getAsyncDependencies(), v))
+                  put.addAsyncDependency(v);
+          });
+          op.walk([&](air::ChannelGetOp get) {
+            if (external(get))
+              writers.push_back({&op, get.getMemref()});
+          });
+        }
+      });
+
     // Channel endpoint ordering. The channels were just created here, so no
     // earlier pass had endpoints to order; establish it now rather than leave
     // the IR under-constrained downstream.
