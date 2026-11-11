@@ -476,7 +476,7 @@ def main():
     xb = x[0].numpy().astype(bfloat16)
     args = [xb, wd, misc, rw, kv, np.zeros(D, bfloat16)]
     if a.bench:
-        return mlp_block.bench(art, args, a.bench)
+        return mlp_block.bench(art, args, a.bench, (1, 2))
     with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
         run = be.load(art)
         res = run(*args)

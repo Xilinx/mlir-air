@@ -19,8 +19,9 @@ from air.api import bf16, i32
 from air.backend.xrt import XRTBackend
 from reference import rmsnorm, rope
 
-# a check's bound on the relative L2 error
-TOL = 0.005
+# the element-wise atol, over max |want|: about three times the worst
+# measured (1.1e-3)
+ATOL = 3e-3
 
 DH, NQ, NKV = W.DH, W.NQ, W.NKV
 DQ, DK = NQ * DH, NKV * DH
@@ -120,13 +121,10 @@ if __name__ == "__main__":
         ("k", out[3], k),
         ("v", out[4], qkv[DQ + DK :]),
     ):
-        c, l2, e = common.compare(g, wnt)
         # v passes through unchanged
-        good = c > 0.9999 and (l2 == 0 if n == "v" else l2 < TOL)
-        ok &= good
-        print(
-            f"{n}: corr {c:.7f} rel L2 {l2:.2e} max rel err {e:.2e}"
-            f" {'ok' if good else 'BAD'}"
-        )
+        if n == "v":
+            ok &= common.check(n, g, wnt, 0.0, rtol=0.0)
+        else:
+            ok &= common.check(n, g, wnt, ATOL)
     print("PASS!" if ok else "failed.")
     raise SystemExit(0 if ok else 1)

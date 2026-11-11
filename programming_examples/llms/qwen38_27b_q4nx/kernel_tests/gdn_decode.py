@@ -19,6 +19,10 @@ from air import api as air
 from air.api import bf16, f32, i32
 from air.backend.xrt import XRTBackend
 
+# the output's element-wise atol, over max |want|: twice the worst measured
+# over seeds 0-2 (4.2e-3)
+ATOL = 1e-2
+
 H, DK, DV, R = W.NVH, W.DK, W.DV, 4
 VC = DV // R
 SLOT = DV + 32  # a vector and its float32 scalar, padded
@@ -124,12 +128,9 @@ if __name__ == "__main__":
     S2 = out[2].reshape(H, R, DK, VC).transpose(0, 2, 1, 3).reshape(H, DK, DV)
     o = out[3].reshape(H, DV).astype(np.float64)
     S2w, ow = reference(q, k, v, alpha, beta, S)
-    es = np.abs(S2 - S2w).max() / np.abs(S2w).max()
-    co = float(o.ravel() @ ow.ravel() / np.linalg.norm(o) / np.linalg.norm(ow))
-    eo = np.abs(o - ow).max() / np.abs(ow).max()
-    print(f"state max rel err {es:.2e}; out corr {co:.7f}, max rel err {eo:.2e}")
-    # the float32 state's rounding: 1.0e-5 to 1.4e-5 over seeds, at 32 heads
-    # (Qwen3.6) as at 48
-    ok = es < 2e-5 and co > 0.9999 and eo < 2e-2
+    # the float32 state's rounding: 1.0e-5 to 1.4e-5 of max |state| over
+    # seeds, at 32 heads (Qwen3.6) as at 48
+    ok = common.check("state", S2, S2w, 2e-5, rtol=0.0)
+    ok &= common.check("out", o, ow, ATOL)
     print("PASS!" if ok else "failed.")
     raise SystemExit(0 if ok else 1)

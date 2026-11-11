@@ -787,14 +787,19 @@ class Q38Decoder:
         the state is not carried (the same inputs every time)."""
         self._set(x, L)
         t = []
+        done = self.xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED
         for _ in range(n + 1):
             t0 = time.perf_counter()
             self.run.start()
-            self.run.wait(120000)
+            st = self.run.wait(120000)
             t1 = time.perf_counter()
+            if st != done:
+                raise RuntimeError(f"layers' dispatch at L={L} ended in {st}")
             self.lrun.start()
-            self.lrun.wait(120000)
+            st = self.lrun.wait(120000)
             t.append((t1 - t0, time.perf_counter() - t1))
+            if st != done:
+                raise RuntimeError(f"LM head's dispatch at L={L} ended in {st}")
         t = np.array(t[1:]) * 1e3
         tot = t.sum(1)
         med = float(np.median(tot))

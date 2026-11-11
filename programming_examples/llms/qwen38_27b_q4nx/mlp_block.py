@@ -167,8 +167,9 @@ def weights(w, layer):
     return gu, dn
 
 
-def bench(art, inputs, n):
-    """Wall time of n dispatches, the weights already on the device."""
+def bench(art, inputs, n, weights):
+    """Wall time of n dispatches, the weights already on the device; weights
+    are the indices of the inputs counted as the dispatch's weights."""
     import time
 
     import pyxrt as xrt
@@ -198,7 +199,7 @@ def bench(art, inputs, n):
         del run, kern, ctx
     t = np.array(times[1:]) * 1e3
     p10, p50, p90 = np.percentile(t, [10, 50, 90])
-    gb = sum(a.nbytes for a in inputs[:2]) / 1e9
+    gb = sum(inputs[i].nbytes for i in weights) / 1e9
     print(
         f"{n} dispatches: median {p50:.3f} ms, p10 {p10:.3f}, p90 {p90:.3f},"
         f" min {t.min():.3f} ms; {gb / p50 * 1e3:.1f} GB/s of weights at the median"
@@ -226,7 +227,7 @@ def main():
     be = XRTBackend(instance_name="mlp", output_format="elf")
     art = be.compile(module)
     if a.bench:
-        return bench(art, [gu, dn, x, np.zeros(D, bfloat16)], a.bench)
+        return bench(art, [gu, dn, x, np.zeros(D, bfloat16)], a.bench, (0, 1))
     with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
         run = be.load(art)
         out = run(gu, dn, x, np.zeros(D, bfloat16))[3]

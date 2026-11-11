@@ -169,7 +169,7 @@ def main():
     nw = np.asarray(w.final_norm()).astype(bfloat16)
     args = [x, nw, pack_weights(w), np.zeros((NCOL, ROUNDS, NROW * RB), bfloat16)]
     if a.bench:
-        return mlp_block.bench(art, args, a.bench)
+        return mlp_block.bench(art, args, a.bench, (1, 2))
     with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
         be = XRTBackend(instance_name="lm_head", output_format="elf")
         run = be.load(art)

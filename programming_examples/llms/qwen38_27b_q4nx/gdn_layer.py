@@ -479,7 +479,7 @@ def main():
     assert wd.shape[1] == G_DENSE
     args = [xb, wd, misc, cw, s, np.zeros(D, bfloat16)]
     if a.bench:
-        return mlp_block.bench(art, args, a.bench)
+        return mlp_block.bench(art, args, a.bench, (1, 2))
     with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
         run = be.load(art)
         res = run(*args)

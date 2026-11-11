@@ -19,8 +19,9 @@ from air import api as air
 from air.api import bf16, f32, i32
 from air.backend.xrt import XRTBackend
 
-# a check's bound on the relative L2 error
-TOL = 0.08
+# the element-wise atol, over max |want|: twice the worst measured (2.1e-2,
+# L = 16; two BFP16 matmuls and a bf16 softmax)
+ATOL = 4e-2
 
 # the kernels take 8 query heads per KV head, Qwen3.8's 6 padded with zero
 # heads, and give o back packed: the 6 only
@@ -130,12 +131,6 @@ if __name__ == "__main__":
         s = q.astype(np.float64) @ k[:L].astype(np.float64).T * W.DH**-0.5
         p = np.exp(s - s.max(1, keepdims=True))
         want = (p / p.sum(1, keepdims=True)) @ v[:L].astype(np.float64)
-        c, l2, e = common.compare(o, want[:QREAL])
-        good = c > 0.999 and l2 < TOL
-        ok &= good
-        print(
-            f"L={L}: corr {c:.6f} rel L2 {l2:.2e} max rel err {e:.2e}"
-            f" {'ok' if good else 'BAD'}"
-        )
+        ok &= common.check(f"L={L}", o, want[:QREAL], ATOL)
     print("PASS!" if ok else "failed.")
     raise SystemExit(0 if ok else 1)
