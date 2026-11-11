@@ -11,15 +11,20 @@
 // bufferization does by default) then sets the herd's allocs to L1: the L2
 // ones are overridden too, since a herd cannot hold L2.
 
+// An alloc keeps its dynamic sizes and attributes: only its type changes.
+
 // CHECK-LABEL: func.func @kernel
 // CHECK: air.herd
 // CHECK: memref.alloc() : memref<32xf32, 2 : i32>
-func.func @kernel() {
+// CHECK: memref.alloc(%{{.*}}) alignment = 64 : memref<?xf32, 2 : i32>
+func.func @kernel(%n: index) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   scf.parallel (%x, %y) = (%c0, %c0) to (%c1, %c1) step (%c1, %c1) {
     %a = memref.alloc() : memref<32xf32, 1 : i32>
+    %b = memref.alloc(%n) alignment = 64 : memref<?xf32, 1 : i32>
     memref.dealloc %a : memref<32xf32, 1 : i32>
+    memref.dealloc %b : memref<?xf32, 1 : i32>
     scf.reduce
   }
   return

@@ -3093,7 +3093,9 @@ struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
         memrefTy.getLayout().getAffineMap(),
         air::MemorySpaceAttr::get(rewriter.getContext(), *targetMS));
 
-    rewriter.replaceOpWithNewOp<memref::AllocOp>(alloc, newMemrefType);
+    // In place: the alloc keeps its dynamic sizes, alignment and attributes.
+    rewriter.modifyOpInPlace(alloc,
+                             [&] { alloc.getMemref().setType(newMemrefType); });
 
     return success();
   }

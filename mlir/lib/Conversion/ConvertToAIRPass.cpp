@@ -2418,7 +2418,10 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
   }
   // A copy within a core's L1 is the core's own code, not a DMA.
   auto inL1 = [](Value v) {
-    auto ms = xilinx::air::getMemorySpace(cast<MemRefType>(v.getType()));
+    auto ty = dyn_cast<MemRefType>(v.getType());
+    if (!ty)
+      return false; // unranked: left to the conversion below to reject
+    auto ms = xilinx::air::getMemorySpace(ty);
     return ms && *ms == xilinx::air::MemorySpace::L1;
   };
   if (inL1(op.getSource()) && inL1(op.getTarget())) {

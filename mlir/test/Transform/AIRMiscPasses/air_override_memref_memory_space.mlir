@@ -43,21 +43,21 @@ module {
   }
 
   // LAUNCH-LABEL: func.func @func1
-  // LAUNCH: memref.alloc() : memref<8x4x4x8xf32, 2 : i32>
+  // LAUNCH: memref.alloc() alignment = 64 : memref<8x4x4x8xf32, 2 : i32>
   // LAUNCH: memref.collapse_shape {{.*}} : memref<8x4x4x8xf32, 2 : i32> into memref<32x32xf32, 2 : i32>
-  // LAUNCH: memref.alloc() : memref<4x8x8x4xf32, 2 : i32>
+  // LAUNCH: memref.alloc() alignment = 64 : memref<4x8x8x4xf32, 2 : i32>
   // LAUNCH: memref.collapse_shape {{.*}} : memref<4x8x8x4xf32, 2 : i32> into memref<32x32xf32, 2 : i32>
-  // LAUNCH: memref.alloc() : memref<32x32xf32, 2 : i32>
+  // LAUNCH: memref.alloc() alignment = 64 : memref<32x32xf32, 2 : i32>
   // LAUNCH: memref.expand_shape {{.*}} : memref<32x32xf32, 2 : i32> into memref<8x4x8x4xf32, 2 : i32>
-  // LAUNCH: memref.alloc() : memref<8x8x4x4xf32, 2 : i32>
+  // LAUNCH: memref.alloc() alignment = 64 : memref<8x8x4x4xf32, 2 : i32>
   // MS1-LABEL: func.func @func1
-  // MS1: memref.alloc() : memref<8x4x4x8xf32, 1 : i32>
+  // MS1: memref.alloc() alignment = 64 : memref<8x4x4x8xf32, 1 : i32>
   // MS1: memref.collapse_shape {{.*}} : memref<8x4x4x8xf32, 1 : i32> into memref<32x32xf32, 1 : i32>
-  // MS1: memref.alloc() : memref<4x8x8x4xf32, 1 : i32>
+  // MS1: memref.alloc() alignment = 64 : memref<4x8x8x4xf32, 1 : i32>
   // MS1: memref.collapse_shape {{.*}} : memref<4x8x8x4xf32, 1 : i32> into memref<32x32xf32, 1 : i32>
-  // MS1: memref.alloc() : memref<32x32xf32, 1 : i32>
+  // MS1: memref.alloc() alignment = 64 : memref<32x32xf32, 1 : i32>
   // MS1: memref.expand_shape {{.*}} : memref<32x32xf32, 1 : i32> into memref<8x4x8x4xf32, 1 : i32>
-  // MS1: memref.alloc() : memref<8x8x4x4xf32, 1 : i32>
+  // MS1: memref.alloc() alignment = 64 : memref<8x8x4x4xf32, 1 : i32>
 
   func.func @func1(%arg0: memref<*xf32> {tt.divisibility = 16 : i32}, %arg1: memref<*xf32> {tt.divisibility = 16 : i32}, %arg2: memref<*xf32> {tt.divisibility = 16 : i32}, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32) {
     %c1 = arith.constant 1 : index
