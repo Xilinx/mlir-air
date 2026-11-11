@@ -15,7 +15,7 @@ EXAMPLE = HERE.parent
 KERNELS = EXAMPLE / "kernels"
 Q36_KERNELS = EXAMPLE.parent / "qwen36_35b_a3b_q4nx" / "kernels"
 # this model's sizes for the kernels shared with Qwen3.6
-MODEL_FLAGS = ["-DGDN_NV=48"]
+MODEL_FLAGS = ["-DGDN_NV=48", "-DLM_DIM=5120"]
 sys.path.insert(0, str(EXAMPLE))
 
 PEANO_FLAGS = [
