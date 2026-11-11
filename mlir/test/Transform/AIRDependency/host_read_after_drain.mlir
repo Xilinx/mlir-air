@@ -92,12 +92,13 @@ module {
 // CHECK: air.channel.get async  @drain[]
 // CHECK: air.channel.put async  @feed[]
 
-// Not host memory: an L2 buffer keeps the equal-start test, so a read of row 3
-// does not depend on a write of rows 2-4.
+// An L2 buffer too: a read of row 3 depends on a write of rows 2-4 (a gather
+// of fills at other offsets, read whole, is the case an equal-start test
+// misses).
 // CHECK-LABEL: func.func @l2
 // CHECK: %[[T:.*]], %{{.*}} = air.execute -> (memref<8x4x16xi32, 1>)
-// CHECK: air.channel.get async [%[[T]]]  @drain[]
-// CHECK: air.channel.put async [%[[T]]]  @feed[]
+// CHECK: %[[G:.*]] = air.channel.get async [%[[T]]]  @drain[]
+// CHECK: air.channel.put async [%[[G]]]  @feed[]
 
 #nest = affine_map<()[s0, s1] -> (s0 + s1 + 2)>
 #wrap = affine_map<()[s0] -> (s0 mod 2 + 2)>

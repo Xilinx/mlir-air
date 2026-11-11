@@ -433,3 +433,50 @@ module {
     return
   }
 }
+
+// -----
+
+// J: a join: two fill loops write the two halves of an L2 buffer, and a put
+// reads it whole. Locks do not order the two writers, so the buffer's lock
+// counts come from the body they share: the three stay in one loop.
+// CHECK-LABEL: func.func @join_stays
+// CHECK: scf.for
+// CHECK: %[[F0:.*]] = scf.for
+// CHECK: air.channel.get{{.*}}@fill[%c0, %c0]
+// CHECK: %[[F1:.*]] = scf.for
+// CHECK: air.channel.get{{.*}}@fill[%c0, %c1
+// CHECK: air.channel.put async [%[[F0]], %[[F1]]]  @out
+// CHECK-NOT: scf.for
+
+module {
+  air.channel @fill [1, 2]
+  air.channel @out [1, 1]
+  func.func @join_stays() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%a, %b) in (%sa=%c1, %sb=%c1) {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c4 = arith.constant 4 : index
+        %t0, %buf = air.execute -> (memref<2x64xbf16, 1>) {
+          %m = memref.alloc() : memref<2x64xbf16, 1>
+          air.execute_terminator %m : memref<2x64xbf16, 1>
+        }
+        %2 = scf.for %k = %c0 to %c4 step %c1_0 iter_args(%it = %t0) -> (!air.async.token) {
+          %f0 = scf.for %h = %c0 to %c2 step %c1_0 iter_args(%t = %it) -> (!air.async.token) {
+            %g = air.channel.get async [%t] @fill[%c0, %c0] (%buf[%c0, %h] [%c1_0, %c4] [%c4, %c1_0]) : (memref<2x64xbf16, 1>)
+            scf.yield %g : !air.async.token
+          }
+          %f1 = scf.for %h = %c0 to %c2 step %c1_0 iter_args(%t = %it) -> (!air.async.token) {
+            %g = air.channel.get async [%t] @fill[%c0, %c1_0] (%buf[%c1_0, %h] [%c1_0, %c4] [%c4, %c1_0]) : (memref<2x64xbf16, 1>)
+            scf.yield %g : !air.async.token
+          }
+          %p = air.channel.put async [%f0, %f1] @out[%c0, %c0] (%buf[] [] []) : (memref<2x64xbf16, 1>)
+          scf.yield %p : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}

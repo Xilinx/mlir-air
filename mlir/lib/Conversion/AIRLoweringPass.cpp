@@ -381,6 +381,8 @@ public:
     auto herdLoadOp =
         airrt::HerdLoadOp::create(rewriter, op->getLoc(), rewriter.getI64Type(),
                                   herd_name_attr.getValue().str(), args);
+    if (auto n = op->getAttr(air::attrs::HerdRtpIndex))
+      herdLoadOp->setAttr(air::attrs::HerdRtpIndex, n);
 
     // Set an attribute linking to the parent segment's symbol name.
     if (auto segment = herd->getParentOfType<air::SegmentOp>()) {

@@ -1854,8 +1854,10 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
     for (int phys_x = loc_x; phys_x < size_x + loc_x; phys_x++) {
       for (int phys_y = loc_y; phys_y < size_y + loc_y; phys_y++) {
 
-        std::string name = "__air_herd_rtp_" + std::to_string(phys_x) + "_" +
-                           std::to_string(phys_y);
+        std::string name = "__air_herd_rtp";
+        if (auto n = op->getAttrOfType<IntegerAttr>(air::attrs::HerdRtpIndex))
+          name += std::to_string(n.getInt());
+        name += "_" + std::to_string(phys_x) + "_" + std::to_string(phys_y);
 
         // Only generate RTP writes if the RTP buffer was actually created.
         bool rtpBufferExists = false;

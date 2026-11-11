@@ -690,6 +690,14 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       if (!core.getStackSizeAttr())
         core.setStackSize(options.stack_size);
 
+      // A herd in a loop -- of its segment, or around its launch in the host
+      // function -- runs its body several times in one dispatch.
+      for (Operation *p = h->getParentOp(); p; p = p->getParentOp())
+        if (isa<scf::ForOp, affine::AffineForOp, scf::WhileOp>(p)) {
+          core->setAttr("air.reruns", builder.getUnitAttr());
+          break;
+        }
+
       // Collect IDs from all parent hierarchy ops (Launch, Segment, etc.).
       // These values become compile-time constants and don't need RTP slots.
       llvm::SmallDenseSet<Value> hierarchyIdSet;
@@ -717,9 +725,12 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       AIE::BufferOp rtp_buffer = nullptr;
       if (rtp_buffer_size) {
         uint64_t buffer_id = 0;
+        std::string rtp_name = "__air_herd_rtp";
+        if (auto n = h->getAttrOfType<IntegerAttr>(air::attrs::HerdRtpIndex))
+          rtp_name = "__air_herd_rtp" + std::to_string(n.getInt());
         rtp_buffer = allocateBufferOp(
             buffer_id, MemRefType::get({rtp_buffer_size}, builder.getI32Type()),
-            tile, builder.getStringAttr("__air_herd_rtp"), phys_x, phys_y);
+            tile, builder.getStringAttr(rtp_name), phys_x, phys_y);
         if (!options.emit_herd_lock) {
           h.emitWarning("Herd RTP buffer allocated but herd lock disabled");
           h.emitWarning("Enabling herd lock for RTP buffer synchronization");
@@ -3217,6 +3228,56 @@ void L2MemrefToMemTileMap(
     }
     return false;
   };
+  auto otherSideCoreCol = [&](StringRef channelName, bool weAreThePut) -> int {
+    int col = -1;
+    m.walk([&](air::ChannelInterface chIf) {
+      if (chIf.getChanName() != channelName)
+        return WalkResult::advance();
+      bool isOurSide = (weAreThePut == isa<air::ChannelPutOp>(*chIf));
+      if (isOurSide)
+        return WalkResult::advance();
+      auto core = chIf->getParentOfType<AIE::CoreOp>();
+      if (!core)
+        return WalkResult::advance();
+      auto tile =
+          dyn_cast_if_present<AIE::TileOp>(core.getTile().getDefiningOp());
+      if (!tile)
+        return WalkResult::advance();
+      int c = tile.getCol();
+      if (col == -1)
+        col = c;
+      else if (col != c)
+        col = -2;
+      return WalkResult::advance();
+    });
+    return col < 0 ? -1 : col;
+  };
+  // The column of the cores on the far side of `alloc`'s channels, if they
+  // agree on one; -1 otherwise.
+  auto allocCoreCol = [&](memref::AllocOp alloc) -> int {
+    int consensus = -1;
+    for (auto user : alloc.getMemref().getUsers()) {
+      auto ch = dyn_cast_if_present<air::ChannelInterface>(user);
+      if (!ch)
+        continue;
+      int cand =
+          otherSideCoreCol(ch.getChanName(), isa<air::ChannelPutOp>(*ch));
+      if (cand < 0)
+        continue;
+      if (consensus == -1)
+        consensus = cand;
+      else if (consensus != cand)
+        return -1;
+    }
+    return consensus;
+  };
+  // The pin of `bucket`, if any member carries one; -1 otherwise.
+  auto bucketPinCol = [&](ArrayRef<memref::AllocOp> bucket) -> int {
+    for (auto other : bucket)
+      if (allocPinCol(other) >= 0)
+        return allocPinCol(other);
+    return -1;
+  };
   auto placeMemrefInSharedBucket =
       [&](SmallVector<SmallVector<memref::AllocOp>> &memref_buckets,
           memref::AllocOp alloc) {
@@ -3233,6 +3294,17 @@ void L2MemrefToMemTileMap(
           // the shared channel becomes a real cross-memtile flow.
           if (allocPin >= 0 && bucketHasConflictingPin(bucket, allocPin))
             continue;
+          // Likewise an unpinned buffer whose own cores sit in another column
+          // than the bucket's pin: it is the near end of a hop to the pinned
+          // buffer (cores -> this buffer -> the pinned one), so it stays with
+          // its cores rather than crowding the pinned memtile with their
+          // flows.
+          if (allocPin < 0) {
+            int bucketPin = bucketPinCol(bucket);
+            int own = allocCoreCol(alloc);
+            if (bucketPin >= 0 && own >= 0 && own != bucketPin)
+              continue;
+          }
           bucket.push_back(alloc);
           return true;
         }
@@ -3266,30 +3338,6 @@ void L2MemrefToMemTileMap(
       if (targetModel.isMemTile(col, row))
         return true;
     return false;
-  };
-  auto otherSideCoreCol = [&](StringRef channelName, bool weAreThePut) -> int {
-    int col = -1;
-    m.walk([&](air::ChannelInterface chIf) {
-      if (chIf.getChanName() != channelName)
-        return WalkResult::advance();
-      bool isOurSide = (weAreThePut == isa<air::ChannelPutOp>(*chIf));
-      if (isOurSide)
-        return WalkResult::advance();
-      auto core = chIf->getParentOfType<AIE::CoreOp>();
-      if (!core)
-        return WalkResult::advance();
-      auto tile =
-          dyn_cast_if_present<AIE::TileOp>(core.getTile().getDefiningOp());
-      if (!tile)
-        return WalkResult::advance();
-      int c = tile.getCol();
-      if (col == -1)
-        col = c;
-      else if (col != c)
-        col = -2;
-      return WalkResult::advance();
-    });
-    return col < 0 ? -1 : col;
   };
   auto deriveBucketCol = [&](ArrayRef<memref::AllocOp> bucket) -> int {
     int consensus = -1;
@@ -8562,6 +8610,38 @@ public:
         }
       };
 
+      // A core whose herd runs its body several times in one dispatch (a
+      // wave of a decode, say): a channel of several finite tasks would run
+      // them once, and the next run's transfers would never start. With
+      // constant repeat counts, unroll the tasks into one circular chain --
+      // each task's transfers as many times in a row as it repeats, in
+      // program order, which is the order the core releases them in -- when
+      // the BDs fit.
+      std::optional<SmallVector<Operation *>> unrolledChain;
+      if constexpr (std::is_same_v<dmaAllocatorTy, air::TileDMAAllocator>) {
+        auto tileOp = dyn_cast<AIE::TileOp>(tile.getOperation());
+        AIE::CoreOp core = tileOp ? tileOp.getCoreOp() : AIE::CoreOp();
+        if (core && core->hasAttr("air.reruns") && !infiniteBDLoopMode &&
+            llvm::all_of(repeat_counts,
+                         [](auto &rc) { return rc.first >= 0; })) {
+          SmallVector<Operation *> chain;
+          for (auto &[rep, task_ops] : repeat_counts)
+            for (int k = 0; k <= rep; k++)
+              for (Operation *op : task_ops)
+                chain.push_back(op);
+          constexpr size_t maxChainBDs = 12;
+          if (chain.size() <= maxChainBDs) {
+            unrolledChain = chain;
+            infiniteBDLoopMode = true;
+            auto all = repeat_counts.front();
+            for (auto &rc : llvm::drop_begin(repeat_counts))
+              all.second.insert(rc.second.begin(), rc.second.end());
+            all.first = 0;
+            repeat_counts.assign(1, all);
+          }
+        }
+      }
+
       unsigned taskId = 0;
       // For every BD task
       for (auto &[rep, task_ops] : repeat_counts) {
@@ -8570,7 +8650,8 @@ public:
         // trip that many times (see getCircularChainBDs); a finite task runs
         // its BDs once per repeat.
         SmallVector<Operation *> bd_ops =
-            infiniteBDLoopMode
+            unrolledChain ? *unrolledChain
+            : infiniteBDLoopMode
                 ? air::getCircularChainBDs(memcpy_ops, task_ops.getArrayRef(),
                                            sendsPerFill, timesPerTrip)
                 : SmallVector<Operation *>(task_ops.begin(), task_ops.end());
@@ -10776,6 +10857,8 @@ public:
   static std::string chainLockBlocker(memref::AllocOp alloc) {
     int numWriters = 0, numReaders = 0;
     air::classifyChainBuffer(l2MemrefOf(alloc), numWriters, numReaders);
+    if (!air::chainStagesMoveOncePerFill(l2MemrefOf(alloc)))
+      return "a stage moves it more than once per fill";
     if (numWriters > 1 && numReaders == 1)
       return "";
     if (numWriters == 1 && numReaders > 1)
@@ -10935,6 +11018,26 @@ public:
     }
 
     auto module = getOperation();
+
+    // Herds of one name run in turn on the same cores, each taking its own
+    // scalars. Number them in program order, so that each gets an RTP buffer
+    // of its own and the runtime sequence writes each one's scalars into it
+    // (air-to-std carries the number to the herd's airrt.herd_load).
+    // Counted per segment: the segments of several launches that share a
+    // name (one device, a launch per op) each number their own herds.
+    module.walk([&](air::SegmentOp seg) {
+      llvm::StringMap<int64_t> seen;
+      seg.walk([&](air::HerdOp h) {
+        auto sym =
+            h->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+        if (!sym)
+          return;
+        int64_t n = seen[sym.getValue()]++;
+        if (n)
+          h->setAttr(air::attrs::HerdRtpIndex,
+                     IntegerAttr::get(IntegerType::get(h.getContext(), 64), n));
+      });
+    });
 
     // Before anything is emitted: an op no AIE core can run would otherwise
     // be lowered into IR that looks fine and cannot execute.

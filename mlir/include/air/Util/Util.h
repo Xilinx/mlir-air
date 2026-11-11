@@ -293,6 +293,12 @@ FailureOr<StringRef> getChannelType(air::MemcpyInterface chanIfOp);
 // position.
 SmallVector<Operation *> getOrderedChainEndpoints(Value memref, bool writers);
 void classifyChainBuffer(Value memref, int &numWriters, int &numReaders);
+
+// Whether each stage of a chain buffer's many side (the readers of a fan-out,
+// the writers of a fan-in) moves it once per transfer of the single side: a
+// chain lock passes the buffer from stage to stage once per fill, so a stage
+// moving it twice per fill would wait for a turn that never comes.
+bool chainStagesMoveOncePerFill(Value memref);
 // Do two endpoints occupy the same chain stage? Only provably-equal keys share
 // one, so an unkeyed endpoint never shares a stage with anything but itself.
 bool chainEndpointsShareStage(Operation *a, Operation *b);

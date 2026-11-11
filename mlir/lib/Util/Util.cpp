@@ -1062,6 +1062,45 @@ void air::classifyChainBuffer(Value memref, int &numWriters, int &numReaders) {
   numReaders = getOrderedChainEndpoints(memref, /*writers=*/false).size();
 }
 
+bool air::chainStagesMoveOncePerFill(Value memref) {
+  // Transfers per stage key on each side; an unkeyed endpoint is a stage of
+  // its own.
+  auto perStage = [&](bool writers) {
+    SmallVector<int64_t> counts;
+    SmallVector<ChainEndpointKey> keys;
+    for (auto user : memref.getUsers()) {
+      auto memcpyOp = dyn_cast<air::MemcpyInterface>(user);
+      if (!memcpyOp)
+        continue;
+      bool isWriter = (memref == memcpyOp.getDstMemref());
+      bool isReader = (memref == memcpyOp.getSrcMemref());
+      if ((writers && !isWriter) || (!writers && !isReader))
+        continue;
+      auto key = getChainEndpointKey(user);
+      auto it = key ? llvm::find(keys, *key) : keys.end();
+      if (key && it != keys.end()) {
+        counts[it - keys.begin()]++;
+        continue;
+      }
+      keys.push_back(key ? *key : ChainEndpointKey{});
+      counts.push_back(1);
+    }
+    return counts;
+  };
+  SmallVector<int64_t> w = perStage(true), r = perStage(false);
+  // The single side's transfers are the fills (or drains); each stage of the
+  // many side must move the buffer once for each.
+  auto matches = [](ArrayRef<int64_t> one, ArrayRef<int64_t> many) {
+    int64_t fills = one.empty() ? 0 : one.front();
+    return llvm::all_of(many, [&](int64_t n) { return n == fills; });
+  };
+  if (w.size() == 1)
+    return matches(w, r);
+  if (r.size() == 1)
+    return matches(r, w);
+  return true;
+}
+
 bool air::chainEndpointsShareStage(Operation *a, Operation *b) {
   auto ka = getChainEndpointKey(a);
   auto kb = getChainEndpointKey(b);

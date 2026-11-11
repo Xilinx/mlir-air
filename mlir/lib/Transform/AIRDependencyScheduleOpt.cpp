@@ -1214,16 +1214,20 @@ struct HoistAIRHerdsToSharedRegionPattern
 
   LogicalResult matchAndRewrite(air::HerdOp herdOp,
                                 PatternRewriter &rewriter) const override {
-    auto parentRegion = herdOp->getParentRegion();
+    // The herds of one name anywhere in the herd's segment (or other
+    // isolated-from-above parent), not only next to it: a herd in a loop
+    // nested deeper than its siblings is found from either.
+    auto *isolated = herdOp->getParentWithTrait<OpTrait::IsIsolatedFromAbove>();
     auto symName = herdOp.getSymName();
     SmallVector<Operation *> herdsWithSameName;
-    parentRegion->walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
-        [symName, &herdsWithSameName](air::HerdOp herd) {
-          if (herd.getSymName() != symName)
-            return WalkResult::skip();
-          herdsWithSameName.push_back(herd.getOperation());
-          return WalkResult::advance();
-        });
+    for (Region &parentRegion : isolated->getRegions())
+      parentRegion.walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+          [symName, &herdsWithSameName](air::HerdOp herd) {
+            if (herd.getSymName() != symName)
+              return WalkResult::skip();
+            herdsWithSameName.push_back(herd.getOperation());
+            return WalkResult::advance();
+          });
     if (herdOp != herdsWithSameName.back())
       return failure(); // Apply pattern at the last herd
 
@@ -4918,10 +4922,13 @@ private:
 // Like applyPatternsGreedily(region), but also works on a region that is not
 // isolated from above, such as an scf.for body. Ops outside the region are not
 // rewritten.
-static void applyPatternsGreedilyInRegion(Region &region,
-                                          RewritePatternSet &&patterns) {
+static void
+applyPatternsGreedilyInRegion(Region &region,
+                              const FrozenRewritePatternSet &patterns,
+                              bool *changed = nullptr) {
   if (region.getParentOp()->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
-    (void)applyPatternsGreedily(region, std::move(patterns));
+    (void)applyPatternsGreedily(region, patterns, GreedyRewriteConfig(),
+                                changed);
     return;
   }
   SmallVector<Operation *> ops;
@@ -4929,7 +4936,13 @@ static void applyPatternsGreedilyInRegion(Region &region,
   GreedyRewriteConfig config;
   config.setScope(&region);
   config.setStrictness(GreedyRewriteStrictness::AnyOp);
-  (void)applyOpPatternsGreedily(ops, std::move(patterns), config);
+  (void)applyOpPatternsGreedily(ops, patterns, config, changed);
+}
+
+static void applyPatternsGreedilyInRegion(Region &region,
+                                          RewritePatternSet &&patterns) {
+  applyPatternsGreedilyInRegion(region,
+                                FrozenRewritePatternSet(std::move(patterns)));
 }
 
 LogicalResult
@@ -5588,7 +5601,8 @@ public:
           if (merged.size() > 1)
             continue;
           // Aggressively fuse air.channels by time multiplexing.
-          if (!mergeChannels(rewriter, channelOps[i], channelOps[j]))
+          if (!inExclusiveArms(channelOps[i], channelOps[j]) &&
+              !mergeChannels(rewriter, channelOps[i], channelOps[j]))
             continue;
           invalidateChannelIndex();
           chan_merge_map[channelOps[j]] = channelOps[i];
@@ -5941,10 +5955,49 @@ private:
       return false;
     if (a_gets.size() != b_gets.size())
       return false;
+    // A herd marked air.multiplex_l2 has its channels multiplexed in L2 as
+    // well, whatever the function's spaces (a superkernel's attention cores,
+    // whose memtile has no channel to spare, among cores whose channels must
+    // not be).
+    // (its cores' ends, and its own L2 buffers: those pinned to its column)
+    std::set<int64_t> l2Cols;
+    if (auto f = chan_a->getParentOfType<ModuleOp>())
+      f.walk([&](air::HerdOp h) {
+        if (h->hasAttr("air.multiplex_l2"))
+          if (auto x = h->getAttrOfType<IntegerAttr>("x_loc"))
+            l2Cols.insert(x.getInt());
+      });
+    auto inL2Herd = [&](Operation *op) {
+      if (auto h = op->getParentOfType<air::HerdOp>())
+        return h->hasAttr("air.multiplex_l2");
+      auto ch = cast<air::ChannelInterface>(op);
+      auto ms =
+          air::getMemorySpace(cast<BaseMemRefType>(ch.getMemref().getType()));
+      if (!ms || *ms != air::MemorySpace::L2)
+        return true; // an L3 end: the shim
+      Value m = ch.getMemref();
+      Operation *def = m.getDefiningOp();
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(def))
+        for (auto a : exec.getOps<memref::AllocOp>())
+          def = a;
+      auto col = def ? def->getAttrOfType<IntegerAttr>("air.memtile_col")
+                     : IntegerAttr();
+      return col && l2Cols.count(col.getInt());
+    };
+    auto allIn = [&](auto &ops) {
+      return llvm::all_of(ops, [&](auto op) { return inL2Herd(op); });
+    };
+    bool herdL2 = !l2Cols.empty() && !a_gets.empty() && !b_gets.empty() &&
+                  allIn(a_gets) && allIn(b_gets) && allIn(a_puts) &&
+                  allIn(b_puts);
+    SmallVector<air::MemorySpace> withL2(targetMemorySpaces.begin(),
+                                         targetMemorySpaces.end());
+    if (herdL2 && !llvm::is_contained(withL2, air::MemorySpace::L2))
+      withL2.push_back(air::MemorySpace::L2);
     // Filter out put/get memory space based on aggressive mode option
-    if (!hitsMemorySpaceForAggMode(a_puts, a_gets))
+    if (!hitsMemorySpaceForAggMode(a_puts, a_gets, withL2))
       return false;
-    if (!hitsMemorySpaceForAggMode(b_puts, b_gets))
+    if (!hitsMemorySpaceForAggMode(b_puts, b_gets, withL2))
       return false;
     // A merge that only the function's own spaces allow must not reach a
     // channel other functions use too.
@@ -5964,7 +6017,7 @@ private:
           hitsMemorySpaceForAggMode(b_puts, b_gets, moduleSpaces)))
       return false;
     bool multiplexesL2 =
-        llvm::is_contained(moduleSpaces, air::MemorySpace::L2) ||
+        herdL2 || llvm::is_contained(moduleSpaces, air::MemorySpace::L2) ||
         (llvm::is_contained(functionOnlySpaces, air::MemorySpace::L2) &&
          onlyInFunction);
     // b's ops may sit in loops of their own inside the nest they share with
@@ -7189,6 +7242,51 @@ private:
     }
     b->erase();
   }
+
+  // Whether every transfer of b sits in another arm of an scf.if or
+  // scf.index_switch than every transfer of a, on both ends: only one of the
+  // two runs, so one channel carries whichever does, by renaming alone -- how
+  // a herd's cores serve one class of waves or another, chosen by the arm.
+  bool inExclusiveArms(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+    // Only arms within one segment: separate segments (several launches of
+    // a device, one per arm of a dispatch switch) are separate programs.
+    auto exclusive = [](Operation *a, Operation *b) {
+      auto seg = a->getParentOfType<air::SegmentOp>();
+      if (!seg || seg != b->getParentOfType<air::SegmentOp>())
+        return false;
+      for (Operation *p = a->getParentOp(); p && p != seg;
+           p = p->getParentOp()) {
+        if (!isa<scf::IfOp, scf::IndexSwitchOp>(p))
+          continue;
+        Region *ra = nullptr, *rb = nullptr;
+        for (Region &r : p->getRegions()) {
+          if (r.findAncestorOpInRegion(*a))
+            ra = &r;
+          if (r.findAncestorOpInRegion(*b))
+            rb = &r;
+        }
+        if (ra && rb && ra != rb)
+          return true;
+      }
+      return false;
+    };
+    auto aPuts = getChannelPutOpThroughSymbol(chan_a);
+    auto bPuts = getChannelPutOpThroughSymbol(chan_b);
+    auto aGets = getChannelGetOpThroughSymbol(chan_a);
+    auto bGets = getChannelGetOpThroughSymbol(chan_b);
+    if (aPuts.empty() || aGets.empty() || bPuts.empty() || bGets.empty())
+      return false;
+    for (auto bp : bPuts)
+      for (auto ap : aPuts)
+        if (!exclusive(ap, bp))
+          return false;
+    for (auto bg : bGets)
+      for (auto ag : aGets)
+        if (!exclusive(ag, bg))
+          return false;
+    return true;
+  }
+
   // Returns false, changing nothing, when some pair of b's ops cannot be
   // merged into a's nests: merging only one side of a channel pair would
   // interleave on one side and not the other.
@@ -7656,6 +7754,14 @@ private:
     for (auto &o : for_op.getBody()->getOperations()) {
       // Get for_op's immediate child op
       if (!isAsyncOp(&o)) {
+        // The split keeps only the ops it partitions and erases the loop, so
+        // an op it cannot place -- one with effects but no token, such as an
+        // scf.if around a class of waves' transfers -- would be dropped.
+        if (!o.hasTrait<OpTrait::IsTerminator>() && !air::isPure(&o) &&
+            !isa<memref::AllocOp, memref::DeallocOp, air::WaitAllOp>(o)) {
+          target_ops_sets.clear();
+          return;
+        }
         continue; // This pass requires an async IR.
       }
 
@@ -7797,6 +7903,27 @@ private:
       }
       return true;
     };
+    // Whether no other op of the body writes the buffers `a` and `b` share.
+    // Locks do not order two writers: a join of several fills (a loop nest
+    // per part) read whole takes its lock counts from the body they share, so
+    // its transfers stay in one loop.
+    auto soleWriter = [&](Operation *a, Operation *b) {
+      const auto &x = access[a], &y = access[b];
+      llvm::DenseSet<Value> shared;
+      for (Value v : x.writes)
+        if (y.reads.contains(v))
+          shared.insert(v);
+      for (Value v : x.reads)
+        if (y.writes.contains(v))
+          shared.insert(v);
+      return llvm::none_of(candidate_ops, [&](Operation *o) {
+        if (o == a || o == b)
+          return false;
+        const auto &z = access[o];
+        return llvm::any_of(shared,
+                            [&](Value v) { return z.writes.contains(v); });
+      });
+    };
     llvm::MapVector<Operation *, SmallVector<Operation *>> depGraph;
     for (auto op : candidate_ops)
       depGraph[op] = SmallVector<Operation *>{};
@@ -7816,7 +7943,8 @@ private:
         // body they share.
         if (isa<LoopLikeOpInterface>(sourceOp) && isSingleEndpoint(sourceOp) &&
             isSingleEndpoint(sinkOp) && !usesNonTokenResult(sourceOp, sinkOp) &&
-            LoopBodyAccess::lockOrdered(access[sourceOp], access[sinkOp]))
+            LoopBodyAccess::lockOrdered(access[sourceOp], access[sinkOp]) &&
+            soleWriter(sourceOp, sinkOp))
           lockOrdered.push_back({sourceOp, sinkOp});
         else
           depGraph[sinkOp].push_back(sourceOp);
@@ -8010,7 +8138,15 @@ LogicalResult AIRIsolateAsyncDmaLoopNestsImpl(Region *region) {
   air::HerdOp::getCanonicalizationPatterns(patterns_1, ctx);
   air::WaitAllOp::getCanonicalizationPatterns(patterns_1, ctx);
   scf::ForOp::getCanonicalizationPatterns(patterns_1, ctx);
-  applyPatternsGreedilyInRegion(*region, std::move(patterns_1));
+  // Splitting a loop can leave a herd alone in it, hoistable, after the
+  // greedy driver has last looked at the herd; apply until nothing changes.
+  FrozenRewritePatternSet frozen(std::move(patterns_1));
+  for (int round = 0; round < 8; round++) {
+    bool changed = false;
+    applyPatternsGreedilyInRegion(*region, frozen, &changed);
+    if (!changed)
+      break;
+  }
   return success();
 }
 

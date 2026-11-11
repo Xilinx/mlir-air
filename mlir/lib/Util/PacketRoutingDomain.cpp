@@ -152,7 +152,11 @@ static PacketChannelFacts classify(ChannelOp chanOp,
   for (ChannelInterface p : puts) {
     std::optional<int64_t> v = totalVolume(p, scopeRoot);
     if (!v) {
-      c.reason = "a put has a non-static volume";
+      // A stream of run-time length (a put in a loop whose trip count is
+      // known only at run time) cannot be replicated into destinations that
+      // each take a fixed volume: those gets partition it. As for any
+      // partition, verify() still requires a put naming a `dest` upstream.
+      c.fanout = PacketFanout::Demux;
       return c;
     }
     putVol += *v;

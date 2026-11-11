@@ -1958,6 +1958,30 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       builder.setInsertionPoint(execOp);
     } else
       newMemref = memref::AllocOp::create(builder, loc, newMemrefType);
+    // The parts keep the whole buffer's lock template.
+    {
+      Operation *orig = allocOp;
+      if (auto exec = dyn_cast<air::ExecuteOp>(allocOp))
+        for (auto a : exec.getOps<memref::AllocOp>())
+          orig = a.getOperation();
+      Operation *part = newMemref.getDefiningOp();
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(part))
+        for (auto a : exec.getOps<memref::AllocOp>())
+          part = a.getOperation();
+      for (StringRef name : {air::attrs::ChainLock, air::attrs::NoChainLock,
+                             air::attrs::CountedLock})
+        if (Attribute a = orig->getAttr(name))
+          part->setAttr(name, a);
+      // A buffer split along its leading dim over a herd's columns
+      // (air.memtile_col_base = the herd's first column): each part in its
+      // own column's memtile.
+      if (auto base = orig->getAttrOfType<IntegerAttr>("air.memtile_col_base"))
+        if (memrefDim == 0 && newMemrefShape[0] > 0)
+          part->setAttr(
+              air::attrs::MemtileCol,
+              IntegerAttr::get(IntegerType::get(ctx, 32),
+                               base.getInt() + key / newMemrefShape[0]));
+    }
     // Create new dealloc ops.
     if (deallocOp) {
       builder.setInsertionPoint(deallocOp);
