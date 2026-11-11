@@ -27,8 +27,8 @@
 #   memtile 5     the RMS core's inputs (x, the norm weights) and its side
 #                 outputs: the alpha / beta input, the layer's output
 #
-# At D = 5120 the RMS core holds five [D] buffers (x, a norm weight, the normed
-# x, the projection rows, the output), where Qwen3.6's held ten at D = 2048.
+# At D = 5120 the RMS core holds five [D] buffers (x, a norm weight, the two
+# normed x, a projection's rows), where Qwen3.6's held ten at D = 2048.
 import argparse
 import os
 import sys
@@ -116,11 +116,11 @@ def build_module():
     k_ = lambda o, n, s=(): air.extern(  # noqa: E731
         n, link_with=f"{o}.o", scalars=list(s)
     )
-    rms_norm, res_add = k_("moe_glu", "rms_norm", [i32]), k_(
-        "moe_glu", "residual_add", [i32]
+    rms_norm, res_add = k_("q38_ffn", "rms_norm", [i32]), k_(
+        "q38_ffn", "residual_inplace", [i32]
     )
-    copy_r = k_("moe_glu", "copy_round", [i32])
-    glu_s = k_("moe_glu", "glu_shared_round", [i32])
+    copy_r = k_("q38_ffn", "copy_round", [i32])
+    glu_s = k_("q38_ffn", "glu_shared_round", [i32])
     conv_k = k_("gdn_prep", "gdn_conv_cache", [i32])
     l2n = k_("gdn_prep", "gdn_l2norm", [i32, i32])
     pack = k_("gdn_prep", "gdn_pack", [i32])
@@ -247,29 +247,32 @@ def build_module():
                         @h.body
                         def _(tx):
                             p = h.private()
-                            x, w, xn, mix, y = (
+                            # x, a norm weight (w1, then w2), the normed x
+                            # of the mixer and of the MLP, a projection's rows.
+                            # A buffer sent on a channel that also carries
+                            # another is written once per layer: written again
+                            # after its send, the compiler holds the send back
+                            x, w, xab, xn, mix = (
                                 air.alloc([D], bf16, scope=p) for _ in range(5)
                             )
                             u = air.alloc([arr.round], bf16, scope=p)
                             to_rms.get(x)
                             to_rms.get(w)
-                            rms_norm(xn, x, w, D)
-                            xn_ch.put(xn)
-                            xs_ch.put(xn)
+                            rms_norm(xab, x, w, D)
+                            xn_ch.put(xab)
+                            xs_ch.put(xab)
                             for j in air.sequential(0, RG_O):
                                 arr.out_y.get(u, indices=[0, RMS])
                                 copy_r(mix, u, j)
-                            res_add(y, x, mix, D)
-                            # the post-attention norm weight; the core waits
-                            # for xn's transfers before it writes xn again
+                            res_add(x, mix, D)
                             to_rms.get(w)
                             rms_norm(xn, x, w, D)
                             xn_ch.put(xn)
                             for j in air.sequential(0, RG_DN):
                                 arr.out_y.get(u, indices=[0, RMS])
                                 copy_r(mix, u, j)
-                            res_add(y, x, mix, D)
-                            xs_ch.put(y)
+                            res_add(x, mix, D)
+                            xs_ch.put(x)
 
                     with air.herd([range(1)], name="ab", shape=(1,), at=AB_AT) as h:
 
@@ -447,7 +450,7 @@ def main():
     if a.print_module_only:
         print(module)
         return 0
-    for k in ("q4k_mvm", "moe_glu", "gdn_prep", "gdn_decode", "gate"):
+    for k in ("q4k_mvm", "q38_ffn", "gdn_prep", "gdn_decode", "gate"):
         common.compile_kernel(k)
 
     from reference import Reference, rmsnorm, t

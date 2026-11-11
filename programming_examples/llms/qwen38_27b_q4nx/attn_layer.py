@@ -121,11 +121,11 @@ def build_module(L):
     k_ = lambda o, n, s=(): air.extern(  # noqa: E731
         n, link_with=f"{o}.o", scalars=list(s)
     )
-    rms_norm, res_add = k_("moe_glu", "rms_norm", [i32]), k_(
-        "moe_glu", "residual_add", [i32]
+    rms_norm, res_add = k_("q38_ffn", "rms_norm", [i32]), k_(
+        "q38_ffn", "residual_inplace", [i32]
     )
-    copy_r = k_("moe_glu", "copy_round", [i32])
-    glu_s = k_("moe_glu", "glu_shared_round", [i32])
+    copy_r = k_("q38_ffn", "copy_round", [i32])
+    glu_s = k_("q38_ffn", "glu_shared_round", [i32])
     rope_rd, rope = k_("rope_rounds", "rope_round", [i32]), k_(
         "rope_rounds", "rope_compute", [i32]
     )
@@ -268,26 +268,31 @@ def build_module(L):
                         @h.body
                         def _(tx):
                             p = h.private()
-                            x, w, xn, mix, y = (
+                            # x, a norm weight (w1, then w2), the normed x
+                            # of the mixer and of the MLP, a projection's rows.
+                            # A buffer sent on a channel that also carries
+                            # another is written once per layer: written again
+                            # after its send, the compiler holds the send back
+                            x, w, xab, xn, mix = (
                                 air.alloc([D], bf16, scope=p) for _ in range(5)
                             )
                             u = air.alloc([arr.round], bf16, scope=p)
                             to_rms.get(x)
                             to_rms.get(w)
-                            rms_norm(xn, x, w, D)
-                            xn_ch.put(xn)
+                            rms_norm(xab, x, w, D)
+                            xn_ch.put(xab)
                             for j in air.sequential(0, RG_O):
                                 arr.out_y.get(u, indices=[0, RMS])
                                 copy_r(mix, u, j)
-                            res_add(y, x, mix, D)
+                            res_add(x, mix, D)
                             to_rms.get(w)
                             rms_norm(xn, x, w, D)
                             xn_ch.put(xn)
                             for j in air.sequential(0, RG_DN):
                                 arr.out_y.get(u, indices=[0, RMS])
                                 copy_r(mix, u, j)
-                            res_add(y, x, mix, D)
-                            xs_ch.put(y)
+                            res_add(x, mix, D)
+                            xs_ch.put(x)
 
                     with air.herd([range(1)], name="rope", shape=(1,), at=ROPE_AT) as h:
 
@@ -451,7 +456,7 @@ def main():
     if a.print_module_only:
         print(module)
         return 0
-    for k in ("q4k_mvm", "moe_glu", "gate"):
+    for k in ("q4k_mvm", "q38_ffn", "gate"):
         common.compile_kernel(k)
     for k in ("rope_rounds", "attn_qk", "attn_kv"):
         common.compile_kernel(k, engine=True)

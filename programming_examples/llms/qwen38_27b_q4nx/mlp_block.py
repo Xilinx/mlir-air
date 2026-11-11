@@ -60,7 +60,7 @@ def build_module():
     step = air.extern("q4k_step", scalars=[i32], **q4k)
     flush = air.extern("q4k_flush", **q4k)
     g_ = lambda n, s=(): air.extern(  # noqa: E731
-        n, link_with="moe_glu.o", scalars=list(s)
+        n, link_with="q38_ffn.o", scalars=list(s)
     )
     glu_s, copy_r = g_("glu_shared_round", [i32]), g_("copy_round", [i32])
 
@@ -217,7 +217,7 @@ def main():
     if a.print_module_only:
         print(module)
         return 0
-    for k in ("q4k_mvm", "moe_glu"):
+    for k in ("q4k_mvm", "q38_ffn"):
         common.compile_kernel(k)
     w = W.Qwen38Q4nx()
     x = w.embed([a.token])[0]
