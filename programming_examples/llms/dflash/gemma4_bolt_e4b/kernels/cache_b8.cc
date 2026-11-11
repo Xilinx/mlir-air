@@ -37,12 +37,16 @@ void cache_scale_rows_aie(float *__restrict factors, bf16 *__restrict slab,
 }
 
 // The chunk normalized, without the weight: the residual core applies it.
-// At most eight rows. The factor is split into two BF16 limbs so the scaling
-// is two native macs.
+// At most 16 rows. The factor is split into two BF16 limbs so the scaling is
+// two native macs.
 void cache_chunk_aie(bf16 *__restrict y, bf16 *__restrict slab,
                      float *__restrict factors, int rows, int chunk) {
   aie_round_nearest_even();
-  aie::accum<accfloat, 16> fa(aie::load_v<8>(factors).template grow<16>());
+  // factors holds only `rows` values: pad a local copy for the vector load
+  alignas(aie::vector_decl_align) float f[16] = {};
+  for (int row = 0; row < rows; ++row)
+    f[row] = factors[row];
+  aie::accum<accfloat, 16> fa(aie::load_v<16>(f));
   aie::vector<bf16, 16> f_hi = fa.template to_vector<bf16>();
   aie::vector<bf16, 16> f_lo =
       aie::sub(fa, aie::accum<accfloat, 16>(f_hi)).template to_vector<bf16>();

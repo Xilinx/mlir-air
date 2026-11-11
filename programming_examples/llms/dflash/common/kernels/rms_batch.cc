@@ -28,13 +28,17 @@ void rms_scale_row_aie(float *__restrict factors, bf16 *__restrict x, int row,
   factors[row] = batch_rsqrt(x + row * MODEL_DIM);
 }
 
-// y = x * w * factor, for at most eight rows. The FP32 product x * w is exact
-// in two BF16 limbs and the factor is split into two as well, so the scaling
-// is native BF16 macs; an FP32 vector-by-scalar multiply is emulated.
+// y = x * w * factor, for at most 16 rows. The FP32 product x * w is exact in
+// two BF16 limbs and the factor is split into two as well, so the scaling is
+// native BF16 macs; an FP32 vector-by-scalar multiply is emulated.
 void rms_chunk_aie(bf16 *__restrict y, bf16 *__restrict x, bf16 *__restrict w,
                    float *__restrict factors, int batch, int chunk, int width) {
   aie_round_nearest_even();
-  aie::accum<accfloat, 16> fa(aie::load_v<8>(factors).template grow<16>());
+  // factors holds only `batch` values: pad a local copy for the vector load
+  alignas(aie::vector_decl_align) float f[16] = {};
+  for (int row = 0; row < batch; ++row)
+    f[row] = factors[row];
+  aie::accum<accfloat, 16> fa(aie::load_v<16>(f));
   aie::vector<bf16, 16> f_hi = fa.template to_vector<bf16>();
   aie::vector<bf16, 16> f_lo =
       aie::sub(fa, aie::accum<accfloat, 16>(f_hi)).template to_vector<bf16>();
