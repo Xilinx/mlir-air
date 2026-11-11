@@ -97,6 +97,16 @@ this machine; every attention layer reads its whole KV cache, which the longer
 contexts add. A 64k build's KV cache (4.3 GB) is past 4 GB: its rows land where
 they belong. At 128k aircc fails in its wrap-and-stride canonicalization.
 
+Against FastFlowLM 1.0.11 on the same bundle and machine (`flm bench
+qwen3.8-mtp:27b -i bench_4k.json --bench-iterations 3`, mean decode tok/s; FLM
+without speculation is `FLM_DISABLE_SPECULATION=1`):
+
+| context | this decode | FLM, no speculation | FLM with its MTP drafts |
+| --- | --- | --- | --- |
+| 1024 | 3.38 | 0.24 | 1.19 |
+| 2048 | | 0.24 | 1.65 |
+| 4096 | 3.17 | 0.25 | 1.66 |
+
 ## Prerequisites
 
 - NPU2 (Strix / AIE2P) + XRT, a Peano (llvm-aie) install
