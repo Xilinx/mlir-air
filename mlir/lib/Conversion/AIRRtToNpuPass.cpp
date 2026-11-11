@@ -3374,6 +3374,10 @@ LogicalResult enforceAIE2WrapLimit(ModuleOp module) {
 }
 
 struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
+  // Tasks in flight per shim feed channel: the shim DMA task queue depth,
+  // which a channel holds regardless of how large its tasks are.
+  static constexpr unsigned kShimFeedsInFlight = 4;
+
   // Track pending main device creation - stores info needed to create main
   // device AFTER all argument-modifying patterns have run
   std::optional<PendingMainDevice> pendingMainDevice;
@@ -4131,9 +4135,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // their emission order and await structure unchanged. Read-backs need
   // ordering constraints even when every channel is below the queue limit.
   LogicalResult boundShimFeedBursts(ModuleOp module) {
-    // Tasks in flight per shim channel: the shim DMA task queue depth, which a
-    // channel holds regardless of how large its tasks are.
-    constexpr unsigned burstLimit = 4;
+    constexpr unsigned burstLimit = kShimFeedsInFlight;
     bool invalidSchedule = false;
 
     module.walk([&](AIE::RuntimeSequenceOp seq) {
@@ -4750,18 +4752,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     });
   }
 
-  // Put each channel's awaits in the order its tasks were started, and release
-  // what an await proves finished. A shim channel retires its tasks in order
-  // and an await consumes the oldest completion token outstanding on the
-  // channel, whichever task it names. So an await of task j while an older
-  // token-issuing task i on the channel is still unawaited returns once i
-  // completes, not j: pacing meant to bound the channel lets it run further
-  // ahead, and BD assignment, which models the same rule, cannot release j's
-  // descriptors. This happens when a paced burst's tail is awaited, or only
-  // freed, at the end of the sequence while a later burst on the channel is
-  // already awaiting its own tasks. So await i right before j, which costs
-  // nothing since i completes first, and free the older tasks that issue no
-  // token right after it, instead of holding their descriptors to the end.
   // Two `scf.if`s of a runtime sequence on one condition, whose bodies only
   // feed shim channels -- each its own channels -- issue one after the other:
   // the second's tasks wait behind the first's queue-depth awaits, so the
@@ -4909,8 +4899,35 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     });
   }
 
+  // Put each channel's awaits in the order its tasks were started, and release
+  // what an await proves finished. A shim channel retires its tasks in order
+  // and an await consumes the oldest completion token outstanding on the
+  // channel, whichever task it names. So an await of task j while an older
+  // token-issuing task i on the channel is still unawaited returns once i
+  // completes, not j: pacing meant to bound the channel lets it run further
+  // ahead, and BD assignment, which models the same rule, cannot release j's
+  // descriptors. This happens when a paced burst's tail is awaited, or only
+  // freed, at the end of the sequence while a later burst on the channel is
+  // already awaiting its own tasks. So await i right before j, which costs
+  // nothing since i completes first, and free the older tasks that issue no
+  // token right after it, instead of holding their descriptors to the end.
+  //
+  // It also caps each feed channel at kShimFeedsInFlight started tasks that
+  // are neither awaited nor freed. boundShimFeedBursts caps each run of feeds
+  // on its own, but a drain await that ends one run leaves that run's feeds in
+  // flight, and the next run counts from zero; past the shim's descriptors,
+  // BD assignment fails. A start that would exceed the cap first awaits the
+  // channel's oldest open task.
   void awaitInChannelOrder(ModuleOp module) {
     module.walk([&](AIE::RuntimeSequenceOp seq) {
+      auto device = seq->getParentOfType<AIE::DeviceOp>();
+      auto isFeed = [&](AIEX::DMAConfigureTaskForOp cfg) {
+        auto alloc =
+            device ? AIE::ShimDMAAllocationOp::getForSymbol(
+                         device, cfg.getAlloc().getLeafReference().getValue())
+                   : AIE::ShimDMAAllocationOp();
+        return alloc && alloc.getChannelDir() == AIE::DMAChannelDir::MM2S;
+      };
       SmallVector<Block *> blocks;
       seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
       for (Block *blk : blocks) {
@@ -4927,8 +4944,19 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           if (auto start = dyn_cast<AIEX::DMAStartTaskOp>(&o)) {
             auto cfg =
                 start.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
-            if (cfg && cfg->getBlock() == blk && !released.contains(cfg))
-              open[channelOf(cfg)].push_back(cfg);
+            if (!cfg || cfg->getBlock() != blk || released.contains(cfg))
+              continue;
+            auto &pending = open[channelOf(cfg)];
+            if (isFeed(cfg) && pending.size() >= kShimFeedsInFlight) {
+              AIEX::DMAConfigureTaskForOp oldest = pending.front();
+              oldest.setIssueToken(true);
+              OpBuilder before(start);
+              AIEX::DMAAwaitTaskOp::create(before, start.getLoc(),
+                                           oldest.getResult());
+              released.insert(oldest);
+              pending.erase(pending.begin());
+            }
+            pending.push_back(cfg);
             continue;
           }
           if (auto free = dyn_cast<AIEX::DMAFreeTaskOp>(&o)) {
