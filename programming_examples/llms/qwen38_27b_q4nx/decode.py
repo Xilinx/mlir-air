@@ -92,8 +92,7 @@ def build_module(waves, maxl):
     step = k_("q4k_mvm", "q4k_step", [i32])
     flush = k_("q4k_mvm", "q4k_flush")
     rms_norm = k_("q38_ffn", "rms_norm", [i32])
-    res_add = k_("q38_ffn", "residual_inplace", [i32])
-    copy_r = k_("q38_ffn", "copy_round", [i32])
+    res_rd = k_("q38_ffn", "residual_round", [i32])
     glu_s = k_("q38_ffn", "glu_shared_round", [i32])
     conv_k = k_("gdn_prep", "gdn_conv_cache", [i32])
     l2n = k_("gdn_prep", "gdn_l2norm", [i32, i32])
@@ -202,18 +201,20 @@ def build_module(waves, maxl):
                     # the gate core: a GDN layer's from the recurrence column,
                     # the attention layer's from its two units; the KV cache to
                     # the units, each its two KV heads in turn per block
-                    dnw3, og = l2([HD], 3), l2([DQ], 3)
-                    # og is written in two halves in either kind of layer: a
-                    # buffer's fill count is one for the whole loop
+                    # A buffer per kind of layer: channels that fill one buffer
+                    # take its free slots from one lock, so the units' channels
+                    # would hold slots a GDN layer's output is waiting for
+                    dnw3 = l2([HD], 3)
+                    og_g, og_a = l2([DQ], 3), l2([DQ], 3)
                     for j in range(pw):
                         m_dn.get(dnw3)
-                        for c in range(NCU):
-                            if j < ngw:
-                                og_ch.get(og[c * UO : (c + 1) * UO])
-                            else:
-                                o_cu.get(og[c * UO : (c + 1) * UO], indices=[c])
+                        if j < ngw:
+                            og_ch.get(og_g)
+                        else:
+                            for c in range(NCU):
+                                o_cu.get(og_a[c * UO : (c + 1) * UO], indices=[c])
                         o_in.put(dnw3)
-                        o_in.put(og)
+                        o_in.put(og_g if j < ngw else og_a)
                     km, vm = l2([16, DK], 3), l2([16, DK], 3)
                     for _b in wave_loop(nb):
                         k_rd.get(km)
@@ -273,35 +274,36 @@ def build_module(waves, maxl):
                         @h.body
                         def _(tx):
                             p = h.private()
-                            # x, a norm weight (w1, then w2), the normed x of
-                            # the mixer and of the MLP, a projection's rows.
-                            # A buffer sent on a channel that also carries
-                            # another is written once per layer (gdn_layer.py)
-                            x, w_, xab, xn, mix = (
-                                air.alloc([D], bf16, scope=p) for _ in range(5)
+                            # x, its slot from the host, the two norm
+                            # weights, the normed x of the mixer and of the
+                            # MLP. Each buffer appears once a layer on each
+                            # channel that carries it: a buffer received or
+                            # sent twice a layer on a channel that carries
+                            # others, or written after it is sent, shares a
+                            # lock pair the core's accesses do not match. The
+                            # projections' rows add into x as they arrive
+                            x, xin, w1, w2, xab, xn = (
+                                air.alloc([D], bf16, scope=p) for _ in range(6)
                             )
                             u = air.alloc([arr.round], bf16, scope=p)
                             for j in wave_loop(pw):
                                 # x carries over from layer to layer; only the
                                 # wave's first takes it from the host
-                                to_rms.get(mix)
+                                for b in (xin, w1, w2):
+                                    to_rms.get(b)
                                 with air.ops.branch(j == 0):
-                                    x[:] = mix[:]
-                                to_rms.get(w_)
-                                rms_norm(xab, x, w_, D)
+                                    x[:] = xin[:]
+                                rms_norm(xab, x, w1, D)
                                 xn_ch.put(xab)
                                 xs_ch.put(xab)
                                 for jj in air.sequential(0, G.RG_O):
                                     arr.out_y.get(u, indices=[0, RMS])
-                                    copy_r(mix, u, jj)
-                                res_add(x, mix, D)
-                                to_rms.get(w_)
-                                rms_norm(xn, x, w_, D)
+                                    res_rd(x, u, jj)
+                                rms_norm(xn, x, w2, D)
                                 xn_ch.put(xn)
                                 for jj in air.sequential(0, G.RG_DN):
                                     arr.out_y.get(u, indices=[0, RMS])
-                                    copy_r(mix, u, jj)
-                                res_add(x, mix, D)
+                                    res_rd(x, u, jj)
                                 xs_ch.put(x)
 
                     # ---- alpha / beta (GDN layers; an attention layer's
@@ -394,10 +396,7 @@ def build_module(waves, maxl):
                                         if r > 0:
                                             relay[r - 1][:] = og_[:]
                                         else:
-                                            # in halves, as the attention
-                                            # units send theirs
-                                            for c in range(NCU):
-                                                og_ch.put(og_[c * UO : (c + 1) * UO])
+                                            og_ch.put(og_)
 
                     for r in range(R):
                         step_core(r)
@@ -531,18 +530,25 @@ def build_module(waves, maxl):
                         unit(c, col, row)
 
                     # ---- the issuer: each layer's dense weights, one transfer
-                    # on each of the array's shim channels
+                    # on each of the array's shim channels. A queued task reads
+                    # its descriptor when it starts, so each layer has its own
+                    # (the loop unrolled): one descriptor patched for every
+                    # layer would send the queued layers the last one's address
                     with herd("issue", ISSUE_AT, params=[lbase]) as h:
 
                         @h.body
                         def _(tx):
                             p = h.private()
                             idx = air.alloc([16], i32, scope=p)
-                            for j in wave_loop(pw):
+
+                            def issue(j):
                                 r_slot(idx, 8, lbase, j)
                                 arr.put_weights(
                                     lambda i, hh: [WD[idx[8], i, hh, :, :, :]]
                                 )
+
+                            for j in range(pw):
+                                issue(j)
 
                     # ---- GLU
                     with herd("glu", G.GLU_AT) as h:
