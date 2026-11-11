@@ -132,6 +132,15 @@ void shared_gate_apply(bf16 *__restrict g, bf16 *__restrict s, int n) {
         s + i, aie::mul(aie::load_v<V>(s + i), sg).template to_vector<bf16>());
 }
 
+// y = bf16(acc): a model with no shared expert
+void moe_out_routed(bf16 *__restrict y, float *__restrict acc, int n) {
+  for (int i = 0; i < n; i += V) {
+    aie::accum<accfloat, V> a;
+    a.from_vector(aie::load_v<V>(acc + i));
+    aie::store_v(y + i, a.template to_vector<bf16>());
+  }
+}
+
 void moe_out(bf16 *__restrict y, bf16 *__restrict s, float *__restrict acc,
              int n) {
   for (int i = 0; i < n; i += V) {

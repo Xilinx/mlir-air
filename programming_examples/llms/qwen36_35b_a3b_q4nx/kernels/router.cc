@@ -19,7 +19,10 @@
 
 namespace {
 
-constexpr int N_EXPERTS = 256;
+#ifndef MOE_N_EXPERTS
+#define MOE_N_EXPERTS 256
+#endif
+constexpr int N_EXPERTS = MOE_N_EXPERTS;
 constexpr int TOP_K = 8;
 constexpr int BLOCK_ROWS = 32;
 constexpr int BLOCK_COLS = 256;
@@ -102,7 +105,8 @@ void router_topk(float *__restrict logits, int32_t *__restrict index,
   }
 }
 
-// router_topk of layer b of the run: its experts' rows start at a + 256 b
+// router_topk of layer b of the run: its experts' rows start at
+// a + N_EXPERTS b
 void router_topk_at(float *__restrict logits, int32_t *__restrict index,
                     float *__restrict score, int32_t a, int32_t b) {
   router_topk(logits, index, score, a + N_EXPERTS * b);

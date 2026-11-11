@@ -14,13 +14,14 @@ void rope_round(bf16 *__restrict qkv, bf16 *__restrict rnd, int j) {
     aie::store_v(qkv + 512 * j + i, aie::load_v<32>(rnd + i));
 }
 
-// q [16 heads][256] -> the attention units' layout: [unit][256 / 8][8 heads][8]
+// q [heads][DH] -> the attention units' layout: [unit][DH / 8][unit's heads][8]
 void q_pack(bf16 *__restrict qp, bf16 *__restrict q) {
-  for (int u = 0; u < 2; u++)
-    for (int h = 0; h < 8; h++)
-      for (int dc = 0; dc < 32; dc++)
-        aie::store_v(qp + u * 2048 + dc * 64 + h * 8,
-                     aie::load_v<8>(q + (u * 8 + h) * 256 + dc * 8));
+  constexpr int QH = Q_HEADS_PER_GROUP;
+  for (int u = 0; u < NUM_KV_HEADS; u++)
+    for (int h = 0; h < QH; h++)
+      for (int dc = 0; dc < DH / 8; dc++)
+        aie::store_v(qp + u * QH * DH + dc * QH * 8 + h * 8,
+                     aie::load_v<8>(q + (u * QH + h) * DH + dc * 8));
 }
 
 } // extern "C"
