@@ -192,13 +192,17 @@ static bool isRuntimeHerdOperand(Value koperand) {
 
 // The name both halves of the lowering agree on. AIRRtToNpu re-derives it to
 // decide whether to skip a write, so this must stay a pure function of the
-// herd's symbol and the slot. Herds without a symbol keep the RTP path: there
-// would be no stable name to agree on.
+// herd's symbol, its instance number among herds of that name
+// (air.herd_rtp_index) and the slot. Herds without a symbol keep the RTP path:
+// there would be no stable name to agree on.
 static std::string getHerdParamName(air::HerdOp h, unsigned slot) {
   auto sym = h->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
   if (!sym)
     return "";
-  return "__air_param_" + sym.getValue().str() + "_" + std::to_string(slot);
+  std::string name = "__air_param_" + sym.getValue().str();
+  if (auto n = h->getAttrOfType<IntegerAttr>(air::attrs::HerdRtpIndex))
+    name += "_rtp" + std::to_string(n.getInt());
+  return name + "_" + std::to_string(slot);
 }
 
 // Declare the parameter at module scope, once. The scratchpad is one hardware
@@ -3295,16 +3299,20 @@ void L2MemrefToMemTileMap(
           if (allocPin >= 0 && bucketHasConflictingPin(bucket, allocPin))
             continue;
           // Likewise an unpinned buffer whose own cores sit in another column
-          // than the bucket's pin: it is the near end of a hop to the pinned
-          // buffer (cores -> this buffer -> the pinned one), so it stays with
-          // its cores rather than crowding the pinned memtile with their
-          // flows.
-          if (allocPin < 0) {
-            int bucketPin = bucketPinCol(bucket);
-            int own = allocCoreCol(alloc);
-            if (bucketPin >= 0 && own >= 0 && own != bucketPin)
-              continue;
-          }
+          // than a pin: it is the near end of a hop to the pinned buffer
+          // (cores -> this buffer -> the pinned one), so it stays with its
+          // cores rather than crowding the pinned memtile with their flows --
+          // whichever of the two is visited first.
+          auto awayFromPin = [&](memref::AllocOp unpinned, int pin) {
+            int own = allocCoreCol(unpinned);
+            return pin >= 0 && own >= 0 && own != pin;
+          };
+          if (allocPin < 0 && awayFromPin(alloc, bucketPinCol(bucket)))
+            continue;
+          if (allocPin >= 0 && llvm::any_of(bucket, [&](memref::AllocOp o) {
+                return allocPinCol(o) < 0 && awayFromPin(o, allocPin);
+              }))
+            continue;
           bucket.push_back(alloc);
           return true;
         }
@@ -8436,6 +8444,35 @@ public:
             singleSlot.insert(m);
     }
 
+    // A core whose herd runs its body several times in one dispatch (a wave
+    // of a decode, say): a channel of several finite tasks would run them
+    // once, and the next run's transfers would never start. Each channel's
+    // tasks are unrolled into one circular chain instead (below). The tile's
+    // BDs are shared by all its channels, so the chains must fit together.
+    bool rerunChains = false;
+    if constexpr (std::is_same_v<dmaAllocatorTy, air::TileDMAAllocator>) {
+      auto tileOp = dyn_cast<AIE::TileOp>(tile.getOperation());
+      AIE::CoreOp core = tileOp ? tileOp.getCoreOp() : AIE::CoreOp();
+      if (core && core->hasAttr("air.reruns")) {
+        rerunChains = true;
+        int64_t bds = 0;
+        for (auto &[dma_chan, memcpy_ops] : dma_memcpys_sorted) {
+          auto counts = air::getRepeatCounts(memcpy_ops);
+          for (auto &[rep, task_ops] : counts)
+            bds += (counts.size() > 1 && rep > 0 ? rep + 1 : 1) *
+                   (int64_t)task_ops.size();
+        }
+        int64_t have = targetModel.getNumBDs(tileOp.getCol(), tileOp.getRow());
+        if (bds > have)
+          return core.emitOpError("runs its herd's body several times in one "
+                                  "dispatch, so each of its DMA channels "
+                                  "chains its transfers, unrolled by their "
+                                  "repeat counts, in one circular BD chain; "
+                                  "the chains take ")
+                 << bds << " BDs, and the tile has " << have;
+      }
+    }
+
     // The first block
     Block *channel_head = nullptr;
     Block *end_bb = nullptr;
@@ -8610,36 +8647,25 @@ public:
         }
       };
 
-      // A core whose herd runs its body several times in one dispatch (a
-      // wave of a decode, say): a channel of several finite tasks would run
-      // them once, and the next run's transfers would never start. With
-      // constant repeat counts, unroll the tasks into one circular chain --
-      // each task's transfers as many times in a row as it repeats, in
-      // program order, which is the order the core releases them in -- when
-      // the BDs fit.
+      // On a core that reruns its herd's body (see rerunChains), a channel of
+      // several tasks -- each of a constant repeat count, as checked above --
+      // becomes one circular chain: each task's transfers as many times in a
+      // row as it repeats, in program order, which is the order the core
+      // releases them in.
       std::optional<SmallVector<Operation *>> unrolledChain;
-      if constexpr (std::is_same_v<dmaAllocatorTy, air::TileDMAAllocator>) {
-        auto tileOp = dyn_cast<AIE::TileOp>(tile.getOperation());
-        AIE::CoreOp core = tileOp ? tileOp.getCoreOp() : AIE::CoreOp();
-        if (core && core->hasAttr("air.reruns") && !infiniteBDLoopMode &&
-            llvm::all_of(repeat_counts,
-                         [](auto &rc) { return rc.first >= 0; })) {
-          SmallVector<Operation *> chain;
-          for (auto &[rep, task_ops] : repeat_counts)
-            for (int k = 0; k <= rep; k++)
-              for (Operation *op : task_ops)
-                chain.push_back(op);
-          constexpr size_t maxChainBDs = 12;
-          if (chain.size() <= maxChainBDs) {
-            unrolledChain = chain;
-            infiniteBDLoopMode = true;
-            auto all = repeat_counts.front();
-            for (auto &rc : llvm::drop_begin(repeat_counts))
-              all.second.insert(rc.second.begin(), rc.second.end());
-            all.first = 0;
-            repeat_counts.assign(1, all);
-          }
-        }
+      if (rerunChains && !infiniteBDLoopMode) {
+        SmallVector<Operation *> chain;
+        for (auto &[rep, task_ops] : repeat_counts)
+          for (int k = 0; k <= rep; k++)
+            for (Operation *op : task_ops)
+              chain.push_back(op);
+        unrolledChain = chain;
+        infiniteBDLoopMode = true;
+        auto all = repeat_counts.front();
+        for (auto &rc : llvm::drop_begin(repeat_counts))
+          all.second.insert(rc.second.begin(), rc.second.end());
+        all.first = 0;
+        repeat_counts.assign(1, all);
       }
 
       unsigned taskId = 0;

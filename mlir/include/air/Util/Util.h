@@ -299,6 +299,12 @@ void classifyChainBuffer(Value memref, int &numWriters, int &numReaders);
 // chain lock passes the buffer from stage to stage once per fill, so a stage
 // moving it twice per fill would wait for a turn that never comes.
 bool chainStagesMoveOncePerFill(Value memref);
+
+// Whether channel transfers `a` and `b` move the same data the same way: both
+// puts or both gets, of one buffer through one view (indices, offsets, sizes,
+// strides). With `sameChannel`, also on one channel. Two such transfers, in
+// exclusive arms of a branch, are one DMA descriptor whichever arm runs.
+bool sameChannelTransfer(Operation *a, Operation *b, bool sameChannel);
 // Do two endpoints occupy the same chain stage? Only provably-equal keys share
 // one, so an unkeyed endpoint never shares a stage with anything but itself.
 bool chainEndpointsShareStage(Operation *a, Operation *b);

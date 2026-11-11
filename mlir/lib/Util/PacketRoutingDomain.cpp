@@ -153,10 +153,11 @@ static PacketChannelFacts classify(ChannelOp chanOp,
     std::optional<int64_t> v = totalVolume(p, scopeRoot);
     if (!v) {
       // A stream of run-time length (a put in a loop whose trip count is
-      // known only at run time) cannot be replicated into destinations that
-      // each take a fixed volume: those gets partition it. As for any
-      // partition, verify() still requires a put naming a `dest` upstream.
-      c.fanout = PacketFanout::Demux;
+      // known only at run time): volumes cannot tell a partition from a
+      // broadcast. As for a get of run-time volume, buildDomains() makes it a
+      // demux when a put naming a `dest` reaches it.
+      c.runtimeVolume = true;
+      c.reason = "a put has a non-static volume";
       return c;
     }
     putVol += *v;

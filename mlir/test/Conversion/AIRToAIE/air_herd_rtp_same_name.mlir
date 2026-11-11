@@ -7,6 +7,7 @@
 
 // RUN: air-opt %s -air-to-aie="device=npu2 row-offset=2 col-offset=0 emit-herd-lock=true" | FileCheck %s
 // RUN: air-opt %s -air-to-aie="device=npu2 row-offset=2 col-offset=0 emit-herd-lock=true" -air-to-std -canonicalize -airrt-to-npu | FileCheck %s --check-prefix=NPU
+// RUN: air-opt %s -air-to-aie="device=npu2 row-offset=2 col-offset=0 emit-herd-lock=true output-elf=true" | FileCheck %s --check-prefix=ELF
 
 // Two herds of one name run in turn on the same cores, each with a scalar of
 // its own. The second is numbered (air.herd_rtp_index = 1) and takes its
@@ -25,6 +26,15 @@
 // The runtime sequence writes each herd's scalar into that herd's buffer.
 // NPU: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %arg0)
 // NPU: aiex.npu.rtp_write(@__air_herd_rtp1_0_2, 0, %arg1)
+
+// Under output-elf the scalars go through scratchpad parameters instead, one
+// for each herd of the name too (see herd_rtp_scratchpad_skip.mlir for the
+// runtime sequence's side).
+// ELF-DAG: aiex.scratchpad_parameter @__air_param_h_0 : i32
+// ELF-DAG: aiex.scratchpad_parameter @__air_param_h_rtp1_0 : i32
+// ELF: aie.core
+// ELF: aiex.read_scratchpad_parameter @__air_param_h_0 : i32
+// ELF: aiex.read_scratchpad_parameter @__air_param_h_rtp1_0 : i32
 
 module {
   func.func @two_herds(%arg0: i32, %arg1: i32) {

@@ -5600,8 +5600,12 @@ public:
           merged.insert(jPins.begin(), jPins.end());
           if (merged.size() > 1)
             continue;
-          // Aggressively fuse air.channels by time multiplexing.
-          if (!inExclusiveArms(channelOps[i], channelOps[j]) &&
+          // Channels of exclusive arms merge by renaming when alike, and not
+          // at all otherwise; others by time multiplexing.
+          ArmsRelation arms = armsRelation(channelOps[i], channelOps[j]);
+          if (arms == ArmsRelation::Unlike)
+            continue;
+          if (arms == ArmsRelation::None &&
               !mergeChannels(rewriter, channelOps[i], channelOps[j]))
             continue;
           invalidateChannelIndex();
@@ -7247,7 +7251,10 @@ private:
   // scf.index_switch than every transfer of a, on both ends: only one of the
   // two runs, so one channel carries whichever does, by renaming alone -- how
   // a herd's cores serve one class of waves or another, chosen by the arm.
-  bool inExclusiveArms(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+  // Alike when the arms move the same data the same way; Unlike arms are not
+  // merged at all (time multiplexing would move transfers across arms).
+  enum class ArmsRelation { None, Alike, Unlike };
+  ArmsRelation armsRelation(air::ChannelOp chan_a, air::ChannelOp chan_b) {
     // Only arms within one segment: separate segments (several launches of
     // a device, one per arm of a dispatch switch) are separate programs.
     auto exclusive = [](Operation *a, Operation *b) {
@@ -7275,16 +7282,33 @@ private:
     auto aGets = getChannelGetOpThroughSymbol(chan_a);
     auto bGets = getChannelGetOpThroughSymbol(chan_b);
     if (aPuts.empty() || aGets.empty() || bPuts.empty() || bGets.empty())
-      return false;
+      return ArmsRelation::None;
+    // The merged channel's DMA chains hold both arms' transfers in turn,
+    // whichever arm runs: the arms must move the same data the same way. A
+    // channel may already carry several of its arm's transfers (merged one
+    // at a time), so each transfer of the one with fewer must have an alike
+    // transfer in the other; the lock counts check the arms as merged
+    // (countOnOnePath).
+    auto alike = [](auto &as, auto &bs) {
+      auto covered = [](auto &few, auto &many) {
+        return llvm::all_of(few, [&](auto x) {
+          return llvm::any_of(many, [&](auto y) {
+            return air::sameChannelTransfer(x, y, /*sameChannel=*/false);
+          });
+        });
+      };
+      return as.size() <= bs.size() ? covered(as, bs) : covered(bs, as);
+    };
     for (auto bp : bPuts)
       for (auto ap : aPuts)
         if (!exclusive(ap, bp))
-          return false;
+          return ArmsRelation::None;
     for (auto bg : bGets)
       for (auto ag : aGets)
         if (!exclusive(ag, bg))
-          return false;
-    return true;
+          return ArmsRelation::None;
+    return alike(aPuts, bPuts) && alike(aGets, bGets) ? ArmsRelation::Alike
+                                                      : ArmsRelation::Unlike;
   }
 
   // Returns false, changing nothing, when some pair of b's ops cannot be

@@ -631,7 +631,11 @@ air::getWrapsAndStrides(ArrayRef<OpFoldResult> memcpy_sizes,
 
 // How many of `ops` run on one control path: ops in different regions of an
 // scf.if or scf.index_switch never run together, so a branching op counts as
-// the most any one of its regions does. `scope` bounds the walk up.
+// the most any one of its regions does -- when its regions' transfers are the
+// same transfers on one channel, in the same order (sameChannelTransfer). A
+// DMA's descriptors do not follow the branch: a buffer's transfers on other
+// channels, or of other views, all run whichever arm the cores take, and
+// count once each. `scope` bounds the walk up.
 static int countOnOnePath(ArrayRef<Operation *> ops, Operation *scope) {
   int plain = 0;
   llvm::MapVector<Operation *, SmallVector<Operation *>> byBranch;
@@ -647,15 +651,35 @@ static int countOnOnePath(ArrayRef<Operation *> ops, Operation *scope) {
       plain++;
   }
   for (auto &[branch, inside] : byBranch) {
-    int most = 0;
+    int most = 0, all = 0;
+    SmallVector<Operation *> firstTransfers;
+    bool alike = true, seen = false;
     for (Region &r : branch->getRegions()) {
-      SmallVector<Operation *> here;
+      SmallVector<Operation *> here, transfers;
       for (Operation *op : inside)
-        if (r.findAncestorOpInRegion(*op))
+        if (r.findAncestorOpInRegion(*op)) {
           here.push_back(op);
-      most = std::max(most, countOnOnePath(here, branch));
+          if (isa<air::ChannelInterface>(op))
+            transfers.push_back(op);
+        }
+      if (here.empty())
+        continue;
+      if (!seen) {
+        firstTransfers = transfers;
+        seen = true;
+      } else {
+        alike &=
+            transfers.size() == firstTransfers.size() &&
+            llvm::all_of(llvm::zip(transfers, firstTransfers), [](auto p) {
+              return air::sameChannelTransfer(std::get<0>(p), std::get<1>(p),
+                                              /*sameChannel=*/true);
+            });
+      }
+      int n = countOnOnePath(here, branch);
+      most = std::max(most, n);
+      all += n;
     }
-    plain += most;
+    plain += alike ? most : all;
   }
   return plain;
 }
@@ -3770,15 +3794,6 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
         chan = c;
     if (chan == -1)
       chan = num_allocs % memtile_dma_channels;
-  }
-  if (getenv("AIR_DEBUG_ALLOC")) {
-    auto c = tile.tryGetCol();
-    llvm::errs()
-        << "memtile alloc col " << (c ? *c : -1) << " "
-        << (isMM2S.value() ? "MM2S" : "S2MM") << " pkt " << isPacketFlowOp
-        << " -> chan " << chan << " (" << memcpyOp->getName() << " "
-        << cast<air::ChannelInterface>(memcpyOp.getOperation()).getChanName()
-        << ")\n";
   }
   return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
 }
