@@ -709,3 +709,54 @@ void tiles_bfp(const uint16_t *src, int t, int K, int TM, int TK, int k0,
     }
   }
 }
+
+// rows[r] of x [*, ldx] f32, r < t, into the GEMM's A (tiles_bfp's layout),
+// rounded to bf16 as tile_a does; rows past t in the last 8 are zeros
+void tile_a_rows(const float *x, int ldx, const int64_t *rows, int t, int K,
+                 int TM, int TK, uint8_t *dst, long dr, long dk) {
+  int ks = K / TK, nb = TM / 8;
+  long tile = 72L * (TM / 8) * (TK / 8);
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int rs = 0; rs < (t + 7) / 8 * ks; rs++) {
+    int rb = rs / ks, s = rs % ks, ty = rb / nb, b = rb % nb;
+    uint8_t *d = dst + (ty * dr + s * dk) * tile + 72L * (b % 2);
+    for (int kb = 0; kb < TK / 8; kb++) {
+      uint16_t blk[64];
+      for (int g = 0; g < 8; g++) {
+        int r = rb * 8 + g;
+        const float *xs =
+            x + (r < t ? rows[r] * (long)ldx : 0) + s * TK + kb * 8;
+        for (int c = 0; c < 8; c++)
+          blk[g * 8 + c] = r < t ? f2bf(xs[c]) : 0;
+      }
+      bfp_block(blk, 8, 1, d + 144L * ((b / 2) * (TK / 8) + kb));
+    }
+  }
+}
+
+// An expert's GLU into the down GEMM's A (tiles_bfp's layout):
+// bf16(u * SiLU(g)), c bf16 [t, ldc] holding u and g in turns of TK columns
+void glu_tile_a(const uint16_t *c, int ldc, int t, int n, int TM, int TK,
+                uint8_t *dst, long dr, long dk) {
+  int ks = n / TK, nb = TM / 8;
+  long tile = 72L * (TM / 8) * (TK / 8);
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int rs = 0; rs < (t + 7) / 8 * ks; rs++) {
+    int rb = rs / ks, s = rs % ks, ty = rb / nb, b = rb % nb;
+    uint8_t *d = dst + (ty * dr + s * dk) * tile + 72L * (b % 2);
+    for (int kb = 0; kb < TK / 8; kb++) {
+      uint16_t blk[64];
+      for (int g = 0; g < 8; g++) {
+        int r = rb * 8 + g;
+        const uint16_t *u =
+            c + (long)(r < t ? r : 0) * ldc + 2 * s * TK + kb * 8;
+        for (int i = 0; i < 8; i++) {
+          float gv = bf2f(u[TK + i]);
+          float sg = 1.f / (1.f + vexp(-gv));
+          blk[g * 8 + i] = r < t ? f2bf(bf2f(u[i]) * gv * sg) : 0;
+        }
+      }
+      bfp_block(blk, 8, 1, d + 144L * ((b / 2) * (TK / 8) + kb));
+    }
+  }
+}
