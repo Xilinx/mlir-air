@@ -68,6 +68,7 @@ def compile_kernels(out, fd):
         f"-DGLU_BATCH={fd.BATCH}",
         f"-DNORM_CACHE_ROWS={fd.BATCH}",
         "-DDECODE_ROUND_NEAREST",
+        "-DQK_NORM_BATCHED",
         "-I" + str(Path(os.environ["MLIR_AIE_INSTALL_DIR"]) / "include"),
         "-I" + str(FUSED / "kernels"),
         "-I" + str(FUSED / "models"),

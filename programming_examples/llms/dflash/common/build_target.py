@@ -155,6 +155,7 @@ def main(
     ]
     flags += [
         "-DATTN_NORM_VECTOR",
+        "-DQK_NORM_BATCHED",
         f"-DPROJ_MM_BATCH={cfg.batch}",
         "-DDECODE_ROUND_NEAREST",
         "-DATTN_QUERY_TILE=4",
