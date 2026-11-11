@@ -3618,6 +3618,173 @@ static bool commonRefinement(ArrayRef<int64_t> a, ArrayRef<int64_t> b,
 }
 
 DiagnosedSilenceableFailure
+transform::UnshareEmptiesOp::apply(transform::TransformRewriter &rewriter,
+                                   transform::TransformResults &results,
+                                   transform::TransformState &state) {
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+  for (Operation *target : targets) {
+    SmallVector<tensor::EmptyOp> empties;
+    target->walk([&](tensor::EmptyOp e) { empties.push_back(e); });
+    for (tensor::EmptyOp e : empties) {
+      SmallVector<OpOperand *> uses;
+      for (OpOperand &u : e->getUses())
+        uses.push_back(&u);
+      for (OpOperand *u : ArrayRef(uses).drop_front()) {
+        rewriter.setInsertionPoint(u->getOwner());
+        Operation *c = rewriter.clone(*e);
+        rewriter.modifyOpInPlace(u->getOwner(),
+                                 [&] { u->set(c->getResult(0)); });
+      }
+    }
+  }
+  results.set(llvm::cast<OpResult>(getResult()), targets);
+  return DiagnosedSilenceableFailure::success();
+}
+
+// The buffer `v` is a view of: through view and cast ops, back to an op's
+// result or a block argument.
+static Value wrapViewRoot(Value v) {
+  while (Operation *d = v.getDefiningOp()) {
+    if (auto view = dyn_cast<ViewLikeOpInterface>(d)) {
+      v = view.getViewSource();
+      continue;
+    }
+    if (auto cast = dyn_cast<memref::CastOp>(d)) {
+      v = cast.getSource();
+      continue;
+    }
+    break;
+  }
+  return v;
+}
+
+// The ops of `block` that compute view `v` of a block argument.
+static void wrapViewChain(Value v, Block &block,
+                          SetVector<Operation *> &chain) {
+  while (Operation *d = v.getDefiningOp()) {
+    if (d->getBlock() == &block)
+      chain.insert(d);
+    if (auto view = dyn_cast<ViewLikeOpInterface>(d))
+      v = view.getViewSource();
+    else if (auto cast = dyn_cast<memref::CastOp>(d))
+      v = cast.getSource();
+    else
+      break;
+  }
+}
+
+DiagnosedSilenceableFailure
+transform::WrapInParallelOp::apply(transform::TransformRewriter &rewriter,
+                                   transform::TransformResults &results,
+                                   transform::TransformState &state) {
+  SmallVector<Operation *> pars;
+  for (Operation *op : state.getPayloadOps(getTarget())) {
+    auto f = dyn_cast<func::FuncOp>(op);
+    if (!f || !f.getBody().hasOneBlock())
+      return emitDefiniteFailure() << "target must be a func.func of one block";
+    Block &block = f.getBody().front();
+    Operation *term = block.getTerminator();
+    Location loc = f.getLoc();
+    // Scalar arithmetic stays outside: what a core's DMA addresses must be
+    // known where the DMA is issued.
+    auto stays = [](Operation &o) {
+      if (o.getNumRegions() || !isMemoryEffectFree(&o))
+        return false;
+      auto scalar = [](Type t) { return t.isIntOrIndex(); };
+      return llvm::all_of(o.getOperandTypes(), scalar) &&
+             llvm::all_of(o.getResultTypes(), scalar);
+    };
+    auto isArg = [&](Value v) {
+      auto a = dyn_cast<BlockArgument>(wrapViewRoot(v));
+      return a && a.getOwner() == &block;
+    };
+    SetVector<Operation *> before, after;
+    if (getStageL2()) {
+      SmallVector<memref::CopyOp> copies;
+      for (Operation &o : block)
+        if (auto c = dyn_cast<memref::CopyOp>(o))
+          copies.push_back(c);
+      auto l2 = rewriter.getI32IntegerAttr(1);
+      for (memref::CopyOp c : copies) {
+        Value src = c.getSource(), dst = c.getTarget();
+        auto alloc = dst.getDefiningOp<memref::AllocOp>();
+        if (isArg(src) && alloc && alloc->getBlock() == &block &&
+            alloc.getType().hasStaticShape()) {
+          // a load: into the L2 buffer before the parallel, then into a
+          // buffer of the core's
+          wrapViewChain(src, block, before);
+          before.insert(alloc);
+          before.insert(c);
+          rewriter.setInsertionPoint(c);
+          auto own =
+              memref::AllocOp::create(rewriter, c.getLoc(), alloc.getType());
+          auto in = memref::CopyOp::create(rewriter, c.getLoc(), alloc, own);
+          rewriter.replaceUsesWithIf(alloc, own, [&](OpOperand &u) {
+            return u.getOwner() != c && u.getOwner() != in;
+          });
+          // the staging buffer, used by the two copies only, is in L2
+          auto at = alloc.getType();
+          rewriter.modifyOpInPlace(alloc, [&] {
+            alloc.getResult().setType(MemRefType::get(
+                at.getShape(), at.getElementType(), at.getLayout(), l2));
+          });
+          continue;
+        }
+        auto st = dyn_cast<MemRefType>(src.getType());
+        if (isArg(dst) && !isArg(src) && st && st.hasStaticShape()) {
+          // a store: into an L2 buffer the parallel hands out, then out
+          rewriter.setInsertionPoint(&block, block.begin());
+          auto buf = memref::AllocOp::create(
+              rewriter, c.getLoc(),
+              MemRefType::get(st.getShape(), st.getElementType(),
+                              MemRefLayoutAttrInterface{}, l2));
+          wrapViewChain(dst, block, after);
+          rewriter.setInsertionPoint(c);
+          memref::CopyOp::create(rewriter, c.getLoc(), src, buf);
+          rewriter.modifyOpInPlace(c,
+                                   [&] { c.getSourceMutable().assign(buf); });
+          after.insert(c);
+        }
+      }
+    }
+    // a view a load and a store share is made before
+    after.remove_if([&](Operation *o) { return before.contains(o); });
+    SmallVector<Operation *> body;
+    for (Operation &o : block)
+      if (&o != term && !stays(o) && !before.contains(&o) &&
+          !after.contains(&o) &&
+          !(isa<memref::AllocOp>(o) &&
+            llvm::any_of(o.getUsers(),
+                         [&](Operation *u) { return after.contains(u); })))
+        body.push_back(&o);
+    rewriter.setInsertionPoint(term);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    auto par = scf::ParallelOp::create(rewriter, loc, ValueRange{c0, c0},
+                                       ValueRange{c1, c1}, ValueRange{c1, c1});
+    // in the order they were in
+    SmallVector<Operation *> ins(before.begin(), before.end());
+    llvm::sort(
+        ins, [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+    for (Operation *o : ins)
+      rewriter.moveOpBefore(o, par);
+    Operation *yield = par.getBody()->getTerminator();
+    for (Operation *o : body)
+      rewriter.moveOpBefore(o, yield);
+    // the stores' views in the order they were made, then the stores
+    SmallVector<Operation *> outs(after.begin(), after.end());
+    llvm::sort(
+        outs, [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+    for (Operation *o : outs)
+      rewriter.moveOpBefore(o, term);
+    pars.push_back(par);
+  }
+  results.set(llvm::cast<OpResult>(getResult()), pars);
+  return DiagnosedSilenceableFailure::success();
+}
+
+DiagnosedSilenceableFailure
 transform::ShareAllocOp::apply(transform::TransformRewriter &rewriter,
                                transform::TransformResults &results,
                                transform::TransformState &state) {

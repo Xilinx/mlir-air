@@ -3081,9 +3081,11 @@ struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
       return failure();
     // Skip allocs that already have a recognized non-default memory space
     // (e.g., L1=2 when target is L2=1). Only override allocs with default
-    // memory space (L3=0) or unrecognized raw integer memory spaces.
+    // memory space (L3=0) or unrecognized raw integer memory spaces -- and,
+    // in a herd, L2 ones, which a herd cannot hold.
     auto currentMS = air::getMemorySpace(memrefTy);
-    if (currentMS && *currentMS != air::MemorySpace::L3)
+    if (currentMS && *currentMS != air::MemorySpace::L3 &&
+        !(clScope == "herd" && *currentMS == air::MemorySpace::L2))
       return failure();
 
     auto newMemrefType = MemRefType::get(

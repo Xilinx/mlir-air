@@ -571,6 +571,61 @@ def ShareAllocOp : Op<Transform_Dialect, "air.share_alloc",
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
+def WrapInParallelOp
+    : Op<Transform_Dialect, "air.wrap_in_parallel",
+         [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+          DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Run a function's body in one 1x1 scf.parallel";
+  let description = [{
+    Each target is a `func.func` of one block. Every op of the block but its
+    terminator moves, in order, into the body of a new `scf.parallel` of one
+    iteration in each of two dimensions, placed before the terminator.
+
+    This is a kernel made to run whole on one core: `air.par_to_herd` makes
+    the parallel a 1x1 herd, so the buffers the body allocates and the
+    copies it makes are the core's own (its L1 and its DMAs), with nothing
+    left at the segment level.
+
+    With `stage_l2`, the body's copies between a function buffer and a
+    buffer of its own, at its top level, go through L2 at the segment's
+    level instead: a load fills an L2 buffer before the parallel, and the
+    core copies that into a buffer of its own; a store copies into an L2
+    buffer the parallel hands out, which is written to the function buffer
+    after it. The core then takes its data from memtiles, as the other
+    cores' data comes, rather than from DDR through a shim channel of its
+    own.
+
+    Returns the new `scf.parallel` ops.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target,
+      UnitAttr:$stage_l2);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target (`stage_l2` $stage_l2^)? attr-dict `:` "
+                       "functional-type(operands, results)";
+}
+
+def UnshareEmptiesOp
+    : Op<Transform_Dialect, "air.unshare_empties",
+         [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+          DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Give each use of a tensor.empty an empty of its own";
+  let description = [{
+    Every `tensor.empty` under the targets with more than one use is cloned
+    before each further use, which then takes the clone. Ops writing their
+    results into the same empty then bufferize to buffers of their own,
+    rather than one buffer that a later op overwrites while a DMA of the
+    earlier value may still be reading it.
+
+    Returns the targets.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat =
+      "$target attr-dict `:` functional-type(operands, results)";
+}
+
 def EliminateCascadeMemcpyOp : Op<Transform_Dialect, "air.eliminate_cascade_memcpy",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
