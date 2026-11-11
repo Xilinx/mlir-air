@@ -650,6 +650,8 @@ LLM_HF_MODELS = {
     "qwen35_0_8b_q4nx": "FastFlowLM/Qwen3.5-0.8B-NPU2",
     "qwen36_35b_a3b_q4nx": "FastFlowLM/Qwen3.6-35B-A3B-NPU2",
     "qwen38_27b_q4nx": "FastFlowLM/Qwen3.8-27B-NPU2",
+    # no pre-quantized bundle: the example quantizes this checkpoint to Q4_K once
+    "qwen3_coder_30b_a3b_q4k": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
     "smollm2_1_7b": "HuggingFaceTB/SmolLM2-1.7B",
     "smolvla": "lerobot/smolvla_base",
     "whisper_v3_turbo_q4nx": "openai/whisper-large-v3-turbo",
@@ -707,6 +709,7 @@ LLM_DISPLAY = {
     "qwen35_0_8b_q4nx": ("Qwen3.5-0.8B", "Q4NX", "qwen3_5vl"),
     "qwen36_35b_a3b_q4nx": ("Qwen3.6-35B-A3B", "Q4NX, Q4_K experts", _FLM_QWEN36),
     "qwen38_27b_q4nx": ("Qwen3.8-27B", "Q4NX", _FLM_QWEN38),
+    "qwen3_coder_30b_a3b_q4k": ("Qwen3-Coder-30B-A3B-Instruct", "Q4_K", None),
     "smollm2_1_7b": ("SmolLM2-1.7B", "bf16", None),
     "qwen3_4b_dflash_b8": ("Qwen3-4B", "Q4NX", None),
     "qwen3_4b_dflash_b16": ("Qwen3-4B", "Q4NX", None),

@@ -19,7 +19,10 @@ namespace {
 
 constexpr int SL = 128; // a column's rows of a round
 constexpr int NC = 4;   // columns
-constexpr int I = 512;  // an expert's intermediate width
+#ifndef MOE_I
+#define MOE_I 512
+#endif
+constexpr int I = MOE_I; // an expert's intermediate width
 
 void glu_n(bf16 *__restrict y, const bf16 *g, const bf16 *u) {
   for (int i = 0; i < SL; i += V) {

@@ -17,12 +17,14 @@
 
 #define QWEN3_5_08B 16
 #define QWEN3_6_35B_A3B 17
-#define QWEN3_8_27B 18
+#define QWEN3_CODER_30B_A3B 18
+#define QWEN3_8_27B 19
 
 #ifndef MODEL_TYPE
 #define MODEL_TYPE QWEN3_5_08B
 #endif
 
+#include "qwen3-coder-30b-a3b.h"
 #include "qwen3.5-0.8b.h"
 #include "qwen3.6-35b-a3b.h"
 #include "qwen3.8-27b.h"

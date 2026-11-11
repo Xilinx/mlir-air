@@ -8,10 +8,9 @@
 
 extern "C" {
 
-// o [DH / 8][Q_HEADS_PER_CU heads][8], attn_kv_fin's packed output ->
-// on [Q_HEADS_PER_CU heads][DH]
+// o [DH / 8][unit's heads][8] -> on [unit's heads][DH]
 void o_natural(bf16 *__restrict on, bf16 *__restrict o) {
-  constexpr int QH = Q_HEADS_PER_CU;
+  constexpr int QH = Q_HEADS_PER_GROUP;
   for (int h = 0; h < QH; h++)
     for (int dc = 0; dc < DH / 8; dc++)
       aie::store_v(on + h * DH + dc * 8,

@@ -14,16 +14,15 @@ void rope_round(bf16 *__restrict qkv, bf16 *__restrict rnd, int j) {
     aie::store_v(qkv + 512 * j + i, aie::load_v<32>(rnd + i));
 }
 
-// q [KV head][8 query heads (padded)][256], as rope_compute writes it -> the
-// attention kernels' layout per KV head: [KV head][256 / 8][8 heads][8]
+// q [heads, padded per KV head][DH] -> the attention units' layout:
+// [unit][DH / 8][unit's heads][8]
 void q_pack(bf16 *__restrict qp, bf16 *__restrict q) {
   constexpr int QH = Q_HEADS_PER_GROUP_PADDED;
-  static_assert(QH == 8, "the attention kernels take 8 query heads");
-  for (int g = 0; g < NUM_KV_HEADS; g++)
+  for (int u = 0; u < NUM_KV_HEADS; u++)
     for (int h = 0; h < QH; h++)
       for (int dc = 0; dc < DH / 8; dc++)
-        aie::store_v(qp + g * QH * DH + dc * QH * 8 + h * 8,
-                     aie::load_v<8>(q + (g * QH + h) * DH + dc * 8));
+        aie::store_v(qp + u * QH * DH + dc * QH * 8 + h * 8,
+                     aie::load_v<8>(q + (u * QH + h) * DH + dc * 8));
 }
 
 } // extern "C"
