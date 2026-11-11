@@ -8,11 +8,14 @@
 
 extern "C" {
 
-// o [256 / 8][8 heads][8] -> on [8 heads][256]
+// o [DH / 8][Q_HEADS_PER_CU heads][8], attn_kv_fin's packed output ->
+// on [Q_HEADS_PER_CU heads][DH]
 void o_natural(bf16 *__restrict on, bf16 *__restrict o) {
-  for (int h = 0; h < 8; h++)
-    for (int dc = 0; dc < 32; dc++)
-      aie::store_v(on + h * 256 + dc * 8, aie::load_v<8>(o + dc * 64 + h * 8));
+  constexpr int QH = Q_HEADS_PER_CU;
+  for (int h = 0; h < QH; h++)
+    for (int dc = 0; dc < DH / 8; dc++)
+      aie::store_v(on + h * DH + dc * 8,
+                   aie::load_v<8>(o + dc * QH * 8 + h * 8));
 }
 
 } // extern "C"

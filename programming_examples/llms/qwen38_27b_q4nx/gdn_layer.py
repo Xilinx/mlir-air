@@ -84,14 +84,11 @@ NRB_AB = 2 * NV // RB
 # a column's dense weights in phase order, [row group x col block][4][block]:
 # qkv, z, ssm_out, the MLP's gate/up and down; one transfer per shim channel
 G_DENSE = (RG_QKV + RG_Z + RG_GU) * NCB_X + RG_O * NCB_O + RG_DN * NCB_H
-# a transfer per phase: one of all G_DENSE blocks (2920 = 40 x 73) has no
-# shim-legal tiling
-G_PARTS = []
-_at = 0
-for _n in (RG_QKV * NCB_X, RG_Z * NCB_X, RG_O * NCB_O, RG_GU * NCB_X, RG_DN * NCB_H):
-    G_PARTS.append((_at, _at + _n))
-    _at += _n
-assert _at == G_DENSE
+# two transfers per shim channel, the mixer's projections and the MLP's: one
+# of all G_DENSE blocks (2920 = 40 x 73) has no shim-legal tiling, and the
+# decode's core-issued transfers per channel bound a lock's count (63)
+G_MIX = (RG_QKV + RG_Z) * NCB_X + RG_O * NCB_O
+G_PARTS = [(0, G_MIX), (G_MIX, G_DENSE)]
 # the misc bf16 tensor
 MISC = {}
 _at = 0

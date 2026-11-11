@@ -89,20 +89,9 @@ ROPE, GATE, RMS, GLU = range(4)  # the array's consumers
 RG_KV, RG_Q, RG_G, RG_O = 2 * DK // 512, DQ // 512, DQ // 512, D // 512
 NCB_O = DQ // CB
 G_DENSE = (RG_KV + RG_Q + RG_G + RG_GU) * NCB_X + RG_O * NCB_O + RG_DN * NCB_H
-# a transfer per phase, as in gdn_layer.py
-G_PARTS = []
-_at = 0
-for _n in (
-    RG_KV * NCB_X,
-    RG_Q * NCB_X,
-    RG_G * NCB_X,
-    RG_O * NCB_O,
-    RG_GU * NCB_X,
-    RG_DN * NCB_H,
-):
-    G_PARTS.append((_at, _at + _n))
-    _at += _n
-assert _at == G_DENSE
+# two transfers per shim channel, as in gdn_layer.py
+G_MIX = (RG_KV + RG_Q + RG_G) * NCB_X + RG_O * NCB_O
+G_PARTS = [(0, G_MIX), (G_MIX, G_DENSE)]
 MISC = {}
 _at = 0
 for _n, _sz in (("w1", D), ("w2", D)):
