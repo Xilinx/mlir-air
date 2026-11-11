@@ -23,6 +23,7 @@ import functools
 import json
 import os
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -280,8 +281,10 @@ def prepare(hf_dir=None, out=None, steps=20, log=print):
     hb = json.dumps(hdr).encode()
     hb += b" " * (-len(hb) % 8)
     out = bundle_path(out)
-    tmp = out.with_suffix(".partial")
-    with open(tmp, "wb") as f:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # a file of its own per writer: the rename publishes only a whole bundle
+    fd, tmp = tempfile.mkstemp(prefix=out.name + ".", suffix=".partial", dir=out.parent)
+    with os.fdopen(fd, "wb") as f:
         f.write(np.uint64(len(hb)).tobytes())
         f.write(hb)
         for i, (n, kind, shape, src) in enumerate(plan):

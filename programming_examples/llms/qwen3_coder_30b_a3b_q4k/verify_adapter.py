@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from ml_dtypes import bfloat16
 
 _THIS_DIR = Path(__file__).resolve().parent
 _VERIFY = _THIS_DIR.parent / "verify"
@@ -55,7 +56,14 @@ def build_config():
 
 
 def resolve_model(model_choice_or_id: str) -> str:
-    return MODEL_CHOICES.get(model_choice_or_id, model_choice_or_id)
+    """The checkpoint at the revision the bundle is quantized from, as a
+    local snapshot, so the tokenizer and the bf16 reference load that one."""
+    name = MODEL_CHOICES.get(model_choice_or_id, model_choice_or_id)
+    if name != _w.REPO:
+        return name
+    from huggingface_hub import snapshot_download
+
+    return snapshot_download(_w.REPO, revision=_w.REVISION)
 
 
 def hf_reference(npu_model_name: str) -> str:
@@ -100,18 +108,17 @@ class NpuRunner:
             lock.release()
 
     def _step(self, tok, pos):
-        x = np.asarray(self._w.embed([int(tok)])[0]).astype(np.float32)
-        from ml_dtypes import bfloat16
-
-        return np.asarray(self.dec.step(x.astype(bfloat16), pos + 1), np.float32)
+        # position pos writes cache row pos
+        if pos >= _MAXL:
+            raise SystemExit(
+                f"position {pos} is past the decode's {_MAXL}-position cache"
+                " (QWEN3C_VERIFY_MAXL)"
+            )
+        x = np.asarray(self._w.embed([int(tok)])[0]).astype(bfloat16)
+        return np.asarray(self.dec.step(x, pos + 1), np.float32)
 
     def prefill(self, prompt_tokens: np.ndarray) -> PrefillRecord:
         ids = [int(t) for t in prompt_tokens]
-        if len(ids) >= _MAXL:
-            raise SystemExit(
-                f"prompt is {len(ids)} tokens; the decode holds {_MAXL}"
-                " (QWEN3C_VERIFY_MAXL)"
-            )
         for pos, t in enumerate(ids):
             logits = self._step(t, pos)
         return PrefillRecord(

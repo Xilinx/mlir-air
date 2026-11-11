@@ -51,8 +51,11 @@ GROUP = 4 * BB  # one column block of a 128-row group
 E_GROUPS = MB.RG_GU * MB.NCB_X + MB.RG_DN * MB.NCB_H  # an expert's, in WE
 GU, DN = "gu", "down"
 NCB_O = S.DQ // D.Q4K_COLS  # column blocks of the o projection
-# WE needs this much past its last expert: the down GEMM's padded panels
-WE_SLACK = (S.npad(S.D_MODEL) - S.D_MODEL) // 128 * MB.NCB_H * GROUP
+# WE needs this much past its last expert: the down GEMM's padded panels, and
+# the device's K rounded up past the expert width
+WE_SLACK = (S.npad(S.D_MODEL) - S.D_MODEL) // 128 * MB.NCB_H * GROUP + (
+    D.k_pad(S.I) - S.I
+) // D.Q4K_COLS * GROUP
 _p, _i = ctypes.c_void_p, ctypes.c_int
 
 
@@ -172,7 +175,8 @@ class Q3CPrefill(Engine):
 
             k, n = S.SHAPES[part]
             ncb = k // D.Q4K_COLS
-            groups = (S.npad(n) // 128 - 1) * ncb + ncb
+            # the last panel reads the device's K, rounded up
+            groups = (S.npad(n) // 128 - 1) * ncb + D.k_pad(k) // D.Q4K_COLS
             off = self.we_off + (j * MB.E + e) * E_GROUPS * GROUP
             off += MB.RG_GU * MB.NCB_X * GROUP if part == DN else 0
             self.wsub[key] = xrt.bo(self.we_bo, groups * GROUP, off)
