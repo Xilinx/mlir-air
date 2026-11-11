@@ -37,7 +37,8 @@ void cache_scale_rows_aie(float *__restrict factors, bf16 *__restrict slab,
 }
 
 // The chunk normalized, without the weight: the residual core applies it.
-// The factor is split into two BF16 limbs so the scaling is two native macs.
+// At most eight rows. The factor is split into two BF16 limbs so the scaling
+// is two native macs.
 void cache_chunk_aie(bf16 *__restrict y, bf16 *__restrict slab,
                      float *__restrict factors, int rows, int chunk) {
   aie_round_nearest_even();

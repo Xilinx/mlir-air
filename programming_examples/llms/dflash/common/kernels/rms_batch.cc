@@ -28,9 +28,9 @@ void rms_scale_row_aie(float *__restrict factors, bf16 *__restrict x, int row,
   factors[row] = batch_rsqrt(x + row * MODEL_DIM);
 }
 
-// y = x * w * factor. The FP32 product x * w is exact in two BF16 limbs and the
-// factor is split into two as well, so the scaling uses native BF16 macs rather
-// than an emulated FP32 vector-by-scalar multiply.
+// y = x * w * factor, for at most eight rows. The FP32 product x * w is exact
+// in two BF16 limbs and the factor is split into two as well, so the scaling
+// is native BF16 macs; an FP32 vector-by-scalar multiply is emulated.
 void rms_chunk_aie(bf16 *__restrict y, bf16 *__restrict x, bf16 *__restrict w,
                    float *__restrict factors, int batch, int chunk, int width) {
   aie_round_nearest_even();

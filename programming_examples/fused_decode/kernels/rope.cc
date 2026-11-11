@@ -63,10 +63,10 @@ void qk_norm(const bf16 *restrict x, const bf16 *restrict w) {
 }
 
 #ifdef QK_NORM_BATCHED
-// qk_norm for every head of one token, without scalar float math (the scalar
-// unit emulates it). The same seed and two Newton steps run on 16 heads per
-// vector; each factor is passed on as two bf16 limbs, and x * w (exact in two
-// bf16 limbs) is scaled with native bf16 macs.
+// qk_norm for every head of one token, with no scalar float math (the scalar
+// unit emulates it). The reciprocal square root is qk_norm's bit-trick seed
+// and two Newton steps, 16 heads per vector. Each factor is kept as two bf16
+// limbs, and x * w, exact in two bf16 limbs, is scaled with native bf16 macs.
 constexpr int QK_NORM_HEADS = NUM_KV_HEADS * (Q_HEADS_PER_GROUP + 1);
 constexpr int QK_NORM_HEADS_PADDED = (QK_NORM_HEADS + 15) / 16 * 16;
 
