@@ -8,53 +8,53 @@
 #include "aie_kernel_utils.h"
 #include "model_spec.h"
 
-template <int PR>
-static inline aie::vector<bf16, PR * 8>
-q4k_unpack_step(const uint4 *&qs_ptr, const bf16 *scales, const bf16 *mins) {
-  aie::vector<uint4, PR * 8> q = aie::load_v<PR * 8>(qs_ptr);
-  qs_ptr += PR * 4;
-  aie::accum<accfloat, PR * 8> acc;
-  acc.from_vector(aie::to_float(q, 0));
-  aie::vector<bf16, PR * 8> qb = acc.template to_vector<bf16>();
-
-  aie::vector<bf16, PR> s16 = aie::load_v<PR>(scales);
-  aie::vector<bf16, PR> m16 = aie::load_v<PR>(mins);
-  aie::vector<bf16, PR * 2> s32 = aie::concat(s16, s16);
-  aie::vector<bf16, PR * 2> m32 = aie::concat(m16, m16);
-  aie::vector<bf16, PR * 4> s64 = aie::concat(s32, s32);
-  aie::vector<bf16, PR * 4> m64 = aie::concat(m32, m32);
-  aie::vector<bf16, PR * 8> sv = aie::concat(s64, s64);
-  aie::vector<bf16, PR * 8> mv = aie::concat(m64, m64);
-
-  aie::vector<bf16, PR * 8> ws = aie::mul(qb, sv).template to_vector<bf16>();
-  return aie::add(ws, mv);
-}
-
+// w = s * q + m, rounded to BF16 once. The nibble becomes the BF16 bit
+// pattern 0x4300 | q, which is exactly 128 + q, so no float conversion is
+// needed; the offset is folded into m' = m - 128 s (FP32, once per group).
+// Each chunk is 16 rows x 8 columns; a 32-column group spans four chunks.
 template <int MROWS, int KCOL>
 static inline void q4k_unpack_block(const q4k_block_t *A, bf16 *__restrict W) {
   constexpr int PR = 16;
   constexpr int CHUNK = PR * 8;
-  constexpr int NSTEP = MROWS * KCOL / CHUNK;
   constexpr int NCB = KCOL / 8;
   static_assert(MROWS % 16 == 0, "unpack emits two 8-row tiles per chunk");
   static_assert(KCOL % 32 == 0, "a 32-column quant group must be whole");
   const uint4 *qs_ptr = A->qs;
+  const aie::vector<uint16, 32> bias = aie::broadcast<uint16, 32>(0x4300);
+  const aie::vector<bf16, 32> c128 = aie::broadcast<bf16, 32>(bf16(128.0f));
 
-  AIE_PREPARE_FOR_PIPELINING
-  AIE_LOOP_RANGE(NSTEP, NSTEP)
-  for (int i = 0; i < NSTEP; i++)
-    AIE_LOOP_FLATTEN {
+  for (int R = 0; R < MROWS / PR; R++) {
+    AIE_PREPARE_FOR_PIPELINING
+    AIE_LOOP_RANGE(KCOL / 32, KCOL / 32)
+    for (int g = 0; g < KCOL / 32; g++) {
+      const int off = g * MROWS + R * PR;
+      aie::vector<bf16, PR> s16 = aie::load_v<PR>(A->scales + off);
+      aie::vector<bf16, PR> m16 = aie::load_v<PR>(A->mins + off);
+      // 32 lanes: two columns of 16 rows, the lane order of a chunk
+      aie::vector<bf16, 32> s32 = aie::concat(s16, s16);
+      aie::accum<accfloat, 32> mp;
+      mp.from_vector(aie::concat(m16, m16));
+      mp = aie::msc(mp, s32, c128);
 
-      const int R = i / NCB;
-      const int cb = i % NCB;
-
-      const int off = (cb / 4) * MROWS + R * PR;
-      aie::vector<bf16, CHUNK> w =
-          q4k_unpack_step<PR>(qs_ptr, A->scales + off, A->mins + off);
-
-      aie::store_v(W + ((2 * R) * NCB + cb) * 64, aie::filter_even(w, 8));
-      aie::store_v(W + ((2 * R + 1) * NCB + cb) * 64, aie::filter_odd(w, 8));
+      AIE_LOOP_UNROLL_FULL
+      for (int c = 0; c < 4; c++) {
+        const int cb = g * 4 + c;
+        aie::vector<uint4, CHUNK> q = aie::load_v<CHUNK>(qs_ptr);
+        qs_ptr += PR * 4;
+        aie::vector<uint8, CHUNK> q8 = aie::unpack(q);
+        aie::vector<bf16, CHUNK> w;
+        AIE_LOOP_UNROLL_FULL
+        for (int p = 0; p < CHUNK / 32; p++) {
+          aie::vector<uint16, 32> q16 = aie::unpack(q8.template extract<32>(p));
+          aie::vector<bf16, 32> qb =
+              aie::vector_cast<bf16>(aie::add(q16, bias));
+          w.insert(p, aie::mac(mp, qb, s32).template to_vector<bf16>());
+        }
+        aie::store_v(W + ((2 * R) * NCB + cb) * 64, aie::filter_even(w, 8));
+        aie::store_v(W + ((2 * R + 1) * NCB + cb) * 64, aie::filter_odd(w, 8));
+      }
     }
+  }
 }
 
 template <int MROWS, int KCOL, int BATCH>

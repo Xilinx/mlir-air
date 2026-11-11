@@ -61,6 +61,74 @@ void qk_norm(const bf16 *restrict x, const bf16 *restrict w) {
     it_w += vector_size;
   }
 }
+
+#ifdef QK_NORM_BATCHED
+// qk_norm for every head of one token, without scalar float math (the scalar
+// unit emulates it). The same seed and two Newton steps run on 16 heads per
+// vector; each factor is passed on as two bf16 limbs, and x * w (exact in two
+// bf16 limbs) is scaled with native bf16 macs.
+constexpr int QK_NORM_HEADS = NUM_KV_HEADS * (Q_HEADS_PER_GROUP + 1);
+constexpr int QK_NORM_HEADS_PADDED = (QK_NORM_HEADS + 15) / 16 * 16;
+
+// r[h] = 1 / sqrt(mean(x_h^2) + eps) for the q heads then the k heads of qkv
+static inline void qk_norm_factors(const bf16 *restrict qkv,
+                                   bf16 *restrict r_hi, bf16 *restrict r_lo) {
+  alignas(aie::vector_decl_align) float ss[QK_NORM_HEADS_PADDED];
+  for (int h = 0; h < QK_NORM_HEADS; h++) {
+    aie::accum<accfloat, 32> acc = aie::zeros<accfloat, 32>();
+    AIE_LOOP_UNROLL_FULL for (int i = 0; i < DH / 32; i++) acc =
+        aie::mac_square(acc, aie::load_v<32>(qkv + h * DH + 32 * i));
+    aie::vector<float, 32> t = acc.template to_vector<float>();
+    ss[h] = aie::reduce_add(
+        aie::add(t.template extract<16>(0), t.template extract<16>(1)));
+  }
+  for (int h = QK_NORM_HEADS; h < QK_NORM_HEADS_PADDED; h++)
+    ss[h] = 1.0f;
+  const aie::vector<float, 16> one_over_d =
+      aie::broadcast<float, 16>(1.0f / (float)DH);
+  const aie::vector<float, 16> eps = aie::broadcast<float, 16>(1e-6f);
+  const aie::vector<float, 16> half = aie::broadcast<float, 16>(0.5f);
+  const aie::vector<float, 16> threehalfs = aie::broadcast<float, 16>(1.5f);
+  const aie::vector<int32, 16> magic = aie::broadcast<int32, 16>(0x5f3759df);
+  for (int b = 0; b < QK_NORM_HEADS_PADDED; b += 16) {
+    aie::vector<float, 16> s =
+        aie::add(aie::mul(aie::load_v<16>(ss + b), one_over_d)
+                     .template to_vector<float>(),
+                 eps);
+    aie::vector<float, 16> x2 = aie::mul(s, half).template to_vector<float>();
+    aie::vector<float, 16> y = aie::vector_cast<float>(
+        aie::sub(magic, aie::downshift(aie::vector_cast<int32>(s), 1)));
+    for (int it = 0; it < 2; it++) {
+      aie::vector<float, 16> yy = aie::mul(y, y).template to_vector<float>();
+      y = aie::mul(y, aie::sub(threehalfs,
+                               aie::mul(x2, yy).template to_vector<float>()))
+              .template to_vector<float>();
+    }
+    aie::accum<accfloat, 16> ya(y);
+    aie::vector<bf16, 16> yh = ya.template to_vector<bf16>();
+    aie::store_v(r_hi + b, yh);
+    aie::store_v(
+        r_lo + b,
+        aie::sub(ya, aie::accum<accfloat, 16>(yh)).template to_vector<bf16>());
+  }
+}
+
+// in place: x = x * w * r, r = r_hi + r_lo
+static inline void qk_scale_head(bf16 *restrict x, const bf16 *restrict w,
+                                 bf16 r_hi, bf16 r_lo) {
+  AIE_LOOP_UNROLL_FULL for (int i = 0; i < DH / 32; i++) {
+    aie::accum<accfloat, 32> xw =
+        aie::mul(aie::load_v<32>(x + 32 * i), aie::load_v<32>(w + 32 * i));
+    aie::vector<bf16, 32> hi = xw.template to_vector<bf16>();
+    aie::vector<bf16, 32> lo =
+        aie::sub(xw, aie::accum<accfloat, 32>(hi)).template to_vector<bf16>();
+    aie::accum<accfloat, 32> o = aie::mul(hi, r_hi);
+    o = aie::mac(o, lo, r_hi);
+    o = aie::mac(o, hi, r_lo);
+    aie::store_v(x + 32 * i, o.template to_vector<bf16>());
+  }
+}
+#endif
 #endif
 
 #ifdef HAS_V_NORM
@@ -185,11 +253,23 @@ void pseduo_rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
   bf16 *cos_val = it_rope;
   bf16 *sin_val = it_rope + ROPE_DIM / 2;
 
+#if defined(HAS_QK_NORM) && !defined(FULL_QK_NORM) && defined(QK_NORM_BATCHED)
+  alignas(aie::vector_decl_align) bf16 r_hi[QK_NORM_HEADS_PADDED];
+  alignas(aie::vector_decl_align) bf16 r_lo[QK_NORM_HEADS_PADDED];
+  qk_norm_factors(qkv, r_hi, r_lo);
+  int head = 0;
+#define QK_NORM_HEAD(x, w)                                                     \
+  qk_scale_head(x, w, r_hi[head], r_lo[head]);                                 \
+  head++
+#elif defined(HAS_QK_NORM) && !defined(FULL_QK_NORM)
+#define QK_NORM_HEAD(x, w) qk_norm(x, w)
+#else
+#define QK_NORM_HEAD(x, w) ((void)0)
+#endif
+
   for (int h = 0; h < NUM_KV_HEADS; h++) {
     for (int g = 0; g < Q_HEADS_PER_GROUP; g++) {
-#if defined(HAS_QK_NORM) && !defined(FULL_QK_NORM)
-      qk_norm(it_qkv, q_norm_weight);
-#endif
+      QK_NORM_HEAD(it_qkv, q_norm_weight);
       apply_rope(it_q, it_qkv, cos_val, sin_val);
       it_q += DH;
       it_qkv += DH;
@@ -204,13 +284,12 @@ void pseduo_rope(bf16 *restrict q, bf16 *restrict k, bf16 *restrict v,
   }
 
   for (int h = 0; h < NUM_KV_HEADS; h++) {
-#if defined(HAS_QK_NORM) && !defined(FULL_QK_NORM)
-    qk_norm(it_qkv, k_norm_weight);
-#endif
+    QK_NORM_HEAD(it_qkv, k_norm_weight);
     apply_rope(it_k, it_qkv, cos_val, sin_val);
     it_k += DH;
     it_qkv += DH;
   }
+#undef QK_NORM_HEAD
 
 #ifdef HAS_V_NORM
   for (int h = 0; h < DV / DH; h++)

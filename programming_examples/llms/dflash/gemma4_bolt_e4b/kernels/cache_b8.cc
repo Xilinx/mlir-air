@@ -37,15 +37,25 @@ void cache_scale_rows_aie(float *__restrict factors, bf16 *__restrict slab,
 }
 
 // The chunk normalized, without the weight: the residual core applies it.
+// The factor is split into two BF16 limbs so the scaling is two native macs.
 void cache_chunk_aie(bf16 *__restrict y, bf16 *__restrict slab,
                      float *__restrict factors, int rows, int chunk) {
   aie_round_nearest_even();
-  for (int row = 0; row < rows; ++row)
-    for (int j = 0; j < CHUNK; j += 16) {
-      auto xv = aie::load_v<16>(slab + (chunk * rows + row) * CHUNK + j);
-      aie::vector<float, 16> xf = aie::mul(xv, aie::broadcast<bf16, 16>(1.0f));
-      aie::store_v(y + row * CHUNK + j,
-                   aie::mul(xf, factors[row]).to_vector<bf16>());
+  aie::accum<accfloat, 16> fa(aie::load_v<8>(factors).template grow<16>());
+  aie::vector<bf16, 16> f_hi = fa.template to_vector<bf16>();
+  aie::vector<bf16, 16> f_lo =
+      aie::sub(fa, aie::accum<accfloat, 16>(f_hi)).template to_vector<bf16>();
+  for (int row = 0; row < rows; ++row) {
+    const bf16 r_hi = f_hi[row], r_lo = f_lo[row];
+    const bf16 *xr = slab + (chunk * rows + row) * CHUNK;
+    bf16 *yr = y + row * CHUNK;
+    AIE_PREPARE_FOR_PIPELINING AIE_LOOP_MIN_ITERATION_COUNT(
+        4) for (int j = 0; j < CHUNK; j += 32) {
+      aie::vector<bf16, 32> xv = aie::load_v<32>(xr + j);
+      aie::accum<accfloat, 32> o = aie::mul(xv, r_hi);
+      o = aie::mac(o, xv, r_lo);
+      aie::store_v(yr + j, o.template to_vector<bf16>());
     }
+  }
 }
 }
