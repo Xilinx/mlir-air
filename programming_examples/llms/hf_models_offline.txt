@@ -42,3 +42,8 @@ openai/gpt-oss-20b
 # transformers' Qwen3.5-MoE layers fed these same weights, so no bf16
 # checkpoint is needed.
 FastFlowLM/Qwen3.6-35B-A3B-NPU2@18adb6adc1338ba29711e58b787df609fc55cd3a
+
+# Qwen3.8-27B (llms/qwen38_27b_q4nx): FastFlowLM's bundle at the revision its
+# loader pins. `make verify` checks its CPU reference against HF transformers'
+# Qwen3.5 layers fed these same weights, so no bf16 checkpoint is needed.
+FastFlowLM/Qwen3.8-27B-NPU2@071def594ad89b0dadd104a117722d6090a5fa26

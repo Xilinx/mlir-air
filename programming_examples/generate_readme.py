@@ -649,6 +649,7 @@ LLM_HF_MODELS = {
     "qwen3_8b_q4nx": "FastFlowLM/Qwen3-8B-NPU2",
     "qwen35_0_8b_q4nx": "FastFlowLM/Qwen3.5-0.8B-NPU2",
     "qwen36_35b_a3b_q4nx": "FastFlowLM/Qwen3.6-35B-A3B-NPU2",
+    "qwen38_27b_q4nx": "FastFlowLM/Qwen3.8-27B-NPU2",
     "smollm2_1_7b": "HuggingFaceTB/SmolLM2-1.7B",
     "smolvla": "lerobot/smolvla_base",
     "whisper_v3_turbo_q4nx": "openai/whisper-large-v3-turbo",
@@ -665,6 +666,11 @@ _FLM_SRC = _FLM_BLOB + "AutoModel/modeling_{}.cpp"
 _FLM_QWEN36 = (
     "https://github.com/ROCm/FastFlowLM/blob/1b5585bd1a18d4b2fbe360963b2156a966c73f0d"
     "/src/common/AutoModel/modeling_qwen3_6_moe.cpp"
+)
+# Qwen3.8 likewise.
+_FLM_QWEN38 = (
+    "https://github.com/ROCm/FastFlowLM/blob/209282cb91722936a6a9a8b3de045f100d0f0225"
+    "/src/common/AutoModel/modeling_qwen3_8mtp.cpp"
 )
 
 # Per record: the upstream model's HF name, the weight format, and the
@@ -700,6 +706,7 @@ LLM_DISPLAY = {
     "qwen3_8b_q4nx": ("Qwen3-8B", "Q4NX", "qwen3"),
     "qwen35_0_8b_q4nx": ("Qwen3.5-0.8B", "Q4NX", "qwen3_5vl"),
     "qwen36_35b_a3b_q4nx": ("Qwen3.6-35B-A3B", "Q4NX, Q4_K experts", _FLM_QWEN36),
+    "qwen38_27b_q4nx": ("Qwen3.8-27B", "Q4NX", _FLM_QWEN38),
     "smollm2_1_7b": ("SmolLM2-1.7B", "bf16", None),
     "qwen3_4b_dflash_b8": ("Qwen3-4B", "Q4NX", None),
     "qwen3_4b_dflash_b16": ("Qwen3-4B", "Q4NX", None),

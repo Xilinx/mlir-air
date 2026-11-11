@@ -902,6 +902,7 @@ def main():
                 toks.append(nxt)
         print(repr(a.prompt), "->", repr(tok.decode(toks[len(ids) :])))
         n_prompt = len(ids)
+        print(f"Inference: prompt_len={n_prompt}, n_tokens={len(toks) - n_prompt}")
         print(f"Time to first token (TTFT): {sum(times[:n_prompt]):.3f}s")
         if len(times) > n_prompt:
             gen = np.array(times[n_prompt:]) * 1e3
