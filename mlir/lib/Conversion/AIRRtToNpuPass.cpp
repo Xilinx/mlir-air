@@ -4869,12 +4869,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // next phase's offset). Straight-line code frees at the launch end, but in a
   // loop body the free follows its start.
   //
-  // A loop with a constant trip count is unrolled, and its feeds' frees go to
-  // the end of the sequence: every feed keeps its descriptor until then, as in
-  // straight-line code. (Awaiting the feed instead would block the control
-  // program on a transfer whose consumer may need feeds issued after the
-  // loop.) In a loop that stays -- a run-time trip count -- the feed is
-  // awaited before its free.
+  // A loop with a constant trip count is unrolled, and a feed keeps its
+  // descriptor through the next trip, at whose end it is awaited and freed (a
+  // feed of the last trip, to the end of the sequence, as in straight-line
+  // code). (Awaiting it in its own trip would block the control program on a
+  // transfer whose consumer may need the next trip's feeds.) In a loop that
+  // stays -- a run-time trip count -- the feed is awaited before its free.
   static bool freesUnawaited(Operation *op) {
     bool found = false;
     op->walk([&](AIEX::DMAFreeTaskOp free) {
@@ -4962,6 +4962,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       Operation *end = &top.back();
       if (!end->hasTrait<OpTrait::IsTerminator>())
         end = nullptr;
+      llvm::DenseMap<Operation *, Operation *> movedAfter;
       seq.walk([&](AIEX::DMAFreeTaskOp free) {
         if (!free->hasAttr("air.loop_free"))
           return;
@@ -4972,28 +4973,37 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             }))
           return;
         if (free->getBlock() == &top) {
-          // To the end of the outermost unrolled trip it came from (a wave of
-          // the decode, say): by then the trip's later awaits have passed, and
-          // its descriptor is not held across what follows. The trip ends
-          // after its last tagged op; the ops between (an inner unroll's index
-          // arithmetic, say) carry no tag.
-          Operation *at = end;
+          // The end of a trip proves nothing about its feeds, so the
+          // descriptor is held through the next trip of the outermost
+          // unrolled loop it came from (the next wave of the decode, say) and
+          // given back at that trip's end, once the feed is awaited -- which
+          // by then waits for nothing in practice, and does not hold up the
+          // next trip's feeds behind this one's consumers. A feed of the last
+          // trip keeps its descriptor to the end, as in straight-line code. A
+          // trip ends after its last tagged op; the ops between (an inner
+          // unroll's index arithmetic, say) carry no tag.
+          Operation *nextEnd = nullptr;
           if (auto tr = free->getAttrOfType<IntegerAttr>("air.unrolled_trip")) {
-            int64_t id = tr.getInt();
-            Operation *last = free;
-            for (Operation *o = free->getNextNode(); o; o = o->getNextNode()) {
-              auto ot = o->getAttrOfType<IntegerAttr>("air.unrolled_trip");
-              if (ot && ot.getInt() != id)
-                break;
-              if (ot)
-                last = o;
-            }
-            at = last->getNextNode();
+            int64_t next = tr.getInt() + 1; // (loop << 20) | trip
+            for (Operation *o = free->getNextNode(); o; o = o->getNextNode())
+              if (auto ot = o->getAttrOfType<IntegerAttr>("air.unrolled_trip"))
+                if (ot.getInt() == next)
+                  nextEnd = o;
           }
-          if (at)
-            free->moveBefore(at);
-          else
-            free->moveBefore(&top, top.end());
+          if (!nextEnd) {
+            if (end)
+              free->moveBefore(end);
+            else
+              free->moveBefore(&top, top.end());
+            return;
+          }
+          // After the ones moved there before it: in program order.
+          Operation *&after = movedAfter[nextEnd];
+          free->moveAfter(after ? after : nextEnd);
+          after = free;
+          cfg.setIssueToken(true);
+          OpBuilder b(free);
+          AIEX::DMAAwaitTaskOp::create(b, free.getLoc(), cfg.getResult());
           return;
         }
         if (cfg->getBlock() != free->getBlock())
@@ -5097,8 +5107,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                !packetSources.contains({alloc.getTile().getDefiningOp(),
                                         (int)alloc.getChannelIndex()});
       };
-      // The task's one linear BD with a constant range, else null.
+      // The task's one linear BD with a constant range, run once, else null.
+      // (A repeated task sends its range several times in a row, and a run-time
+      // offset or length is not in the BD's constant range.)
       auto linearBd = [](AIEX::DMAConfigureTaskForOp cfg) -> AIE::DMABDOp {
+        if (cfg.getRepeatCount() != 0 || cfg.getRepeatCountVal())
+          return {};
         AIE::DMABDOp bd;
         int n = 0;
         cfg.getBody().walk([&](AIE::DMABDOp b) {
@@ -5106,7 +5120,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           n++;
         });
         if (n != 1 || bd.getPacketAttr() || !bd.getConstantOffset() ||
-            !bd.getConstantLen() || !isa<BlockArgument>(bd.getBuffer()))
+            !bd.getConstantLen() || !isa<BlockArgument>(bd.getBuffer()) ||
+            bd.getOffsetParameterAttr() || bd.getLengthParameterAttr() ||
+            bd.getOffsetStateTableIdxAttr() || bd.getLengthStateTableIdxAttr())
           return {};
         // linear: row-major contiguous dims (a tile's [rows, cols] too)
         auto sizes = bd.getMixedSizes(), strides = bd.getMixedStrides();
@@ -5133,12 +5149,22 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             continue;
           StringRef chan = cfg.getAlloc().getLeafReference().getValue();
           AIE::DMABDOp bd = linearBd(cfg);
-          bool awaited =
-              llvm::any_of(cfg.getResult().getUsers(), [](Operation *u) {
-                return isa<AIEX::DMAAwaitTaskOp>(u);
-              });
+          auto awaitOf = [](AIEX::DMAConfigureTaskForOp t) -> Operation * {
+            for (Operation *u : t.getResult().getUsers())
+              if (isa<AIEX::DMAAwaitTaskOp>(u))
+                return u;
+            return nullptr;
+          };
+          // Merged, the task is awaited where the earlier one was: both, or
+          // neither, must be awaited, the earlier one first.
+          auto awaitsAllow = [&](AIEX::DMAConfigureTaskForOp prevCfg) {
+            Operation *a = awaitOf(prevCfg), *b = awaitOf(cfg);
+            if (!a || !b)
+              return !a && !b;
+            return a->getBlock() == b->getBlock() && a->isBeforeInBlock(b);
+          };
           auto it = last.find(chan);
-          if (bd && !awaited && it != last.end()) {
+          if (bd && it != last.end() && awaitsAllow(it->second)) {
             AIE::DMABDOp prev = linearBd(it->second);
             if (prev && prev.getBuffer() == bd.getBuffer() &&
                 *prev.getConstantOffset() + *prev.getConstantLen() ==
@@ -5163,7 +5189,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
               continue;
             }
           }
-          if (bd && !awaited)
+          if (bd)
             last[chan] = cfg;
           else
             last.erase(chan);
@@ -5192,10 +5218,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       Operation *cfg = task.getDefiningOp();
       if (!cfg || !isa<AIE::RuntimeSequenceOp>(cfg->getParentOp()))
         return;
-      if (llvm::any_of(task.getUsers(), [](Operation *u) {
-            return isa<AIEX::DMAFreeTaskOp>(u);
-          }))
-        return;
+      // A free after the await on its path (not one in another arm of a
+      // branch the await is in).
+      for (Operation *u : task.getUsers()) {
+        if (!isa<AIEX::DMAFreeTaskOp>(u))
+          continue;
+        Operation *anc = u->getBlock()->findAncestorOpInBlock(*await);
+        if (anc && anc->isBeforeInBlock(u))
+          return;
+      }
       OpBuilder after(await->getBlock(), std::next(await->getIterator()));
       AIEX::DMAFreeTaskOp::create(after, await.getLoc(), task);
     });
@@ -6593,17 +6624,53 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // launch's end would wait on at best, and its result is dropped below. So
   // wait, at the end of the branch, for the transfers of the branch that no
   // wait in it covers yet -- a drain is awaited there, a feed's descriptors
-  // freed (AIRRtWaitAllOpConversion).
+  // freed (AIRRtWaitAllOpConversion). A drain is awaited there only when
+  // nothing between the branch and the wait on its event (the launch's end)
+  // feeds or dispatches cores: that may be what the drain's producer waits
+  // for, and the wait in the branch would block the sequence before it. Such a
+  // drain is left unawaited, as before.
   void waitForBranchTransfers(ModuleOp module) {
+    // Whether `dma` moves data to the host, on whichever device holds its
+    // shim channel.
+    auto isDrainDma = [&](airrt::DmaMemcpyNdOp dma) {
+      auto md = dma->getAttrOfType<FlatSymbolRefAttr>("metadata");
+      if (!md)
+        return false;
+      bool drain = false;
+      module.walk([&](AIE::DeviceOp d) {
+        drain |= isDeviceToHostShimChannel(d, md.getValue());
+      });
+      return drain;
+    };
+    // Whether an op after branch `o`, up to the first use of its results (or
+    // the end of its block), feeds or dispatches cores.
+    auto feedsAfter = [&](Operation *o) {
+      for (Operation *n = o->getNextNode(); n; n = n->getNextNode()) {
+        if (llvm::any_of(n->getOperands(),
+                         [&](Value v) { return v.getDefiningOp() == o; }))
+          return false;
+        bool found = n->walk([&](Operation *x) {
+                        auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(x);
+                        if ((dma && !isDrainDma(dma)) ||
+                            isa<airrt::HerdLoadOp, airrt::SegmentLoadOp>(x))
+                          return WalkResult::interrupt();
+                        return WalkResult::advance();
+                      }).wasInterrupted();
+        if (found)
+          return true;
+      }
+      return false;
+    };
     module.walk([&](Operation *o) {
       if (!isa<scf::IfOp, scf::IndexSwitchOp>(o))
         return;
+      bool keepDrains = feedsAfter(o);
       for (Region &r : o->getRegions())
         for (Block &blk : r) {
           llvm::SetVector<Value> open;
           for (Operation &op : blk)
             if (auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op))
-              if (dma->getNumResults())
+              if (dma->getNumResults() && !(keepDrains && isDrainDma(dma)))
                 open.insert(dma->getResult(0));
           if (open.empty())
             continue;

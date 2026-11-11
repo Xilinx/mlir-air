@@ -1671,19 +1671,31 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     if (llvm::any_of(window, isInput)) {
       SmallVector<airrt::DmaMemcpyNdOp> drainsSoFar;
       Operation *anchor = nullptr;
-      // The inputs passed since the anchor.
-      SmallVector<airrt::DmaMemcpyNdOp> readSinceAnchor;
+      // The inputs passed since the anchor, and the drains that stayed below
+      // it.
+      SmallVector<airrt::DmaMemcpyNdOp> readSinceAnchor, stayedSinceAnchor;
       // `window` holds the original order; the moves below only take a drain
       // up to an anchor that is still ahead of it.
       for (Operation *op : window) {
         auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
         if (dma && isDrain(dma)) {
-          // A drain whose slice contains a side-effecting op stays in place.
-          if (anchor &&
-              llvm::none_of(readSinceAnchor, [&](airrt::DmaMemcpyNdOp in) {
-                return readsWhatDrainWrites(in, dma);
-              }))
-            (void)air::moveWithPureBackwardSlice(op, anchor, /*after=*/false);
+          // A drain whose slice contains a side-effecting op stays in place,
+          // as does one that would pass a drain of its channel staying in
+          // place: a shim channel retires its drains in order.
+          bool moved =
+              anchor &&
+              llvm::none_of(readSinceAnchor,
+                            [&](airrt::DmaMemcpyNdOp in) {
+                              return readsWhatDrainWrites(in, dma);
+                            }) &&
+              llvm::none_of(stayedSinceAnchor,
+                            [&](airrt::DmaMemcpyNdOp d) {
+                              return d->getAttr("metadata") ==
+                                     dma->getAttr("metadata");
+                            }) &&
+              air::moveWithPureBackwardSlice(op, anchor, /*after=*/false);
+          if (anchor && !moved)
+            stayedSinceAnchor.push_back(dma);
           drainsSoFar.push_back(dma);
           continue;
         }
@@ -1697,6 +1709,7 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
         if (dependsOnDrain) {
           anchor = nullptr;
           readSinceAnchor.clear();
+          stayedSinceAnchor.clear();
         } else if (!anchor) {
           anchor = op;
         }

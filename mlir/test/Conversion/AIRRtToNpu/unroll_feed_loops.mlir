@@ -78,8 +78,9 @@ module {
 // The phase loop's bounds select on the wave's class (two phases in the first
 // waves, the third phase alone in the last): they are constants only once the
 // wave loop is unrolled, and the phase loop is unrolled then too. Its feeds
-// belong to the wave: they are freed after the wave's last feed, not after
-// their own start. With merge-contiguous-feeds, a wave's feeds that continue
+// belong to the wave: each keeps its descriptor through the next wave, at
+// whose end it is awaited and freed (the last wave's, at the end), not freed
+// after its own start. With merge-contiguous-feeds, a wave's feeds that continue
 // one another in host memory are one task; the next wave's are not merged
 // across the RTP write between them.
 
@@ -94,10 +95,15 @@ module {
 // CHECK: %[[B:.*]] = aiex.dma_configure_task_for @feedIn
 // CHECK-NEXT: aie.dma_bd(%arg0 : memref<512xi32> offset = 64 len = 64
 // CHECK: aiex.dma_start_task(%[[B]])
-// CHECK-NEXT: aiex.dma_free_task(%[[A]])
-// CHECK-NEXT: aiex.dma_free_task(%[[B]])
+// CHECK-NOT: aiex.dma_free_task
 // CHECK: aie.dma_bd(%arg0 : memref<512xi32> offset = 128 len = 64
-// CHECK: aie.dma_bd(%arg0 : memref<512xi32> offset = 192 len = 64
+// CHECK: %[[D:.*]] = aiex.dma_configure_task_for @feedIn
+// CHECK-NEXT: aie.dma_bd(%arg0 : memref<512xi32> offset = 192 len = 64
+// CHECK: aiex.dma_start_task(%[[D]])
+// CHECK-NEXT: aiex.dma_await_task(%[[A]])
+// CHECK-NEXT: aiex.dma_free_task(%[[A]])
+// CHECK-NEXT: aiex.dma_await_task(%[[B]])
+// CHECK-NEXT: aiex.dma_free_task(%[[B]])
 // CHECK: aie.dma_bd(%arg0 : memref<512xi32> offset = 384 len = 64
 
 // MERGE-LABEL: aie.runtime_sequence @phases
@@ -158,8 +164,8 @@ module {
 // Each wave awaits its drain. Unrolled, the waves' tasks are at the top level,
 // where the run-time BD pool (in use: a run-time loop follows) returns a
 // descriptor only at a free: each awaited drain is freed after its await, and
-// each wave's feed at the end of its wave -- before the run-time loop, not at
-// the end of the sequence.
+// each wave's feed, awaited, at the end of the next wave -- not at the end of
+// the sequence (but for the last wave's: nothing proves it done before then).
 
 // CHECK-LABEL: aie.runtime_sequence @drains
 // MERGE-LABEL: aie.runtime_sequence @drains
@@ -167,14 +173,20 @@ module {
 // CHECK: %[[F0:.*]] = aiex.dma_configure_task_for @feedIn
 // CHECK: aiex.dma_await_task(%[[D0]])
 // CHECK-NEXT: aiex.dma_free_task(%[[D0]])
+// CHECK: %[[D1:.*]] = aiex.dma_configure_task_for @drainOut
+// CHECK: %[[F1:.*]] = aiex.dma_configure_task_for @feedIn
+// CHECK: aiex.dma_await_task(%[[D1]])
+// CHECK-NEXT: aiex.dma_free_task(%[[D1]])
+// CHECK-NEXT: aiex.dma_await_task(%[[F0]])
 // CHECK-NEXT: aiex.dma_free_task(%[[F0]])
-// CHECK: aiex.dma_configure_task_for @drainOut
 // CHECK: %[[D2:.*]] = aiex.dma_configure_task_for @drainOut
 // CHECK: %[[F2:.*]] = aiex.dma_configure_task_for @feedIn
 // CHECK: aiex.dma_await_task(%[[D2]])
 // CHECK-NEXT: aiex.dma_free_task(%[[D2]])
-// CHECK-NEXT: aiex.dma_free_task(%[[F2]])
+// CHECK-NEXT: aiex.dma_await_task(%[[F1]])
+// CHECK-NEXT: aiex.dma_free_task(%[[F1]])
 // CHECK-NEXT: scf.for
+// CHECK: aiex.dma_free_task(%[[F2]])
 
 module {
   aie.device(npu2) @seg {
@@ -255,6 +267,48 @@ module {
     %feed = arith.constant 4 : i32
     %p = airrt.segment_load "seg" : i64
     %f0 = airrt.dma_memcpy_nd(%feed, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feedIn} : (i32, i64, i64, memref<128xi32>) : !airrt.event
+    %f1 = airrt.dma_memcpy_nd(%feed, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c64_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feedIn} : (i32, i64, i64, memref<128xi32>) : !airrt.event
+    %h = airrt.herd_load "herd_0" () {segment_name = "seg"} : () -> i64
+    %e = airrt.wait_all %f0, %f1 {"air.launch_end"} : !airrt.event
+    return
+  }
+}
+
+// -----
+
+// A feed repeated (a zero-stride outer dimension: the task's repeat count)
+// sends its range several times in a row: merged with the next it would
+// interleave them, so it stays apart.
+
+// MERGE-LABEL: aie.runtime_sequence @repeated
+// MERGE: aie.dma_bd(%arg0 : memref<128xi32> offset = 0 len = 64
+// MERGE: } {repeat_count = 1 : i32}
+// MERGE: aie.dma_bd(%arg0 : memref<128xi32> offset = 64 len = 64
+
+module {
+  aie.device(npu2) @seg {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %__air_herd_lock_0_2 = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %__air_herd_rtp_0_2 = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    aie.shim_dma_allocation @feedIn(%tile_0_0, MM2S, 0)
+    %core_0_2 = aie.core(%tile_0_2) {
+      aie.end
+    } {air.herd_name = "herd_0", link_with = "kernel.o"}
+  } {sym_name = "seg"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "seg"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 2 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @repeated(%arg0: memref<128xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %feed = arith.constant 4 : i32
+    %p = airrt.segment_load "seg" : i64
+    %f0 = airrt.dma_memcpy_nd(%feed, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feedIn} : (i32, i64, i64, memref<128xi32>) : !airrt.event
     %f1 = airrt.dma_memcpy_nd(%feed, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c64_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feedIn} : (i32, i64, i64, memref<128xi32>) : !airrt.event
     %h = airrt.herd_load "herd_0" () {segment_name = "seg"} : () -> i64
     %e = airrt.wait_all %f0, %f1 {"air.launch_end"} : !airrt.event

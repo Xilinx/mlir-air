@@ -2509,12 +2509,14 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           op.walk([&](air::ChannelPutOp put) {
             if (!external(put))
               return;
+            // (a loop's token among its results, wherever it is)
             SmallVector<Value> mine;
             for (auto &[w, wm] : writers)
-              if (wm == put.getMemref() && w->getNumResults() &&
-                  isa<air::AsyncTokenType>(w->getResult(0).getType()) &&
-                  !llvm::is_contained(mine, w->getResult(0)))
-                mine.push_back(w->getResult(0));
+              if (wm == put.getMemref())
+                for (Value r : w->getResults())
+                  if (isa<air::AsyncTokenType>(r.getType()) &&
+                      !llvm::is_contained(mine, r))
+                    mine.push_back(r);
             if (mine.empty())
               return;
             bool onlyParallel = true;

@@ -493,3 +493,51 @@ module {
     return
   }
 }
+
+// -----
+
+// In place, then a second drain on the same channel to rows the input does not
+// read. The first drain stays after the input (as in @in_place); the second
+// does not pass it: a shim channel retires its drains in order, and armed
+// first it would take the first drain's output.
+
+// CHECK-LABEL: func.func @in_place_then_other
+// CHECK: airrt.dma_memcpy_nd({{.*}}metadata = @inAlloc4
+// CHECK: airrt.dma_memcpy_nd({{.*}}[0, 0, 0, 0], [1, 1, 1, 64]{{.*}}metadata = @outAlloc4
+// CHECK: airrt.dma_memcpy_nd({{.*}}[0, 0, 0, 64], [1, 1, 1, 64]{{.*}}metadata = @outAlloc4
+
+module {
+  aie.device(npu2) {
+    %t = aie.tile(0, 0)
+    aie.shim_dma_allocation @outAlloc4(%t, S2MM, 0)
+    aie.shim_dma_allocation @inAlloc4(%t, MM2S, 0)
+  } {sym_name = "seg4"}
+  air.channel @out4 [1, 1]
+  air.channel @in4 [1, 1]
+  func.func @in_place_then_other(%buf: memref<256xi32>) {
+    %c1 = arith.constant 1 : index
+    %l = air.launch async (%i, %j) in (%si=%c1, %sj=%c1) args(%b=%buf) : memref<256xi32> {
+      %c0 = arith.constant 0 : index
+      %c1_l = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %w = air.channel.put async  @in4[] (%b[%c0] [%c64] [%c1_l]) {id = 1 : i32, metadata = @inAlloc4} : (memref<256xi32>)
+      %d0 = air.channel.get async  @out4[] (%b[%c0] [%c64] [%c1_l]) {id = 2 : i32, metadata = @outAlloc4} : (memref<256xi32>)
+      %d1 = air.channel.get async  @out4[] (%b[%c64] [%c64] [%c1_l]) {id = 3 : i32, metadata = @outAlloc4} : (memref<256xi32>)
+      %e = air.wait_all async [%d0, %d1, %w] {air.launch_end}
+      %s = air.segment @seg4 async {
+        %c1_0 = arith.constant 1 : index
+        %h = air.herd @h4 async  tile (%x, %y) in (%sx=%c1_0, %sy=%c1_0) {
+          %tok, %a = air.execute -> (memref<64xi32, 2>) {
+            %alloc = memref.alloc() : memref<64xi32, 2>
+            air.execute_terminator %alloc : memref<64xi32, 2>
+          }
+          %g = air.channel.get async [%tok]  @in4[] (%a[] [] []) {id = 4 : i32} : (memref<64xi32, 2>)
+          %p = air.channel.put async [%g]  @out4[] (%a[] [] []) {id = 5 : i32} : (memref<64xi32, 2>)
+          %p2 = air.channel.put async [%p]  @out4[] (%a[] [] []) {id = 6 : i32} : (memref<64xi32, 2>)
+        }
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
