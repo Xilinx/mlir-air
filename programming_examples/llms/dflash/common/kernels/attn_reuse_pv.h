@@ -23,11 +23,11 @@ dflash_pv_reuse_v(bf16 *scores, bf16 *values, float *output, float *denominator,
     // corrections are FP32; compare their bits with 1.0f.
     uint32_t off_unit = 0;
     for (int local = 0; local < 4; ++local) {
-      const uint32_t *c =
-          reinterpret_cast<const uint32_t *>(scores + local * SSZ_BLK + 128) +
+      const float *c =
+          reinterpret_cast<const float *>(scores + local * SSZ_BLK + 128) +
           group * 4;
       for (int h = 0; h < 4; ++h)
-        off_unit |= c[h] ^ 0x3f800000u;
+        off_unit |= __builtin_bit_cast(uint32_t, c[h]) ^ 0x3f800000u;
     }
     const bool unit = off_unit == 0;
     auto s0 = aie::load_v<64>(scores + group * 64);
