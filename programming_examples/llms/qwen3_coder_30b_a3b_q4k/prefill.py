@@ -203,10 +203,9 @@ class Q3CPrefill(Engine):
     def _attn_all(self, j, x, chunks):
         kvb = self.kvb[j]
         t0 = time.perf_counter()
-        h = H.rms(x, self.p[j]["n1"], W.EPS).astype(bfloat16)
         for c, (r0, t) in enumerate(chunks):
             a = self.a_chunk(S.D_MODEL, c)
-            H.tile_a(h[r0 : r0 + t].astype(np.float32), a[1], D.TM, D.TK)
+            H.rms_tile(x[r0 : r0 + t], self.p[j]["n1"], W.EPS, a[1], D.TM, D.TK)
             a[0].sync(TO)
         self._t("host", t0)
         pq = [self.gemm_start(f"{j}.qkv", c) for c in range(len(chunks))]
@@ -291,7 +290,7 @@ class Q3CPrefill(Engine):
         self._t("stream", t0)
         t0 = time.perf_counter()
         p = self.p[j]
-        h = H.rms(x, p["n2"], W.EPS).astype(bfloat16).astype(np.float32)
+        h = H.round_bf16(H.rms(x, p["n2"], W.EPS))
         ht = torch.from_numpy(h)
         # softmax over every expert, the top k renormalized, their weights bf16
         probs = (ht @ p["router"]).softmax(-1)

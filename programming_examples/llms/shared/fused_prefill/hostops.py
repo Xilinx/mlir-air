@@ -23,6 +23,7 @@ def load(build_dir):
     _l = ctypes.c_long
     _lib.tiles_bfp.argtypes = [_p, _i, _i, _i, _i, _i, _i, _p, _l, _l]
     _lib.bfp_rows.argtypes = [_p, ctypes.c_long, _p]
+    _lib.round_bf16.argtypes = [_p, ctypes.c_long]
     _lib.tile_a_rows.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p, _l, _l]
     _lib.glu_tile_a.argtypes = [_p, _i, _i, _i, _i, _i, _p, _l, _l]
     _lib.bf16_to_f32.argtypes = [_p, _i, _i, _i, _p]
@@ -146,6 +147,13 @@ def bf16_to_f32(src, rows, n):
 
 def _c(a):
     return np.ascontiguousarray(a, np.float32)
+
+
+def round_bf16(x):
+    """x float32, rounded to bf16 in place; returns x."""
+    assert x.dtype == np.float32 and x.flags.c_contiguous
+    _lib.round_bf16(x.ctypes.data, x.size)
+    return x
 
 
 def rms(x, w, eps):

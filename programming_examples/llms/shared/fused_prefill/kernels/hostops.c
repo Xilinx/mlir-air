@@ -82,6 +82,15 @@ void rms(const float *x, int rows, int n, const float *w, float eps, float *y) {
   }
 }
 
+// x rounded to bf16 in place, kept as f32
+void round_bf16(float *x, long n) {
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (long i = 0; i < n; i++) {
+    uint32_t u = (uint32_t)f2bf(x[i]) << 16;
+    memcpy(x + i, &u, 4);
+  }
+}
+
 // y = res + rms(x) * w
 void add_rms(const float *res, const float *x, int rows, int n, const float *w,
              float eps, float *y) {
