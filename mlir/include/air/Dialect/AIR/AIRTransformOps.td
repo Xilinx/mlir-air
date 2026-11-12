@@ -1124,6 +1124,47 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
   }];
 }
 
+def WidenElementwiseVectorsOp : Op<Transform_Dialect, "air.widen_elementwise_vectors",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Compute narrow 1-D elementwise vector ops on `lanes` lanes";
+  let description = [{
+    Rewrites each elementwise op in `target` whose results and operands are
+    1-D vectors of N elements, N dividing `lanes` and smaller, as the same op
+    on vectors of `lanes` elements followed by an extraction of the first N.
+    Each operand is widened by a shuffle that repeats it (a concatenation of
+    copies); an operand that is itself the first N lanes of a `lanes`-wide
+    vector is taken whole, and a splat constant becomes a wider splat. Only
+    the first N lanes of the result are used, so the other lanes need no
+    particular values; an op that may not be safe on any values (an integer
+    division) takes repeated copies of its operands' lanes instead. The
+    targets must be isolated from above (functions, herds).
+
+    Targets whose vector units work on whole registers: an op on part of one
+    becomes an op on a full one, as hand-written kernels compute two 8-lane
+    values as one 16-lane vector.
+
+    Example, with `lanes = 16`:
+    ```mlir
+    %r = arith.mulf %a, %b : vector<8xf32>
+    ```
+    becomes
+    ```mlir
+    %wa = vector.shuffle %a, %a [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7] : vector<8xf32>, vector<8xf32>
+    %wb = vector.shuffle %b, %b [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7] : vector<8xf32>, vector<8xf32>
+    %w = arith.mulf %wa, %wb : vector<16xf32>
+    %r = vector.extract_strided_slice %w {offsets = [0], sizes = [8], strides = [1]} : vector<16xf32> to vector<8xf32>
+    ```
+
+    Returns a handle to the target.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   I64Attr:$lanes);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target prop-dict attr-dict `:` functional-type(operands, results)";
+}
+
 def EliminateRedundantVectorTransfersOp : Op<Transform_Dialect, "air.eliminate_redundant_vector_transfers",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {

@@ -5746,6 +5746,112 @@ static bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
   return false;
 }
 
+//===----------------------------------------------------------------------===//
+// WidenElementwiseVectorsOp
+//===----------------------------------------------------------------------===//
+
+namespace {
+// N if t is a 1-D vector of N elements, N dividing lanes and smaller; else 0.
+int64_t narrowVectorSize(Type t, int64_t lanes) {
+  auto vt = dyn_cast<VectorType>(t);
+  if (!vt || vt.getRank() != 1 || vt.isScalable())
+    return 0;
+  int64_t n = vt.getNumElements();
+  return n < lanes && lanes % n == 0 ? n : 0;
+}
+
+// v on lanes lanes: its lanes repeated, or the wide vector it is the first
+// lanes of, or a wider splat.
+Value widenVector(RewriterBase &rewriter, Location loc, Value v, int64_t lanes,
+                  bool anyUpperLanes) {
+  auto vt = cast<VectorType>(v.getType());
+  auto wide = VectorType::get({lanes}, vt.getElementType());
+  // (whose upper lanes hold whatever the wide vector does: only for an op
+  // that is safe on any values)
+  if (auto ex = v.getDefiningOp<vector::ExtractStridedSliceOp>();
+      ex && anyUpperLanes)
+    if (ex.getSourceVectorType() == wide && !ex.hasNonUnitStrides() &&
+        cast<IntegerAttr>(ex.getOffsets()[0]).getInt() == 0)
+      return ex.getSource();
+  DenseElementsAttr cst;
+  if (matchPattern(v, m_Constant(&cst)) && cst.isSplat())
+    return arith::ConstantOp::create(rewriter, loc, wide,
+                                     cst.resizeSplat(wide));
+  int64_t n = vt.getNumElements();
+  SmallVector<int64_t> idx;
+  for (int64_t i = 0; i < lanes; ++i)
+    idx.push_back(i % n);
+  return vector::ShuffleOp::create(rewriter, loc, v, v, idx);
+}
+
+// op on lanes lanes, if it is elementwise on 1-D vectors of N < lanes
+// elements; its results the first N lanes.
+void widenElementwise(RewriterBase &rewriter, Operation *op, int64_t lanes) {
+  if (op->getNumResults() == 0 || op->getNumRegions() != 0 ||
+      !OpTrait::hasElementwiseMappableTraits(op) ||
+      op->getParentOfType<vector::MaskOp>())
+    return;
+  int64_t n = narrowVectorSize(op->getResult(0).getType(), lanes);
+  if (!n)
+    return;
+  for (Type t : llvm::concat<Type>(op->getOperandTypes(), op->getResultTypes()))
+    if (narrowVectorSize(t, lanes) != n)
+      return;
+  Location loc = op->getLoc();
+  rewriter.setInsertionPoint(op);
+  // An op that may have undefined behavior on some values (an integer
+  // division) takes repeated copies of its lanes, never a wide vector's
+  // upper lanes.
+  bool anyUpperLanes = isSpeculatable(op);
+  OperationState state(loc, op->getName());
+  for (Value v : op->getOperands())
+    state.addOperands(widenVector(rewriter, loc, v, lanes, anyUpperLanes));
+  for (Type t : op->getResultTypes())
+    state.addTypes(
+        VectorType::get({lanes}, cast<VectorType>(t).getElementType()));
+  state.addAttributes(op->getAttrs());
+  Operation *w = rewriter.create(state);
+  SmallVector<Value> res;
+  for (Value r : w->getResults())
+    res.push_back(vector::ExtractStridedSliceOp::create(
+        rewriter, loc, r, ArrayRef<int64_t>{0}, ArrayRef<int64_t>{n},
+        ArrayRef<int64_t>{1}));
+  rewriter.replaceOp(op, res);
+}
+} // namespace
+
+DiagnosedSilenceableFailure transform::WidenElementwiseVectorsOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+  for (Operation *target : targets)
+    if (!target->hasTrait<OpTrait::IsIsolatedFromAbove>())
+      return emitDefiniteFailure()
+             << "target operation must have IsolatedFromAbove trait";
+  for (Operation *target : targets) {
+    // In order, so that an op's operands are widened before it.
+    SmallVector<Operation *> ops;
+    target->walk<WalkOrder::PreOrder>([&](Operation *op) {
+      if (op != target)
+        ops.push_back(op);
+    });
+    for (Operation *op : ops)
+      widenElementwise(rewriter, op, getLanes());
+    // Extractions left unused, and shuffles of shuffles, go.
+    RewritePatternSet patterns(target->getContext());
+    vector::ExtractStridedSliceOp::getCanonicalizationPatterns(
+        patterns, target->getContext());
+    vector::ShuffleOp::getCanonicalizationPatterns(patterns,
+                                                   target->getContext());
+    if (failed(applyPatternsGreedily(target, std::move(patterns))))
+      return emitDefiniteFailure()
+             << "widen_elementwise_vectors did not converge";
+  }
+  results.set(llvm::cast<OpResult>(getResult()), targets);
+  return DiagnosedSilenceableFailure::success();
+}
+
 DiagnosedSilenceableFailure
 transform::EliminateRedundantVectorTransfersOp::apply(
     transform::TransformRewriter &rewriter,
