@@ -61,14 +61,11 @@ _p, _i = ctypes.c_void_p, ctypes.c_int
 
 
 def build_host(out):
-    """hostops with HOST_THREADS row threads, then the model's host library."""
+    """The model's host library, with HOST_THREADS row threads."""
     flags = ["gcc", "-O3", "-march=native", "-ffp-contract=off", "-fopenmp"]
     flags += ["-fno-trapping-math", "-shared", "-fPIC", f"-DNT={HOST_THREADS}"]
-    for src, so in (
-        (HERE.parents[0] / "shared/fused_prefill/kernels/hostops.c", "libhostops.so"),
-        (HOST_C, "libq36host.so"),
-    ):
-        subprocess.run(flags + [str(src), "-o", str(Path(out) / so), "-lm"], check=True)
+    so = str(Path(out) / "libq36host.so")
+    subprocess.run(flags + [str(HOST_C), "-o", so, "-lm"], check=True)
 
 
 def row_groups(blocks):
@@ -93,6 +90,7 @@ class Qwen36Prefill(Engine):
     and with "stream" one layer's, copied in before the layer's MoE."""
 
     def __init__(self, build_dir, w, layers=None, we=None, threads=HOST_THREADS):
+        H.build(build_dir, HOST_THREADS)
         so = Path(build_dir) / "libq36host.so"
         if not so.exists() or so.stat().st_mtime < HOST_C.stat().st_mtime:
             build_host(build_dir)
@@ -102,7 +100,6 @@ class Qwen36Prefill(Engine):
         self.q = ctypes.CDLL(str(so))
         self.q.gdn_chunk.argtypes = [_p, _i, _p, _i, _i] + [_p] * 9 + [_i]
         self.q.o_gate_tile.argtypes = [_p] + [_i] * 9 + [_p, _i, _p, _i]
-        self.q.exp_glu_tile.argtypes = [_p] + [_i] * 5 + [_p, _i]
         self.nt = threads
         inv = 1.0 / W.THETA ** (np.arange(0, W.ROPE_DIM, 2) / W.ROPE_DIM)
         ang = np.arange(S.max_len)[:, None] * inv[None]
@@ -240,25 +237,26 @@ class Qwen36Prefill(Engine):
         self.n = n
         return x
 
-    def _norm_in(self, j, x, chunks):
-        """rms(x) * w into each chunk's A, as the device and the host take
-        it: bf16 rows [n, D]."""
+    def _norm_in(self, j, x, chunks, rows=False):
+        """bf16(rms(x) * w) into each chunk's A, as the device takes it; with
+        rows, also as the host takes it: float32 rows [n, D] of bf16 values."""
         t0 = time.perf_counter()
-        h = H.rms(x, self.p[j]["n1"], W.EPS).astype(bfloat16)
+        w = self.p[j]["n1"]
         for c, (r0, t) in enumerate(chunks):
             a = self.a_chunk(S.D_MODEL, c)
-            H.tile_a(h[r0 : r0 + t].astype(np.float32), a[1], D.TM, D.TK)
+            H.rms_tile(x[r0 : r0 + t], w, W.EPS, a[1], D.TM, D.TK)
             a[0].sync(TO)
+        h = H.round_bf16(H.rms(x, w, W.EPS)) if rows else None
         self._t("host", t0)
         return h
 
     def _gdn_all(self, j, x, chunks):
         p = self.p[j]
-        h = self._norm_in(j, x, chunks)
+        h = self._norm_in(j, x, chunks, rows=True)
         pl = [self.gemm_start(f"{j}.lin_in", c) for c in range(len(chunks))]
         t0 = time.perf_counter()
         # beta | alpha, float32 on bf16 rows as FLM's host takes them
-        ba = (torch.from_numpy(h.astype(np.float32)) @ p["ab"]).numpy()
+        ba = (torch.from_numpy(h) @ p["ab"]).numpy()
         ba = np.ascontiguousarray(ba.astype(bfloat16))
         nc, nz = W.QKV, W.NVH * W.DV
         hist = np.zeros((W.CONV - 1, nc), np.float32)
@@ -405,7 +403,7 @@ class Qwen36Prefill(Engine):
         self._t("stream", t0)
         t0 = time.perf_counter()
         p = self.p[j]
-        h = H.rms(x, p["n2"], W.EPS).astype(bfloat16).astype(np.float32)
+        h = H.round_bf16(H.rms(x, p["n2"], W.EPS))
         ht = torch.from_numpy(h)
         # FLM's router: softmax over every expert, the top k renormalized,
         # their weights bf16
@@ -493,7 +491,7 @@ class Qwen36Prefill(Engine):
             pair = int(len(rows) > M)
             st = self._slot(GU, i % 2, pair)
             for hh in range(1 + pair):
-                H.tile_a(h[rows[hh * M : (hh + 1) * M]], st["am"][hh], D.TM, D.TK)
+                H.tile_a_rows(h, rows[hh * M : (hh + 1) * M], st["am"][hh], D.TM, D.TK)
             st["a"].sync(TO)
             self._start(st, wbo(e, GU))
             return st
@@ -517,18 +515,7 @@ class Qwen36Prefill(Engine):
             st = self._slot(DN, i % 2, pair)
             for hh in range(1 + pair):
                 r = slice(hh * M, min(t, (hh + 1) * M))
-                a = H._bf16_tiles(st["am"][hh], D.TM, D.TK)
-                self.q.exp_glu_tile(
-                    gu[r].ctypes.data,
-                    gu.shape[1],
-                    r.stop - r.start,
-                    S.I,
-                    D.TM,
-                    D.TK,
-                    a.ctypes.data,
-                    self.nt,
-                )
-                H._to_bfp(a, r.stop - r.start, st["am"][hh])
+                H.glu_tile_a(gu[r], r.stop - r.start, S.I, st["am"][hh], D.TM, D.TK)
             st["a"].sync(TO)
             self._t("experts_host", t0)
             self._start(st, wbo(e, DN))

@@ -14,7 +14,6 @@ decode's.
 prefill(ids) keeps each layer's K and V for the decode.
 """
 
-import subprocess
 import sys
 import time
 import types
@@ -42,7 +41,6 @@ from air_examples.llms.shared.fused_prefill.engine import (  # noqa: E402
     view,
 )
 
-HOST_C = HERE.parent / "shared/fused_prefill/kernels/hostops.c"
 HOST_THREADS = 16
 BB = D.Q4K_BYTES
 GROUP = 4 * BB  # one column block of a 128-row group
@@ -54,28 +52,6 @@ NCB_O = S.DQ // D.Q4K_COLS  # column blocks of the o projection
 WE_SLACK = (S.npad(S.D_MODEL) - S.D_MODEL) // 128 * MB.NCB_H * GROUP + (
     D.k_pad(S.I) - S.I
 ) // D.Q4K_COLS * GROUP
-
-
-HOST_FLAGS = ["-O3", "-march=native", "-ffp-contract=off", "-fopenmp"]
-HOST_FLAGS += ["-fno-trapping-math", "-shared", "-fPIC", f"-DNT={HOST_THREADS}"]
-
-
-def build_host(out):
-    """hostops with HOST_THREADS row threads, unless the build dir already
-    holds that build: the device build makes its own at the default count.
-    A stamp next to the library records the flags it was built with."""
-    so, stamp = Path(out) / "libhostops.so", Path(out) / "libhostops.flags"
-    want = " ".join(HOST_FLAGS)
-    if (
-        so.exists()
-        and stamp.exists()
-        and stamp.read_text() == want
-        and stamp.stat().st_mtime >= so.stat().st_mtime
-        and so.stat().st_mtime >= HOST_C.stat().st_mtime
-    ):
-        return
-    subprocess.run(["gcc", *HOST_FLAGS, str(HOST_C), "-o", str(so), "-lm"], check=True)
-    stamp.write_text(want)
 
 
 def row_groups(blocks):
@@ -100,7 +76,7 @@ class Q3CPrefill(Engine):
     and with "stream" one layer's, copied in before the layer's MoE."""
 
     def __init__(self, build_dir, w, layers=None, we=None):
-        build_host(build_dir)
+        H.build(build_dir, HOST_THREADS)
         super().__init__(build_dir, S.CFG, S.max_len)
         self.w = w
         self.layers = list(range(W.N_LAYERS)) if layers is None else list(layers)
