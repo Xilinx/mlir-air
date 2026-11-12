@@ -5850,6 +5850,261 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantReadsOp::apply(
   return DiagnosedSilenceableFailure::success();
 }
 
+//===----------------------------------------------------------------------===//
+// AccumulateIntoLoopInitOp
+//===----------------------------------------------------------------------===//
+
+namespace {
+// `v` as a value plus a constant (a null value for a constant).
+static std::pair<Value, int64_t> splitIndexConstant(Value v) {
+  if (auto c = getConstantIntValue(v))
+    return {Value(), *c};
+  if (auto add = v.getDefiningOp<arith::AddIOp>()) {
+    if (auto c = getConstantIntValue(add.getRhs()))
+      return {add.getLhs(), *c};
+    if (auto c = getConstantIntValue(add.getLhs()))
+      return {add.getRhs(), *c};
+  }
+  if (auto ap = v.getDefiningOp<affine::AffineApplyOp>()) {
+    AffineMap m = ap.getAffineMap();
+    if (m.getNumResults() == 1 && ap.getMapOperands().size() == 1) {
+      AffineExpr x = m.getNumDims() ? getAffineDimExpr(0, ap.getContext())
+                                    : getAffineSymbolExpr(0, ap.getContext());
+      if (auto c = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
+              m.getResult(0) - x, m.getNumDims(), m.getNumSymbols())))
+        return {ap.getMapOperands()[0], c.getValue()};
+    }
+  }
+  return {v, 0};
+}
+
+// Whether the transfers `w` and `r` of one memref provably touch different
+// elements: in some dim their indices are one value plus constants further
+// apart than either's extent there.
+static bool disjointTransfers(VectorTransferOpInterface w,
+                              VectorTransferOpInterface r) {
+  if (w.getBase() != r.getBase() ||
+      w.getIndices().size() != r.getIndices().size() ||
+      !w.getPermutationMap().isMinorIdentity() ||
+      !r.getPermutationMap().isMinorIdentity())
+    return false;
+  int64_t rank = w.getIndices().size();
+  auto extent = [&](VectorTransferOpInterface t, int64_t d) -> int64_t {
+    auto vt = t.getVectorType();
+    int64_t off = rank - vt.getRank();
+    return d < off ? 1 : vt.getDimSize(d - off);
+  };
+  for (int64_t d = 0; d < rank; ++d) {
+    auto [bw, cw] = splitIndexConstant(w.getIndices()[d]);
+    auto [br, cr] = splitIndexConstant(r.getIndices()[d]);
+    if (bw != br)
+      continue;
+    if (cw + extent(w, d) <= cr || cr + extent(r, d) <= cw)
+      return true;
+  }
+  return false;
+}
+
+// Whether an op in [from, to) of one block may write `root`'s memory where
+// `rd` (if given) reads it.
+static bool mayWriteBetween(Operation *from, Operation *to, Value root,
+                            vector::TransferReadOp rd = nullptr) {
+  for (Operation *op = from; op && op != to; op = op->getNextNode()) {
+    bool may = false;
+    op->walk([&](Operation *o) {
+      if (may || isPure(o))
+        return;
+      if (auto w = dyn_cast<vector::TransferWriteOp>(o))
+        if (rd && disjointTransfers(cast<VectorTransferOpInterface>(*w),
+                                    cast<VectorTransferOpInterface>(*rd)))
+          return;
+      auto eff = dyn_cast<MemoryEffectOpInterface>(o);
+      if (!eff) {
+        may = !o->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
+        return;
+      }
+      SmallVector<MemoryEffects::EffectInstance> effects;
+      eff.getEffects(effects);
+      for (auto &e : effects)
+        if (isa<MemoryEffects::Write, MemoryEffects::Free>(e.getEffect()) &&
+            (!e.getValue() || mayAlias(memrefRoot(e.getValue()), root)))
+          may = true;
+    });
+    if (may)
+      return true;
+  }
+  return false;
+}
+
+// Collects into `slice` (in no particular order) the ops after `loop` in its
+// block that `v` is made of; fails unless they are pure or reads of memory
+// nothing from `loop` on writes, and the rest comes from before `loop`.
+static bool collectHoistable(Value v, scf::ForOp loop,
+                             SetVector<Operation *> &slice) {
+  // Defined before the loop (or around it): available there.
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return !loop->isAncestor(cast<BlockArgument>(v).getOwner()->getParentOp());
+  if (def->getBlock() != loop->getBlock())
+    return !loop->isAncestor(def) &&
+           def->getBlock()->findAncestorOpInBlock(*loop) != nullptr;
+  if (def->isBeforeInBlock(loop))
+    return true;
+  if (def == loop.getOperation() || def->getNumRegions())
+    return false;
+  if (slice.contains(def))
+    return true;
+  if (auto rd = dyn_cast<vector::TransferReadOp>(def)) {
+    // Nothing from the loop on to the read writes what it reads.
+    Value root = memrefRoot(rd.getBase());
+    if (mayWriteBetween(loop, def, root, rd))
+      return false;
+  } else if (!isPure(def)) {
+    return false;
+  }
+  for (Value o : def->getOperands())
+    if (!collectHoistable(o, loop, slice))
+      return false;
+  slice.insert(def);
+  return true;
+}
+
+// The iter arg `i` of `loop` only accumulates: its one use the accumulator of
+// an additive vector.contract whose result the trip yields at `i`.
+static bool onlyAccumulates(scf::ForOp loop, unsigned i) {
+  BlockArgument arg = loop.getRegionIterArg(i);
+  if (!arg.hasOneUse())
+    return false;
+  auto con = dyn_cast<vector::ContractionOp>(*arg.getUsers().begin());
+  if (!con || con.getAcc() != arg ||
+      con.getKind() != vector::CombiningKind::ADD ||
+      !con.getResult().hasOneUse())
+    return false;
+  return loop.getYieldedValues()[i] == con.getResult();
+}
+
+static bool accumulateIntoInit(RewriterBase &rewriter, scf::ForOp loop) {
+  bool changed = false;
+  for (unsigned i = 0; i < loop.getNumRegionIterArgs(); ++i) {
+    if (!matchPattern(loop.getInits()[i], m_AnyZeroFloat()) ||
+        !onlyAccumulates(loop, i))
+      continue;
+    Value r = loop.getResult(i);
+    if (!r.hasOneUse())
+      continue;
+    auto add = dyn_cast<arith::AddFOp>(*r.getUsers().begin());
+    if (!add || add->getBlock() != loop->getBlock())
+      continue;
+    Value y = add.getLhs() == r ? add.getRhs() : add.getLhs();
+    if (y == r)
+      continue;
+    SetVector<Operation *> slice;
+    if (!collectHoistable(y, loop, slice))
+      continue;
+    // Before the loop, in their order.
+    SmallVector<Operation *> ops = slice.takeVector();
+    llvm::sort(
+        ops, [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+    for (Operation *op : ops)
+      rewriter.moveOpBefore(op, loop);
+    rewriter.modifyOpInPlace(loop, [&] { loop.getInitsMutable()[i].set(y); });
+    rewriter.replaceOp(add, r);
+    changed = true;
+  }
+  return changed;
+}
+// The ops `v` is made of after `first` in its block, if they can be made
+// before it: pure ops, and reads of allocations nothing from `first` on
+// writes, from values defined before `first`.
+static bool collectHoistableBefore(Value v, Operation *first, Operation *use,
+                                   SetVector<Operation *> &slice) {
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return true;
+  if (def->getBlock() != first->getBlock())
+    return !first->getBlock()->findAncestorOpInBlock(*def);
+  if (def->isBeforeInBlock(first))
+    return true;
+  if (def == first || def->getNumRegions())
+    return false;
+  if (slice.contains(def))
+    return true;
+  if (auto rd = dyn_cast<vector::TransferReadOp>(def)) {
+    Value root = memrefRoot(rd.getBase());
+    if (mayWriteBetween(first, use, root, rd))
+      return false;
+  } else if (!isPure(def)) {
+    return false;
+  }
+  for (Value o : def->getOperands())
+    if (!collectHoistableBefore(o, first, use, slice))
+      return false;
+  slice.insert(def);
+  return true;
+}
+
+// y + (a chain of additive contractions from zero): the chain from y.
+static bool accumulateChainIntoInit(RewriterBase &rewriter, arith::AddFOp add) {
+  for (unsigned side = 0; side < 2; ++side) {
+    Value r = add->getOperand(side), y = add->getOperand(1 - side);
+    auto last = r.getDefiningOp<vector::ContractionOp>();
+    if (!last || !r.hasOneUse())
+      continue;
+    vector::ContractionOp first = last;
+    bool chain = true;
+    while (true) {
+      if (first.getKind() != vector::CombiningKind::ADD) {
+        chain = false;
+        break;
+      }
+      auto prev = first.getAcc().getDefiningOp<vector::ContractionOp>();
+      if (!prev)
+        break;
+      if (!prev.getResult().hasOneUse()) {
+        chain = false;
+        break;
+      }
+      first = prev;
+    }
+    if (!chain || !matchPattern(first.getAcc(), m_AnyZeroFloat()) ||
+        first->getBlock() != add->getBlock() ||
+        first.getAcc().getType() != y.getType())
+      continue;
+    SetVector<Operation *> slice;
+    if (!collectHoistableBefore(y, first, add, slice))
+      continue;
+    SmallVector<Operation *> ops = slice.takeVector();
+    llvm::sort(
+        ops, [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+    for (Operation *op : ops)
+      rewriter.moveOpBefore(op, first);
+    rewriter.modifyOpInPlace(first, [&] { first.getAccMutable().set(y); });
+    rewriter.replaceOp(add, r);
+    return true;
+  }
+  return false;
+}
+} // namespace
+
+DiagnosedSilenceableFailure transform::AccumulateIntoLoopInitOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+  for (Operation *target : targets) {
+    SmallVector<scf::ForOp> loops;
+    target->walk([&](scf::ForOp l) { loops.push_back(l); });
+    for (scf::ForOp l : loops)
+      accumulateIntoInit(rewriter, l);
+    SmallVector<arith::AddFOp> adds;
+    target->walk([&](arith::AddFOp a) { adds.push_back(a); });
+    for (arith::AddFOp a : adds)
+      accumulateChainIntoInit(rewriter, a);
+  }
+  results.set(llvm::cast<OpResult>(getResult()), targets);
+  return DiagnosedSilenceableFailure::success();
+}
+
 DiagnosedSilenceableFailure
 transform::EliminateRedundantVectorTransfersOp::apply(
     transform::TransformRewriter &rewriter,
