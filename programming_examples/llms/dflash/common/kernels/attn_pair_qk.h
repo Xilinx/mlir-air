@@ -94,13 +94,56 @@ dflash_qk_tile(bf16 *__restrict queries, bf16 *__restrict keys,
       continue;
     valid = valid < 16 ? valid : 16;
     auto mask = aie::le(positions, valid);
-    bool first = block == 0;
-#pragma clang loop unroll(disable)
+    // update() for all eight heads of the query in one pass: per head the
+    // same operations, with the maxima and corrections kept in vectors.
+    const auto lowest = aie::broadcast<bf16, 16>(-0x1.FEp127f);
+    // update()'s clamp on the exponent
+    const auto lo = aie::broadcast<bf16, 16>(-87.0f);
+    const auto hi = aie::broadcast<bf16, 16>(88.0f);
+    aie::vector<bf16, 128> raw = aie::load_v<128>(s);
+    aie::vector<bf16, 128> masked;
+#pragma clang loop unroll(full)
+    for (int head = 0; head < 8; ++head)
+      masked.insert(head,
+                    aie::select(lowest, raw.template extract<16>(head), mask));
+    // per half of four heads: [head][key] -> [key][head], then max over the
+    // keys down to [2 keys][4 heads]
+    auto half_max = [](aie::vector<bf16, 64> v) {
+      aie::vector<bf16, 64> t = aie::transpose(v, 4, 16);
+      aie::vector<bf16, 32> a =
+          aie::max(t.template extract<32>(0), t.template extract<32>(1));
+      aie::vector<bf16, 16> b =
+          aie::max(a.template extract<16>(0), a.template extract<16>(1));
+      return aie::max(b.template extract<8>(0), b.template extract<8>(1));
+    };
+    aie::vector<bf16, 16> both =
+        aie::concat(half_max(masked.template extract<64>(0)),
+                    half_max(masked.template extract<64>(1)));
+    aie::vector<bf16, 8> rowmax =
+        aie::max(aie::filter_even(both, 4), aie::filter_odd(both, 4));
+    aie::vector<bf16, 8> old_m = aie::load_v<8>(m);
+    aie::vector<bf16, 8> vmax = aie::max(rowmax, old_m);
+    aie::vector<bf16, 16> corr =
+        aie::clamp(aie::sub(old_m, vmax).template grow<16>(), lo, hi);
+    aie::vector<float, 16> cf =
+        aie::accum<accfloat, 16>(getExpBf16(corr)).template to_vector<float>();
+    aie::store_v(m, vmax);
+    aie::store_v(c, cf.template extract<8>(0));
+    aie::store_v(reinterpret_cast<float *>(s + 128), cf.template extract<8>(0));
+    // each head's max repeated over its 16 keys, [head][key]
+    aie::vector<bf16, 64> per_head =
+        aie::transpose(vmax.template grow_replicate<64>(), 8, 8);
+    auto [heads03, heads47] = aie::interleave_zip(per_head, per_head, 8);
+    aie::vector<bf16, 128> vm128 = aie::concat(heads03, heads47);
+#pragma clang loop unroll(full)
     for (int head = 0; head < 8; ++head) {
-      auto raw = aie::load_v<16>(s + head * 16);
-      auto probability = update(m + head, c + head, raw, mask, first);
-      aie::store_v(s + head * 16, probability);
+      aie::vector<bf16, 16> d =
+          aie::clamp(aie::sub(raw.template extract<16>(head),
+                              vm128.template extract<16>(head)),
+                     lo, hi);
+      aie::vector<bf16, 16> e =
+          aie::accum<accfloat, 16>(getExpBf16(d)).template to_vector<bf16>(0);
+      aie::store_v(s + head * 16, aie::select((bf16)0, e, mask));
     }
-    aie::store_v(reinterpret_cast<float *>(s + 128), aie::load_v<8>(c));
   }
 }
