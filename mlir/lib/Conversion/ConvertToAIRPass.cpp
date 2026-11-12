@@ -207,7 +207,8 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
     // reinterpret_cast offset there; all other offset slots retain the
     // subview offsets which are expressed relative to the cast's base.
     if (auto reinterpretCast = src.getDefiningOp<memref::ReinterpretCastOp>()) {
-      auto rcOffsets = reinterpretCast.getOffsets();
+      // getMixedOffsets: a static offset is an offset too.
+      auto rcOffsets = reinterpretCast.getMixedOffsets();
       if (!rcOffsets.empty() && !src_offsets.empty()) {
         // Determine which subview dimension has stride == 1 (innermost).
         // The reinterpret_cast flat offset belongs to that dimension.
@@ -223,7 +224,8 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
         // Add the reinterpret_cast flat offset to the stride-1 dimension's
         // subview offset. This is the only dimension where the flat offset
         // adds without a stride multiplier.
-        Value rcOff = rcOffsets[0];
+        Value rcOff = getValueOrCreateConstantIndexOp(
+            rewriter, reinterpretCast.getLoc(), rcOffsets[0]);
         Value combined =
             arith::AddIOp::create(rewriter, reinterpretCast.getLoc(),
                                   src_offsets[strideOneIdx], rcOff);
@@ -244,7 +246,8 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
       return failure();
     dst = subview.getSource();
     if (auto reinterpretCast = dst.getDefiningOp<memref::ReinterpretCastOp>()) {
-      auto rcOffsets = reinterpretCast.getOffsets();
+      // getMixedOffsets: a static offset is an offset too.
+      auto rcOffsets = reinterpretCast.getMixedOffsets();
       if (!rcOffsets.empty() && !dst_offsets.empty()) {
         int strideOneIdx = static_cast<int>(dst_strides.size()) - 1;
         for (int i = 0; i < static_cast<int>(dst_strides.size()); ++i) {
@@ -255,7 +258,8 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
             }
           }
         }
-        Value rcOff = rcOffsets[0];
+        Value rcOff = getValueOrCreateConstantIndexOp(
+            rewriter, reinterpretCast.getLoc(), rcOffsets[0]);
         Value combined =
             arith::AddIOp::create(rewriter, reinterpretCast.getLoc(),
                                   dst_offsets[strideOneIdx], rcOff);
@@ -2410,6 +2414,22 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
                                    transform::TransformState &state) {
   if (xilinx::air::isSelfCopy(op)) {
     rewriter.eraseOp(op);
+    return DiagnosedSilenceableFailure::success();
+  }
+  // A copy within a core's L1 is the core's own code, not a DMA.
+  auto inL1 = [](Value v) {
+    auto ty = dyn_cast<MemRefType>(v.getType());
+    if (!ty)
+      return false; // unranked: left to the conversion below to reject
+    auto ms = xilinx::air::getMemorySpace(ty);
+    return ms && *ms == xilinx::air::MemorySpace::L1;
+  };
+  if (inL1(op.getSource()) && inL1(op.getTarget())) {
+    rewriter.setInsertionPoint(op);
+    auto copy = linalg::CopyOp::create(rewriter, op.getLoc(), op.getSource(),
+                                       op.getTarget());
+    rewriter.eraseOp(op);
+    results.push_back(copy);
     return DiagnosedSilenceableFailure::success();
   }
   auto res = xilinx::air::matchAndRewriteCopyOp(op, rewriter);

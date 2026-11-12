@@ -4,7 +4,8 @@
 // Qwen3-Coder-30B-A3B verify: a layer (attention and MoE) and the LM head each
 // against the CPU reference; the fused prefill's last logits against it; the
 // prompt prefilled into the 48-layer decode, its greedy tokens against the
-// reference; the reference's layers against HF transformers' fed the same
+// reference; the prompt a token at a time across a read length boundary;
+// the reference's layers against HF transformers' fed the same
 // weights; the top-k token-set gate against HF bf16.
 //
 // REQUIRES: ryzen_ai_npu2, peano, hfweights_qwen_qwen3_coder_30b_a3b_instruct
@@ -19,6 +20,9 @@
 // CHECK: PASS!
 // CHECK: prefill of {{[0-9]+}} tokens
 // CHECK: ' is Paris
+// CHECK: PASS!
+// CHECK: L=16: next
+// CHECK: L=17: next
 // CHECK: PASS!
 // CHECK: PASS!
 // CHECK: [verify] PASS

@@ -158,8 +158,10 @@ make profile-prefill CTX=2048 # TTFT of a 2048-token prompt
 - The weights are 4-bit: greedy text follows the bf16 model's closely but can
   diverge from it where two tokens are near-tied (the token-set gate allows
   for this).
-- The decode's KV cache length (`MAXL`) is compiled in, and every layer reads
-  it back whole each token, so a larger build is slower at every context.
+- The decode's KV cache length (`MAXL`) is compiled in, and a layers' ELF
+  reads a fixed number of positions back each token. `READS` adds ELFs that
+  read fewer (e.g. `make run MAXL=8192 READS=1024,2048,4096`); each token runs
+  the one with the fewest positions that covers its context.
 - Prompts up to 4096 tokens (the prefill device's KV records).
 - The kernels and the host GLU are the Qwen3.6 example's, so that example's
   directory is needed alongside this one.

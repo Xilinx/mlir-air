@@ -152,6 +152,11 @@ static PacketChannelFacts classify(ChannelOp chanOp,
   for (ChannelInterface p : puts) {
     std::optional<int64_t> v = totalVolume(p, scopeRoot);
     if (!v) {
+      // A stream of run-time length (a put in a loop whose trip count is
+      // known only at run time): volumes cannot tell a partition from a
+      // broadcast. As for a get of run-time volume, buildDomains() makes it a
+      // demux when a put naming a `dest` reaches it.
+      c.runtimeVolume = true;
       c.reason = "a put has a non-static volume";
       return c;
     }

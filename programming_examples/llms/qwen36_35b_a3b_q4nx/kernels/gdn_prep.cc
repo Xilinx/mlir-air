@@ -26,7 +26,13 @@ using bf16 = bfloat16;
 namespace {
 
 constexpr int HD = 128; // head dim, keys and values
-constexpr int NK = 16, NV = 32;
+// value heads: Qwen3.6-35B-A3B's 32 by default, Qwen3.8-27B builds with
+// -DGDN_NV=48
+#ifndef GDN_NV
+#define GDN_NV 32
+#endif
+constexpr int NK = 16, NV = GDN_NV;
+constexpr int VPK = NV / NK; // value heads per key head
 constexpr int DQ = NK * HD, DKV = NK * HD, DV = NV * HD;
 constexpr int SLOT = HD + 32;
 constexpr int BLOCK_ROWS = 32, BLOCK_COLS = 256;
@@ -210,12 +216,12 @@ void ab_activate(float *__restrict ab, float *__restrict a_dt) {
     aie::store_v(ab + i, sigmoid<16>(aie::load_v<16>(ab + i)));
 }
 
-// kvq = [k_{h / 2}, alpha_h | v_h, beta_h | q_{h / 2}] of value head h, from
-// conv = [q 2048 | k 2048 | v 4096]
+// kvq = [k_{h / VPK}, alpha_h | v_h, beta_h | q_{h / VPK}] of value head h,
+// from conv = [q DQ | k DKV | v DV]
 void gdn_pack(bf16 *__restrict conv, float *__restrict ab, bf16 *__restrict kvq,
               int h) {
-  const bf16 *q = conv + (h / 2) * HD;
-  const bf16 *k = conv + DQ + (h / 2) * HD;
+  const bf16 *q = conv + (h / VPK) * HD;
+  const bf16 *k = conv + DQ + (h / VPK) * HD;
   const bf16 *v = conv + DQ + DKV + h * HD;
   for (int i = 0; i < HD; i += 16) {
     aie::store_v(kvq + i, aie::load_v<16>(k + i));

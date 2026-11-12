@@ -38,6 +38,7 @@ The remaining models were developed directly in MLIR-AIR.
 | **d3-edge** | `vllm-sr/d3-edge` | 12 | 1024 / 256 / 3584 | GQA 8Q/2KV, **noncausal** | Qwen3.5-0.8B-derived decision model: one forward pass per System One question, 255-way FP32 readout of the last row instead of an LM head; noncausal full attention (`attn_bfp16` noncausal mode), 6 of 12 layers Gated DeltaNet; BF16 weights; [d3_edge](d3_edge/) | prefill only |
 | **d3-lite Q4NX** | `FastFlowLM/D3-Lite-NPU2` | 24 | 1024 / 256 / 3584 | GQA 8Q/2KV, **noncausal** | as d3-edge, 18 of 24 layers Gated DeltaNet; Q4K + Q8 weights of FastFlowLM's package; [d3_lite_q4nx](d3_lite_q4nx/) | prefill only |
 | **Qwen3.6-35B-A3B Q4NX** | `FastFlowLM/Qwen3.6-35B-A3B-NPU2` | 40 | 2048 / 256 / 512 per expert | GQA 16Q/2KV | **MoE**: 256 experts, top 8, plus a shared expert; hybrid Gated DeltaNet-attention (30 of 40 layers Gated DeltaNet, 32 value / 16 key heads); Q4_K weights, Q8 LM head, vocab 248320; [qwen36_35b_a3b_q4nx](qwen36_35b_a3b_q4nx/) | prefill + decode |
+| **Qwen3.8-27B Q4NX** | `FastFlowLM/Qwen3.8-27B-NPU2` | 64 | 5120 / 256 / 17408 | GQA 24Q/4KV | dense; hybrid Gated DeltaNet-attention (48 of 64 layers Gated DeltaNet, 48 value / 16 key heads); Q4_K weights, Q8 LM head and embedding, vocab 248320; [qwen38_27b_q4nx](qwen38_27b_q4nx/) | prefill + decode |
 | **Qwen3-Coder-30B-A3B Q4_K** | `Qwen/Qwen3-Coder-30B-A3B-Instruct` | 48 | 2048 / 128 / 768 per expert | GQA 32Q/4KV | **MoE**: 128 experts, top 8; QK-norm; Q4_K weights quantized from the bf16 checkpoint, Q8 LM head, vocab 151936; [qwen3_coder_30b_a3b_q4k](qwen3_coder_30b_a3b_q4k/) | prefill + decode |
 
 ### Affine-Q4 deployments with BFP16 prefill
@@ -180,6 +181,7 @@ llms/
 ├── qwen3_4b/           # Qwen3-4B      (QK-norm, decoupled q_dim=4096)
 ├── qwen3_8b_q4nx/      # Q4NX 4-bit Qwen3-8B (fused decode, split weight BOs)
 ├── qwen36_35b_a3b_q4nx/  # Q4NX Qwen3.6-35B-A3B MoE (one-dispatch decode, fused prefill)
+├── qwen38_27b_q4nx/    # Q4NX Qwen3.8-27B dense (one-dispatch decode, fused prefill)
 ├── qwen3_coder_30b_a3b_q4k/  # Q4_K Qwen3-Coder-30B-A3B MoE (one-dispatch decode, fused prefill)
 ├── whisper_v3_turbo_q4nx/  # Q4NX Whisper large-v3-turbo (speech to text)
 ├── shared/

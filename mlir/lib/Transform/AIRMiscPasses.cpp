@@ -1958,6 +1958,30 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       builder.setInsertionPoint(execOp);
     } else
       newMemref = memref::AllocOp::create(builder, loc, newMemrefType);
+    // The parts keep the whole buffer's lock template.
+    {
+      Operation *orig = allocOp;
+      if (auto exec = dyn_cast<air::ExecuteOp>(allocOp))
+        for (auto a : exec.getOps<memref::AllocOp>())
+          orig = a.getOperation();
+      Operation *part = newMemref.getDefiningOp();
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(part))
+        for (auto a : exec.getOps<memref::AllocOp>())
+          part = a.getOperation();
+      for (StringRef name : {air::attrs::ChainLock, air::attrs::NoChainLock,
+                             air::attrs::CountedLock})
+        if (Attribute a = orig->getAttr(name))
+          part->setAttr(name, a);
+      // A buffer split along its leading dim over a herd's columns
+      // (air.memtile_col_base = the herd's first column): each part in its
+      // own column's memtile.
+      if (auto base = orig->getAttrOfType<IntegerAttr>("air.memtile_col_base"))
+        if (memrefDim == 0 && newMemrefShape[0] > 0)
+          part->setAttr(
+              air::attrs::MemtileCol,
+              IntegerAttr::get(IntegerType::get(ctx, 32),
+                               base.getInt() + key / newMemrefShape[0]));
+    }
     // Create new dealloc ops.
     if (deallocOp) {
       builder.setInsertionPoint(deallocOp);
@@ -3081,9 +3105,11 @@ struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
       return failure();
     // Skip allocs that already have a recognized non-default memory space
     // (e.g., L1=2 when target is L2=1). Only override allocs with default
-    // memory space (L3=0) or unrecognized raw integer memory spaces.
+    // memory space (L3=0) or unrecognized raw integer memory spaces -- and,
+    // in a herd, L2 ones, which a herd cannot hold.
     auto currentMS = air::getMemorySpace(memrefTy);
-    if (currentMS && *currentMS != air::MemorySpace::L3)
+    if (currentMS && *currentMS != air::MemorySpace::L3 &&
+        !(clScope == "herd" && *currentMS == air::MemorySpace::L2))
       return failure();
 
     auto newMemrefType = MemRefType::get(
@@ -3091,7 +3117,9 @@ struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
         memrefTy.getLayout().getAffineMap(),
         air::MemorySpaceAttr::get(rewriter.getContext(), *targetMS));
 
-    rewriter.replaceOpWithNewOp<memref::AllocOp>(alloc, newMemrefType);
+    // In place: the alloc keeps its dynamic sizes, alignment and attributes.
+    rewriter.modifyOpInPlace(alloc,
+                             [&] { alloc.getMemref().setType(newMemrefType); });
 
     return success();
   }

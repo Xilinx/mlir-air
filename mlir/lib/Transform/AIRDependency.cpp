@@ -2067,10 +2067,15 @@ private:
   // wrote, at an offset inside the drained region or from a loop over it, and
   // the equal-start test below misses both. An access whose footprint is not
   // known keeps the equal-start test alone.
+  //
+  // Not only host buffers: an L2 buffer that several transfers fill at
+  // different offsets and one transfer then reads whole (a gather, as a
+  // memtile assembling the blocks of several cores) has the same shape, and
+  // without these edges the read waited for the first fill only.
   bool footprintsIntersectInHostMemory(partialMemref *tile_0,
                                        partialMemref *tile_1) {
     auto ty = dyn_cast<BaseMemRefType>(tile_0->memrefValue.getType());
-    if (!ty || !air::isL3(ty))
+    if (!ty || !(air::isL3(ty) || air::isL2(ty)))
       return false;
     return air::accessesIntersect(tile_0->offsets, tile_0->sizes,
                                   tile_0->strides, tile_1->offsets,

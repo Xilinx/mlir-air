@@ -19,6 +19,11 @@ using bf16 = bfloat16;
 namespace {
 
 constexpr int HD = 128; // a Gated DeltaNet value head
+// value heads: Qwen3.6-35B-A3B's 32 by default, Qwen3.8-27B builds with
+// -DGDN_NV=48
+#ifndef GDN_NV
+#define GDN_NV 32
+#endif
 
 aie::vector<bf16, 16> sigmoid(aie::vector<bf16, 16> x) {
   const aie::vector<bf16, 16> half = aie::broadcast<bf16, 16>(0.5f);
@@ -80,10 +85,10 @@ void dn_norm(bf16 *__restrict y, bf16 *__restrict o, bf16 *__restrict w,
   }
 }
 
-// dn_norm of the step cores' outputs as they arrive, o = [4 cores][32 heads]
-// [32 values], into head order y = [32 heads][128].
+// dn_norm of the step cores' outputs as they arrive, o = [4 cores][NH heads]
+// [32 values], into head order y = [NH heads][128].
 void dn_norm_rhv(bf16 *__restrict y, bf16 *__restrict o, bf16 *__restrict w) {
-  constexpr int V = 16, NH = 32, VC = 32, NC = HD / VC;
+  constexpr int V = 16, NH = GDN_NV, VC = 32, NC = HD / VC;
   for (int h = 0; h < NH; h++) {
     aie::accum<accfloat, V> s = aie::zeros<accfloat, V>();
     for (int r = 0; r < NC; r++)

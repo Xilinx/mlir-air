@@ -381,6 +381,8 @@ public:
     auto herdLoadOp =
         airrt::HerdLoadOp::create(rewriter, op->getLoc(), rewriter.getI64Type(),
                                   herd_name_attr.getValue().str(), args);
+    if (auto n = op->getAttr(air::attrs::HerdRtpIndex))
+      herdLoadOp->setAttr(air::attrs::HerdRtpIndex, n);
 
     // Set an attribute linking to the parent segment's symbol name.
     if (auto segment = herd->getParentOfType<air::SegmentOp>()) {
@@ -1346,6 +1348,31 @@ static SmallVector<Operation *> getLaunchWindow(airrt::WaitAllOp launchEnd) {
 // drains that wrote what it reads.
 using DrainDeps =
     llvm::DenseMap<Operation *, llvm::SmallSetVector<Operation *, 4>>;
+// Whether input `in` may read what `drain` writes to host memory.
+static bool readsWhatDrainWrites(airrt::DmaMemcpyNdOp in,
+                                 airrt::DmaMemcpyNdOp drain) {
+  auto root = [](Value v) {
+    while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
+      v = view.getViewSource();
+    return v;
+  };
+  auto isBuffer = [](Value v) {
+    return isa<BlockArgument>(v) || v.getDefiningOp<memref::AllocOp>();
+  };
+  Value a = in.getMemref(), b = drain.getMemref();
+  if (a != b) {
+    // Different views of one buffer count offsets from different bases, so
+    // only distinct buffers are known not to touch.
+    Value ra = root(a), rb = root(b);
+    return ra == rb || !isBuffer(ra) || !isBuffer(rb);
+  }
+  return air::accessesIntersect(in.getMixedOffsets(), in.getMixedLengths(),
+                                in.getMixedStrides(), drain.getMixedOffsets(),
+                                drain.getMixedLengths(),
+                                drain.getMixedStrides())
+      .value_or(true);
+}
+
 template <typename IsDrainFn>
 static DrainDeps getDrainDeps(ArrayRef<Operation *> window, IsDrainFn isDrain) {
   DrainDeps deps;
@@ -1365,18 +1392,53 @@ static DrainDeps getDrainDeps(ArrayRef<Operation *> window, IsDrainFn isDrain) {
         memo[v] = found;
         return found;
       };
-  for (Operation *op : window) {
-    auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
-    if (!dma || !dma->getNumResults() || isDrain(dma))
-      continue;
+  auto inputDrains = [&](airrt::DmaMemcpyNdOp dma) {
+    llvm::SmallSetVector<Operation *, 4> found;
     for (Operation *user : dma->getResult(0).getUsers()) {
       auto wa = dyn_cast<airrt::WaitAllOp>(user);
       if (!wa || !wa->getNumResults())
         continue;
       for (Value o : wa->getOperands())
         if (o != dma->getResult(0))
-          deps[op].insert_range(drainsOf(o));
+          found.insert_range(drainsOf(o));
     }
+    return found;
+  };
+  // A read of host memory an earlier drain of the window wrote depends on
+  // that drain, whatever the tokens say: the drain may be a core's own
+  // transfer to host memory, whose token the read's dependencies (on the
+  // core's herd) never reach.
+  SmallVector<airrt::DmaMemcpyNdOp> drainsSoFar;
+  auto earlierDrains = [&](airrt::DmaMemcpyNdOp in) {
+    llvm::SmallSetVector<Operation *, 4> found;
+    for (auto d : drainsSoFar)
+      if (readsWhatDrainWrites(in, d))
+        found.insert(d);
+    return found;
+  };
+  for (Operation *op : window) {
+    auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
+    if (dma) {
+      if (dma->getNumResults() && !isDrain(dma)) {
+        deps[op].insert_range(inputDrains(dma));
+        deps[op].insert_range(earlierDrains(dma));
+      }
+      if (dma->getNumResults() && isDrain(dma))
+        drainsSoFar.push_back(dma);
+      continue;
+    }
+    // An op with regions, such as an scf.if guarding a run-time sized read,
+    // depends on what the inputs nested in it depend on -- outside it: a
+    // drain nested with its read is ordered inside
+    // (orderNestedReadsAfterDrains).
+    op->walk([&](airrt::DmaMemcpyNdOp in) {
+      if (in != op && in->getNumResults() && !isDrain(in)) {
+        for (Operation *d : inputDrains(in))
+          if (!op->isAncestor(d))
+            deps[op].insert(d);
+        deps[op].insert_range(earlierDrains(in));
+      }
+    });
   }
   return deps;
 }
@@ -1394,46 +1456,37 @@ template <typename IsDrainFn>
 static llvm::SmallSetVector<Value, 8>
 awaitDrainsBeforeReads(ArrayRef<Operation *> ops, IsDrainFn isDrain,
                        const DrainDeps &deps,
-                       SmallVectorImpl<Operation *> &unordered) {
-  auto root = [](Value v) {
-    while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
-      v = view.getViewSource();
-    return v;
-  };
-  auto isBuffer = [](Value v) {
-    return isa<BlockArgument>(v) || v.getDefiningOp<memref::AllocOp>();
-  };
-  auto readsBack = [&](airrt::DmaMemcpyNdOp in, airrt::DmaMemcpyNdOp drain) {
-    Value a = in.getMemref(), b = drain.getMemref();
-    if (a != b) {
-      // Different views of one buffer count offsets from different bases, so
-      // only distinct buffers are known not to touch.
-      Value ra = root(a), rb = root(b);
-      return ra == rb || !isBuffer(ra) || !isBuffer(rb);
-    }
-    return air::accessesIntersect(in.getMixedOffsets(), in.getMixedLengths(),
-                                  in.getMixedStrides(), drain.getMixedOffsets(),
-                                  drain.getMixedLengths(),
-                                  drain.getMixedStrides())
-        .value_or(true);
-  };
+                       SmallVectorImpl<Operation *> &unordered,
+                       SmallVectorImpl<Operation *> *waits = nullptr) {
+  auto readsBack = readsWhatDrainWrites;
   // Drains issued so far, in issue order.
   llvm::SetVector<Operation *> issued;
   llvm::SmallSetVector<Value, 8> awaited;
   for (Operation *op : ops) {
     auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
-    if (!dma || !dma->getNumResults())
+    if (dma && !dma->getNumResults())
       continue;
-    if (isDrain(dma)) {
+    if (dma && isDrain(dma)) {
       issued.insert(op);
       continue;
     }
     auto it = deps.find(op);
     if (it == deps.end())
       continue;
+    // The inputs that read: the DMA itself, or those nested in the op.
+    SmallVector<airrt::DmaMemcpyNdOp> inputs;
+    if (dma)
+      inputs.push_back(dma);
+    else
+      op->walk([&](airrt::DmaMemcpyNdOp in) {
+        if (in->getNumResults() && !isDrain(in))
+          inputs.push_back(in);
+      });
     auto reads = [&](Operation *d) {
       return it->second.contains(d) &&
-             readsBack(dma, cast<airrt::DmaMemcpyNdOp>(d));
+             llvm::any_of(inputs, [&](airrt::DmaMemcpyNdOp in) {
+               return readsBack(in, cast<airrt::DmaMemcpyNdOp>(d));
+             });
     };
     SmallVector<Value> tokens;
     for (Operation *d : issued)
@@ -1447,7 +1500,9 @@ awaitDrainsBeforeReads(ArrayRef<Operation *> ops, IsDrainFn isDrain,
       continue;
     OpBuilder b(op);
     // No result: a wait_all without one blocks the control program.
-    airrt::WaitAllOp::create(b, op->getLoc(), TypeRange{}, tokens);
+    auto w = airrt::WaitAllOp::create(b, op->getLoc(), TypeRange{}, tokens);
+    if (waits)
+      waits->push_back(w);
     awaited.insert(tokens.begin(), tokens.end());
   }
   return awaited;
@@ -1480,11 +1535,16 @@ static void orderReadsAfterDrains(ArrayRef<Operation *> window,
 template <typename IsDrainFn>
 static void orderNestedReadsAfterDrains(ArrayRef<Operation *> window,
                                         IsDrainFn isDrain) {
+  // Drains in the launch's own ops: an input nested in a region waits for
+  // them before the region's op (awaitDrainsBeforeReads).
+  llvm::SmallPtrSet<Operation *, 8> outer(window.begin(), window.end());
   std::function<void(Block &, bool)> visit = [&](Block &blk, bool inLoop) {
     SmallVector<Operation *> ops;
     for (Operation &op : blk)
       ops.push_back(&op);
     DrainDeps deps = getDrainDeps(ops, isDrain);
+    for (auto &[op, ds] : deps)
+      ds.remove_if([&](Operation *d) { return outer.contains(d); });
     SmallVector<Operation *> unordered;
     auto awaited = awaitDrainsBeforeReads(ops, isDrain, deps, unordered);
     if (inLoop && !awaited.empty()) {
@@ -1592,25 +1652,52 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
     // before the inputs that drive its producer, but stop at an input that
     // depends on an earlier drain: that input waits for the earlier drain
     // (orderReadsAfterDrains), and a drain moved above the wait would queue
-    // ahead of work it depends on. Every drain moved goes before the same
-    // anchor, so the drains keep their order, which a shim channel retires
-    // them in. A launch whose inputs depend on none of its drains gets every
-    // drain ahead of its first input.
+    // ahead of work it depends on. Nor is a drain moved above a read of what
+    // it writes: armed first, it could take a producer's output before the
+    // read has run, unless that producer is the one the read feeds. Every
+    // drain moved goes before the same anchor, so the drains keep their
+    // order, which a shim channel retires them in. A launch whose inputs
+    // depend on none of its drains gets every drain ahead of its first input.
+    //
+    // An input DMA, or an op an input is nested in (an scf.if guarding a
+    // run-time sized read, say).
     auto isInput = [&](Operation *op) {
-      auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
-      return dma && dma->getNumResults() && !isDrain(dma);
+      return op
+          ->walk([&](airrt::DmaMemcpyNdOp dma) {
+            return dma->getNumResults() && !isDrain(dma)
+                       ? WalkResult::interrupt()
+                       : WalkResult::advance();
+          })
+          .wasInterrupted();
     };
     if (llvm::any_of(window, isInput)) {
       SmallVector<airrt::DmaMemcpyNdOp> drainsSoFar;
       Operation *anchor = nullptr;
+      // The inputs passed since the anchor, and the drains that stayed below
+      // it.
+      SmallVector<airrt::DmaMemcpyNdOp> readSinceAnchor, stayedSinceAnchor;
       // `window` holds the original order; the moves below only take a drain
       // up to an anchor that is still ahead of it.
       for (Operation *op : window) {
         auto dma = dyn_cast<airrt::DmaMemcpyNdOp>(op);
         if (dma && isDrain(dma)) {
-          // A drain whose slice contains a side-effecting op stays in place.
-          if (anchor)
-            (void)air::moveWithPureBackwardSlice(op, anchor, /*after=*/false);
+          // A drain whose slice contains a side-effecting op stays in place,
+          // as does one that would pass a drain of its channel staying in
+          // place: a shim channel retires its drains in order.
+          bool moved =
+              anchor &&
+              llvm::none_of(readSinceAnchor,
+                            [&](airrt::DmaMemcpyNdOp in) {
+                              return readsWhatDrainWrites(in, dma);
+                            }) &&
+              llvm::none_of(stayedSinceAnchor,
+                            [&](airrt::DmaMemcpyNdOp d) {
+                              return d->getAttr("metadata") ==
+                                     dma->getAttr("metadata");
+                            }) &&
+              air::moveWithPureBackwardSlice(op, anchor, /*after=*/false);
+          if (anchor && !moved)
+            stayedSinceAnchor.push_back(dma);
           drainsSoFar.push_back(dma);
           continue;
         }
@@ -1621,10 +1708,18 @@ static void deferDeviceToHostDrainWaits(ModuleOp module) {
             it != deps.end() && llvm::any_of(drainsSoFar, [&](auto d) {
               return it->second.contains(d.getOperation());
             });
-        if (dependsOnDrain)
+        if (dependsOnDrain) {
           anchor = nullptr;
-        else if (!anchor)
+          readSinceAnchor.clear();
+          stayedSinceAnchor.clear();
+        } else if (!anchor) {
           anchor = op;
+        }
+        if (anchor)
+          op->walk([&](airrt::DmaMemcpyNdOp in) {
+            if (in->getNumResults() && !isDrain(in))
+              readSinceAnchor.push_back(in);
+          });
       }
       // In program order, not as hoisted: a drain moved above an input that
       // reads the same region before the drain overwrites it is not what that

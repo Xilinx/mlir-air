@@ -14,8 +14,6 @@ decode's.
 prefill(ids) keeps each layer's K and V for the decode.
 """
 
-import ctypes
-import importlib.util
 import sys
 import time
 import types
@@ -43,8 +41,6 @@ from air_examples.llms.shared.fused_prefill.engine import (  # noqa: E402
     view,
 )
 
-Q36 = HERE.parent / "qwen36_35b_a3b_q4nx"
-HOST_C = Q36 / "kernels" / "q36_host.c"  # its exp_glu_tile, at this width
 HOST_THREADS = 16
 BB = D.Q4K_BYTES
 GROUP = 4 * BB  # one column block of a 128-row group
@@ -56,19 +52,6 @@ NCB_O = S.DQ // D.Q4K_COLS  # column blocks of the o projection
 WE_SLACK = (S.npad(S.D_MODEL) - S.D_MODEL) // 128 * MB.NCB_H * GROUP + (
     D.k_pad(S.I) - S.I
 ) // D.Q4K_COLS * GROUP
-_p, _i = ctypes.c_void_p, ctypes.c_int
-
-
-def build_host(out):
-    """Qwen3.6's: hostops and its host library."""
-    spec = importlib.util.spec_from_file_location(
-        "q36_prefill_host", Q36 / "prefill.py"
-    )
-    path = list(sys.path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    sys.path[:] = path
-    mod.build_host(out)
 
 
 def row_groups(blocks):
@@ -92,16 +75,11 @@ class Q3CPrefill(Engine):
     decode holds; without it the engine holds every layer's experts itself,
     and with "stream" one layer's, copied in before the layer's MoE."""
 
-    def __init__(self, build_dir, w, layers=None, we=None, threads=HOST_THREADS):
-        so = Path(build_dir) / "libq36host.so"
-        if not so.exists() or so.stat().st_mtime < HOST_C.stat().st_mtime:
-            build_host(build_dir)
+    def __init__(self, build_dir, w, layers=None, we=None):
+        H.build(build_dir, HOST_THREADS)
         super().__init__(build_dir, S.CFG, S.max_len)
         self.w = w
         self.layers = list(range(W.N_LAYERS)) if layers is None else list(layers)
-        self.q = ctypes.CDLL(str(so))
-        self.q.exp_glu_tile.argtypes = [_p] + [_i] * 5 + [_p, _i]
-        self.nt = threads
         inv = 1.0 / W.THETA ** (np.arange(0, W.DH, 2) / W.DH)
         ang = np.arange(S.max_len)[:, None] * inv[None]
         self.cs = np.ascontiguousarray(np.cos(ang), np.float32)
@@ -213,10 +191,9 @@ class Q3CPrefill(Engine):
     def _attn_all(self, j, x, chunks):
         kvb = self.kvb[j]
         t0 = time.perf_counter()
-        h = H.rms(x, self.p[j]["n1"], W.EPS).astype(bfloat16)
         for c, (r0, t) in enumerate(chunks):
             a = self.a_chunk(S.D_MODEL, c)
-            H.tile_a(h[r0 : r0 + t].astype(np.float32), a[1], D.TM, D.TK)
+            H.rms_tile(x[r0 : r0 + t], self.p[j]["n1"], W.EPS, a[1], D.TM, D.TK)
             a[0].sync(TO)
         self._t("host", t0)
         pq = [self.gemm_start(f"{j}.qkv", c) for c in range(len(chunks))]
@@ -301,7 +278,7 @@ class Q3CPrefill(Engine):
         self._t("stream", t0)
         t0 = time.perf_counter()
         p = self.p[j]
-        h = H.rms(x, p["n2"], W.EPS).astype(bfloat16).astype(np.float32)
+        h = H.round_bf16(H.rms(x, p["n2"], W.EPS))
         ht = torch.from_numpy(h)
         # softmax over every expert, the top k renormalized, their weights bf16
         probs = (ht @ p["router"]).softmax(-1)
@@ -378,7 +355,7 @@ class Q3CPrefill(Engine):
             pair = int(len(rows) > M)
             st = self._slot(GU, i % 2, pair)
             for hh in range(1 + pair):
-                H.tile_a(h[rows[hh * M : (hh + 1) * M]], st["am"][hh], D.TM, D.TK)
+                H.tile_a_rows(h, rows[hh * M : (hh + 1) * M], st["am"][hh], D.TM, D.TK)
             st["a"].sync(TO)
             self._start(st, self._wbo(j, e, GU))
             return st
@@ -402,18 +379,7 @@ class Q3CPrefill(Engine):
             st = self._slot(DN, i % 2, pair)
             for hh in range(1 + pair):
                 r = slice(hh * M, min(t, (hh + 1) * M))
-                a = H._bf16_tiles(st["am"][hh], D.TM, D.TK)
-                self.q.exp_glu_tile(
-                    gu[r].ctypes.data,
-                    gu.shape[1],
-                    r.stop - r.start,
-                    S.I,
-                    D.TM,
-                    D.TK,
-                    a.ctypes.data,
-                    self.nt,
-                )
-                H._to_bfp(a, r.stop - r.start, st["am"][hh])
+                H.glu_tile_a(gu[r], r.stop - r.start, S.I, st["am"][hh], D.TM, D.TK)
             st["a"].sync(TO)
             self._t("experts_host", t0)
             self._start(st, self._wbo(j, e, DN))

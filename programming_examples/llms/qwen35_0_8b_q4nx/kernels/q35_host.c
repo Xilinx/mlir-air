@@ -62,7 +62,8 @@ static inline float vexp(float x) {
 static inline float sigm(float x) { return 1.f / (1.f + vexp(-x)); }
 
 // One chunk of a Gated DeltaNet layer.
-//   lin  bf16 [t, ldl]: q | k | v (NC raw, before the conv), then z (NZ)
+//   lin  bf16 [t, ldl]: q | k | v (NC raw, before the conv)
+//   z    bf16 [t, ldz]: z (NZ)
 //   ba   bf16 [t, ldb]: b (NV), then a (NV)
 //   hist f32 [TAPS - 1, NC]: the raw q | k | v rows before the chunk; on
 //        return the chunk's last TAPS - 1 rows (earlier ones if t < 3)
@@ -71,10 +72,11 @@ static inline float sigm(float x) { return 1.f / (1.f + vexp(-x)); }
 //   state f32 [NV][DK][DK] (k, v), carried across chunks
 //   u    f32 scratch [t + 3, NC], y f32 scratch [t, NC]
 //   out  f32 [t, NZ]: the out_proj's input
-void gdn_chunk(const uint16_t *lin, int ldl, const uint16_t *ba, int ldb, int t,
-               float *hist, const float *conv, const float *nega,
-               const float *dtb, const float *normw, float *state, float *u,
-               float *y, float *out, int nt) {
+void gdn_chunk_z(const uint16_t *lin, int ldl, const uint16_t *zs, int ldz,
+                 const uint16_t *ba, int ldb, int t, float *hist,
+                 const float *conv, const float *nega, const float *dtb,
+                 const float *normw, float *state, float *u, float *y,
+                 float *out, int nt) {
   // X = [hist; chunk's raw q | k | v] as f32 (u's rows 0..t+2 hold X, then
   // are overwritten row by row by the conv output, which lags 3 rows)
   float *X = u; // [t + TAPS - 1, NC]
@@ -186,12 +188,21 @@ void gdn_chunk(const uint16_t *lin, int ldl, const uint16_t *ba, int ldb, int t,
         ss += o[i] * o[i];
       }
       float inv = 1.f / sqrtf(ss / DK + 1e-6f);
-      const uint16_t *z = lin + (long)r * ldl + NC + h * DK;
+      const uint16_t *z = zs + (long)r * ldz + h * DK;
       for (int i = 0; i < DK; i++) {
         float zi = bf2f(z[i]);
         o[i] = rbf(rbf(o[i] * inv) * normw[i]) * (zi * sigm(zi));
       }
     }
+}
+
+// gdn_chunk_z with z after q | k | v in lin's rows
+void gdn_chunk(const uint16_t *lin, int ldl, const uint16_t *ba, int ldb, int t,
+               float *hist, const float *conv, const float *nega,
+               const float *dtb, const float *normw, float *state, float *u,
+               float *y, float *out, int nt) {
+  gdn_chunk_z(lin, ldl, lin + NC, ldl, ba, ldb, t, hist, conv, nega, dtb, normw,
+              state, u, y, out, nt);
 }
 
 // offset of (i, j) in a tile of rows x cols as the attention cores write

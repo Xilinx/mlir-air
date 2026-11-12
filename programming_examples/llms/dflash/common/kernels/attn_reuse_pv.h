@@ -18,6 +18,18 @@ dflash_pv_reuse_v(bf16 *scores, bf16 *values, float *output, float *denominator,
   }
 #pragma clang loop unroll(disable)
   for (int group = 0; group < 2; ++group) {
+    // When no running max in the group moved, every correction is exactly 1
+    // and the old output seeds the mac instead of being rescaled. The
+    // corrections are FP32; compare their bits with 1.0f.
+    uint32_t off_unit = 0;
+    for (int local = 0; local < 4; ++local) {
+      const float *c =
+          reinterpret_cast<const float *>(scores + local * SSZ_BLK + 128) +
+          group * 4;
+      for (int h = 0; h < 4; ++h)
+        off_unit |= __builtin_bit_cast(uint32_t, c[h]) ^ 0x3f800000u;
+    }
+    const bool unit = off_unit == 0;
     auto s0 = aie::load_v<64>(scores + group * 64);
     auto s1 = aie::load_v<64>(scores + SSZ_BLK + group * 64);
     auto s2 = aie::load_v<64>(scores + 2 * SSZ_BLK + group * 64);
@@ -26,6 +38,30 @@ dflash_pv_reuse_v(bf16 *scores, bf16 *values, float *output, float *denominator,
     auto a1 = aie::concat(aie::filter_odd(s0, 8), aie::filter_odd(s1, 8));
     auto b0 = aie::concat(aie::filter_even(s2, 8), aie::filter_even(s3, 8));
     auto b1 = aie::concat(aie::filter_odd(s2, 8), aie::filter_odd(s3, 8));
+    if (unit) {
+#pragma clang loop unroll(disable)
+      for (int d = 0; d < DH / 8; ++d) {
+        bf16 *vp = values + (group * (DH / 8) + d) * 64;
+        auto v0 = aie::load_v<64>(vp);
+        auto v1 = aie::load_v<64>(vp + KV_HEADS_PER_CU * DH * 8);
+        float *y0 = output + d * 64 + group * 32;
+        float *y1 = output + width + d * 64 + group * 32;
+        float *y2 = output + 2 * width + d * 64 + group * 32;
+        float *y3 = output + 3 * width + d * 64 + group * 32;
+        MM pa(aie::concat(aie::load_v<32>(y0), aie::load_v<32>(y1)));
+        MM pb(aie::concat(aie::load_v<32>(y2), aie::load_v<32>(y3)));
+        pa.mac(a0, v0);
+        pb.mac(b0, v0);
+        pa.mac(a1, v1);
+        pb.mac(b1, v1);
+        auto ra = pa.template to_vector<float>();
+        auto rb = pb.template to_vector<float>();
+        aie::store_v(y0, ra.template extract<32>(0));
+        aie::store_v(y1, ra.template extract<32>(1));
+        aie::store_v(y2, rb.template extract<32>(0));
+        aie::store_v(y3, rb.template extract<32>(1));
+      }
+    } else {
 #pragma clang loop unroll(disable)
     for (int d = 0; d < DH / 8; ++d) {
       aie::vector<float, 64> ca, cb;
@@ -62,6 +98,7 @@ dflash_pv_reuse_v(bf16 *scores, bf16 *values, float *output, float *denominator,
         aie::store_v(y0, sum.template extract<32>(0));
         aie::store_v(y1, sum.template extract<32>(1));
       }
+    }
     }
   }
 }

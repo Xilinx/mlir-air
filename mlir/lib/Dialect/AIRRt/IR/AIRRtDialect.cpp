@@ -122,6 +122,9 @@ static bool areHerdLoadsEquivalent(HerdLoadOp a, HerdLoadOp b) {
     return false;
   if (a->getAttr("segment_name") != b->getAttr("segment_name"))
     return false;
+  // Herds of one name run in turn, each instance with RTP buffers of its own.
+  if (a->getAttr("air.herd_rtp_index") != b->getAttr("air.herd_rtp_index"))
+    return false;
   auto aRtp = a.getRtp();
   auto bRtp = b.getRtp();
   if (aRtp.size() != bRtp.size())

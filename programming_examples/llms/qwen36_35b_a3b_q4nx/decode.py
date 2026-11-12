@@ -882,8 +882,10 @@ def compile_all(waves, maxl):
         "ab_router",
     ):
         common.compile_kernel(k)
-    for k in ("rope_rounds", "attn_qk", "attn_kv_q36"):
+    for k in ("rope_rounds", "attn_qk"):
         common.compile_kernel(k, engine=True)
+    # skip the rescale of a block that moves no running max
+    common.compile_kernel("attn_kv_q36", ["-DATTN_LAZY_RESCALE=1"], engine=True)
     art = XRTBackend(instance_name="decode", output_format="elf").compile(
         build_module(waves, maxl)
     )
@@ -999,6 +1001,8 @@ def main():
             npu.seed(pf, conv_w)
             got = npu.head(x[-1].astype(bfloat16), len(ids))
             t_prefill = time.perf_counter() - t0
+            # its hw contexts slow the decode's dispatches; prefill() resumes
+            pf.suspend()
             first = len(ids)
             print(f"prefill of {first} tokens: {t_prefill:.3f}s")
             nxt = check(first - 1, got, ids)
