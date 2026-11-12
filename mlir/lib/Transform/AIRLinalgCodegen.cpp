@@ -5927,9 +5927,7 @@ static bool mayWriteBetween(Operation *from, Operation *to, Value root,
       eff.getEffects(effects);
       for (auto &e : effects)
         if (isa<MemoryEffects::Write, MemoryEffects::Free>(e.getEffect()) &&
-            (!e.getValue() || memrefRoot(e.getValue()) == root ||
-             !(memrefRoot(e.getValue()).getDefiningOp<memref::AllocOp>() ||
-               isa<BlockArgument>(memrefRoot(e.getValue())))))
+            (!e.getValue() || mayAlias(memrefRoot(e.getValue()), root)))
           may = true;
     });
     if (may)
@@ -5959,8 +5957,7 @@ static bool collectHoistable(Value v, scf::ForOp loop,
   if (auto rd = dyn_cast<vector::TransferReadOp>(def)) {
     // Nothing from the loop on to the read writes what it reads.
     Value root = memrefRoot(rd.getBase());
-    if ((!root.getDefiningOp<memref::AllocOp>() && !isa<BlockArgument>(root)) ||
-        mayWriteBetween(loop, def, root, rd))
+    if (mayWriteBetween(loop, def, root, rd))
       return false;
   } else if (!isPure(def)) {
     return false;
@@ -6034,8 +6031,6 @@ static bool collectHoistableBefore(Value v, Operation *first, Operation *use,
     return true;
   if (auto rd = dyn_cast<vector::TransferReadOp>(def)) {
     Value root = memrefRoot(rd.getBase());
-    if (!root.getDefiningOp<memref::AllocOp>() && !isa<BlockArgument>(root))
-      return false;
     if (mayWriteBetween(first, use, root, rd))
       return false;
   } else if (!isPure(def)) {
