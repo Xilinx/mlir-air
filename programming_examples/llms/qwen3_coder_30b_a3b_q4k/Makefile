@@ -14,8 +14,9 @@
 #   make prefill-fused   The fused prefill of PROMPT repeated to LONG_LEN tokens
 #                        vs the CPU reference
 #   make verify          Each stage alone, prefill-fused, the decode, the
-#                        reference against HF transformers' Qwen3-MoE layers,
-#                        then the top-k token-set gate vs HF bf16
+#                        decode across a READS boundary, the reference
+#                        against HF transformers' Qwen3-MoE layers, then the
+#                        top-k token-set gate vs HF bf16
 #   make profile         Time per token at context CTX, no reference
 #   make profile-decode  Decode tok/s at each of CONTEXTS (one build each)
 #   make profile-prefill TTFT of a CTX-token prompt
@@ -83,6 +84,8 @@ verify: $(BUNDLE)
 			|| exit 1; done
 	$(MAKE) -f $(srcdir)/Makefile prefill-fused
 	$(MAKE) -f $(srcdir)/Makefile run
+	$(MAKE) -f $(srcdir)/Makefile run MAXL=64 READS=16 GEN=14 FUSED_PREFILL_DIR= \
+		BUILD_DIR=build_reads
 	$(PYTHON) $(srcdir)/check_vs_hf.py
 	cd $(srcdir)/.. && QWEN3C_VERIFY_DIR=$(CURDIR)/build_verify \
 		$(PYTHON) verify/verify_runner.py \
