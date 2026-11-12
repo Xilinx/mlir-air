@@ -28,6 +28,8 @@ DECODE := $(PYTHON) $(srcdir)/decode.py
 comma := ,
 
 MAXL      ?= 64
+# shorter cache reads below MAXL, each in a layers' ELF of its own
+READS     ?=
 GEN       ?= 8
 PROMPT    ?= The capital of France
 CTX       ?= 1024
@@ -69,7 +71,7 @@ compile-fused-prefill:
 
 run: $(BUNDLE) $(FUSED_DEP)
 	mkdir -p $(BUILD_DIR) && cd $(BUILD_DIR) && \
-		$(DECODE) --maxl $(MAXL) --gen $(GEN) --prompt "$(PROMPT)"
+		$(DECODE) --maxl $(MAXL) --reads "$(READS)" --gen $(GEN) --prompt "$(PROMPT)"
 
 prefill-fused: $(BUNDLE) $(FUSED_DIR)/manifest.json
 	$(PYTHON) $(srcdir)/prefill.py $(FUSED_DIR) --prompt "$(PROMPT)" \

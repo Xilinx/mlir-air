@@ -16,8 +16,9 @@
 #                 128 and the experts' transfers; GLU
 #
 # The context length L is a run-time scalar: it places this token's K and V
-# row, and the attention cores mask by it. Every layer reads the cache back
-# whole, maxl positions.
+# row, and the attention cores mask by it. A layers' ELF reads a fixed number
+# of cache positions back each layer: maxl, or one of --reads. Each token runs
+# the ELF with the fewest that covers L.
 import argparse
 import json
 import os
@@ -64,11 +65,13 @@ MISC = {"xpad": (0, D), **{n: (a + D, b + D) for n, (a, b) in A.MISC.items()}}
 MISC_LEN = A.MISC_LEN + D
 
 
-def build_module(waves, maxl):
-    """`waves` x PER_WAVE layers, for a context of up to `maxl` positions."""
+def build_module(waves, maxl, cap=None):
+    """`waves` x PER_WAVE layers, for a context of up to `maxl` positions, on a
+    KV cache of `cap` (default maxl) positions."""
     pw = PER_WAVE
     nl = pw * waves
-    assert maxl % 16 == 0
+    cap = cap or maxl
+    assert maxl % 16 == 0 and maxl <= cap
     nb = maxl // 16
     k_ = lambda o, n, s=(): air.extern(  # noqa: E731
         n, link_with=f"{o}.o", scalars=list(s)
@@ -107,7 +110,7 @@ def build_module(waves, maxl):
     X = air.tensor([waves + 1, pw, D], bf16)
     WD = air.tensor([nl, NCOL, A.G_DENSE, R, BB], ui8)
     M = air.tensor([nl, MISC_LEN], bf16)
-    KV = air.tensor([nl, 2, maxl, DK], bf16, inout=True)
+    KV = air.tensor([nl, 2, cap, DK], bf16, inout=True)
     RW = air.tensor([nl, 3 * DH], bf16)
     # the context length, this token's position + 1
     SEQ = air.tensor([], i32, name="L")
@@ -442,8 +445,8 @@ def build_module(waves, maxl):
                         v_out.get(KV[lay, 1, pos, :])
                         for c in range(len(CU_COLS)):
                             hs = slice(c * HPM, (c + 1) * HPM)
-                            k_rd.put(KV[lay, 0, :, hs], indices=[c])
-                            v_rd.put(KV[lay, 1, :, hs], indices=[c])
+                            k_rd.put(KV[lay, 0, 0:maxl, hs], indices=[c])
+                            v_rd.put(KV[lay, 1, 0:maxl, hs], indices=[c])
 
         launch.body(body)
 
@@ -467,12 +470,14 @@ def layer_inputs(w, layers):
 
 
 class Q3CDecoder:
-    """The layers' ELF and the LM head's, their buffers, and a run of each.
-    Per token the host writes x, the layers' RoPE rows and L."""
+    """The layers' ELFs and the LM head's, their buffers, and a run of each.
+    Per token the host writes x, the layers' RoPE rows and L, and runs the
+    layers' ELF with the shortest cache read that covers L."""
 
-    def __init__(self, arts, args, lm_args, waves, pw, qkn, params, we_slack=0):
-        """we_slack: bytes past the experts (args[0]) that a reader of WE
-        other than this decode may touch."""
+    def __init__(self, decs, lart, args, lm_args, waves, pw, qkn, we_slack=0):
+        """decs: (positions read, ELF artifact, params.txt) per layers' ELF,
+        all on the same buffers. we_slack: bytes past the experts (args[0])
+        that a reader of WE other than this decode may touch."""
         import pyxrt as xrt
 
         from decode_elf import param_writers
@@ -500,17 +505,26 @@ class Q3CDecoder:
                 return ctx, xrt.ext.kernel(ctx, art.kernel.replace("main:", "seg:"))
 
         self.bos = [bo(t, we_slack if i == 0 else 0) for i, t in enumerate(args)]
-        self.ctx, kern = kernel(arts[0])
-        self.run = xrt.run(kern)
-        for i, b in enumerate(self.bos):
-            self.run.set_arg(i, b)
-        self.params = ParameterScratchpad(self.run, str(params))
-        self.writers = param_writers(params, {"L": len(args)})
+        self.decs = []
+        for read, art, params in sorted(decs, key=lambda d: d[0]):
+            ctx, kern = kernel(art)
+            run = xrt.run(kern)
+            for i, b in enumerate(self.bos):
+                run.set_arg(i, b)
+            self.decs.append(
+                dict(
+                    read=read,
+                    ctx=ctx,
+                    run=run,
+                    params=ParameterScratchpad(run, str(params)),
+                    writers=param_writers(params, {"L": len(args)}),
+                )
+            )
         self.xmap = np.frombuffer(self.bos[1].map(), bfloat16).reshape(waves + 1, pw, D)
         self.rwmap = np.frombuffer(self.bos[5].map(), bfloat16).reshape(-1, 3 * DH)
         xsub = xrt.bo(self.bos[1], D * 2, (waves * pw + pw - 1) * D * 2)
         self.lbos = [xsub] + [bo(t) for t in lm_args]
-        self.lctx, lkern = kernel(arts[1])
+        self.lctx, lkern = kernel(lart)
         self.lrun = xrt.run(lkern)
         for i, b in enumerate(self.lbos):
             self.lrun.set_arg(i, b)
@@ -522,9 +536,13 @@ class Q3CDecoder:
             self.rwmap[i] = A.rope_weights(L - 1, qn, kn)
         for i in (1, 5):
             self.bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-        for name, fn in self.writers:
-            self.params.write(name, np.int32(fn({len(self.bos): L})))
-        self.params.sync()
+        dec = next((d for d in self.decs if d["read"] >= L), None)
+        if dec is None:
+            raise ValueError(f"L={L} is past the cache ({self.decs[-1]['read']})")
+        for name, fn in dec["writers"]:
+            dec["params"].write(name, np.int32(fn({len(self.bos): L})))
+        dec["params"].sync()
+        self.run = dec["run"]
 
     def _go(self, runs, L):
         import lm_head as LM
@@ -584,31 +602,44 @@ class Q3CDecoder:
         )
 
 
-def compile_all(waves, maxl):
-    """Kernels, the layers' ELF here and the LM head's in lm/."""
+def compile_all(waves, maxl, reads=()):
+    """Kernels, the layers' ELFs and the LM head's in lm/: one layers' ELF
+    reading the whole cache of maxl positions, here, and one per entry of
+    reads reading only that many, in read<n>/. Returns ([(positions read,
+    ELF artifact, params.txt)], the LM head's artifact)."""
     import lm_head as LM
 
     A.compile_kernels()
-    art = XRTBackend(instance_name="decode", output_format="elf").compile(
-        build_module(waves, maxl)
-    )
-    art.output_binary = os.path.abspath(art.output_binary)
     here = os.getcwd()
+    decs = []
+    for read in sorted({*reads, maxl}):
+        d = here if read == maxl else os.path.join(here, f"read{read}")
+        os.makedirs(d, exist_ok=True)
+        os.chdir(d)
+        for o in Path(here).glob("*.o"):
+            if d != here and not Path(o.name).exists():
+                os.symlink(o, o.name)
+        art = XRTBackend(instance_name="decode", output_format="elf").compile(
+            build_module(waves, read, maxl)
+        )
+        art.output_binary = os.path.abspath(art.output_binary)
+        decs.append((read, art, Path(d) / "params.txt"))
+        os.chdir(here)
     os.makedirs("lm", exist_ok=True)
     os.chdir("lm")
     lart = LM.compile_lm_head()
     lart.output_binary = os.path.abspath(lart.output_binary)
     os.chdir(here)
-    return art, lart, Path(here) / "params.txt"
+    return decs, lart
 
 
-def load(w, maxl, waves=W.N_LAYERS // PER_WAVE, we_slack=0):
+def load(w, maxl, waves=W.N_LAYERS // PER_WAVE, we_slack=0, reads=()):
     """Compile (into the current directory) and load the decode: a
-    Q3CDecoder of every layer, at a context of up to maxl. Hold the NPU lock
-    while it lives. we_slack: as Q3CDecoder's."""
+    Q3CDecoder of every layer, at a context of up to maxl, with compile_all's
+    reads. Hold the NPU lock while it lives. we_slack: as Q3CDecoder's."""
     import lm_head as LM
 
-    arts = compile_all(waves, maxl)
+    decs, lart = compile_all(waves, maxl, reads)
     layers = list(range(PER_WAVE * waves))
     we, wd, M, qkn = layer_inputs(w, layers)
     KV = np.zeros((len(layers), 2, maxl, DK), bfloat16)
@@ -617,13 +648,13 @@ def load(w, maxl, waves=W.N_LAYERS // PER_WAVE, we_slack=0):
     nw = np.asarray(w.final_norm()).astype(bfloat16)
     y = np.zeros((LM.NCOL, LM.ROUNDS, LM.NROW * LM.RB), bfloat16)
     return Q3CDecoder(
-        arts,
+        decs,
+        lart,
         [we, xs, wd, M, KV, rw],
         [nw, LM.pack_weights(w), y],
         waves,
         PER_WAVE,
         qkn,
-        arts[2],
         we_slack,
     )
 
@@ -647,16 +678,22 @@ def main():
     )
     ap.add_argument("--gen", type=int, default=8, help="tokens to generate")
     ap.add_argument("--maxl", type=int, default=64, help="context the build holds")
+    ap.add_argument(
+        "--reads",
+        default="",
+        help="also layers' ELFs reading only these many positions, e.g. 1024,4096",
+    )
     ap.add_argument("--waves", type=int, default=W.N_LAYERS // PER_WAVE)
     ap.add_argument("--no-ref", action="store_true", help="skip the CPU reference")
     ap.add_argument("--bench", type=int, default=0, help="then time n tokens")
     ap.add_argument("--bench-l", type=int, default=0, help="at this context length")
     a = ap.parse_args()
+    reads = [int(v) for v in a.reads.split(",") if v]
     if a.print_module_only:
         print(build_module(a.waves, a.maxl))
         return 0
     if a.compile_only:
-        compile_all(a.waves, a.maxl)
+        compile_all(a.waves, a.maxl, reads)
         print("Compilation passed.")
         return 0
     from reference import Reference
@@ -682,7 +719,7 @@ def main():
     lock = filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock"))
     with lock:
         t0 = time.time()
-        npu = load(w, a.maxl, a.waves, P.WE_SLACK if fused else 0)
+        npu = load(w, a.maxl, a.waves, P.WE_SLACK if fused else 0, reads)
         print(f"compiled and loaded in {time.time() - t0:.0f}s")
 
         def embed(t):
