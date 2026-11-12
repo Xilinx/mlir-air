@@ -1216,35 +1216,25 @@ struct HoistAIRHerdsToSharedRegionPattern
                                 PatternRewriter &rewriter) const override {
     // The herds of one name anywhere in the herd's segment (or other
     // isolated-from-above parent), not only next to it: a herd in a loop
-    // nested deeper than its siblings is found from either.
+    // nested deeper than its siblings is found from either. When those share
+    // no region to hoist to (herds of the name in sibling loops), the herds
+    // of the name in the herd's own region.
     auto *isolated = herdOp->getParentWithTrait<OpTrait::IsIsolatedFromAbove>();
-    auto symName = herdOp.getSymName();
     SmallVector<Operation *> herdsWithSameName;
-    for (Region &parentRegion : isolated->getRegions())
-      parentRegion.walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
-          [symName, &herdsWithSameName](air::HerdOp herd) {
-            if (herd.getSymName() != symName)
-              return WalkResult::skip();
-            herdsWithSameName.push_back(herd.getOperation());
-            return WalkResult::advance();
-          });
+    for (Region &r : isolated->getRegions())
+      collectHerdsNamed(r, herdOp.getSymName(), herdsWithSameName);
+    Region *region = hoistRegion(herdsWithSameName);
+    if (!region) {
+      herdsWithSameName.clear();
+      collectHerdsNamed(*herdOp->getParentRegion(), herdOp.getSymName(),
+                        herdsWithSameName);
+      region = hoistRegion(herdsWithSameName);
+      if (!region)
+        return failure();
+    }
     if (herdOp != herdsWithSameName.back())
       return failure(); // Apply pattern at the last herd
 
-    // Get the innermost region that is ancestor to all herds sharing the same
-    // name
-    Region *region = air::findCommonRegionContainingAllAncestors(
-        herdsWithSameName,
-        herdsWithSameName.front()
-            ->getParentWithTrait<OpTrait::IsIsolatedFromAbove>());
-    if (!region)
-      return failure();
-    // If none of the herds are directly contained in region, then abort herd
-    // hoisting; otherwise the loop hoisting breaks the IR functionality.
-    if (llvm::none_of(herdsWithSameName, [region](Operation *h) {
-          return h->getParentRegion() == region;
-        }))
-      return failure();
     // If only one herd uses the same symname, then hoist it all the way to the
     // body of any parent op with trait "IsolatedFromAbove".
     if (herdsWithSameName.size() == 1)
@@ -1272,6 +1262,32 @@ struct HoistAIRHerdsToSharedRegionPattern
   }
 
 private:
+  // The herds named `symName` in `root`, in order.
+  static void collectHerdsNamed(Region &root, std::optional<StringRef> symName,
+                                SmallVector<Operation *> &herds) {
+    root.walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+        [&](air::HerdOp herd) {
+          if (herd.getSymName() != symName)
+            return WalkResult::skip();
+          herds.push_back(herd.getOperation());
+          return WalkResult::advance();
+        });
+  }
+
+  // The innermost region holding all of `herds`, if one of them is directly
+  // in it; else null (hoisting would break the IR).
+  static Region *hoistRegion(SmallVector<Operation *> herds) {
+    if (herds.empty())
+      return nullptr;
+    Region *region = air::findCommonRegionContainingAllAncestors(
+        herds,
+        herds.front()->getParentWithTrait<OpTrait::IsIsolatedFromAbove>());
+    if (!region || llvm::none_of(herds, [region](Operation *h) {
+          return h->getParentRegion() == region;
+        }))
+      return nullptr;
+    return region;
+  }
 };
 
 struct ConstructPingPongDependencyPattern
@@ -7779,10 +7795,9 @@ private:
       // Get for_op's immediate child op
       if (!isAsyncOp(&o)) {
         // The split keeps only the ops it partitions and erases the loop, so
-        // an op it cannot place -- one with effects but no token, such as an
-        // scf.if around a class of waves' transfers -- would be dropped.
-        if (!o.hasTrait<OpTrait::IsTerminator>() && !air::isPure(&o) &&
-            !isa<memref::AllocOp, memref::DeallocOp, air::WaitAllOp>(o)) {
+        // a branch without a token (an scf.if around a class of waves'
+        // transfers) would be dropped.
+        if (isa<scf::IfOp, scf::IndexSwitchOp>(o) && !air::isPure(&o)) {
           target_ops_sets.clear();
           return;
         }
