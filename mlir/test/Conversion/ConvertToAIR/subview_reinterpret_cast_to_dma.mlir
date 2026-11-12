@@ -115,3 +115,25 @@ func.func @standalone_transposed_const_offset(%arg0: memref<*xf32>) {
       to memref<64x16xf32, 1>
   return
 }
+
+// A static reinterpret_cast offset counts as much as a dynamic one: 4096 goes
+// into the stride-1 dimension's offset, not dropped.
+// CHECK-LABEL: func.func @static_offset
+// CHECK: air.dma_memcpy_nd
+// CHECK-SAME: %arg0[%arg1, 4096] [16, 256] [256, 1]
+func.func @static_offset(%arg0: memref<*xf32>, %arg2: index) {
+  %alloc = memref.alloc() : memref<512x256xf32, 1>
+  %rc = memref.reinterpret_cast %arg0 to
+    offset: [4096], sizes: [512, 256], strides: [256, 1]
+    : memref<*xf32> to memref<512x256xf32, strided<[256, 1], offset: 4096>>
+  %sv = memref.subview %rc[%arg2, 0] [16, 256] [1, 1]
+    : memref<512x256xf32, strided<[256, 1], offset: 4096>>
+      to memref<16x256xf32, strided<[256, 1], offset: ?>>
+  %sv_dst = memref.subview %alloc[%arg2, 0] [16, 256] [1, 1]
+    : memref<512x256xf32, 1>
+      to memref<16x256xf32, strided<[256, 1], offset: ?>, 1>
+  memref.copy %sv, %sv_dst
+    : memref<16x256xf32, strided<[256, 1], offset: ?>>
+      to memref<16x256xf32, strided<[256, 1], offset: ?>, 1>
+  return
+}
