@@ -1124,6 +1124,55 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
   }];
 }
 
+def MultiReductionTreeOp : Op<Transform_Dialect, "air.multi_reduction_tree",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Reduce the leading dim of vector.multi_reduction ops in halves";
+  let description = [{
+    Rewrites each `vector.multi_reduction` in `target` that reduces only the
+    leading dim of its source (unit dims before it aside), of a power-of-two
+    size N, as log2(N) elementwise steps on the flattened source, which end
+    with the reduction in its first row, then combines that with the
+    accumulator. Where the per-row unrolling of the "innerparallel" lowering
+    extracts and combines the rows one at a time, each step here works on
+    whole registers.
+
+    While the vector is wider than `register_bits` (0: no limit), a step
+    combines its two halves, each a whole number of registers; then a step
+    combines it with itself rotated by half the remaining rows, a shuffle
+    within the register.
+
+    A reduction is unordered, so the tree computes the same reduction; for
+    floating-point addition and multiplication the rounding may differ from
+    another order's.
+
+    Run it after `apply_patterns.vector.reorder_multi_reduction_dims` and
+    `apply_patterns.vector.multi_reduction_flattening` with the
+    "innerparallel" strategy, which put the reduced dims first, and before
+    `apply_patterns.vector.multi_reduction_unrolling`, which then lowers what
+    is left.
+
+    Example, the row maxima of a transposed 8x8 bf16 tile, with 512-bit
+    registers:
+    ```mlir
+    %r = vector.multi_reduction <maximumf>, %t, %acc [0]
+           : vector<8x8xbf16> to vector<8xbf16>
+    ```
+    becomes the maximum of lanes 0-31 and 32-63, that maximum combined with
+    itself rotated by 16 and then by 8 lanes, and the maximum of lanes 0-7
+    and %acc.
+
+    The targets must be isolated from above (functions, herds).
+
+    Returns a handle to the transformed operation.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   DefaultValuedAttr<I64Attr, "0">:$register_bits);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target prop-dict attr-dict `:` functional-type(operands, results)";
+}
+
 def EliminateRedundantVectorTransfersOp : Op<Transform_Dialect, "air.eliminate_redundant_vector_transfers",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
