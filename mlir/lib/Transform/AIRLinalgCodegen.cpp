@@ -5746,6 +5746,106 @@ static bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
   return false;
 }
 
+//===----------------------------------------------------------------------===//
+// MultiReductionTreeOp
+//===----------------------------------------------------------------------===//
+
+namespace {
+// A vector.multi_reduction of the leading dim, of power-of-two size, as a
+// tree of elementwise combinations of halves.
+struct MultiReductionTreePattern
+    : public OpRewritePattern<vector::MultiDimReductionOp> {
+  MultiReductionTreePattern(MLIRContext *ctx, int64_t registerBits)
+      : OpRewritePattern(ctx), registerBits(registerBits) {}
+  int64_t registerBits;
+
+  LogicalResult matchAndRewrite(vector::MultiDimReductionOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getParentOfType<vector::MaskOp>())
+      return rewriter.notifyMatchFailure(op, "masked");
+    // One reduced dim, with only unit dims before it: in memory order the
+    // source is that dim's rows one after another.
+    VectorType ty = op.getSourceVectorType();
+    SmallVector<bool> mask = op.getReductionMask();
+    if (ty.isScalable() || llvm::count(mask, true) != 1)
+      return rewriter.notifyMatchFailure(op, "not a one-dim reduction");
+    // (a scalar result, of a rank-1 source, is vector.reduction's)
+    if (!isa<VectorType>(op.getDest().getType()))
+      return rewriter.notifyMatchFailure(op, "scalar result");
+    int64_t dim = llvm::find(mask, true) - mask.begin();
+    if (llvm::any_of(ty.getShape().take_front(dim),
+                     [](int64_t d) { return d != 1; }))
+      return rewriter.notifyMatchFailure(op, "not a leading-dim reduction");
+    int64_t n = ty.getDimSize(dim);
+    if (n < 2 || !llvm::isPowerOf2_64(n))
+      return rewriter.notifyMatchFailure(op, "leading dim not a power of 2");
+    Type elTy = ty.getElementType();
+    int64_t total = ty.getNumElements(), row = total / n;
+    int64_t bits = elTy.getIntOrFloatBitWidth();
+    // Halves of whole registers: a power-of-two number of them.
+    if (registerBits && total * bits > registerBits &&
+        ((total * bits) % registerBits ||
+         !llvm::isPowerOf2_64(total * bits / registerBits)))
+      return rewriter.notifyMatchFailure(op, "not whole registers");
+    Location loc = op.getLoc();
+    Value v = vector::ShapeCastOp::create(
+        rewriter, loc, VectorType::get({total}, elTy), op.getSource());
+    // Wider than a register: the two halves of the rows combined.
+    while (n > 1 && registerBits && total * bits > registerBits) {
+      total /= 2;
+      n /= 2;
+      Value lo = vector::ExtractStridedSliceOp::create(
+          rewriter, loc, v, ArrayRef<int64_t>{0}, ArrayRef<int64_t>{total},
+          ArrayRef<int64_t>{1});
+      Value hi = vector::ExtractStridedSliceOp::create(
+          rewriter, loc, v, ArrayRef<int64_t>{total}, ArrayRef<int64_t>{total},
+          ArrayRef<int64_t>{1});
+      v = vector::makeArithReduction(rewriter, loc, op.getKind(), lo, hi);
+    }
+    // Within a register: the vector combined with itself rotated by half the
+    // rows, so the leading rows hold the combinations.
+    for (; n > 1; n /= 2) {
+      SmallVector<int64_t> rot;
+      for (int64_t i = 0; i < total; ++i)
+        rot.push_back((i + n / 2 * row) % total);
+      Value r = vector::ShuffleOp::create(rewriter, loc, v, v, rot);
+      v = vector::makeArithReduction(rewriter, loc, op.getKind(), v, r);
+    }
+    // The first row, as a row of the rows (as the unrolling extracts them).
+    v = vector::ShapeCastOp::create(
+        rewriter, loc, VectorType::get({total / row, row}, elTy), v);
+    v = vector::ExtractOp::create(rewriter, loc, v, ArrayRef<int64_t>{0});
+    Value rowVal = vector::ShapeCastOp::create(
+        rewriter, loc, cast<VectorType>(op.getDest().getType()), v);
+    rewriter.replaceOp(op,
+                       vector::makeArithReduction(rewriter, loc, op.getKind(),
+                                                  rowVal, op.getAcc()));
+    return success();
+  }
+};
+} // namespace
+
+DiagnosedSilenceableFailure
+transform::MultiReductionTreeOp::apply(transform::TransformRewriter &rewriter,
+                                       transform::TransformResults &results,
+                                       transform::TransformState &state) {
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+  for (Operation *target : targets)
+    if (!target->hasTrait<OpTrait::IsIsolatedFromAbove>())
+      return emitDefiniteFailure()
+             << "target operation must have IsolatedFromAbove trait";
+  for (Operation *target : targets) {
+    RewritePatternSet patterns(target->getContext());
+    patterns.add<MultiReductionTreePattern>(target->getContext(),
+                                            getRegisterBits());
+    if (failed(applyPatternsGreedily(target, std::move(patterns))))
+      return emitDefiniteFailure() << "multi_reduction_tree did not converge";
+  }
+  results.set(llvm::cast<OpResult>(getResult()), targets);
+  return DiagnosedSilenceableFailure::success();
+}
+
 DiagnosedSilenceableFailure
 transform::EliminateRedundantVectorTransfersOp::apply(
     transform::TransformRewriter &rewriter,
