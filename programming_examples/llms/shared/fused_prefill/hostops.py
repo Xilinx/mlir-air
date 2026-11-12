@@ -107,6 +107,9 @@ def _tile_strides(dst):
 
 def tile_a_rows(x, rows, dst, tm, tk):
     """tile_a of x[rows], read in place: x float32 [*, K] (C order)."""
+    if dst.ndim == 4:  # bf16 A (packing.a_layout)
+        tile_a(x[rows], dst, tm, tk)
+        return
     x = np.ascontiguousarray(x, np.float32)
     rows = np.ascontiguousarray(rows, np.int64)
     _lib.tile_a_rows(
@@ -125,6 +128,8 @@ def tile_a_rows(x, rows, dst, tm, tk):
 def glu_tile_a(c, t, n, dst, tm, tk):
     """bf16(u * SiLU(g)) of c's first t rows into dst, the GEMM's A: c bf16
     [*, ld] holds u and g in turns of tk columns, n of each."""
+    if dst.ndim == 4:
+        raise NotImplementedError("glu_tile_a writes a bfp16 A only")
     _lib.glu_tile_a(
         c.ctypes.data, c.shape[1], t, n, tm, tk, dst.ctypes.data, *_tile_strides(dst)
     )

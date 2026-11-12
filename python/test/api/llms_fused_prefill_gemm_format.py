@@ -120,6 +120,90 @@ for chunks, slot in ((1, 0), (2, 1)):
     check_rest(bufs, slot)
 print("glu_tile ok")
 
+
+def row_bytes(a, r):
+    """Row r's bfp16 groups in a, a chunk's bfp16 A (tiles_bfp's layout)."""
+    ty, b, g = r // D.TM, r % D.TM // 8, r % 8
+    nkb = D.TK // 8
+    return np.concatenate(
+        [
+            a[ty, s, off : off + 9]
+            for s in range(K // D.TK)
+            for kb in range(nkb)
+            for off in [72 * (b % 2) + 144 * (b // 2 * nkb + kb) + 9 * g]
+        ]
+    )
+
+
+def same_rows(got, want, t):
+    """Rows below t as in want; the rest of t's last 8 rows zero."""
+    for r in range(t):
+        assert np.array_equal(row_bytes(got, r), row_bytes(want, r)), r
+    for r in range(t, -(-t // 8) * 8):
+        assert not row_bytes(got, r).any(), r
+
+
+# tile_a_rows reads rows by index: tile_a of the gathered rows, on either
+# chunk of a pair, and again with fewer rows into the same A.
+# CHECK: tile_a_rows ok
+X = rng.standard_normal((3 * T, K)).astype(np.float32)
+rows = rng.permutation(3 * T)[:T]
+for chunks, slot in ((1, 0), (2, 0), (2, 1)):
+    bufs = {"bfp16": a_bufs(chunks)["bfp16"]}
+    got = view(bufs["bfp16"], slot)
+    for t in (T, T - 9):
+        H.tile_a_rows(X, rows[:t], got, D.TM, D.TK)
+        same_rows(got, converted(tiled(X[rows[:t]].astype(bfloat16)), t), t)
+    check_rest(bufs, slot)
+print("tile_a_rows ok")
+
+# glu_tile_a is the expert GLU, bf16(u * g * sigmoid(g)) with hostops'
+# exp, then the bfp16 pass, in one; u and g alternate every TK columns.
+# CHECK: glu_tile_a ok
+f32 = np.float32
+
+
+def vexp(x):
+    """hostops.c vexp, op for op in float32."""
+    x = np.clip(x, f32(-87), f32(88))
+    n = np.rint(x * f32(1.44269504))
+    r = x - n * f32(0.693145752)
+    r = r - n * f32(1.42860677e-6)
+    p = np.full_like(x, f32(1) / f32(720))
+    for c in (120, 24, 6):
+        p = p * r + f32(1) / f32(c)
+    for c in (f32(0.5), f32(1), f32(1)):
+        p = p * r + c
+    return p * ((n.astype(np.int32) + 127) << 23).view(f32)
+
+
+gu = (rng.standard_normal((T, 2 * K)) * 3).astype(bfloat16)
+cols = gu.astype(f32).reshape(T, K // D.TK, 2, D.TK)
+u, g = cols[:, :, 0].reshape(T, K), cols[:, :, 1].reshape(T, K)
+want = (u * g * (f32(1) / (f32(1) + vexp(-g)))).astype(bfloat16)
+for chunks, slot in ((1, 0), (2, 1)):
+    bufs = {"bfp16": a_bufs(chunks)["bfp16"]}
+    got = view(bufs["bfp16"], slot)
+    for t in (T, T - 9):
+        H.glu_tile_a(gu, t, K, got, D.TM, D.TK)
+        same_rows(got, converted(tiled(want[:t]), t), t)
+    check_rest(bufs, slot)
+print("glu_tile_a ok")
+
+# round_bf16 is the bf16 round trip, in place.
+# CHECK: round_bf16 ok
+r = np.concatenate(
+    [
+        rng.standard_normal(4096).astype(np.float32) * 1e3,
+        np.float32([1e-40, -1e-40, 3.4e38, 1.00390625, 1.01171875, 0.0, -0.0]),
+    ]
+)
+assert np.array_equal(
+    H.round_bf16(r.copy()).view(np.uint32),
+    r.astype(bfloat16).astype(np.float32).view(np.uint32),
+)
+print("round_bf16 ok")
+
 # o_tile fills only its heads' columns; the rest of A keeps what it had.
 # CHECK: o_tile ok
 nh, dh, h0 = 2, 64, 1

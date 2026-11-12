@@ -56,12 +56,26 @@ WE_SLACK = (S.npad(S.D_MODEL) - S.D_MODEL) // 128 * MB.NCB_H * GROUP + (
 ) // D.Q4K_COLS * GROUP
 
 
+HOST_FLAGS = ["-O3", "-march=native", "-ffp-contract=off", "-fopenmp"]
+HOST_FLAGS += ["-fno-trapping-math", "-shared", "-fPIC", f"-DNT={HOST_THREADS}"]
+
+
 def build_host(out):
-    """hostops with HOST_THREADS row threads."""
-    flags = ["gcc", "-O3", "-march=native", "-ffp-contract=off", "-fopenmp"]
-    flags += ["-fno-trapping-math", "-shared", "-fPIC", f"-DNT={HOST_THREADS}"]
-    so = Path(out) / "libhostops.so"
-    subprocess.run(flags + [str(HOST_C), "-o", str(so), "-lm"], check=True)
+    """hostops with HOST_THREADS row threads, unless the build dir already
+    holds that build: the device build makes its own at the default count.
+    A stamp next to the library records the flags it was built with."""
+    so, stamp = Path(out) / "libhostops.so", Path(out) / "libhostops.flags"
+    want = " ".join(HOST_FLAGS)
+    if (
+        so.exists()
+        and stamp.exists()
+        and stamp.read_text() == want
+        and stamp.stat().st_mtime >= so.stat().st_mtime
+        and so.stat().st_mtime >= HOST_C.stat().st_mtime
+    ):
+        return
+    subprocess.run(["gcc", *HOST_FLAGS, str(HOST_C), "-o", str(so), "-lm"], check=True)
+    stamp.write_text(want)
 
 
 def row_groups(blocks):
@@ -86,9 +100,7 @@ class Q3CPrefill(Engine):
     and with "stream" one layer's, copied in before the layer's MoE."""
 
     def __init__(self, build_dir, w, layers=None, we=None):
-        so = Path(build_dir) / "libhostops.so"
-        if not so.exists() or so.stat().st_mtime < HOST_C.stat().st_mtime:
-            build_host(build_dir)
+        build_host(build_dir)
         super().__init__(build_dir, S.CFG, S.max_len)
         self.w = w
         self.layers = list(range(W.N_LAYERS)) if layers is None else list(layers)
