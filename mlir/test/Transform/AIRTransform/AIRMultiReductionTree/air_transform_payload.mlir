@@ -37,3 +37,36 @@ func.func @keep(%a: vector<8x8xf32>, %b: vector<8xf32>, %c: vector<6x8xf32>, %d:
   %y = vector.multi_reduction <add>, %c, %d [0] : vector<6x8xf32> to vector<8xf32>
   return %x, %y : vector<8xf32>, vector<8xf32>
 }
+
+// The last dim, with only unit dims before it: its 16 lanes rotated within
+// the register.
+// CHECK-LABEL: @unit_prefix_last_dim
+// CHECK: vector.shuffle {{.*}} [8, 9
+// CHECK: vector.shuffle {{.*}} [4, 5
+// CHECK: vector.shuffle {{.*}} [2, 3
+// CHECK: vector.shuffle {{.*}} [1, 2
+// CHECK-NOT: vector.multi_reduction
+func.func @unit_prefix_last_dim(%t: vector<1x16xf32>, %acc: vector<1xf32>) -> vector<1xf32> {
+  %r = vector.multi_reduction <add>, %t, %acc [1] : vector<1x16xf32> to vector<1xf32>
+  return %r : vector<1xf32>
+}
+
+// Four registers: halved twice, then rotated.
+// CHECK-LABEL: @four_registers
+// CHECK: vector.extract_strided_slice {{.*}}offsets = [64], sizes = [64]
+// CHECK: vector.extract_strided_slice {{.*}}offsets = [32], sizes = [32]
+// CHECK-NOT: vector.multi_reduction
+func.func @four_registers(%t: vector<16x8xbf16>, %acc: vector<8xbf16>) -> vector<8xbf16> {
+  %r = vector.multi_reduction <maximumf>, %t, %acc [0] : vector<16x8xbf16> to vector<8xbf16>
+  return %r : vector<8xbf16>
+}
+
+// Not whole registers (768 bits), or a scalar result: left.
+// CHECK-LABEL: @keep_widths
+// CHECK: vector.multi_reduction <maximumf>, %arg0, %arg1 [0]
+// CHECK: vector.multi_reduction <add>, %arg2, %arg3 [0]
+func.func @keep_widths(%a: vector<4x12xbf16>, %b: vector<12xbf16>, %c: vector<16xf32>, %d: f32) -> (vector<12xbf16>, f32) {
+  %x = vector.multi_reduction <maximumf>, %a, %b [0] : vector<4x12xbf16> to vector<12xbf16>
+  %y = vector.multi_reduction <add>, %c, %d [0] : vector<16xf32> to f32
+  return %x, %y : vector<12xbf16>, f32
+}

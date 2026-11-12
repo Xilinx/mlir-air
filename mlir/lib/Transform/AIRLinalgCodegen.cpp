@@ -5769,9 +5769,11 @@ struct MultiReductionTreePattern
     SmallVector<bool> mask = op.getReductionMask();
     if (ty.isScalable() || llvm::count(mask, true) != 1)
       return rewriter.notifyMatchFailure(op, "not a one-dim reduction");
+    // (a scalar result, of a rank-1 source, is vector.reduction's)
+    if (!isa<VectorType>(op.getDest().getType()))
+      return rewriter.notifyMatchFailure(op, "scalar result");
     int64_t dim = llvm::find(mask, true) - mask.begin();
-    if (dim + 1 == ty.getRank() ||
-        llvm::any_of(ty.getShape().take_front(dim),
+    if (llvm::any_of(ty.getShape().take_front(dim),
                      [](int64_t d) { return d != 1; }))
       return rewriter.notifyMatchFailure(op, "not a leading-dim reduction");
     int64_t n = ty.getDimSize(dim);
@@ -5780,6 +5782,11 @@ struct MultiReductionTreePattern
     Type elTy = ty.getElementType();
     int64_t total = ty.getNumElements(), row = total / n;
     int64_t bits = elTy.getIntOrFloatBitWidth();
+    // Halves of whole registers: a power-of-two number of them.
+    if (registerBits && total * bits > registerBits &&
+        ((total * bits) % registerBits ||
+         !llvm::isPowerOf2_64(total * bits / registerBits)))
+      return rewriter.notifyMatchFailure(op, "not whole registers");
     Location loc = op.getLoc();
     Value v = vector::ShapeCastOp::create(
         rewriter, loc, VectorType::get({total}, elTy), op.getSource());
