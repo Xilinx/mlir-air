@@ -14,6 +14,33 @@ _i = ctypes.c_int
 _f = ctypes.c_float
 
 
+_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kernels", "hostops.c")
+
+
+def build(out, threads):
+    """kernels/hostops.c into out/libhostops.so with `threads` row threads,
+    unless out already holds that build: the device build makes its own at
+    the default count. A stamp next to the library records its flags."""
+    import subprocess
+
+    flags = ["-O3", "-march=native", "-ffp-contract=off", "-fopenmp"]
+    flags += ["-fno-trapping-math", "-shared", "-fPIC", f"-DNT={threads}"]
+    so = os.path.join(out, "libhostops.so")
+    stamp = os.path.join(out, "libhostops.flags")
+    want = " ".join(flags)
+    if (
+        os.path.exists(so)
+        and os.path.exists(stamp)
+        and open(stamp).read() == want
+        and os.path.getmtime(stamp) >= os.path.getmtime(so)
+        and os.path.getmtime(so) >= os.path.getmtime(_SRC)
+    ):
+        return
+    subprocess.run(["gcc", *flags, _SRC, "-o", so, "-lm"], check=True)
+    with open(stamp, "w") as f:
+        f.write(want)
+
+
 def load(build_dir):
     global _lib
     # spinning OpenMP workers would compete with the XRT waits between ops
