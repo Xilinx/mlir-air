@@ -27,4 +27,39 @@ void residual_inplace(bf16 *__restrict xbuf, bf16 *__restrict x, int n) {
                  aie::add(aie::load_v<V>(xbuf + i), aie::load_v<V>(x + i)));
 }
 
+// Two tokens' rounds (the speculative decode's verify pass): a round is
+// [column][core][token][32 rows], column c holding the 128-row group 4 j + c.
+constexpr int TB = 32; // a core's rows of a block
+
+// GLU round j of a K half: h[t][256 j ..] = SiLU(gate) * up of both slices
+// [up 2j, gate 2j, up 2j+1, gate 2j+1], for tokens t = 0, 1; h is
+// [2][half_len]
+void glu2_round(bf16 *__restrict h, bf16 *__restrict rnd, int j, int half_len) {
+  for (int t = 0; t < 2; t++)
+    for (int s = 0; s < 2; s++)
+      for (int r = 0; r < NC; r++) {
+        const bf16 *u = rnd + (((2 * s) * NC + r) * 2 + t) * TB;
+        const bf16 *g = rnd + (((2 * s + 1) * NC + r) * 2 + t) * TB;
+        bf16 *y = h + t * half_len + 2 * SL * j + SL * s + TB * r;
+        for (int i = 0; i < TB; i += V) {
+          aie::vector<bf16, V> gv = aie::load_v<V>(g + i);
+          aie::vector<bf16, V> act =
+              aie::mul(gv, sigmoid(gv)).template to_vector<bf16>();
+          aie::store_v(
+              y + i,
+              aie::mul(act, aie::load_v<V>(u + i)).template to_vector<bf16>());
+        }
+      }
+}
+
+// dst[t][512 j ..] = round j's rows of token t; dst is [2][n]
+void copy2_round(bf16 *__restrict dst, bf16 *__restrict rnd, int j, int n) {
+  for (int t = 0; t < 2; t++)
+    for (int c = 0; c < NC; c++)
+      for (int r = 0; r < NC; r++)
+        for (int i = 0; i < TB; i += V)
+          aie::store_v(dst + t * n + NC * SL * j + SL * c + TB * r + i,
+                       aie::load_v<V>(rnd + ((c * NC + r) * 2 + t) * TB + i));
+}
+
 } // extern "C"
