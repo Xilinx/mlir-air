@@ -172,6 +172,50 @@ class Reference:
         return self.lm_head(rmsnorm(x[-1], t(self.w.final_norm())))
 
 
+class Mtp(Reference):
+    """The multi-token-prediction head: from the main model's hidden state at
+    position i and the token at i + 1, the logits of the token at i + 2.
+    x = fc([rms(embed(t[i + 1])) * w_e | rms(h[i]) * w_h]), then one gated
+    attention decoder layer with its own KV over the positions it has seen,
+    the head's final norm, and the main model's LM head. h is the main
+    model's output after its final norm, as FastFlowLM's engine feeds it
+    (qwen3_8mtp_npu.hpp, last_normed_states). The last layer's raw output
+    drafts plausible tokens too, only less often the main model's: 54.8%
+    against 56.3% on a 400-token passage."""
+
+    def __init__(self, w):
+        super().__init__(w, layers=[])
+        fc, ne, nh, nf = w.mtp_head()
+        self.fc, self.ne, self.nh, self.nf = t(fc), t(ne), t(nh), t(nf)
+        self.fn = t(w.final_norm())
+
+    def weights(self, l):
+        if l not in self.p:
+            w = self.w
+            self.p[l] = dict(
+                mix=[t(a) for a in w.attn(l)],
+                norms=[t(a) for a in w.norms(l)],
+                mlp=[t(a) for a in w.mlp(l)],
+            )
+        return self.p[l]
+
+    @torch.no_grad()
+    def forward(self, h, next_ids):
+        """Rows [n, D] of the head's normed output for the main model's last
+        layer outputs h [n, D] (positions self.pos ..) and the tokens after
+        them; the LM head on a
+        row gives that row's draft."""
+        h = rmsnorm(h, self.fn)
+        e = t(self.w.embed(next_ids))
+        x = torch.cat([rmsnorm(e, self.ne), rmsnorm(h, self.nh)], -1) @ self.fc.T
+        p = self.weights("mtp")
+        n1, n2 = p["norms"]
+        x = x + self.attention("mtp", rmsnorm(x, n1), p)
+        x = x + self.mlp(rmsnorm(x, n2), p)
+        self.pos += x.shape[0]
+        return rmsnorm(x, self.nf)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--prompt", default="The capital of France is")
