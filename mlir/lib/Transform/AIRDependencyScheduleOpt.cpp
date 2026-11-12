@@ -826,6 +826,12 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
                usedBesidesHerd(v, outerMostLoop) && mayWaitForChannel(v);
       }))
     return failure();
+  // Only async tokens are carried through the hoisted nest; check before
+  // anything is changed.
+  if (llvm::any_of(outerMostLoop.getInitArgs(), [](Value v) {
+        return !isa<air::AsyncTokenType>(v.getType());
+      }))
+    return failure();
 
   // Create new herd op as parent to the scf.for loop nest.
   builder.setInsertionPoint(outerMostLoop);
@@ -872,12 +878,6 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   // Replace uses of tokens in for loop nest with air.wait_all located at the
   // start of air.herd body.
   for (auto val : forRegionIterOperands) {
-    if (!isa<air::AsyncTokenType>(val.getType())) {
-      outerMostLoop->emitOpError(
-          "loop op's iter_args contain non-async-token-type block arguments, "
-          "NYI.");
-      return failure();
-    }
     auto newAsyncToken =
         air::WaitAllOp::create(builder, loc, air::AsyncTokenType::get(ctx),
                                SmallVector<Value>{})
@@ -7791,16 +7791,16 @@ private:
               // suggesting pipelining pattern. Will be handelled by
               // -air-unroll-loop-for-pipelining-pattern instead.
     SmallVector<Operation *> candidate_ops;
+    // The split keeps only the ops it partitions and erases the loop, so an
+    // op with effects but no token would be dropped: such an op is fine only
+    // when the loop is left whole.
+    bool untokenedEffects = false;
     for (auto &o : for_op.getBody()->getOperations()) {
       // Get for_op's immediate child op
       if (!isAsyncOp(&o)) {
-        // The split keeps only the ops it partitions and erases the loop, so
-        // a branch without a token (an scf.if around a class of waves'
-        // transfers) would be dropped.
-        if (isa<scf::IfOp, scf::IndexSwitchOp>(o) && !air::isPure(&o)) {
-          target_ops_sets.clear();
-          return;
-        }
+        if (!o.hasTrait<OpTrait::IsTerminator>() && !air::isPure(&o) &&
+            !isa<memref::AllocOp, memref::DeallocOp, air::WaitAllOp>(o))
+          untokenedEffects = true;
         continue; // This pass requires an async IR.
       }
 
@@ -8006,6 +8006,10 @@ private:
         depGraph[source].push_back(sink);
     // Partition the graph.
     target_ops_sets = partitionGraph(depGraph);
+    if (untokenedEffects && target_ops_sets.size() > 1) {
+      target_ops_sets.clear();
+      return;
+    }
     // Sort ops in each partition based on their order in block.
     auto sortSetVectorByOpOrder = [](llvm::SetVector<Operation *> &setVec) {
       SmallVector<Operation *> sortedVec = setVec.takeVector();
