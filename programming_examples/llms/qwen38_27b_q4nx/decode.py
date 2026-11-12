@@ -30,6 +30,7 @@
 # row, and the attention cores mask by it. Every attention layer reads the
 # cache back whole, maxl positions.
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -775,6 +776,33 @@ class Q38Decoder:
         yb.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
         return LM.unpack_logits(np.frombuffer(yb.map(), bfloat16)).astype(np.float32)
 
+    def seed(self, pf):
+        """A prefill's state as the next token's inputs: each attention
+        layer's K and V rows, each Gated DeltaNet layer's conv cache and
+        state."""
+        xrt, n, nv = self.xrt, pf.n, len(self.conv_w)
+        mp = lambda i, dt: np.frombuffer(self.bos[i].map(), dt)  # noqa: E731
+        kv = mp(self.KV, bfloat16).reshape(self.waves, 2, -1, DK)
+        cw = mp(self.CWI, bfloat16).reshape(nv, NCH, 7 * HD)
+        s = mp(self.SI, np.float32).reshape(nv, NV, R, HD * 32)
+        g = 0
+        for j in range(len(pf.layers)):
+            if j in pf.kv:
+                for h in range(2):
+                    kv[j // self.pw, h, :n] = np.concatenate(pf.kv[j][h])
+            else:
+                cw[g] = G.conv_cache(pf.conv[j], self.conv_w[g])
+                s[g] = G.state_chunks(pf.state[j])
+                g += 1
+        for i in (self.KV, self.CWI, self.SI):
+            self.bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+
+    def head(self, x, L):
+        """The LM head alone on the last layer's output x, at position L - 1."""
+        self.xmap[self.waves, self.pw - 1] = x
+        self.bos[self.X].sync(self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+        return self._go((self.lrun,), L)
+
     def step(self, x, L):
         """Decode x at position L - 1; returns the logits."""
         self._set(x, L)
@@ -834,6 +862,19 @@ def compile_all(waves, maxl):
     return art, lart, Path(here) / "params.txt"
 
 
+def load(w, maxl, waves=W.N_LAYERS // PER_WAVE, arts=None):
+    """The decode built for context maxl (compile_all, here) and loaded: a
+    Q38Decoder over the first PER_WAVE * waves layers."""
+    import lm_head as LM
+
+    arts = arts or compile_all(waves, maxl)
+    layers = list(range(PER_WAVE * waves))
+    nw = np.asarray(w.final_norm()).astype(bfloat16)
+    y = np.zeros((LM.NCOL, LM.ROUNDS, LM.NROW * LM.RB), bfloat16)
+    lm_args = [nw, LM.pack_weights(w), y]
+    return Q38Decoder(arts, w, layers, waves, maxl, lm_args, arts[2])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-p", "--print-module-only", action="store_true")
@@ -841,6 +882,15 @@ def main():
     ap.add_argument("--prompt", default="The capital of France")
     ap.add_argument(
         "--prompt-len", type=int, default=0, help="repeat the prompt to N tokens"
+    )
+    ap.add_argument(
+        "--fused-dir",
+        type=Path,
+        default=os.environ.get("FUSED_PREFILL_DIR") or None,
+        help="prefill on this fused prefill build (fused_build.py)",
+    )
+    ap.add_argument(
+        "--warm", action="store_true", help="prefill once untimed before timing"
     )
     ap.add_argument("--gen", type=int, default=8, help="tokens to generate")
     ap.add_argument("--maxl", type=int, default=64, help="context the build holds")
@@ -856,7 +906,6 @@ def main():
         compile_all(a.waves, a.maxl)
         print("Compilation passed.")
         return 0
-    import lm_head as LM
     from reference import Reference
 
     w = W.Qwen38Q4nx()
@@ -867,16 +916,23 @@ def main():
     pw = PER_WAVE
     layers = list(range(pw * a.waves))
     assert len(ids) + a.gen <= a.maxl
+    # FLM prefills the whole prompt and takes the first token from the LM head
+    # on its last row; the fused prefill takes prompts up to its build's length.
+    # A bench times the decode alone.
+    fused = a.fused_dir is not None and len(layers) == W.N_LAYERS and not a.bench
+    if fused:
+        import prefill as P
+
+        manifest = a.fused_dir / "manifest.json"
+        if not manifest.is_file():
+            sys.exit(f"{a.fused_dir}: no fused prefill build (fused_build.py)")
+        fused = len(ids) <= json.loads(manifest.read_text())["max_len"]
     arts = compile_all(a.waves, a.maxl)
-    nw = np.asarray(w.final_norm()).astype(bfloat16)
-    y = np.zeros((LM.NCOL, LM.ROUNDS, LM.NROW * LM.RB), bfloat16)
-    lm_args = [nw, LM.pack_weights(w), y]
     # the device is held from the first context to the last dispatch
     lock = filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock"))
     with lock:
         t0 = time.time()
-        npu = Q38Decoder(arts, w, layers, a.waves, a.maxl, lm_args, arts[2])
-        del lm_args
+        npu = load(w, a.maxl, a.waves, arts)
         print(f"weights loaded in {time.time() - t0:.0f}s")
 
         def embed(t):
@@ -897,8 +953,23 @@ def main():
                 )
             return nxt
 
-        # the prompt goes through the decode a token at a time
-        for i in range(len(ids) + a.gen - 1):
+        first, t_prefill = 0, 0.0
+        if fused:
+            pf = P.Qwen38Prefill(a.fused_dir, w, layers)
+            if a.warm:
+                pf.prefill(ids)
+            t0 = time.perf_counter()
+            x = pf.prefill(ids)
+            npu.seed(pf)
+            got = npu.head(x[-1].astype(bfloat16), len(ids))
+            t_prefill = time.perf_counter() - t0
+            first = len(ids)
+            print(f"prefill of {first} tokens: {t_prefill:.3f}s")
+            nxt = check(first - 1, got, ids)
+            if a.gen > 0:
+                toks.append(nxt)
+        # without the prefill the prompt goes through the decode a token at a time
+        for i in range(first, len(ids) + a.gen - 1):
             t0 = time.perf_counter()
             got = npu.step(embed(toks[i]), i + 1)
             times.append(time.perf_counter() - t0)
@@ -906,9 +977,9 @@ def main():
             if i + 1 >= len(ids):
                 toks.append(nxt)
         print(repr(a.prompt), "->", repr(tok.decode(toks[len(ids) :])))
-        n_prompt = len(ids)
-        print(f"Inference: prompt_len={n_prompt}, n_tokens={len(toks) - n_prompt}")
-        print(f"Time to first token (TTFT): {sum(times[:n_prompt]):.3f}s")
+        n_prompt = max(0, len(ids) - first)
+        print(f"Inference: prompt_len={len(ids)}, n_tokens={len(toks) - len(ids)}")
+        print(f"Time to first token (TTFT): {t_prefill + sum(times[:n_prompt]):.3f}s")
         if len(times) > n_prompt:
             gen = np.array(times[n_prompt:]) * 1e3
             print(
@@ -917,6 +988,8 @@ def main():
         if a.bench:
             npu.bench(embed(toks[-1]), a.bench_l or len(toks), a.bench)
         del npu
+        if fused:
+            del pf
     if ref is not None:
         print("PASS!" if ok else "failed.")
     return 0 if ok else 1
