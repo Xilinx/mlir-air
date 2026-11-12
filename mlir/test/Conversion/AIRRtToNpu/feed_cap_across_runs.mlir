@@ -238,3 +238,119 @@ module {
     return
   }
 }
+
+// -----
+
+// Two allocation symbols on one hardware channel share its cap.
+// CHECK-LABEL: aie.runtime_sequence @aliased_channel
+// CHECK: %[[F0:.*]] = aiex.dma_configure_task_for @feed
+// CHECK: %[[F1:.*]] = aiex.dma_configure_task_for @feed
+// CHECK: aiex.dma_await_task(%[[D:.*]])
+// CHECK: aiex.dma_configure_task_for @feed_alias
+// CHECK-NOT: aiex.dma_await_task
+// CHECK: %[[F4:.*]] = aiex.dma_configure_task_for @feed_alias
+// CHECK: aiex.dma_await_task(%[[F0]])
+// CHECK-NEXT: aiex.dma_start_task(%[[F4]])
+// CHECK: %[[F5:.*]] = aiex.dma_configure_task_for @feed_alias
+// CHECK: aiex.dma_await_task(%[[F1]])
+// CHECK-NEXT: aiex.dma_start_task(%[[F5]])
+module {
+  aie.device(npu2) {
+    %t0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @feed(%t0, MM2S, 0)
+    aie.shim_dma_allocation @feed_alias(%t0, MM2S, 0)
+    aie.shim_dma_allocation @drain(%t0, S2MM, 0)
+    aie.runtime_sequence @aliased_channel(%a: memref<512xi32>, %b: memref<64xi32>) {
+      %f0 = aiex.dma_configure_task_for @feed {
+        aie.dma_bd(%a : memref<512xi32> offset = 0 len = 64)
+        aie.end
+      }
+      aiex.dma_start_task(%f0)
+      %f1 = aiex.dma_configure_task_for @feed {
+        aie.dma_bd(%a : memref<512xi32> offset = 64 len = 64)
+        aie.end
+      }
+      aiex.dma_start_task(%f1)
+      %f2 = aiex.dma_configure_task_for @feed {
+        aie.dma_bd(%a : memref<512xi32> offset = 128 len = 64)
+        aie.end
+      }
+      aiex.dma_start_task(%f2)
+      %d = aiex.dma_configure_task_for @drain {
+        aie.dma_bd(%b : memref<64xi32> offset = 0 len = 64)
+        aie.end
+      } {issue_token = true}
+      aiex.dma_start_task(%d)
+      aiex.dma_await_task(%d)
+      %f3 = aiex.dma_configure_task_for @feed_alias {
+        aie.dma_bd(%a : memref<512xi32> offset = 192 len = 64)
+        aie.end
+      }
+      aiex.dma_start_task(%f3)
+      %f4 = aiex.dma_configure_task_for @feed_alias {
+        aie.dma_bd(%a : memref<512xi32> offset = 256 len = 64)
+        aie.end
+      }
+      aiex.dma_start_task(%f4)
+      %f5 = aiex.dma_configure_task_for @feed_alias {
+        aie.dma_bd(%a : memref<512xi32> offset = 320 len = 64)
+        aie.end
+      }
+      aiex.dma_start_task(%f5)
+    }
+  }
+}
+
+// -----
+
+// A task awaited inside both arms of an scf.if has consumed its token and is
+// not awaited again when the next feed would pass the cap.
+// CHECK-LABEL: aie.runtime_sequence @awaited_in_branches
+// CHECK: %[[F0:.*]] = aiex.dma_configure_task_for @feed
+// CHECK: scf.if
+// CHECK: aiex.dma_await_task(%[[F0]])
+// CHECK: else
+// CHECK: aiex.dma_await_task(%[[F0]])
+// CHECK: }
+// CHECK-NOT: aiex.dma_await_task(%[[F0]])
+// CHECK: aiex.dma_start_task
+module {
+  aie.device(npu2) {
+    %t0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @feed(%t0, MM2S, 0)
+    aie.runtime_sequence @awaited_in_branches(%a: memref<512xi32>, %n: i32) {
+      %c0 = arith.constant 0 : i32
+      %p = arith.cmpi sgt, %n, %c0 : i32
+      %f0 = aiex.dma_configure_task_for @feed {
+        aie.dma_bd(%a : memref<512xi32> offset = 0 len = 64)
+        aie.end
+      } {issue_token = true}
+      aiex.dma_start_task(%f0)
+      %f1 = aiex.dma_configure_task_for @feed {
+        aie.dma_bd(%a : memref<512xi32> offset = 64 len = 64)
+        aie.end
+      }
+      aiex.dma_start_task(%f1)
+      %f2 = aiex.dma_configure_task_for @feed {
+        aie.dma_bd(%a : memref<512xi32> offset = 128 len = 64)
+        aie.end
+      }
+      aiex.dma_start_task(%f2)
+      %f3 = aiex.dma_configure_task_for @feed {
+        aie.dma_bd(%a : memref<512xi32> offset = 192 len = 64)
+        aie.end
+      }
+      aiex.dma_start_task(%f3)
+      scf.if %p {
+        aiex.dma_await_task(%f0)
+      } else {
+        aiex.dma_await_task(%f0)
+      }
+      %f4 = aiex.dma_configure_task_for @feed {
+        aie.dma_bd(%a : memref<512xi32> offset = 256 len = 64)
+        aie.end
+      }
+      aiex.dma_start_task(%f4)
+    }
+  }
+}

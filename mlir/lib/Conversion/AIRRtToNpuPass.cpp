@@ -3373,6 +3373,25 @@ LogicalResult enforceAIE2WrapLimit(ModuleOp module) {
   return success();
 }
 
+// The hardware channel a shim task runs on, from its allocation's tile,
+// direction and index: two allocation symbols may name the same channel.
+static std::optional<int64_t> shimChannelOf(AIEX::DMAConfigureTaskForOp cfg) {
+  auto device = cfg->getParentOfType<AIE::DeviceOp>();
+  if (!device)
+    return std::nullopt;
+  auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(
+      device, cfg.getAlloc().getLeafReference().getValue());
+  if (!alloc)
+    return std::nullopt;
+  auto tile = dyn_cast_if_present<AIE::TileOp>(alloc.getTile().getDefiningOp());
+  if (!tile)
+    return std::nullopt;
+  return ((int64_t(tile.getCol()) * 64 + tile.getRow()) * 2 +
+          int64_t(alloc.getChannelDir() == AIE::DMAChannelDir::MM2S)) *
+             64 +
+         alloc.getChannelIndex();
+}
+
 struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // Tasks in flight per shim feed channel: the shim DMA task queue depth,
   // which a channel holds regardless of how large its tasks are.
@@ -4768,16 +4787,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           device(cfg), cfg.getAlloc().getLeafReference().getValue());
       return alloc && alloc.getChannelDir() == AIE::DMAChannelDir::MM2S;
     };
-    // The hardware channel a task runs on: tile, direction and index, as
-    // two allocation symbols may name the same channel.
     auto channelOf = [&](AIEX::DMAConfigureTaskForOp cfg) -> int64_t {
-      auto alloc = AIE::ShimDMAAllocationOp::getForSymbol(
-          device(cfg), cfg.getAlloc().getLeafReference().getValue());
-      auto tile = cast<AIE::TileOp>(alloc.getTile().getDefiningOp());
-      return ((int64_t(tile.getCol()) * 64 + tile.getRow()) * 2 +
-              int64_t(alloc.getChannelDir() == AIE::DMAChannelDir::MM2S)) *
-                 64 +
-             alloc.getChannelIndex();
+      return *shimChannelOf(cfg);
     };
     // The channels of `ops`, if they are all feed tasks configured among
     // them, those tasks' starts, awaits and frees, or pure.
@@ -4932,15 +4943,37 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       seq.getBody().walk([&](Block *b) { blocks.push_back(b); });
       for (Block *blk : blocks) {
         // Started tasks still holding their descriptors, per channel, in
-        // start order.
-        llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>>
+        // start order. A task whose allocation does not resolve to a tile
+        // is kept under its symbol.
+        using ChannelKey = std::pair<int64_t, StringRef>;
+        llvm::MapVector<ChannelKey, SmallVector<AIEX::DMAConfigureTaskForOp>>
             open;
         llvm::SmallPtrSet<Operation *, 16> released;
         SmallVector<Operation *> stale;
-        auto channelOf = [](AIEX::DMAConfigureTaskForOp cfg) {
-          return cfg.getAlloc().getLeafReference().getValue();
+        auto channelOf = [](AIEX::DMAConfigureTaskForOp cfg) -> ChannelKey {
+          if (auto hw = shimChannelOf(cfg))
+            return {*hw, StringRef()};
+          return {-1, cfg.getAlloc().getLeafReference().getValue()};
         };
         for (Operation &o : llvm::make_early_inc_range(*blk)) {
+          // A task of this block awaited or freed in a nested region, on
+          // some path only, can neither be counted as open here nor be
+          // awaited again: its token may be gone. Stop tracking it.
+          if (o.getNumRegions()) {
+            o.walk([&](Operation *n) {
+              Value task;
+              if (auto aw = dyn_cast<AIEX::DMAAwaitTaskOp>(n))
+                task = aw.getTask();
+              else if (auto fr = dyn_cast<AIEX::DMAFreeTaskOp>(n))
+                task = fr.getTask();
+              auto cfg = task
+                             ? task.getDefiningOp<AIEX::DMAConfigureTaskForOp>()
+                             : AIEX::DMAConfigureTaskForOp();
+              if (cfg && cfg->getBlock() == blk)
+                llvm::erase(open[channelOf(cfg)], cfg);
+            });
+            continue;
+          }
           if (auto start = dyn_cast<AIEX::DMAStartTaskOp>(&o)) {
             auto cfg =
                 start.getTask().getDefiningOp<AIEX::DMAConfigureTaskForOp>();
