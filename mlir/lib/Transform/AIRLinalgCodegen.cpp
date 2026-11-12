@@ -5746,6 +5746,110 @@ static bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
   return false;
 }
 
+//===----------------------------------------------------------------------===//
+// HoistLoopInvariantReadsOp
+//===----------------------------------------------------------------------===//
+
+namespace {
+// The allocation or block argument `v` views, through view-like ops.
+static Value memrefRoot(Value v) {
+  while (Operation *def = v.getDefiningOp()) {
+    if (auto view = dyn_cast<ViewLikeOpInterface>(def))
+      v = view.getViewSource();
+    else if (auto c = dyn_cast<memref::CollapseShapeOp>(def))
+      v = c.getSrc();
+    else if (auto e = dyn_cast<memref::ExpandShapeOp>(def))
+      v = e.getSrc();
+    else
+      break;
+  }
+  return v;
+}
+
+// Whether the memrefs viewing the roots `a` and `b` may overlap: unless they
+// are two allocations, or an allocation and a function's argument.
+static bool mayAlias(Value a, Value b) {
+  if (a == b)
+    return true;
+  auto isAlloc = [](Value v) {
+    return static_cast<bool>(v.getDefiningOp<memref::AllocOp>());
+  };
+  auto isFuncArg = [](Value v) {
+    auto arg = dyn_cast<BlockArgument>(v);
+    return arg && arg.getOwner()->isEntryBlock() &&
+           isa<FunctionOpInterface>(arg.getOwner()->getParentOp());
+  };
+  if (isAlloc(a) && (isAlloc(b) || isFuncArg(b)))
+    return false;
+  if (isAlloc(b) && isFuncArg(a))
+    return false;
+  return true;
+}
+
+// Whether something in `loop` may write the allocation `root`.
+static bool mayWrite(scf::ForOp loop, Value root) {
+  bool may = false;
+  loop.getBody()->walk([&](Operation *op) {
+    if (may || isPure(op) || isa<scf::YieldOp, scf::ForOp>(op))
+      return;
+    auto eff = dyn_cast<MemoryEffectOpInterface>(op);
+    if (!eff) {
+      may = !op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
+      return;
+    }
+    SmallVector<MemoryEffects::EffectInstance> effects;
+    eff.getEffects(effects);
+    for (auto &e : effects) {
+      if (!isa<MemoryEffects::Write, MemoryEffects::Free>(e.getEffect()))
+        continue;
+      Value w = e.getValue();
+      if (!w) {
+        may = true;
+        return;
+      }
+      if (mayAlias(memrefRoot(w), root))
+        may = true;
+    }
+  });
+  return may;
+}
+} // namespace
+
+DiagnosedSilenceableFailure transform::HoistLoopInvariantReadsOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+  for (Operation *target : targets) {
+    // Innermost first (post-order), so that a read can leave each loop.
+    SmallVector<scf::ForOp> loops;
+    target->walk([&](scf::ForOp l) { loops.push_back(l); });
+    for (scf::ForOp loop : loops) {
+      // A read before the loop runs even when the loop does not: only loops
+      // known to run.
+      std::optional<APInt> trips = loop.getStaticTripCount();
+      if (!trips || trips->isZero())
+        continue;
+      SmallVector<vector::TransferReadOp> reads;
+      for (Operation &op : loop.getBody()->without_terminator())
+        if (auto rd = dyn_cast<vector::TransferReadOp>(op))
+          reads.push_back(rd);
+      for (vector::TransferReadOp rd : reads) {
+        if (!llvm::all_of(rd->getOperands(), [&](Value v) {
+              return loop.isDefinedOutsideOfLoop(v);
+            }))
+          continue;
+        Value root = memrefRoot(rd.getBase());
+        if (!root.getDefiningOp<memref::AllocOp>() || mayWrite(loop, root))
+          continue;
+        rewriter.moveOpBefore(rd, loop);
+      }
+    }
+  }
+  results.set(llvm::cast<OpResult>(getResult()), targets);
+  return DiagnosedSilenceableFailure::success();
+}
+
 DiagnosedSilenceableFailure
 transform::EliminateRedundantVectorTransfersOp::apply(
     transform::TransformRewriter &rewriter,
