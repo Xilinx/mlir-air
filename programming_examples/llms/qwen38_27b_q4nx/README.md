@@ -13,10 +13,15 @@ at revision `071def594ad89b0dadd104a117722d6090a5fa26`, file `model.q4nx`
 quantized values are used as supplied; only their device layout changes. The
 vision tower and the multi-token-prediction head are out of scope.
 
+- **prefill** on the shared fused prefill device
+  ([`shared/fused_prefill`](../shared/fused_prefill)), as Qwen3.6-35B-A3B's
+  prefill runs: every projection a GEMM op reading the bundle's Q4_K blocks,
+  the full-attention layers' attention on the device, the Gated DeltaNet scan,
+  the norms and the GLU on the host.
 - **decode**: **one NPU dispatch per token for the 64 layers**, then a second
   for the Q8 LM head. The KV cache, the conv caches and the Gated DeltaNet
-  states stay on the device across tokens.
-- The prompt goes through the decode a token at a time.
+  states stay on the device across tokens; the prefill hands them over, and the
+  decode's LM head gives the first token from the prompt's last row.
 
 ## Architecture
 
@@ -42,7 +47,20 @@ The decode takes the Q4_K blocks as stored. A layer's dense weights are one
 buffer region (about 221 MB), each shim channel's share of it one run of DDR,
 and a token reads about 15.5 GB of weights.
 
-## Placement
+## Prefill
+
+`fused_spec.py` configures the device and `prefill.py` drives it, a layer at
+a time over the prompt's 128-token chunks. A GEMM op is at most 12288 columns
+wide, so the wider projections are split: the Gated DeltaNet's q | k | v and
+z, the attention's q | gate and k | v, and the MLP's up | gate (interleaved per
+128 rows, as the decode reads them) in three pieces, each piece's GLU written
+into its share of the down GEMM's input. Attention runs on columns 0 and 7,
+12 query heads and 2 KV heads each. On the host (`kernels/q38_host.c`, with
+Qwen3.5's Gated DeltaNet code at 48 value heads): alpha / beta, the causal
+conv, the delta rule on an FP32 state, the gated norm, q / k norm and RoPE,
+the output gate and the GLU. The prefill keeps its own copy of the weights.
+
+## Decode placement
 
 `decode.py`, one launch repeated once per four layers:
 
@@ -75,14 +93,30 @@ for attention and RoPE).
   `qwen3_5` decoder layers fed the same weights (cosine 1.0000000 on a GDN and
   an attention layer).
 - **`make verify`** (`run_npu2_verify.lit`): the MLP block, a GDN layer, an
-  attention layer and the LM head each against the reference; the prompt
-  through the 64-layer decode and every greedy token compared with the
-  reference's; the reference against HF.
+  attention layer and the LM head each against the reference; the fused
+  prefill of a 300-token prompt against it (last-row logits); the prompt
+  prefilled into the 64-layer decode and every greedy token compared with the
+  reference's; the reference against HF; and the shared top-5 gate
+  ([`verify/`](../verify), `verify_adapter.py`) against `Qwen/Qwen3.8-27B` in
+  bf16.
 
 ## Results
 
-NPU2 (Strix Halo), NPU otherwise idle, the 64-layer dispatch and the LM head's
-timed separately:
+NPU2 (Strix Halo), NPU otherwise idle.
+
+Prefill (`run_npu2_prefill_sweep.lit`): time to first token, the prompt
+prefilled then the first token from the LM head, against FastFlowLM 1.0.11 on
+the same bundle and machine (`flm bench`, mean TTFT):
+
+| prompt | TTFT | tok/s | FLM TTFT |
+| --- | --- | --- | --- |
+| 128 | 1.43 s | 90 | |
+| 512 | 3.26 s | 157 | |
+| 1024 | 6.43 s | 159 | 9.19 s |
+| 2048 | 12.94 s | 158 | 16.93 s |
+| 4096 | 26.28 s | 156 | 32.82 s |
+
+Decode, the 64-layer dispatch and the LM head's timed separately:
 
 | context | layers | LM head | per token |
 | --- | --- | --- | --- |
@@ -112,15 +146,19 @@ without speculation is `FLM_DISABLE_SPECULATION=1`):
 - NPU2 (Strix / AIE2P) + XRT, a Peano (llvm-aie) install
 - `source utils/env_setup.sh` (see the repo README), `HF_HOME` for the Hub
 - `pip install -r requirements.txt`
-- About 16 GB of host memory pinned for the weights
+- About 31 GB of host memory pinned for the weights: the decode's 16 GB and the
+  prefill's own 15 GB copy
 
 ## Usage
 
 ```bash
 make compile                 # the decode and LM head ELFs
-make run                     # greedy decode of PROMPT against the CPU reference
-make verify                  # each stage, the decode, the reference against HF
+make compile-fused-prefill   # the fused prefill device (also built on demand)
+make run                     # prefill + greedy decode of PROMPT against the CPU reference
+make prefill-fused           # the fused prefill of a LONG_LEN-token prompt vs the reference
+make verify                  # each stage, prefill, decode, HF check, top-5 gate
 make profile                 # TTFT and decode tok/s, no reference
+make profile-prefill CTX=2048   # TTFT of a CTX-token prompt
 make profile-decode CONTEXTS=1024,8192   # decode tok/s per context
 make kernels                 # the kernel tests
 ```
