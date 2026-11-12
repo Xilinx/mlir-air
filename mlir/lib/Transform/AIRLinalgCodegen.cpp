@@ -5746,6 +5746,35 @@ static bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
   return false;
 }
 
+//===----------------------------------------------------------------------===//
+// UnrollSmallLoopsOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::UnrollSmallLoopsOp::apply(transform::TransformRewriter &rewriter,
+                                     transform::TransformResults &results,
+                                     transform::TransformState &state) {
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+  for (Operation *target : targets) {
+    SmallVector<scf::ForOp> loops;
+    target->walk([&](scf::ForOp l) { loops.push_back(l); });
+    for (scf::ForOp loop : loops) {
+      std::optional<APInt> tc = loop.getStaticTripCount();
+      if (!tc || tc->getSExtValue() < 1 ||
+          tc->getSExtValue() > (int64_t)getMaxTrips())
+        continue;
+      bool contracts = false;
+      loop->walk([&](vector::ContractionOp) { contracts = true; });
+      if (contracts)
+        continue;
+      (void)loopUnrollFull(loop);
+    }
+  }
+  results.set(llvm::cast<OpResult>(getResult()), targets);
+  return DiagnosedSilenceableFailure::success();
+}
+
 DiagnosedSilenceableFailure
 transform::EliminateRedundantVectorTransfersOp::apply(
     transform::TransformRewriter &rewriter,
