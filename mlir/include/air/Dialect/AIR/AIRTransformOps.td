@@ -1124,6 +1124,31 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
   }];
 }
 
+def HoistLoopInvariantReadsOp : Op<Transform_Dialect, "air.hoist_loop_invariant_reads",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Move vector reads a loop repeats unchanged out of it";
+  let description = [{
+    Moves each `vector.transfer_read` in an `scf.for` in `target` whose
+    operands are defined outside the loop, and whose buffer nothing in the
+    loop may write, before the loop (innermost loops first, so a read can
+    leave several). A read's buffer is the `memref.alloc` it views (through
+    view and reshape ops); a write elsewhere is to another allocation or a
+    function argument, which cannot be it. A loop with an op that writes
+    memory it cannot place so (a call, an op with unknown effects) keeps its
+    reads.
+
+    Pure ops are left to loop-invariant code motion; together they let a
+    loop that uses the same tiles every trip keep them in registers.
+
+    Returns a handle to the target.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
 def EliminateRedundantVectorTransfersOp : Op<Transform_Dialect, "air.eliminate_redundant_vector_transfers",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
