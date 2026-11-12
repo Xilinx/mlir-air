@@ -1151,6 +1151,39 @@ def HoistLoopInvariantReadsOp : Op<Transform_Dialect, "air.hoist_loop_invariant_
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
+def AccumulateIntoLoopInitOp : Op<Transform_Dialect, "air.accumulate_into_loop_init",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Start a loop's sum at what it is added to after the loop";
+  let description = [{
+    For each `scf.for` in `target` with a loop-carried value that starts at
+    zero, that each trip only accumulates into (as the accumulator of an
+    additive `vector.contract`, whose result the trip yields), and whose
+    result is used only by an `arith.addf` with another value `y`: computes
+    `y` before the loop instead and starts the sum at it, so that the
+    `arith.addf` goes. `y` must be computable there: made of pure ops and
+    `vector.transfer_read`s of memory the loop does not write, from values
+    defined before the loop.
+
+    The same for a chain of additive `vector.contract`s, each the next's
+    accumulator, the first's zero, whose result is used only by an
+    `arith.addf` with `y`: `y` is computed before the first and is its
+    accumulator.
+
+    The sum is then `y + (t0 + t1 + ...)` computed as `((y + t0) + t1) + ...`:
+    for floating point the rounding may differ.
+
+    A hand-written attention kernel scales its output rows and multiplies
+    P V onto them so: `r = o * c; r = mma(p, v, r)`.
+
+    Returns a handle to the target.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
 def EliminateRedundantVectorTransfersOp : Op<Transform_Dialect, "air.eliminate_redundant_vector_transfers",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
