@@ -292,16 +292,30 @@ static xilinx::AIE::CoreOp getCoreAt(xilinx::AIE::DeviceOp device, int x,
 // the RTP buffer. The declaration it emits at module scope is the contract
 // between the two passes; see the comment on isRuntimeHerdOperand in
 // AIRToAIEPass.cpp for why the decision is recorded rather than recomputed.
+// The name AIRToAIE gives the slot's parameter (getHerdParamName there): the
+// n-th herd of a name (air.herd_rtp_index on its herd_load) has its own.
+static std::string scratchpadParameterName(xilinx::AIE::CoreOp coreOp,
+                                           xilinx::airrt::HerdLoadOp herdLoad,
+                                           unsigned slot) {
+  auto herdName = coreOp->getAttrOfType<StringAttr>("air.herd_name");
+  if (!herdName)
+    return "";
+  std::string name = "__air_param_" + herdName.getValue().str();
+  if (auto n = herdLoad->getAttrOfType<IntegerAttr>(
+          xilinx::air::attrs::HerdRtpIndex))
+    name += "_rtp" + std::to_string(n.getInt());
+  return name + "_" + std::to_string(slot);
+}
+
 static bool isScratchpadParameterSlot(ModuleOp module,
                                       xilinx::AIE::CoreOp coreOp,
+                                      xilinx::airrt::HerdLoadOp herdLoad,
                                       unsigned slot) {
   if (!coreOp)
     return false;
-  auto herdName = coreOp->getAttrOfType<StringAttr>("air.herd_name");
-  if (!herdName)
+  std::string name = scratchpadParameterName(coreOp, herdLoad, slot);
+  if (name.empty())
     return false;
-  std::string name =
-      "__air_param_" + herdName.getValue().str() + "_" + std::to_string(slot);
   return static_cast<bool>(
       module.lookupSymbol<xilinx::AIEX::ScratchpadParameterOp>(name));
 }
@@ -1854,8 +1868,10 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
     for (int phys_x = loc_x; phys_x < size_x + loc_x; phys_x++) {
       for (int phys_y = loc_y; phys_y < size_y + loc_y; phys_y++) {
 
-        std::string name = "__air_herd_rtp_" + std::to_string(phys_x) + "_" +
-                           std::to_string(phys_y);
+        std::string name = "__air_herd_rtp";
+        if (auto n = op->getAttrOfType<IntegerAttr>(air::attrs::HerdRtpIndex))
+          name += std::to_string(n.getInt());
+        name += "_" + std::to_string(phys_x) + "_" + std::to_string(phys_y);
 
         // Only generate RTP writes if the RTP buffer was actually created.
         bool rtpBufferExists = false;
@@ -1951,14 +1967,11 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
             // there is nothing to write here. The symbol is the contract
             // between the two passes -- re-deciding "is this constant?" here
             // would risk the two disagreeing after canonicalization.
-            if (isScratchpadParameterSlot(module, coreOp, rtp_slot)) {
+            if (isScratchpadParameterSlot(module, coreOp, op, rtp_slot)) {
               // Which sequence argument the host writes it from, for hosts
               // that cannot tell by its name.
               int64_t scale, addend;
-              auto herdName =
-                  coreOp->getAttrOfType<StringAttr>("air.herd_name");
-              std::string pname = "__air_param_" + herdName.getValue().str() +
-                                  "_" + std::to_string(rtp_slot);
+              std::string pname = scratchpadParameterName(coreOp, op, rtp_slot);
               auto decl =
                   module.lookupSymbol<xilinx::AIEX::ScratchpadParameterOp>(
                       pname);

@@ -240,3 +240,93 @@ module {
     return
   }
 }
+
+// -----
+
+// Herds of one name run in turn on the same cores, and the n-th
+// (air.herd_rtp_index = n) has parameters of its own: each herd_load's slot is
+// looked up by the parameter named for its own instance, and records the
+// sequence argument it is written from.
+
+// CHECK-LABEL: aiex.scratchpad_parameter @__air_param_herd_0_0 : i32 {air.source = array<i64: 1, 1, 0>}
+// CHECK:       aiex.scratchpad_parameter @__air_param_herd_0_rtp1_0 : i32 {air.source = array<i64: 2, 1, 0>}
+// CHECK-LABEL: aie.runtime_sequence @ctrl_same_name
+// CHECK-NOT:     aiex.npu.rtp_write
+// CHECK:         aiex.set_lock(%{{.*}}, %c1_i32{{.*}})
+// CHECK-NOT:     aiex.npu.rtp_write
+// CHECK:         aiex.set_lock(%{{.*}}, %c1_i32{{.*}})
+module {
+  aiex.scratchpad_parameter @__air_param_herd_0_0 : i32
+  aiex.scratchpad_parameter @__air_param_herd_0_rtp1_0 : i32
+  aie.device(npu2) @seg {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %__air_herd_lock_0_2 = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %__air_herd_rtp_0_2 = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    %__air_herd_rtp1_0_2 = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp1_0_2"} : memref<1xi32>
+    aie.shim_dma_allocation @feedIn(%tile_0_0, MM2S, 0)
+    %core_0_2 = aie.core(%tile_0_2) {
+      aie.end
+    } {air.herd_name = "herd_0", link_with = "kernel.o"}
+  } {sym_name = "seg"}
+
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "seg"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 2 : i64, sym_name = "herd_0"}
+    }
+  }
+
+  func.func @ctrl_same_name(%arg0: memref<64xi32>, %L: i32, %M: i32) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %feed = arith.constant 4 : i32
+    %f0 = airrt.dma_memcpy_nd(%feed, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feedIn} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %h0 = airrt.herd_load "herd_0" (%L) {segment_name = "seg"} : (i32) -> i64
+    %h1 = airrt.herd_load "herd_0" (%M) {segment_name = "seg", air.herd_rtp_index = 1 : i64} : (i32) -> i64
+    airrt.wait_all %f0 {"air.launch_end"}
+    %p = airrt.segment_load "seg" : i64
+    return
+  }
+}
+
+// -----
+
+// Two herd_loads of one name with the same scalars are not folded when they
+// are different instances (air.herd_rtp_index): each writes its own buffer.
+
+// CHECK-LABEL: aie.runtime_sequence @ctrl_same_scalar
+// CHECK:         aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, %[[A:.*]]) : i32
+// CHECK:         aiex.npu.rtp_write(@__air_herd_rtp1_0_2, 0, %[[A]]) : i32
+module {
+  aie.device(npu2) @seg {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %__air_herd_lock_0_2 = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %__air_herd_rtp_0_2 = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    %__air_herd_rtp1_0_2 = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp1_0_2"} : memref<1xi32>
+    aie.shim_dma_allocation @feedIn(%tile_0_0, MM2S, 0)
+    %core_0_2 = aie.core(%tile_0_2) {
+      aie.end
+    } {air.herd_name = "herd_0", link_with = "kernel.o"}
+  } {sym_name = "seg"}
+
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "seg"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 2 : i64, sym_name = "herd_0"}
+    }
+  }
+
+  func.func @ctrl_same_scalar(%arg0: memref<64xi32>, %L: i32) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %feed = arith.constant 4 : i32
+    %f0 = airrt.dma_memcpy_nd(%feed, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @feedIn} : (i32, i64, i64, memref<64xi32>) : !airrt.event
+    %h0 = airrt.herd_load "herd_0" (%L) {segment_name = "seg"} : (i32) -> i64
+    %h1 = airrt.herd_load "herd_0" (%L) {segment_name = "seg", air.herd_rtp_index = 1 : i64} : (i32) -> i64
+    airrt.wait_all %f0 {"air.launch_end"}
+    %p = airrt.segment_load "seg" : i64
+    return
+  }
+}

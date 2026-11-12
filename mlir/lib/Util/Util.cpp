@@ -38,6 +38,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetOperations.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/bit.h"
@@ -1060,6 +1061,98 @@ SmallVector<Operation *> air::getOrderedChainEndpoints(Value memref,
 void air::classifyChainBuffer(Value memref, int &numWriters, int &numReaders) {
   numWriters = getOrderedChainEndpoints(memref, /*writers=*/true).size();
   numReaders = getOrderedChainEndpoints(memref, /*writers=*/false).size();
+}
+
+bool air::chainStagesMoveOncePerFill(Value memref) {
+  SmallVector<Operation *> users;
+  for (auto user : memref.getUsers())
+    if (isa<air::MemcpyInterface>(user))
+      users.push_back(user);
+  if (users.empty())
+    return true;
+  // Transfers per fill count each op by the trips of the loops around it that
+  // are not around them all: the loops they share run fills and stages
+  // alike. A loop of unknown trip count there leaves it undecided.
+  llvm::SmallPtrSet<Operation *, 8> shared;
+  for (Operation *p = users.front()->getParentOp(); p; p = p->getParentOp())
+    shared.insert(p);
+  for (Operation *u : llvm::drop_begin(users)) {
+    llvm::SmallPtrSet<Operation *, 8> mine;
+    for (Operation *p = u->getParentOp(); p; p = p->getParentOp())
+      mine.insert(p);
+    llvm::set_intersect(shared, mine);
+  }
+  llvm::DenseMap<Operation *, int64_t> times;
+  for (Operation *u : users) {
+    int64_t n = 1;
+    for (Operation *p = u->getParentOp(); p && !shared.contains(p);
+         p = p->getParentOp()) {
+      if (auto f = dyn_cast<scf::ForOp>(p)) {
+        auto trips = f.getStaticTripCount();
+        if (!trips)
+          return true;
+        n *= trips->getSExtValue();
+      } else if (isa<LoopLikeOpInterface>(p)) {
+        return true;
+      }
+    }
+    times[u] = n;
+  }
+  // Transfers per stage key on each side; an unkeyed endpoint is a stage of
+  // its own.
+  auto perStage = [&](bool writers) {
+    SmallVector<int64_t> counts;
+    SmallVector<ChainEndpointKey> keys;
+    for (Operation *user : users) {
+      auto memcpyOp = cast<air::MemcpyInterface>(user);
+      bool isWriter = (memref == memcpyOp.getDstMemref());
+      bool isReader = (memref == memcpyOp.getSrcMemref());
+      if ((writers && !isWriter) || (!writers && !isReader))
+        continue;
+      auto key = getChainEndpointKey(user);
+      auto it = key ? llvm::find(keys, *key) : keys.end();
+      if (key && it != keys.end()) {
+        counts[it - keys.begin()] += times[user];
+        continue;
+      }
+      keys.push_back(key ? *key : ChainEndpointKey{});
+      counts.push_back(times[user]);
+    }
+    return counts;
+  };
+  SmallVector<int64_t> w = perStage(true), r = perStage(false);
+  // The single side's transfers are the fills (or drains); each stage of the
+  // many side must move the buffer once for each.
+  auto matches = [](ArrayRef<int64_t> one, ArrayRef<int64_t> many) {
+    int64_t fills = one.empty() ? 0 : one.front();
+    return llvm::all_of(many, [&](int64_t n) { return n == fills; });
+  };
+  if (w.size() == 1)
+    return matches(w, r);
+  if (r.size() == 1)
+    return matches(r, w);
+  return true;
+}
+
+bool air::sameChannelTransfer(Operation *a, Operation *b, bool sameChannel) {
+  auto ca = dyn_cast<air::ChannelInterface>(a);
+  auto cb = dyn_cast<air::ChannelInterface>(b);
+  if (!ca || !cb || isa<air::ChannelPutOp>(a) != isa<air::ChannelPutOp>(b))
+    return false;
+  if (sameChannel && ca.getChanName() != cb.getChanName())
+    return false;
+  if (ca.getMemref() != cb.getMemref())
+    return false;
+  auto same = [](ArrayRef<OpFoldResult> x, ArrayRef<OpFoldResult> y) {
+    return x.size() == y.size() && llvm::all_of(llvm::zip(x, y), [](auto p) {
+             return isEqualConstantIntOrValue(std::get<0>(p), std::get<1>(p));
+           });
+  };
+  SmallVector<OpFoldResult> ia = getAsOpFoldResult(ca.getIndices());
+  SmallVector<OpFoldResult> ib = getAsOpFoldResult(cb.getIndices());
+  return same(ia, ib) && same(ca.getMixedOffsets(), cb.getMixedOffsets()) &&
+         same(ca.getMixedSizes(), cb.getMixedSizes()) &&
+         same(ca.getMixedStrides(), cb.getMixedStrides());
 }
 
 bool air::chainEndpointsShareStage(Operation *a, Operation *b) {

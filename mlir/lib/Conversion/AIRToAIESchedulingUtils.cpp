@@ -629,6 +629,61 @@ air::getWrapsAndStrides(ArrayRef<OpFoldResult> memcpy_sizes,
   return output;
 }
 
+// How many of `ops` run on one control path: ops in different regions of an
+// scf.if or scf.index_switch never run together, so a branching op counts as
+// the most any one of its regions does -- when its regions' transfers are the
+// same transfers on one channel, in the same order (sameChannelTransfer). A
+// DMA's descriptors do not follow the branch: a buffer's transfers on other
+// channels, or of other views, all run whichever arm the cores take, and
+// count once each. `scope` bounds the walk up.
+static int countOnOnePath(ArrayRef<Operation *> ops, Operation *scope) {
+  int plain = 0;
+  llvm::MapVector<Operation *, SmallVector<Operation *>> byBranch;
+  for (Operation *op : ops) {
+    Operation *outer = nullptr;
+    for (Operation *p = op->getParentOp(); p && p != scope;
+         p = p->getParentOp())
+      if (isa<scf::IfOp, scf::IndexSwitchOp>(p))
+        outer = p;
+    if (outer)
+      byBranch[outer].push_back(op);
+    else
+      plain++;
+  }
+  for (auto &[branch, inside] : byBranch) {
+    int most = 0, all = 0;
+    SmallVector<Operation *> firstTransfers;
+    bool alike = true, seen = false;
+    for (Region &r : branch->getRegions()) {
+      SmallVector<Operation *> here, transfers;
+      for (Operation *op : inside)
+        if (r.findAncestorOpInRegion(*op)) {
+          here.push_back(op);
+          if (isa<air::ChannelInterface>(op))
+            transfers.push_back(op);
+        }
+      if (here.empty())
+        continue;
+      if (!seen) {
+        firstTransfers = transfers;
+        seen = true;
+      } else {
+        alike &=
+            transfers.size() == firstTransfers.size() &&
+            llvm::all_of(llvm::zip(transfers, firstTransfers), [](auto p) {
+              return air::sameChannelTransfer(std::get<0>(p), std::get<1>(p),
+                                              /*sameChannel=*/true);
+            });
+      }
+      int n = countOnOnePath(here, branch);
+      most = std::max(most, n);
+      all += n;
+    }
+    plain += alike ? most : all;
+  }
+  return plain;
+}
+
 std::pair<int64_t, int64_t>
 air::getLockValuePair(const AIE::AIETargetModel &targetModel,
                       Value buffer_memref) {
@@ -639,29 +694,32 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
   // TODO: What if a buffer memref is read or written by multiple channels?
   if (!llvm::isa<BaseMemRefType>(buffer_memref.getType()))
     return std::make_pair(-1, -1);
-  int read_counter = 0;
-  int write_counter = 0;
+  // The readers and writers on one control path: those in other arms of a
+  // branch on, say, the class of a wave are not there when these run.
+  SmallVector<Operation *> readers, writers;
   for (auto user : buffer_memref.getUsers()) {
     if (auto memcpyOp = dyn_cast_if_present<air::MemcpyInterface>(user)) {
       if (buffer_memref == memcpyOp.getSrcMemref())
-        read_counter++;
+        readers.push_back(user);
       else if (buffer_memref == memcpyOp.getDstMemref())
-        write_counter++;
+        writers.push_back(user);
     } else if (isa<affine::AffineLoadOp>(user))
-      read_counter++;
+      readers.push_back(user);
     else if (isa<affine::AffineStoreOp>(user))
-      write_counter++;
+      writers.push_back(user);
     else if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(user)) {
       for (auto opoperand : linalgop.getDpsInputOperands())
         if (opoperand->is(buffer_memref))
-          read_counter++;
+          readers.push_back(user);
       for (auto &opoperand : linalgop.getDpsInitsMutable())
         if (opoperand.is(buffer_memref)) {
-          read_counter++;
-          write_counter++;
+          readers.push_back(user);
+          writers.push_back(user);
         }
     }
   }
+  int read_counter = countOnOnePath(readers, nullptr);
+  int write_counter = countOnOnePath(writers, nullptr);
   if (!read_counter || !write_counter)
     return std::make_pair(1, 1);
   if (read_counter >= write_counter)
@@ -697,6 +755,8 @@ bool air::isChainLockCandidate(AIE::BufferOp buf) {
     return false;
   int nW = 0, nR = 0;
   air::classifyChainBuffer(buf.getResult(), nW, nR);
+  if (!air::chainStagesMoveOncePerFill(buf.getResult()))
+    return false;
   // Fan-in: N writers (N>1) + 1 reader. The chain-lock is required here to
   // prevent write-side corruption, so the opt-out below is NOT honored.
   if (nW > 1 && nR == 1)
@@ -3707,8 +3767,34 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   int memtile_dma_channels =
       isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
                      : tile.getNumDestConnections(AIE::WireBundle::DMA);
-  if (chan == -1)
-    chan = num_allocs % memtile_dma_channels;
+  if (chan == -1) {
+    // The lowest channel of the tile no allocation holds yet; past them all,
+    // one holding flows of this one's switching kind (a switchbox port is
+    // packet- or circuit-switched, not both), and only then any.
+    // (on this tile, or on a logical tile already bound to its column: the
+    // two meet on one switchbox once placed)
+    std::map<int, bool> held; // channel -> carries a packet flow
+    auto col = tile.tryGetCol();
+    auto sameTile = [&](air::allocation_info_t &t) {
+      if (t.foundAlloc(tile))
+        return true;
+      if (!col || !t.dma_tile)
+        return false;
+      auto other = t.dma_tile.tryGetCol();
+      return other && *other == *col;
+    };
+    for (auto &t : *allocs)
+      if (sameTile(t))
+        held[t.dma_channel.channel] |= t.foundPacketFlowAllocInTile(t.dma_tile);
+    for (int c = 0; c < memtile_dma_channels && chan == -1; c++)
+      if (!held.count(c))
+        chan = c;
+    for (int c = 0; c < memtile_dma_channels && chan == -1; c++)
+      if (held[c] == isPacketFlowOp)
+        chan = c;
+    if (chan == -1)
+      chan = num_allocs % memtile_dma_channels;
+  }
   return air::DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
 }
 

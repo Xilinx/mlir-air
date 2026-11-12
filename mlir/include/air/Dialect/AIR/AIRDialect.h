@@ -82,6 +82,11 @@ constexpr StringLiteral SrcWritesPktHeader = "air.src_writes_pkt_header";
 // ordering (RTP arm / set_lock / output-S2MM hoist) groups by this index
 // instead of inferring wave boundaries from op positions.
 constexpr StringLiteral LaunchWave = "air.launch_wave";
+// On the second and later air.herd of one name (n >= 1), and on its
+// airrt.herd_load: herds of one name run in turn on the same cores, and the
+// n-th takes its scalars through an RTP buffer of its own,
+// __air_herd_rtp<n>_<col>_<row>.
+constexpr StringLiteral HerdRtpIndex = "air.herd_rtp_index";
 // Opt-out (unit attr) on a shared-L2 memref.alloc: keep the buffer on the
 // legacy counted-lock template even under use-lock-race-condition-fix-v2,
 // instead of the daisy-chained chain-lock. Honored only for fan-out broadcast
