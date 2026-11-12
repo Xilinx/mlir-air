@@ -1038,7 +1038,9 @@ def FuseElementwiseLinalgOp : Op<Transform_Dialect, "air.fuse_elementwise_linalg
     is still computed once: into its only user, which reads it through a
     permutation map. Like the pass, it leaves a producer with other users
     alone; it also does not fuse through a broadcast, which would compute a
-    producer's element again for every element it is broadcast to.
+    producer's element again for every element it is broadcast to, nor into
+    a consumer inside a loop the producer is outside of, which would compute
+    it again every trip.
 
     Returns a handle to the modified function.
   }];
