@@ -23,6 +23,9 @@ def load(build_dir):
     _l = ctypes.c_long
     _lib.tiles_bfp.argtypes = [_p, _i, _i, _i, _i, _i, _i, _p, _l, _l]
     _lib.bfp_rows.argtypes = [_p, ctypes.c_long, _p]
+    _lib.round_bf16.argtypes = [_p, ctypes.c_long]
+    _lib.tile_a_rows.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p, _l, _l]
+    _lib.glu_tile_a.argtypes = [_p, _i, _i, _i, _i, _i, _p, _l, _l]
     _lib.bf16_to_f32.argtypes = [_p, _i, _i, _i, _p]
     _lib.rms.argtypes = [_p, _i, _i, _p, _f, _p]
     _lib.add_rms.argtypes = [_p, _p, _i, _i, _p, _f, _p]
@@ -96,6 +99,42 @@ def tile_a(x, dst, tm, tk):
     _to_bfp(a, x.shape[0], dst)
 
 
+def _tile_strides(dst):
+    """dst's row-block and K-step strides in tiles (tiles_bfp)."""
+    assert dst.ndim == 3 and dst.strides[2] == 1, dst.strides
+    return [v // dst.shape[2] for v in dst.strides[:2]]
+
+
+def tile_a_rows(x, rows, dst, tm, tk):
+    """tile_a of x[rows], read in place: x float32 [*, K] (C order)."""
+    if dst.ndim == 4:  # bf16 A (packing.a_layout)
+        tile_a(x[rows], dst, tm, tk)
+        return
+    x = np.ascontiguousarray(x, np.float32)
+    rows = np.ascontiguousarray(rows, np.int64)
+    _lib.tile_a_rows(
+        x.ctypes.data,
+        x.shape[1],
+        rows.ctypes.data,
+        len(rows),
+        x.shape[1],
+        tm,
+        tk,
+        dst.ctypes.data,
+        *_tile_strides(dst),
+    )
+
+
+def glu_tile_a(c, t, n, dst, tm, tk):
+    """bf16(u * SiLU(g)) of c's first t rows into dst, the GEMM's A: c bf16
+    [*, ld] holds u and g in turns of tk columns, n of each."""
+    if dst.ndim == 4:
+        raise NotImplementedError("glu_tile_a writes a bfp16 A only")
+    _lib.glu_tile_a(
+        c.ctypes.data, c.shape[1], t, n, tm, tk, dst.ctypes.data, *_tile_strides(dst)
+    )
+
+
 def bfp_rows(src):
     """src [..., 8] bf16 -> bfp16 groups [..., 9] uint8."""
     src = np.ascontiguousarray(src)
@@ -113,6 +152,13 @@ def bf16_to_f32(src, rows, n):
 
 def _c(a):
     return np.ascontiguousarray(a, np.float32)
+
+
+def round_bf16(x):
+    """x float32, rounded to bf16 in place; returns x."""
+    assert x.dtype == np.float32 and x.flags.c_contiguous
+    _lib.round_bf16(x.ctypes.data, x.size)
+    return x
 
 
 def rms(x, w, eps):
