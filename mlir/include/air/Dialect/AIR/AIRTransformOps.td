@@ -1136,7 +1136,9 @@ def WidenElementwiseVectorsOp : Op<Transform_Dialect, "air.widen_elementwise_vec
     copies); an operand that is itself the first N lanes of a `lanes`-wide
     vector is taken whole, and a splat constant becomes a wider splat. Only
     the first N lanes of the result are used, so the other lanes need no
-    particular values.
+    particular values; an op that may not be safe on any values (an integer
+    division) takes repeated copies of its operands' lanes instead. The
+    targets must be isolated from above (functions, herds).
 
     Targets whose vector units work on whole registers: an op on part of one
     becomes an op on a full one, as hand-written kernels compute two 8-lane

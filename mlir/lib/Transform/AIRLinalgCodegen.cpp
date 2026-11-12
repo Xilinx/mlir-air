@@ -5762,11 +5762,14 @@ int64_t narrowVectorSize(Type t, int64_t lanes) {
 
 // v on lanes lanes: its lanes repeated, or the wide vector it is the first
 // lanes of, or a wider splat.
-Value widenVector(RewriterBase &rewriter, Location loc, Value v,
-                  int64_t lanes) {
+Value widenVector(RewriterBase &rewriter, Location loc, Value v, int64_t lanes,
+                  bool anyUpperLanes) {
   auto vt = cast<VectorType>(v.getType());
   auto wide = VectorType::get({lanes}, vt.getElementType());
-  if (auto ex = v.getDefiningOp<vector::ExtractStridedSliceOp>())
+  // (whose upper lanes hold whatever the wide vector does: only for an op
+  // that is safe on any values)
+  if (auto ex = v.getDefiningOp<vector::ExtractStridedSliceOp>();
+      ex && anyUpperLanes)
     if (ex.getSourceVectorType() == wide && !ex.hasNonUnitStrides() &&
         cast<IntegerAttr>(ex.getOffsets()[0]).getInt() == 0)
       return ex.getSource();
@@ -5796,9 +5799,13 @@ void widenElementwise(RewriterBase &rewriter, Operation *op, int64_t lanes) {
       return;
   Location loc = op->getLoc();
   rewriter.setInsertionPoint(op);
+  // An op that may have undefined behavior on some values (an integer
+  // division) takes repeated copies of its lanes, never a wide vector's
+  // upper lanes.
+  bool anyUpperLanes = isSpeculatable(op);
   OperationState state(loc, op->getName());
   for (Value v : op->getOperands())
-    state.addOperands(widenVector(rewriter, loc, v, lanes));
+    state.addOperands(widenVector(rewriter, loc, v, lanes, anyUpperLanes));
   for (Type t : op->getResultTypes())
     state.addTypes(
         VectorType::get({lanes}, cast<VectorType>(t).getElementType()));
@@ -5818,6 +5825,10 @@ DiagnosedSilenceableFailure transform::WidenElementwiseVectorsOp::apply(
     transform::TransformResults &results, transform::TransformState &state) {
   SmallVector<Operation *> targets =
       llvm::to_vector(state.getPayloadOps(getTarget()));
+  for (Operation *target : targets)
+    if (!target->hasTrait<OpTrait::IsIsolatedFromAbove>())
+      return emitDefiniteFailure()
+             << "target operation must have IsolatedFromAbove trait";
   for (Operation *target : targets) {
     // In order, so that an op's operands are widened before it.
     SmallVector<Operation *> ops;

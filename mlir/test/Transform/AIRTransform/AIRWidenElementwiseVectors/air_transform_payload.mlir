@@ -35,3 +35,17 @@ func.func @keep(%a: vector<16xf32>, %b: vector<6xf32>) -> (vector<16xf32>, vecto
   %y = arith.addf %b, %b : vector<6xf32>
   return %x, %y : vector<16xf32>, vector<6xf32>
 }
+
+// A division takes its divisor's lanes repeated, not the upper lanes of the
+// wide vector it comes from, which may be zero.
+// CHECK-LABEL: @division
+// CHECK: %[[W:.*]] = arith.addi {{.*}} : vector<16xi32>
+// CHECK: %[[N:.*]] = vector.extract_strided_slice %[[W]]
+// CHECK: %[[R:.*]] = vector.shuffle %[[N]], %{{.*}} [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7]
+// CHECK: arith.divsi %{{.*}}, %[[R]] : vector<16xi32>
+func.func @division(%a: vector<8xi32>, %b: vector<8xi32>) -> vector<8xi32> {
+  %s = arith.addi %b, %b : vector<8xi32>
+  %d = arith.divsi %a, %s : vector<8xi32>
+  return %d : vector<8xi32>
+}
+
