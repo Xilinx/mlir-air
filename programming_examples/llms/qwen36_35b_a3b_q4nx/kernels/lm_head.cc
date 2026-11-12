@@ -25,8 +25,14 @@ extern "C" float __addsf3(float, float);
 extern "C" float __subsf3(float, float);
 extern "C" float __mulsf3(float, float);
 
+// hidden size: Qwen3.6-35B-A3B's 2048 by default, Qwen3.8-27B builds with
+// -DLM_DIM=5120
+#ifndef LM_DIM
+#define LM_DIM 2048
+#endif
+
 namespace {
-constexpr int MODEL_DIM = 2048;
+constexpr int MODEL_DIM = LM_DIM;
 } // namespace
 
 extern "C" {

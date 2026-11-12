@@ -872,10 +872,22 @@ void attn_kv_blk(bf16 *__restrict s_block, bf16 *__restrict v_block,
 void attn_kv_fin(float *__restrict y_state, float *__restrict l_state,
                  bf16 *__restrict o) {
   aie_round_nearest_even();
+#if ATTN_IMPL == ATTN_IMPL_1x8x1
+  // One dim tile (8 heads x 8) at a time, the unit scale_div_aie works in: a
+  // bf16 copy of all of y (4 KB at head dim 256) would overrun a 2 KB core
+  // stack into the buffer above it.
+  constexpr int TILE = Q_HEADS_PADDED_PER_CU * 8;
+  alignas(aie::vector_decl_align) bf16 y_bf16[TILE];
+  for (int d = 0; d < DH / 8; d++) {
+    passThrough_aie<y_acc_dtype, bf16, TILE>(y_state + d * TILE, y_bf16);
+    scale_div_aie<TILE>(y_bf16, o + d * Q_HEADS_PER_GROUP * 8, l_state);
+  }
+#else
   alignas(aie::vector_decl_align) bf16 y_bf16[Q_HEADS_PADDED_PER_CU * DH];
   passThrough_aie<y_acc_dtype, bf16, Q_HEADS_PADDED_PER_CU * DH>(y_state,
                                                                  y_bf16);
   scale_div_aie<Q_HEADS_PADDED_PER_CU * DH>(y_bf16, o, l_state);
+#endif
 }
 
 #if ATTN_KV_PARTS > 1
