@@ -151,6 +151,9 @@ class NpuRunner:
                 self.dec.head(x[-1].astype(bfloat16), len(ids)), np.float32
             )
         else:
+            # the runner is reused across prompts: the last prompt's states and
+            # conv history go first (seed overwrites them on the fused path)
+            self.dec.reset()
             for pos, t in enumerate(ids):
                 logits = self._step(t, pos)
         return PrefillRecord(

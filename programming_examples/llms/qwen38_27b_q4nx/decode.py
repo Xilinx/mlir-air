@@ -797,6 +797,19 @@ class Q38Decoder:
         for i in (self.KV, self.CWI, self.SI):
             self.bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
+    def reset(self):
+        """A new sequence: every Gated DeltaNet layer's state and conv history
+        zero, in both buffers of each pair; the conv weights stay. The KV rows
+        need no reset, as a step reads only rows below its position."""
+        nv, to = len(self.conv_w), self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
+        for i in (self.CWI, self.CWO):
+            cw = np.frombuffer(self.bos[i].map(), bfloat16).reshape(nv, NCH, 7, HD)
+            cw[:, :, :3] = 0
+            self.bos[i].sync(to)
+        for i in (self.SI, self.SO):
+            np.frombuffer(self.bos[i].map(), np.float32)[:] = 0
+            self.bos[i].sync(to)
+
     def head(self, x, L):
         """The LM head alone on the last layer's output x, at position L - 1."""
         self.xmap[self.waves, self.pw - 1] = x
