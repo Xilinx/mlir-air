@@ -1134,7 +1134,8 @@ def UnrollSmallLoopsOp : Op<Transform_Dialect, "air.unroll_small_loops",
     over a few tiles then becomes their ops one after another, whose stores
     and loads of one tile the vector transfer forwarding can then pair, so
     the tiles stay in registers, as a hand-written kernel keeps a row
-    block's few tiles in registers from one step to the next.
+    block's few tiles in registers from one step to the next. A loop that
+    is one of the targets, or holds one, is not unrolled.
 
     Returns a handle to the target.
   }];
