@@ -118,9 +118,12 @@ module {
 
 // A read in a case that depends on a drain issued before the scf.index_switch:
 // the case cannot tell which of the channel's tasks are still outstanding when
-// it runs, so the read is not ordered there; it is diagnosed.
+// it runs, so the drain is awaited before the scf.index_switch, not in the case.
 
 // CHECK-LABEL: func.func @outside
+// CHECK: %[[D:.*]] = airrt.dma_memcpy_nd({{.*}}metadata = @outAllocoutside}
+// CHECK: airrt.wait_all %[[D]]{{$}}
+// CHECK-NEXT: scf.index_switch
 // CHECK: case 0 {
 // CHECK-NOT: airrt.wait_all %{{[0-9]+}}{{$}}
 // CHECK: scf.yield
@@ -143,8 +146,6 @@ module {
       %d = air.channel.get async  @outoutside[] (%b[%c64] [%c64] [%c1_l]) {id = 1 : i32, metadata = @outAllocoutside} : (memref<256xi32>)
       %r = scf.index_switch %s0 -> !air.async.token
       case 0 {
-        // expected-warning@+2 {{this read of host memory depends on a device-to-host drain that cannot be awaited before it here}}
-        // expected-note@+1 {{the drain is outside its block}}
         %rb = air.channel.put async [%d]  @inoutside[] (%b[%c64] [%c64] [%c1_l]) {id = 2 : i32, metadata = @inAllocoutside} : (memref<256xi32>)
         %y = air.wait_all async [%d, %rb]
         scf.yield %y : !air.async.token
