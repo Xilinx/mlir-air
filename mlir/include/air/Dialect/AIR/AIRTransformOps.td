@@ -1133,10 +1133,12 @@ def HoistLoopInvariantReadsOp : Op<Transform_Dialect, "air.hoist_loop_invariant_
     operands are defined outside the loop, and whose buffer nothing in the
     loop may write, before the loop (innermost loops first, so a read can
     leave several). A read's buffer is the `memref.alloc` it views (through
-    view and reshape ops); a write elsewhere is to another allocation or a
-    function argument, which cannot be it. A loop with an op that writes
-    memory it cannot place so (a call, an op with unknown effects) keeps its
-    reads.
+    view and reshape ops); only a write to another allocation or to a
+    function's argument cannot be to it (a write through a loop's or a
+    region's memref argument may be). A loop with an op that writes memory
+    it cannot place so (a call, an op with unknown effects) keeps its reads,
+    and so does a loop not known to run at least once (no constant trip
+    count of one or more), where the read would run when the loop does not.
 
     Pure ops are left to loop-invariant code motion; together they let a
     loop that uses the same tiles every trip keep them in registers.

@@ -5766,6 +5766,26 @@ static Value memrefRoot(Value v) {
   return v;
 }
 
+// Whether the memrefs viewing the roots `a` and `b` may overlap: unless they
+// are two allocations, or an allocation and a function's argument.
+static bool mayAlias(Value a, Value b) {
+  if (a == b)
+    return true;
+  auto isAlloc = [](Value v) {
+    return static_cast<bool>(v.getDefiningOp<memref::AllocOp>());
+  };
+  auto isFuncArg = [](Value v) {
+    auto arg = dyn_cast<BlockArgument>(v);
+    return arg && arg.getOwner()->isEntryBlock() &&
+           isa<FunctionOpInterface>(arg.getOwner()->getParentOp());
+  };
+  if (isAlloc(a) && (isAlloc(b) || isFuncArg(b)))
+    return false;
+  if (isAlloc(b) && isFuncArg(a))
+    return false;
+  return true;
+}
+
 // Whether something in `loop` may write the allocation `root`.
 static bool mayWrite(scf::ForOp loop, Value root) {
   bool may = false;
@@ -5787,10 +5807,7 @@ static bool mayWrite(scf::ForOp loop, Value root) {
         may = true;
         return;
       }
-      Value wr = memrefRoot(w);
-      // Another allocation, or an argument (which no allocation is).
-      if (wr == root ||
-          !(wr.getDefiningOp<memref::AllocOp>() || isa<BlockArgument>(wr)))
+      if (mayAlias(memrefRoot(w), root))
         may = true;
     }
   });
@@ -5808,6 +5825,11 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantReadsOp::apply(
     SmallVector<scf::ForOp> loops;
     target->walk([&](scf::ForOp l) { loops.push_back(l); });
     for (scf::ForOp loop : loops) {
+      // A read before the loop runs even when the loop does not: only loops
+      // known to run.
+      std::optional<APInt> trips = loop.getStaticTripCount();
+      if (!trips || trips->isZero())
+        continue;
       SmallVector<vector::TransferReadOp> reads;
       for (Operation &op : loop.getBody()->without_terminator())
         if (auto rd = dyn_cast<vector::TransferReadOp>(op))

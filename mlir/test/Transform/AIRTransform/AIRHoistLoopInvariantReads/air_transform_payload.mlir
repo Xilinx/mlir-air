@@ -36,3 +36,41 @@ func.func @hoist(%out: memref<4x8xf32>) {
   }
   return
 }
+
+// A write through a loop-carried memref that starts as the read's buffer may
+// write it: the read stays.
+// CHECK-LABEL: @iter_arg_write
+// CHECK: scf.for
+// CHECK: vector.transfer_read
+// CHECK: vector.transfer_write
+func.func @iter_arg_write(%v: vector<8xf32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %f0 = arith.constant 0.0 : f32
+  %a = memref.alloc() : memref<8xf32>
+  %r = scf.for %i = %c0 to %c4 step %c1 iter_args(%buf = %a) -> (memref<8xf32>) {
+    %p = vector.transfer_read %a[%c0], %f0 {in_bounds = [true]} : memref<8xf32>, vector<8xf32>
+    %s = arith.addf %p, %v : vector<8xf32>
+    vector.transfer_write %s, %buf[%c0] {in_bounds = [true]} : vector<8xf32>, memref<8xf32>
+    scf.yield %buf : memref<8xf32>
+  }
+  return
+}
+
+// A loop that may not run: the read stays in it.
+// CHECK-LABEL: @maybe_zero_trips
+// CHECK: scf.for
+// CHECK: vector.transfer_read
+func.func @maybe_zero_trips(%n: index, %out: memref<8xf32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %f0 = arith.constant 0.0 : f32
+  %a = memref.alloc(%n) : memref<?xf32>
+  scf.for %i = %c0 to %n step %c1 {
+    %p = vector.transfer_read %a[%c0], %f0 {in_bounds = [true]} : memref<?xf32>, vector<8xf32>
+    vector.transfer_write %p, %out[%c0] {in_bounds = [true]} : vector<8xf32>, memref<8xf32>
+  }
+  return
+}
+
