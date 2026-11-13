@@ -373,10 +373,15 @@ class Q3CPrefill(Engine):
         slot = g["runs"][s]
         if slot is None or slot["cap"] < nw:
             ib, view_ = self.fp.insts(np.zeros(nw, np.uint32))
-            bos = list(self.dummy)
-            bos[0:3] = [g["a"], self.we_bo, g["c"]]
-            slot = dict(ib=ib, view=view_, cap=nw, run=self.fp.run(ib, nw, bos))
-            g["runs"][s] = slot
+            if slot is None:
+                bos = list(self.dummy)
+                bos[0:3] = [g["a"], self.we_bo, g["c"]]
+                slot = dict(run=self.fp.run(ib, nw, bos))
+                g["runs"][s] = slot
+            # a larger stream: the slot's one run (Ctx keeps every run it
+            # made) takes the new instruction buffer, the old one goes
+            slot["run"].set_arg(1, ib)
+            slot.update(ib=ib, view=view_, cap=nw)
         txn.concat(runs, slot["view"])
         slot["ib"].sync(TO, nw * 4, 0)
         run = slot["run"]
