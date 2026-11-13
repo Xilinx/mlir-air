@@ -5,6 +5,8 @@ sequence per op, and an optional LM-head device. A model's spec module provides
 
   CFG            device.Config
   gemm_shapes()  (k, n_pad, act, wq) of every GEMM
+  expert_shapes() optional: (k, n_pad, act, wq) of the GEMMs that also run
+                 as "x" ops on runs of expert blocks (CFG.experts)
   ATTN_POINTS    attention points, name -> (heads, nkv, q0, k0); only the
                  heads are used: attention takes (nkv, q0, k0) at run time
   lm_build()     optional: the LM-head device module (built as op "lm")
@@ -66,6 +68,7 @@ def op_name(op, shape):
 def ops(spec):
     """(op, shape) of every op of the spec's device."""
     out = [("g", (*s, p)) for s in spec.gemm_shapes() for p in (0, 1)]
+    out += [("x", s) for s in getattr(spec, "expert_shapes", list)()]
     out += [(a, p) for a in D.attn_ops(spec.CFG) for p in spec.ATTN_POINTS.values()]
     return out
 
@@ -80,7 +83,7 @@ def seq_name(op, shape):
     """Name of the runtime sequence for an op. GEMMs get one per shape. An
     attention op's lengths are run-time arguments, so its points share one
     sequence, keyed by the first shape entry only."""
-    return op_name(op, shape if op == "g" else shape[:1])
+    return op_name(op, shape if op in ("g", "x") else shape[:1])
 
 
 def _link(texts):
@@ -291,6 +294,7 @@ def main(spec_name, argv=None):
     heads = spec.ATTN_POINTS["base"][0]
     manifest = dict(
         gemm=[op_name("g", s) for op, s in ops(spec) if op == "g"],
+        experts=[op_name("x", s) for op, s in ops(spec) if op == "x"],
         attn={a: seq_name(a, (heads,)) for a in D.attn_ops(spec.CFG)},
         heads=heads,
         lm="lm" if hasattr(spec, "lm_build") else None,
@@ -298,5 +302,6 @@ def main(spec_name, argv=None):
         max_len=getattr(spec, "max_len", None),
     )
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
-    nops = len(manifest["gemm"]) + len(manifest["attn"]) + bool(manifest["lm"])
+    nops = len(manifest["gemm"]) + len(manifest["experts"])
+    nops += len(manifest["attn"]) + bool(manifest["lm"])
     print(f"built {nops} ops into {out}")

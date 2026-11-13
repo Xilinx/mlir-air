@@ -35,7 +35,6 @@ from air_examples.llms.qwen3_coder_30b_a3b_q4k import fused_spec as S  # noqa: E
 from air_examples.llms.shared.fused_prefill import device as D  # noqa: E402
 from air_examples.llms.shared.fused_prefill import hostops as H  # noqa: E402
 from air_examples.llms.shared.fused_prefill import packing as P  # noqa: E402
-from air_examples.llms.shared.fused_prefill import txn  # noqa: E402
 from air_examples.llms.shared.fused_prefill.engine import (  # noqa: E402
     FROM,
     TO,
@@ -291,14 +290,14 @@ class Q3CPrefill(Engine):
         x += self._experts(j, h, top_i.numpy(), top_v.numpy())
 
     # A layer's experts run in MOE_GROUPS dispatches of their up | gate GEMMs
-    # and as many of their down GEMMs, each dispatch the op's runtime sequence
-    # once per block of an expert's rows (txn.concat), on that block's part of
-    # one A, one C and the WE buffer. The host's GLU of a group's up | gate
-    # overlaps the device's up | gate of the next.
+    # and as many of their down GEMMs, each dispatch the part's "x" op on a
+    # run of blocks of experts' rows: one launch wave per block, on that
+    # block's A and C and its expert's weights. The host's GLU of a group's
+    # up | gate overlaps the device's up | gate of the next.
 
     def _part(self, part):
-        """part's GEMM: its op's sequence for one chunk and a pair (Copies),
-        its A and C buffers by block, and two dispatch slots."""
+        """part's GEMM: its "x" op, its A and C buffers by block, and two
+        dispatch slots."""
         if part not in self.parts:
             k, n = S.SHAPES[part]
             npd = S.npad(n)
@@ -310,7 +309,7 @@ class Q3CPrefill(Engine):
                 k=k,
                 npd=npd,
                 steps=k // D.TK,
-                cp=[txn.Copies(self._insts(f"g_{k}_{npd}_0_3_{q}")) for q in (0, 1)],
+                op=f"seg_x_{k}_{npd}_0_3",
                 abytes=abytes,
                 cbytes=[(1 + q) * D.M * npd * 2 for q in (0, 1)],
                 cap=[0, 0],  # blocks of one chunk / a pair the buffers hold
@@ -319,11 +318,15 @@ class Q3CPrefill(Engine):
         return self.parts[part]
 
     def _part_bufs(self, g, nb):
-        """g's A and C hold at least nb = [single, pair] blocks: pairs first,
-        then single blocks, each block always the one layout so that its A's
-        padding stays zero."""
+        """g's A and C hold at least nb = [single, pair] blocks, each kind in
+        its own sub-buffer, which the x op takes as its own argument; a
+        block is always the one layout, so that its A's padding stays zero."""
         if all(nb[q] <= g["cap"][q] for q in (0, 1)):
             return
+        import pyxrt as xrt
+
+        cap = S.CFG.experts.cap
+        assert all(v <= cap for v in nb), (nb, cap)
         g["cap"] = [max(nb[q], g["cap"][q]) for q in (0, 1)]
         pa, pc = g["cap"][1] * g["abytes"][1], g["cap"][1] * g["cbytes"][1]
         g["a0"], g["c0"] = [pa, 0], [pc, 0]  # first block's offset, by pair
@@ -333,6 +336,20 @@ class Q3CPrefill(Engine):
         g["a"].sync(TO)
         g["c"] = self.fp.bo(pc + g["cap"][0] * g["cbytes"][0], 2)
         g["cm"] = np.frombuffer(g["c"].map(), np.uint8)
+
+        def sub(bo, off, size):
+            return xrt.bo(bo, size, off) if size else self.dummy[0]
+
+        # the singles' A and C, then the pairs' (_bind)
+        g["sub"] = [
+            sub(g["a"], pa, g["cap"][0] * g["abytes"][0]),
+            sub(g["c"], pc, g["cap"][0] * g["cbytes"][0]),
+            sub(g["a"], 0, pa),
+            sub(g["c"], 0, pc),
+        ]
+        for slot in g["runs"]:
+            if slot is not None:
+                self._bind(g, slot["run"])
 
     def _a_tiles(self, g, q, i):
         """Block i (of pair-ness q)'s A tiles, one view per chunk."""
@@ -345,50 +362,71 @@ class Q3CPrefill(Engine):
         o = g["c0"][q] + i * g["cbytes"][q]
         return g["cm"][o : o + g["cbytes"][q]].view(bfloat16).reshape(-1, g["npd"])
 
+    def _we_part(self, j, part):
+        """The sub-buffer of WE from expert 0 of layer j's part: the x op's B,
+        which it indexes by expert."""
+        j = 0 if self.stream else j
+        key = ("x", j, part)
+        if key not in self.wsub:
+            import pyxrt as xrt
+
+            off = self.we_off + j * MB.E * E_GROUPS * GROUP
+            off += MB.RG_GU * MB.NCB_X * GROUP if part == DN else 0
+            self.wsub[key] = xrt.bo(self.we_bo, self.we_bo.size() - off, off)
+        return self.wsub[key]
+
+    def _bind(self, g, run):
+        a0, c0, a1, c1 = g["sub"]
+        run.set_arg(3, a1)
+        run.set_arg(5, c1)
+        run.set_arg(6, a0)
+        run.set_arg(7, c0)
+
     def _dispatch(self, part, s, blocks, j):
-        """Start part's GEMM on blocks [(expert, pair, index)] in dispatch
-        slot s; returns what _collect needs."""
+        """Start part's GEMM on blocks [(expert, pair, index)], pairs first,
+        each kind's indices consecutive, in dispatch slot s; returns what
+        _collect needs."""
         g = self._part(part)
-        b0 = MB.RG_GU * MB.NCB_X * GROUP if part == DN else 0
-        runs = []
-        for q in (1, 0):
-            off = [
-                (
-                    g["a0"][q] + i * g["abytes"][q],
-                    self.we_off
-                    + ((0 if self.stream else j) * MB.E + e) * E_GROUPS * GROUP
-                    + b0,
-                    g["c0"][q] + i * g["cbytes"][q],
-                )
-                for e, p, i in blocks
-                if p == q
-            ]
-            runs.append((g["cp"][q], np.asarray(off, np.int64).reshape(-1, 3)))
-            # flush each chunk's first output line: unflushed, it can read back
-            # with the previous dispatch's bytes
-            for _, _, c in off:
-                for hh in range(1 + q):
-                    g["c"].sync(TO, 64, c + hh * D.M * g["npd"] * 2)
-        nw = sum(c.body.size * len(o) for c, o in runs) + 4
+        kmax = S.CFG.experts.kmax
+        assert len(blocks) <= kmax, (len(blocks), kmax)
+        pairs = [b for b in blocks if b[1] == 1]
+        singles = [b for b in blocks if b[1] == 0]
+        assert blocks == pairs + singles
+        for run in (pairs, singles):
+            assert [i for _, _, i in run] == [run[0][2] + t for t in range(len(run))]
+        es = [e for e, _, _ in blocks]
+        words = self._insts(
+            g["op"][4:],
+            len(blocks),
+            len(pairs),
+            pairs[0][2] if pairs else 0,
+            singles[0][2] if singles else 0,
+            *es,
+            *[0] * (kmax - len(es)),
+        )
+        # flush each chunk's first output line: unflushed, it can read back
+        # with the previous dispatch's bytes
+        for _, q, i in blocks:
+            c = g["c0"][q] + i * g["cbytes"][q]
+            for hh in range(1 + q):
+                g["c"].sync(TO, 64, c + hh * D.M * g["npd"] * 2)
+        nw = words.size
         slot = g["runs"][s]
         if slot is None or slot["cap"] < nw:
             ib, view_ = self.fp.insts(np.zeros(nw, np.uint32))
             if slot is None:
-                bos = list(self.dummy)
-                bos[0:3] = [g["a"], self.we_bo, g["c"]]
-                slot = dict(run=self.fp.run(ib, nw, bos))
+                slot = dict(run=self.fp.run(ib, nw, list(self.dummy)))
+                self._bind(g, slot["run"])
                 g["runs"][s] = slot
             # a larger stream: the slot's one run (Ctx keeps every run it
             # made) takes the new instruction buffer, the old one goes
             slot["run"].set_arg(1, ib)
             slot.update(ib=ib, view=view_, cap=nw)
-        txn.concat(runs, slot["view"])
+        slot["view"][:nw] = words
         slot["ib"].sync(TO, nw * 4, 0)
         run = slot["run"]
         run.set_arg(2, nw)
-        run.set_arg(3, g["a"])
-        run.set_arg(4, self.we_bo)
-        run.set_arg(5, g["c"])
+        run.set_arg(4, self._we_part(j, part))
         t0 = time.perf_counter()
         run.r.start()
         return dict(run=run, t0=t0, tag=part)
@@ -426,8 +464,12 @@ class Q3CPrefill(Engine):
         cut = np.cumsum([len(b[1]) for b in blocks])
         ng = max(1, min(MOE_GROUPS, len(blocks)))
         edges = np.searchsorted(cut, cut[-1] * np.arange(1, ng) / ng, "right")
+        # no group larger than one x op takes
+        kmax = S.CFG.experts.kmax
         groups = [
-            blocks[a:b] for a, b in zip([0, *edges], [*edges, len(blocks)]) if b > a
+            blocks[c : min(b, c + kmax)]
+            for a, b in zip([0, *edges], [*edges, len(blocks)])
+            for c in range(a, b, kmax)
         ]
         # each block's place in its part's buffers: pairs, then single blocks,
         # numbered in group order so that a group's are contiguous

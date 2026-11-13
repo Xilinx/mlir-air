@@ -8,13 +8,14 @@
 """Several of the fused prefill's ops in one dispatch, and the host helpers
 that feed them in one parallel region.
 
-txn.concat must repeat a TXN stream with each copy's DDR patches moved by its
-own offsets, past 4 GB too, and leave every other word and a valid header.
+The "x" op, a GEMM over a run-time run of expert blocks, must keep its launch
+loop rolled and take each block's expert and buffers at run time.
 tile_a_rows_n, glu_tile_a_n and scatter_add_rows_n must write what the single
 calls do, byte for byte; scatter_add_rows_n's jobs share rows, so its sums
 must also come in the single calls' order.
 """
 
+import re
 import subprocess
 import sys
 import types
@@ -30,7 +31,6 @@ sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path_
 from air_examples.llms.shared.fused_prefill import device as D  # noqa: E402
 from air_examples.llms.shared.fused_prefill import hostops as H  # noqa: E402
 from air_examples.llms.shared.fused_prefill import packing as P  # noqa: E402
-from air_examples.llms.shared.fused_prefill import txn  # noqa: E402
 
 FP = SRC / "programming_examples/llms/shared/fused_prefill"
 OUT.mkdir(parents=True, exist_ok=True)
@@ -43,95 +43,44 @@ H.load(str(OUT))
 rng = np.random.default_rng(0)
 
 
-# A TXN stream as aie_runtime's builders write it (TxnEncoding.h).
-def write32(addr, v):
-    return [txn.WRITE, 0, addr, 0, v, 24]
-
-
-def blockwrite(addr, data):
-    return [txn.BLOCKWRITE, 0, addr, 4 * (4 + len(data))] + list(data)
-
-
-def maskwrite(addr, v, m):
-    return [txn.MASKWRITE, 0, addr, 0, v, m, 28]
-
-
-def patch(addr, arg, plus):
-    return [
-        txn.DDR_PATCH,
-        48,
-        0,
-        0,
-        0,
-        0,
-        addr,
-        0,
-        arg,
-        0,
-        plus & 0xFFFFFFFF,
-        plus >> 32,
-    ]
-
-
-def sync(col, chan):
-    return [txn.TCT, 16, col << 16, chan << 24]
-
-
-def stream(ops):
-    body = [w for op in ops for w in op]
-    return np.asarray(
-        [0x02040001, 0x0108, len(ops), 4 * (4 + len(body))] + body, np.uint32
-    )
-
-
-# CHECK: txn ok
-ops = [
-    write32(0x100, 7),
-    blockwrite(0x200, [1, 2, 3, 4, 5, 6, 7, 8]),
-    patch(0x204, 0, 0),
-    patch(0x224, 1, 9472),
-    maskwrite(0x300, 3840, 7936),
-    patch(0x244, 2, 128),
-    patch(0x264, 6, 0x80000000 + 64),  # an arg past the firmware's five
-    sync(0, 1),
-]
-w = stream(ops)
-assert [o for _, o, _ in txn.ops(w)] == [0, 1, 0x81, 0x81, 3, 0x81, 0x81, 0x80]
-c = txn.Copies(w)
-assert list(c.arg) == [0, 1, 2, 6] and list(c.plus) == [0, 9472, 128, 0x80000040]
-offs = np.array([[0, 0, 0, 0, 0, 0, 0], [4096, 5 << 30, 8192, 0, 0, 0, 3]], np.int64)
-small = txn.Copies(stream(ops[:3] + [sync(1, 0)]))
-out = np.zeros(c.words(2) + small.words(1), np.uint32)
-cat = txn.concat([(c, offs), (small, np.array([[1 << 33, 0, 0]], np.int64))], out)
-# the header counts every copy's ops and words; nothing else moves
-assert cat.size == 4 + 2 * c.body.size + small.body.size
-assert cat[2] == 2 * len(ops) + 4 and cat[3] == 4 * cat.size
-assert cat[0] == w[0] and cat[1] == w[1]
-got = txn.ops(cat)
-assert len(got) == cat[2]
-plus = [
-    (int(cat[p + 8]), int(cat[p + 10]) | int(cat[p + 11]) << 32)
-    for p, o, _ in got
-    if o == 0x81
-]
-assert plus == [
-    (0, 0), (1, 9472), (2, 128), (6, 0x80000040),
-    (0, 4096), (1, 9472 + (5 << 30)), (2, 128 + 8192), (6, 0x80000043),
-    (0, 1 << 33),
-], plus  # fmt: skip
-mask = np.ones(cat.size, bool)
-mask[2:4] = False  # the counts, checked above
-for p, o, _ in got:
-    if o == 0x81:
-        mask[p + 10 : p + 12] = False
-ref = np.concatenate([w[:4], c.body, c.body, small.body])
-assert np.array_equal(cat[mask], ref[mask])
-try:
-    txn.ops(np.concatenate([w, [9, 0]]).astype(np.uint32))
-    raise AssertionError("trailing words accepted")
-except ValueError:
-    pass
-print("txn ok")
+# CHECK: x op ok
+# The "x" op: the GEMM on a run of expert blocks, one launch wave per block. Its
+# wave count, pair count, first blocks and experts are run-time scalars, so the
+# launch loop stays rolled, the wave's expert is picked by an index_switch over
+# the expert scalars, and the pairs' and single chunks' feeds are the two arms
+# of an scf.if on wave < n1, each on its own buffers of blocks.
+cfg = D.Config(
+    attn={"a0": D.Attn(col=0, dh=128, lkp=32, kv_heads=2, max_blocks=4)},
+    act="silu",
+    q4k=True,
+    experts=D.Experts(kmax=3, cap=5, stride=7, experts=4),
+)
+x = str(D.build(cfg, "x", D.Q4K_COLS, D.NR, 0, 3, name="x", own=True).build("npu2"))
+sig = re.search(r"func.func @x\((.*?)\) \{", x).group(1)
+args = [t.split(": ")[1] for t in sig.split(", %")]
+# A and C of pairs, B, then the single chunks' (and the attention's) buffers,
+# then nb, n1, i1, i0 and one expert per block
+ks = D.k_pad(D.Q4K_COLS) // D.TK
+for q, a, c in ((1, 0, 2), (0, 3, 4)):
+    assert args[a] == f"memref<5x{D.HR}x{ks}x{1 + q}x{D.A_BFP}xi8>", args[a]
+    assert args[c] == f"memref<5x{1 + q}x{D.M}x1x{D.GNC}x{D.TN}xbf16>", args[c]
+# one layer's experts: the last one's panels, 3 experts' strides past the first
+rows = (D.NR // (2 * D.TN) - 1) + ks // 2 + 3 * 7
+assert args[1] == f"memref<{rows}x4x{D.Q4K_BYTES}xi8>", args[1]
+assert args[-7:] == ["i32"] * 7, args
+loop = re.search(r"scf.for %\S+ = %c0 to (%\S+) step", x)
+# the bound is nb, not a constant
+nb = len(args) - 7
+assert loop and not loop.group(1).startswith("%c"), loop
+assert f"arith.index_cast %arg{nb} : i32 to index" in x
+# kmax 3: cases 0 and 1, the last expert the default
+assert "scf.index_switch" in x and "case 1 {" in x and "case 2 {" not in x
+# pairs or single chunks: one scf.if, which keeps the stream free of
+# queue-space polls (an scf.index_switch arm gets one per transfer)
+assert len(re.findall(r"scf.if %\S+ \{", x)) == 1, re.findall(r"scf.if .*", x)
+assert len(re.findall(r"air.channel.put  @gAIn", x)) == 2 * D.HR
+assert len(re.findall(r"air.channel.get  @gCOut", x)) == 2 * D.GNC
+print("x op ok")
 
 # Blocks of an expert's rows, as the MoE gives them: one chunk, or a pair
 # (two chunks) of up to 2 * M rows, rows that end inside a row block.

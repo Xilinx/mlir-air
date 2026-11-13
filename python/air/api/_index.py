@@ -352,7 +352,30 @@ def coerce_index(value):
     if isinstance(value, (_Switch, RuntimeParam)):
         return value.as_index()
     # One element of an L1 buffer, read by the core: `W[topk[i]]`.
-    from ._value import BufferSlice
+    from ._value import BufferSlice, Tensor
+
+    # A rank-0 integer tensor: a scalar kernel argument, read at dispatch, as
+    # an index where it is used -- a run-time repeat count, or a DMA offset in
+    # the launch body. The value is the argument bound at the current scope.
+    if isinstance(value, Tensor) and not value.shape and not value.dtype.is_float:
+        from air.dialects import arith
+        from air.ir import IndexType
+
+        if value.value is None:
+            raise TypeError(f"{value!r} is not bound in this scope")
+        # One leaf per binding and block, so that two reads are the same term
+        # and cancel: `A[o : o + n]` with o built from the scalar has a static
+        # size only if both ends share the leaf. Only within the block the cast
+        # was made in, which it dominates.
+        from air.ir import InsertionPoint
+
+        here = InsertionPoint.current.block
+        cached = getattr(value, "_index_leaf", None)
+        if cached is not None and cached[0] == value.value and cached[1] == here:
+            return cached[2]
+        leaf = IndexExpr.leaf(arith.index_cast(IndexType.get(), value.value), "s")
+        value._index_leaf = (value.value, here, leaf)
+        return leaf
 
     if isinstance(value, BufferSlice):
         return IndexExpr.leaf(value.as_index(), "l1")

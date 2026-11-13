@@ -75,9 +75,11 @@ Prefill (`prefill.py`, device spec `fused_spec.py`):
 
 An expert's rows run in blocks of up to 256, the busiest experts first. A
 layer's blocks go in `MOE_GROUPS` (8) groups, each one up | gate dispatch, the
-GLU on the host and one down dispatch: the dispatch runs the GEMM's runtime
-sequence once per block, each copy pointed at its block's part of one A, one
-C and the WE buffer (`shared/fused_prefill/txn.py`). The host's GLU of a group
+GLU on the host and one down dispatch: the dispatch is the GEMM's "x" op
+(`shared/fused_prefill/device.py`), a launch repeated once per block, whose
+block count, blocks and experts are run-time arguments of the op's C++ TXN
+builder; each wave reads its block's A and C and its expert's part of the WE
+buffer. The host's GLU of a group
 overlaps the device's up | gate of the next. After prefill the host writes the prompt's
 K / V rows into the decode's cache, and the LM head takes the last row for the
 first token.
