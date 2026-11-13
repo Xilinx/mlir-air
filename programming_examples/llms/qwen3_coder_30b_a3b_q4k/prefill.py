@@ -34,14 +34,17 @@ import qwen3_coder_30b_a3b_q4k_weights as W  # noqa: E402
 from air_examples.llms.qwen3_coder_30b_a3b_q4k import fused_spec as S  # noqa: E402
 from air_examples.llms.shared.fused_prefill import device as D  # noqa: E402
 from air_examples.llms.shared.fused_prefill import hostops as H  # noqa: E402
+from air_examples.llms.shared.fused_prefill import packing as P  # noqa: E402
+from air_examples.llms.shared.fused_prefill import txn  # noqa: E402
 from air_examples.llms.shared.fused_prefill.engine import (  # noqa: E402
     FROM,
     TO,
     Engine,
-    view,
 )
 
 HOST_THREADS = 16
+# dispatches of a layer's up | gate GEMMs (and of its down GEMMs)
+MOE_GROUPS = 8
 BB = D.Q4K_BYTES
 GROUP = 4 * BB  # one column block of a 128-row group
 E_GROUPS = MB.RG_GU * MB.NCB_X + MB.RG_DN * MB.NCB_H  # an expert's, in WE
@@ -141,7 +144,7 @@ class Q3CPrefill(Engine):
             self.we_bo.sync(TO)
         self.attn_setup()
         self.kvb = {j: self.kv_bo("a") for j in range(len(self.layers))}
-        self.slots = {}
+        self.parts = {}
         self.warm("0.qkv")
 
     def _wbo(self, j, e, part):
@@ -287,105 +290,226 @@ class Q3CPrefill(Engine):
         self._t("router", t0)
         x += self._experts(j, h, top_i.numpy(), top_v.numpy())
 
-    def _slot(self, part, i, pair):
-        """Dispatch slot i of `part`: its A and C buffers and run."""
-        key = (part, i, pair)
-        if key not in self.slots:
+    # A layer's experts run in MOE_GROUPS dispatches of their up | gate GEMMs
+    # and as many of their down GEMMs, each dispatch the op's runtime sequence
+    # once per block of an expert's rows (txn.concat), on that block's part of
+    # one A, one C and the WE buffer. The host's GLU of a group's up | gate
+    # overlaps the device's up | gate of the next.
+
+    def _part(self, part):
+        """part's GEMM: its op's sequence for one chunk and a pair (Copies),
+        its A and C buffers by block, and two dispatch slots."""
+        if part not in self.parts:
             k, n = S.SHAPES[part]
             npd = S.npad(n)
-            name = f"g_{k}_{npd}_0_3_{pair}"
-            ins = self._insts(name)
-            ib, _ = self.fp.insts(ins)
-            a, am = self._a_buf(k, 1 + pair)
-            c = self.fp.bo((1 + pair) * D.M * npd * 2, 2)
-            cm = view(c, bfloat16, ((1 + pair) * D.M, npd))
-            bos = list(self.dummy)
-            bos[0:3] = [a, self.dummy[1], c]
-            run = self.fp.run(ib, len(ins), bos)
-            steps = k // D.TK
-            self.slots[key] = dict(
-                a=a,
-                am=[am[:, :steps, h] for h in range(1 + pair)],
-                c=c,
-                cm=cm,
-                run=run,
+            dt, shape = P.a_layout(self.gemm_format, k, 1)
+            abytes = [
+                int(np.prod(shape)) * np.dtype(dt).itemsize * (1 + q) for q in (0, 1)
+            ]
+            self.parts[part] = dict(
+                k=k,
                 npd=npd,
-                tag=part,
+                steps=k // D.TK,
+                cp=[txn.Copies(self._insts(f"g_{k}_{npd}_0_3_{q}")) for q in (0, 1)],
+                abytes=abytes,
+                cbytes=[(1 + q) * D.M * npd * 2 for q in (0, 1)],
+                cap=[0, 0],  # blocks of one chunk / a pair the buffers hold
+                runs=[None, None],
             )
-        return self.slots[key]
+        return self.parts[part]
 
-    def _start(self, st, wbo):
-        st["run"].set_arg(4, wbo)
-        # flush each chunk's first output line: unflushed, it can read back
-        # with the previous dispatch's bytes
-        chunk = D.M * st["npd"] * 2
-        for c in range(len(st["am"])):
-            st["c"].sync(TO, 64, c * chunk)
-        st["t0"] = time.perf_counter()
-        st["run"].r.start()
+    def _part_bufs(self, g, nb):
+        """g's A and C hold at least nb = [single, pair] blocks: pairs first,
+        then single blocks, each block always the one layout so that its A's
+        padding stays zero."""
+        if all(nb[q] <= g["cap"][q] for q in (0, 1)):
+            return
+        g["cap"] = [max(nb[q], g["cap"][q]) for q in (0, 1)]
+        pa, pc = g["cap"][1] * g["abytes"][1], g["cap"][1] * g["cbytes"][1]
+        g["a0"], g["c0"] = [pa, 0], [pc, 0]  # first block's offset, by pair
+        g["a"] = self.fp.bo(pa + g["cap"][0] * g["abytes"][0], 0)
+        g["am"] = np.frombuffer(g["a"].map(), np.uint8)
+        g["am"][:] = 0
+        g["a"].sync(TO)
+        g["c"] = self.fp.bo(pc + g["cap"][0] * g["cbytes"][0], 2)
+        g["cm"] = np.frombuffer(g["c"].map(), np.uint8)
 
-    def _wait(self, st, t):
-        r = st["run"].r.wait()
-        dt = time.perf_counter() - st["t0"]
+    def _a_tiles(self, g, q, i):
+        """Block i (of pair-ness q)'s A tiles, one view per chunk."""
+        dt, shape = P.a_layout(self.gemm_format, g["k"], 1 + q)
+        o = g["a0"][q] + i * g["abytes"][q]
+        v = g["am"][o : o + g["abytes"][q]].view(dt).reshape(shape)
+        return [v[:, : g["steps"], hh] for hh in range(1 + q)]
+
+    def _c_rows(self, g, q, i):
+        o = g["c0"][q] + i * g["cbytes"][q]
+        return g["cm"][o : o + g["cbytes"][q]].view(bfloat16).reshape(-1, g["npd"])
+
+    def _dispatch(self, part, s, blocks, j):
+        """Start part's GEMM on blocks [(expert, pair, index)] in dispatch
+        slot s; returns what _collect needs."""
+        g = self._part(part)
+        b0 = MB.RG_GU * MB.NCB_X * GROUP if part == DN else 0
+        runs = []
+        for q in (1, 0):
+            off = [
+                (
+                    g["a0"][q] + i * g["abytes"][q],
+                    self.we_off
+                    + ((0 if self.stream else j) * MB.E + e) * E_GROUPS * GROUP
+                    + b0,
+                    g["c0"][q] + i * g["cbytes"][q],
+                )
+                for e, p, i in blocks
+                if p == q
+            ]
+            runs.append((g["cp"][q], np.asarray(off, np.int64).reshape(-1, 3)))
+            # flush each chunk's first output line: unflushed, it can read back
+            # with the previous dispatch's bytes
+            for _, _, c in off:
+                for hh in range(1 + q):
+                    g["c"].sync(TO, 64, c + hh * D.M * g["npd"] * 2)
+        nw = sum(c.body.size * len(o) for c, o in runs) + 4
+        slot = g["runs"][s]
+        if slot is None or slot["cap"] < nw:
+            ib, view_ = self.fp.insts(np.zeros(nw, np.uint32))
+            if slot is None:
+                bos = list(self.dummy)
+                bos[0:3] = [g["a"], self.we_bo, g["c"]]
+                slot = dict(run=self.fp.run(ib, nw, bos))
+                g["runs"][s] = slot
+            # a larger stream: the slot's one run (Ctx keeps every run it
+            # made) takes the new instruction buffer, the old one goes
+            slot["run"].set_arg(1, ib)
+            slot.update(ib=ib, view=view_, cap=nw)
+        txn.concat(runs, slot["view"])
+        slot["ib"].sync(TO, nw * 4, 0)
+        run = slot["run"]
+        run.set_arg(2, nw)
+        run.set_arg(3, g["a"])
+        run.set_arg(4, self.we_bo)
+        run.set_arg(5, g["c"])
+        t0 = time.perf_counter()
+        run.r.start()
+        return dict(run=run, t0=t0, tag=part)
+
+    def _collect(self, d):
+        r = d["run"].r.wait()
+        dt = time.perf_counter() - d["t0"]
         self.dev_t += dt
-        self.by_op[st["tag"]] = self.by_op.get(st["tag"], 0.0) + dt
+        self.by_op[d["tag"]] = self.by_op.get(d["tag"], 0.0) + dt
         if "COMPLETED" not in str(r):
-            raise RuntimeError(f"fused prefill {st['tag']}: {r}")
-        st["c"].sync(FROM, t * st["npd"] * 2, 0)
-        return st["cm"]
+            raise RuntimeError(f"fused prefill {d['tag']}: {r}")
 
     def _experts(self, j, h, top_i, top_v):
         """The routed experts' weighted sum of h [n, D]."""
         n, M = h.shape[0], D.M
         out = np.zeros((n, S.D_MODEL), np.float32)
         zero = np.zeros(S.D_MODEL, np.float32)
-        blocks = []
+        blocks = []  # (expert, rows, weights, pair)
         # the busiest experts first
-        counts = np.bincount(top_i.ravel(), minlength=MB.E)
+        flat = top_i.ravel()
+        counts = np.bincount(flat, minlength=MB.E)
+        # each expert's (row, slot)s in row order, as np.nonzero(top_i == e)
+        by_e = np.argsort(flat, kind="stable")
+        first = np.concatenate([[0], np.cumsum(counts)])
         for e in np.argsort(-counts, kind="stable"):
             if counts[e] == 0:
                 break
-            rows, slot = np.nonzero(top_i == e)
-            wt = top_v[rows, slot]
+            f = by_e[first[e] : first[e + 1]]
+            rows = f // top_i.shape[1]
+            wt = top_v.ravel()[f]
             for r0 in range(0, len(rows), 2 * M):
-                blocks.append((e, rows[r0 : r0 + 2 * M], wt[r0 : r0 + 2 * M]))
+                r = rows[r0 : r0 + 2 * M]
+                blocks.append((e, r, wt[r0 : r0 + 2 * M], int(len(r) > M)))
+        # groups of about equal rows, in block order (the order of the sums)
+        cut = np.cumsum([len(b[1]) for b in blocks])
+        ng = max(1, min(MOE_GROUPS, len(blocks)))
+        edges = np.searchsorted(cut, cut[-1] * np.arange(1, ng) / ng, "right")
+        groups = [
+            blocks[a:b] for a, b in zip([0, *edges], [*edges, len(blocks)]) if b > a
+        ]
+        # each block's place in its part's buffers: pairs, then single blocks,
+        # numbered in group order so that a group's are contiguous
+        nb = [sum(1 - b[3] for b in blocks), sum(b[3] for b in blocks)]
+        gu, dn = self._part(GU), self._part(DN)
+        self._part_bufs(gu, nb)
+        self._part_bufs(dn, nb)
+        idx, ctr = [], [0, 0]
+        for grp in groups:
+            ii = []
+            for b in grp:
+                ii.append(ctr[b[3]])
+                ctr[b[3]] += 1
+            idx.append(ii)
 
-        def start_gu(i):
-            e, rows, _ = blocks[i]
-            pair = int(len(rows) > M)
-            st = self._slot(GU, i % 2, pair)
-            for hh in range(1 + pair):
-                H.tile_a_rows(h, rows[hh * M : (hh + 1) * M], st["am"][hh], D.TM, D.TK)
-            st["a"].sync(TO)
-            self._start(st, self._wbo(j, e, GU))
-            return st
+        def _runs(grp, ii):
+            """A group's blocks as _dispatch takes them, its pairs first: each
+            of its two sequences is then one run of copies."""
+            return sorted(
+                ((b[0], b[3], i) for b, i in zip(grp, ii)), key=lambda r: -r[1]
+            )
 
-        def finish_dn(i, st):
-            e, rows, wt = blocks[i]
-            y = self._wait(st, len(rows))
+        def sync(g, buf, grp, ii, d):
+            """A group's part of g's A or C, each pair-ness's in one sync."""
+            for q in (0, 1):
+                sel = [i for b, i in zip(grp, ii) if b[3] == q]
+                if sel:
+                    sz = g[f"{buf}bytes"][q]
+                    o = g[f"{buf}0"][q] + min(sel) * sz
+                    g[buf].sync(d, len(sel) * sz, o)
+
+        def start_gu(gi):
+            grp, ii = groups[gi], idx[gi]
             t0 = time.perf_counter()
-            H.scatter_add_rows(out, y, rows, wt, zero, S.D_MODEL)
+            jobs = []
+            for (e, rows, _, q), i in zip(grp, ii):
+                am = self._a_tiles(gu, q, i)
+                jobs += [(rows[hh * M : (hh + 1) * M], am[hh]) for hh in range(1 + q)]
+            H.tile_a_rows_n(h, jobs, D.TM, D.TK)
+            sync(gu, "a", grp, ii, TO)
+            self._t("experts_host", t0)
+            return self._dispatch(GU, gi % 2, _runs(grp, ii), j)
+
+        def start_dn(gi):
+            grp, ii = groups[gi], idx[gi]
+            t0 = time.perf_counter()
+            sync(gu, "c", grp, ii, FROM)
+            jobs = []
+            for (e, rows, _, q), i in zip(grp, ii):
+                y, am, t = self._c_rows(gu, q, i), self._a_tiles(dn, q, i), len(rows)
+                for hh in range(1 + q):
+                    r0, r1 = hh * M, min(t, (hh + 1) * M)
+                    jobs.append((y[r0:r1], r1 - r0, am[hh]))
+            H.glu_tile_a_n(jobs, S.I, D.TM, D.TK)
+            sync(dn, "a", grp, ii, TO)
+            self._t("experts_host", t0)
+            return self._dispatch(DN, gi % 2, _runs(grp, ii), j)
+
+        def finish_dn(gi, d):
+            self._collect(d)
+            t0 = time.perf_counter()
+            grp, ii = groups[gi], idx[gi]
+            sync(dn, "c", grp, ii, FROM)
+            jobs = [
+                (self._c_rows(dn, q, i)[: len(rows)], rows, wt)
+                for (e, rows, wt, q), i in zip(grp, ii)
+            ]
+            H.scatter_add_rows_n(out, jobs, zero, S.D_MODEL)
             self._t("experts_host", t0)
 
+        # device order: gu 0, gu 1, dn 0, gu 2, dn 1, ...: the host's GLU of
+        # group g runs while the device does gu g + 1
         gus = {0: start_gu(0)}
         prev = None
-        for i, (e, rows, wt) in enumerate(blocks):
-            if i + 1 < len(blocks):
-                gus[i + 1] = start_gu(i + 1)
-            t = len(rows)
-            pair = int(t > M)
-            gu = self._wait(gus.pop(i), t)
-            t0 = time.perf_counter()
-            st = self._slot(DN, i % 2, pair)
-            for hh in range(1 + pair):
-                r = slice(hh * M, min(t, (hh + 1) * M))
-                H.glu_tile_a(gu[r], r.stop - r.start, S.I, st["am"][hh], D.TM, D.TK)
-            st["a"].sync(TO)
-            self._t("experts_host", t0)
-            self._start(st, self._wbo(j, e, DN))
+        for gi in range(len(groups)):
+            if gi + 1 < len(groups):
+                gus[gi + 1] = start_gu(gi + 1)
+            self._collect(gus.pop(gi))
+            d = start_dn(gi)
             if prev is not None:
                 finish_dn(*prev)
-            prev = (i, st)
+            prev = (gi, d)
         finish_dn(*prev)
         return out
 

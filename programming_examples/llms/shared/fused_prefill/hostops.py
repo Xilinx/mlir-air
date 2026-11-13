@@ -53,6 +53,9 @@ def load(build_dir):
     _lib.round_bf16.argtypes = [_p, ctypes.c_long]
     _lib.tile_a_rows.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p, _l, _l]
     _lib.glu_tile_a.argtypes = [_p, _i, _i, _i, _i, _i, _p, _l, _l]
+    _lib.tile_a_rows_n.argtypes = [_p, _i, _i, _i, _i, _i, _p, _p, _p, _p, _p, _p]
+    _lib.glu_tile_a_n.argtypes = [_i, _i, _i, _i, _i, _p, _p, _p, _p, _p]
+    _lib.scatter_add_rows_n.argtypes = [_p, _i, _i, _p, _i, _i, _p, _p, _p, _p, _p]
     _lib.bf16_to_f32.argtypes = [_p, _i, _i, _i, _p]
     _lib.rms.argtypes = [_p, _i, _i, _p, _f, _p]
     _lib.add_rms.argtypes = [_p, _p, _i, _i, _p, _f, _p]
@@ -150,6 +153,66 @@ def tile_a_rows(x, rows, dst, tm, tk):
         dst.ctypes.data,
         *_tile_strides(dst),
     )
+
+
+def _jobs_dst(dsts):
+    """Addresses and tile strides of bfp16 A views (tile_a_rows)."""
+    st = np.asarray([_tile_strides(d) for d in dsts], np.int64).reshape(-1, 2)
+    adr = np.asarray([d.ctypes.data for d in dsts], np.int64)
+    return adr, np.ascontiguousarray(st[:, 0]), np.ascontiguousarray(st[:, 1])
+
+
+def tile_a_rows_n(x, jobs, tm, tk):
+    """tile_a_rows(x, rows, dst) for each (rows, dst) of jobs, in one
+    parallel region: x float32 [*, K] (C order), dst bfp16 A views."""
+    if not jobs:
+        return
+    x = np.ascontiguousarray(x, np.float32)
+    rows = [np.asarray(r, np.int64) for r, _ in jobs]
+    t = np.asarray([len(r) for r in rows], np.int32)
+    r0 = np.concatenate([[0], np.cumsum(t[:-1], dtype=np.int64)])
+    allr = np.ascontiguousarray(np.concatenate(rows))
+    adr, dr, dk = _jobs_dst([d for _, d in jobs])
+    _lib.tile_a_rows_n(
+        x.ctypes.data, x.shape[1], x.shape[1], tm, tk, len(jobs), allr.ctypes.data,
+        r0.ctypes.data, t.ctypes.data, adr.ctypes.data, dr.ctypes.data, dk.ctypes.data,
+    )  # fmt: skip
+
+
+def glu_tile_a_n(jobs, n, tm, tk):
+    """glu_tile_a(c, t, n, dst) for each (c, t, dst) of jobs, in one parallel
+    region; the c (bf16 [*, ldc], C order rows) share ldc."""
+    if not jobs:
+        return
+    ldc = jobs[0][0].shape[1]
+    assert all(c.shape[1] == ldc and c.strides[1] == 2 for c, _, _ in jobs)
+    c = np.asarray([c.ctypes.data for c, _, _ in jobs], np.int64)
+    t = np.asarray([t for _, t, _ in jobs], np.int32)
+    adr, dr, dk = _jobs_dst([d for _, _, d in jobs])
+    _lib.glu_tile_a_n(
+        ldc, n, tm, tk, len(jobs), c.ctypes.data, t.ctypes.data, adr.ctypes.data,
+        dr.ctypes.data, dk.ctypes.data,
+    )  # fmt: skip
+
+
+def scatter_add_rows_n(out, jobs, b, n):
+    """scatter_add_rows(out, y, rows, w, b, n) for each (y, rows, w) of jobs
+    in turn, in one parallel region; the y share ld."""
+    if not jobs:
+        return
+    ldy = jobs[0][0].shape[1]
+    assert all(y.shape[1] == ldy and y.strides[1] == 2 for y, _, _ in jobs)
+    y = np.asarray([y.ctypes.data for y, _, _ in jobs], np.int64)
+    t = np.asarray([len(r) for _, r, _ in jobs], np.int32)
+    r0 = np.concatenate([[0], np.cumsum(t[:-1], dtype=np.int64)])
+    rows = np.ascontiguousarray(np.concatenate([r for _, r, _ in jobs]), np.int64)
+    w = np.ascontiguousarray(np.concatenate([w for _, _, w in jobs]), np.float32)
+    b = _c(b)
+    _lib.scatter_add_rows_n(
+        out.ctypes.data, out.shape[1], ldy, b.ctypes.data, n, len(jobs),
+        y.ctypes.data, rows.ctypes.data, w.ctypes.data, r0.ctypes.data,
+        t.ctypes.data,
+    )  # fmt: skip
 
 
 def glu_tile_a(c, t, n, dst, tm, tk):
