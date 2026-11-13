@@ -9686,6 +9686,62 @@ static scf::IndexSwitchOp restoreIndexSwitchDrainToken(scf::IndexSwitchOp sw,
   return newSw;
 }
 
+// The same for a launch-scope scf.if: a branch on the launch's iteration (a
+// launch whose waves run one of two kinds of feeds, e.g. air.api's ops.branch)
+// loses its token result to the same canonicalize, and a drain in it is then
+// never awaited -- its BD is not released and the dispatch can finish before
+// the drain does. Rebuild it with a trailing !air.async.token result, each
+// branch yielding a wait_all over its dangling tokens; a missing else yields
+// an empty wait_all.
+static scf::IfOp restoreIfDrainToken(scf::IfOp ifOp, OpBuilder &b) {
+  auto tokTy = air::AsyncTokenType::get(ifOp.getContext());
+  if (ifOp.getNumResults() &&
+      isa<air::AsyncTokenType>(
+          ifOp.getResult(ifOp.getNumResults() - 1).getType()))
+    return ifOp;
+  auto dangling = [](Block *blk) {
+    SmallVector<Value> tokens;
+    if (!blk)
+      return tokens;
+    for (Operation &o : blk->without_terminator())
+      for (Value res : o.getResults())
+        if (isa<air::AsyncTokenType>(res.getType()) && res.use_empty())
+          tokens.push_back(res);
+    return tokens;
+  };
+  if (dangling(ifOp.thenBlock()).empty() && dangling(ifOp.elseBlock()).empty())
+    return ifOp;
+
+  SmallVector<Type> resTys(ifOp.getResultTypes());
+  resTys.push_back(tokTy);
+  b.setInsertionPoint(ifOp);
+  auto newIf = scf::IfOp::create(b, ifOp.getLoc(), resTys, ifOp.getCondition(),
+                                 /*withElseRegion=*/true);
+  if (auto attr =
+          ifOp->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+    newIf->setAttr(SymbolTable::getSymbolAttrName(), attr);
+  for (auto [oldBlk, newBlk] :
+       {std::pair{ifOp.thenBlock(), newIf.thenBlock()},
+        std::pair{ifOp.elseBlock(), newIf.elseBlock()}}) {
+    SmallVector<Value> yieldVals;
+    if (oldBlk) {
+      auto y = cast<scf::YieldOp>(oldBlk->getTerminator());
+      yieldVals.append(y.getOperands().begin(), y.getOperands().end());
+      newBlk->getOperations().splice(newBlk->end(), oldBlk->getOperations(),
+                                     oldBlk->begin(), Block::iterator(y));
+    }
+    SmallVector<Value> tokens = dangling(newBlk);
+    b.setInsertionPointToEnd(newBlk);
+    auto wa = air::WaitAllOp::create(b, ifOp.getLoc(), tokTy, tokens);
+    yieldVals.push_back(wa.getResult(0));
+    scf::YieldOp::create(b, ifOp.getLoc(), yieldVals);
+  }
+  for (auto [o, n] : llvm::zip(ifOp.getResults(), newIf.getResults()))
+    o.replaceAllUsesWith(n);
+  ifOp.erase();
+  return newIf;
+}
+
 // Channel declarations whose data reaches a herd that also consumes a
 // broadcast channel.
 //
@@ -9897,18 +9953,25 @@ public:
     }
 
     // Re-establish drain tokens on any sync launch-scope scf.index_switch
-    // (mode-select host feeds) before the launch is serialized into scf.for, so
-    // AIRLaunchToScfForPattern's generateWaitAllToTerminateBlock threads the
-    // switch's branch-feed tokens into the loop-carried drain / air.launch_end.
+    // (mode-select host feeds) or scf.if before the launch is serialized into
+    // scf.for, so AIRLaunchToScfForPattern's generateWaitAllToTerminateBlock
+    // threads the branch-feed tokens into the loop-carried drain /
+    // air.launch_end.
     {
       OpBuilder b(ctx);
       SmallVector<scf::IndexSwitchOp> switchesToFix;
+      SmallVector<scf::IfOp> ifsToFix;
       func.walk([&](air::LaunchOp launch) {
-        for (auto sw : launch.getBody().front().getOps<scf::IndexSwitchOp>())
+        Block &body = launch.getBody().front();
+        for (auto sw : body.getOps<scf::IndexSwitchOp>())
           switchesToFix.push_back(sw);
+        for (auto ifOp : body.getOps<scf::IfOp>())
+          ifsToFix.push_back(ifOp);
       });
       for (auto sw : switchesToFix)
         restoreIndexSwitchDrainToken(sw, b);
+      for (auto ifOp : ifsToFix)
+        restoreIfDrainToken(ifOp, b);
     }
 
     // Convert air.launch to scf.for.
