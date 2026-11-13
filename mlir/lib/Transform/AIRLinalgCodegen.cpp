@@ -4920,15 +4920,24 @@ DiagnosedSilenceableFailure transform::FuseElementwiseLinalgOp::apply(
 
     // By default every fusion is allowed. With no_recompute, a producer is
     // fused only where it is computed once per element: not into a consumer
-    // that reads it through a broadcast, and not when it has other users,
-    // which would keep it as well.
+    // that reads it through a broadcast or in a loop the producer is outside
+    // of, and not when it has other users, which would keep it as well.
     bool noRecompute = getNoRecompute();
     linalg::ControlFusionFn controlFn = [noRecompute](OpOperand *fusedOperand) {
       if (!noRecompute)
         return true;
       auto consumer = cast<linalg::LinalgOp>(fusedOperand->getOwner());
-      return fusedOperand->get().hasOneUse() &&
-             consumer.getMatchingIndexingMap(fusedOperand).isPermutation();
+      if (!fusedOperand->get().hasOneUse() ||
+          !consumer.getMatchingIndexingMap(fusedOperand).isPermutation())
+        return false;
+      // Nor into a loop the producer is outside of: each trip would compute
+      // it again.
+      Operation *producer = fusedOperand->get().getDefiningOp();
+      for (Operation *loop = consumer->getParentOp(); loop;
+           loop = loop->getParentOp())
+        if (isa<LoopLikeOpInterface>(loop) && !loop->isAncestor(producer))
+          return false;
+      return true;
     };
 
     linalg::populateElementwiseOpsFusionPatterns(patterns, controlFn);

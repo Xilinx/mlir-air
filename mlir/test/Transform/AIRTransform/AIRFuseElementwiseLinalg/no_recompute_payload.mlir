@@ -131,3 +131,39 @@ func.func @transposed(%a: tensor<8x4xf32>, %b: tensor<4x8xf32>) -> tensor<4x8xf3
   } -> tensor<4x8xf32>
   return %r : tensor<4x8xf32>
 }
+
+// The only user is inside a loop the producer is outside of: fused, the
+// producer would be computed again every trip.
+// CHECK-LABEL: @outside_loop
+// CHECK: linalg.generic
+// CHECK: arith.mulf
+// CHECK: scf.for
+// CHECK: linalg.generic
+// CHECK-NOT: arith.mulf
+// CHECK: arith.addf
+// PLAIN-LABEL: @outside_loop
+// PLAIN: scf.for
+// PLAIN: linalg.generic
+// PLAIN: arith.mulf
+// PLAIN: arith.addf
+func.func @outside_loop(%a: tensor<8xf32>, %b: tensor<8xf32>, %n: index) -> tensor<8xf32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %e = tensor.empty() : tensor<8xf32>
+  %m = linalg.generic {indexing_maps = [#id1, #id1], iterator_types = ["parallel"]}
+      ins(%a : tensor<8xf32>) outs(%e : tensor<8xf32>) {
+  ^bb0(%x: f32, %o: f32):
+    %0 = arith.mulf %x, %x : f32
+    linalg.yield %0 : f32
+  } -> tensor<8xf32>
+  %r = scf.for %i = %c0 to %n step %c1 iter_args(%acc = %b) -> (tensor<8xf32>) {
+    %s = linalg.generic {indexing_maps = [#id1, #id1, #id1], iterator_types = ["parallel"]}
+        ins(%m, %acc : tensor<8xf32>, tensor<8xf32>) outs(%e : tensor<8xf32>) {
+    ^bb0(%x: f32, %y: f32, %o: f32):
+      %0 = arith.addf %x, %y : f32
+      linalg.yield %0 : f32
+    } -> tensor<8xf32>
+    scf.yield %s : tensor<8xf32>
+  }
+  return %r : tensor<8xf32>
+}
