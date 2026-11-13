@@ -141,6 +141,10 @@ void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
   // The pairing with the air.channel.issue that patches and starts the op.
   if (auto issue = src->getAttr("air.device_issue"))
     dst->setAttr("air.device_issue", issue);
+  // The cores a broadcast put feeds, read by AIRToAIE's flow creation: its
+  // channel is declared broadcast, so a put without it would route to one.
+  if (auto bs = src->getAttr("broadcast_set"))
+    dst->setAttr("broadcast_set", bs);
 }
 
 void air::addAsyncDependency(Operation *op, Value token) {
