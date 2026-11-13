@@ -107,9 +107,9 @@ measured with `llama-bench`.
 | --- | --- | --- |
 | decode, 1024-token context | 45.5 ms/token (22.0 tok/s) | 36.3 ms/token (27.5 tok/s) |
 | decode, 4096-token context | 56.2 ms/token (17.8 tok/s) | 35.7 ms/token (28.0 tok/s) |
-| prefill, 1024-token prompt | 1.57 s | 1.92 s |
-| prefill, 2048-token prompt | 2.96 s | 4.11 s |
-| prefill, 4096-token prompt | 6.65 s | 10.2 s |
+| prefill, 1024-token prompt | 1.48 s | 1.92 s |
+| prefill, 2048-token prompt | 2.80 s | 4.11 s |
+| prefill, 4096-token prompt | 6.35 s | 10.2 s |
 
 Decode streams about 1.9 GB of weights a token; the NPU's DDR reads top out
 near 58 GB/s, so its floor is above llama.cpp's on the integrated GPU.

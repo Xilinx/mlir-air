@@ -383,7 +383,7 @@ class Q3CPrefill(Engine):
             for _, _, c in off:
                 for hh in range(1 + q):
                     g["c"].sync(TO, 64, c + hh * D.M * g["npd"] * 2)
-        nw = sum(c.body.size * len(o) for c, o in runs) + 4
+        nw = txn.size(runs)
         slot = g["runs"][s]
         if slot is None or slot["cap"] < nw:
             ib, view_ = self.fp.insts(np.zeros(nw, np.uint32))

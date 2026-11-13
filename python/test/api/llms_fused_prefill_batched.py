@@ -85,27 +85,39 @@ def stream(ops):
 
 
 # CHECK: txn ok
+CORE = (1 << 25) | (2 << 20)  # column 1, row 2: a core tile
 ops = [
-    write32(0x100, 7),
-    blockwrite(0x200, [1, 2, 3, 4, 5, 6, 7, 8]),
-    patch(0x204, 0, 0),
-    patch(0x224, 1, 9472),
-    maskwrite(0x300, 3840, 7936),
-    patch(0x244, 2, 128),
-    patch(0x264, 6, 0x80000000 + 64),  # an arg past the firmware's five
+    write32(CORE | 0x3E80, 7),  # an RTP
+    write32(CORE | 0x1F000, 1),  # its lock
+    write32(0x1D204, 5),  # a shim register
+    blockwrite(0x1D000, [1, 2, 3, 4, 5, 6, 7, 8]),
+    patch(0x1D004, 0, 0),
+    patch(0x1D024, 1, 9472),
+    maskwrite(0x1D200, 3840, 7936),
+    patch(0x1D044, 2, 128),
+    patch(0x1D064, 6, 0x80000000 + 64),  # an arg past the firmware's five
     sync(0, 1),
 ]
 w = stream(ops)
-assert [o for _, o, _ in txn.ops(w)] == [0, 1, 0x81, 0x81, 3, 0x81, 0x81, 0x80]
+assert [o for _, o, _ in txn.ops(w)] == [0, 0, 0, 1, 0x81, 0x81, 3, 0x81, 0x81, 0x80]
 c = txn.Copies(w)
-assert list(c.arg) == [0, 1, 2, 6] and list(c.plus) == [0, 9472, 128, 0x80000040]
-offs = np.array([[0, 0, 0, 0, 0, 0, 0], [4096, 5 << 30, 8192, 0, 0, 0, 3]], np.int64)
-small = txn.Copies(stream(ops[:3] + [sync(1, 0)]))
-out = np.zeros(c.words(2) + small.words(1), np.uint32)
-cat = txn.concat([(c, offs), (small, np.array([[1 << 33, 0, 0]], np.int64))], out)
+for f in (c.first, c.rest):
+    assert list(f.arg) == [0, 1, 2, 6] and list(f.plus) == [0, 9472, 128, 0x80000040]
+# a copy after the first leaves out the RTP write, and only that
+assert c.first.nops == len(ops) and c.rest.nops == len(ops) - 1
+assert np.array_equal(c.first.body, w[4:])
+assert np.array_equal(c.rest.body, np.concatenate([w[4 + 6 :]]))
+offs = np.array(
+    [[0, 0, 0, 0, 0, 0, 0], [4096, 5 << 30, 8192, 0, 0, 0, 3], [1, 2, 3, 0, 0, 0, 4]],
+    np.int64,
+)
+small = txn.Copies(stream(ops[3:5] + [sync(1, 0)]))
+runs = [(c, offs), (small, np.array([[1 << 33, 0, 0]], np.int64))]
+out = np.zeros(txn.size(runs) + 5, np.uint32)
+cat = txn.concat(runs, out)
 # the header counts every copy's ops and words; nothing else moves
-assert cat.size == 4 + 2 * c.body.size + small.body.size
-assert cat[2] == 2 * len(ops) + 4 and cat[3] == 4 * cat.size
+assert cat.size == txn.size(runs) == 4 + w.size - 4 + 2 * c.rest.body.size + 7 * 4
+assert cat[2] == len(ops) + 2 * (len(ops) - 1) + 3 and cat[3] == 4 * cat.size
 assert cat[0] == w[0] and cat[1] == w[1]
 got = txn.ops(cat)
 assert len(got) == cat[2]
@@ -117,6 +129,7 @@ plus = [
 assert plus == [
     (0, 0), (1, 9472), (2, 128), (6, 0x80000040),
     (0, 4096), (1, 9472 + (5 << 30)), (2, 128 + 8192), (6, 0x80000043),
+    (0, 1), (1, 9474), (2, 131), (6, 0x80000044),
     (0, 1 << 33),
 ], plus  # fmt: skip
 mask = np.ones(cat.size, bool)
@@ -124,7 +137,7 @@ mask[2:4] = False  # the counts, checked above
 for p, o, _ in got:
     if o == 0x81:
         mask[p + 10 : p + 12] = False
-ref = np.concatenate([w[:4], c.body, c.body, small.body])
+ref = np.concatenate([w[:4], c.first.body, c.rest.body, c.rest.body, small.first.body])
 assert np.array_equal(cat[mask], ref[mask])
 try:
     txn.ops(np.concatenate([w, [9, 0]]).astype(np.uint32))

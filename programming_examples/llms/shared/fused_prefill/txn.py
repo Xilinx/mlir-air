@@ -40,23 +40,67 @@ def ops(words):
     return out
 
 
+# a core tile's row in a TXN register address, and its lock registers
+_ROW, _LOCKS = lambda a: (a >> 20) & 0x1F, 0x1F000
+
+
+class _Form:
+    """A TXN stream's ops (no header) and its DDR patches."""
+
+    def __init__(self, w, keep):
+        body = [w[p : p + n] for p, opc, n in ops(w) if keep(w, p, opc)]
+        self.nops = len(body)
+        self.body = np.concatenate(body).astype(np.uint32)
+        pos, at = [], 0
+        for b in body:
+            if int(b[0]) & 0xFF == DDR_PATCH:
+                pos.append(at)
+            at += b.size
+        self.pos = np.asarray(pos, np.int64)
+        self.arg = self.body[self.pos + 8].astype(np.int64)
+        self.plus = self.body[self.pos + 10].astype(np.uint64) | (
+            self.body[self.pos + 11].astype(np.uint64) << np.uint64(32)
+        )
+
+
 class Copies:
     """An op's TXN stream, to be repeated with each copy's offsets added to
-    its DDR patches of given arguments."""
+    its DDR patches of given arguments. A copy that follows another of the
+    same op skips the writes to the cores' data memory, the RTPs, which hold
+    what the copy before wrote; it still writes their locks, which start the
+    cores on it. The firmware is slow at those writes: on the fused prefill's
+    GEMMs they were a sixth of an op's time."""
 
     def __init__(self, words):
         w = np.asarray(words, np.uint32)
-        self.head, self.body, self.nops = w[:4].copy(), w[4:].copy(), int(w[2])
-        p = [pos - 4 for pos, opc, _ in ops(w) if opc == DDR_PATCH]
-        self.pos = np.asarray(p, np.int64)
-        b = self.body
-        self.arg = b[self.pos + 8].astype(np.int64)
-        self.plus = b[self.pos + 10].astype(np.uint64) | (
-            b[self.pos + 11].astype(np.uint64) << np.uint64(32)
-        )
+        self.head = w[:4].copy()
 
-    def words(self, n):
-        return 4 + n * self.body.size
+        def repeat(w, p, opc):
+            if opc != WRITE:
+                return True
+            a = int(w[p + 2])
+            return _ROW(a) < 2 or (a & 0xFFFFF) >= _LOCKS
+
+        self.first = _Form(w, lambda w, p, opc: True)
+        self.rest = _Form(w, repeat)
+
+
+def size(runs):
+    """Words of concat(runs)."""
+    return 4 + sum(
+        c.first.body.size + (len(o) - 1) * c.rest.body.size for c, o in runs if len(o)
+    )
+
+
+def _put(w, at, f, o):
+    """Copies of form f at w[at:], one per row of offsets o; the end."""
+    k, m = len(o), f.body.size
+    seg = w[at : at + k * m].reshape(k, m)
+    seg[:] = f.body
+    plus = f.plus[None, :] + o[:, f.arg].astype(np.uint64)
+    seg[:, f.pos + 10] = (plus & np.uint64(0xFFFFFFFF)).astype(np.uint32)
+    seg[:, f.pos + 11] = (plus >> np.uint64(32)).astype(np.uint32)
+    return at + k * m
 
 
 def concat(runs, out=None):
@@ -65,18 +109,13 @@ def concat(runs, out=None):
     offsets[i, a] bytes. Writes into `out` (uint32, at least as long) when
     given; returns the stream."""
     runs = [(c, np.asarray(o, np.int64)) for c, o in runs if len(o)]
-    n = sum(c.body.size * len(o) for c, o in runs)
-    w = np.empty(4 + n, np.uint32) if out is None else out[: 4 + n]
+    n = size(runs)
+    w = np.empty(n, np.uint32) if out is None else out[:n]
     w[:4] = runs[0][0].head
-    w[2] = sum(c.nops * len(o) for c, o in runs)
-    w[3] = (4 + n) * 4
+    w[2] = sum(c.first.nops + (len(o) - 1) * c.rest.nops for c, o in runs)
+    w[3] = n * 4
     at = 4
     for c, o in runs:
-        k, m = len(o), c.body.size
-        seg = w[at : at + k * m].reshape(k, m)
-        seg[:] = c.body
-        plus = c.plus[None, :] + o[:, c.arg].astype(np.uint64)
-        seg[:, c.pos + 10] = (plus & np.uint64(0xFFFFFFFF)).astype(np.uint32)
-        seg[:, c.pos + 11] = (plus >> np.uint64(32)).astype(np.uint32)
-        at += k * m
+        at = _put(w, at, c.first, o[:1])
+        at = _put(w, at, c.rest, o[1:])
     return w
