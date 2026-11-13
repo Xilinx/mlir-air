@@ -267,6 +267,27 @@ void scatter_add_rows(float *out, int ldo, const uint16_t *y, int ldy,
   }
 }
 
+// scatter_add_rows for nj jobs in turn, in one parallel region: job j's t[j]
+// rows of y[j] (an address) to rows + r0[j] with weights w + r0[j]. A job's
+// rows are distinct; jobs may share rows, so each finishes before the next
+// (the sums in the order of the single calls)
+void scatter_add_rows_n(float *out, int ldo, int ldy, const float *b, int n,
+                        int nj, const int64_t *y, const int64_t *rows,
+                        const float *w, const int64_t *r0, const int32_t *t) {
+#pragma omp parallel num_threads(NT)
+  for (int j = 0; j < nj; j++) {
+    const uint16_t *yj = (const uint16_t *)(intptr_t)y[j];
+#pragma omp for schedule(static)
+    for (int i = 0; i < t[j]; i++) {
+      float *o = out + rows[r0[j] + i] * ldo;
+      const uint16_t *yi = yj + (long)i * ldy;
+      const float wi = w[r0[j] + i];
+      for (int k = 0; k < n; k++)
+        o[k] += wi * (bf2f(yi[k]) + b[k]);
+    }
+  }
+}
+
 // dst (tiled A, K = n) = bf16(rms(x) * w)
 void rms_tile(const float *x, int t, int n, const float *w, float eps, int TM,
               int TK, uint16_t *dst) {
@@ -721,51 +742,89 @@ void tiles_bfp(const uint16_t *src, int t, int K, int TM, int TK, int k0,
 
 // rows[r] of x [*, ldx] f32, r < t, into the GEMM's A (tiles_bfp's layout),
 // rounded to bf16 as tile_a does; rows past t in the last 8 are zeros
-void tile_a_rows(const float *x, int ldx, const int64_t *rows, int t, int K,
-                 int TM, int TK, uint8_t *dst, long dr, long dk) {
+// one item rs (8 rows by one K step) of tile_a_rows
+static inline void tile_a_rows_rs(const float *x, int ldx, const int64_t *rows,
+                                  int t, int K, int TM, int TK, uint8_t *dst,
+                                  long dr, long dk, int rs) {
   int ks = K / TK, nb = TM / 8;
   long tile = 72L * (TM / 8) * (TK / 8);
-#pragma omp parallel for num_threads(NT) schedule(static)
-  for (int rs = 0; rs < (t + 7) / 8 * ks; rs++) {
-    int rb = rs / ks, s = rs % ks, ty = rb / nb, b = rb % nb;
-    uint8_t *d = dst + (ty * dr + s * dk) * tile + 72L * (b % 2);
-    for (int kb = 0; kb < TK / 8; kb++) {
-      uint16_t blk[64];
-      for (int g = 0; g < 8; g++) {
-        int r = rb * 8 + g;
-        const float *xs =
-            x + (r < t ? rows[r] * (long)ldx : 0) + s * TK + kb * 8;
-        for (int c = 0; c < 8; c++)
-          blk[g * 8 + c] = r < t ? f2bf(xs[c]) : 0;
-      }
-      bfp_block(blk, 8, 1, d + 144L * ((b / 2) * (TK / 8) + kb));
+  int rb = rs / ks, s = rs % ks, ty = rb / nb, b = rb % nb;
+  uint8_t *d = dst + (ty * dr + s * dk) * tile + 72L * (b % 2);
+  for (int kb = 0; kb < TK / 8; kb++) {
+    uint16_t blk[64];
+    for (int g = 0; g < 8; g++) {
+      int r = rb * 8 + g;
+      const float *xs = x + (r < t ? rows[r] * (long)ldx : 0) + s * TK + kb * 8;
+      for (int c = 0; c < 8; c++)
+        blk[g * 8 + c] = r < t ? f2bf(xs[c]) : 0;
     }
+    bfp_block(blk, 8, 1, d + 144L * ((b / 2) * (TK / 8) + kb));
+  }
+}
+
+void tile_a_rows(const float *x, int ldx, const int64_t *rows, int t, int K,
+                 int TM, int TK, uint8_t *dst, long dr, long dk) {
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int rs = 0; rs < (t + 7) / 8 * (K / TK); rs++)
+    tile_a_rows_rs(x, ldx, rows, t, K, TM, TK, dst, dr, dk, rs);
+}
+
+// tile_a_rows for nj jobs in one parallel region: job j's t[j] rows
+// rows + r0[j] into dst[j] (an address) with strides dr[j], dk[j]
+void tile_a_rows_n(const float *x, int ldx, int K, int TM, int TK, int nj,
+                   const int64_t *rows, const int64_t *r0, const int32_t *t,
+                   const int64_t *dst, const int64_t *dr, const int64_t *dk) {
+#pragma omp parallel num_threads(NT)
+  for (int j = 0; j < nj; j++) {
+#pragma omp for schedule(static) nowait
+    for (int rs = 0; rs < (t[j] + 7) / 8 * (K / TK); rs++)
+      tile_a_rows_rs(x, ldx, rows + r0[j], t[j], K, TM, TK,
+                     (uint8_t *)(intptr_t)dst[j], dr[j], dk[j], rs);
   }
 }
 
 // An expert's GLU into the down GEMM's A (tiles_bfp's layout):
 // bf16(u * SiLU(g)), c bf16 [t, ldc] holding u and g in turns of TK columns
-void glu_tile_a(const uint16_t *c, int ldc, int t, int n, int TM, int TK,
-                uint8_t *dst, long dr, long dk) {
+// one item rs (8 rows by one K step) of glu_tile_a
+static inline void glu_tile_a_rs(const uint16_t *c, int ldc, int t, int n,
+                                 int TM, int TK, uint8_t *dst, long dr, long dk,
+                                 int rs) {
   int ks = n / TK, nb = TM / 8;
   long tile = 72L * (TM / 8) * (TK / 8);
-#pragma omp parallel for num_threads(NT) schedule(static)
-  for (int rs = 0; rs < (t + 7) / 8 * ks; rs++) {
-    int rb = rs / ks, s = rs % ks, ty = rb / nb, b = rb % nb;
-    uint8_t *d = dst + (ty * dr + s * dk) * tile + 72L * (b % 2);
-    for (int kb = 0; kb < TK / 8; kb++) {
-      uint16_t blk[64];
-      for (int g = 0; g < 8; g++) {
-        int r = rb * 8 + g;
-        const uint16_t *u =
-            c + (long)(r < t ? r : 0) * ldc + 2 * s * TK + kb * 8;
-        for (int i = 0; i < 8; i++) {
-          float gv = bf2f(u[TK + i]);
-          float sg = 1.f / (1.f + vexp(-gv));
-          blk[g * 8 + i] = r < t ? f2bf(bf2f(u[i]) * gv * sg) : 0;
-        }
+  int rb = rs / ks, s = rs % ks, ty = rb / nb, b = rb % nb;
+  uint8_t *d = dst + (ty * dr + s * dk) * tile + 72L * (b % 2);
+  for (int kb = 0; kb < TK / 8; kb++) {
+    uint16_t blk[64];
+    for (int g = 0; g < 8; g++) {
+      int r = rb * 8 + g;
+      const uint16_t *u = c + (long)(r < t ? r : 0) * ldc + 2 * s * TK + kb * 8;
+      for (int i = 0; i < 8; i++) {
+        float gv = bf2f(u[TK + i]);
+        float sg = 1.f / (1.f + vexp(-gv));
+        blk[g * 8 + i] = r < t ? f2bf(bf2f(u[i]) * gv * sg) : 0;
       }
-      bfp_block(blk, 8, 1, d + 144L * ((b / 2) * (TK / 8) + kb));
     }
+    bfp_block(blk, 8, 1, d + 144L * ((b / 2) * (TK / 8) + kb));
+  }
+}
+
+void glu_tile_a(const uint16_t *c, int ldc, int t, int n, int TM, int TK,
+                uint8_t *dst, long dr, long dk) {
+#pragma omp parallel for num_threads(NT) schedule(static)
+  for (int rs = 0; rs < (t + 7) / 8 * (n / TK); rs++)
+    glu_tile_a_rs(c, ldc, t, n, TM, TK, dst, dr, dk, rs);
+}
+
+// glu_tile_a for nj jobs in one parallel region: job j's t[j] rows at c[j]
+// (an address) into dst[j] with strides dr[j], dk[j]
+void glu_tile_a_n(int ldc, int n, int TM, int TK, int nj, const int64_t *c,
+                  const int32_t *t, const int64_t *dst, const int64_t *dr,
+                  const int64_t *dk) {
+#pragma omp parallel num_threads(NT)
+  for (int j = 0; j < nj; j++) {
+#pragma omp for schedule(static) nowait
+    for (int rs = 0; rs < (t[j] + 7) / 8 * (n / TK); rs++)
+      glu_tile_a_rs((const uint16_t *)(intptr_t)c[j], ldc, t[j], n, TM, TK,
+                    (uint8_t *)(intptr_t)dst[j], dr[j], dk[j], rs);
   }
 }
