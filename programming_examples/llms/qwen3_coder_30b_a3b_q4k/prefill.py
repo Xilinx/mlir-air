@@ -302,6 +302,7 @@ class Q3CPrefill(Engine):
         if part not in self.parts:
             k, n = S.SHAPES[part]
             npd = S.npad(n)
+            rows2 = f"g_{k}_{npd}_0_3_2" in self.man["gemm"]
             dt, shape = P.a_layout(self.gemm_format, k, 1)
             abytes = [
                 int(np.prod(shape)) * np.dtype(dt).itemsize * (1 + q) for q in (0, 1)
@@ -310,7 +311,12 @@ class Q3CPrefill(Engine):
                 k=k,
                 npd=npd,
                 steps=k // D.TK,
-                cp=[txn.Copies(self._insts(f"g_{k}_{npd}_0_3_{q}")) for q in (0, 1)],
+                # a block of one chunk runs pair 2 where the device has it
+                rows2=rows2,
+                cp=[
+                    txn.Copies(self._insts(f"g_{k}_{npd}_0_3_{m}"))
+                    for m in (2 if rows2 else 0, 1)
+                ],
                 abytes=abytes,
                 cbytes=[(1 + q) * D.M * npd * 2 for q in (0, 1)],
                 cap=[0, 0],  # blocks of one chunk / a pair the buffers hold
@@ -335,11 +341,19 @@ class Q3CPrefill(Engine):
         g["cm"] = np.frombuffer(g["c"].map(), np.uint8)
 
     def _a_tiles(self, g, q, i):
-        """Block i (of pair-ness q)'s A tiles, one view per chunk."""
+        """Block i (of pair-ness q)'s A as (first row, rows, tiles view)
+        pieces: a chunk each, or for a chunk run as pair 2, a row block each
+        in its layout [lo][K step][hi][tile] (row block 2 hi + lo)."""
         dt, shape = P.a_layout(self.gemm_format, g["k"], 1 + q)
         o = g["a0"][q] + i * g["abytes"][q]
         v = g["am"][o : o + g["abytes"][q]].view(dt).reshape(shape)
-        return [v[:, : g["steps"], hh] for hh in range(1 + q)]
+        if q == 0 and g["rows2"]:
+            v = v.reshape(2, shape[1], 2, shape[3])
+            return [
+                (D.TM * t, D.TM, v[t % 2 : t % 2 + 1, : g["steps"], t // 2])
+                for t in range(D.HR)
+            ]
+        return [(D.M * hh, D.M, v[:, : g["steps"], hh]) for hh in range(1 + q)]
 
     def _c_rows(self, g, q, i):
         o = g["c0"][q] + i * g["cbytes"][q]
@@ -464,8 +478,9 @@ class Q3CPrefill(Engine):
             t0 = time.perf_counter()
             jobs = []
             for (e, rows, _, q), i in zip(grp, ii):
-                am = self._a_tiles(gu, q, i)
-                jobs += [(rows[hh * M : (hh + 1) * M], am[hh]) for hh in range(1 + q)]
+                for r0, n, am in self._a_tiles(gu, q, i):
+                    if r0 < len(rows):
+                        jobs.append((rows[r0 : r0 + n], am))
             H.tile_a_rows_n(h, jobs, D.TM, D.TK)
             sync(gu, "a", grp, ii, TO)
             self._t("experts_host", t0)
@@ -477,10 +492,11 @@ class Q3CPrefill(Engine):
             sync(gu, "c", grp, ii, FROM)
             jobs = []
             for (e, rows, _, q), i in zip(grp, ii):
-                y, am, t = self._c_rows(gu, q, i), self._a_tiles(dn, q, i), len(rows)
-                for hh in range(1 + q):
-                    r0, r1 = hh * M, min(t, (hh + 1) * M)
-                    jobs.append((y[r0:r1], r1 - r0, am[hh]))
+                y, t = self._c_rows(gu, q, i), len(rows)
+                for r0, n, am in self._a_tiles(dn, q, i):
+                    if r0 < t:
+                        r1 = min(t, r0 + n)
+                        jobs.append((y[r0:r1], r1 - r0, am))
             H.glu_tile_a_n(jobs, S.I, D.TM, D.TK)
             sync(dn, "a", grp, ii, TO)
             self._t("experts_host", t0)

@@ -52,8 +52,18 @@ CFG = D.Config(
     act="silu",
     ops={"a": ("a0", "a1")},
     q4k=True,
+    rows2=True,
 )
 ATTN_POINTS = attn_points(HEADS)
+
+
+def gemm_pairs(shape):
+    """GEMM chunk modes of a shape: the experts' also take pair 2, one chunk
+    with each weight dequantized by two cores of a column, not four
+    (device._gemm); their widths are 2 and 3 of its rounds."""
+    k, n, _, _ = shape
+    experts = {(SHAPES[p][0], npad(SHAPES[p][1])) for p in ("gu", "down")}
+    return (0, 1, 2) if (k, n) in experts else (0, 1)
 
 
 def gemm_shapes():

@@ -65,7 +65,10 @@ def op_name(op, shape):
 
 def ops(spec):
     """(op, shape) of every op of the spec's device."""
-    out = [("g", (*s, p)) for s in spec.gemm_shapes() for p in (0, 1)]
+    # chunk modes (device._gemm pair) of each shape: a spec may add 2 for
+    # Q4_K weights (gemm_pairs(shape))
+    modes = getattr(spec, "gemm_pairs", lambda s: (0, 1))
+    out = [("g", (*s, p)) for s in spec.gemm_shapes() for p in modes(s)]
     out += [(a, p) for a in D.attn_ops(spec.CFG) for p in spec.ATTN_POINTS.values()]
     return out
 

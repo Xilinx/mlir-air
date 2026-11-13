@@ -35,6 +35,8 @@ QB = TN * TK // 2 + 2 * 2 * (TK // 32) * TN  # bytes of one B packet
 # bytes of the bfp16 A and B tiles of a K step (gemm_bfp16.cc)
 A_BFP, B_BFP = TM * TK * 9 // 8, TN * TK * 9 // 8
 MAX_N = 32 * NR  # widest GEMM op: more rounds no longer fit one shim BD
+# most rounds of a pair-2 GEMM op (_gemm): 7 hangs on shim BDs, 3 runs
+MAX_ROUNDS2 = 3
 
 
 def k_pad(k):
@@ -100,6 +102,9 @@ class Config(NamedTuple):
     # (wq=3, gemm_bfp16.cc dq4k_bfp16), read where they lie; a B packet is
     # then one block, so the device has no int4 or bf16 GEMMs
     q4k: bool = False
+    # (q4k) the GEMMs may run pair 2 (_gemm): the cores hold 2 A and 4 B
+    # buffers instead of 4 and 2
+    rows2: bool = False
 
 
 def attn_ops(cfg):
@@ -143,15 +148,34 @@ def q_tile(g):
     return g.lkp * g.dh * 9 // 16 + (SINK if g.sinks else 0)
 
 
-def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb):
+def _gemm(
+    wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb, r2=False
+):
     """wq: 0 bf16 weights, 1 int4, 2 MXFP4 (a device built with mx), 3 Q4_K
     (a device built with q4). An MXFP4 weight is row groups of ncb blocks
     pairs: two 32-row blocks per K step make a packet, which is how the bundle
     lays out a 64-column panel's steps. A Q4_K weight is row groups of ncb
     column blocks of four 32-row blocks: a panel's two blocks of a column
-    block are two packets, which cover two K steps."""
+    block are two packets, which cover two K steps.
+
+    pair: 0 one chunk, a core its row block of the column's panel; 1 two
+    chunks (pair), a core its row block of each against the panel; 2 (Q4_K
+    only) one chunk, a core two row blocks of one of two panels, so a column
+    dequantizes each weight twice where with 0 it does four times: core ty
+    takes row blocks ty // 2 and ty // 2 + 2 of panel ty % 2 of the column's
+    row group, and a round covers 2 * NR columns. Its A is laid out
+    [lo][K step][hi][tile] for row block 2 hi + lo (a_layout_rows2)."""
     ksteps = k // TK
-    P = 1 + pair
+    # chunks in A and C, and whether the cores drain a second accumulator
+    pr, rows2 = int(pair == 1), int(pair == 2)
+    single, two = int(pair == 0), int(pair != 0)
+    assert not rows2 or (wq == 3 and r2), (pair, wq, r2)
+    # L1 buffers: a device with pair 2 (r2, Config.rows2) takes 2 A and 4 B
+    # (the pair-2 loop holds both panels of a column block), others 4 A and
+    # 2 B; U: trips' worth a trip of the loops with 2 B packets a trip
+    NA, NB = (2, 4) if r2 else (4, 2)
+    U = NB // 2
+    P = 1 + pr
     qb = Q4K_BYTES if q4 else QB
     zero, mmul, mmul_pkt, cast, cast_act, dq, dqmx, dq4k = kern
     npk = 2 if wq == 0 else 1  # B packets per K step: bfp16 in K halves, else 1
@@ -165,6 +189,18 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb
     def shim():
         L = ksteps * qb * npk
         for ty in range(HR):
+            if rows2:
+                # A as [lo][K step][hi][tile], row block 2 hi + lo: core ty's
+                # row blocks ty // 2 and ty // 2 + 2 lie in turn, one span
+                n = ksteps * 2 * A_BFP
+                lo = ty // 2
+                a_in.put(
+                    A.reshape(2, n)[lo : lo + 1, 0:n]
+                    .reshape(n)
+                    .broadcast_to(rounds, n),
+                    indices=[ty],
+                )
+                continue
             a_in.put(
                 A[ty : ty + 1, 0:ksteps, 0:P, 0:A_BFP]
                 .reshape(ksteps * P * A_BFP)
@@ -184,6 +220,12 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb
                     g0 = p // 2 * ncb
                     h = p % 2
                     b_in.put(B[g0 : g0 + ksteps, h : h + 1, 0:QB], indices=[tx])
+        elif wq == 3 and rows2:
+            # a column's row group, all four blocks: both its panels
+            for r in range(rounds):
+                for tx in range(GNC):
+                    g0 = (r * GNC + tx) * ncb
+                    b_in.put(B[g0 : g0 + ksteps // 2, 0:4, 0:qb], indices=[tx])
         elif wq == 3:
             # panel p is blocks 2 (p % 2) and the next of row group p // 2
             for r in range(rounds):
@@ -198,6 +240,19 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb
                 for tx in range(GNC):
                     i = r * GNC + tx
                     b_in.put(Bp[i : i + 1, 0:L], indices=[tx])
+        if rows2:
+            # a round's column: [row block t][panel][TM][TN], t = 2 (second
+            # accumulator) + ty // 2 for core ty; one get per round
+            Cr = C.reshape(HR, TM, rounds, GNC, 2, TN)
+            for tx in range(GNC):
+                for r in range(rounds):
+                    c_out.get(
+                        Cr[0:HR, 0:TM, r : r + 1, tx, 0:2, 0:TN].transpose(
+                            2, 0, 4, 1, 3, 5
+                        ),
+                        indices=[tx],
+                    )
+            return
         for tx in range(GNC):
             c_out.get(
                 C.reshape(P, M, rounds, GNC, TN)[
@@ -209,28 +264,32 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb
     puts.append(shim)
     # computed in the launch, so the segment body does not depend on the shape
     w4, wb, wm = (int(wq == v) for v in (1, 0, 2))
-    kq = air.rtp(wave * 0 + (ksteps // 4) * w4 * (1 - pair))
-    kp = air.rtp(wave * 0 + (ksteps // 2) * w4 * pair)
-    kb = air.rtp(wave * 0 + (ksteps // 4) * wb * (1 - pair))
-    kbp = air.rtp(wave * 0 + (ksteps // 2) * wb * pair)
+    kq = air.rtp(wave * 0 + (ksteps // 4) * w4 * single)
+    kp = air.rtp(wave * 0 + (ksteps // (2 * U)) * w4 * pr)
+    kb = air.rtp(wave * 0 + (ksteps // 4) * wb * single)
+    kbp = air.rtp(wave * 0 + (ksteps // 2) * wb * pr)
     nr = air.rtp(wave * 0 + rounds)
     actp = air.rtp(wave * 0 + act)
     plain = air.rtp(wave * 0 + (1 - act))
-    actp2 = air.rtp(wave * 0 + act * pair)
-    plain2 = air.rtp(wave * 0 + (1 - act) * pair)
+    actp2 = air.rtp(wave * 0 + act * two)
+    plain2 = air.rtp(wave * 0 + (1 - act) * two)
     rtps += [kq, kp, kb, kbp, nr, actp, plain, actp2, plain2]
     loops = [kq, kp, kb, kbp]
     if mx:
-        kmx = air.rtp(wave * 0 + (ksteps // 4) * wm * (1 - pair))
-        kmxp = air.rtp(wave * 0 + (ksteps // 2) * wm * pair)
+        kmx = air.rtp(wave * 0 + (ksteps // 4) * wm * single)
+        kmxp = air.rtp(wave * 0 + (ksteps // (2 * U)) * wm * pr)
         rtps += [kmx, kmxp]
         loops += [kmx, kmxp]
     if q4:
         w3 = int(wq == 3)
-        k4k = air.rtp(wave * 0 + (ksteps // 4) * w3 * (1 - pair))
-        k4kp = air.rtp(wave * 0 + (ksteps // 2) * w3 * pair)
+        k4k = air.rtp(wave * 0 + (ksteps // 4) * w3 * single)
+        k4kp = air.rtp(wave * 0 + (ksteps // (2 * U)) * w3 * pr)
         rtps += [k4k, k4kp]
         loops += [k4k, k4kp]
+        if r2:
+            k4kr = air.rtp(wave * 0 + (ksteps // 2) * w3 * rows2)
+            rtps.append(k4kr)
+            loops.append(k4kr)
 
     def body(seg):
         a_l2 = [
@@ -276,71 +335,89 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb
 
             @hd.body
             def _(tx, ty):
-                a_l1 = [air.alloc([A_BFP], i8, scope=hd.private()) for _ in range(4)]
-                b_l1 = [air.alloc([qb], i8, scope=hd.private()) for _ in range(2)]
+                a_l1 = [air.alloc([A_BFP], i8, scope=hd.private()) for _ in range(NA)]
+                b_l1 = [air.alloc([qb], i8, scope=hd.private()) for _ in range(NB)]
                 bdq = air.alloc([B_BFP], i8, scope=hd.private())
                 acc = air.alloc([TN // MM, TM // MM, MM, MM], f32, scope=hd.private())
                 acc2 = air.alloc([TN // MM, TM // MM, MM, MM], f32, scope=hd.private())
                 out = air.alloc([TN // MM, TM // MM, MM, MM], bf16, scope=hd.private())
+
+                def ga(i):
+                    """The A buffer of a trip's i-th A tile, got into it."""
+                    a2l1.get(a_l1[i % NA], indices=[tx, ty])
+                    return a_l1[i % NA]
+
+                def gb(i):
+                    """The B buffer of a trip's i-th packet, got into it."""
+                    b2l1.get(b_l1[i % NB], indices=[tx, ty])
+                    return b_l1[i % NB]
+
                 for _r in air.sequential(nr):
                     zero(acc)
                     zero(acc2)
                     # int4 and MXFP4 packets are dequantized; bf16 weights
                     # come as bfp16 in two packets per K step. With pair, each
                     # K step takes two chunks' A tiles against one B. Of the
-                    # loops all but one are zero-trip, and each trip gets the
-                    # four A buffers in the same order, which is the BD chain
-                    # air-to-aie builds (#2040).
+                    # loops all but one are zero-trip, and each trip goes
+                    # round the A and the B buffers in the same order, which
+                    # is the BD chain air-to-aie builds (#2040): a loop with
+                    # fewer packets a trip than B buffers runs U trips' worth.
                     for kn, dqf in ((kq, dq), (kmx, dqmx)) if mx else ((kq, dq),):
                         for _k in air.sequential(kn):
                             for i in range(4):
-                                a2l1.get(a_l1[i], indices=[tx, ty])
-                                b2l1.get(b_l1[i % 2], indices=[tx, ty])
-                                dqf(b_l1[i % 2], bdq)
-                                mmul(a_l1[i], bdq, acc)
+                                a = ga(i)
+                                bb = gb(i)
+                                dqf(bb, bdq)
+                                mmul(a, bdq, acc)
                     for kn, dqf in ((kp, dq), (kmxp, dqmx)) if mx else ((kp, dq),):
                         for _k in air.sequential(kn):
-                            for pp in range(2):
-                                b2l1.get(b_l1[pp], indices=[tx, ty])
-                                dqf(b_l1[pp], bdq)
-                                a2l1.get(a_l1[2 * pp], indices=[tx, ty])
-                                mmul(a_l1[2 * pp], bdq, acc)
-                                a2l1.get(a_l1[2 * pp + 1], indices=[tx, ty])
-                                mmul(a_l1[2 * pp + 1], bdq, acc2)
+                            for u in range(U):
+                                for pp in range(2):
+                                    bb = gb(2 * u + pp)
+                                    dqf(bb, bdq)
+                                    mmul(ga(2 * pp), bdq, acc)
+                                    mmul(ga(2 * pp + 1), bdq, acc2)
                     if q4:
                         # a block pair is two K steps: both stay while the
                         # cores take its K halves in turn
                         for _k in air.sequential(k4k):
                             for s in range(2):
-                                for pp in range(2):
-                                    b2l1.get(b_l1[pp], indices=[tx, ty])
+                                b0, b1 = gb(2 * s), gb(2 * s + 1)
                                 for h in range(2):
-                                    dq4k(b_l1[0], b_l1[1], bdq, h)
-                                    a2l1.get(a_l1[2 * s + h], indices=[tx, ty])
-                                    mmul(a_l1[2 * s + h], bdq, acc)
+                                    dq4k(b0, b1, bdq, h)
+                                    mmul(ga(2 * s + h), bdq, acc)
                         for _k in air.sequential(k4kp):
-                            for pp in range(2):
-                                b2l1.get(b_l1[pp], indices=[tx, ty])
-                            for h in range(2):
-                                dq4k(b_l1[0], b_l1[1], bdq, h)
-                                a2l1.get(a_l1[2 * h], indices=[tx, ty])
-                                mmul(a_l1[2 * h], bdq, acc)
-                                a2l1.get(a_l1[2 * h + 1], indices=[tx, ty])
-                                mmul(a_l1[2 * h + 1], bdq, acc2)
+                            for u in range(U):
+                                b0, b1 = gb(2 * u), gb(2 * u + 1)
+                                for h in range(2):
+                                    dq4k(b0, b1, bdq, h)
+                                    mmul(ga(2 * h), bdq, acc)
+                                    mmul(ga(2 * h + 1), bdq, acc2)
+                        if r2:
+                            # pair 2: a column block's four packets are two
+                            # panels; core ty dequantizes panel ty % 2 only, and
+                            # with four B buffers both halves of the column take
+                            # their panel at once
+                            for _k in air.sequential(k4kr):
+                                for s in range(2):
+                                    b0, b1 = gb(2 * s), gb(2 * s + 1)
+                                    with air.ops.branch(ty % 2 == s):
+                                        for h in range(2):
+                                            dq4k(b0, b1, bdq, h)
+                                            mmul(ga(2 * h), bdq, acc)
+                                            mmul(ga(2 * h + 1), bdq, acc2)
                     for _k in air.sequential(kb):
                         for i in range(4):
-                            a2l1.get(a_l1[i], indices=[tx, ty])
+                            a = ga(i)
                             for h in range(2):
-                                b2l1.get(b_l1[h], indices=[tx, ty])
-                                mmul_pkt(a_l1[i], b_l1[h], acc, h)
+                                mmul_pkt(a, gb(2 * i + h), acc, h)
                     for _k in air.sequential(kbp):
                         for pp in range(2):
-                            a2l1.get(a_l1[2 * pp], indices=[tx, ty])
-                            a2l1.get(a_l1[2 * pp + 1], indices=[tx, ty])
+                            a0, a1 = ga(2 * pp), ga(2 * pp + 1)
                             for h in range(2):
-                                b2l1.get(b_l1[h], indices=[tx, ty])
-                                mmul_pkt(a_l1[2 * pp], b_l1[h], acc, h)
-                                mmul_pkt(a_l1[2 * pp + 1], b_l1[h], acc2, h)
+                                bb = gb(2 * pp + h)
+                                mmul_pkt(a0, bb, acc, h)
+                                mmul_pkt(a1, bb, acc2, h)
                     # the activation in the drain when act is set
                     for _a in air.sequential(actp):
                         cast_act(acc, out)
@@ -595,11 +672,15 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
     }
     if op == "g":
         k, n, act, wq, pair = shape
-        assert n % NR == 0, n
+        # a pair-2 round covers two panels a column; its C takes a shim BD a
+        # round, and past MAX_ROUNDS2 rounds the op runs out of them
+        nr = NR * (2 if pair == 2 else 1)
+        assert n % nr == 0, (n, pair)
+        assert pair != 2 or (cfg.rows2 and n // nr <= MAX_ROUNDS2), (n, pair)
         assert wq != 2 or (cfg.mxfp4 and k % TK == 0), (k, wq)
         assert (wq == 3) == cfg.q4k and (wq != 3 or k % Q4K_COLS == 0), (k, wq)
         ncb = k // (Q4K_COLS if wq == 3 else TK)
-        g.update(k=k_pad(k), n=n, act=act, wq=wq, pair=pair, rounds=n // NR, ncb=ncb)
+        g.update(k=k_pad(k), n=n, act=act, wq=wq, pair=pair, rounds=n // nr, ncb=ncb)
     else:
         heads, nkv, q0, k0 = shape
         groups = attn_ops(cfg)[op]
@@ -644,9 +725,9 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
         bshape = [g["n"] // TN, g["k"] // TK * (2 if g["wq"] == 0 else 1), QB]
     # declared in the kernel's argument order
     gt = (
-        air.tensor([HR, g["k"] // TK, 1 + g["pair"], A_BFP], i8),
+        air.tensor([HR, g["k"] // TK, 1 + int(g["pair"] == 1), A_BFP], i8),
         air.tensor(bshape, i8),
-        air.tensor([(1 + g["pair"]) * M, g["n"]], bf16),
+        air.tensor([(1 + int(g["pair"] == 1)) * M, g["n"]], bf16),
     )
     att = {}
     for a, ga in cfg.attn.items():
@@ -693,6 +774,7 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
                         cfg.mxfp4,
                         cfg.q4k,
                         g["ncb"],
+                        cfg.rows2,
                     )
                 )
             for names in cols.values():
