@@ -413,7 +413,8 @@ def launch(grid=None, name="kernel", target=None, repeat=None, attrs=None):
     own segment -- multiplying segment symbols, locks and packet ids, which the
     5-bit `dma_bd` Packet ID field caps at about four launches. `repeat` is
     temporal: one device, driven N times, which is how a per-wave decode
-    dispatch is written. Pass an int for `range(n)`, or a `range`.
+    dispatch is written. Pass an int for `range(n)`, a `range`, or a rank-0
+    integer tensor for a count known only at dispatch.
 
     `attrs` are unit attributes on `air.launch`.
 
@@ -428,14 +429,26 @@ def _parse_repeat(repeat):
     """Normalise `repeat` to (lo, hi, step), or None."""
     if repeat is None:
         return None
+    from ._value import Tensor
+
+    if isinstance(repeat, Tensor):
+        # A run-time count: a rank-0 integer argument, read at dispatch. The
+        # scf.for around air.launch keeps it as its bound, and the runtime
+        # sequence keeps the loop rolled.
+        if repeat.shape or repeat.dtype.is_float:
+            raise TypeError(
+                "air.launch(repeat=...) takes a rank-0 integer tensor as a "
+                f"run-time count, got {repeat!r}"
+            )
+        return (0, repeat, 1)
     if isinstance(repeat, range):
         lo, hi, step = repeat.start, repeat.stop, repeat.step
     elif isinstance(repeat, int) and not isinstance(repeat, bool):
         lo, hi, step = 0, repeat, 1
     else:
         raise TypeError(
-            f"air.launch(repeat=...) takes an int or a range, got {repeat!r} "
-            f"({type(repeat).__name__})"
+            f"air.launch(repeat=...) takes an int, a range or a rank-0 integer "
+            f"tensor, got {repeat!r} ({type(repeat).__name__})"
         )
     if step <= 0:
         raise ValueError(f"air.launch(repeat=...) needs a positive step, got {step}")

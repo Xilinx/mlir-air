@@ -20,6 +20,7 @@ patterns, so each op is a single launch.
 from typing import NamedTuple
 
 from air import api as air
+from air.api import ops
 from air.api.types import bf16, f32, i8, i32
 
 M = 128  # rows per chunk
@@ -100,6 +101,21 @@ class Config(NamedTuple):
     # (wq=3, gemm_bfp16.cc dq4k_bfp16), read where they lie; a B packet is
     # then one block, so the device has no int4 or bf16 GEMMs
     q4k: bool = False
+    # MoE expert GEMMs as one op over a run of blocks (Experts); see _gemm
+    experts: "Experts" = None
+
+
+class Experts(NamedTuple):
+    """An "x" op runs one GEMM shape on up to kmax blocks of an expert's rows,
+    a block per launch wave. A block is a pair of chunks or one chunk, each
+    from its own buffer of cap blocks; its weights are those of expert e of a
+    layer, stride rows of B past expert e - 1 (a B row is one column block of
+    four Q4_K blocks, or a pair of MXFP4 ones)."""
+
+    kmax: int
+    cap: int
+    stride: int
+    experts: int
 
 
 def attn_ops(cfg):
@@ -143,13 +159,21 @@ def q_tile(g):
     return g.lkp * g.dh * 9 // 16 + (SINK if g.sinks else 0)
 
 
-def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb):
+def _gemm(
+    wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb, blk=None
+):
     """wq: 0 bf16 weights, 1 int4, 2 MXFP4 (a device built with mx), 3 Q4_K
     (a device built with q4). An MXFP4 weight is row groups of ncb blocks
     pairs: two 32-row blocks per K step make a packet, which is how the bundle
     lays out a 64-column panel's steps. A Q4_K weight is row groups of ncb
     column blocks of four 32-row blocks: a panel's two blocks of a column
-    block are two packets, which cover two K steps."""
+    block are two packets, which cover two K steps.
+
+    blk runs it on a run of expert blocks (Experts), one per launch wave:
+    waves below blk["n1"] are pairs, A and C blocks i1 + wave of blk["A"][1]
+    and blk["C"][1], the rest single chunks, blocks i0 + wave - n1 of
+    blk["A"][0] and blk["C"][0]; the wave's B is blk["e"] rows into B. The
+    pair RTPs are picked per wave, so the cores run both kinds."""
     ksteps = k // TK
     P = 1 + pair
     qb = Q4K_BYTES if q4 else QB
@@ -162,15 +186,46 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb
     c2l2 = air.channel("gC2L2", size=[GNC, HR])
     c_out = air.channel("gCOut", size=[GNC])
 
+    def a_whole(ty, P):
+        return (
+            A[ty : ty + 1, 0:ksteps, 0:P, 0:A_BFP]
+            .reshape(ksteps * P * A_BFP)
+            .broadcast_to(rounds, ksteps * P * A_BFP)
+        )
+
+    def c_whole(tx, P):
+        return C.reshape(P, M, rounds, GNC, TN)[0:P, 0:M, 0:rounds, tx, 0:TN].transpose(
+            2, 0, 1, 3, 4
+        )
+
     def shim():
+        if blk is None:
+            feeds(a_whole, c_whole, P, 0)
+            return
+        # block i of its kind's A and C buffers
+        n1, i1, i0 = blk["n1"], blk["i1"], blk["i0"]
+        blocks = {
+            q: (
+                lambda ty, P, Ab=blk["A"][q], ib=ib: Ab[
+                    ib, ty : ty + 1, 0:ksteps, 0:P, 0:A_BFP
+                ].broadcast_to(rounds, 1, 1, ksteps, P, A_BFP),
+                lambda tx, P, Cb=blk["C"][q], ib=ib: Cb[
+                    ib, 0:P, 0:M, 0:rounds, tx, 0:TN
+                ].transpose(0, 3, 1, 2, 4, 5),
+            )
+            for q, ib in ((1, i1 + wave), (0, i0 + wave - n1))
+        }
+        with ops.branch(blk["pair"]) as arm:
+            feeds(*blocks[1], 2, blk["e"])
+        with arm.otherwise():
+            feeds(*blocks[0], 1, blk["e"])
+
+    def feeds(a_of, c_of, P, b0):
+        """A, B and C of one block: a_of(ty, P) and c_of(tx, P) are its A put
+        and C get, b0 its weights' first row of B."""
         L = ksteps * qb * npk
         for ty in range(HR):
-            a_in.put(
-                A[ty : ty + 1, 0:ksteps, 0:P, 0:A_BFP]
-                .reshape(ksteps * P * A_BFP)
-                .broadcast_to(rounds, ksteps * P * A_BFP),
-                indices=[ty],
-            )
+            a_in.put(a_of(ty, P), indices=[ty])
         # One put per round and column, so a packet's start goes in the
         # buffer offset: as a BD stride, GNC packets of a long K overflow
         # the shim BD's stride field.
@@ -181,7 +236,7 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb
             for r in range(rounds):
                 for tx in range(GNC):
                     p = r * GNC + tx
-                    g0 = p // 2 * ncb
+                    g0 = b0 + p // 2 * ncb
                     h = p % 2
                     b_in.put(B[g0 : g0 + ksteps, h : h + 1, 0:QB], indices=[tx])
         elif wq == 3:
@@ -189,46 +244,55 @@ def _gemm(wave, A, B, C, k, act, wq, pair, rounds, kern, puts, rtps, mx, q4, ncb
             for r in range(rounds):
                 for tx in range(GNC):
                     p = r * GNC + tx
-                    g0 = p // 2 * ncb
+                    g0 = b0 + p // 2 * ncb
                     s = 2 * (p % 2)
                     b_in.put(B[g0 : g0 + ksteps // 2, s : s + 2, 0:qb], indices=[tx])
         else:
+            assert blk is None, "expert blocks take Q4_K or MXFP4 weights"
             Bp = B.reshape(rounds * GNC, L)
             for r in range(rounds):
                 for tx in range(GNC):
                     i = r * GNC + tx
                     b_in.put(Bp[i : i + 1, 0:L], indices=[tx])
         for tx in range(GNC):
-            c_out.get(
-                C.reshape(P, M, rounds, GNC, TN)[
-                    0:P, 0:M, 0:rounds, tx, 0:TN
-                ].transpose(2, 0, 1, 3, 4),
-                indices=[tx],
-            )
+            c_out.get(c_of(tx, P), indices=[tx])
 
     puts.append(shim)
     # computed in the launch, so the segment body does not depend on the shape
     w4, wb, wm = (int(wq == v) for v in (1, 0, 2))
-    kq = air.rtp(wave * 0 + (ksteps // 4) * w4 * (1 - pair))
-    kp = air.rtp(wave * 0 + (ksteps // 2) * w4 * pair)
-    kb = air.rtp(wave * 0 + (ksteps // 4) * wb * (1 - pair))
-    kbp = air.rtp(wave * 0 + (ksteps // 2) * wb * pair)
+
+    def by_pair(f):
+        """The RTP f(pair); with blk, f(1) on a pair's wave, f(0) on a single
+        chunk's."""
+        if blk is None:
+            return air.rtp(wave * 0 + f(pair))
+        from air.dialects import arith
+        from air.ir import IntegerType
+
+        i32_t = IntegerType.get_signless(32)
+        v1, v0 = (arith.ConstantOp(i32_t, f(q)).result for q in (1, 0))
+        return air.rtp(arith.select(blk["pair"].materialize(), v1, v0))
+
+    kq = by_pair(lambda q: (ksteps // 4) * w4 * (1 - q))
+    kp = by_pair(lambda q: (ksteps // 2) * w4 * q)
+    kb = by_pair(lambda q: (ksteps // 4) * wb * (1 - q))
+    kbp = by_pair(lambda q: (ksteps // 2) * wb * q)
     nr = air.rtp(wave * 0 + rounds)
     actp = air.rtp(wave * 0 + act)
     plain = air.rtp(wave * 0 + (1 - act))
-    actp2 = air.rtp(wave * 0 + act * pair)
-    plain2 = air.rtp(wave * 0 + (1 - act) * pair)
+    actp2 = by_pair(lambda q: act * q)
+    plain2 = by_pair(lambda q: (1 - act) * q)
     rtps += [kq, kp, kb, kbp, nr, actp, plain, actp2, plain2]
     loops = [kq, kp, kb, kbp]
     if mx:
-        kmx = air.rtp(wave * 0 + (ksteps // 4) * wm * (1 - pair))
-        kmxp = air.rtp(wave * 0 + (ksteps // 2) * wm * pair)
+        kmx = by_pair(lambda q: (ksteps // 4) * wm * (1 - q))
+        kmxp = by_pair(lambda q: (ksteps // 2) * wm * q)
         rtps += [kmx, kmxp]
         loops += [kmx, kmxp]
     if q4:
         w3 = int(wq == 3)
-        k4k = air.rtp(wave * 0 + (ksteps // 4) * w3 * (1 - pair))
-        k4kp = air.rtp(wave * 0 + (ksteps // 2) * w3 * pair)
+        k4k = by_pair(lambda q: (ksteps // 4) * w3 * (1 - q))
+        k4kp = by_pair(lambda q: (ksteps // 2) * w3 * q)
         rtps += [k4k, k4kp]
         loops += [k4k, k4kp]
 
@@ -571,6 +635,11 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
             (2 with pair, else 1), with the activation drain if act and int4
             weight packets if wq is 1, MXFP4 row groups of k / 128 block
             pairs if 2 (cfg.mxfp4), bf16 if 0
+    op 'x': (k, n, act, wq), the 'g' GEMM on a run of up to
+            cfg.experts.kmax expert blocks, its block count and choice at
+            run time: scalars nb (blocks), n1 (of them pairs, first), i1
+            and i0 (the first pair's and single chunk's block in their
+            buffers) and e0 ... (each block's expert); wq is 2 or 3
     op <attention op>: (heads, nkv, q0, k0), attention for one chunk; a
             noncausal op's keys are its nkv blocks, and with own it takes
             the key count as a fourth run-time scalar nk
@@ -579,6 +648,10 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
     the union of every op's segment @seg (see air-to-aie), and the op's func
     drives only its groups' columns.
     """
+    xb = op == "x"
+    if xb:
+        op = "g"
+        shape = (*shape, 0)
     drive = ({"g"} if op == "g" else set(attn_ops(cfg)[op])) if own else None
     # with own, an attention op takes (nkv, q0, k0) at run time
     runtime = own and op != "g"
@@ -643,11 +716,27 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
     else:
         bshape = [g["n"] // TN, g["k"] // TK * (2 if g["wq"] == 0 else 1), QB]
     # declared in the kernel's argument order
-    gt = (
-        air.tensor([HR, g["k"] // TK, 1 + g["pair"], A_BFP], i8),
-        air.tensor(bshape, i8),
-        air.tensor([(1 + g["pair"]) * M, g["n"]], bf16),
-    )
+    if xb:
+        # pair and single blocks [cap] each, B a layer's experts
+        ex = cfg.experts
+        assert ex and g["wq"] in (2, 3), (ex, g["wq"])
+        bshape[0] += (ex.experts - 1) * ex.stride
+
+        def a_blocks(q):
+            return air.tensor([ex.cap, HR, g["k"] // TK, 1 + q, A_BFP], i8)
+
+        def c_blocks(q):
+            return air.tensor([ex.cap, 1 + q, M, g["rounds"], GNC, TN], bf16)
+
+        # in argument order: the pairs' A, B, the pairs' C, then the singles'
+        gt = (a_blocks(1), air.tensor(bshape, i8), c_blocks(1))
+        ab, cb = [a_blocks(0), gt[0]], [c_blocks(0), gt[2]]
+    else:
+        gt = (
+            air.tensor([HR, g["k"] // TK, 1 + g["pair"], A_BFP], i8),
+            air.tensor(bshape, i8),
+            air.tensor([(1 + g["pair"]) * M, g["n"]], bf16),
+        )
     att = {}
     for a, ga in cfg.attn.items():
         nr = max(1, at[a]["rounds"])
@@ -671,12 +760,38 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
             if cfg.attn[a].noncausal:
                 at[a]["win"] = scalars["nk"]
 
-    with air.launch(repeat=1, name=name, attrs=["air.preserve_shim_dma_order"]) as lch:
+    if xb:
+        sc = {
+            v: air.tensor([], i32, name=v)
+            for v in ("nb", "n1", "i1", "i0", *(f"e{i}" for i in range(ex.kmax)))
+        }
+    with air.launch(
+        repeat=sc["nb"] if xb else 1,
+        name=name,
+        attrs=["air.preserve_shim_dma_order"],
+    ) as lch:
 
         @lch.body
         def _(wave):
             puts, externs, rtps = [], {}, []
             bodies = []
+            blk = None
+            if xb:
+                from air.api._index import coerce_index
+
+                es = [sc[f"e{i}"] for i in range(ex.kmax)]
+                blk = dict(
+                    A=ab,
+                    C=cb,
+                    n1=coerce_index(sc["n1"]),
+                    i1=coerce_index(sc["i1"]),
+                    i0=coerce_index(sc["i0"]),
+                    pair=wave < coerce_index(sc["n1"]),
+                    e=ops.switch(
+                        wave,
+                        [lambda t=t: coerce_index(t) * ex.stride for t in es],
+                    ).as_index(),
+                )
             if drive is None or "g" in drive:
                 bodies.append(
                     _gemm(
@@ -693,6 +808,7 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
                         cfg.mxfp4,
                         cfg.q4k,
                         g["ncb"],
+                        blk,
                     )
                 )
             for names in cols.values():
