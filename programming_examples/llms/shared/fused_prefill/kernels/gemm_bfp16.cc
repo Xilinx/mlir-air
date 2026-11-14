@@ -192,41 +192,31 @@ void dqmx_bfp16(uint8_t *__restrict packed, uint8_t *__restrict out) {
 #endif
 
 #ifdef GEMM_Q4K
-// Half a K step pair of Q4_K weights as FastFlowLM's bundle stores them, one
-// block of 32 output columns n by 256 k per packet, 4736 bytes:
-//   uint8 scales [8 k groups][32 n], mins the same,
-//   nibbles [256 k][32 n], the low nibble the even n,
-//   bf16 S [32], M [32] (stored negated),
-// with w = S s_j q + M m_j, as FastFlowLM dequantizes it: the group's
-// scale and min are bf16 products, and 0x4300 | q is the bf16 128 + q. b0
-// holds columns 0..31 of the panel, b1 32..63; h is the K step's half of
-// the blocks. The nibbles run along n, so a byte-domain transpose turns
-// each 8 x 8 block into B's rows n.
+// Half a K step pair of Q4_K weights in the fused prefill's layout of a block
+// (hostops.c q4k_prefill): 32 output columns n by 256 k per packet, 5120
+// bytes,
+//   nibbles [k half][16-column half][group][8 k][8-column block] of [8 n][8 k]
+//           tiles, the low nibble the even lane,
+//   bf16 [group][16-column half][16] the group's scales S s_j, then [16] its
+//           mins M m_j,
+// with w = S s_j q + M m_j as FastFlowLM dequantizes it, and 0x4300 | q the
+// bf16 128 + q. A tile is B's 8 x 8 block. b0 holds columns 0..31 of the
+// panel, b1 32..63; h is the K step's half of the blocks.
 static_assert(DIM_N == 64 && DIM_K == 128, "a K step is half of two blocks");
 
-// One 16-column pair (PAR: the block's first or second 16 columns) of
-// dq4k_bfp16: the pair's bytes are split off before they are unpacked.
+// One 16-column half (PAR) of a block of dq4k_bfp16.
 extern "C++" {
 template <int PAR>
 static inline void
 dq4k_pair(const uint8_t *blk, int h,
           aie::block_vector_output_buffer_stream<bfp16ebs8, 64> &os) {
-  constexpr int RB = 32, NG = 8, QS = 2 * NG * RB, SM = QS + 256 * RB / 2;
-  constexpr int r0 = PAR * 16;
+  constexpr int NG = DIM_K / DQ_GROUP, NIB = 4096;
   const aie::vector<uint8, 64> bias = aie::broadcast<uint8, 64>(0x43);
-  const bfloat16 *sm = (const bfloat16 *)(blk + SM);
-  aie::vector<bfloat16, 16> S = aie::load_v<16>(sm + r0);
-  aie::vector<bfloat16, 16> M = aie::load_v<16>(sm + RB + r0);
-  for (int gl = 0; gl < DIM_K / DQ_GROUP; gl++) {
-    const int g = h * (DIM_K / DQ_GROUP) + gl;
-    aie::accum<accfloat, 16> t;
-    t.from_vector(aie::to_float(aie::load_v<16>(blk + g * RB + r0), 0));
-    aie::vector<bfloat16, 16> sc = aie::mul(t.template to_vector<bfloat16>(), S)
-                                       .template to_vector<bfloat16>();
-    t.from_vector(
-        aie::to_float(aie::load_v<16>(blk + NG * RB + g * RB + r0), 0));
-    aie::vector<bfloat16, 16> mn = aie::mul(t.template to_vector<bfloat16>(), M)
-                                       .template to_vector<bfloat16>();
+  for (int gl = 0; gl < NG; gl++) {
+    const int g = h * NG + gl;
+    const bfloat16 *cst = (const bfloat16 *)(blk + NIB) + (g * 2 + PAR) * 32;
+    aie::vector<bfloat16, 16> sc = aie::load_v<16>(cst);
+    aie::vector<bfloat16, 16> mn = aie::load_v<16>(cst + 16);
     VB s0 = rows8(sc.template extract<8>(0));
     VB s1 = rows8(sc.template extract<8>(1));
     ACC c0, c1;
@@ -234,29 +224,14 @@ dq4k_pair(const uint8_t *blk, int h,
     c0 = aie::msc(c0, s0, bfloat16(128.0f));
     c1.from_vector(rows8(mn.template extract<8>(1)));
     c1 = aie::msc(c1, s1, bfloat16(128.0f));
-    // [k][16 bytes]: bytes 0-7 hold n 0-15, bytes 8-15 n 16-31
-    const uint8_t *q = blk + QS + (g * DQ_GROUP) * RB / 2;
+    const uint8_t *q = blk + ((h * 2 + PAR) * NG + gl) * 256;
     for (int kq = 0; kq < DQ_GROUP / 8; kq++)
       chess_prepare_for_pipelining {
-        aie::vector<uint8, 32> lo[2], hi[2];
-#pragma clang loop unroll(full)
-        for (int c = 0; c < 2; c++) {
-          aie::vector<uint8, 64> raw = aie::load_v<64>(q + (kq * 2 + c) * 64);
-          auto by = aie::interleave_unzip(raw.template extract<32>(0),
-                                          raw.template extract<32>(1), 8);
-          aie::vector<uint8, 64> mine =
-              aie::unpack(aie::vector_cast<uint4>(PAR ? by.second : by.first));
-          auto nb = aie::interleave_unzip(mine.template extract<32>(0),
-                                          mine.template extract<32>(1), 8);
-          lo[c] = nb.first;
-          hi[c] = nb.second;
-        }
-        aie::vector<uint8, 64> tl =
-            aie::transpose(aie::concat(lo[0], lo[1]), 8, 8);
-        aie::vector<uint8, 64> th =
-            aie::transpose(aie::concat(hi[0], hi[1]), 8, 8);
-        auto zl = aie::interleave_zip(tl, bias, 1);
-        auto zh = aie::interleave_zip(th, bias, 1);
+        // two tiles: columns 0-7 and 8-15 of the half
+        aie::vector<uint8, 128> u =
+            aie::unpack(aie::vector_cast<uint4>(aie::load_v<64>(q + kq * 64)));
+        auto zl = aie::interleave_zip(u.template extract<64>(0), bias, 1);
+        auto zh = aie::interleave_zip(u.template extract<64>(1), bias, 1);
         VB wl = aie::vector_cast<bfloat16>(aie::concat(zl.first, zl.second));
         VB wh = aie::vector_cast<bfloat16>(aie::concat(zh.first, zh.second));
         os << ACC(aie::mac(c0, wl, s0)).template to_vector<bfp16ebs8>();

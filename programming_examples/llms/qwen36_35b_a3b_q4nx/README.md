@@ -49,9 +49,11 @@ How each side takes them:
 - **Decode**: the Q4_K blocks as stored, in FastFlowLM's layout per layer. The
   experts of all 40 layers sit in one buffer (`WE`, about 18.6 GB) that the
   router core reads at the chosen experts' offsets.
-- **Prefill**: the same blocks, read in place by the fused prefill device's
-  Q4_K GEMM (`Config.q4k`): the routed experts from the decode's `WE`, the
-  dense projections from the prefill's own copy.
+- **Prefill**: the same blocks in the fused prefill device's layout of them
+  (`hostops.q4k_prefill`: the nibbles in the order its dequant reads them,
+  each group's scale and min products precomputed), 5120 bytes a block. The
+  prefill holds its own copy of the dense projections and of the routed
+  experts (the experts about 20.1 GB), apart from the decode's `WE`.
 
 ## Placement
 

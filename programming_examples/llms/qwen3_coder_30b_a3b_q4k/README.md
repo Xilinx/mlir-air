@@ -46,9 +46,11 @@ How each side takes them:
 - **Decode**: the Q4_K blocks as stored. The experts of all 48 layers sit in
   one buffer (`WE`, about 16.8 GB) that the router core reads at the chosen
   experts' offsets.
-- **Prefill**: the same blocks, read in place by the fused prefill device's
-  Q4_K GEMM (`Config.q4k`): the experts from the decode's `WE`, the dense
-  projections from the prefill's own copy.
+- **Prefill**: the same blocks in the fused prefill device's layout of them
+  (`hostops.q4k_prefill`: the nibbles in the order its dequant reads them,
+  each group's scale and min products precomputed), 5120 bytes a block. The
+  prefill holds its own copy of the dense projections and of the experts
+  (the experts about 18.2 GB), apart from the decode's `WE`.
 
 ## Placement
 
@@ -78,8 +80,8 @@ layer's blocks go in `MOE_GROUPS` (8) groups, each one up | gate dispatch, the
 GLU on the host and one down dispatch: the dispatch is the GEMM's "x" op
 (`shared/fused_prefill/device.py`), a launch repeated once per block, whose
 block count, blocks and experts are run-time arguments of the op's C++ TXN
-builder; each wave reads its block's A and C and its expert's part of the WE
-buffer. The host's GLU of a group
+builder; each wave reads its block's A and C and its expert's part of the
+prefill's copy of the experts. The host's GLU of a group
 overlaps the device's up | gate of the next. After prefill the host writes the prompt's
 K / V rows into the decode's cache, and the LM head takes the last row for the
 first token.

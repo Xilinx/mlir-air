@@ -993,7 +993,7 @@ def main():
 
         first, t_prefill = 0, 0.0
         if fused:
-            pf = P.Qwen36Prefill(a.fused_dir, w, layers, we=(npu.bos[0], 0))
+            pf = P.Qwen36Prefill(a.fused_dir, w, layers)
             if a.warm:
                 pf.prefill(ids)
             t0 = time.perf_counter()

@@ -3,9 +3,9 @@
 """Qwen3-Coder-30B-A3B on the shared fused prefill device (shared/fused_prefill):
 the spec build.py reads.
 
-Every GEMM reads the bundle's Q4_K blocks where they lie (Config.q4k): the
-dense projections from the prefill's own copy, the routed experts from the
-decode's WE buffer. Attention: 32 query heads in two groups of 16 on columns 0
+Every GEMM reads the bundle's Q4_K blocks in the device's layout of them
+(Config.q4k, hostops.q4k_prefill), from the prefill's own copy of the dense
+projections and of the routed experts. Attention: 32 query heads in two groups of 16 on columns 0
 and 7, two KV heads each, head_dim 128, causal."""
 
 import sys
