@@ -66,7 +66,7 @@ for q, a, c in ((1, 0, 2), (0, 3, 4)):
     assert args[c] == f"memref<5x{1 + q}x{D.M}x1x{D.GNC}x{D.TN}xbf16>", args[c]
 # one layer's experts: the last one's panels, 3 experts' strides past the first
 rows = (D.NR // (2 * D.TN) - 1) + ks // 2 + 3 * 7
-assert args[1] == f"memref<{rows}x4x{D.Q4K_BYTES}xi8>", args[1]
+assert args[1] == f"memref<{rows}x4x{D.Q4K_PF_BYTES}xi8>", args[1]
 assert args[-7:] == ["i32"] * 7, args
 loop = re.search(r"scf.for %\S+ = %c0 to (%\S+) step", x)
 # the bound is nb, not a constant

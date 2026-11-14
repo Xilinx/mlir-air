@@ -51,6 +51,7 @@ def load(build_dir):
     _lib.tiles_bfp.argtypes = [_p, _i, _i, _i, _i, _i, _i, _p, _l, _l]
     _lib.bfp_rows.argtypes = [_p, ctypes.c_long, _p]
     _lib.round_bf16.argtypes = [_p, ctypes.c_long]
+    _lib.q4k_prefill.argtypes = [_p, ctypes.c_long, _p]
     _lib.tile_a_rows.argtypes = [_p, _i, _p, _i, _i, _i, _i, _p, _l, _l]
     _lib.glu_tile_a.argtypes = [_p, _i, _i, _i, _i, _i, _p, _l, _l]
     _lib.tile_a_rows_n.argtypes = [_p, _i, _i, _i, _i, _i, _p, _p, _p, _p, _p, _p]
@@ -230,6 +231,20 @@ def bfp_rows(src):
     src = np.ascontiguousarray(src)
     out = np.empty(src.shape[:-1] + (9,), np.uint8)
     _lib.bfp_rows(src.ctypes.data, src.size // 8, out.ctypes.data)
+    return out
+
+
+def q4k_prefill(blocks, out=None):
+    """Q4_K blocks [..., 4736] as the bundle stores them -> the fused
+    prefill's layout of them [..., 5120] (hostops.c q4k_prefill), into out
+    when given (any uint8 array of that size, e.g. a mapped buffer)."""
+    blocks = np.ascontiguousarray(blocks, np.uint8)
+    n = blocks.size // 4736
+    assert blocks.size == n * 4736, blocks.shape
+    if out is None:
+        out = np.empty(blocks.shape[:-1] + (5120,), np.uint8)
+    assert out.dtype == np.uint8 and out.size == n * 5120 and out.flags.c_contiguous
+    _lib.q4k_prefill(blocks.ctypes.data, n, out.ctypes.data)
     return out
 
 

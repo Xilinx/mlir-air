@@ -15,7 +15,8 @@ vision tower and the multi-token-prediction head are out of scope.
 
 - **prefill** on the shared fused prefill device
   ([`shared/fused_prefill`](../shared/fused_prefill)), as Qwen3.6-35B-A3B's
-  prefill runs: every projection a GEMM op reading the bundle's Q4_K blocks,
+  prefill runs: every projection a GEMM op reading the bundle's Q4_K blocks (in the
+  device's layout of them, `hostops.q4k_prefill`),
   the full-attention layers' attention on the device, the Gated DeltaNet scan,
   the norms and the GLU on the host.
 - **decode**: **one NPU dispatch per token for the 64 layers**, then a second

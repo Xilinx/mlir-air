@@ -49,8 +49,9 @@ def n_split(n):
     return [(n0, min(n, n0 + MAX_N)) for n0 in range(0, n, MAX_N)]
 
 
-# a Q4_K block: 32 output columns by 256 k
-Q4K_COLS, Q4K_BYTES = 256, 4736
+# a Q4_K block: 32 output columns by 256 k, as the bundle stores it and as the
+# device reads it (hostops.q4k_prefill)
+Q4K_COLS, Q4K_BYTES, Q4K_PF_BYTES = 256, 4736, 5120
 
 MM_OBJ, MM_SUF = "mm_m32n64.o", "_m32n64"
 GEMM_OBJ = "gemm_bfp16.o"
@@ -97,9 +98,9 @@ class Config(NamedTuple):
     # GEMMs whose weights are MXFP4 blocks as the gpt-oss bundle stores them
     # (wq=2, gemm_bfp16.cc dqmx_bfp16), read where they lie
     mxfp4: bool = False
-    # every GEMM's weights are Q4_K blocks as FastFlowLM's bundle stores them
-    # (wq=3, gemm_bfp16.cc dq4k_bfp16), read where they lie; a B packet is
-    # then one block, so the device has no int4 or bf16 GEMMs
+    # every GEMM's weights are FastFlowLM's Q4_K blocks (wq=3, gemm_bfp16.cc
+    # dq4k_bfp16) in the prefill's layout of them (hostops.q4k_prefill); a B
+    # packet is then one block, so the device has no int4 or bf16 GEMMs
     q4k: bool = False
     # MoE expert GEMMs as one op over a run of blocks (Experts); see _gemm
     experts: "Experts" = None
@@ -176,7 +177,7 @@ def _gemm(
     pair RTPs are picked per wave, so the cores run both kinds."""
     ksteps = k // TK
     P = 1 + pair
-    qb = Q4K_BYTES if q4 else QB
+    qb = Q4K_PF_BYTES if q4 else QB
     zero, mmul, mmul_pkt, cast, cast_act, dq, dqmx, dq4k = kern
     npk = 2 if wq == 0 else 1  # B packets per K step: bfp16 in K halves, else 1
     a_in = air.channel("gAIn", size=[HR])
@@ -712,7 +713,7 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
         # [group * ncb + column block][4 blocks], up to the last panel's
         # column blocks, which read past its group when k was padded
         bshape = [(g["n"] // (2 * TN) - 1) * g["ncb"] + g["k"] // (2 * TK), 4]
-        bshape.append(Q4K_BYTES)
+        bshape.append(Q4K_PF_BYTES)
     else:
         bshape = [g["n"] // TN, g["k"] // TK * (2 if g["wq"] == 0 else 1), QB]
     # declared in the kernel's argument order

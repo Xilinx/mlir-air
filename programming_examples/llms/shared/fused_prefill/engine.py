@@ -176,7 +176,7 @@ class Engine:
     def gemm_site(self, site, k, n, packed, wq):
         """Load one weight matrix (packed by self.pack_q4 if wq is 1, by
         self.pack_bf16 if 0; Q4_K row groups [row groups * column blocks, 4,
-        block] if 3)."""
+        block] if 3, the bundle's blocks, which it lays out for the device)."""
         fp = self.fp
         npd = P.n_pad(n)
         if k not in self.abuf:
@@ -187,6 +187,7 @@ class Engine:
             ncb = k // D.Q4K_COLS
             need = (npd // (2 * D.TN) - 1) * ncb + D.k_pad(k) // (2 * D.TK)
             packed = np.pad(packed, ((0, max(0, need - len(packed))), (0, 0), (0, 0)))
+            packed = H.q4k_prefill(packed)
         else:
             # the device's K steps past k read zero packets
             kp = packed.shape[1] * D.k_pad(k) // k

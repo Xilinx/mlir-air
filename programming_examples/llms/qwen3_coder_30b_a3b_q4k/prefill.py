@@ -45,7 +45,7 @@ HOST_THREADS = 16
 # dispatches of a layer's up | gate GEMMs (and of its down GEMMs)
 MOE_GROUPS = 8
 BB = D.Q4K_BYTES
-GROUP = 4 * BB  # one column block of a 128-row group
+GROUP = 4 * D.Q4K_PF_BYTES  # one column block of a 128-row group, laid out
 E_GROUPS = MB.RG_GU * MB.NCB_X + MB.RG_DN * MB.NCB_H  # an expert's, in WE
 GU, DN = "gu", "down"
 NCB_O = S.DQ // D.Q4K_COLS  # column blocks of the o projection
@@ -73,9 +73,9 @@ def experts_we(w, layer):
 
 
 class Q3CPrefill(Engine):
-    """`we`: (BO, byte offset of layers[0]'s experts) of a WE buffer the
-    decode holds; without it the engine holds every layer's experts itself,
-    and with "stream" one layer's, copied in before the layer's MoE."""
+    """The engine holds the experts in the device's layout of their blocks
+    (hostops.q4k_prefill), apart from the decode's WE: every layer's, or with
+    `we` "stream" one layer's, laid out before the layer's MoE."""
 
     def __init__(self, build_dir, w, layers=None, we=None):
         H.build(build_dir, HOST_THREADS)
@@ -102,17 +102,15 @@ class Q3CPrefill(Engine):
         self.p = []
         lb = MB.E * E_GROUPS * GROUP
         self.stream = we == "stream"
-        if we is None or self.stream:
-            import pyxrt as xrt
+        if we not in (None, "stream"):
+            raise ValueError(f"we is None or 'stream', not {we!r}")
+        import pyxrt as xrt
 
-            held = 1 if self.stream else len(self.layers)
-            bo = xrt.ext.bo(self.dev, held * lb + WE_SLACK)
-            m = np.frombuffer(bo.map(), np.uint8)
-            m[held * lb :] = 0
-            we = (bo, 0)
-        else:
-            m = None
-        self.we_bo, self.we_off, self.we_map = we[0], we[1], m
+        held = 1 if self.stream else len(self.layers)
+        bo = xrt.ext.bo(self.dev, held * lb + WE_SLACK)
+        m = np.frombuffer(bo.map(), np.uint8)
+        m[held * lb :] = 0
+        self.we_bo, self.we_off, self.we_map = bo, 0, m
         self.wsub = {}
         sa = "self_attn."
         for j, L in enumerate(self.layers):
@@ -137,9 +135,9 @@ class Q3CPrefill(Engine):
                     kn=vec(sa + "k_norm.weight"),
                 )
             )
-            if m is not None and not self.stream:
-                m[j * lb : (j + 1) * lb] = experts_we(w, L).reshape(-1)
-        if m is not None and not self.stream:
+            if not self.stream:
+                H.q4k_prefill(experts_we(w, L), out=m[j * lb : (j + 1) * lb])
+        if not self.stream:
             self.we_bo.sync(TO)
         self.attn_setup()
         self.kvb = {j: self.kv_bo("a") for j in range(len(self.layers))}
@@ -275,7 +273,7 @@ class Q3CPrefill(Engine):
         t0 = time.perf_counter()
         if self.stream:
             lb = MB.E * E_GROUPS * GROUP
-            self.we_map[:lb] = experts_we(self.w, self.layers[j]).reshape(-1)
+            H.q4k_prefill(experts_we(self.w, self.layers[j]), out=self.we_map[:lb])
             self.we_bo.sync(TO, lb, 0)
         self._t("stream", t0)
         t0 = time.perf_counter()
