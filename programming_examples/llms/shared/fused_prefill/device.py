@@ -100,7 +100,8 @@ class Config(NamedTuple):
     mxfp4: bool = False
     # every GEMM's weights are FastFlowLM's Q4_K blocks (wq=3, gemm_bfp16.cc
     # dq4k_bfp16) in the prefill's layout of them (hostops.q4k_prefill); a B
-    # packet is then one block, so the device has no int4 or bf16 GEMMs
+    # packet is then a k half of a block, so the device has no int4 or bf16
+    # GEMMs
     q4k: bool = False
     # MoE expert GEMMs as one op over a run of blocks (Experts); see _gemm
     experts: "Experts" = None
@@ -177,7 +178,9 @@ def _gemm(
     pair RTPs are picked per wave, so the cores run both kinds."""
     ksteps = k // TK
     P = 1 + pair
-    qb = Q4K_PF_BYTES if q4 else QB
+    # a Q4_K packet is one k half of a block: a K step is a packet from each
+    # of the panel's two blocks
+    qb = Q4K_PF_BYTES // 2 if q4 else QB
     zero, mmul, mmul_pkt, cast, cast_act, dq, dqmx, dq4k = kern
     npk = 2 if wq == 0 else 1  # B packets per K step: bfp16 in K halves, else 1
     a_in = air.channel("gAIn", size=[HR])
@@ -241,13 +244,17 @@ def _gemm(
                     h = p % 2
                     b_in.put(B[g0 : g0 + ksteps, h : h + 1, 0:QB], indices=[tx])
         elif wq == 3:
-            # panel p is blocks 2 (p % 2) and the next of row group p // 2
+            # panel p is block pair p % 2 of row group p // 2, its K steps
+            # (a k half of each block) one run of bytes
             for r in range(rounds):
                 for tx in range(GNC):
                     p = r * GNC + tx
                     g0 = b0 + p // 2 * ncb
-                    s = 2 * (p % 2)
-                    b_in.put(B[g0 : g0 + ksteps // 2, s : s + 2, 0:qb], indices=[tx])
+                    s = p % 2
+                    b_in.put(
+                        B[g0 : g0 + ksteps // 2, s : s + 1, 0:2, 0:2, 0:qb],
+                        indices=[tx],
+                    )
         else:
             assert blk is None, "expert blocks take Q4_K or MXFP4 weights"
             Bp = B.reshape(rounds * GNC, L)
@@ -342,7 +349,12 @@ def _gemm(
             @hd.body
             def _(tx, ty):
                 a_l1 = [air.alloc([A_BFP], i8, scope=hd.private()) for _ in range(4)]
-                b_l1 = [air.alloc([qb], i8, scope=hd.private()) for _ in range(2)]
+                # Q4_K: two buffers of a K step's packets, so the next step's
+                # arrive while one is dequantized
+                b_l1 = [
+                    air.alloc([qb], i8, scope=hd.private())
+                    for _ in range(4 if q4 else 2)
+                ]
                 bdq = air.alloc([B_BFP], i8, scope=hd.private())
                 acc = air.alloc([TN // MM, TM // MM, MM, MM], f32, scope=hd.private())
                 acc2 = air.alloc([TN // MM, TM // MM, MM, MM], f32, scope=hd.private())
@@ -351,61 +363,64 @@ def _gemm(
                     zero(acc)
                     zero(acc2)
                     # int4 and MXFP4 packets are dequantized; bf16 weights
-                    # come as bfp16 in two packets per K step. With pair, each
-                    # K step takes two chunks' A tiles against one B. Of the
-                    # loops all but one are zero-trip, and each trip gets the
-                    # four A buffers in the same order, which is the BD chain
-                    # air-to-aie builds (#2040).
-                    for kn, dqf in ((kq, dq), (kmx, dqmx)) if mx else ((kq, dq),):
-                        for _k in air.sequential(kn):
-                            for i in range(4):
-                                a2l1.get(a_l1[i], indices=[tx, ty])
-                                b2l1.get(b_l1[i % 2], indices=[tx, ty])
-                                dqf(b_l1[i % 2], bdq)
-                                mmul(a_l1[i], bdq, acc)
-                    for kn, dqf in ((kp, dq), (kmxp, dqmx)) if mx else ((kp, dq),):
-                        for _k in air.sequential(kn):
-                            for pp in range(2):
-                                b2l1.get(b_l1[pp], indices=[tx, ty])
-                                dqf(b_l1[pp], bdq)
-                                a2l1.get(a_l1[2 * pp], indices=[tx, ty])
-                                mmul(a_l1[2 * pp], bdq, acc)
-                                a2l1.get(a_l1[2 * pp + 1], indices=[tx, ty])
-                                mmul(a_l1[2 * pp + 1], bdq, acc2)
-                    if q4:
-                        # a block pair is two K steps: both stay while the
-                        # cores take its K halves in turn
-                        for _k in air.sequential(k4k):
-                            for s in range(2):
+                    # come as bfp16 in two packets per K step; a Q4_K device
+                    # has only Q4_K GEMMs. With pair, each K step takes two
+                    # chunks' A tiles against one B. Of the loops all but one
+                    # are zero-trip, and each trip gets the four A buffers in
+                    # the same order, which is the BD chain air-to-aie builds
+                    # (#2040).
+                    if not q4:
+                        for kn, dqf in ((kq, dq), (kmx, dqmx)) if mx else ((kq, dq),):
+                            for _k in air.sequential(kn):
+                                for i in range(4):
+                                    a2l1.get(a_l1[i], indices=[tx, ty])
+                                    b2l1.get(b_l1[i % 2], indices=[tx, ty])
+                                    dqf(b_l1[i % 2], bdq)
+                                    mmul(a_l1[i], bdq, acc)
+                        for kn, dqf in ((kp, dq), (kmxp, dqmx)) if mx else ((kp, dq),):
+                            for _k in air.sequential(kn):
                                 for pp in range(2):
                                     b2l1.get(b_l1[pp], indices=[tx, ty])
-                                for h in range(2):
-                                    dq4k(b_l1[0], b_l1[1], bdq, h)
-                                    a2l1.get(a_l1[2 * s + h], indices=[tx, ty])
-                                    mmul(a_l1[2 * s + h], bdq, acc)
+                                    dqf(b_l1[pp], bdq)
+                                    a2l1.get(a_l1[2 * pp], indices=[tx, ty])
+                                    mmul(a_l1[2 * pp], bdq, acc)
+                                    a2l1.get(a_l1[2 * pp + 1], indices=[tx, ty])
+                                    mmul(a_l1[2 * pp + 1], bdq, acc2)
+                    if q4:
+                        # a K step's two packets in buffers 0, 1 or 2, 3 in
+                        # turn, each trip taking all four in order
+                        for _k in air.sequential(k4k):
+                            for q in range(4):
+                                i = 2 * (q % 2)
+                                for pp in range(2):
+                                    b2l1.get(b_l1[i + pp], indices=[tx, ty])
+                                dq4k(b_l1[i], b_l1[i + 1], bdq)
+                                a2l1.get(a_l1[q], indices=[tx, ty])
+                                mmul(a_l1[q], bdq, acc)
                         for _k in air.sequential(k4kp):
-                            for pp in range(2):
-                                b2l1.get(b_l1[pp], indices=[tx, ty])
                             for h in range(2):
-                                dq4k(b_l1[0], b_l1[1], bdq, h)
+                                for pp in range(2):
+                                    b2l1.get(b_l1[2 * h + pp], indices=[tx, ty])
+                                dq4k(b_l1[2 * h], b_l1[2 * h + 1], bdq)
                                 a2l1.get(a_l1[2 * h], indices=[tx, ty])
                                 mmul(a_l1[2 * h], bdq, acc)
                                 a2l1.get(a_l1[2 * h + 1], indices=[tx, ty])
                                 mmul(a_l1[2 * h + 1], bdq, acc2)
-                    for _k in air.sequential(kb):
-                        for i in range(4):
-                            a2l1.get(a_l1[i], indices=[tx, ty])
-                            for h in range(2):
-                                b2l1.get(b_l1[h], indices=[tx, ty])
-                                mmul_pkt(a_l1[i], b_l1[h], acc, h)
-                    for _k in air.sequential(kbp):
-                        for pp in range(2):
-                            a2l1.get(a_l1[2 * pp], indices=[tx, ty])
-                            a2l1.get(a_l1[2 * pp + 1], indices=[tx, ty])
-                            for h in range(2):
-                                b2l1.get(b_l1[h], indices=[tx, ty])
-                                mmul_pkt(a_l1[2 * pp], b_l1[h], acc, h)
-                                mmul_pkt(a_l1[2 * pp + 1], b_l1[h], acc2, h)
+                    if not q4:
+                        for _k in air.sequential(kb):
+                            for i in range(4):
+                                a2l1.get(a_l1[i], indices=[tx, ty])
+                                for h in range(2):
+                                    b2l1.get(b_l1[h], indices=[tx, ty])
+                                    mmul_pkt(a_l1[i], b_l1[h], acc, h)
+                        for _k in air.sequential(kbp):
+                            for pp in range(2):
+                                a2l1.get(a_l1[2 * pp], indices=[tx, ty])
+                                a2l1.get(a_l1[2 * pp + 1], indices=[tx, ty])
+                                for h in range(2):
+                                    b2l1.get(b_l1[h], indices=[tx, ty])
+                                    mmul_pkt(a_l1[2 * pp], b_l1[h], acc, h)
+                                    mmul_pkt(a_l1[2 * pp + 1], b_l1[h], acc2, h)
                     # the activation in the drain when act is set
                     for _a in air.sequential(actp):
                         cast_act(acc, out)
@@ -698,11 +713,7 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
         mm[2],
         air.extern("dq4_bfp16", link_with=GEMM_OBJ),
         air.extern("dqmx_bfp16", link_with=GEMM_OBJ) if cfg.mxfp4 else None,
-        (
-            air.extern("dq4k_bfp16", link_with=GEMM_OBJ, scalars=[i32])
-            if cfg.q4k
-            else None
-        ),
+        (air.extern("dq4k_bfp16", link_with=GEMM_OBJ) if cfg.q4k else None),
     )
     if g["wq"] == 2:
         assert QB == 2 * 2560, QB  # a packet is two MXFP4 blocks of 32 x 128
@@ -712,8 +723,8 @@ def build(cfg, op, *shape, name="fused_prefill", own=False):
     elif g["wq"] == 3:
         # [group * ncb + column block][4 blocks], up to the last panel's
         # column blocks, which read past its group when k was padded
-        bshape = [(g["n"] // (2 * TN) - 1) * g["ncb"] + g["k"] // (2 * TK), 4]
-        bshape.append(Q4K_PF_BYTES)
+        bshape = [(g["n"] // (2 * TN) - 1) * g["ncb"] + g["k"] // (2 * TK)]
+        bshape += [2, 2, 2, Q4K_PF_BYTES // 2]  # [pair][k half][block][packet]
     else:
         bshape = [g["n"] // TN, g["k"] // TK * (2 if g["wq"] == 0 else 1), QB]
     # declared in the kernel's argument order

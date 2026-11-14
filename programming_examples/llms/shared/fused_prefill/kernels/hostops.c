@@ -833,23 +833,28 @@ void glu_tile_a_n(int ldc, int n, int TM, int TK, int nj, const int64_t *c,
 // k, 4736 bytes: uint8 scales [8 groups][32 n], mins the same, nibbles
 // [256 k][32 n] with the low nibble the even n, bf16 S [32], M [32]) -> the
 // fused prefill's layout of the same block, 5120 bytes, which its dequant
-// reads without rearranging:
-//   nibbles [k half][16-column half][group][8 k][8-column block] of
-//           [8 n][8 k] tiles, the low nibble the even lane;
+// reads without rearranging. A k half of a block (one K step, a B packet),
+// 2560 bytes:
+//   nibbles [16-column half][group][8 k][8-column block] of [8 n][8 k]
+//           tiles, the low nibble the even lane, 2048 bytes;
 //   bf16 [group][16-column half][16] bf16(S s_j), then [16] bf16(M m_j),
-//           rounded as the device rounds them.
+//           rounded as the device rounds them, 512 bytes.
+// The n blocks are row groups of four, laid out [block pair][k half][block of
+// the pair][packet]: a GEMM panel reads a pair, whose K steps are then one
+// run of bytes.
 void q4k_prefill(const uint8_t *src, long n, uint8_t *dst) {
 #pragma omp parallel for num_threads(NT) schedule(static)
   for (long b = 0; b < n; b++) {
     const uint8_t *s = src + b * 4736;
-    uint8_t *d = dst + b * 5120;
+    // block b % 4 of its row group; + h * 2 * 2560 for its k half h
+    uint8_t *d = dst + b / 4 * 4 * 5120 + b % 4 / 2 * 2 * 5120 + b % 2 * 2560;
     const uint8_t *q = s + 512;
     for (int h = 0; h < 2; h++)
       for (int p = 0; p < 2; p++)
         for (int g = 0; g < 4; g++)
           for (int kq = 0; kq < 4; kq++)
             for (int o = 0; o < 2; o++) {
-              uint8_t *t = d + ((((h * 2 + p) * 4 + g) * 4 + kq) * 2 + o) * 32;
+              uint8_t *t = d + h * 5120 + (((p * 4 + g) * 4 + kq) * 2 + o) * 32;
               int k0 = h * 128 + g * 32 + kq * 8, n0 = p * 16 + o * 8;
               for (int j = 0; j < 32; j++) {
                 int r = j / 4, c = (j % 4) * 2, nn = n0 + r;
@@ -860,18 +865,19 @@ void q4k_prefill(const uint8_t *src, long n, uint8_t *dst) {
               }
             }
     const uint16_t *S = (const uint16_t *)(s + 4608), *M = S + 32;
-    uint16_t *cst = (uint16_t *)(d + 4096);
     for (int g = 0; g < 8; g++)
       for (int p = 0; p < 2; p++)
         for (int i = 0; i < 16; i++) {
           int nn = p * 16 + i;
+          // the group's k half holds its constants
+          uint16_t *cst =
+              (uint16_t *)(d + (g / 4) * 5120 + 2048) + ((g % 4) * 2 + p) * 32;
           uint32_t su = (uint32_t)S[nn] << 16, mu = (uint32_t)M[nn] << 16;
           float sf, mf;
           memcpy(&sf, &su, 4);
           memcpy(&mf, &mu, 4);
-          cst[(g * 2 + p) * 32 + i] = f2bf((float)s[g * 32 + nn] * sf);
-          cst[(g * 2 + p) * 32 + 16 + i] =
-              f2bf((float)s[256 + g * 32 + nn] * mf);
+          cst[i] = f2bf((float)s[g * 32 + nn] * sf);
+          cst[16 + i] = f2bf((float)s[256 + g * 32 + nn] * mf);
         }
   }
 }
