@@ -1655,8 +1655,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       Operation *offset_producer = offsets[i].getDefiningOp();
       if (auto castOp =
               dyn_cast_if_present<arith::IndexCastOp>(offset_producer)) {
-        // The handle applies to the cast's index result: affine.apply takes no
-        // integer operand.
+        // affine.apply takes an index, not the cast's integer input.
         builder.setInsertionPointAfter(castOp);
         offset_producer = affine::AffineApplyOp::create(
             builder, builder.getUnknownLoc(),
