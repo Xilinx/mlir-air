@@ -34,7 +34,7 @@
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 PYTHON ?= python3
-DECODE := $(PYTHON) $(srcdir)/decode.py
+DRIVER := $(PYTHON) $(srcdir)/gpt_oss_20b_q4nx_inference.py
 comma := ,
 
 MAXL     ?= 256
@@ -47,7 +47,7 @@ CTX      ?= 512
 BUILD_DIR ?= build_decode
 LONG_LEN ?= 128
 
-# The fused prefill build, under the invoking directory; decode.py prefills on
+# The fused prefill build, under the invoking directory; the run prefills on
 # the build in FUSED_PREFILL_DIR, and with FUSED_PREFILL_DIR= on per-op ELFs.
 FUSED_DIR ?= $(CURDIR)/_fused_prefill
 override FUSED_DIR := $(abspath $(FUSED_DIR))
@@ -63,7 +63,7 @@ FUSED_DEP := $(if $(FUSED_PREFILL_DIR),$(abspath $(FUSED_PREFILL_DIR))/manifest.
 	clean
 
 compile:
-	$(DECODE) --compile-only --maxl $(MAXL) --build-dir $(BUILD_DIR)
+	$(DRIVER) --compile-only --maxl $(MAXL) --build-dir $(BUILD_DIR)
 
 compile-fused-prefill:
 	$(PYTHON) $(srcdir)/fused_build.py $(FUSED_DIR) -j $(FUSED_JOBS)
@@ -72,13 +72,13 @@ compile-fused-prefill:
 	$(PYTHON) $(srcdir)/fused_build.py $* -j $(FUSED_JOBS)
 
 run: $(FUSED_DEP)
-	$(DECODE) --maxl $(MAXL) --steps $(STEPS) --prompt "$(PROMPT)" \
+	$(DRIVER) --maxl $(MAXL) --steps $(STEPS) --prompt "$(PROMPT)" \
 		--build-dir $(BUILD_DIR)
 
 # PROMPT repeated to LONG_LEN tokens: prefilled, then decoded, each token
 # checked against the CPU reference
 run-long: $(FUSED_DEP)
-	$(DECODE) --maxl $$(( ($(LONG_LEN) + $(STEPS) + 15) / 16 * 16 )) \
+	$(DRIVER) --maxl $$(( ($(LONG_LEN) + $(STEPS) + 15) / 16 * 16 )) \
 		--steps $(STEPS) --prompt "$(PROMPT)" --prompt-len $(LONG_LEN) \
 		--build-dir build_long
 
@@ -92,23 +92,23 @@ prefill-fused: $(FUSED_DIR)/manifest.json
 # the decode's resident weights, the fused prefill's KV handed to it; the
 # reference token comes from prefill-fused, so the two never share memory
 decode-prefilled: prefill-fused
-	FUSED_PREFILL_DIR=$(FUSED_DIR) $(DECODE) \
+	FUSED_PREFILL_DIR=$(FUSED_DIR) $(DRIVER) \
 		--maxl $$(( ($(LONG_LEN) + $(STEPS) + 15) / 16 * 16 )) --steps $(STEPS) \
 		--prompt "$(PROMPT)" --prompt-len $(LONG_LEN) --no-ref \
 		--first-token $(CURDIR)/first_token.txt --build-dir build_long
 
 profile: $(FUSED_DEP)
-	$(DECODE) --maxl $(MAXL) --steps $(N_TOKENS) --prompt "$(PROMPT)" --no-ref \
+	$(DRIVER) --maxl $(MAXL) --steps $(N_TOKENS) --prompt "$(PROMPT)" --no-ref \
 		--build-dir $(BUILD_DIR)
 
 # The context is compiled in: one build per point, each at its own maxl.
 profile-decode:
 	for c in $(subst $(comma), ,$(CONTEXTS)); do \
-		$(DECODE) --maxl $$c --bench $(BENCH) --bench-ctx $$c \
+		$(DRIVER) --maxl $$c --bench $(BENCH) --bench-ctx $$c \
 			--build-dir build_ctx$$c || exit 1; done
 
 profile-prefill: $(FUSED_DEP)
-	$(DECODE) --maxl $$(( ($(CTX) + 31) / 16 * 16 )) --prompt-len $(CTX) \
+	$(DRIVER) --maxl $$(( ($(CTX) + 31) / 16 * 16 )) --prompt-len $(CTX) \
 		--steps 2 --no-ref --warm --build-dir build_ctx$(CTX)
 
 prefill:
@@ -121,7 +121,7 @@ prefill:
 	$(PYTHON) $(srcdir)/prefill.py --npu --build-dir build_prefill_ops
 
 bench:
-	$(DECODE) --maxl $(MAXL) --bench $(BENCH) --build-dir $(BUILD_DIR)
+	$(DRIVER) --maxl $(MAXL) --bench $(BENCH) --build-dir $(BUILD_DIR)
 
 block:
 	$(PYTHON) $(srcdir)/moe_block.py

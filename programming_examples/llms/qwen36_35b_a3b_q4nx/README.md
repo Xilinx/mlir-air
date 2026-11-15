@@ -57,8 +57,8 @@ How each side takes them:
 
 ## Placement
 
-Decode (`decode.py`), FastFlowLM's tile map, one launch repeated once per four
-layers:
+Decode (`qwen36_35b_a3b_q4nx_decode.py`), FastFlowLM's tile map, one launch
+repeated once per four layers:
 
 | Columns | Role |
 | --- | --- |
@@ -151,7 +151,8 @@ make kernels                  # every kernel test
 
 | File | Purpose |
 | --- | --- |
-| `decode.py` | The 40-layer decode ELF, the LM head dispatch, the prefill hand-off (`Q36Decoder`); `make run` / `profile` |
+| `qwen36_35b_a3b_q4nx_inference.py` | End to end: the prompt (fused prefill or decode), then the decode; TTFT and tok/s; `make run` / `profile` |
+| `qwen36_35b_a3b_q4nx_decode.py` | The 40-layer decode ELF, the LM head dispatch, the prefill hand-off (`Q36Decoder`) |
 | `gdn_layer.py`, `attn_layer.py`, `moe_block.py`, `lm_head.py` | One GDN layer, one attention layer, the MoE block and the LM head alone, each against the reference |
 | `prefill.py` | The prefill on the fused prefill device (`Qwen36Prefill`) |
 | `fused_spec.py`, `fused_build.py` | The prefill device: GEMM shapes, attention groups, build |

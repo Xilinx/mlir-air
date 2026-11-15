@@ -63,7 +63,7 @@ the output gate and the GLU. The prefill keeps its own copy of the weights.
 
 ## Decode placement
 
-`decode.py`, one launch repeated once per four layers:
+`qwen38_27b_q4nx_decode.py`, one launch repeated once per four layers:
 
 | Columns | Role |
 | --- | --- |

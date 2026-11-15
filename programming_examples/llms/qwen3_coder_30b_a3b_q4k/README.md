@@ -54,7 +54,7 @@ How each side takes them:
 
 ## Placement
 
-Decode (`decode.py`), one launch repeated once per four layers:
+Decode (`qwen3_coder_30b_a3b_q4k_decode.py`), one launch repeated once per four layers:
 
 | Columns | Role |
 | --- | --- |
@@ -150,7 +150,8 @@ make profile-prefill CTX=2048 # TTFT of a 2048-token prompt
 
 | File | Purpose |
 | --- | --- |
-| `decode.py` | The 48-layer decode ELF, the LM head dispatch, the prefill hand-off (`Q3CDecoder`); `make run` / `profile` |
+| `qwen3_coder_30b_a3b_q4k_inference.py` | End to end: the prompt (fused prefill or decode), then the decode; TTFT and tok/s; `make run` / `profile` |
+| `qwen3_coder_30b_a3b_q4k_decode.py` | The 48-layer decode ELF, the LM head dispatch, the prefill hand-off (`Q3CDecoder`) |
 | `attn_layer.py`, `lm_head.py` | One layer (attention and MoE) and the LM head alone, each against the reference |
 | `moe_block.py` | The MoE block's shapes and weight layout |
 | `prefill.py` | The prefill on the fused prefill device (`Q3CPrefill`) |
