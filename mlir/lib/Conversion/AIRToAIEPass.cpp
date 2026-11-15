@@ -8434,12 +8434,14 @@ public:
       dma_memcpys_sorted = dma_memcpys;
 
     // The chain-lock ping-pong twin alternates a buffer between two instances,
-    // so every channel moving it has to alternate too. One that chains it with
-    // other transfers in a task does not, and the buffer stays single.
+    // so every channel moving it has to alternate too. A channel that also
+    // moves other transfers, in the same task or in other tasks, runs each BD
+    // once per repeat and cannot; such a buffer stays single.
     llvm::DenseSet<Value> singleSlot;
     for (auto &[dma_chan, memcpy_ops] : dma_memcpys_sorted) {
-      for (auto &[rep, task_ops] : air::getRepeatCounts(memcpy_ops))
-        if (task_ops.size() != 1)
+      auto counts = air::getRepeatCounts(memcpy_ops);
+      for (auto &[rep, task_ops] : counts)
+        if (task_ops.size() != 1 || counts.size() != 1)
           for (Operation *op : task_ops)
             if (Value m = memtileSideMemref(op))
               singleSlot.insert(m);
