@@ -5261,6 +5261,8 @@ public:
       };
 
       for (auto &level : chain) {
+        if (level.viaLoop)
+          break;
         Slot *slot = findSlot(level);
         if (!slot)
           continue;

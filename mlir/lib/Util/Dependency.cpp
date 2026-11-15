@@ -748,7 +748,29 @@ void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
   Value token = directToken;
   SmallVector<std::pair<Operation *, unsigned>> guards;
   chain.push_back({block, token, guards});
+  bool viaLoop = false;
   while (Operation *parent = block->getParentOp()) {
+    if (auto loop = dyn_cast<scf::ForOp>(parent)) {
+      // The loop's result for a yielded token that waits on this op: all
+      // iterations' endpoints are behind it.
+      auto yield = cast<scf::YieldOp>(block->getTerminator());
+      Operation *def = token.getDefiningOp();
+      Value promoted;
+      for (auto [i, v] : llvm::enumerate(yield.getOperands()))
+        if (isa<air::AsyncTokenType>(v.getType()) && v.getDefiningOp() && def &&
+            isAsyncDependent(def, v.getDefiningOp())) {
+          promoted = loop->getResult(i);
+          break;
+        }
+      if (!promoted)
+        break;
+      viaLoop = true;
+      guards.clear();
+      token = promoted;
+      block = loop->getBlock();
+      chain.push_back({block, token, guards, viaLoop});
+      continue;
+    }
     if (!isConditionalOp(parent))
       break;
     // Promote to the result that carries `token` out of this arm, found by
@@ -773,7 +795,7 @@ void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
     guards.push_back({parent, block->getParent()->getRegionNumber()});
     token = promoted;
     block = parent->getBlock();
-    chain.push_back({block, token, guards});
+    chain.push_back({block, token, guards, viaLoop});
   }
 }
 
@@ -812,11 +834,14 @@ void enforceChannelFifoOrder(Operation *root) {
     };
 
     // Link to the nearest preceding match, innermost scope outward.
-    for (auto &level : chain)
+    for (auto &level : chain) {
+      if (level.viaLoop)
+        break;
       if (Slot *slot = findSlot(level)) {
         addAsyncDependencyIfNew(chan.getOperation(), slot->token);
         break;
       }
+    }
 
     // Publish at every scope level, so a later endpoint at any of them matches.
     for (auto &level : chain) {
