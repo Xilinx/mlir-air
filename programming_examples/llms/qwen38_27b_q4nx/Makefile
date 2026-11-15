@@ -12,8 +12,9 @@
 #   make prefill-fused   The fused prefill of PROMPT repeated to LONG_LEN tokens
 #                        vs the CPU reference
 #   make verify          Each stage alone, prefill-fused, the decode, the
-#                        reference against HF transformers' Qwen3.5 layers, and
-#                        the shared top-5 gate against Qwen/Qwen3.8-27B in bf16
+#                        decode across a READS boundary, the reference against
+#                        HF transformers' Qwen3.5 layers, and the shared top-5
+#                        gate against Qwen/Qwen3.8-27B in bf16
 #   make profile         TTFT and decode throughput of PROMPT, no reference
 #   make profile-decode  Decode tok/s at each of CONTEXTS (one build each)
 #   make profile-prefill TTFT of a CTX-token prompt
@@ -29,6 +30,8 @@ DRIVER := $(PYTHON) $(srcdir)/qwen38_27b_q4nx_inference.py
 comma := ,
 
 MAXL      ?= 64
+# shorter cache reads below MAXL, each in a layers' ELF of its own
+READS     ?=
 GEN       ?= 8
 PROMPT    ?= The capital of France
 N_TOKENS  ?= 32
@@ -55,7 +58,7 @@ KERNELS   := q4k_mvm gdn_prep gdn_decode gate rope attn
 
 compile:
 	mkdir -p $(BUILD_DIR) && cd $(BUILD_DIR) && \
-		$(DRIVER) --compile-only --maxl $(MAXL)
+		$(DRIVER) --compile-only --maxl $(MAXL) --reads "$(READS)"
 
 compile-fused-prefill:
 	$(PYTHON) $(srcdir)/fused_build.py $(FUSED_DIR)
@@ -65,7 +68,7 @@ compile-fused-prefill:
 
 run: $(FUSED_DEP)
 	mkdir -p $(BUILD_DIR) && cd $(BUILD_DIR) && \
-		$(DRIVER) --maxl $(MAXL) --gen $(GEN) --prompt "$(PROMPT)"
+		$(DRIVER) --maxl $(MAXL) --reads "$(READS)" --gen $(GEN) --prompt "$(PROMPT)"
 
 prefill-fused: $(FUSED_DIR)/manifest.json
 	$(PYTHON) $(srcdir)/prefill.py $(FUSED_DIR) --prompt "$(PROMPT)" \
@@ -77,6 +80,8 @@ verify:
 			|| exit 1; done
 	$(MAKE) -f $(srcdir)/Makefile prefill-fused
 	$(MAKE) -f $(srcdir)/Makefile run GEN=4
+	$(MAKE) -f $(srcdir)/Makefile run MAXL=64 READS=16 GEN=14 FUSED_PREFILL_DIR= \
+		BUILD_DIR=build_reads
 	$(PYTHON) $(srcdir)/check_vs_hf.py
 	cd $(srcdir)/.. && QWEN38_VERIFY_DIR=$(CURDIR)/build_verify \
 		$(PYTHON) verify/verify_runner.py \
