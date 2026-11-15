@@ -88,7 +88,7 @@ class NpuRunner:
     def __init__(self):
         import filelock
 
-        import decode
+        import qwen3_coder_30b_a3b_q4k_decode as dec
 
         self._w = _w.Qwen3CoderQ4k()
         self._lock = filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock"))
@@ -98,7 +98,7 @@ class NpuRunner:
         here = os.getcwd()
         os.chdir(build)
         try:
-            self.dec = decode.load(self._w, _MAXL)
+            self.dec = dec.load(self._w, _MAXL)
         finally:
             os.chdir(here)
 
