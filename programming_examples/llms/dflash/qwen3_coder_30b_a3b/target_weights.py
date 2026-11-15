@@ -1,19 +1,15 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""What the shared decoder imports as its target's weights: Qwen3-8B's, as
-its target role; the drafter here takes its weights from drafter.py."""
+"""The names the shared decoder and the drafter packer import as the target
+role's weights (Qwen3-8B's). The drafter takes its own weights and RoPE from
+drafter.py."""
 
 from paths import HERE
 import sys
 
 sys.path.insert(0, str(HERE.parents[1] / "qwen3_8b_q4nx"))
-from qwen3_8b_q4nx_weights import Q4nxModel, BLOCK_BF16, generate_rope_lut
+from qwen3_8b_q4nx_weights import Q4nxModel, generate_rope_lut
 
 
 def rope_row(position, role):
     return generate_rope_lut(position)
-
-
-# Decoder-only callers have not imported the native prefill runner yet.
-sys.path.insert(0, str(HERE.parents[1] / "qwen3_4b"))
-from qwen3_4b_weights import LayerWeights as PrefillLayer

@@ -8,6 +8,7 @@ the vocabulary head is the target's, quantized the same way.
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 import sys
 
@@ -43,10 +44,13 @@ def main():
     if done.is_file() and json.loads(done.read_text()).get("status") == "prepared":
         print(f"{a.output} is prepared")
         return
-    a.output.mkdir(parents=True, exist_ok=False)
+    # written aside, then renamed: an interrupted pack leaves no half output
+    out = a.output.with_name(a.output.name + ".partial")
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
     st = Safetensors(a.draft / "model.safetensors")
     packed = np.lib.format.open_memmap(
-        a.output / "W.npy",
+        out / "W.npy",
         mode="w+",
         dtype=np.uint16,
         shape=(LAYERS * LAYER_WORDS + HEAD_WORDS,),
@@ -111,9 +115,9 @@ def main():
         offset += words.size
     assert offset == packed.size
     packed.flush()
-    np.save(a.output / "RMS.npy", np.asarray(norms, bfloat16).view(np.uint16))
-    np.save(a.output / "QK.npy", np.asarray(qk, bfloat16).view(np.uint16))
-    (a.output / "manifest.json").write_text(
+    np.save(out / "RMS.npy", np.asarray(norms, bfloat16).view(np.uint16))
+    np.save(out / "QK.npy", np.asarray(qk, bfloat16).view(np.uint16))
+    (out / "manifest.json").write_text(
         json.dumps(
             dict(
                 status="prepared",
@@ -126,6 +130,9 @@ def main():
         )
         + "\n"
     )
+
+    shutil.rmtree(a.output, ignore_errors=True)
+    out.rename(a.output)
 
 
 if __name__ == "__main__":

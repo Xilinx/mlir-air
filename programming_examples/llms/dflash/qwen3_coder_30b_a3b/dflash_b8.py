@@ -17,10 +17,11 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import model_paths  # noqa: E402
+import model_spec  # noqa: E402
 import verify_b8 as V  # noqa: E402
 
 W, TOK = V.W, V.TOK
-EOS = (151643, 151645)
+EOS = model_spec.EOS_IDS
 
 
 class _Taps(dict):
@@ -90,6 +91,10 @@ def main():
     n = len(ids)
 
     reads = [int(r) for r in a.reads.split(",")]
+    # a block's 8 rows must fit the longest read
+    limit = max(reads)
+    if -(-n // TOK) * TOK > limit:
+        raise SystemExit(f"a prompt of {n} tokens does not fit {limit} positions")
     v = V.VerifyB8(w, a.root, 4096, reads)
     dr = drafter.Drafter(
         w,
@@ -107,7 +112,7 @@ def main():
     times = dict.fromkeys(("draft", "verify", "head"), 0.0)
     t_all = time.perf_counter()
     stamps = []
-    while len(out) < a.gen and out[-1] not in EOS:
+    while len(out) < a.gen and out[-1] not in EOS and start + TOK <= limit:
         t = time.perf_counter()
         dr.context(ctx, p0)
         props = dr.propose(out[-1], start)
@@ -133,6 +138,8 @@ def main():
         p0 = start
         start += acc + 1
     wall = time.perf_counter() - t_all
+    if start + TOK > limit and len(out) < a.gen and out[-1] not in EOS:
+        print(f"stopped at position {start}: the next block passes {limit}")
     print(
         "[draft] "
         + ", ".join(

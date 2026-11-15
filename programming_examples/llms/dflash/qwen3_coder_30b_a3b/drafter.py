@@ -14,7 +14,8 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 HERE = Path(__file__).resolve().parent
-TOK, DH, NKV, THETA = 8, 128, 4, 1e7
+# the geometry the drafter's build has
+TOK, LAYERS, D, DH, NKV, THETA = 8, 8, 2048, 128, 4, 1e7
 
 
 class Safetensors:
@@ -101,22 +102,36 @@ class Drafter:
         cfg = json.loads((Path(draft_path) / "config.json").read_text())
         self.mask = cfg["dflash_config"]["mask_token_id"]
         self.taps = cfg["dflash_config"]["target_layer_ids"]
+        geometry = tuple(
+            cfg[k]
+            for k in (
+                "num_hidden_layers",
+                "hidden_size",
+                "head_dim",
+                "num_key_value_heads",
+                "rope_theta",
+            )
+        )
+        if geometry != (LAYERS, D, DH, NKV, THETA) or len(self.taps) != 5:
+            raise ValueError(f"{draft_path} is not the drafter this build is for")
         t = lambda n: torch.from_numpy(
             np.asarray(st.tensor(n), np.float32)
         )  # noqa: E731
         self.fc, self.hn = t("fc.weight"), t("hidden_norm.weight").numpy()
-        # fc by tap, transposed: [5][2048 in, 2048 out]
+        # fc by tap, transposed: [tap][D in, D out]
         self.fcs = [
-            self.fc[:, i * 2048 : (i + 1) * 2048].T.contiguous() for i in range(5)
+            self.fc[:, i * D : (i + 1) * D].T.contiguous()
+            for i in range(len(self.taps))
         ]
         self.kv = [
             torch.cat(
                 [t(f"layers.{l}.self_attn.{n}_proj.weight") for n in "kv"]
             ).T.contiguous()
-            for l in range(8)
+            for l in range(LAYERS)
         ]
-        self.kn = [t(f"layers.{l}.self_attn.k_norm.weight").numpy() for l in range(8)]
-        D = 2048
+        self.kn = [
+            t(f"layers.{l}.self_attn.k_norm.weight").numpy() for l in range(LAYERS)
+        ]
 
         class Provider:
             def bf16(self, name):
@@ -141,25 +156,31 @@ class Drafter:
         self.dec.kernel = _Spin(self.dec.kernel)
         self.times = dict.fromkeys(("kv", "upload", "dispatch"), 0.0)
 
-    def _kv(self, taps, p0):
-        """Rows' K and V [8 layers, n, 1024] for taps [n, 5 D] at p0 .."""
-        torch = self.torch
-        c = (
-            torch.from_numpy(np.ascontiguousarray(taps, np.float32)) @ self.fc.T
-        ).numpy()
-        c = torch.from_numpy(_rms(c, self.hn).astype(bfloat16).astype(np.float32))
+    def _layers_kv(self, c, p0, layers):
+        """K and V [n, 1024] of each of layers for the normed rows c [n, D]
+        at p0 .., each KV head twice as the build stores them."""
         n = len(c)
         inv = 1.0 / (THETA ** (np.arange(0, DH, 2) / DH))
         f = (p0 + np.arange(n))[:, None, None] * inv
         cos, sin = np.cos(f), np.sin(f)
         K, V = [], []
-        for l in range(8):
+        for l in layers:
             kv = (c @ self.kv[l]).numpy().reshape(n, 2, NKV, DH)
             k = _rms(kv[:, 0], self.kn[l])
             k1, k2 = k[..., : DH // 2], k[..., DH // 2 :]
             k = np.concatenate([k1 * cos - k2 * sin, k2 * cos + k1 * sin], -1)
             K.append(np.repeat(k, 2, 1).reshape(n, -1))
             V.append(np.repeat(kv[:, 1], 2, 1).reshape(n, -1))
+        return K, V
+
+    def _normed(self, c):
+        c = _rms(np.asarray(c), self.hn).astype(bfloat16).astype(np.float32)
+        return self.torch.from_numpy(c)
+
+    def _kv(self, taps, p0):
+        """Rows' K and V [layers, n, 1024] for taps [n, taps x D] at p0 .."""
+        t = self.torch.from_numpy(np.ascontiguousarray(taps, np.float32))
+        K, V = self._layers_kv(self._normed((t @ self.fc.T).numpy()), p0, range(LAYERS))
         return np.stack(K), np.stack(V)
 
     # A verified block's K and V, in pieces a dispatch's wait can hold: a
@@ -171,24 +192,17 @@ class Drafter:
 
     def finish(self, p0, half):
         if half == 0:
-            c = _rms(self.acc.numpy(), self.hn).astype(bfloat16).astype(np.float32)
-            self.c_pre, self.kv_pre = self.torch.from_numpy(c), ([], [])
-        c, n = self.c_pre, len(self.c_pre)
-        inv = 1.0 / (THETA ** (np.arange(0, DH, 2) / DH))
-        f = (p0 + np.arange(n))[:, None, None] * inv
-        cos, sin = np.cos(f), np.sin(f)
-        for l in range(4 * half, 4 * half + 4):
-            kv = (c @ self.kv[l]).numpy().reshape(n, 2, NKV, DH)
-            k = _rms(kv[:, 0], self.kn[l])
-            k1, k2 = k[..., : DH // 2], k[..., DH // 2 :]
-            k = np.concatenate([k1 * cos - k2 * sin, k2 * cos + k1 * sin], -1)
-            self.kv_pre[0].append(np.repeat(k, 2, 1).reshape(n, -1))
-            self.kv_pre[1].append(np.repeat(kv[:, 1], 2, 1).reshape(n, -1))
+            self.c_pre, self.kv_pre = self._normed(self.acc.numpy()), ([], [])
+        h = LAYERS // 2
+        K, V = self._layers_kv(self.c_pre, p0, range(h * half, h * half + h))
+        self.kv_pre[0].extend(K)
+        self.kv_pre[1].extend(V)
         if half == 1:
             self.pre = (p0, np.stack(self.kv_pre[0]), np.stack(self.kv_pre[1]))
 
     def context(self, taps, p0):
-        """The committed rows' taps [n, 5 D] at p0 ..: their K and V into the cache."""
+        """The committed rows' taps [n, taps x D] at p0 ..: their K and V into the
+        cache."""
         t0 = time.perf_counter()
         pre, self.pre = getattr(self, "pre", None), None
         n = len(taps)

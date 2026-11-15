@@ -40,8 +40,14 @@ def _cwd(d):
 
 
 SOURCES = {
-    "lm_head": ("lm_head_b8.py", "kernels/q8_b8.cc", "kernels/q4k_b8.cc"),
+    "lm_head": (
+        "verify_b8.py",
+        "lm_head_b8.py",
+        "kernels/q8_b8.cc",
+        "kernels/q4k_b8.cc",
+    ),
     "layers": (
+        "verify_b8.py",
         "layers_b8.py",
         "model_b8.py",
         "kernels/layers_b8.cc",
@@ -61,14 +67,35 @@ def _tools():
     from air.tools import resolve_tool
 
     h = hashlib.sha256()
-    for tool in (
-        shutil.which("air-opt"),
-        resolve_tool("aircc"),
-        shutil.which("aiecc"),
-        Path(os.environ["PEANO_INSTALL_DIR"]) / "bin/clang++",
+    peano = os.environ.get("PEANO_INSTALL_DIR")
+    for name, tool in (
+        ("air-opt", resolve_tool("air-opt")),
+        ("aircc", resolve_tool("aircc")),
+        ("aiecc", shutil.which("aiecc")),
+        ("clang++", peano and Path(peano) / "bin/clang++"),
     ):
-        with open(tool, "rb") as f:
-            h.update(hashlib.file_digest(f, "sha256").digest())
+        h.update(name.encode())
+        if tool and Path(tool).is_file():
+            with open(tool, "rb") as f:
+                h.update(hashlib.file_digest(f, "sha256").digest())
+    return h.hexdigest()
+
+
+def _weights_stamp(w):
+    """What the tiled weights are made from: the layouts and the bundle."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for f in (
+        HERE / "q4k_layout.py",
+        HERE / "model_b8.py",
+        M.CODER / "lm_head.py",
+        M.CODER / "moe_block.py",
+        M.CODER / "attn_layer.py",
+    ):
+        h.update(f.read_bytes())
+    st = Path(w.path).stat()
+    h.update(f"{w.path} {st.st_size} {st.st_mtime_ns}".encode())
     return h.hexdigest()
 
 
@@ -95,9 +122,14 @@ def _compile(d, module, kernel, *key, opts=FIX):
     d = Path(d).resolve()
     m = module()
     st, sf = _stamp(m, *key), d / "stamp.json"
-    if sf.is_file() and json.loads(sf.read_text()).get("stamp") == st:
+    if (
+        sf.is_file()
+        and json.loads(sf.read_text()).get("stamp") == st
+        and (d / "air.elf").is_file()
+    ):
         kname = json.loads(sf.read_text())["kernel"]
     else:
+        sf.unlink(missing_ok=True)
         with _cwd(d):
             kernel()
             art = XRTBackend(instance_name=key[0], output_format="elf", **opts).compile(
@@ -159,6 +191,12 @@ class VerifyB8:
         t0 = time.time()
         cache = self.root / "weights_tiled"
         cache.mkdir(parents=True, exist_ok=True)
+        # tiled weights made from other layouts or another bundle are stale
+        ws, wf = _weights_stamp(w), cache / "stamp.txt"
+        if not wf.is_file() or wf.read_text() != ws:
+            for f in cache.glob("*.npy"):
+                f.unlink()
+            wf.write_text(ws)
 
         def cached(name, make):
             f = cache / f"{name}.npy"

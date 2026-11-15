@@ -181,6 +181,7 @@ void q4k_b8_zero(float *__restrict acc) {
 // scratch: x in bfp16, then the nibble tiles
 void q4k_b8_block(bf16 *__restrict x, uint8_t *__restrict w,
                   float *__restrict acc, uint8_t *__restrict scratch) {
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
   char *xb = (char *)scratch;
   char *wb = xb + KT * BLK;
   {
@@ -196,6 +197,7 @@ void q4k_b8_block(bf16 *__restrict x, uint8_t *__restrict w,
 
 // y[token][32 rows] = acc in bf16
 void q4k_b8_flush(float *__restrict acc, bf16 *__restrict y) {
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
   for (int t = 0; t < 8; t++)
     for (int j = 0; j < NT; j++) {
       aie::accum<accfloat, 8> a;

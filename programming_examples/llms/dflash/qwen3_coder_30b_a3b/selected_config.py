@@ -1,6 +1,6 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""The supported B8 and B16 NPU mappings for this example."""
+"""The drafter's B8 mapping on the shared decoder, the one this example builds."""
 
 from __future__ import annotations
 
@@ -8,26 +8,27 @@ from dataclasses import asdict
 
 from target_config import TargetConfig
 
+from model_spec import DRAFT_LAYERS
+
 CAPACITY = 4096
 BATCH = 8
-from model_spec import TARGET_LAYERS, DRAFT_LAYERS
 
 
 def selected_config(role: str, block_size: int = BATCH) -> TargetConfig:
-    if role not in ("target", "drafter"):
-        raise ValueError("role must be target or drafter")
-    if block_size not in (8, 16):
-        raise ValueError("Block size must be 8 or 16")
+    if role != "drafter":
+        raise ValueError("only the drafter runs on the shared decoder here")
+    if block_size != BATCH:
+        raise ValueError(f"the drafter is built for blocks of {BATCH}")
     return TargetConfig(
         role=role,
-        batch=block_size,
-        projection_schedule="2x2" if block_size == 16 else "groups",
-        attention_native_key=block_size == 16,
-        attention_early_key_release=block_size == 16,
-        attention_pv_reuse=block_size == 16,
+        batch=BATCH,
+        projection_schedule="groups",
+        attention_native_key=False,
+        attention_early_key_release=False,
+        attention_pv_reuse=False,
         capacity=CAPACITY,
-        layers=TARGET_LAYERS if role == "target" else DRAFT_LAYERS,
-        causal=role == "target",
+        layers=DRAFT_LAYERS,
+        causal=False,
     )
 
 

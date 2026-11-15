@@ -116,6 +116,7 @@ void moe_acc(float *__restrict moe, float *__restrict acc, float *__restrict sc,
 
 // row group rg of moe as bf16 after the header slot
 void moe_out(float *__restrict moe, bf16 *__restrict y, int32_t rg) {
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
   for (int i = 0; i < 256; i += 16) {
     aie::accum<accfloat, 16> a;
     a.from_vector(aie::load_v<16>(moe + 256 * rg + i));
