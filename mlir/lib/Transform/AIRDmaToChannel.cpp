@@ -1868,8 +1868,8 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
   // once per run of the herd, and the core patches and starts it on every
   // iteration. The host waits for each start it can count. Starts it cannot
   // count (a run-time trip count, or a condition around a start in a loop)
-  // get count 0 and no completion token; the cores that receive the data
-  // keep the run from ending before it lands.
+  // get count 0 and no completion token: the host learns of them only through
+  // the data they carry, so no host transfer may share their shim channel.
   scf::ForOp outerLoop;
   int64_t issueCount = 1;
   bool counted = true;
