@@ -5209,8 +5209,8 @@ static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
   send({i32(hdr),
         i32(air::ctrlPacketWord(ctrlPkt, /*read=*/false, 2, bdAddr + 4)), newLo,
         newHi});
-  // bit 31 asks for a completion token, which only a start the host counts
-  // may send
+  // Bit 31 requests a completion token; only starts the host waits for set
+  // it.
   auto push =
       send({i32(hdr),
             i32(air::ctrlPacketWord(ctrlPkt, /*read=*/false, 1, queueAddr)),

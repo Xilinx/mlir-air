@@ -441,6 +441,45 @@ module {
 
 // -----
 
+// A run-time loop inside a counted one: the starts cannot be counted either,
+// and the put leaves both loops.
+
+// CHECK-LABEL: func.func @l3_in_run_time_loop_nest
+// CHECK: air.channel.put @cin8[{{.*}}] {{.*}}air.device_issue_count = 0 : i64
+// CHECK: air.herd @router
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: air.channel.issue @cin8
+
+module {
+  air.channel @cin8 [1, 1]
+  func.func @l3_in_run_time_loop_nest(%arg0: memref<65536xi32>, %arg1: index) {
+    air.launch () in () args(%a0=%arg0, %n=%arg1) : memref<65536xi32>, index {
+      air.segment @seg args(%s0=%a0, %sn=%n) : memref<65536xi32>, index {
+        %c1 = arith.constant 1 : index
+        air.herd @router tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%w=%s0, %hn=%sn) : memref<65536xi32>, index {
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          %c2 = arith.constant 2 : index
+          %c1024 = arith.constant 1024 : index
+          %topk = memref.alloc() : memref<16xi32, 2 : i32>
+          scf.for %j = %c0 to %c2 step %c1_0 {
+            scf.for %i = %c0 to %hn step %c1_0 {
+              %v = memref.load %topk[%i] : memref<16xi32, 2 : i32>
+              %e = arith.index_cast %v : i32 to index
+              %off = arith.muli %e, %c1024 : index
+              air.channel.put @cin8[%tx, %ty] (%w[%off] [%c1024] [%c1_0]) : (memref<65536xi32>)
+            }
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
 // A core that starts two L2 transfers before receiving the first would patch
 // the one descriptor while the first start is still queued.
 

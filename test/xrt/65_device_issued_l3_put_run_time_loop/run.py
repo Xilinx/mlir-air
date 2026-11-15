@@ -4,11 +4,10 @@
 # A core starts one L3 transfer from a loop whose trip count it reads at run
 # time.
 #
-# As in 64_device_issued_l3_put_in_loop, the router core puts W[idx[i], :]
-# and waits for the forwarding core's report before the next start, but the
-# number of rows is idx[15], read on the core. The host cannot count those
-# starts, so it waits on none of them: the row the forwarding core sends out
-# for each is what the run waits for.
+# The router core puts W[idx[i], :] for idx[15] rows, a count it reads at run
+# time, and waits for the forwarding core's report before each next start.
+# The host cannot count those starts, so it waits on none of them: the run
+# ends once the forwarding core has sent out every row.
 
 import argparse
 

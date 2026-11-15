@@ -1866,9 +1866,9 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
           "in the herd; only its offset can");
   // An L3 put a core starts in a loop keeps one descriptor: the host arms it
   // once per run of the herd, and the core patches and starts it on every
-  // iteration. The host waits for each start it can count. One it cannot (a
-  // run-time trip count, or a start under a condition in a loop) is started
-  // without a completion token, count 0: the cores that receive its data
+  // iteration. The host waits for each start it can count. Starts it cannot
+  // count (a run-time trip count, or a condition around a start in a loop)
+  // get count 0 and no completion token; the cores that receive the data
   // keep the run from ending before it lands.
   scf::ForOp outerLoop;
   int64_t issueCount = 1;
