@@ -311,7 +311,9 @@ class VerifyB8:
             # poll rather than block: a blocked host wakes late and clocks down
             done = __import__("pyxrt").ert_cmd_state.ERT_CMD_STATE_COMPLETED
             t_end = time.perf_counter() + 30
-            while run.state() != done and time.perf_counter() < t_end:
+            while run.state() != done:
+                if time.perf_counter() > t_end:
+                    raise TimeoutError(f"not done after 30 s, state {run.state()}")
                 if poll is not None:
                     poll()
                     while self.work:
@@ -517,11 +519,13 @@ def main():
     t0 = time.time()
     got = v.forward(h0, n)
     print(f"verify: {time.time() - t0:.2f} s")
+    coss = []
     for i in range(TOK):
         g, r_ = got[i].astype(np.float64), want[i].astype(np.float64)
-        cos = g @ r_ / np.linalg.norm(g) / np.linalg.norm(r_)
-        print(f"row {i}: hidden cos {cos:.5f}")
-    ok = True
+        coss.append(g @ r_ / np.linalg.norm(g) / np.linalg.norm(r_))
+        print(f"row {i}: hidden cos {coss[-1]:.5f}")
+    # the first layers' hidden states; all 48 are checked by their argmax
+    ok = bool(all(c > 0.995 for c in coss))
     if full:
         lg, lw = head(got), head(want)
         am, aw = lg.argmax(-1), lw.argmax(-1)

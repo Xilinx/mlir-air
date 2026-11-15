@@ -91,8 +91,11 @@ RING = 1 << 20
 def build_module(nl, reads, cap=None, causal=True):
     """nl layers (a wave each), attention reading `reads` cache positions
     of a cache of `cap`."""
-    assert reads % 16 == 0
     cap = cap or reads
+    if reads <= 0 or reads % 16 or reads > cap:
+        raise ValueError(
+            f"reads {reads}: a positive multiple of 16 up to the cache's {cap}"
+        )
     nb = reads // 16
     waves = nl
     k_ = lambda n, s=(): air.extern(  # noqa: E731
