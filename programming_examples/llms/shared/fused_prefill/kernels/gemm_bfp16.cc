@@ -192,29 +192,28 @@ void dqmx_bfp16(uint8_t *__restrict packed, uint8_t *__restrict out) {
 #endif
 
 #ifdef GEMM_Q4K
-// Half a K step pair of Q4_K weights in the fused prefill's layout of a block
-// (hostops.c q4k_prefill): 32 output columns n by 256 k per packet, 5120
-// bytes,
-//   nibbles [k half][16-column half][group][8 k][8-column block] of [8 n][8 k]
+// A K step of Q4_K weights in the fused prefill's layout of a block
+// (hostops.c q4k_prefill): a packet is one k half of a block, 32 output
+// columns n by 128 k, 2560 bytes,
+//   nibbles [16-column half][group][8 k][8-column block] of [8 n][8 k]
 //           tiles, the low nibble the even lane,
 //   bf16 [group][16-column half][16] the group's scales S s_j, then [16] its
 //           mins M m_j,
 // with w = S s_j q + M m_j as FastFlowLM dequantizes it, and 0x4300 | q the
 // bf16 128 + q. A tile is B's 8 x 8 block. b0 holds columns 0..31 of the
-// panel, b1 32..63; h is the K step's half of the blocks.
-static_assert(DIM_N == 64 && DIM_K == 128, "a K step is half of two blocks");
+// panel, b1 32..63.
+static_assert(DIM_N == 64 && DIM_K == 128, "a K step is two packets");
 
-// One 16-column half (PAR) of a block of dq4k_bfp16.
+// One 16-column half (PAR) of a packet of dq4k_bfp16.
 extern "C++" {
 template <int PAR>
 static inline void
-dq4k_pair(const uint8_t *blk, int h,
+dq4k_pair(const uint8_t *pkt,
           aie::block_vector_output_buffer_stream<bfp16ebs8, 64> &os) {
-  constexpr int NG = DIM_K / DQ_GROUP, NIB = 4096;
+  constexpr int NG = DIM_K / DQ_GROUP, NIB = 2048;
   const aie::vector<uint8, 64> bias = aie::broadcast<uint8, 64>(0x43);
   for (int gl = 0; gl < NG; gl++) {
-    const int g = h * NG + gl;
-    const bfloat16 *cst = (const bfloat16 *)(blk + NIB) + (g * 2 + PAR) * 32;
+    const bfloat16 *cst = (const bfloat16 *)(pkt + NIB) + (gl * 2 + PAR) * 32;
     aie::vector<bfloat16, 16> sc = aie::load_v<16>(cst);
     aie::vector<bfloat16, 16> mn = aie::load_v<16>(cst + 16);
     VB s0 = rows8(sc.template extract<8>(0));
@@ -224,7 +223,7 @@ dq4k_pair(const uint8_t *blk, int h,
     c0 = aie::msc(c0, s0, bfloat16(128.0f));
     c1.from_vector(rows8(mn.template extract<8>(1)));
     c1 = aie::msc(c1, s1, bfloat16(128.0f));
-    const uint8_t *q = blk + ((h * 2 + PAR) * NG + gl) * 256;
+    const uint8_t *q = pkt + (PAR * NG + gl) * 256;
     for (int kq = 0; kq < DQ_GROUP / 8; kq++)
       chess_prepare_for_pipelining {
         // two tiles: columns 0-7 and 8-15 of the half
@@ -242,13 +241,13 @@ dq4k_pair(const uint8_t *blk, int h,
 } // extern "C++"
 
 void dq4k_bfp16(uint8_t *__restrict b0, uint8_t *__restrict b1,
-                uint8_t *__restrict out, int32_t h) {
+                uint8_t *__restrict out) {
   ::aie::set_rounding(aie::rounding_mode::conv_even);
   aie::block_vector_output_buffer_stream<bfp16ebs8, 64> os((bfp16ebs8 *)out);
-  dq4k_pair<0>(b0, h, os);
-  dq4k_pair<1>(b0, h, os);
-  dq4k_pair<0>(b1, h, os);
-  dq4k_pair<1>(b1, h, os);
+  dq4k_pair<0>(b0, os);
+  dq4k_pair<1>(b0, os);
+  dq4k_pair<0>(b1, os);
+  dq4k_pair<1>(b1, os);
 }
 #endif
 
