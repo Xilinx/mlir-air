@@ -42,16 +42,23 @@ def main():
     )
     ap.add_argument("--gen", type=int, default=8, help="tokens to generate")
     ap.add_argument("--maxl", type=int, default=64, help="context the build holds")
+    ap.add_argument(
+        "--reads",
+        default="",
+        help="shorter cache reads below maxl, each in a layers' ELF of its own"
+        " (comma-separated positions, multiples of 16)",
+    )
     ap.add_argument("--waves", type=int, default=W.N_LAYERS // PER_WAVE)
     ap.add_argument("--no-ref", action="store_true", help="skip the CPU reference")
     ap.add_argument("--bench", type=int, default=0, help="then time n tokens")
     ap.add_argument("--bench-l", type=int, default=0, help="at this context length")
     a = ap.parse_args()
+    reads = [int(v) for v in a.reads.split(",") if v]
     if a.print_module_only:
         print(build_module(a.waves, a.maxl))
         return 0
     if a.compile_only:
-        compile_all(a.waves, a.maxl)
+        compile_all(a.waves, a.maxl, reads)
         print("Compilation passed.")
         return 0
     from reference import Reference
@@ -75,7 +82,7 @@ def main():
         if not manifest.is_file():
             sys.exit(f"{a.fused_dir}: no fused prefill build (fused_build.py)")
         fused = len(ids) <= json.loads(manifest.read_text())["max_len"]
-    arts = compile_all(a.waves, a.maxl)
+    arts = compile_all(a.waves, a.maxl, reads)
     # the device is held from the first context to the last dispatch
     lock = filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock"))
     with lock:

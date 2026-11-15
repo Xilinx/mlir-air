@@ -111,13 +111,14 @@ the same bundle and machine (`flm bench`, mean TTFT):
 
 | prompt | TTFT | tok/s | FLM TTFT |
 | --- | --- | --- | --- |
-| 128 | 1.43 s | 90 | |
-| 512 | 3.26 s | 157 | |
-| 1024 | 6.43 s | 159 | 9.19 s |
-| 2048 | 12.94 s | 158 | 16.93 s |
-| 4096 | 26.28 s | 156 | 32.82 s |
+| 128 | 0.92 s | 139 | |
+| 512 | 2.39 s | 215 | |
+| 1024 | 4.62 s | 222 | 9.19 s |
+| 2048 | 9.29 s | 221 | 16.93 s |
+| 4096 | 18.91 s | 217 | 32.82 s |
 
-Decode, the 64-layer dispatch and the LM head's timed separately:
+Decode, the 64-layer dispatch and the LM head's timed separately, each build
+reading back the whole cache it holds:
 
 | context | layers | LM head | per token |
 | --- | --- | --- | --- |
@@ -128,9 +129,16 @@ Decode, the 64-layer dispatch and the LM head's timed separately:
 | 65536 | 671 ms | 25 ms | 696 ms (1.44 tok/s) |
 
 At short contexts that is about 53 GB/s of weights, the NPU's DDR read rate on
-this machine; every attention layer reads its whole KV cache, which the longer
+this machine; every attention layer reads the KV cache back, which the longer
 contexts add. A 64k build's KV cache (4.3 GB) is past 4 GB: its rows land where
 they belong. At 128k aircc fails in its wrap-and-stride canonicalization.
+
+A layers' ELF reads a fixed number of cache positions back, so a build for a
+long context is as slow at every context unless it also has ELFs that read
+less: `--reads` (`READS` in the Makefile) adds one per entry over the same
+buffers, and each token runs the one with the fewest that covers its context.
+A 32k build with `READS=1024,8192` takes 297.8 / 339.4 / 491.0 ms a token at
+1k / 8k / 32k, as builds for those contexts do.
 
 Against FastFlowLM 1.0.11 on the same bundle and machine (`flm bench
 qwen3.8-mtp:27b -i bench_4k.json --bench-iterations 3`, mean decode tok/s; FLM
@@ -147,8 +155,8 @@ without speculation is `FLM_DISABLE_SPECULATION=1`):
 - NPU2 (Strix / AIE2P) + XRT, a Peano (llvm-aie) install
 - `source utils/env_setup.sh` (see the repo README), `HF_HOME` for the Hub
 - `pip install -r requirements.txt`
-- About 31 GB of host memory pinned for the weights: the decode's 16 GB and the
-  prefill's own 15 GB copy
+- About 32 GB of host memory pinned for the weights: the decode's 16 GB and the
+  prefill's own copy, laid out for its dequant (about 16 GB)
 
 ## Usage
 
@@ -156,6 +164,7 @@ without speculation is `FLM_DISABLE_SPECULATION=1`):
 make compile                 # the decode and LM head ELFs
 make compile-fused-prefill   # the fused prefill device (also built on demand)
 make run                     # prefill + greedy decode of PROMPT against the CPU reference
+make run MAXL=32768 READS=1024,8192   # a long-context build, fast at short contexts
 make prefill-fused           # the fused prefill of a LONG_LEN-token prompt vs the reference
 make verify                  # each stage, prefill, decode, HF check, top-5 gate
 make profile                 # TTFT and decode tok/s, no reference

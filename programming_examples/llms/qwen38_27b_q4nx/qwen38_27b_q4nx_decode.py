@@ -28,8 +28,9 @@
 #   shim channel.
 #
 # The context length L is a run-time scalar: it places this token's K and V
-# row, and the attention cores mask by it. Every attention layer reads the
-# cache back whole, maxl positions.
+# row, and the attention cores mask by it. A layers' ELF reads a fixed number
+# of cache positions back in each attention layer: maxl, or one of `reads`.
+# Each token runs the ELF with the fewest that covers L.
 import os
 import sys
 import time
@@ -77,12 +78,13 @@ QKV_G = G.QKV
 UO = KPU * QR * DH  # an attention unit's output: its two KV heads' query heads
 
 
-def build_module(waves, maxl):
+def build_module(waves, maxl, cap=None):
     """`waves` x (3 GDN layers, then an attention one), for a context of up to
-    `maxl` positions."""
+    `maxl` positions, on a KV cache of `cap` (default maxl) positions."""
     pw, ngw = PER_WAVE, NG_WAVE
     nl, ng = pw * waves, ngw * waves
-    assert maxl % 16 == 0
+    cap = cap or maxl
+    assert maxl % 16 == 0 and maxl <= cap
     nb = maxl // 16
     k_ = lambda o, n, s=(): air.extern(  # noqa: E731
         n, link_with=f"{o}.o", scalars=list(s)
@@ -133,7 +135,7 @@ def build_module(waves, maxl):
     # need no ordering between them
     CWI = air.tensor([ng, NCH, 7 * HD], bf16)
     SI = air.tensor([ng, NV, R, HD * 32], f32)
-    KV = air.tensor([waves, 2, maxl, DK], bf16, inout=True)
+    KV = air.tensor([waves, 2, cap, DK], bf16, inout=True)
     RW = air.tensor([waves, 3 * DH], bf16)
     CWO = air.tensor([ng, NCH, 7 * HD], bf16)
     SO = air.tensor([ng, NV, R, HD * 32], f32)
@@ -613,8 +615,8 @@ def build_module(waves, maxl):
                             pos = Lp.as_index() - 1
                             k_out.get(KV[w, 0, pos, :])
                             v_out.get(KV[w, 1, pos, :])
-                            k_rd.put(KV[w, 0, :, :])
-                            v_rd.put(KV[w, 1, :, :])
+                            k_rd.put(KV[w, 0, 0:maxl, :])
+                            v_rd.put(KV[w, 1, 0:maxl, :])
 
         launch.body(body)
 
@@ -660,7 +662,9 @@ class Q38Decoder:
     # the layers' arguments, in build_module's order
     X, WD, M, CWI, SI, KV, RW, CWO, SO = range(9)
 
-    def __init__(self, arts, w, layers, waves, maxl, lm_args, params):
+    def __init__(self, arts, w, layers, waves, maxl, lm_args):
+        """arts: compile_all's ([(positions read, ELF artifact, params.txt)]
+        per layers' ELF, all on the same buffers, the LM head's artifact)."""
         import pyxrt as xrt
 
         from decode_elf import param_writers
@@ -727,17 +731,28 @@ class Q38Decoder:
             except RuntimeError:  # a repeated launch's kernel sits in the segment
                 return ctx, xrt.ext.kernel(ctx, art.kernel.replace("main:", "seg:"))
 
-        self.ctx, kern = kernel(arts[0])
-        self.run = xrt.run(kern)
-        for i, b in enumerate(self.bos):
-            self.run.set_arg(i, b)
-        self.params = ParameterScratchpad(self.run, str(params))
-        self.writers = param_writers(params, {"L": len(self.bos)})
+        decs, lart = arts
+        self.decs = []
+        for read, art, params in sorted(decs, key=lambda d: d[0]):
+            ctx, kern = kernel(art)
+            run = xrt.run(kern)
+            for i, b in enumerate(self.bos):
+                run.set_arg(i, b)
+            self.decs.append(
+                dict(
+                    read=read,
+                    ctx=ctx,
+                    run=run,
+                    params=ParameterScratchpad(run, str(params)),
+                    writers=param_writers(params, {"L": len(self.bos)}),
+                )
+            )
+        self.run = self.decs[-1]["run"]
         self.xmap = maps[self.X].view(bfloat16).reshape(waves + 1, pw, D)
         self.rwmap = maps[self.RW].view(bfloat16).reshape(waves, 3 * DH)
         xsub = xrt.bo(self.bos[self.X], D * 2, (waves * pw + pw - 1) * D * 2)
         self.lbos = [xsub] + [bo(t) for t in lm_args]
-        self.lctx, lkern = kernel(arts[1])
+        self.lctx, lkern = kernel(lart)
         self.lrun = xrt.run(lkern)
         for i, b in enumerate(self.lbos):
             self.lrun.set_arg(i, b)
@@ -749,16 +764,21 @@ class Q38Decoder:
             self.rwmap[i] = rope_weights(L - 1, qn, kn).astype(bfloat16)
         for i in (self.X, self.RW):
             self.bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-        for name, fn in self.writers:
-            self.params.write(name, np.int32(fn({len(self.bos): L})))
-        self.params.sync()
+        dec = next((d for d in self.decs if d["read"] >= L), None)
+        if dec is None:
+            raise ValueError(f"L={L} is past the cache ({self.decs[-1]['read']})")
+        for name, fn in dec["writers"]:
+            dec["params"].write(name, np.int32(fn({len(self.bos): L})))
+        dec["params"].sync()
+        self.run = dec["run"]
 
     def _swap(self):
         """This token's outputs are the next one's inputs."""
         for a, b in ((self.CWI, self.CWO), (self.SI, self.SO)):
             self.bos[a], self.bos[b] = self.bos[b], self.bos[a]
-            self.run.set_arg(a, self.bos[a])
-            self.run.set_arg(b, self.bos[b])
+            for d in self.decs:
+                d["run"].set_arg(a, self.bos[a])
+                d["run"].set_arg(b, self.bos[b])
 
     def _go(self, runs, L):
         import lm_head as LM
@@ -851,35 +871,50 @@ class Q38Decoder:
         )
 
 
-def compile_all(waves, maxl):
-    """Kernels, the layers' ELF here and the LM head's in lm/."""
+def compile_all(waves, maxl, reads=()):
+    """Kernels, the layers' ELFs and the LM head's in lm/: one layers' ELF
+    reading the whole cache of maxl positions, here, and one per entry of
+    reads reading only that many, in read<n>/. Returns ([(positions read,
+    ELF artifact, params.txt)], the LM head's artifact)."""
     import lm_head as LM
 
     for k in ("q4k_mvm", "q38_ffn", "gate", "router", "gdn_prep", "gdn_decode"):
         common.compile_kernel(k)
     for k in ("rope_rounds", "attn_qk", "attn_kv_q36"):
         common.compile_kernel(k, engine=True)
-    art = XRTBackend(instance_name="decode", output_format="elf").compile(
-        build_module(waves, maxl)
-    )
-    art.output_binary = os.path.abspath(art.output_binary)
     here = os.getcwd()
+    decs = []
+    for read in sorted({*reads, maxl}):
+        assert read <= maxl, f"a read of {read} is past maxl {maxl}"
+        d = here if read == maxl else os.path.join(here, f"read{read}")
+        os.makedirs(d, exist_ok=True)
+        os.chdir(d)
+        for o in Path(here).glob("*.o"):
+            if d != here and not Path(o.name).exists():
+                os.symlink(o, o.name)
+        art = XRTBackend(instance_name="decode", output_format="elf").compile(
+            build_module(waves, read, maxl)
+        )
+        art.output_binary = os.path.abspath(art.output_binary)
+        decs.append((read, art, Path(d) / "params.txt"))
+        os.chdir(here)
     os.makedirs("lm", exist_ok=True)
     os.chdir("lm")
     lart = LM.compile_lm_head()
     lart.output_binary = os.path.abspath(lart.output_binary)
     os.chdir(here)
-    return art, lart, Path(here) / "params.txt"
+    return decs, lart
 
 
-def load(w, maxl, waves=W.N_LAYERS // PER_WAVE, arts=None):
-    """The decode built for context maxl (compile_all, here) and loaded: a
-    Q38Decoder over the first PER_WAVE * waves layers."""
+def load(w, maxl, waves=W.N_LAYERS // PER_WAVE, arts=None, reads=()):
+    """The decode built for context maxl, with layers' ELFs for the shorter
+    cache reads `reads` (compile_all, here), and loaded: a Q38Decoder over
+    the first PER_WAVE * waves layers."""
     import lm_head as LM
 
-    arts = arts or compile_all(waves, maxl)
+    arts = arts or compile_all(waves, maxl, reads)
     layers = list(range(PER_WAVE * waves))
     nw = np.asarray(w.final_norm()).astype(bfloat16)
     y = np.zeros((LM.NCOL, LM.ROUNDS, LM.NROW * LM.RB), bfloat16)
     lm_args = [nw, LM.pack_weights(w), y]
-    return Q38Decoder(arts, w, layers, waves, maxl, lm_args, arts[2])
+    return Q38Decoder(arts, w, layers, waves, maxl, lm_args)
