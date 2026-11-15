@@ -60,13 +60,15 @@ ATOL = 2e-2
 class Phase2:
     """One projection for both tokens: ``nrg`` row groups per core of
     ``ncb`` column blocks, its K in ``halves`` parts of ``xw`` per token, and
-    the consumer ``dest`` of its rows."""
+    the consumer ``dest`` of its rows; ``fresh=False`` reuses the x an
+    earlier phase left."""
 
     xw: int
     nrg: int
     ncb: int
     halves: int
     dest: int
+    fresh: bool = True
 
 
 class TwoTokenArray(MvmArray):
@@ -85,7 +87,8 @@ class TwoTokenArray(MvmArray):
             nblk = ph.nrg * ncbh
             assert nblk % 2 == 0
             for h in range(ph.halves):
-                self.x_b.get(x[0 : 2 * ph.xw], indices=[tx, ty])
+                if ph.fresh:
+                    self.x_b.get(x[0 : 2 * ph.xw], indices=[tx, ty])
                 for k in air.sequential(0, nblk // 2):
                     for half, wb in enumerate(wab):
                         i = k * 2 + half
@@ -93,14 +96,17 @@ class TwoTokenArray(MvmArray):
                         slot = i // ncbh if ph.halves > 1 else 0
                         self.w_l1.get(wb, indices=[tx, ty])
                         self.step2(x, wb, yacc, cbl + h * ncbh, ph.xw, h * ncbh, slot)
-                        if h == ph.halves - 1:
-                            with air.ops.branch(cbl == ncbh - 1):
-                                self.flush2(yacc, y, slot)
-                                self.out_a.put(
-                                    y[16 - HDR : 16 + rb],
-                                    indices=[tx, ty],
-                                    dest=ph.dest,
-                                )
+                        # every half the same loop shape, the flush branch in
+                        # each (never taken but in the last half): a half
+                        # without it fails the lock pass's last-use check
+                        last = ncbh - 1 if h == ph.halves - 1 else ncbh
+                        with air.ops.branch(cbl == last):
+                            self.flush2(yacc, y, slot)
+                            self.out_a.put(
+                                y[16 - HDR : 16 + rb],
+                                indices=[tx, ty],
+                                dest=ph.dest,
+                            )
 
 
 def build_module():

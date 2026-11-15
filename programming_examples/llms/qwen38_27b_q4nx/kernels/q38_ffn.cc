@@ -62,4 +62,24 @@ void copy2_round(bf16 *__restrict dst, bf16 *__restrict rnd, int j, int n) {
                        aie::load_v<V>(rnd + ((c * NC + r) * 2 + t) * TB + i));
 }
 
+// y = rms_norm of token t of x [2][n] with norm weight k of w [2][n]
+void rms_norm_tw(bf16 *__restrict y, bf16 *__restrict x, bf16 *__restrict w,
+                 int n, int t, int k) {
+  rms_norm(y, x + t * n, w + k * n, n);
+}
+
+// x[t][512 j ..] += round j's rows of token t, for both tokens of a
+// two-token round; x is [2][n]
+void residual_round2(bf16 *__restrict x, bf16 *__restrict rnd, int j, int n) {
+  for (int t = 0; t < 2; t++)
+    for (int c = 0; c < NC; c++)
+      for (int r = 0; r < NC; r++) {
+        bf16 *xa = x + t * n + NC * SL * j + SL * c + TB * r;
+        const bf16 *ra = rnd + ((c * NC + r) * 2 + t) * TB;
+        for (int i = 0; i < TB; i += V)
+          aie::store_v(
+              xa + i, aie::add(aie::load_v<V>(xa + i), aie::load_v<V>(ra + i)));
+      }
+}
+
 } // extern "C"
