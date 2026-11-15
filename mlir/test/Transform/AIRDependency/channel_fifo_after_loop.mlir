@@ -8,13 +8,14 @@
 // RUN: air-opt %s -air-dependency -split-input-file | FileCheck %s
 
 // Puts of unrelated buffers on one channel before, inside and after a loop: the
-// put after the loop is ordered after the loop's, through its token result.
+// put after the loop is ordered after the loop's, through its token result, and
+// after the put before the loop, which the loop's token does not wait on.
 
 // CHECK-LABEL: func.func @after_loop
-// CHECK: air.channel.put async{{.*}}@c[] {{.*}} {id = 1 : i32}
+// CHECK: %[[P:.*]] = air.channel.put async{{.*}}@c[] {{.*}} {id = 1 : i32}
 // CHECK: %[[L:.*]] = scf.for
 // CHECK: air.channel.put async{{.*}}@c[] {{.*}} {id = 2 : i32}
-// CHECK: air.channel.put async [%[[L]]]  @c[] {{.*}} {id = 3 : i32}
+// CHECK: air.channel.put async [%[[P]], %[[L]]]  @c[] {{.*}} {id = 3 : i32}
 
 module {
   air.channel @c [1]
@@ -40,11 +41,11 @@ module {
 // The same after a loop nest: the put after it follows the outer loop.
 
 // CHECK-LABEL: func.func @after_loop_nest
-// CHECK: air.channel.put async{{.*}}@c[] {{.*}} {id = 1 : i32}
+// CHECK: %[[P:.*]] = air.channel.put async{{.*}}@c[] {{.*}} {id = 1 : i32}
 // CHECK: %[[L:.*]] = scf.for
 // CHECK: scf.for
 // CHECK: air.channel.put async{{.*}}@c[] {{.*}} {id = 2 : i32}
-// CHECK: air.channel.put async [%[[L]]]  @c[] {{.*}} {id = 3 : i32}
+// CHECK: air.channel.put async [%[[P]], %[[L]]]  @c[] {{.*}} {id = 3 : i32}
 
 module {
   air.channel @c [1]

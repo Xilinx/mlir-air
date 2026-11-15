@@ -742,6 +742,21 @@ bool sameGuardChain(ArrayRef<std::pair<Operation *, unsigned>> a,
   return true;
 }
 
+// Does token `v` wait on token `target`, through the async dependency lists
+// of the ops that produce it?
+static bool tokenWaitsOn(Value v, Value target,
+                         llvm::SmallPtrSetImpl<Operation *> &visited) {
+  if (v == target)
+    return true;
+  Operation *def = v.getDefiningOp();
+  if (!def || !visited.insert(def).second)
+    return false;
+  for (Value dep : getAsyncDependenciesFromOp(def))
+    if (tokenWaitsOn(dep, target, visited))
+      return true;
+  return false;
+}
+
 void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
                           SmallVectorImpl<ChannelScopeLevel> &chain) {
   Block *block = chan->getBlock();
@@ -753,14 +768,15 @@ void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
     if (auto loop = dyn_cast<scf::ForOp>(parent)) {
       // The loop result of a yielded token that waits on this op.
       auto yield = cast<scf::YieldOp>(block->getTerminator());
-      Operation *def = token.getDefiningOp();
       Value promoted;
-      for (auto [i, v] : llvm::enumerate(yield.getOperands()))
-        if (isa<air::AsyncTokenType>(v.getType()) && v.getDefiningOp() && def &&
-            isAsyncDependent(def, v.getDefiningOp())) {
+      for (auto [i, v] : llvm::enumerate(yield.getOperands())) {
+        llvm::SmallPtrSet<Operation *, 16> visited;
+        if (isa<air::AsyncTokenType>(v.getType()) &&
+            tokenWaitsOn(v, token, visited)) {
           promoted = loop->getResult(i);
           break;
         }
+      }
       if (!promoted)
         break;
       viaLoop = true;
@@ -807,9 +823,11 @@ void enforceChannelFifoOrder(Operation *root) {
   // Publishing at every scope in the chain and looking up innermost-first is
   // what lets a nested endpoint pair with a sibling under the same guard, while
   // a loop boundary keeps the two apart.
+  // A loop's token result need not wait on the endpoint before the loop, so
+  // publishing it keeps that endpoint's token as well.
   struct Slot {
     ChannelEndpointKey key;
-    Value token;
+    SmallVector<Value, 2> tokens;
     SmallVector<std::pair<Operation *, unsigned>> guards;
   };
   llvm::DenseMap<Block *, SmallVector<Slot>> lastSeen;
@@ -837,7 +855,8 @@ void enforceChannelFifoOrder(Operation *root) {
       if (level.viaLoop)
         break;
       if (Slot *slot = findSlot(level)) {
-        addAsyncDependencyIfNew(chan.getOperation(), slot->token);
+        for (Value t : slot->tokens)
+          addAsyncDependencyIfNew(chan.getOperation(), t);
         break;
       }
     }
@@ -845,10 +864,12 @@ void enforceChannelFifoOrder(Operation *root) {
     // Publish at every scope level, so a later endpoint at any of them matches.
     for (auto &level : chain) {
       if (Slot *slot = findSlot(level)) {
-        slot->token = level.token;
+        if (!level.viaLoop)
+          slot->tokens.clear();
+        slot->tokens.push_back(level.token);
         continue;
       }
-      lastSeen[level.block].push_back({key, level.token, level.guards});
+      lastSeen[level.block].push_back({key, {level.token}, level.guards});
     }
   });
 }

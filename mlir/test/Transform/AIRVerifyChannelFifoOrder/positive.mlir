@@ -365,3 +365,38 @@ module {
     return
   }
 }
+
+// -----
+// A loop yielding two tokens from a conditional with two token results; the
+// get inside is carried out by the loop's second result, which the get after
+// the loop waits on.
+module {
+  air.channel @channel_11 [1]
+  func.func @pos_after_loop_two_tokens(%p: i1) {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) args(%lp=%p) : i1 {
+      air.segment @seg args(%q=%lp) : i1 {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %g0 = air.channel.get async [%t0] @channel_11[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+        %l:2 = scf.for %i = %c0 to %c4 step %c1_0 iter_args(%x = %t0, %y = %g0) -> (!air.async.token, !air.async.token) {
+          %r:2 = scf.if %q -> (!air.async.token, !air.async.token) {
+            %w = air.wait_all async [%x]
+            %g1 = air.channel.get async [%y] @channel_11[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+            scf.yield %w, %g1 : !air.async.token, !air.async.token
+          } else {
+            scf.yield %x, %y : !air.async.token, !air.async.token
+          }
+          scf.yield %r#0, %r#1 : !air.async.token, !air.async.token
+        }
+        %g2 = air.channel.get async [%g0, %l#1] @channel_11[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+      }
+    }
+    return
+  }
+}

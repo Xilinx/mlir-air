@@ -177,3 +177,35 @@ module {
     return
   }
 }
+
+// -----
+// A get after a loop of gets, ordered after the loop's token result, which
+// does not wait on the get before the loop.
+module {
+  air.channel @channel_0 [1]
+  func.func @neg_after_loop_skips_earlier() {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) {
+      air.segment @seg {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        // expected-note@+1 {{earlier op addressing the same slot}}
+        %g0 = air.channel.get async [%t0] @channel_0[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+        %w = air.wait_all async [%t0]
+        %l0 = scf.for %i = %c0 to %c4 step %c1_0 iter_args(%it = %w) -> (!air.async.token) {
+          %g1 = air.channel.get async [%it] @channel_0[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %g1 : !air.async.token
+        }
+        // expected-error@+2 {{addresses the same channel slot as an earlier op but is not ordered after it}}
+        // expected-note@+1 {{ops on one channel share a FIFO and must be totally ordered}}
+        %g2 = air.channel.get async [%l0] @channel_0[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+      }
+    }
+    return
+  }
+}
