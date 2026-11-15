@@ -366,8 +366,14 @@ module {
 
 // -----
 
-// The host waits for each start, so a loop with a run-time trip count cannot
-// hold one.
+// A run-time trip count: the host cannot count the starts, so it waits on none
+// (count 0) and the core starts them without a completion token.
+
+// CHECK-LABEL: func.func @l3_in_run_time_loop
+// CHECK: air.channel.put @cin6[{{.*}}] {{.*}}air.device_issue_count = 0 : i64
+// CHECK: air.herd @router
+// CHECK: scf.for
+// CHECK: air.channel.issue @cin6
 
 module {
   air.channel @cin6 [1, 1]
@@ -384,7 +390,6 @@ module {
             %v = memref.load %topk[%i] : memref<16xi32, 2 : i32>
             %e = arith.index_cast %v : i32 to index
             %off = arith.muli %e, %c1024 : index
-            // expected-error@+1 {{an L3 transfer whose offset a core computes can be in a loop in the herd only if the loop's trip count is static}}
             air.channel.put @cin6[%tx, %ty] (%w[%off] [%c1024] [%c1_0]) : (memref<65536xi32>)
           }
         }
@@ -397,7 +402,13 @@ module {
 // -----
 
 // A start under a condition in a counted loop: the host cannot know how many
-// starts to wait for.
+// starts to wait for, so it waits on none.
+
+// CHECK-LABEL: func.func @l3_in_loop_under_condition
+// CHECK: air.channel.put @cin7[{{.*}}] {{.*}}air.device_issue_count = 0 : i64
+// CHECK: air.herd @router
+// CHECK: scf.if
+// CHECK: air.channel.issue @cin7
 
 module {
   air.channel @cin7 [1, 1]
@@ -418,7 +429,6 @@ module {
               %v = memref.load %topk[%i] : memref<16xi32, 2 : i32>
               %e = arith.index_cast %v : i32 to index
               %off = arith.muli %e, %c1024 : index
-              // expected-error@+1 {{an L3 transfer whose offset a core computes cannot be started from a loop under a condition: the number of starts is not known}}
               air.channel.put @cin7[%tx, %ty] (%w[%off] [%c1024] [%c1_0]) : (memref<65536xi32>)
             }
           }

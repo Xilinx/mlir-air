@@ -5078,7 +5078,8 @@ static void eraseIssue(air::ChannelIssueOp issue) {
 // `channel` of a shim tile, through packet `ctrlPkt` and reply `replyPkt`.
 static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
                              int channel, uint32_t bdId, uint32_t ctrlPkt,
-                             uint32_t replyPkt, Type elemType, bool reused) {
+                             uint32_t replyPkt, Type elemType, bool reused,
+                             bool token) {
   auto device = issue->getParentOfType<AIE::DeviceOp>();
   auto tile = cast<AIE::TileOp>(
       issue->getParentOfType<AIE::CoreOp>().getTile().getDefiningOp());
@@ -5208,10 +5209,12 @@ static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
   send({i32(hdr),
         i32(air::ctrlPacketWord(ctrlPkt, /*read=*/false, 2, bdAddr + 4)), newLo,
         newHi});
+  // bit 31 asks for a completion token, which only a start the host counts
+  // may send
   auto push =
       send({i32(hdr),
             i32(air::ctrlPacketWord(ctrlPkt, /*read=*/false, 1, queueAddr)),
-            i32((1u << 31) | bdId)});
+            i32((token ? 1u << 31 : 0u) | bdId)});
   // The task's repeat count is only known once airrt-to-npu shapes its BD;
   // it finds the queue word's store by this tag and adds the count.
   push->setAttr("air.device_issue", issue.getIssueIdAttr());
@@ -5705,6 +5708,8 @@ public:
       // copies of its issue (an unrolled loop): they share the BD. Any other
       // second issuer would queue one never armed.
       bool reused = arm->hasAttr("air.device_issue_count");
+      auto count = arm->getAttrOfType<IntegerAttr>("air.device_issue_count");
+      bool token = !count || count.getInt() != 0;
       auto armedBd = arm->getAttrOfType<IntegerAttr>("air.device_issue_bd");
       if (armedBd && !reused)
         return issue->emitOpError(
@@ -5770,7 +5775,8 @@ public:
       lowerDeviceIssue(
           issue, ic, alloc.getChannelIndex(), bdId, it->second.first,
           it->second.second,
-          cast<MemRefType>(arm.getMemref().getType()).getElementType(), reused);
+          cast<MemRefType>(arm.getMemref().getType()).getElementType(), reused,
+          token);
 
       OpBuilder b(arm);
       arm->setAttr("air.device_issue_bd", b.getI32IntegerAttr(bdId));
