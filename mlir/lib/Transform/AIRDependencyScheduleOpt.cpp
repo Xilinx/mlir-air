@@ -5232,13 +5232,14 @@ public:
   AIRVerifyChannelFifoOrder() = default;
 
   void runOnOperation() override {
+    // Each token a later endpoint must follow, with the endpoint it stands
+    // for.
     struct Slot {
       air::ChannelEndpointKey key;
-      Value token;
+      SmallVector<std::pair<Value, Operation *>, 2> tokens;
       SmallVector<std::pair<Operation *, unsigned>> guards;
-      Operation *op;
     };
-    llvm::DenseMap<Block *, SmallVector<Slot>> lastSeen;
+    llvm::DenseMap<Block *, SmallVector<Slot, 1>> lastSeen;
     bool failed = false;
 
     getOperation().walk([&](air::ChannelInterface chan) {
@@ -5261,16 +5262,20 @@ public:
       };
 
       for (auto &level : chain) {
+        if (level.viaLoop)
+          break;
         Slot *slot = findSlot(level);
         if (!slot)
           continue;
-        llvm::SmallPtrSet<Operation *, 16> visited;
-        if (!asyncDependsOnValue(chan.getOperation(), slot->token, visited)) {
+        for (auto [token, earlier] : slot->tokens) {
+          llvm::SmallPtrSet<Operation *, 16> visited;
+          if (asyncDependsOnValue(chan.getOperation(), token, visited))
+            continue;
           failed = true;
           InFlightDiagnostic diag = chan->emitOpError()
                                     << "addresses the same channel slot as an "
                                        "earlier op but is not ordered after it";
-          diag.attachNote(slot->op->getLoc())
+          diag.attachNote(earlier->getLoc())
               << "earlier op addressing the same slot";
           diag.attachNote()
               << "ops on one channel share a FIFO and must be totally ordered; "
@@ -5282,12 +5287,13 @@ public:
 
       for (auto &level : chain) {
         if (Slot *slot = findSlot(level)) {
-          slot->token = level.token;
-          slot->op = chan.getOperation();
+          if (!level.viaLoop)
+            slot->tokens.clear();
+          slot->tokens.push_back({level.token, chan.getOperation()});
           continue;
         }
         lastSeen[level.block].push_back(
-            {key, level.token, level.guards, chan.getOperation()});
+            {key, {{level.token, chan.getOperation()}}, level.guards});
       }
     });
 
