@@ -73,9 +73,10 @@ bool sameChannelEndpoint(const ChannelEndpointKey &a,
 
 // One scope a channel op participates in: the block, the token carrying the
 // op's completion into that block, and the conditional arms crossed to reach it
-// as (conditional op, region number) pairs. viaLoop: reached through an
-// enclosing loop's token result, which later ops in that scope order after but
-// which the op itself is not linked from.
+// as (conditional op, region number) pairs. viaLoop: the level lies outside an
+// enclosing loop and is reached through the loop's token result; later
+// endpoints there are ordered after the loop, the op itself is not ordered
+// against endpoints there.
 struct ChannelScopeLevel {
   Block *block;
   Value token;
@@ -89,9 +90,9 @@ struct ChannelScopeLevel {
 // the enclosing scope, so the chain walks out through them, promoting the token
 // to the conditional's token result: that result, not the guarded op's own
 // token, is what an op outside the region can name. A loop body is a scope of
-// its own; the chain continues past an scf.for only where the loop's token
-// result stands behind the op, so an op after the loop on the same slot is
-// ordered after all of its iterations.
+// its own. The chain continues past an scf.for when a token the loop yields
+// waits on the op, so an endpoint after the loop is ordered after every
+// iteration.
 void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
                           SmallVectorImpl<ChannelScopeLevel> &chain);
 

@@ -751,8 +751,7 @@ void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
   bool viaLoop = false;
   while (Operation *parent = block->getParentOp()) {
     if (auto loop = dyn_cast<scf::ForOp>(parent)) {
-      // The loop's result for a yielded token that waits on this op: all
-      // iterations' endpoints are behind it.
+      // The loop result of a yielded token that waits on this op.
       auto yield = cast<scf::YieldOp>(block->getTerminator());
       Operation *def = token.getDefiningOp();
       Value promoted;

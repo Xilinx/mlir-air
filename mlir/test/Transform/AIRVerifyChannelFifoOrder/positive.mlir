@@ -337,3 +337,31 @@ module {
     return
   }
 }
+
+// -----
+// A get after a loop of gets on the same slot, ordered after the loop's token
+// result.
+module {
+  air.channel @channel_10 [1]
+  func.func @pos_after_loop() {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) {
+      air.segment @seg {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %g0 = air.channel.get async [%t0] @channel_10[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+        %l0 = scf.for %i = %c0 to %c4 step %c1_0 iter_args(%it = %g0) -> (!air.async.token) {
+          %g1 = air.channel.get async [%it] @channel_10[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %g1 : !air.async.token
+        }
+        %g2 = air.channel.get async [%l0] @channel_10[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+      }
+    }
+    return
+  }
+}
