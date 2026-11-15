@@ -199,7 +199,7 @@ def main():
         l2 = np.linalg.norm(g - r_) / np.linalg.norm(r_)
         same = int(g.argmax()) == int(r_.argmax())
         print(f"row {t}: cos {cos:.6f} rel L2 {l2:.2e} argmax {'=' if same else '!='}")
-        ok &= cos > 0.9999 and l2 < 0.015
+        ok &= cos > 0.9999 and l2 < 0.015 and same
     print("PASS!" if ok else "failed.")
     return 0 if ok else 1
 

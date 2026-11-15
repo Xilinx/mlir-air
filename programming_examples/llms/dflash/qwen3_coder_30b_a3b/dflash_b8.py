@@ -138,7 +138,8 @@ def main():
         p0 = start
         start += acc + 1
     wall = time.perf_counter() - t_all
-    if start + TOK > limit and len(out) < a.gen and out[-1] not in EOS:
+    complete = len(out) >= a.gen or out[-1] in EOS
+    if not complete:
         print(f"stopped at position {start}: the next block passes {limit}")
     print(
         "[draft] "
@@ -187,7 +188,8 @@ def main():
                 f"  reference top-2 logit margin there {margins[same]:.4f}; "
                 f"smallest before it {min(margins[:same], default=0):.4f}"
             )
-        ok = same is None
+        # a capture cut short by the cache is no check of --gen tokens
+        ok = same is None and complete
     print("PASS!" if ok else "failed.")
     return 0 if ok else 1
 

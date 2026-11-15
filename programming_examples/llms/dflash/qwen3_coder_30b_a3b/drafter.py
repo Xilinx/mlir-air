@@ -39,6 +39,23 @@ class Safetensors:
         )
 
 
+def source_identity(draft_path, bundle):
+    """What a packed drafter is made from: the checkpoint, the target bundle
+    its vocabulary head comes from, and the packer."""
+    import hashlib
+
+    def sha(path):
+        with open(path, "rb") as f:
+            return hashlib.file_digest(f, "sha256").hexdigest()
+
+    st = Path(bundle).stat()
+    return dict(
+        draft=sha(Path(draft_path) / "model.safetensors"),
+        head=f"{Path(bundle).resolve()} {st.st_size} {st.st_mtime_ns}",
+        packer=sha(HERE / "prepare_coder_draft.py"),
+    )
+
+
 def _rms(x, g, eps=1e-6):
     return x / np.sqrt((x * x).mean(-1, keepdims=True) + eps) * g
 
@@ -98,6 +115,12 @@ class Drafter:
         from common.decoder_8b import TargetDecoder
 
         self.torch = torch
+        made = json.loads((Path(packed) / "manifest.json").read_text())
+        if made.get("source") != source_identity(draft_path, w.path):
+            raise ValueError(
+                f"{packed} was packed from another checkpoint or bundle; rerun "
+                "prepare_coder_draft.py"
+            )
         st = Safetensors(Path(draft_path) / "model.safetensors")
         cfg = json.loads((Path(draft_path) / "config.json").read_text())
         self.mask = cfg["dflash_config"]["mask_token_id"]

@@ -16,7 +16,7 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from paths import HERE
-from drafter import Safetensors
+from drafter import Safetensors, source_identity
 from model_paths import default_draft_cache, draft_snapshot
 from common.prepare_draft_8b import quantized_blocks
 from common.prepare_target_8b import cascade, inverse
@@ -27,11 +27,11 @@ LAYER_WORDS = ((DQ + 2 * DKV) * K + K * DQ + 3 * FFN * K) * 5 // 16
 HEAD_WORDS = VOCAB_PADDED * K * 5 // 16
 
 
-def target_head():
+def target_weights():
     sys.path.insert(0, str(HERE.parents[1] / "qwen3_coder_30b_a3b_q4k"))
     import qwen3_coder_30b_a3b_q4k_weights as W
 
-    return np.asarray(W.Qwen3CoderQ4k().lm_head, np.float32)
+    return W.Qwen3CoderQ4k()
 
 
 def main():
@@ -40,10 +40,14 @@ def main():
     ap.add_argument("--output", type=Path, default=default_draft_cache())
     a = ap.parse_args()
     a.draft = draft_snapshot(a.draft)
+    target = target_weights()
+    origin = source_identity(a.draft, target.path)
     done = a.output / "manifest.json"
-    if done.is_file() and json.loads(done.read_text()).get("status") == "prepared":
-        print(f"{a.output} is prepared")
-        return
+    if done.is_file():
+        made = json.loads(done.read_text())
+        if made.get("status") == "prepared" and made.get("source") == origin:
+            print(f"{a.output} is prepared")
+            return
     # written aside, then renamed: an interrupted pack leaves no half output
     out = a.output.with_name(a.output.name + ".partial")
     shutil.rmtree(out, ignore_errors=True)
@@ -105,7 +109,7 @@ def main():
             ]
         )
         print(f"packed drafter layer {layer + 1}/{LAYERS}", flush=True)
-    raw = quantized_blocks(target_head())
+    raw = quantized_blocks(np.asarray(target.lm_head, np.float32))
     padded = np.zeros((VOCAB_PADDED // 32, K // 256, 2560), np.uint16)
     padded[: len(raw)] = raw
     for wave in range(VOCAB_PADDED // HEAD_WAVE_ROWS):
@@ -125,6 +129,7 @@ def main():
                 layers=LAYERS,
                 layer_words=LAYER_WORDS,
                 head_words=HEAD_WORDS,
+                source=origin,
             ),
             indent=2,
         )

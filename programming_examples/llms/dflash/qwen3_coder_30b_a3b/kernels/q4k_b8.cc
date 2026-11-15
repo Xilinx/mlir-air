@@ -174,6 +174,7 @@ inline void q4k_tiles(const char *xb, const uint8_t *w, float *acc, char *spc) {
 extern "C" {
 
 void q4k_b8_zero(float *__restrict acc) {
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
   for (int i = 0; i < NT * 64; i += 32)
     aie::store_v(acc + i, aie::zeros<float, 32>());
 }

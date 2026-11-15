@@ -46,6 +46,7 @@ void moe_scores(uint8_t *__restrict msg, float *__restrict sc, int32_t c) {
 }
 
 void moe_zero(float *__restrict acc, int32_t n) {
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
   for (int i = 0; i < n; i += 32)
     aie::store_v(acc + i, aie::zeros<float, 32>());
 }
