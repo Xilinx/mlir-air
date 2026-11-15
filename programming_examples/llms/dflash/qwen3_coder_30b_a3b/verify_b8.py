@@ -7,6 +7,7 @@
 # cover the block.
 import argparse
 import contextlib
+import functools
 import os
 import sys
 import time
@@ -51,13 +52,35 @@ SOURCES = {
 }
 
 
-def _stamp(*key):
-    """A build's sources and arguments, hashed."""
+@functools.lru_cache(maxsize=None)
+def _tools():
+    """The compilers' identities: a new toolchain is a new build."""
+    import hashlib
+    import shutil
+
+    from air.tools import resolve_tool
+
+    h = hashlib.sha256()
+    for tool in (
+        shutil.which("air-opt"),
+        resolve_tool("aircc"),
+        shutil.which("aiecc"),
+        Path(os.environ["PEANO_INSTALL_DIR"]) / "bin/clang++",
+    ):
+        with open(tool, "rb") as f:
+            h.update(hashlib.file_digest(f, "sha256").digest())
+    return h.hexdigest()
+
+
+def _stamp(module, *key):
+    """A build's sources, module text, toolchain and arguments, hashed."""
     import hashlib
 
     h = hashlib.sha256()
     for f in SOURCES[key[0]]:
         h.update((HERE / f).read_bytes())
+    h.update(str(module).encode())
+    h.update(_tools().encode())
     h.update(repr(key).encode())
     return h.hexdigest()
 
@@ -70,14 +93,15 @@ def _compile(d, module, kernel, *key, opts=FIX):
     from air.backend.xrt import XRTBackend, _HostSide
 
     d = Path(d).resolve()
-    st, sf = _stamp(*key), d / "stamp.json"
+    m = module()
+    st, sf = _stamp(m, *key), d / "stamp.json"
     if sf.is_file() and json.loads(sf.read_text()).get("stamp") == st:
         kname = json.loads(sf.read_text())["kernel"]
     else:
         with _cwd(d):
             kernel()
             art = XRTBackend(instance_name=key[0], output_format="elf", **opts).compile(
-                module()
+                m
             )
         kname = art.kernel
         sf.write_text(json.dumps(dict(stamp=st, kernel=kname)))

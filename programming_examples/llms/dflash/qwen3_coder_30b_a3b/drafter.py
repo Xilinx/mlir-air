@@ -5,6 +5,7 @@
 # in one dispatch. Each of its 4 KV heads is stored twice, which gives the
 # decoder's 8-head attention. The context's K and V are computed on the host.
 import json
+import struct
 import sys
 import time
 from pathlib import Path
@@ -14,6 +15,27 @@ from ml_dtypes import bfloat16
 
 HERE = Path(__file__).resolve().parent
 TOK, DH, NKV, THETA = 8, 128, 4, 1e7
+
+
+class Safetensors:
+    def __init__(self, path):
+        self.path = Path(path)
+        with self.path.open("rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            self.header = json.loads(f.read(n))
+            self.base = n + 8
+
+    def tensor(self, name):
+        e = self.header[name]
+        assert e["dtype"] == "BF16", (name, e["dtype"])
+        lo, _ = e["data_offsets"]
+        return np.memmap(
+            self.path,
+            mode="r",
+            dtype=bfloat16,
+            offset=self.base + lo,
+            shape=tuple(e["shape"]),
+        )
 
 
 def _rms(x, g, eps=1e-6):
@@ -73,7 +95,6 @@ class Drafter:
     def _init(self, torch, w, draft_path, artifacts, packed):
         import paths  # noqa: F401
         from common.decoder_8b import TargetDecoder
-        from prepare_coder_draft import Safetensors
 
         self.torch = torch
         st = Safetensors(Path(draft_path) / "model.safetensors")

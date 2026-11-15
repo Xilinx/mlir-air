@@ -93,7 +93,7 @@ def main():
     v = V.VerifyB8(w, a.root, 4096, reads)
     dr = drafter.Drafter(
         w,
-        a.draft or model_paths.default_draft_snapshot(),
+        model_paths.draft_snapshot(a.draft),
         a.draft_build or Path(a.root) / "drafter",
         a.draft_weights,
     )
@@ -123,7 +123,10 @@ def main():
         acc = 0
         while acc < TOK - 1 and props[acc] == post[acc]:
             acc += 1
-        out += props[:acc] + [post[acc]]
+        emitted = props[:acc] + [post[acc]]
+        # stop at the first EOS, accepted or not
+        acc = next((i for i, t in enumerate(emitted) if t in EOS), acc)
+        out += emitted[: acc + 1]
         rounds.append(acc + 1)
         stamps.append((time.perf_counter(), len(out)))
         ctx = np.concatenate([taps[l][: acc + 1] for l in dr.taps], -1)

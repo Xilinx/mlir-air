@@ -33,17 +33,30 @@ def default_draft_cache() -> Path:
 default_target_cache = default_draft_cache
 
 
-def default_draft_snapshot(offline=False) -> Path:
+def default_draft_snapshot() -> Path:
     configured = os.environ.get("DFLASH_DRAFT_SNAPSHOT")
     if configured:
         return Path(configured).expanduser()
-    from huggingface_hub import snapshot_download
+    from huggingface_hub.constants import HF_HUB_CACHE
 
-    return Path(
-        snapshot_download(
-            DRAFT_MODEL, revision=DRAFT_REVISION, local_files_only=offline
-        )
+    return (
+        Path(HF_HUB_CACHE)
+        / ("models--" + DRAFT_MODEL.replace("/", "--"))
+        / "snapshots"
+        / DRAFT_REVISION
     )
+
+
+def draft_snapshot(path=None) -> Path:
+    """path, else the pinned checkpoint, downloaded if it is not cached."""
+    if path is not None:
+        return Path(path)
+    snapshot = default_draft_snapshot()
+    if not snapshot.is_dir():
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(DRAFT_MODEL, revision=DRAFT_REVISION)
+    return snapshot
 
 
 def resolve_target_model(model=TARGET_MODEL, *, offline=False):

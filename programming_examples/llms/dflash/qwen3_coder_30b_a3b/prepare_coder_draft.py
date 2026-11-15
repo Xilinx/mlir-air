@@ -9,14 +9,14 @@ the vocabulary head is the target's, quantized the same way.
 import argparse
 import json
 from pathlib import Path
-import struct
 import sys
 
 import numpy as np
 from ml_dtypes import bfloat16
 
 from paths import HERE
-from model_paths import default_draft_cache, default_draft_snapshot
+from drafter import Safetensors
+from model_paths import default_draft_cache, draft_snapshot
 from common.prepare_draft_8b import quantized_blocks
 from common.prepare_target_8b import cascade, inverse
 
@@ -24,27 +24,6 @@ K, DQ, DKV, FFN, LAYERS = 2048, 4096, 1024, 6144, 8
 VOCAB, VOCAB_PADDED, HEAD_WAVE_ROWS = 151936, 153600, 20 * 512
 LAYER_WORDS = ((DQ + 2 * DKV) * K + K * DQ + 3 * FFN * K) * 5 // 16
 HEAD_WORDS = VOCAB_PADDED * K * 5 // 16
-
-
-class Safetensors:
-    def __init__(self, path):
-        self.path = Path(path)
-        with self.path.open("rb") as f:
-            n = struct.unpack("<Q", f.read(8))[0]
-            self.header = json.loads(f.read(n))
-            self.base = n + 8
-
-    def tensor(self, name):
-        e = self.header[name]
-        assert e["dtype"] == "BF16", (name, e["dtype"])
-        lo, _ = e["data_offsets"]
-        return np.memmap(
-            self.path,
-            mode="r",
-            dtype=bfloat16,
-            offset=self.base + lo,
-            shape=tuple(e["shape"]),
-        )
 
 
 def target_head():
@@ -59,7 +38,7 @@ def main():
     ap.add_argument("--draft", type=Path, help="drafter snapshot dir")
     ap.add_argument("--output", type=Path, default=default_draft_cache())
     a = ap.parse_args()
-    a.draft = a.draft or default_draft_snapshot()
+    a.draft = draft_snapshot(a.draft)
     done = a.output / "manifest.json"
     if done.is_file() and json.loads(done.read_text()).get("status") == "prepared":
         print(f"{a.output} is prepared")
