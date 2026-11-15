@@ -6110,6 +6110,45 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
   LogicalResult armDeviceIssuedTasks(AIE::DeviceOp device, Block &body) {
     using Tasks = SmallVector<AIEX::DMAConfigureTaskForOp>;
+    // The host waits for no start of an uncounted task (count 0), so a host
+    // task on the same shim channel could overtake them: refuse one.
+    auto channelOf = [&](AIEX::DMAConfigureTaskForOp t) {
+      auto alloc = air::lookupBySymName<AIE::ShimDMAAllocationOp>(
+          device, t.getAlloc().getLeafReference().getValue());
+      auto tile = cast<AIE::TileOp>(alloc.getTile().getDefiningOp());
+      return std::make_tuple(tile.getCol(),
+                             static_cast<int>(alloc.getChannelDir()),
+                             static_cast<int>(alloc.getChannelIndex()));
+    };
+    auto startedByCore = [](AIEX::DMAConfigureTaskForOp t) {
+      auto lock = t->getAttrOfType<StringAttr>("air.device_issue_lock");
+      return lock && !lock.getValue().empty();
+    };
+    std::map<std::tuple<int, int, int>, AIEX::DMAConfigureTaskForOp> uncounted;
+    body.walk([&](AIEX::DMAConfigureTaskForOp t) {
+      auto n = t->getAttrOfType<IntegerAttr>("air.device_issue_count");
+      if (startedByCore(t) && n && n.getInt() == 0)
+        uncounted.try_emplace(channelOf(t), t);
+    });
+    if (!uncounted.empty()) {
+      LogicalResult shared = success();
+      body.walk([&](AIEX::DMAConfigureTaskForOp t) {
+        if (startedByCore(t))
+          return WalkResult::advance();
+        auto it = uncounted.find(channelOf(t));
+        if (it == uncounted.end())
+          return WalkResult::advance();
+        t->emitOpError("shares its shim channel with transfers a core starts "
+                       "an uncounted number of times, which the host cannot "
+                       "order it after")
+                .attachNote(it->second.getLoc())
+            << "the core-started transfer";
+        shared = failure();
+        return WalkResult::interrupt();
+      });
+      if (failed(shared))
+        return failure();
+    }
     llvm::MapVector<StringAttr, Tasks> pending, outstanding;
     // A token the core requests goes out under the controller id in the
     // channel's control register, which only a host push would set.
