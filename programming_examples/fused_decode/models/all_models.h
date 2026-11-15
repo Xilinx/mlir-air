@@ -37,6 +37,7 @@
 #define OLMO2_1B 14
 #define OPENELM_1B 15
 #define GPT_OSS_20B 16
+#define QWEN3_CODER_DRAFT 17
 
 #ifndef MODEL_TYPE
 #define MODEL_TYPE LLAMA_3_2_1B
@@ -58,6 +59,7 @@
 #include "../models/qwen2.5-7b.h"
 #include "../models/qwen3-4b.h"
 #include "../models/qwen3-8b.h"
+#include "../models/qwen3-coder-draft.h"
 #include "../models/smollm3-3b.h"
 
 /// @brief RMSNorm epsilon, added to the MEAN square.

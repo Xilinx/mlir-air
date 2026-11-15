@@ -1,0 +1,5 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+// Weight-free build of the verify pass, its LM head and the drafter.
+// REQUIRES: peano, llvm_link_pre23
+// RUN: make -f %S/Makefile compile BUILD_DIR=dflash-build

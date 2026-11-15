@@ -29,8 +29,13 @@ class ShardedOwners:
         self.l1 = f.IntegerAttr.get(f.T.i32(), f.MemorySpace.L1)
         self.l2 = f.IntegerAttr.get(f.T.i32(), f.MemorySpace.L2)
         assert (
-            f.K == 4096 and f.BATCH == 8 and f.NORMALIZATION_CACHE and f.XMT_PCOL == 4
+            f.K % 512 == 0
+            and f.BATCH == 8
+            and f.NORMALIZATION_CACHE
+            and f.XMT_PCOL == 4
         )
+        # a row's 512-wide chunks
+        self.chunks = f.K // 512
 
     def mem(self, n, space=None, dtype=None):
         return self.f.MemRefType.get(
@@ -90,7 +95,7 @@ class ShardedOwners:
         self.gate(arm, updates)
 
         def join(count):
-            for _ in f.for_(ix(0), ix(count * 8), ix(1)):
+            for _ in f.for_(ix(0), ix(count * self.chunks), ix(1)):
                 buf = f.AllocOp(self.mem(4096, self.l2), [], [])
                 buf.operation.attributes["air.memtile_col"] = f.IntegerAttr.get(
                     self.i32, 3
@@ -127,8 +132,8 @@ class ShardedOwners:
 
             @f.herd(name=f"rms_owner_{owner}", sizes=[1, 1], operands=[arm])
             def rms(tx, ty, sx, sy, A, owner=owner):
-                xb = f.AllocOp(self.mem(4 * 4096), [], [])
-                weights = [f.AllocOp(self.mem(4096), [], []) for _ in range(2)]
+                xb = f.AllocOp(self.mem(4 * f.K), [], [])
+                weights = [f.AllocOp(self.mem(f.K), [], []) for _ in range(2)]
                 out, update = [f.AllocOp(self.mem(2048), [], []) for _ in range(2)]
                 scales = f.AllocOp(self.mem(4, dtype=self.fp), [], [])
                 all_buffers = [xb, *weights, out, update, scales]
@@ -142,7 +147,7 @@ class ShardedOwners:
                 def normalized(w):
                     for row in range(4):
                         f.CallOp(self.scale, [scales, xb, ci(row), A])
-                    for chunk in f.for_(ix(0), ix(8), ix(1)):
+                    for chunk in f.for_(ix(0), ix(self.chunks), ix(1)):
                         f.CallOp(
                             self.norm,
                             [
@@ -165,7 +170,7 @@ class ShardedOwners:
                         f.yield_([])
 
                 def accumulated():
-                    for chunk in f.for_(ix(0), ix(8), ix(1)):
+                    for chunk in f.for_(ix(0), ix(self.chunks), ix(1)):
                         f.ChannelGet(f"owner_update_{owner}", update)
                         offset = f.arith.muli(
                             f.arith.index_cast(self.i32, chunk), ci(512)
@@ -186,7 +191,7 @@ class ShardedOwners:
                         f"owner_final_{owner}",
                         xb,
                         offsets=[0],
-                        sizes=[16384],
+                        sizes=[4 * f.K],
                         strides=[1],
                     )
 
@@ -202,7 +207,7 @@ class ShardedOwners:
 
             @f.herd(name=f"norm_cache_{owner}", sizes=[1, 1], operands=[arm])
             def cache(tx, ty, sx, sy, A, owner=owner):
-                slab, out = f.AllocOp(self.mem(16384), [], []), f.AllocOp(
+                slab, out = f.AllocOp(self.mem(4 * f.K), [], []), f.AllocOp(
                     self.mem(2048), [], []
                 )
                 for buf in (slab, out):
@@ -213,7 +218,7 @@ class ShardedOwners:
                 def emit(count):
                     f.ChannelGet(f"owner_fill_{owner}", slab)
                     for _ in f.for_(ix(0), count, ix(1)):
-                        for chunk in f.for_(ix(0), ix(8), ix(1)):
+                        for chunk in f.for_(ix(0), ix(self.chunks), ix(1)):
                             f.CallOp(
                                 self.replay,
                                 [out, slab, f.arith.index_cast(self.i32, chunk)],
