@@ -19,6 +19,12 @@
 #   make profile-decode  Decode tok/s at each of CONTEXTS (one build each)
 #   make profile-prefill TTFT of a CTX-token prompt
 #   make kernels         Every kernel test
+#   make spec            Self-speculative greedy decode of PROMPT with the MTP
+#                        head (qwen38_27b_q4nx_spec.py), checked token for
+#                        token against the plain decode
+#   make profile-spec    Its tok/s, draft acceptance and step times
+#   make verify-spec     Its stages alone (the two-token MLP, the verify pass,
+#                        the MTP head, the two-row LM head), then make spec
 #
 # The prompt is prefilled on the shared fused prefill device (fused_spec.py,
 # prefill.py) and handed to the decode, whose LM head gives the first token;
@@ -27,6 +33,7 @@
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 PYTHON ?= python3
 DRIVER := $(PYTHON) $(srcdir)/qwen38_27b_q4nx_inference.py
+SPEC   := $(PYTHON) $(srcdir)/qwen38_27b_q4nx_spec.py
 comma := ,
 
 MAXL      ?= 64
@@ -51,10 +58,11 @@ override FUSED_PREFILL_DIR := $(if $(FUSED_PREFILL_DIR),$(abspath $(FUSED_PREFIL
 export FUSED_PREFILL_DIR
 FUSED_DEP := $(if $(FUSED_PREFILL_DIR),$(abspath $(FUSED_PREFILL_DIR))/manifest.json)
 STAGES    := mlp_block gdn_layer attn_layer lm_head
-KERNELS   := q4k_mvm gdn_prep gdn_decode gate rope attn
+KERNELS   := q4k_mvm gdn_prep gdn_decode gate rope attn q4k_mvm2 gdn_prep2
+SPEC_STAGES := mlp_block2 qwen38_27b_q4nx_verify mtp_draft
 
 .PHONY: compile compile-fused-prefill run prefill-fused verify profile \
-	profile-decode profile-prefill kernels clean
+	profile-decode profile-prefill kernels spec profile-spec verify-spec clean
 
 compile:
 	mkdir -p $(BUILD_DIR) && cd $(BUILD_DIR) && \
@@ -110,6 +118,27 @@ kernels:
 	mkdir -p build_kernels && cd build_kernels && \
 		for k in $(KERNELS); do \
 			$(PYTHON) $(srcdir)/kernel_tests/$$k.py || exit 1; done
+
+# The build holds the prompt, the generated tokens and a step's two: MAXL,
+# or more for N_TOKENS and a short prompt.
+SPEC_MIN  = ($(N_TOKENS) + 64 + 15) / 16 * 16
+SPEC_MAXL = $$(( $(SPEC_MIN) > $(MAXL) ? $(SPEC_MIN) : $(MAXL) ))
+
+spec: $(FUSED_DEP)
+	mkdir -p build_spec && cd build_spec && \
+		$(SPEC) --maxl $(SPEC_MAXL) --gen $(N_TOKENS) --prompt "$(PROMPT)" --check
+
+profile-spec: $(FUSED_DEP)
+	mkdir -p build_spec && cd build_spec && \
+		$(SPEC) --maxl $(SPEC_MAXL) --gen $(N_TOKENS) --prompt "$(PROMPT)"
+
+verify-spec:
+	for s in $(SPEC_STAGES); do \
+		mkdir -p build_$$s && (cd build_$$s && $(PYTHON) $(srcdir)/$$s.py) \
+			|| exit 1; done
+	mkdir -p build_lm_head2 && cd build_lm_head2 && \
+		$(PYTHON) $(srcdir)/lm_head.py --tokens 9338,760
+	$(MAKE) -f $(srcdir)/Makefile spec
 
 clean:
 	rm -rf $(BUILD_DIR) build_* $(FUSED_DIR) *.o

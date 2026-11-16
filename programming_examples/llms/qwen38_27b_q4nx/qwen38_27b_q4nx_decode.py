@@ -109,7 +109,7 @@ def build_module(waves, maxl, cap=None):
     rope = k_("rope_rounds", "rope_compute", [i32])
     q_pack = k_("rope_rounds", "q_pack")
     qk = k_("attn_qk", "attn_qk_blk", [i32, i32])
-    kv = k_("attn_kv_q36", "attn_kv_blk", [i32, i32])
+    kv = k_("attn_kv_q36", "attn_kv_blk_z", [i32, i32])
     fin = k_("attn_kv_q36", "attn_kv_fin")
     o_nat = k_("attn_kv_q36", "o_natural")
 

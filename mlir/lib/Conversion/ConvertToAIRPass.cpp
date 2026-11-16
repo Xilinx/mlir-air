@@ -292,7 +292,7 @@ void getUsedConstsAndArgsDefinedAbove(MutableArrayRef<Region> region,
                                       SmallVector<Value, 4> &constants,
                                       SmallVector<Value, 4> &args) {
   getUsedConstsDefinedAbove(region, constants);
-  getUsedConstsDefinedAbove(region, args);
+  getUsedArgsDefinedAbove(region, args);
 }
 
 class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
