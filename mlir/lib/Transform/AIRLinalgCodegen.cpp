@@ -7639,6 +7639,81 @@ void transform::CoalesceSlicesOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
+// SinkOperandProducersOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::SinkOperandProducersOp::apply(transform::TransformRewriter &rewriter,
+                                         transform::TransformResults &results,
+                                         transform::TransformState &state) {
+  for (Operation *target : state.getPayloadOps(getTarget()))
+    for (int64_t i : getOperandIndices())
+      if (i < 0 || i >= target->getNumOperands())
+        return emitSilenceableError()
+               << "operand " << i << " out of range for " << target->getName();
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    Block *block = target->getBlock();
+    // The ops of the block that the listed operands depend on.
+    llvm::SetVector<Operation *> deps;
+    SmallVector<Value> work;
+    for (int64_t i : getOperandIndices())
+      work.push_back(target->getOperand(i));
+    while (!work.empty()) {
+      Operation *def = work.pop_back_val().getDefiningOp();
+      if (!def || def->getBlock() != block || !deps.insert(def))
+        continue;
+      llvm::append_range(work, def->getOperands());
+      SetVector<Value> captured;
+      getUsedValuesDefinedAbove(def->getRegions(), captured);
+      llvm::append_range(work, captured);
+    }
+    // Keep in place the ops that may not move, and the ops they use, which
+    // must stay before them.
+    llvm::SetVector<Operation *> kept;
+    auto keep = [&](Operation *op) {
+      SmallVector<Operation *> stack = {op};
+      while (!stack.empty()) {
+        Operation *o = stack.pop_back_val();
+        if (!kept.insert(o))
+          continue;
+        for (Operation *d : deps)
+          if (!kept.contains(d) &&
+              llvm::any_of(d->getUsers(), [&](Operation *u) {
+                return block->findAncestorOpInBlock(*u) == o;
+              }))
+            stack.push_back(d);
+      }
+    };
+    for (Operation *op : deps) {
+      bool otherUse = llvm::any_of(op->getUsers(), [&](Operation *u) {
+        Operation *a = block->findAncestorOpInBlock(*u);
+        return a != target && !deps.contains(a);
+      });
+      if (otherUse || !isMemoryEffectFree(op))
+        keep(op);
+    }
+    // The rest are used only by each other and the target, and use only
+    // values defined before them, so they may move in order.
+    SmallVector<Operation *> moved;
+    for (Operation *op : deps)
+      if (!kept.contains(op))
+        moved.push_back(op);
+    llvm::sort(moved, [](Operation *a, Operation *b) {
+      return a->isBeforeInBlock(b);
+    });
+    for (Operation *op : moved)
+      rewriter.moveOpBefore(op, target);
+  }
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform::SinkOperandProducersOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  onlyReadsHandle(getTargetMutable(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
 // FoldIterArgsIntoInductionVarOp
 //===----------------------------------------------------------------------===//
 

@@ -1680,6 +1680,37 @@ def CoalesceSlicesOp : Op<Transform_Dialect, "air.coalesce_slices",
   let assemblyFormat = "$target (`full_dims` `=` $full_dims^)? attr-dict `:` functional-type(operands, results)";
 }
 
+def SinkOperandProducersOp : Op<Transform_Dialect, "air.sink_operand_producers",
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Move the ops that compute some operands of an op right before it";
+  let description = [{
+    For each `target`, finds the ops of its block that compute the operands
+    at `operand_indices`, directly or through each other (including values
+    their regions use), and moves them, in their order, to right before the
+    target.
+
+    An op stays where it is if it is not known to be free of memory effects
+    (ops without an effects interface included), or if one of its results is
+    used other than by the target and those ops (uses nested in their
+    regions count as theirs; uses in other blocks count as other uses). The
+    ops it depends on then stay too, before it.
+
+    Once bufferized, the producers become a core's transfers into its
+    buffers and its reads of them, so this sets the program order of those
+    transfers. Whether that changes what the core waits for first depends on
+    where the lowering acquires each buffer's lock (AIRToAIE acquires it at
+    the buffer's first access or at its transfer).
+
+    Returns no handle. An index the target has no operand for is a
+    silenceable error, reported before anything moves.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   DenseI64ArrayAttr:$operand_indices);
+  let assemblyFormat = "$target `operand_indices` `=` $operand_indices attr-dict `:` type($target)";
+}
+
 def FoldIterArgsIntoInductionVarOp : Op<Transform_Dialect, "air.fold_iter_args_into_induction_var",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
