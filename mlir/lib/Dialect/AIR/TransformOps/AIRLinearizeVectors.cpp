@@ -1213,6 +1213,20 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
             applyOpPatternsGreedily(ands, std::move(unpackPatterns), config)))
       return emitDefiniteFailure() << "failed to rewrite 4-bit unpacks";
 
+    // A sum's product may only have shown its bf16 operands once the
+    // patterns above settled (an extf sunk below a broadcast or shuffle
+    // changes the product's operands, not the sum the fusion is rooted at):
+    // fuse again. The products are roots too, so that the fused ones go.
+    SmallVector<Operation *> adds;
+    target->walk([&](Operation *op) {
+      if (isa<arith::AddFOp, arith::MulFOp>(op))
+        adds.push_back(op);
+    });
+    RewritePatternSet fmaPatterns(ctx);
+    fmaPatterns.add<MulAddToFMA>(ctx, getContract(), /*benefit=*/1);
+    if (failed(applyOpPatternsGreedily(adds, std::move(fmaPatterns), config)))
+      return emitDefiniteFailure() << "failed to fuse multiply-adds";
+
     // Once the pieces have settled (extracts of inserts folded), extracts
     // that remain read real registers.
     SmallVector<Operation *> extracts;
