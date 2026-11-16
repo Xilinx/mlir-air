@@ -85,3 +85,32 @@ func.func @copy_in_if(%c: i1) {
   }
   return
 }
+
+// Two branch ops in a row accessing one buffer: the second one's token
+// follows the first one's whichever region runs, so the dealloc after both
+// waits for the first call even when the second condition is false.
+// CHECK-LABEL: func.func @consecutive_ifs
+// CHECK: %[[IF1:.*]] = scf.if
+// CHECK:   func.call @kernel
+// CHECK: %[[IF2:.*]] = scf.if
+// CHECK:   air.execute [%[[IF1]]]
+// CHECK-NEXT: func.call @kernel
+// CHECK: } else {
+// CHECK:   %[[E:.*]] = air.wait_all async [%[[IF1]]]
+// CHECK:   scf.yield %[[E]]
+// CHECK: air.execute [%[[IF2]]]
+// CHECK-NEXT: memref.dealloc
+func.func @consecutive_ifs(%c: i1, %d: i1) {
+  %c1 = arith.constant 1 : index
+  air.herd @h tile (%x, %y) in (%sx = %c1, %sy = %c1) args(%cc = %c, %dd = %d) : i1, i1 {
+    %a = memref.alloc() : memref<48xi32, 2>
+    scf.if %cc {
+      func.call @kernel(%a) : (memref<48xi32, 2>) -> ()
+    }
+    scf.if %dd {
+      func.call @kernel(%a) : (memref<48xi32, 2>) -> ()
+    }
+    memref.dealloc %a : memref<48xi32, 2>
+  }
+  return
+}

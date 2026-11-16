@@ -429,10 +429,13 @@ public:
           for (unsigned i = 0; i < new_regions.size(); i++) {
             if (new_regions[i].empty())
               continue;
-            if (incoming &&
-                !tokensFollowAll(yielded_tokens_per_region[i],
+            SmallVector<Value> incomingDeps;
+            if (incoming)
+              llvm::append_range(incomingDeps,
                                  incoming.getDefiningOp<air::WaitAllOp>()
-                                     .getAsyncDependencies()))
+                                     .getAsyncDependencies());
+            if (incoming &&
+                !tokensFollowAll(yielded_tokens_per_region[i], incomingDeps))
               yielded_tokens_per_region[i].push_back(incoming);
             insertLoopCarriedDepsInRegion(rewriter, new_regions[i],
                                           yielded_tokens_per_region[i]);
@@ -2059,7 +2062,7 @@ private:
   // Whether every token of `targets` is reached from `tokens` through async
   // dependencies (and scf.for/scf.parallel init tokens). Conservative: false
   // when unsure.
-  bool tokensFollowAll(ArrayRef<Value> tokens, OperandRange targets) {
+  bool tokensFollowAll(ArrayRef<Value> tokens, ArrayRef<Value> targets) {
     llvm::SmallPtrSet<void *, 16> seen;
     llvm::SmallVector<Value> work(tokens.begin(), tokens.end());
     llvm::SmallPtrSet<void *, 16> reached;
@@ -2080,6 +2083,16 @@ private:
       else if (auto par = dyn_cast<scf::ParallelOp>(d))
         for (Value init : par.getInitVals())
           work.push_back(init);
+      else if (isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp>(d)) {
+        // A branch op's token follows what every region yields.
+        for (Region &r : d->getRegions()) {
+          if (r.empty() || !r.front().mightHaveTerminator())
+            return false;
+          for (Value y : r.front().getTerminator()->getOperands())
+            if (isa<air::AsyncTokenType>(y.getType()))
+              work.push_back(y);
+        }
+      }
     }
     return llvm::all_of(targets, [&](Value t) {
       return reached.contains(t.getAsOpaquePointer());
@@ -2132,8 +2145,43 @@ private:
           llvm::is_contained(async_sink.getAsyncDependencies(), token))
         continue;
       async_sink.addAsyncDependency(token);
+      // The branch ops between the sink and the token's block now follow the
+      // token too, whichever region runs: an op after one of them may rely
+      // on that order through the sink (the transitive reduction dropped its
+      // direct edge), and a region without the sink would not provide it.
+      for (Operation *p = sink->getParentOp();
+           p && p != sinkAncestor->getParentOp(); p = p->getParentOp())
+        if (isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp>(p))
+          orderBranchAfter(p, token);
     }
     branchDeps.clear();
+  }
+
+  // Make every region of branch op `branch` yield a token that follows
+  // `token`, so the branch op's token does.
+  void orderBranchAfter(Operation *branch, Value token) {
+    for (Region &r : branch->getRegions()) {
+      if (r.empty() || !r.front().mightHaveTerminator())
+        continue;
+      Operation *term = r.front().getTerminator();
+      for (OpOperand &y : term->getOpOperands()) {
+        if (!isa<air::AsyncTokenType>(y.get().getType()) ||
+            tokensFollowAll({y.get()}, {token}))
+          continue;
+        if (auto wa = y.get().getDefiningOp<air::WaitAllOp>();
+            wa && wa->getBlock() == &r.front()) {
+          wa.addAsyncDependency(token);
+          continue;
+        }
+        OpBuilder builder(term);
+        auto wa =
+            air::WaitAllOp::create(builder, term->getLoc(),
+                                   air::AsyncTokenType::get(term->getContext()),
+                                   SmallVector<Value>{y.get(), token});
+        wa->setAttr("id", builder.getI32IntegerAttr(++WaitAllOpID));
+        y.set(wa.getAsyncToken());
+      }
+    }
   }
 
   template <typename T>
