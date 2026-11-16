@@ -318,12 +318,15 @@ def main():
             dec = DEC.load(w, a.maxl, arts=darts)
             emb = lambda t: np.asarray(w.embed([t])[0]).astype(bfloat16)  # noqa
             # the decode from the same start as the speculative one: the
-            # prefill's state, or the prompt a token at a time
+            # prefill's state, or the prompt a token at a time; tops[k] the
+            # decode's top two logits for generated token k
             n, toks, tops = len(ids), list(ids), []
             if fused:
                 pf.prefill(ids)
                 dec.seed(pf)
-                toks.append(int(np.argmax(dec.head(hs[-1], n))))
+                lg = dec.head(hs[-1], n)
+                toks.append(int(np.argmax(lg)))
+                tops.append(top2(lg))
                 del pf
             for i in range(n if fused else 0, n + len(out) - 1):
                 lg = dec.step(emb(toks[i]), i + 1)
@@ -335,22 +338,22 @@ def main():
             if ref == out:
                 print("PASS!")
                 return 0
-            k = next(i for i in range(len(out)) if ref[i] != out[i])
-            # a near-tie both ways: the decode's and the verify's top two the
-            # same tokens, a gap of a few bf16 steps
-            (dt, dv), (st, sv) = tops[k - 1], sp_tops[k]
-            print(
-                f"first difference at token {k}: decode {ref[k]}, speculative"
-                f" {out[k]}; decode's top two {dt} gap {dv[0] - dv[1]:.3f},"
-                f" verify's {st} gap {sv[0] - sv[1]:.3f}"
+            # every token must match; the first difference's logits say
+            # whether it was close
+            diff = [i for i in range(len(out)) if ref[i] != out[i]]
+            k = diff[0]
+            dt, dv = tops[k]
+            msg = (
+                f"{len(diff)} of {len(out)} tokens differ, the first at {k}:"
+                f" decode {ref[k]}, speculative {out[k]}; the decode's top two"
+                f" {dt} gap {dv[0] - dv[1]:.3f}"
             )
-            tie = set(dt) == set(st) and max(dv[0] - dv[1], sv[0] - sv[1]) < 0.25
-            print(
-                "PASS (a near-tie)"
-                if tie
-                else "failed: the tokens differ from the decode's."
-            )
-            return 0 if tie else 1
+            if sp_tops[k] is not None:  # the first token is the prefill's
+                st, sv = sp_tops[k]
+                msg += f", the verify's {st} gap {sv[0] - sv[1]:.3f}"
+            print(msg)
+            print("failed: the tokens differ from the decode's.")
+            return 1
     return 0
 
 

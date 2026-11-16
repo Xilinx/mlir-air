@@ -84,6 +84,12 @@ assert NQKV == DQP
 assert QR * DH == NV * 32
 
 
+# the elementwise gates of main(), as fractions of max |want| at common's
+# rtol: a wave's outputs and the GDN states it leaves, against the float
+# reference (measured: at most 1.2e-3 and 3.2e-2)
+OUT_ATOL, STATE_ATOL = 5e-3, 6e-2
+
+
 def build_module(waves, maxl):
     """`waves` x (3 GDN layers, then an attention one), two tokens, for a
     context of up to `maxl` positions."""
@@ -899,12 +905,12 @@ def main():
     art, params = compile_all(a.maxl)
     ok = True
 
-    def chk(name, got, want, tol=0.999):
+    def chk(name, got, want):
+        # every element (common.check), against the float reference: the
+        # outputs after a wave's four bf16 layers, the states in float32
         nonlocal ok
-        c, l2, _ = common.compare(got, want)
-        good = c > tol
-        ok &= good
-        print(f"{name}: corr {c:.6f} rel L2 {l2:.2e} {'ok' if good else 'BAD'}")
+        f32 = np.asarray(got).dtype == np.float32
+        ok &= common.check(name, got, want, STATE_ATOL if f32 else OUT_ATOL)
 
     with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
         v = Q38Verifier(art, params, w, layers, a.waves, a.maxl)

@@ -147,7 +147,18 @@ if __name__ == "__main__":
         )
         be_.unload()
     kvq = out[3].reshape(NV, 2, 3, SLOT)
-    ok = True
+    # the new conv cache: per chunk [x2, a, b], copies of bf16 rows, exact
+    ho_want = np.concatenate(
+        [
+            hx.reshape(NCH, 7, HD)[:, 2],
+            qkv[3].numpy().astype(bfloat16).reshape(NCH, HD),
+            qkv[4].numpy().astype(bfloat16).reshape(NCH, HD),
+        ],
+        axis=1,
+    )
+    ho_got = np.asarray(out[4]).reshape(NCH, 3 * HD)
+    ok = bool(np.array_equal(ho_got.view(np.uint16), ho_want.view(np.uint16)))
+    print(f"conv cache [x2, a, b]: {'exact' if ok else 'BAD'}")
     for t in range(2):
         hist = qkv[t : t + 4]  # the conv's four inputs for token t
         y = F.silu(sum(cw[j] * hist[j] for j in range(4)))

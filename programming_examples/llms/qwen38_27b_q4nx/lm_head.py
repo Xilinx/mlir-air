@@ -60,6 +60,8 @@ ROUNDS = rounds(VOCAB)
 
 
 def build_module(rows=1, vocab=VOCAB):
+    # kernels for one row (lm_head.cc) and two (lm_head2.cc)
+    assert rows in (1, 2), f"{rows} rows: the LM head takes 1 or 2"
     obj = "lm_head.o" if rows == 1 else "lm_head2.o"
     sfx = "" if rows == 1 else "2"
     step = air.extern("q8_step" + sfx, link_with=obj, scalars=[i32])
@@ -179,6 +181,8 @@ def main():
     a = ap.parse_args()
     toks = [int(v) for v in a.tokens.split(",")]
     rows = len(toks)
+    if rows not in (1, 2):
+        ap.error("--tokens: one token, or two")
     if a.print_module_only:
         print(build_module(rows))
         return 0

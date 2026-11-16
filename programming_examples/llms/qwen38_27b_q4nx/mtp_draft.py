@@ -62,6 +62,9 @@ G_ALL = G_FC + A.G_DENSE
 G_PARTS = [(0, G_FC + A.G_MIX), (G_FC + A.G_MIX, G_ALL)]
 ROPE, GATE, RMS, GLU = range(4)  # the array's consumers
 MISC, MISC_LEN = A.MISC, A.MISC_LEN
+# main()'s elementwise gate on the head's normed output, a fraction of
+# max |want| at common's rtol (measured: at most 1.0e-2)
+ATOL = 3e-2
 
 
 def build_module(maxl):
@@ -527,10 +530,7 @@ def main():
             got = rms(got, np.asarray(d.norms[2], np.float32))
             h = torch.from_numpy(hs[i : i + 1].astype(np.float32))
             want = mtp.forward(h, ids[i + 1 : i + 2])[0].double().numpy()
-            c, l2, _ = common.compare(got, want)
-            good = c > 0.999
-            ok &= good
-            print(f"L={i + 1}: corr {c:.6f} rel L2 {l2:.2e} {'ok' if good else 'BAD'}")
+            ok &= common.check(f"L={i + 1}", got, want, ATOL)
         del d
     print("PASS!" if ok else "failed.")
     return 0 if ok else 1

@@ -119,16 +119,18 @@ kernels:
 		for k in $(KERNELS); do \
 			$(PYTHON) $(srcdir)/kernel_tests/$$k.py || exit 1; done
 
-# the build holds the prompt, the generated tokens and a step's two
+# The build holds the prompt, the generated tokens and a step's two: MAXL,
+# or more for N_TOKENS and a short prompt.
+SPEC_MIN  = ($(N_TOKENS) + 64 + 15) / 16 * 16
+SPEC_MAXL = $$(( $(SPEC_MIN) > $(MAXL) ? $(SPEC_MIN) : $(MAXL) ))
+
 spec: $(FUSED_DEP)
 	mkdir -p build_spec && cd build_spec && \
-		$(SPEC) --maxl $$(( ($(N_TOKENS) + 64 + 15) / 16 * 16 )) \
-			--gen $(N_TOKENS) --prompt "$(PROMPT)" --check
+		$(SPEC) --maxl $(SPEC_MAXL) --gen $(N_TOKENS) --prompt "$(PROMPT)" --check
 
 profile-spec: $(FUSED_DEP)
 	mkdir -p build_spec && cd build_spec && \
-		$(SPEC) --maxl $$(( ($(N_TOKENS) + 64 + 15) / 16 * 16 )) \
-			--gen $(N_TOKENS) --prompt "$(PROMPT)"
+		$(SPEC) --maxl $(SPEC_MAXL) --gen $(N_TOKENS) --prompt "$(PROMPT)"
 
 verify-spec:
 	for s in $(SPEC_STAGES); do \
