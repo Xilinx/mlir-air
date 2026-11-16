@@ -1696,11 +1696,8 @@ def SinkOperandProducersOp : Op<Transform_Dialect, "air.sink_operand_producers",
     regions count as theirs; uses in other blocks count as other uses). The
     ops it depends on then stay too, before it.
 
-    Once bufferized, the producers become a core's transfers into its
-    buffers and its reads of them, so this sets the program order of those
-    transfers. Whether that changes what the core waits for first depends on
-    where the lowering acquires each buffer's lock (AIRToAIE acquires it at
-    the buffer's first access or at its transfer).
+    After bufferization the producers become the core's transfers into its
+    buffers, so this sets the program order of those transfers.
 
     Returns no handle. An index the target has no operand for is a
     silenceable error, reported before anything moves.

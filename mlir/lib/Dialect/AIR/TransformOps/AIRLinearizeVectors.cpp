@@ -1213,10 +1213,9 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
             applyOpPatternsGreedily(ands, std::move(unpackPatterns), config)))
       return emitDefiniteFailure() << "failed to rewrite 4-bit unpacks";
 
-    // A sum's product may only have shown its bf16 operands once the
-    // patterns above settled (an extf sunk below a broadcast or shuffle
-    // changes the product's operands, not the sum the fusion is rooted at):
-    // fuse again. The products are roots too, so that the fused ones go.
+    // The patterns above can sink an extf below a broadcast or shuffle after
+    // MulAddToFMA last visited the add that uses the product, so run it once
+    // more. Products are roots too, so a product it fuses is erased.
     SmallVector<Operation *> adds;
     target->walk([&](Operation *op) {
       if (isa<arith::AddFOp, arith::MulFOp>(op))
