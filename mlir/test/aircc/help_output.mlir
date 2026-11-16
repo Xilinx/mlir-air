@@ -17,4 +17,5 @@
 // CHECK-DAG: --omit-ping-pong-transform
 // CHECK-DAG: --omit-while-true-loop
 // CHECK-DAG: --trace-size
+// CHECK-DAG: --trace-tiles
 // CHECK-DAG: --bf16-emulation

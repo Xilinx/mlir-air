@@ -10239,15 +10239,39 @@ public:
       return pressure;
     };
 
+    std::set<std::pair<int, int>> only;
+    for (StringRef spec : clTraceTiles) {
+      auto [col, row] = spec.split(':');
+      int c, r;
+      if (col.getAsInteger(10, c) || row.getAsInteger(10, r)) {
+        device.emitError("trace-tiles: expected col:row, got '") << spec << "'";
+        signalPassFailure();
+        return;
+      }
+      if (!target_model.isCoreTile(0, r)) {
+        device.emitError("trace-tiles: ") << spec << " is not a core tile";
+        signalPassFailure();
+        return;
+      }
+      only.insert({c, r});
+    }
+    // An unrolled segment's device is merged at this column.
+    int colOffset = 0;
+    if (auto ux = device->getAttrOfType<IntegerAttr>("segment_unroll_x"))
+      colOffset = ux.getInt() * target_model.columns();
+
     // Create packet flows
     for (auto srcTile : device.getOps<AIE::TileOp>()) {
       int srcColIndex = srcTile.colIndex();
       int srcRowIndex = srcTile.rowIndex();
       AIE::TileOp destTile;
+      bool listed = only.count({srcColIndex + colOffset, srcRowIndex});
+      if (!only.empty() && !listed)
+        continue;
 
       if (target_model.isCoreTile(srcColIndex, srcRowIndex) ||
           target_model.isMemTile(srcColIndex, srcRowIndex)) {
-        if (target_model.isCoreTile(srcColIndex, srcRowIndex) &&
+        if (target_model.isCoreTile(srcColIndex, srcRowIndex) && !listed &&
             southPressureAt(srcColIndex, srcRowIndex) >= southCapacity)
           continue;
         int destColIndex = srcColIndex; // todo: allocation?
