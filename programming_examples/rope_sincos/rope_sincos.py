@@ -223,7 +223,9 @@ if __name__ == "__main__":
     np.random.seed(0)
     num_tiles = args.num_heads
     inputs = np.random.randn(num_tiles, 3 * args.head_size).astype(INPUT_DATATYPE)
-    outputs = inputs.copy()
+    # Compute the reference in float32 and round once at the end: bf16 scalar
+    # arithmetic rounds each product, which cancels some outputs to exactly 0.
+    outputs = inputs.astype(np.float32)
 
     # Reference: apply rotation to Q and K, leave V unchanged
     for i in range(num_tiles):
@@ -245,6 +247,7 @@ if __name__ == "__main__":
             v1 = outputs[i][s + args.head_size + 1]
             outputs[i][s + args.head_size] = v0 * fcr - v1 * fci
             outputs[i][s + args.head_size + 1] = v0 * fci + v1 * fcr
+    outputs = outputs.astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
         runner = XRTRunner(

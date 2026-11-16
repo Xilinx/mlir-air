@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from ml_dtypes import bfloat16
 
 from common.model import DFlashModel
 from common.runtime import load_pair, load_pipeline, prepare_prompt, tokenize_prompt
@@ -22,7 +23,21 @@ def signature(generation) -> list[dict]:
     ]
 
 
-def main(model: DFlashModel) -> None:
+def kv_difference(got, want) -> float:
+    """The largest difference of two BF16 KV reads, relative to the largest
+    magnitude of want's layer (first axis)."""
+    got = np.asarray(got).view(bfloat16).astype(np.float32)
+    want = np.asarray(want).view(bfloat16).astype(np.float32)
+    scale = np.abs(want).reshape(len(want), -1).max(axis=1)
+    diff = np.abs(got - want).reshape(len(want), -1).max(axis=1)
+    return float((diff / np.maximum(scale, np.finfo(np.float32).tiny)).max())
+
+
+def main(model: DFlashModel, *, kv_tolerance=None) -> None:
+    """kv_tolerance: None requires the committed KV to be bit-exact against
+    the oracle's. A target whose rows round differently in a block than
+    alone (an MoE that sums a row's experts in an order its block sets) gives
+    the largest kv_difference allowed instead; tokens must match either way."""
     here = model.directory
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prompt", default="Introduce me what is GPU")
@@ -129,28 +144,75 @@ def main(model: DFlashModel) -> None:
         )
 
     # Fixed-length state coverage even if the model emits EOS early.
-    oracle = autoregressive(loop.target, prefill, args.tokens, eos_ids=())
-    committed = len(prefill["input_ids"]) + max(0, len(oracle.output_ids) - 1)
+    ties = []
+
+    def oracle_top(position, sample, decoder):
+        # The oracle's top two, tied when one BF16 step apart.
+        lg = np.asarray(sample.logits[0], np.float32)
+        top = np.argpartition(lg, -2)[-2:]
+        top = top[np.argsort(-lg[top], kind="stable")]
+        margin = float(lg[top[0]] - lg[top[1]])
+        step = float(np.spacing(np.abs(lg[top[0]]))) * 2**16
+        ties.append(dict(top=top.tolist(), margin=margin, tied=margin <= step))
+
+    oracle = autoregressive(
+        loop.target,
+        prefill,
+        args.tokens,
+        eos_ids=(),
+        observer=oracle_top if kv_tolerance is not None else None,
+    )
+    n = len(prefill["input_ids"])
+    committed = n + max(0, len(oracle.output_ids) - 1)
     oracle_kv = loop.target.read_kv(committed)
 
     loop.reset(prefill)
-    round_kv_checks = []
+    snapshots = []
 
     def observe(row, active):
         end = row["position"] + row["emitted"]
-        exact = np.array_equal(active.target.read_kv(end), oracle_kv[:, :, :end])
-        round_kv_checks.append(dict(committed_end=end, exact=bool(exact)))
-        assert exact, round_kv_checks[-1]
+        snapshots.append((end, active.target.read_kv(end)))
 
     first = loop.generate(args.tokens, eos_ids=(), observer=observe)
     first_kv = loop.target.read_kv(committed)
     loop.reset(prefill)
     second = loop.generate(args.tokens, eos_ids=())
-
-    assert first.output_ids == oracle.output_ids
     assert second.output_ids == first.output_ids
     assert signature(second) == signature(first)
-    assert np.array_equal(first_kv, oracle_kv)
+
+    agree = next(
+        (
+            j
+            for j, (a, b) in enumerate(zip(first.output_ids, oracle.output_ids))
+            if a != b
+        ),
+        len(oracle.output_ids),
+    )
+    divergence = None
+    if agree < len(oracle.output_ids):
+        assert kv_tolerance is not None, f"DFlash differs from its oracle at {agree}"
+        # Rounding may only choose between the oracle's tied top two.
+        divergence = dict(output=agree, **ties[agree - 1])
+        assert divergence["tied"], divergence
+        assert first.output_ids[agree] in divergence["top"], divergence
+
+    def kv_check(got, want):
+        check = dict(exact=bool(np.array_equal(got, want)))
+        if kv_tolerance is not None:
+            check["max_relative"] = kv_difference(got, want)
+        assert check["exact"] or check.get("max_relative", 1) <= kv_tolerance, check
+        return check
+
+    # A KV row depends on the outputs at or before its position.
+    limit = n + agree
+    round_kv_checks = [
+        dict(
+            committed_end=end,
+            **kv_check(kv[:, :, :limit], oracle_kv[:, :, : min(end, limit)]),
+        )
+        for end, kv in snapshots
+    ]
+    final_kv = kv_check(first_kv[:, :, :limit], oracle_kv[:, :, :limit])
     result.update(
         passed=True,
         input_tokens=len(input_ids),
@@ -160,8 +222,10 @@ def main(model: DFlashModel) -> None:
         prefill_seconds=prefill_seconds,
         cpu_prefill_seconds=prefill_seconds if args.prefill == "cpu" else None,
         dflash_repeats_exact=True,
-        same_block_oracle_output_exact=True,
-        committed_target_kv_exact=True,
+        same_block_oracle_output_exact=divergence is None,
+        oracle_divergence=divergence,
+        committed_target_kv_exact=final_kv["exact"],
+        committed_target_kv_max_relative=final_kv.get("max_relative"),
         checked_rounds=len(first.rounds),
         round_kv_checks=round_kv_checks,
     )

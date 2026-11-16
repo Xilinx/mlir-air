@@ -18,7 +18,6 @@ namespace xilinx {
 namespace air {
 
 std::unique_ptr<mlir::Pass> createAIRLoweringPass();
-std::unique_ptr<mlir::Pass> createAIRPipelineToAffinePass();
 
 } // namespace air
 } // namespace xilinx

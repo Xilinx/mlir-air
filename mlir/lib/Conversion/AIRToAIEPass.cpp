@@ -5078,7 +5078,8 @@ static void eraseIssue(air::ChannelIssueOp issue) {
 // `channel` of a shim tile, through packet `ctrlPkt` and reply `replyPkt`.
 static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
                              int channel, uint32_t bdId, uint32_t ctrlPkt,
-                             uint32_t replyPkt, Type elemType, bool reused) {
+                             uint32_t replyPkt, Type elemType, bool reused,
+                             bool token) {
   auto device = issue->getParentOfType<AIE::DeviceOp>();
   auto tile = cast<AIE::TileOp>(
       issue->getParentOfType<AIE::CoreOp>().getTile().getDefiningOp());
@@ -5208,10 +5209,12 @@ static void lowerDeviceIssue(air::ChannelIssueOp issue, DeviceIssueCore &ic,
   send({i32(hdr),
         i32(air::ctrlPacketWord(ctrlPkt, /*read=*/false, 2, bdAddr + 4)), newLo,
         newHi});
+  // Bit 31 requests a completion token; only starts the host waits for set
+  // it.
   auto push =
       send({i32(hdr),
             i32(air::ctrlPacketWord(ctrlPkt, /*read=*/false, 1, queueAddr)),
-            i32((1u << 31) | bdId)});
+            i32((token ? 1u << 31 : 0u) | bdId)});
   // The task's repeat count is only known once airrt-to-npu shapes its BD;
   // it finds the queue word's store by this tag and adds the count.
   push->setAttr("air.device_issue", issue.getIssueIdAttr());
@@ -5705,6 +5708,8 @@ public:
       // copies of its issue (an unrolled loop): they share the BD. Any other
       // second issuer would queue one never armed.
       bool reused = arm->hasAttr("air.device_issue_count");
+      auto count = arm->getAttrOfType<IntegerAttr>("air.device_issue_count");
+      bool token = !count || count.getInt() != 0;
       auto armedBd = arm->getAttrOfType<IntegerAttr>("air.device_issue_bd");
       if (armedBd && !reused)
         return issue->emitOpError(
@@ -5770,7 +5775,8 @@ public:
       lowerDeviceIssue(
           issue, ic, alloc.getChannelIndex(), bdId, it->second.first,
           it->second.second,
-          cast<MemRefType>(arm.getMemref().getType()).getElementType(), reused);
+          cast<MemRefType>(arm.getMemref().getType()).getElementType(), reused,
+          token);
 
       OpBuilder b(arm);
       arm->setAttr("air.device_issue_bd", b.getI32IntegerAttr(bdId));
@@ -8428,12 +8434,14 @@ public:
       dma_memcpys_sorted = dma_memcpys;
 
     // The chain-lock ping-pong twin alternates a buffer between two instances,
-    // so every channel moving it has to alternate too. One that chains it with
-    // other transfers in a task does not, and the buffer stays single.
+    // so every channel moving it has to alternate too. A channel that also
+    // moves other transfers, in the same task or in other tasks, runs each BD
+    // once per repeat and cannot; such a buffer stays single.
     llvm::DenseSet<Value> singleSlot;
     for (auto &[dma_chan, memcpy_ops] : dma_memcpys_sorted) {
-      for (auto &[rep, task_ops] : air::getRepeatCounts(memcpy_ops))
-        if (task_ops.size() != 1)
+      auto counts = air::getRepeatCounts(memcpy_ops);
+      for (auto &[rep, task_ops] : counts)
+        if (task_ops.size() != 1 || counts.size() != 1)
           for (Operation *op : task_ops)
             if (Value m = memtileSideMemref(op))
               singleSlot.insert(m);
@@ -10231,15 +10239,39 @@ public:
       return pressure;
     };
 
+    std::set<std::pair<int, int>> only;
+    for (StringRef spec : clTraceTiles) {
+      auto [col, row] = spec.split(':');
+      int c, r;
+      if (col.getAsInteger(10, c) || row.getAsInteger(10, r)) {
+        device.emitError("trace-tiles: expected col:row, got '") << spec << "'";
+        signalPassFailure();
+        return;
+      }
+      if (!target_model.isCoreTile(0, r)) {
+        device.emitError("trace-tiles: ") << spec << " is not a core tile";
+        signalPassFailure();
+        return;
+      }
+      only.insert({c, r});
+    }
+    // An unrolled segment's device is merged at this column.
+    int colOffset = 0;
+    if (auto ux = device->getAttrOfType<IntegerAttr>("segment_unroll_x"))
+      colOffset = ux.getInt() * target_model.columns();
+
     // Create packet flows
     for (auto srcTile : device.getOps<AIE::TileOp>()) {
       int srcColIndex = srcTile.colIndex();
       int srcRowIndex = srcTile.rowIndex();
       AIE::TileOp destTile;
+      bool listed = only.count({srcColIndex + colOffset, srcRowIndex});
+      if (!only.empty() && !listed)
+        continue;
 
       if (target_model.isCoreTile(srcColIndex, srcRowIndex) ||
           target_model.isMemTile(srcColIndex, srcRowIndex)) {
-        if (target_model.isCoreTile(srcColIndex, srcRowIndex) &&
+        if (target_model.isCoreTile(srcColIndex, srcRowIndex) && !listed &&
             southPressureAt(srcColIndex, srcRowIndex) >= southCapacity)
           continue;
         int destColIndex = srcColIndex; // todo: allocation?

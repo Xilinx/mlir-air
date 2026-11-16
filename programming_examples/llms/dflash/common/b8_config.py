@@ -150,14 +150,10 @@ def load_geometry(config, length=None):
         fd = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fd)
     assert fd.ATTN_MAXL == config.capacity
-    assert (fd.K, fd.M, fd.DK_TOT_A, fd.DH, fd.N_ATTN_CU, fd.PAIR_ROWS) == (
-        4096,
-        6144,
-        1024,
-        128,
-        4,
-        1,
-    )
+    expect = (4096, 6144, 1024, 128, 4, 1)
+    if config.role == "drafter":
+        expect = getattr(model, "DRAFT_GEOMETRY_CHECK", expect)
+    assert (fd.K, fd.M, fd.DK_TOT_A, fd.DH, fd.N_ATTN_CU, fd.PAIR_ROWS) == expect
     return fd
 
 

@@ -46,6 +46,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Inliner.h"
 #include "mlir/Transforms/InliningUtils.h"
+#include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/ScopeExit.h"
@@ -72,11 +73,14 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
     auto source_subview =
         cast<memref::SubViewOp>(op.getSource().getDefiningOp());
 
-    // FIXME: do we still need this?
-    // for (auto m : llvm::zip(source_subview.getType().getLayout(),
-    //                         op.getType().getLayout()))
-    //   if (std::get<0>(m) != std::get<1>(m))
-    //     return failure();
+    // Offsets only add, and op's strides carry over, when the source is a
+    // non-rank-reducing, unit-stride subview.
+    if (source_subview.getSourceType().getRank() !=
+        source_subview.getType().getRank())
+      return failure();
+    if (!llvm::all_of(source_subview.getStaticStrides(),
+                      [](int64_t s) { return s == 1; }))
+      return failure();
 
     auto offsets = op.getOffsets().begin();
     auto source_offsets = source_subview.getOffsets().begin();
@@ -2653,73 +2657,43 @@ static Value cloneOpAndOperands(Operation *op, Value loopIV, scf::ForOp loopOp,
     return cloned->getResult(0);
 }
 
-/// Hoist a single transfer read/write pair out of a loop. The read is cloned
-/// before the loop, the write is cloned after the loop, and an iter_arg is
-/// added to carry the accumulator value through the loop body. The write goes
-/// after `lastHoistedWrite` when that is set, so that writes hoisted one after
-/// another keep their order in the loop body; it is updated to the new write.
-/// Returns the new ForOp on success.
-static FailureOr<scf::ForOp> hoistTransferPairFromLoop(
-    vector::TransferReadOp readOp, vector::TransferWriteOp writeOp,
-    scf::ForOp loopOp, Operation *&lastHoistedWrite, RewriterBase &rewriter) {
-  Value loopIV = loopOp.getInductionVar();
-
-  // Clone the read and its operands before the loop
-  rewriter.setInsertionPoint(loopOp);
-  IRMapping readMapping;
-  Value clonedReadResult =
-      cloneOpAndOperands(readOp, loopIV, loopOp, rewriter, readMapping);
-
-  // Capture writeVector before replaceWithAdditionalYields
-  Value writeVector = writeOp.getVector();
-  auto yieldValuesFn =
-      [&](OpBuilder &b, Location loc,
-          ArrayRef<BlockArgument> newBbArgs) -> SmallVector<Value> {
-    BlockArgument readIterArg = newBbArgs.back();
-    rewriter.replaceAllUsesWith(readOp.getResult(), readIterArg);
-    SmallVector<Value> yieldValues;
-    yieldValues.push_back(writeVector);
-    return yieldValues;
-  };
-
-  FailureOr<LoopLikeOpInterface> newLoopResult =
-      cast<LoopLikeOpInterface>(loopOp.getOperation())
-          .replaceWithAdditionalYields(rewriter, ValueRange{clonedReadResult},
-                                       true, yieldValuesFn);
-  if (failed(newLoopResult))
-    return failure();
-
-  auto newLoop = cast<scf::ForOp>(newLoopResult->getOperation());
-  rewriter.eraseOp(readOp);
-
-  // Clone the write operation after the loop using the yielded value
-  Value valueToWrite = newLoop.getResults().back();
-  IRMapping writeMapping;
-  writeMapping.map(writeVector, valueToWrite);
-
-  if (lastHoistedWrite)
-    rewriter.setInsertionPointAfter(lastHoistedWrite);
-  else
-    rewriter.setInsertionPointAfter(newLoop);
-
-  for (Value index : writeOp.getIndices()) {
-    Operation *defOp = index.getDefiningOp();
-    if (!defOp || dependsOnLoopIV(index, loopIV))
+/// Find a read/write pair in the loop body that can become an iter_arg: same
+/// memref, indices and type, all operands defined outside the loop, and every
+/// other access to the memref in the loop provably disjoint from it.
+static std::optional<std::pair<vector::TransferReadOp, vector::TransferWriteOp>>
+findHoistableTransferPair(scf::ForOp loop) {
+  auto loopLike = cast<LoopLikeOpInterface>(loop.getOperation());
+  for (auto write : loop.getBody()->getOps<vector::TransferWriteOp>()) {
+    Value base = write.getBase();
+    if (!isa<MemRefType>(base.getType()) || write.getMask() ||
+        isa_and_present<ViewLikeOpInterface>(base.getDefiningOp()) ||
+        llvm::any_of(base.getUsers(), llvm::IsaPred<ViewLikeOpInterface>))
       continue;
-    if (!newLoop->isProperAncestor(defOp))
+    if (!llvm::all_of(write.getIndices(), [&](Value v) {
+          return loopLike.isDefinedOutsideOfLoop(v);
+        }))
       continue;
-    if (!writeMapping.contains(index)) {
-      Value clonedIndex =
-          cloneOpAndOperands(defOp, loopIV, newLoop, rewriter, writeMapping);
-      if (clonedIndex)
-        writeMapping.map(index, clonedIndex);
+    for (auto read : loop.getBody()->getOps<vector::TransferReadOp>()) {
+      if (read.getBase() != base || read.getMask() ||
+          read.getIndices() != write.getIndices() ||
+          read.getVectorType() != write.getVectorType() ||
+          read.getPermutationMap() != write.getPermutationMap() ||
+          !read->isBeforeInBlock(write) ||
+          !loopLike.isDefinedOutsideOfLoop(read.getPadding()))
+        continue;
+      bool disjoint = llvm::all_of(base.getUsers(), [&](Operation *user) {
+        if (user == read || user == write || !loop->isAncestor(user))
+          return true;
+        auto other = dyn_cast<VectorTransferOpInterface>(user);
+        return other && vector::isDisjointTransferSet(
+                            cast<VectorTransferOpInterface>(*write), other,
+                            /*testDynamicValueUsingBounds=*/true);
+      });
+      if (disjoint)
+        return std::make_pair(read, write);
     }
   }
-
-  lastHoistedWrite = rewriter.clone(*writeOp.getOperation(), writeMapping);
-  rewriter.eraseOp(writeOp);
-
-  return newLoop;
+  return std::nullopt;
 }
 
 DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
@@ -2746,78 +2720,55 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
     return emitDefiniteFailure() << "loop must be inside the scope operation";
   }
 
-  // Iteratively discover and hoist one loop-invariant transfer pair at a time.
-  // After each hoist, the loop is replaced with a new loop, so we re-discover
-  // pairs in the new loop to avoid stale Operation* pointers.
-  scf::ForOp currentLoop = loopOp;
-  Operation *lastHoistedWrite = nullptr;
-
-  while (true) {
-    Value loopIV = currentLoop.getInductionVar();
-
-    // Find one loop-invariant write and its paired read
-    vector::TransferWriteOp foundWrite = nullptr;
-    vector::TransferReadOp foundRead = nullptr;
-
-    currentLoop->walk([&](vector::TransferWriteOp writeOp) {
-      if (foundWrite)
-        return;
-      if (writeOp->getParentOfType<scf::ForOp>() != currentLoop)
-        return;
-
-      // Check all write indices are loop-invariant
-      bool allInvariant = true;
-      for (Value index : writeOp.getIndices()) {
-        if (dependsOnLoopIV(index, loopIV)) {
-          allInvariant = false;
-          break;
-        }
-      }
-      if (!allInvariant)
-        return;
-
-      // Find paired read with same memref and matching loop-invariant indices
-      currentLoop->walk([&](vector::TransferReadOp readOp) {
-        if (foundRead)
-          return;
-        if (readOp->getParentOfType<scf::ForOp>() != currentLoop)
-          return;
-        if (readOp.getBase() != writeOp.getBase())
-          return;
-
-        for (Value index : readOp.getIndices()) {
-          if (dependsOnLoopIV(index, loopIV))
-            return;
-        }
-
-        if (readOp.getIndices().size() != writeOp.getIndices().size())
-          return;
-        for (auto [ri, wi] :
-             llvm::zip(readOp.getIndices(), writeOp.getIndices())) {
-          if (!areEquivalentIndices(ri, wi))
-            return;
-        }
-
-        foundRead = readOp;
-      });
-
-      if (foundRead)
-        foundWrite = writeOp;
+  // Matching pairs must share index values. Only index ops are merged: later
+  // transform steps match the remaining body ops by count.
+  SmallVector<affine::AffineApplyOp> applies;
+  for (auto apply : llvm::make_early_inc_range(
+           loopOp.getBody()->getOps<affine::AffineApplyOp>())) {
+    auto it = llvm::find_if(applies, [&](affine::AffineApplyOp prev) {
+      return OperationEquivalence::isEquivalentTo(
+          prev, apply, OperationEquivalence::IgnoreLocations);
     });
-
-    if (!foundWrite || !foundRead)
-      break; // No more pairs to hoist
-
-    FailureOr<scf::ForOp> newLoop = hoistTransferPairFromLoop(
-        foundRead, foundWrite, currentLoop, lastHoistedWrite, rewriter);
-    if (failed(newLoop)) {
-      return emitDefiniteFailure() << "failed to hoist transfer pair";
+    if (it == applies.end()) {
+      applies.push_back(apply);
+      continue;
     }
-    currentLoop = *newLoop;
+    rewriter.replaceOp(apply, it->getResult());
   }
 
-  SmallVector<Operation *> resultOps = {currentLoop.getOperation()};
-  results.set(llvm::cast<OpResult>(getResult()), resultOps);
+  moveLoopInvariantCode(cast<LoopLikeOpInterface>(loopOp.getOperation()));
+
+  scf::ForOp newLoop = loopOp;
+  Operation *lastWrite = nullptr;
+  while (auto pair = findHoistableTransferPair(newLoop)) {
+    vector::TransferReadOp read = pair->first;
+    vector::TransferWriteOp write = pair->second;
+    rewriter.moveOpBefore(read, newLoop);
+    // Keep the hoisted writes in loop-body order.
+    if (lastWrite)
+      rewriter.moveOpAfter(write, lastWrite);
+    else
+      rewriter.moveOpAfter(write, newLoop);
+    lastWrite = write;
+
+    NewYieldValuesFn yieldFn = [&](OpBuilder &, Location,
+                                   ArrayRef<BlockArgument>) {
+      return SmallVector<Value>{write.getVector()};
+    };
+    FailureOr<LoopLikeOpInterface> replaced =
+        cast<LoopLikeOpInterface>(newLoop.getOperation())
+            .replaceWithAdditionalYields(rewriter, read.getVector(),
+                                         /*replaceInitOperandUsesInLoop=*/true,
+                                         yieldFn);
+    if (failed(replaced))
+      return emitDefiniteFailure() << "failed to hoist transfer pair";
+    newLoop = cast<scf::ForOp>(replaced->getOperation());
+    rewriter.modifyOpInPlace(write, [&] {
+      write.getValueToStoreMutable().assign(newLoop.getResults().back());
+    });
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), {newLoop.getOperation()});
   return DiagnosedSilenceableFailure::success();
 }
 
@@ -5690,6 +5641,17 @@ static bool areIdenticalReads(vector::TransferReadOp read1,
   if (vec1Ty != vec2Ty)
     return false;
 
+  if (read1.getPermutationMap() != read2.getPermutationMap() ||
+      read1.getInBoundsAttr() != read2.getInBoundsAttr() ||
+      read1.getMask() != read2.getMask())
+    return false;
+
+  Attribute pad1, pad2;
+  if (read1.getPadding() != read2.getPadding() &&
+      !(matchPattern(read1.getPadding(), m_Constant(&pad1)) &&
+        matchPattern(read2.getPadding(), m_Constant(&pad2)) && pad1 == pad2))
+    return false;
+
   return true;
 }
 
@@ -5711,14 +5673,10 @@ static bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
   for (auto it = ++firstIt; it != secondIt; ++it) {
     Operation *op = &(*it);
 
-    // Check if this operation writes to the source memref
+    // Ops without declared effects (calls, ops with regions) may write.
     auto memInterface = dyn_cast_if_present<MemoryEffectOpInterface>(op);
-    if (!memInterface) {
-      // Conservative: if we can't determine effects, assume it might write
-      if (!op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
-        continue;
+    if (!memInterface)
       return true;
-    }
 
     SmallVector<MemoryEffects::EffectInstance> effects;
     memInterface.getEffects(effects);
@@ -7729,6 +7687,81 @@ void transform::CoalesceSlicesOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   onlyReadsHandle(getTargetMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
+// SinkOperandProducersOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::SinkOperandProducersOp::apply(transform::TransformRewriter &rewriter,
+                                         transform::TransformResults &results,
+                                         transform::TransformState &state) {
+  for (Operation *target : state.getPayloadOps(getTarget()))
+    for (int64_t i : getOperandIndices())
+      if (i < 0 || i >= target->getNumOperands())
+        return emitSilenceableError()
+               << "operand " << i << " out of range for " << target->getName();
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    Block *block = target->getBlock();
+    // The ops of the block that the listed operands depend on.
+    llvm::SetVector<Operation *> deps;
+    SmallVector<Value> work;
+    for (int64_t i : getOperandIndices())
+      work.push_back(target->getOperand(i));
+    while (!work.empty()) {
+      Operation *def = work.pop_back_val().getDefiningOp();
+      if (!def || def->getBlock() != block || !deps.insert(def))
+        continue;
+      llvm::append_range(work, def->getOperands());
+      SetVector<Value> captured;
+      getUsedValuesDefinedAbove(def->getRegions(), captured);
+      llvm::append_range(work, captured);
+    }
+    // Keep in place the ops that may not move, and the ops they use, which
+    // must stay before them.
+    llvm::SetVector<Operation *> kept;
+    auto keep = [&](Operation *op) {
+      SmallVector<Operation *> stack = {op};
+      while (!stack.empty()) {
+        Operation *o = stack.pop_back_val();
+        if (!kept.insert(o))
+          continue;
+        for (Operation *d : deps)
+          if (!kept.contains(d) &&
+              llvm::any_of(d->getUsers(), [&](Operation *u) {
+                return block->findAncestorOpInBlock(*u) == o;
+              }))
+            stack.push_back(d);
+      }
+    };
+    for (Operation *op : deps) {
+      bool otherUse = llvm::any_of(op->getUsers(), [&](Operation *u) {
+        Operation *a = block->findAncestorOpInBlock(*u);
+        return a != target && !deps.contains(a);
+      });
+      if (otherUse || !isMemoryEffectFree(op))
+        keep(op);
+    }
+    // The rest are used only by each other and the target, and use only
+    // values defined before them, so they may move in order.
+    SmallVector<Operation *> moved;
+    for (Operation *op : deps)
+      if (!kept.contains(op))
+        moved.push_back(op);
+    llvm::sort(moved, [](Operation *a, Operation *b) {
+      return a->isBeforeInBlock(b);
+    });
+    for (Operation *op : moved)
+      rewriter.moveOpBefore(op, target);
+  }
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform::SinkOperandProducersOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  onlyReadsHandle(getTargetMutable(), effects);
   modifiesPayload(effects);
 }
 

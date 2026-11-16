@@ -15,7 +15,8 @@ vision tower and the multi-token-prediction head are out of scope.
 
 - **prefill** on the shared fused prefill device
   ([`shared/fused_prefill`](../shared/fused_prefill)), as Qwen3.6-35B-A3B's
-  prefill runs: every projection a GEMM op reading the bundle's Q4_K blocks,
+  prefill runs: every projection a GEMM op reading the bundle's Q4_K blocks (in the
+  device's layout of them, `hostops.q4k_prefill`),
   the full-attention layers' attention on the device, the Gated DeltaNet scan,
   the norms and the GLU on the host.
 - **decode**: **one NPU dispatch per token for the 64 layers**, then a second
@@ -62,7 +63,7 @@ the output gate and the GLU. The prefill keeps its own copy of the weights.
 
 ## Decode placement
 
-`decode.py`, one launch repeated once per four layers:
+`qwen38_27b_q4nx_decode.py`, one launch repeated once per four layers:
 
 | Columns | Role |
 | --- | --- |
@@ -110,13 +111,14 @@ the same bundle and machine (`flm bench`, mean TTFT):
 
 | prompt | TTFT | tok/s | FLM TTFT |
 | --- | --- | --- | --- |
-| 128 | 1.43 s | 90 | |
-| 512 | 3.26 s | 157 | |
-| 1024 | 6.43 s | 159 | 9.19 s |
-| 2048 | 12.94 s | 158 | 16.93 s |
-| 4096 | 26.28 s | 156 | 32.82 s |
+| 128 | 0.92 s | 139 | |
+| 512 | 2.39 s | 215 | |
+| 1024 | 4.62 s | 222 | 9.19 s |
+| 2048 | 9.29 s | 221 | 16.93 s |
+| 4096 | 18.91 s | 217 | 32.82 s |
 
-Decode, the 64-layer dispatch and the LM head's timed separately:
+Decode, the 64-layer dispatch and the LM head's timed separately, each build
+reading back the whole cache it holds:
 
 | context | layers | LM head | per token |
 | --- | --- | --- | --- |
@@ -127,9 +129,16 @@ Decode, the 64-layer dispatch and the LM head's timed separately:
 | 65536 | 671 ms | 25 ms | 696 ms (1.44 tok/s) |
 
 At short contexts that is about 53 GB/s of weights, the NPU's DDR read rate on
-this machine; every attention layer reads its whole KV cache, which the longer
+this machine; every attention layer reads the KV cache back, which the longer
 contexts add. A 64k build's KV cache (4.3 GB) is past 4 GB: its rows land where
 they belong. At 128k aircc fails in its wrap-and-stride canonicalization.
+
+A layers' ELF reads a fixed number of cache positions back, so a build for a
+long context is as slow at every context unless it also has ELFs that read
+less: `--reads` (`READS` in the Makefile) adds one per entry over the same
+buffers, and each token runs the one with the fewest that covers its context.
+A 32k build with `READS=1024,8192` takes 297.8 / 339.4 / 491.0 ms a token at
+1k / 8k / 32k, as builds for those contexts do.
 
 Against FastFlowLM 1.0.11 on the same bundle and machine (`flm bench
 qwen3.8-mtp:27b -i bench_4k.json --bench-iterations 3`, mean decode tok/s; FLM
@@ -141,13 +150,60 @@ without speculation is `FLM_DISABLE_SPECULATION=1`):
 | 2048 | | 0.24 | 1.65 |
 | 4096 | 3.17 | 0.25 | 1.66 |
 
+## Speculative decode (MTP)
+
+`qwen38_27b_q4nx_spec.py` decodes greedily with the model's multi-token
+prediction head drafting one token ahead (k = 1), as FastFlowLM's
+`qwen3.8-mtp` does. Each step:
+
+1. **Verify** (`qwen38_27b_q4nx_verify.py`). The pending token and the draft
+   go through the 64 layers in one two-token pass, each weight block read
+   once for both (`kernels/q4k_mvm2.cc`, `mlp_block2.py`). The LM head then
+   runs on both rows (`lm_head.py`, rows=2, 25 ms, as one row's).
+2. **Keep or reject.**
+   - If the model's token after the pending one is the draft, both are kept
+     and the token after the draft comes free.
+   - Otherwise only the pending token is kept. Its Gated DeltaNet states
+     (written by the step cores after token 0) and the conv caches rebuilt
+     on the host replace the step's.
+3. **Draft** (`mtp_draft.py`). The head runs on each kept position: fc over
+   the normed embedding and the normed main-model output, then one gated
+   attention layer with its own KV cache, on the attention layer's tile map.
+   The LM head over the vocabulary's first 65536 rows, with the head's norm,
+   drafts the next token.
+
+The verify ELF holds one wave of four layers and runs once per wave, all 16
+runs queued at once. A launch repeated per wave does not route: with the
+volumes a wave loop leaves unknown, aiecc's router keeps more packet flows
+apart than the links hold.
+
+The tokens are the plain decode's, bit for bit (`make spec` checks it): the
+two-token pass computes each token exactly as the decode does.
+`attn_kv_blk_z` (`../qwen36_35b_a3b_q4nx/kernels/attn_kv_q36.cc`) makes that
+so. The attention's probabilities x V runs in BFP16, whose blocks of 8 keys
+share an exponent, so a masked key's value still changed the others'
+rounding: the verify's token 0 depended on the draft, and every decode on its
+cache's stale rows. The masked values are now zeroed first. On the prompt the head runs over the last 128 rows only, its
+attention windowed above them, so drafting adds about 0.8 s to the TTFT.
+
+Fused prefill, then greedy decode; plain decode tok/s from the table above:
+
+| prompt | tokens | drafts kept | tok/s | plain decode |
+| --- | --- | --- | --- | --- |
+| a 40-token instruction (prose) | 96 | 76% | 4.63 | 3.39 |
+| `docs/AIRRunner.md` (1295 tokens) | 64 | 75% | 4.46 | 3.37 |
+
+A step costs about 375 ms: the verify 330 ms (342 ms at a 1376-token build),
+the two LM heads 25.5 and 7.3 ms, the head 6 ms per kept token. FastFlowLM
+1.0.11 with its MTP drafts decodes at 1.2-1.7 tok/s on this machine.
+
 ## Prerequisites
 
 - NPU2 (Strix / AIE2P) + XRT, a Peano (llvm-aie) install
 - `source utils/env_setup.sh` (see the repo README), `HF_HOME` for the Hub
 - `pip install -r requirements.txt`
-- About 31 GB of host memory pinned for the weights: the decode's 16 GB and the
-  prefill's own 15 GB copy
+- About 32 GB of host memory pinned for the weights: the decode's 16 GB and the
+  prefill's own copy, laid out for its dequant (about 16 GB)
 
 ## Usage
 
@@ -155,10 +211,14 @@ without speculation is `FLM_DISABLE_SPECULATION=1`):
 make compile                 # the decode and LM head ELFs
 make compile-fused-prefill   # the fused prefill device (also built on demand)
 make run                     # prefill + greedy decode of PROMPT against the CPU reference
+make run MAXL=32768 READS=1024,8192   # a long-context build, fast at short contexts
 make prefill-fused           # the fused prefill of a LONG_LEN-token prompt vs the reference
 make verify                  # each stage, prefill, decode, HF check, top-5 gate
 make profile                 # TTFT and decode tok/s, no reference
 make profile-prefill CTX=2048   # TTFT of a CTX-token prompt
 make profile-decode CONTEXTS=1024,8192   # decode tok/s per context
 make kernels                 # the kernel tests
+make spec                    # speculative decode of PROMPT, checked against the plain decode
+make profile-spec            # its tok/s, draft acceptance and step times
+make verify-spec             # its stages, then make spec
 ```

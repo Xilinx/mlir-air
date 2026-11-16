@@ -826,6 +826,12 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
                usedBesidesHerd(v, outerMostLoop) && mayWaitForChannel(v);
       }))
     return failure();
+  // Only async tokens are carried through the hoisted nest; check before
+  // anything is changed.
+  if (llvm::any_of(outerMostLoop.getInitArgs(), [](Value v) {
+        return !isa<air::AsyncTokenType>(v.getType());
+      }))
+    return failure();
 
   // Create new herd op as parent to the scf.for loop nest.
   builder.setInsertionPoint(outerMostLoop);
@@ -872,12 +878,6 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   // Replace uses of tokens in for loop nest with air.wait_all located at the
   // start of air.herd body.
   for (auto val : forRegionIterOperands) {
-    if (!isa<air::AsyncTokenType>(val.getType())) {
-      outerMostLoop->emitOpError(
-          "loop op's iter_args contain non-async-token-type block arguments, "
-          "NYI.");
-      return failure();
-    }
     auto newAsyncToken =
         air::WaitAllOp::create(builder, loc, air::AsyncTokenType::get(ctx),
                                SmallVector<Value>{})
@@ -1216,35 +1216,25 @@ struct HoistAIRHerdsToSharedRegionPattern
                                 PatternRewriter &rewriter) const override {
     // The herds of one name anywhere in the herd's segment (or other
     // isolated-from-above parent), not only next to it: a herd in a loop
-    // nested deeper than its siblings is found from either.
+    // nested deeper than its siblings is found from either. When those share
+    // no region to hoist to (herds of the name in sibling loops), the herds
+    // of the name in the herd's own region.
     auto *isolated = herdOp->getParentWithTrait<OpTrait::IsIsolatedFromAbove>();
-    auto symName = herdOp.getSymName();
     SmallVector<Operation *> herdsWithSameName;
-    for (Region &parentRegion : isolated->getRegions())
-      parentRegion.walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
-          [symName, &herdsWithSameName](air::HerdOp herd) {
-            if (herd.getSymName() != symName)
-              return WalkResult::skip();
-            herdsWithSameName.push_back(herd.getOperation());
-            return WalkResult::advance();
-          });
+    for (Region &r : isolated->getRegions())
+      collectHerdsNamed(r, herdOp.getSymName(), herdsWithSameName);
+    Region *region = hoistRegion(herdsWithSameName);
+    if (!region) {
+      herdsWithSameName.clear();
+      collectHerdsNamed(*herdOp->getParentRegion(), herdOp.getSymName(),
+                        herdsWithSameName);
+      region = hoistRegion(herdsWithSameName);
+      if (!region)
+        return failure();
+    }
     if (herdOp != herdsWithSameName.back())
       return failure(); // Apply pattern at the last herd
 
-    // Get the innermost region that is ancestor to all herds sharing the same
-    // name
-    Region *region = air::findCommonRegionContainingAllAncestors(
-        herdsWithSameName,
-        herdsWithSameName.front()
-            ->getParentWithTrait<OpTrait::IsIsolatedFromAbove>());
-    if (!region)
-      return failure();
-    // If none of the herds are directly contained in region, then abort herd
-    // hoisting; otherwise the loop hoisting breaks the IR functionality.
-    if (llvm::none_of(herdsWithSameName, [region](Operation *h) {
-          return h->getParentRegion() == region;
-        }))
-      return failure();
     // If only one herd uses the same symname, then hoist it all the way to the
     // body of any parent op with trait "IsolatedFromAbove".
     if (herdsWithSameName.size() == 1)
@@ -1272,6 +1262,32 @@ struct HoistAIRHerdsToSharedRegionPattern
   }
 
 private:
+  // The herds named `symName` in `root`, in order.
+  static void collectHerdsNamed(Region &root, std::optional<StringRef> symName,
+                                SmallVector<Operation *> &herds) {
+    root.walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+        [&](air::HerdOp herd) {
+          if (herd.getSymName() != symName)
+            return WalkResult::skip();
+          herds.push_back(herd.getOperation());
+          return WalkResult::advance();
+        });
+  }
+
+  // The innermost region holding all of `herds`, if one of them is directly
+  // in it; else null (hoisting would break the IR).
+  static Region *hoistRegion(SmallVector<Operation *> herds) {
+    if (herds.empty())
+      return nullptr;
+    Region *region = air::findCommonRegionContainingAllAncestors(
+        herds,
+        herds.front()->getParentWithTrait<OpTrait::IsIsolatedFromAbove>());
+    if (!region || llvm::none_of(herds, [region](Operation *h) {
+          return h->getParentRegion() == region;
+        }))
+      return nullptr;
+    return region;
+  }
 };
 
 struct ConstructPingPongDependencyPattern
@@ -5216,13 +5232,14 @@ public:
   AIRVerifyChannelFifoOrder() = default;
 
   void runOnOperation() override {
+    // Each token a later endpoint must follow, with the endpoint it stands
+    // for.
     struct Slot {
       air::ChannelEndpointKey key;
-      Value token;
+      SmallVector<std::pair<Value, Operation *>, 2> tokens;
       SmallVector<std::pair<Operation *, unsigned>> guards;
-      Operation *op;
     };
-    llvm::DenseMap<Block *, SmallVector<Slot>> lastSeen;
+    llvm::DenseMap<Block *, SmallVector<Slot, 1>> lastSeen;
     bool failed = false;
 
     getOperation().walk([&](air::ChannelInterface chan) {
@@ -5245,16 +5262,20 @@ public:
       };
 
       for (auto &level : chain) {
+        if (level.viaLoop)
+          break;
         Slot *slot = findSlot(level);
         if (!slot)
           continue;
-        llvm::SmallPtrSet<Operation *, 16> visited;
-        if (!asyncDependsOnValue(chan.getOperation(), slot->token, visited)) {
+        for (auto [token, earlier] : slot->tokens) {
+          llvm::SmallPtrSet<Operation *, 16> visited;
+          if (asyncDependsOnValue(chan.getOperation(), token, visited))
+            continue;
           failed = true;
           InFlightDiagnostic diag = chan->emitOpError()
                                     << "addresses the same channel slot as an "
                                        "earlier op but is not ordered after it";
-          diag.attachNote(slot->op->getLoc())
+          diag.attachNote(earlier->getLoc())
               << "earlier op addressing the same slot";
           diag.attachNote()
               << "ops on one channel share a FIFO and must be totally ordered; "
@@ -5266,12 +5287,13 @@ public:
 
       for (auto &level : chain) {
         if (Slot *slot = findSlot(level)) {
-          slot->token = level.token;
-          slot->op = chan.getOperation();
+          if (!level.viaLoop)
+            slot->tokens.clear();
+          slot->tokens.push_back({level.token, chan.getOperation()});
           continue;
         }
         lastSeen[level.block].push_back(
-            {key, level.token, level.guards, chan.getOperation()});
+            {key, {{level.token, chan.getOperation()}}, level.guards});
       }
     });
 
@@ -7775,17 +7797,16 @@ private:
               // suggesting pipelining pattern. Will be handelled by
               // -air-unroll-loop-for-pipelining-pattern instead.
     SmallVector<Operation *> candidate_ops;
+    // The split keeps only the ops it partitions and erases the loop, so an
+    // op with effects but no token would be dropped: such an op is fine only
+    // when the loop is left whole.
+    bool untokenedEffects = false;
     for (auto &o : for_op.getBody()->getOperations()) {
       // Get for_op's immediate child op
       if (!isAsyncOp(&o)) {
-        // The split keeps only the ops it partitions and erases the loop, so
-        // an op it cannot place -- one with effects but no token, such as an
-        // scf.if around a class of waves' transfers -- would be dropped.
         if (!o.hasTrait<OpTrait::IsTerminator>() && !air::isPure(&o) &&
-            !isa<memref::AllocOp, memref::DeallocOp, air::WaitAllOp>(o)) {
-          target_ops_sets.clear();
-          return;
-        }
+            !isa<memref::AllocOp, memref::DeallocOp, air::WaitAllOp>(o))
+          untokenedEffects = true;
         continue; // This pass requires an async IR.
       }
 
@@ -7991,6 +8012,10 @@ private:
         depGraph[source].push_back(sink);
     // Partition the graph.
     target_ops_sets = partitionGraph(depGraph);
+    if (untokenedEffects && target_ops_sets.size() > 1) {
+      target_ops_sets.clear();
+      return;
+    }
     // Sort ops in each partition based on their order in block.
     auto sortSetVectorByOpOrder = [](llvm::SetVector<Operation *> &setVec) {
       SmallVector<Operation *> sortedVec = setVec.takeVector();
@@ -8777,23 +8802,6 @@ private:
   }
 };
 
-// Get all users to the async op's async token, with type T.
-template <typename T>
-SmallVector<T> getTokenUsersOfType(air::AsyncOpInterface asyncOp) {
-  SmallVector<T> tokenUsers;
-  Value token = asyncOp.getAsyncToken();
-  for (auto token_user : token.getUsers()) {
-    if (auto token_user_of_type = dyn_cast_if_present<T>(token_user))
-      tokenUsers.push_back(token_user_of_type);
-    else if (auto token_user_wait_all =
-                 dyn_cast_if_present<air::WaitAllOp>(token_user))
-      for (auto wa_user : token_user_wait_all.getAsyncToken().getUsers())
-        if (auto token_user_of_type = dyn_cast_if_present<T>(wa_user))
-          tokenUsers.push_back(token_user_of_type);
-  }
-  return tokenUsers;
-}
-
 // Scf.for loop tiling. This simple tiling implementation generates a new
 // inner scf.for loop which starts from the original loop's lower bound. It
 // may change the meaning of the original scf.for loop, therefore it requires
@@ -9342,20 +9350,6 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
   return success();
 }
 
-struct AIRFuncLoopFusionPattern : public OpRewritePattern<func::FuncOp> {
-  using OpRewritePattern<func::FuncOp>::OpRewritePattern;
-
-  AIRFuncLoopFusionPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
-
-  LogicalResult matchAndRewrite(func::FuncOp op,
-                                PatternRewriter &rewriter) const override {
-    return fuseLoopsInRegion(&op.getRegion(), rewriter,
-                             /*fuseWithAllocDeallocs*/ false, /*maxDepth*/ -1);
-  }
-
-private:
-};
-
 struct AIRLaunchLoopFusionPattern : public OpRewritePattern<air::LaunchOp> {
   using OpRewritePattern<air::LaunchOp>::OpRewritePattern;
 
@@ -9667,6 +9661,62 @@ static scf::IndexSwitchOp restoreIndexSwitchDrainToken(scf::IndexSwitchOp sw,
   return newSw;
 }
 
+// The same for a launch-scope scf.if: a branch on the launch's iteration (a
+// launch whose waves run one of two kinds of feeds, e.g. air.api's ops.branch)
+// loses its token result to the same canonicalize, and a drain in it is then
+// never awaited -- its BD is not released and the dispatch can finish before
+// the drain does. Rebuild it with a trailing !air.async.token result, each
+// branch yielding a wait_all over its dangling tokens; a missing else yields
+// an empty wait_all.
+static scf::IfOp restoreIfDrainToken(scf::IfOp ifOp, OpBuilder &b) {
+  auto tokTy = air::AsyncTokenType::get(ifOp.getContext());
+  if (ifOp.getNumResults() &&
+      isa<air::AsyncTokenType>(
+          ifOp.getResult(ifOp.getNumResults() - 1).getType()))
+    return ifOp;
+  auto dangling = [](Block *blk) {
+    SmallVector<Value> tokens;
+    if (!blk)
+      return tokens;
+    for (Operation &o : blk->without_terminator())
+      for (Value res : o.getResults())
+        if (isa<air::AsyncTokenType>(res.getType()) && res.use_empty())
+          tokens.push_back(res);
+    return tokens;
+  };
+  if (dangling(ifOp.thenBlock()).empty() && dangling(ifOp.elseBlock()).empty())
+    return ifOp;
+
+  SmallVector<Type> resTys(ifOp.getResultTypes());
+  resTys.push_back(tokTy);
+  b.setInsertionPoint(ifOp);
+  auto newIf = scf::IfOp::create(b, ifOp.getLoc(), resTys, ifOp.getCondition(),
+                                 /*withElseRegion=*/true);
+  if (auto attr =
+          ifOp->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+    newIf->setAttr(SymbolTable::getSymbolAttrName(), attr);
+  for (auto [oldBlk, newBlk] :
+       {std::pair{ifOp.thenBlock(), newIf.thenBlock()},
+        std::pair{ifOp.elseBlock(), newIf.elseBlock()}}) {
+    SmallVector<Value> yieldVals;
+    if (oldBlk) {
+      auto y = cast<scf::YieldOp>(oldBlk->getTerminator());
+      yieldVals.append(y.getOperands().begin(), y.getOperands().end());
+      newBlk->getOperations().splice(newBlk->end(), oldBlk->getOperations(),
+                                     oldBlk->begin(), Block::iterator(y));
+    }
+    SmallVector<Value> tokens = dangling(newBlk);
+    b.setInsertionPointToEnd(newBlk);
+    auto wa = air::WaitAllOp::create(b, ifOp.getLoc(), tokTy, tokens);
+    yieldVals.push_back(wa.getResult(0));
+    scf::YieldOp::create(b, ifOp.getLoc(), yieldVals);
+  }
+  for (auto [o, n] : llvm::zip(ifOp.getResults(), newIf.getResults()))
+    o.replaceAllUsesWith(n);
+  ifOp.erase();
+  return newIf;
+}
+
 // Channel declarations whose data reaches a herd that also consumes a
 // broadcast channel.
 //
@@ -9878,18 +9928,25 @@ public:
     }
 
     // Re-establish drain tokens on any sync launch-scope scf.index_switch
-    // (mode-select host feeds) before the launch is serialized into scf.for, so
-    // AIRLaunchToScfForPattern's generateWaitAllToTerminateBlock threads the
-    // switch's branch-feed tokens into the loop-carried drain / air.launch_end.
+    // (mode-select host feeds) or scf.if before the launch is serialized into
+    // scf.for, so AIRLaunchToScfForPattern's generateWaitAllToTerminateBlock
+    // threads the branch-feed tokens into the loop-carried drain /
+    // air.launch_end.
     {
       OpBuilder b(ctx);
       SmallVector<scf::IndexSwitchOp> switchesToFix;
+      SmallVector<scf::IfOp> ifsToFix;
       func.walk([&](air::LaunchOp launch) {
-        for (auto sw : launch.getBody().front().getOps<scf::IndexSwitchOp>())
+        Block &body = launch.getBody().front();
+        for (auto sw : body.getOps<scf::IndexSwitchOp>())
           switchesToFix.push_back(sw);
+        for (auto ifOp : body.getOps<scf::IfOp>())
+          ifsToFix.push_back(ifOp);
       });
       for (auto sw : switchesToFix)
         restoreIndexSwitchDrainToken(sw, b);
+      for (auto ifOp : ifsToFix)
+        restoreIfDrainToken(ifOp, b);
     }
 
     // Convert air.launch to scf.for.
@@ -11691,11 +11748,6 @@ std::unique_ptr<Pass> createAIRShrinkMemrefSizesByAccess() {
   return std::make_unique<AIRShrinkMemrefSizesByAccess>();
 }
 
-void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
-  MLIRContext *ctx = patterns.getContext();
-  patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
-}
-
 // Fold affine.apply operations on loop induction variables into the loop
 // bounds. Returns success if any transformation was applied.
 FailureOr<scf::ForOp> foldAffineApplyIntoLoopBounds(scf::ForOp forOp,
@@ -11741,13 +11793,6 @@ void applyAIRSpecializeChannelWrapAndStridePattern(
   (void)AIRSpecializeChannelWrapAndStrideImpl(
       region, limits, enableForLoopUnrolling, enableRepeatAtHighestDim,
       skipZeroStride);
-}
-
-void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {
-  MLIRContext *ctx = patterns.getContext();
-  patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar, UnrollScfParallel,
-                  AIRSegmentLoopFusionPattern, AIRLaunchLoopFusionPattern,
-                  AIRFuncLoopFusionPattern>(ctx);
 }
 
 void applyAIRIsolateAsyncDmaLoopNestsPattern(Region *region) {
