@@ -2653,6 +2653,58 @@ static bool memcpyAccessPatternNeedsRewrite(Value memref,
          isVolumeEqualToMemrefVolume(sizes, memrefTy);
 }
 
+// Rewrite `offsets` (in the coordinates of a view chain's source, one per dim
+// of the access pattern) into units of `strides` (the pattern's strides, the
+// source's layout strides times `steps`). For a dim of step s and a constant
+// offset o: o / s, with (o mod s) times the source stride carried into the dim
+// of stride 1. An offset that cannot be placed so (dynamic, or no dim of
+// stride 1) becomes a leading unit dim with the source stride, appended to
+// `leadOffsets`/`leadStrides`. Fails for a dynamic step or stride.
+static LogicalResult
+scaleOffsetsBySteps(PatternRewriter &rewriter, Location loc,
+                    SmallVectorImpl<Value> &offsets, ArrayRef<Value> steps,
+                    ArrayRef<Value> strides,
+                    SmallVectorImpl<Value> &leadOffsets,
+                    SmallVectorImpl<int64_t> &leadStrides) {
+  if (offsets.size() != steps.size() || offsets.size() != strides.size())
+    return failure();
+  auto cst = [&](int64_t v) {
+    return getValueOrCreateConstantIndexOp(rewriter, loc,
+                                           rewriter.getIndexAttr(v));
+  };
+  int64_t carry = 0;
+  for (unsigned i = 0; i < offsets.size(); ++i) {
+    if (isConstantIntValue(steps[i], 1) || isConstantIntValue(offsets[i], 0))
+      continue;
+    auto step = getConstantIntValue(steps[i]);
+    auto stride = getConstantIntValue(strides[i]);
+    if (!step || !stride || *step <= 0 || *stride % *step)
+      return failure();
+    int64_t srcStride = *stride / *step;
+    if (auto off = getConstantIntValue(offsets[i])) {
+      offsets[i] = cst(*off / *step);
+      carry += (*off % *step) * srcStride;
+      continue;
+    }
+    leadOffsets.push_back(offsets[i]);
+    leadStrides.push_back(srcStride);
+    offsets[i] = cst(0);
+  }
+  if (carry == 0)
+    return success();
+  for (unsigned i = 0; i < offsets.size(); ++i) {
+    if (!isConstantIntValue(strides[i], 1))
+      continue;
+    if (auto off = getConstantIntValue(offsets[i])) {
+      offsets[i] = cst(*off + carry);
+      return success();
+    }
+  }
+  leadOffsets.push_back(cst(carry));
+  leadStrides.push_back(1);
+  return success();
+}
+
 static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
                                      Value &input_memref,
                                      SmallVector<Value> &offsets,
@@ -2674,6 +2726,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   std::vector<Operation *> memrefOpVec = getComposableMemrefChain(memref);
   if (memrefOpVec.empty())
     return failure();
+  // Whether the access pattern comes from the sink's type alone.
+  bool implicitPattern = offsets.empty() && sizes.empty() && strides.empty();
 
   // Init. source memref and offsets at the front of the vector of memref ops.
   auto constZero =
@@ -2878,6 +2932,35 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     }
     combineMixedOffsetsInPlace(rewriter, mlir::getAsOpFoldResult(offsets),
                                initialOffsets, initialStrides);
+  }
+  // The offsets are in the coordinates of the first view's source, and
+  // initialStrides holds the step each dim took through the chain (a
+  // subview's strides). An access pattern counts an offset in units of its
+  // stride, the layout stride: the source's times the step. Convert, and
+  // carry what the step does not divide into the dim of stride 1.
+  // Only for a chain starting at a subview: initialStrides holds its steps
+  // there (a reinterpret_cast's are linear strides). Casts, transposes,
+  // expand/collapse_shape (which keep each dim's step) and unit-step subviews
+  // may follow.
+  if (auto front = dyn_cast<memref::SubViewOp>(memrefOpVec.front())) {
+    bool stepsKept =
+        llvm::all_of(llvm::drop_begin(memrefOpVec), [](Operation *op) {
+          if (isa<memref::CastOp, memref::TransposeOp, memref::ExpandShapeOp,
+                  memref::CollapseShapeOp>(op))
+            return true;
+          auto sv = dyn_cast<memref::SubViewOp>(op);
+          return sv && llvm::all_of(sv.getStaticStrides(),
+                                    [](int64_t st) { return st == 1; });
+        });
+    bool unitSteps = llvm::all_of(front.getMixedStrides(), [](OpFoldResult st) {
+      return isConstantIntValue(st, 1);
+    });
+    // An explicit pattern's offsets are combined above without the steps.
+    if (!unitSteps && (!stepsKept || !implicitPattern ||
+                       failed(scaleOffsetsBySteps(
+                           rewriter, loc, initialOffsets, initialStrides,
+                           strides, droppedOffsets, droppedStrides))))
+      return failure();
   }
   offsets = initialOffsets;
   if (!droppedOffsets.empty())
