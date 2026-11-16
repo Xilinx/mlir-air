@@ -1213,6 +1213,19 @@ transform::LinearizeVectorsOp::apply(transform::TransformRewriter &rewriter,
             applyOpPatternsGreedily(ands, std::move(unpackPatterns), config)))
       return emitDefiniteFailure() << "failed to rewrite 4-bit unpacks";
 
+    // The patterns above can sink an extf below a broadcast or shuffle after
+    // MulAddToFMA last visited the add that uses the product, so run it once
+    // more. Products are roots too, so a product it fuses is erased.
+    SmallVector<Operation *> adds;
+    target->walk([&](Operation *op) {
+      if (isa<arith::AddFOp, arith::MulFOp>(op))
+        adds.push_back(op);
+    });
+    RewritePatternSet fmaPatterns(ctx);
+    fmaPatterns.add<MulAddToFMA>(ctx, getContract(), /*benefit=*/1);
+    if (failed(applyOpPatternsGreedily(adds, std::move(fmaPatterns), config)))
+      return emitDefiniteFailure() << "failed to fuse multiply-adds";
+
     // Once the pieces have settled (extracts of inserts folded), extracts
     // that remain read real registers.
     SmallVector<Operation *> extracts;

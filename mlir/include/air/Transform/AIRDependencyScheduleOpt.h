@@ -72,11 +72,6 @@ std::unique_ptr<mlir::Pass> createAIRFuseAllocDealloc();
 
 std::unique_ptr<mlir::Pass> createAIRShrinkMemrefSizesByAccess();
 
-// Populate patterns for canonicalizing index operations on loop index
-// variables. At the moment, only affine.apply computations on induction
-// variables are canonicalized
-void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns);
-
 // Populate patterns for canonicalizing offsets, sizes and strides in air
 // channel_interface operations.
 void populateAIRCanonicalizeChannelWrapAndStridePatterns(
@@ -87,9 +82,6 @@ void populateAIRCanonicalizeChannelWrapAndStridePatterns(
 void applyAIRSpecializeChannelWrapAndStridePattern(
     Region *region, const DmaBdLimits &limits, bool enableForLoopUnrolling,
     bool enableRepeatAtHighestDim, bool skipZeroStride = false);
-
-// Populate patterns for fusing scf.for loops within air.launch.
-void populateAIRLoopFusionPattern(RewritePatternSet &patterns);
 
 // Apply AIRIsolateAsyncDmaLoopNestsPattern on region.
 void applyAIRIsolateAsyncDmaLoopNestsPattern(Region *region);

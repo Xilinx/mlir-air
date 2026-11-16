@@ -1866,9 +1866,13 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
           "in the herd; only its offset can");
   // An L3 put a core starts in a loop keeps one descriptor: the host arms it
   // once per run of the herd, and the core patches and starts it on every
-  // iteration. The host waits for each start, so their number must be known.
+  // iteration. The host waits for each start it can count. Starts it cannot
+  // count (a run-time trip count, or a condition around a start in a loop)
+  // get count 0 and no completion token: the host learns of them only through
+  // the data they carry, so no host transfer may share their shim channel.
   scf::ForOp outerLoop;
   int64_t issueCount = 1;
+  bool counted = true;
   Operation *guard = nullptr;
   if (put && l3)
     for (Operation *p = op->getParentOp(); p != herd; p = p->getParentOp()) {
@@ -1877,21 +1881,20 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
       auto loop = dyn_cast<scf::ForOp>(p);
       if (!loop)
         continue;
+      outerLoop = loop;
       auto lb = getConstantIntValue(loop.getLowerBound());
       auto ub = getConstantIntValue(loop.getUpperBound());
       auto st = getConstantIntValue(loop.getStep());
-      if (!lb || !ub || !st || *st <= 0)
-        return op->emitOpError(
-            "an L3 transfer whose offset a core computes can be in a loop in "
-            "the herd only if the loop's trip count is static");
+      if (!lb || !ub || !st || *st <= 0) {
+        counted = false;
+        continue;
+      }
       issueCount *= std::max<int64_t>(0, llvm::divideCeil(*ub - *lb, *st));
-      outerLoop = loop;
     }
-  // the host waits for every start it counts
   if (outerLoop && guard)
-    return op->emitOpError(
-        "an L3 transfer whose offset a core computes cannot be started from a "
-        "loop under a condition: the number of starts is not known");
+    counted = false;
+  if (!counted)
+    issueCount = 0;
   // Every start patches the one descriptor, so a start must not land while
   // the previous one is queued: the core receives each transfer, in the same
   // block, before it can start the next.

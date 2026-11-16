@@ -3,7 +3,8 @@
 #
 # Qwen3.8-27B decode: the 64 layers in one dispatch, then the LM head
 # (lm_head.py) in a second, on the tile map of Qwen3.6-35B-A3B's decode
-# (qwen36_35b_a3b_q4nx/decode.py) with its MoE block replaced by the dense MLP.
+# (qwen36_35b_a3b_q4nx/qwen36_35b_a3b_q4nx_decode.py) with its MoE block
+# replaced by the dense MLP.
 #
 # The launch repeats once per four layers: three Gated DeltaNet layers, then a
 # full-attention one, the model's pattern. Every core that both kinds of layer
@@ -27,18 +28,15 @@
 #   shim channel.
 #
 # The context length L is a run-time scalar: it places this token's K and V
-# row, and the attention cores mask by it. Every attention layer reads the
-# cache back whole, maxl positions.
-import argparse
-import json
+# row, and the attention cores mask by it. A layers' ELF reads a fixed number
+# of cache positions back in each attention layer: maxl, or one of `reads`.
+# Each token runs the ELF with the fewest that covers L.
 import os
 import sys
-import tempfile
 import time
 import types
 from pathlib import Path
 
-import filelock
 import numpy as np
 from ml_dtypes import bfloat16
 
@@ -80,12 +78,13 @@ QKV_G = G.QKV
 UO = KPU * QR * DH  # an attention unit's output: its two KV heads' query heads
 
 
-def build_module(waves, maxl):
+def build_module(waves, maxl, cap=None):
     """`waves` x (3 GDN layers, then an attention one), for a context of up to
-    `maxl` positions."""
+    `maxl` positions, on a KV cache of `cap` (default maxl) positions."""
     pw, ngw = PER_WAVE, NG_WAVE
     nl, ng = pw * waves, ngw * waves
-    assert maxl % 16 == 0
+    cap = cap or maxl
+    assert maxl % 16 == 0 and maxl <= cap
     nb = maxl // 16
     k_ = lambda o, n, s=(): air.extern(  # noqa: E731
         n, link_with=f"{o}.o", scalars=list(s)
@@ -110,7 +109,7 @@ def build_module(waves, maxl):
     rope = k_("rope_rounds", "rope_compute", [i32])
     q_pack = k_("rope_rounds", "q_pack")
     qk = k_("attn_qk", "attn_qk_blk", [i32, i32])
-    kv = k_("attn_kv_q36", "attn_kv_blk", [i32, i32])
+    kv = k_("attn_kv_q36", "attn_kv_blk_z", [i32, i32])
     fin = k_("attn_kv_q36", "attn_kv_fin")
     o_nat = k_("attn_kv_q36", "o_natural")
 
@@ -136,7 +135,7 @@ def build_module(waves, maxl):
     # need no ordering between them
     CWI = air.tensor([ng, NCH, 7 * HD], bf16)
     SI = air.tensor([ng, NV, R, HD * 32], f32)
-    KV = air.tensor([waves, 2, maxl, DK], bf16, inout=True)
+    KV = air.tensor([waves, 2, cap, DK], bf16, inout=True)
     RW = air.tensor([waves, 3 * DH], bf16)
     CWO = air.tensor([ng, NCH, 7 * HD], bf16)
     SO = air.tensor([ng, NV, R, HD * 32], f32)
@@ -616,8 +615,8 @@ def build_module(waves, maxl):
                             pos = Lp.as_index() - 1
                             k_out.get(KV[w, 0, pos, :])
                             v_out.get(KV[w, 1, pos, :])
-                            k_rd.put(KV[w, 0, :, :])
-                            v_rd.put(KV[w, 1, :, :])
+                            k_rd.put(KV[w, 0, 0:maxl, :])
+                            v_rd.put(KV[w, 1, 0:maxl, :])
 
         launch.body(body)
 
@@ -663,7 +662,9 @@ class Q38Decoder:
     # the layers' arguments, in build_module's order
     X, WD, M, CWI, SI, KV, RW, CWO, SO = range(9)
 
-    def __init__(self, arts, w, layers, waves, maxl, lm_args, params):
+    def __init__(self, arts, w, layers, waves, maxl, lm_args):
+        """arts: compile_all's ([(positions read, ELF artifact, params.txt)]
+        per layers' ELF, all on the same buffers, the LM head's artifact)."""
         import pyxrt as xrt
 
         from decode_elf import param_writers
@@ -730,17 +731,28 @@ class Q38Decoder:
             except RuntimeError:  # a repeated launch's kernel sits in the segment
                 return ctx, xrt.ext.kernel(ctx, art.kernel.replace("main:", "seg:"))
 
-        self.ctx, kern = kernel(arts[0])
-        self.run = xrt.run(kern)
-        for i, b in enumerate(self.bos):
-            self.run.set_arg(i, b)
-        self.params = ParameterScratchpad(self.run, str(params))
-        self.writers = param_writers(params, {"L": len(self.bos)})
+        decs, lart = arts
+        self.decs = []
+        for read, art, params in sorted(decs, key=lambda d: d[0]):
+            ctx, kern = kernel(art)
+            run = xrt.run(kern)
+            for i, b in enumerate(self.bos):
+                run.set_arg(i, b)
+            self.decs.append(
+                dict(
+                    read=read,
+                    ctx=ctx,
+                    run=run,
+                    params=ParameterScratchpad(run, str(params)),
+                    writers=param_writers(params, {"L": len(self.bos)}),
+                )
+            )
+        self.run = self.decs[-1]["run"]
         self.xmap = maps[self.X].view(bfloat16).reshape(waves + 1, pw, D)
         self.rwmap = maps[self.RW].view(bfloat16).reshape(waves, 3 * DH)
         xsub = xrt.bo(self.bos[self.X], D * 2, (waves * pw + pw - 1) * D * 2)
         self.lbos = [xsub] + [bo(t) for t in lm_args]
-        self.lctx, lkern = kernel(arts[1])
+        self.lctx, lkern = kernel(lart)
         self.lrun = xrt.run(lkern)
         for i, b in enumerate(self.lbos):
             self.lrun.set_arg(i, b)
@@ -752,16 +764,21 @@ class Q38Decoder:
             self.rwmap[i] = rope_weights(L - 1, qn, kn).astype(bfloat16)
         for i in (self.X, self.RW):
             self.bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-        for name, fn in self.writers:
-            self.params.write(name, np.int32(fn({len(self.bos): L})))
-        self.params.sync()
+        dec = next((d for d in self.decs if d["read"] >= L), None)
+        if dec is None:
+            raise ValueError(f"L={L} is past the cache ({self.decs[-1]['read']})")
+        for name, fn in dec["writers"]:
+            dec["params"].write(name, np.int32(fn({len(self.bos): L})))
+        dec["params"].sync()
+        self.run = dec["run"]
 
     def _swap(self):
         """This token's outputs are the next one's inputs."""
         for a, b in ((self.CWI, self.CWO), (self.SI, self.SO)):
             self.bos[a], self.bos[b] = self.bos[b], self.bos[a]
-            self.run.set_arg(a, self.bos[a])
-            self.run.set_arg(b, self.bos[b])
+            for d in self.decs:
+                d["run"].set_arg(a, self.bos[a])
+                d["run"].set_arg(b, self.bos[b])
 
     def _go(self, runs, L):
         import lm_head as LM
@@ -854,159 +871,50 @@ class Q38Decoder:
         )
 
 
-def compile_all(waves, maxl):
-    """Kernels, the layers' ELF here and the LM head's in lm/."""
+def compile_all(waves, maxl, reads=()):
+    """Kernels, the layers' ELFs and the LM head's in lm/: one layers' ELF
+    reading the whole cache of maxl positions, here, and one per entry of
+    reads reading only that many, in read<n>/. Returns ([(positions read,
+    ELF artifact, params.txt)], the LM head's artifact)."""
     import lm_head as LM
 
     for k in ("q4k_mvm", "q38_ffn", "gate", "router", "gdn_prep", "gdn_decode"):
         common.compile_kernel(k)
     for k in ("rope_rounds", "attn_qk", "attn_kv_q36"):
         common.compile_kernel(k, engine=True)
-    art = XRTBackend(instance_name="decode", output_format="elf").compile(
-        build_module(waves, maxl)
-    )
-    art.output_binary = os.path.abspath(art.output_binary)
     here = os.getcwd()
+    decs = []
+    for read in sorted({*reads, maxl}):
+        assert read <= maxl, f"a read of {read} is past maxl {maxl}"
+        d = here if read == maxl else os.path.join(here, f"read{read}")
+        os.makedirs(d, exist_ok=True)
+        os.chdir(d)
+        for o in Path(here).glob("*.o"):
+            if d != here and not Path(o.name).exists():
+                os.symlink(o, o.name)
+        art = XRTBackend(instance_name="decode", output_format="elf").compile(
+            build_module(waves, read, maxl)
+        )
+        art.output_binary = os.path.abspath(art.output_binary)
+        decs.append((read, art, Path(d) / "params.txt"))
+        os.chdir(here)
     os.makedirs("lm", exist_ok=True)
     os.chdir("lm")
     lart = LM.compile_lm_head()
     lart.output_binary = os.path.abspath(lart.output_binary)
     os.chdir(here)
-    return art, lart, Path(here) / "params.txt"
+    return decs, lart
 
 
-def load(w, maxl, waves=W.N_LAYERS // PER_WAVE, arts=None):
-    """The decode built for context maxl (compile_all, here) and loaded: a
-    Q38Decoder over the first PER_WAVE * waves layers."""
+def load(w, maxl, waves=W.N_LAYERS // PER_WAVE, arts=None, reads=()):
+    """The decode built for context maxl, with layers' ELFs for the shorter
+    cache reads `reads` (compile_all, here), and loaded: a Q38Decoder over
+    the first PER_WAVE * waves layers."""
     import lm_head as LM
 
-    arts = arts or compile_all(waves, maxl)
+    arts = arts or compile_all(waves, maxl, reads)
     layers = list(range(PER_WAVE * waves))
     nw = np.asarray(w.final_norm()).astype(bfloat16)
     y = np.zeros((LM.NCOL, LM.ROUNDS, LM.NROW * LM.RB), bfloat16)
     lm_args = [nw, LM.pack_weights(w), y]
-    return Q38Decoder(arts, w, layers, waves, maxl, lm_args, arts[2])
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("-p", "--print-module-only", action="store_true")
-    ap.add_argument("--compile-only", action="store_true")
-    ap.add_argument("--prompt", default="The capital of France")
-    ap.add_argument(
-        "--prompt-len", type=int, default=0, help="repeat the prompt to N tokens"
-    )
-    ap.add_argument(
-        "--fused-dir",
-        type=Path,
-        default=os.environ.get("FUSED_PREFILL_DIR") or None,
-        help="prefill on this fused prefill build (fused_build.py)",
-    )
-    ap.add_argument(
-        "--warm", action="store_true", help="prefill once untimed before timing"
-    )
-    ap.add_argument("--gen", type=int, default=8, help="tokens to generate")
-    ap.add_argument("--maxl", type=int, default=64, help="context the build holds")
-    ap.add_argument("--waves", type=int, default=W.N_LAYERS // PER_WAVE)
-    ap.add_argument("--no-ref", action="store_true", help="skip the CPU reference")
-    ap.add_argument("--bench", type=int, default=0, help="then time n tokens")
-    ap.add_argument("--bench-l", type=int, default=0, help="at this context length")
-    a = ap.parse_args()
-    if a.print_module_only:
-        print(build_module(a.waves, a.maxl))
-        return 0
-    if a.compile_only:
-        compile_all(a.waves, a.maxl)
-        print("Compilation passed.")
-        return 0
-    from reference import Reference
-
-    w = W.Qwen38Q4nx()
-    tok = w.tokenizer()
-    ids = tok.encode(a.prompt).ids
-    if a.prompt_len:
-        ids = (ids * (a.prompt_len // len(ids) + 1))[: a.prompt_len]
-    pw = PER_WAVE
-    layers = list(range(pw * a.waves))
-    assert len(ids) + a.gen <= a.maxl
-    # FLM prefills the whole prompt and takes the first token from the LM head
-    # on its last row; the fused prefill takes prompts up to its build's length.
-    # A bench times the decode alone.
-    fused = a.fused_dir is not None and len(layers) == W.N_LAYERS and not a.bench
-    if fused:
-        import prefill as P
-
-        manifest = a.fused_dir / "manifest.json"
-        if not manifest.is_file():
-            sys.exit(f"{a.fused_dir}: no fused prefill build (fused_build.py)")
-        fused = len(ids) <= json.loads(manifest.read_text())["max_len"]
-    arts = compile_all(a.waves, a.maxl)
-    # the device is held from the first context to the last dispatch
-    lock = filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock"))
-    with lock:
-        t0 = time.time()
-        npu = load(w, a.maxl, a.waves, arts)
-        print(f"weights loaded in {time.time() - t0:.0f}s")
-
-        def embed(t):
-            return np.asarray(w.embed([t])[0]).astype(bfloat16)
-
-        ref = None if a.no_ref else Reference(w, layers=layers)
-        toks, ok, times = list(ids), True, []
-
-        def check(i, got, new):
-            nonlocal ok
-            nxt = int(np.argmax(got))
-            if ref is not None:
-                want = ref.forward(new).float().numpy()
-                ok &= nxt == int(np.argmax(want))
-                print(
-                    f"L={i + 1}: next {nxt} (reference {int(np.argmax(want))}),"
-                    f" logits corr {G.corr(got, want)[0]:.4f}"
-                )
-            return nxt
-
-        first, t_prefill = 0, 0.0
-        if fused:
-            pf = P.Qwen38Prefill(a.fused_dir, w, layers)
-            if a.warm:
-                pf.prefill(ids)
-            t0 = time.perf_counter()
-            x = pf.prefill(ids)
-            npu.seed(pf)
-            got = npu.head(x[-1].astype(bfloat16), len(ids))
-            t_prefill = time.perf_counter() - t0
-            first = len(ids)
-            print(f"prefill of {first} tokens: {t_prefill:.3f}s")
-            nxt = check(first - 1, got, ids)
-            if a.gen > 0:
-                toks.append(nxt)
-        # without the prefill the prompt goes through the decode a token at a time
-        for i in range(first, len(ids) + a.gen - 1):
-            t0 = time.perf_counter()
-            got = npu.step(embed(toks[i]), i + 1)
-            times.append(time.perf_counter() - t0)
-            nxt = check(i, got, [toks[i]])
-            if i + 1 >= len(ids):
-                toks.append(nxt)
-        print(repr(a.prompt), "->", repr(tok.decode(toks[len(ids) :])))
-        n_prompt = max(0, len(ids) - first)
-        print(f"Inference: prompt_len={len(ids)}, n_tokens={len(toks) - len(ids)}")
-        print(f"Time to first token (TTFT): {t_prefill + sum(times[:n_prompt]):.3f}s")
-        if len(times) > n_prompt:
-            gen = np.array(times[n_prompt:]) * 1e3
-            print(
-                f"Decode: median {np.median(gen):.2f} ms ({1e3 / np.median(gen):.2f} tok/s)"
-            )
-        if a.bench:
-            npu.bench(embed(toks[-1]), a.bench_l or len(toks), a.bench)
-        del npu
-        if fused:
-            del pf
-    if ref is not None:
-        print("PASS!" if ok else "failed.")
-    return 0 if ok else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    return Q38Decoder(arts, w, layers, waves, maxl, lm_args)

@@ -1,0 +1,10 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+// PERF_MODEL: qwen3_coder_30b_a3b_dflash_b8
+// The DFlash loop against its sequential oracle and committed KV, then the
+// 48-layer verify pass's argmax against the CPU reference's greedy.
+// REQUIRES: ryzen_ai_npu2, peano, llvm_link_pre23, hfweights_qwen_qwen3_coder_30b_a3b_instruct, hfweights_z_lab_qwen3_coder_30b_a3b_dflash
+// RUN: make -f %S/Makefile weights compile BUILD_DIR=dflash-build
+// RUN: make -f %S/Makefile verify BUILD_DIR=dflash-build | FileCheck %s
+// CHECK: "passed": true
+// CHECK: PASS!

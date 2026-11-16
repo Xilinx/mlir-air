@@ -25,7 +25,7 @@
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 PYTHON ?= python3
-DECODE := $(PYTHON) $(srcdir)/decode.py
+DRIVER := $(PYTHON) $(srcdir)/qwen3_coder_30b_a3b_q4k_inference.py
 comma := ,
 
 MAXL      ?= 64
@@ -62,7 +62,7 @@ $(BUNDLE):
 
 compile:
 	mkdir -p $(BUILD_DIR) && cd $(BUILD_DIR) && \
-		$(DECODE) --compile-only --maxl $(MAXL)
+		$(DRIVER) --compile-only --maxl $(MAXL)
 
 compile-fused-prefill:
 	$(PYTHON) $(srcdir)/fused_build.py $(FUSED_DIR)
@@ -72,7 +72,7 @@ compile-fused-prefill:
 
 run: $(BUNDLE) $(FUSED_DEP)
 	mkdir -p $(BUILD_DIR) && cd $(BUILD_DIR) && \
-		$(DECODE) --maxl $(MAXL) --reads "$(READS)" --gen $(GEN) --prompt "$(PROMPT)"
+		$(DRIVER) --maxl $(MAXL) --reads "$(READS)" --gen $(GEN) --prompt "$(PROMPT)"
 
 prefill-fused: $(BUNDLE) $(FUSED_DIR)/manifest.json
 	$(PYTHON) $(srcdir)/prefill.py $(FUSED_DIR) --prompt "$(PROMPT)" \
@@ -94,18 +94,18 @@ verify: $(BUNDLE)
 
 profile: $(BUNDLE)
 	mkdir -p build_ctx$(CTX) && cd build_ctx$(CTX) && \
-		$(DECODE) --maxl $(CTX) --gen 2 --no-ref --bench $(BENCH) --bench-l $(CTX)
+		$(DRIVER) --maxl $(CTX) --gen 2 --no-ref --bench $(BENCH) --bench-l $(CTX)
 
 # The context is compiled in: one build per point, each at its own maxl.
 profile-decode: $(BUNDLE)
 	for c in $(subst $(comma), ,$(CONTEXTS)); do \
 		mkdir -p build_ctx$$c && (cd build_ctx$$c && \
-			$(DECODE) --maxl $$c --gen 2 --no-ref --bench $(BENCH) --bench-l $$c) \
+			$(DRIVER) --maxl $$c --gen 2 --no-ref --bench $(BENCH) --bench-l $$c) \
 			|| exit 1; done
 
 profile-prefill: $(BUNDLE) $(FUSED_DEP)
 	mkdir -p build_ctx$(CTX) && cd build_ctx$(CTX) && \
-		$(DECODE) --maxl $$(( ($(CTX) + 2 + 15) / 16 * 16 )) --prompt-len $(CTX) \
+		$(DRIVER) --maxl $$(( ($(CTX) + 2 + 15) / 16 * 16 )) --prompt-len $(CTX) \
 			--gen 2 --no-ref --warm
 
 clean:

@@ -571,6 +571,17 @@ _MODELS = {
 # target FFN=14336 without Q/K norm; drafter FFN=12288 with Q/K norm.
 # Both use Llama's vocabulary and sixteen 8192-row head waves. Native B1
 # entries above retain their original projection pairing and vocabulary waves.
+_MODELS["qwen3-coder-dflash-drafter"] = dict(
+    _MODELS["qwen3-4b"],
+    # each of the 4 KV heads stored twice: 8 heads of 4 query heads, as qwen3-4b
+    K=2048,
+    M=6144,  # DQ+DK+DV = 4096+1024+1024
+    I2P=[12, 4, 24, 4],
+    J2P=[4, 8, 4, 12],
+    UNI_DEC=8,
+    UNI_LM=15,  # 4800 vocab rowblocks / VOCAB_CHUNK_I2
+    VOCAB_CHUNK_I2=20,
+)
 _MODELS["llama-3.1-8b-dflash-target"] = dict(
     _MODELS["llama-3.1-8b"],
     PAIR_ROWS=1,

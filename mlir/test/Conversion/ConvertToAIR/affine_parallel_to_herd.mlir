@@ -44,3 +44,25 @@ func.func @par2()  {
   }
   return
 }
+
+// -----
+
+// Non-constant values used in the body become herd arguments; constants are
+// cloned into the body instead.
+// CHECK-LABEL: func.func @par3
+// CHECK-SAME: %[[N:.*]]: index
+// CHECK: air.herd @herd_0 {{.*}}tile (%[[X:.*]], %[[Y:.*]]) in ({{.*}}) args(%[[K:.*]]=%[[N]]) : index {
+// CHECK: %[[C7:.*]] = arith.constant 7 : index
+// CHECK: %[[A:.*]] = arith.addi %[[X]], %[[K]] : index
+// CHECK: arith.muli %[[A]], %[[C7]] : index
+func.func @par3(%n: index)  {
+  %c7 = arith.constant 7 : index
+  affine.parallel (%x,%y) = (0,0) to (4,4) {
+    %b = memref.alloc() : memref<4xindex, 2 : i32>
+    %2 = arith.addi %x, %n : index
+    %3 = arith.muli %2, %c7 : index
+    memref.store %3, %b[%y] : memref<4xindex, 2 : i32>
+    affine.yield
+  }
+  return
+}

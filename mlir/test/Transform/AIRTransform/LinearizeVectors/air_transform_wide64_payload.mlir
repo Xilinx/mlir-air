@@ -154,3 +154,60 @@ func.func @base_msc_flags(%s: memref<64xbf16>, %m: memref<64xbf16>, %w: memref<6
   vector.transfer_write %b, %w[%c0] {in_bounds = [true]} : vector<64xf32>, memref<64xf32>
   return
 }
+
+// A product whose bf16 operand reaches it through a broadcast and a
+// transpose of its widened value: the widening sinks below them only once
+// the other patterns settle, after which the multiply-add is still fused.
+// CHECK-LABEL: @mac_after_sink
+// CHECK: %[[Q:.*]] = vector.transfer_read %arg0
+// CHECK: %[[A:.*]] = vector.transfer_read %arg2
+// CHECK-NOT: arith.mulf
+// CHECK: call @llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf(%[[Q]], %{{.*}}, %[[A]], %{{.*}})
+// CHECK-NOT: arith.mulf
+// CHECK-NOT: arith.addf
+// NOCONTRACT-LABEL: @mac_after_sink
+// NOCONTRACT-NOT: bf.mac.conf
+// NOCONTRACT: arith.addf
+// NOCONTRACT-LABEL: @mac_after_sink_flags
+func.func @mac_after_sink(%q: memref<64xbf16>, %s: memref<8xbf16>, %a: memref<64xf32>, %w: memref<64xf32>) {
+  %c0 = arith.constant 0 : index
+  %pbf = arith.constant 0.0 : bf16
+  %pf = arith.constant 0.0 : f32
+  %qv = vector.transfer_read %q[%c0], %pbf {in_bounds = [true]} : memref<64xbf16>, vector<64xbf16>
+  %qf = arith.extf %qv : vector<64xbf16> to vector<64xf32>
+  %sv = vector.transfer_read %s[%c0], %pbf {in_bounds = [true]} : memref<8xbf16>, vector<8xbf16>
+  %sf = arith.extf %sv : vector<8xbf16> to vector<8xf32>
+  %sb = vector.broadcast %sf : vector<8xf32> to vector<8x8xf32>
+  %st = vector.transpose %sb, [1, 0] : vector<8x8xf32> to vector<8x8xf32>
+  %sc = vector.shape_cast %st : vector<8x8xf32> to vector<64xf32>
+  %av = vector.transfer_read %a[%c0], %pf {in_bounds = [true]} : memref<64xf32>, vector<64xf32>
+  %p = arith.mulf %qf, %sc : vector<64xf32>
+  %r = arith.addf %p, %av : vector<64xf32>
+  vector.transfer_write %r, %w[%c0] {in_bounds = [true]} : vector<64xf32>, memref<64xf32>
+  return
+}
+
+// The same with both ops allowing contraction: fused without `contract` on
+// the transform.
+// CHECK-LABEL: @mac_after_sink_flags
+// CHECK: bf.mac.conf
+// NOCONTRACT: call @llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf
+// NOCONTRACT-NOT: arith.mulf
+// NOCONTRACT-NOT: arith.addf
+func.func @mac_after_sink_flags(%q: memref<64xbf16>, %s: memref<8xbf16>, %a: memref<64xf32>, %w: memref<64xf32>) {
+  %c0 = arith.constant 0 : index
+  %pbf = arith.constant 0.0 : bf16
+  %pf = arith.constant 0.0 : f32
+  %qv = vector.transfer_read %q[%c0], %pbf {in_bounds = [true]} : memref<64xbf16>, vector<64xbf16>
+  %qf = arith.extf %qv : vector<64xbf16> to vector<64xf32>
+  %sv = vector.transfer_read %s[%c0], %pbf {in_bounds = [true]} : memref<8xbf16>, vector<8xbf16>
+  %sf = arith.extf %sv : vector<8xbf16> to vector<8xf32>
+  %sb = vector.broadcast %sf : vector<8xf32> to vector<8x8xf32>
+  %st = vector.transpose %sb, [1, 0] : vector<8x8xf32> to vector<8x8xf32>
+  %sc = vector.shape_cast %st : vector<8x8xf32> to vector<64xf32>
+  %av = vector.transfer_read %a[%c0], %pf {in_bounds = [true]} : memref<64xf32>, vector<64xf32>
+  %p = arith.mulf %qf, %sc fastmath<contract> : vector<64xf32>
+  %r = arith.addf %p, %av fastmath<contract> : vector<64xf32>
+  vector.transfer_write %r, %w[%c0] {in_bounds = [true]} : vector<64xf32>, memref<64xf32>
+  return
+}

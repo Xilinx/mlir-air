@@ -19,10 +19,11 @@
 // CHECK: %[[P3:.*]] = air.channel.put async [%[[P2]]]  @feed[] {{.*}} {id = 3 : i32}
 // A loop over rows 2-4 starts after the drain.
 // CHECK: %[[W:.*]] = air.wait_all async [%[[D]]]
-// CHECK: scf.for {{.*}} iter_args(%{{.*}} = %[[W]])
+// CHECK: %[[L:.*]] = scf.for {{.*}} iter_args(%{{.*}} = %[[W]])
 // CHECK: air.channel.put async [%{{.*}}]  @feed[] {{.*}} {id = 4 : i32}
-// Row 6, which the drain does not write.
-// CHECK: air.channel.put async [%[[P3]]]  @feed[] {{.*}} {id = 5 : i32}
+// Row 6, which the drain does not write: FIFO order on @feed, after the loop's
+// and after put 3.
+// CHECK: air.channel.put async [%[[P3]], %[[L]]]  @feed[] {{.*}} {id = 5 : i32}
 
 #map = affine_map<()[s0] -> (s0 + 2)>
 module {
