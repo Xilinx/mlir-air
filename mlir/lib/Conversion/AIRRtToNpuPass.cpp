@@ -7470,8 +7470,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           return failure();
         }
 
+        // The BD length is in 32-bit words; buff_size is in bytes.
         AIEX::NpuWriteBdOp::create(
-            builder, builder.getUnknownLoc(), dstColIndex, bdID, buff_size,
+            builder, builder.getUnknownLoc(), dstColIndex, bdID, buff_size / 4,
             buff_offset,
             /*enable_packet*/ 1, /*out_of_order_id*/ 0,
             /*packet_id*/ flowID, pkt_type,

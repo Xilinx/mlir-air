@@ -48,7 +48,7 @@ module {
 // CHECK:      %[[A6:.*]] = arith.constant 724740 : i32
 // CHECK:      %[[V6:.*]] = arith.constant 197121 : i32
 // CHECK:      aiex.npu.write32(%[[A6]], %[[V6]]) {column = 0 : i32, row = 1 : i32}
-// CHECK:      aiex.npu.writebd {bd_id = 15 : i32, buffer_length = 16384 : i32, buffer_offset = 65536 : i32, column = 0 : i32
+// CHECK:      aiex.npu.writebd {bd_id = 15 : i32, buffer_length = 4096 : i32, buffer_offset = 65536 : i32, column = 0 : i32
 // CHECK-SAME: enable_packet = 1 : i32
 // CHECK-SAME: packet_id = 0 : i32, packet_type = 3 : i32
 // CHECK:      aiex.npu.address_patch({{.*}}) {addr = 119268 : ui32, arg_idx = 2 : i32}
@@ -73,7 +73,7 @@ module {
 // CHECK:      %[[A13:.*]] = arith.constant 261888 : i32
 // CHECK:      %[[V13:.*]] = arith.constant 289 : i32
 // CHECK:      aiex.npu.write32(%[[A13]], %[[V13]]) {column = 0 : i32, row = 2 : i32}
-// CHECK:      aiex.npu.writebd {bd_id = 14 : i32, buffer_length = 16384 : i32, buffer_offset = 65536 : i32, column = 0 : i32
+// CHECK:      aiex.npu.writebd {bd_id = 14 : i32, buffer_length = 4096 : i32, buffer_offset = 65536 : i32, column = 0 : i32
 // CHECK-SAME: enable_packet = 1 : i32
 // CHECK-SAME: packet_id = 1 : i32, packet_type = 0 : i32
 // CHECK:      aiex.npu.address_patch({{.*}}) {addr = 119236 : ui32, arg_idx = 2 : i32}

@@ -150,6 +150,53 @@ without speculation is `FLM_DISABLE_SPECULATION=1`):
 | 2048 | | 0.24 | 1.65 |
 | 4096 | 3.17 | 0.25 | 1.66 |
 
+## Speculative decode (MTP)
+
+`qwen38_27b_q4nx_spec.py` decodes greedily with the model's multi-token
+prediction head drafting one token ahead (k = 1), as FastFlowLM's
+`qwen3.8-mtp` does. Each step:
+
+1. **Verify** (`qwen38_27b_q4nx_verify.py`). The pending token and the draft
+   go through the 64 layers in one two-token pass, each weight block read
+   once for both (`kernels/q4k_mvm2.cc`, `mlp_block2.py`). The LM head then
+   runs on both rows (`lm_head.py`, rows=2, 25 ms, as one row's).
+2. **Keep or reject.**
+   - If the model's token after the pending one is the draft, both are kept
+     and the token after the draft comes free.
+   - Otherwise only the pending token is kept. Its Gated DeltaNet states
+     (written by the step cores after token 0) and the conv caches rebuilt
+     on the host replace the step's.
+3. **Draft** (`mtp_draft.py`). The head runs on each kept position: fc over
+   the normed embedding and the normed main-model output, then one gated
+   attention layer with its own KV cache, on the attention layer's tile map.
+   The LM head over the vocabulary's first 65536 rows, with the head's norm,
+   drafts the next token.
+
+The verify ELF holds one wave of four layers and runs once per wave, all 16
+runs queued at once. A launch repeated per wave does not route: with the
+volumes a wave loop leaves unknown, aiecc's router keeps more packet flows
+apart than the links hold.
+
+The tokens are the plain decode's, bit for bit (`make spec` checks it): the
+two-token pass computes each token exactly as the decode does.
+`attn_kv_blk_z` (`../qwen36_35b_a3b_q4nx/kernels/attn_kv_q36.cc`) makes that
+so. The attention's probabilities x V runs in BFP16, whose blocks of 8 keys
+share an exponent, so a masked key's value still changed the others'
+rounding: the verify's token 0 depended on the draft, and every decode on its
+cache's stale rows. The masked values are now zeroed first. On the prompt the head runs over the last 128 rows only, its
+attention windowed above them, so drafting adds about 0.8 s to the TTFT.
+
+Fused prefill, then greedy decode; plain decode tok/s from the table above:
+
+| prompt | tokens | drafts kept | tok/s | plain decode |
+| --- | --- | --- | --- | --- |
+| a 40-token instruction (prose) | 96 | 76% | 4.63 | 3.39 |
+| `docs/AIRRunner.md` (1295 tokens) | 64 | 75% | 4.46 | 3.37 |
+
+A step costs about 375 ms: the verify 330 ms (342 ms at a 1376-token build),
+the two LM heads 25.5 and 7.3 ms, the head 6 ms per kept token. FastFlowLM
+1.0.11 with its MTP drafts decodes at 1.2-1.7 tok/s on this machine.
+
 ## Prerequisites
 
 - NPU2 (Strix / AIE2P) + XRT, a Peano (llvm-aie) install
@@ -171,4 +218,7 @@ make profile                 # TTFT and decode tok/s, no reference
 make profile-prefill CTX=2048   # TTFT of a CTX-token prompt
 make profile-decode CONTEXTS=1024,8192   # decode tok/s per context
 make kernels                 # the kernel tests
+make spec                    # speculative decode of PROMPT, checked against the plain decode
+make profile-spec            # its tok/s, draft acceptance and step times
+make verify-spec             # its stages, then make spec
 ```

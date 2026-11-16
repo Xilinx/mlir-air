@@ -43,6 +43,7 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/FileUtilities.h"
 
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
@@ -119,6 +120,11 @@ static cl::opt<unsigned>
     traceSize("trace-size",
               cl::desc("Create packet routed traces for cores and memtiles"),
               cl::init(0), cl::cat(airCompilerOptions));
+
+static cl::list<std::string>
+    traceTiles("trace-tiles", cl::CommaSeparated,
+               cl::desc("With --trace-size, trace only these core tiles"),
+               cl::value_desc("col:row,..."), cl::cat(airCompilerOptions));
 
 static cl::opt<unsigned>
     traceOffset("trace-offset",
@@ -1295,6 +1301,8 @@ static LogicalResult runAieCompilation() {
     os << " device=" << deviceName.getValue();
     if (traceSize > 0)
       os << " insert-trace-packet-flow=true";
+    if (traceSize > 0 && !traceTiles.empty())
+      os << " trace-tiles=" << llvm::join(traceTiles, ",");
     os << " use-lock-race-condition-fix="
        << (useLockRaceConditionFix ? "true" : "false");
     os << " use-lock-race-condition-fix-v2="
