@@ -5584,9 +5584,13 @@ static bool areIdenticalReads(vector::TransferReadOp read1,
   auto sameValue = [](Value a, Value b) {
     if (a == b)
       return success();
-    Operation *defA = a.getDefiningOp();
-    Operation *defB = b.getDefiningOp();
-    return success(defA && defB && isPure(defA) && isPure(defB) &&
+    auto resA = dyn_cast<OpResult>(a);
+    auto resB = dyn_cast<OpResult>(b);
+    if (!resA || !resB || resA.getResultNumber() != resB.getResultNumber())
+      return failure();
+    Operation *defA = resA.getOwner();
+    Operation *defB = resB.getOwner();
+    return success(isPure(defA) && isPure(defB) &&
                    OperationEquivalence::isEquivalentTo(
                        defA, defB, OperationEquivalence::exactValueMatch,
                        /*markEquivalent=*/nullptr,

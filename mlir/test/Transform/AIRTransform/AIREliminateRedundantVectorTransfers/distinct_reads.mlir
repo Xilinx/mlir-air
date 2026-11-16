@@ -140,3 +140,25 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// Different results of one multi-result op are different indices.
+// CHECK-LABEL: @indices_from_different_results
+// CHECK-COUNT-2: vector.transfer_read
+func.func @indices_from_different_results(%m: memref<8x8xi32>, %i: index) -> (vector<4xi32>, vector<4xi32>) {
+  %c0 = arith.constant 0 : index
+  %p = arith.constant 0 : i32
+  %d:2 = affine.delinearize_index %i into (8, 8) : index, index
+  %0 = vector.transfer_read %m[%c0, %d#0], %p : memref<8x8xi32>, vector<4xi32>
+  %1 = vector.transfer_read %m[%c0, %d#1], %p : memref<8x8xi32>, vector<4xi32>
+  return %0, %1 : vector<4xi32>, vector<4xi32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %0 = transform.air.eliminate_redundant_vector_transfers %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
