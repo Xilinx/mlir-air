@@ -31,8 +31,14 @@ def load_baseline(artifacts):
     w = DEC.W.Qwen3CoderQ4k(resolve_target_model())
     work = artifacts / "work"
     work.mkdir(exist_ok=True)
+    # The decode builds into the working directory; the caller's paths are
+    # relative to its own.
+    caller = os.getcwd()
     os.chdir(work)
-    decoder = DEC.load(w, made["capacity"], reads=made["reads"])
+    try:
+        decoder = DEC.load(w, made["capacity"], reads=made["reads"])
+    finally:
+        os.chdir(caller)
 
     class Baseline:
         batch = 1
