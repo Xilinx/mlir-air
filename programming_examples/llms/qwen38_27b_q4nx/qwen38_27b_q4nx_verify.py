@@ -22,6 +22,12 @@
 #     once; token 0 masked at L - 1, token 1 at L.
 #   GLU: the down's input a K half at a time.
 #
+# The ELF holds one wave (four layers); a step dispatches it once per wave,
+# each run on its wave's share of the model's buffers. The launch repeated per
+# wave in one dispatch, as the decode's is, does not route: with the volumes
+# a wave loop leaves unknown, the router keeps more packet flows off a shared
+# arbiter than the links hold.
+#
 # The host commits a verify: both tokens kept (SO, the new conv cache), or
 # token 0 only (SO1, and the conv cache rebuilt from the old one and the
 # new's first input).
@@ -702,22 +708,23 @@ def layer_weights2(w, l):
     return wd, misc, extra
 
 
-def compile_all(waves, maxl):
-    """Kernels and the verify ELF, here."""
+def compile_all(maxl):
+    """Kernels and the verify ELF (one wave), here."""
     for k in ("q4k_mvm2", "q38_ffn", "gdn_prep2", "gdn_decode2", "gate2", "router"):
         common.compile_kernel(k)
     for k in ("rope2", "attn_qk", "attn_kv_q36"):
         common.compile_kernel(k, engine=True)
     art = XRTBackend(instance_name="verify", output_format="elf").compile(
-        build_module(waves, maxl)
+        build_module(1, maxl)
     )
     art.output_binary = os.path.abspath(art.output_binary)
     return art, Path(os.getcwd()) / "params.txt"
 
 
 class Q38Verifier:
-    """The verify ELF and its buffers. A step runs two tokens at positions
-    L - 2 and L - 1; commit() then keeps both, or token 0 only."""
+    """The verify ELF and the model's buffers. A step runs two tokens at
+    positions L - 2 and L - 1, a dispatch per wave; commit() then keeps both,
+    or token 0 only."""
 
     X, WD, M, CWI, SI, KV, RW, CWO, SO, SO1 = range(10)
 
@@ -769,16 +776,37 @@ class Q38Verifier:
                 self.conv_w.append(extra)
         for o in self.bos:
             o.sync(to_dev)
+        # each argument's bytes per wave; X's run takes two rows of waves,
+        # its input and its output
+        self.share = [n // waves for n in sizes]
+        self.share[self.X] = sizes[self.X] // (waves + 1)
+        self.span = list(self.share)
+        self.span[self.X] = 2 * self.share[self.X]
+        self.subs = {}
         self.ctx = xrt.hw_context(dev, xrt.elf(art.output_binary))
         try:
             kern = xrt.ext.kernel(self.ctx, art.kernel)
         except RuntimeError:
             kern = xrt.ext.kernel(self.ctx, art.kernel.replace("main:", "seg:"))
-        self.run = xrt.run(kern)
-        for i, b in enumerate(self.bos):
-            self.run.set_arg(i, b)
-        self.params = ParameterScratchpad(self.run, str(params))
+        self.runs, self.params = [], []
+        for wv in range(waves):
+            r = xrt.run(kern)
+            for i in range(len(self.bos)):
+                r.set_arg(i, self._sub(i, wv))
+            self.runs.append(r)
+            self.params.append(ParameterScratchpad(r, str(params)))
         self.writers = param_writers(params, {"L": len(self.bos)})
+
+    def _sub(self, i, wv):
+        """Wave wv's share of argument i's buffer."""
+        b = self.bos[i]
+        key = (id(b), wv)
+        if key not in self.subs:
+            self.subs[key] = (
+                b,
+                self.xrt.bo(b, self.span[i], wv * self.share[i]),
+            )
+        return self.subs[key][1]
 
     def view(self, i, dt, shape):
         return self.maps[i].view(dt).reshape(shape)
@@ -795,21 +823,24 @@ class Q38Verifier:
                 rw[i, t] = rope_weights(L - 2 + t, qn, kn).astype(bfloat16)
         for i in (self.X, self.RW):
             self.bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-        for name, fn in self.writers:
-            self.params.write(name, np.int32(fn({len(self.bos): L})))
-        self.params.sync()
-        self.run.start()
-        st = self.run.wait(120000)
-        if st != xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED:
-            raise RuntimeError(f"verify dispatch at L={L} ended in {st}")
+        for ps in self.params:
+            for name, fn in self.writers:
+                ps.write(name, np.int32(fn({len(self.bos): L})))
+            ps.sync()
+        for r in self.runs:
+            r.start()
+            st = r.wait(120000)
+            if st != xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED:
+                raise RuntimeError(f"verify dispatch at L={L} ended in {st}")
         self.bos[self.X].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
         return xs.copy()
 
     def _swap(self, a, b):
         self.bos[a], self.bos[b] = self.bos[b], self.bos[a]
         self.maps[a], self.maps[b] = self.maps[b], self.maps[a]
-        self.run.set_arg(a, self.bos[a])
-        self.run.set_arg(b, self.bos[b])
+        for wv, r in enumerate(self.runs):
+            r.set_arg(a, self._sub(a, wv))
+            r.set_arg(b, self._sub(b, wv))
 
     def commit(self, both):
         """Keep both tokens of the last step, or token 0 only: then the
@@ -851,7 +882,7 @@ def main():
     w = W.Qwen38Q4nx()
     ids = w.tokenizer().encode(a.prompt).ids
     layers = list(range(PER_WAVE * a.waves))
-    art, params = compile_all(a.waves, a.maxl)
+    art, params = compile_all(a.maxl)
     ok = True
 
     def chk(name, got, want, tol=0.999):
@@ -872,7 +903,9 @@ def main():
             (ids[3:5], 5, True, [ref_b], ref_b),
         ]
         for toks, L, both, refs, ref in plan:
+            t0 = time.perf_counter()
             got = v.step(emb(toks), L)
+            print(f"L={L} step: {(time.perf_counter() - t0) * 1e3:.1f} ms")
             for r in refs:
                 if r is ref_b and L == 5:
                     r.forward(ids[2:3], lm=False)  # the kept token 0 of step 2
