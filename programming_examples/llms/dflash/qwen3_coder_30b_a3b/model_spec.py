@@ -1,8 +1,16 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Checkpoint semantics the shared B8 decoder reads. Only its drafter role
-runs here; the TARGET_ names are its target role's (Qwen3-8B), which the
-shared modules import but this example does not build."""
+"""Checkpoint semantics of the model pair. The drafter runs on the shared B8
+decoder; the TARGET_ names are that decoder's target role (Qwen3-8B), which
+the shared modules import but this example does not build."""
+
+# one verification block, and the positions the target's cache holds
+BLOCK_SIZE = 8
+CAPACITY = 4096
+TARGET_DEPTH = 48
+CHAT_OPTIONS = {}
+# the target has no CPU prompt reference fast enough to stand in for prefill
+CPU_PREFILL = False
 
 # the z-lab Qwen3-Coder-30B-A3B DFlash drafter
 DRAFT_ID = "z-lab/Qwen3-Coder-30B-A3B-DFlash"

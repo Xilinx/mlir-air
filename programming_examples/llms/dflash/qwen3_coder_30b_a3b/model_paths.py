@@ -1,18 +1,20 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-"""Where the drafter's checkpoint and its packed weights are found. The
-shared B8 decoder also imports its target's names; only its drafter role
-runs here."""
+"""Pinned checkpoints and packed-cache defaults for the DFlash example."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
+# The target's Q4_K bundle is quantized from this checkpoint by the target
+# example (llms/qwen3_coder_30b_a3b_q4k), which also carries the tokenizer.
+TARGET_MODEL = TARGET_REPO = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+TARGET_REVISION = "b2cff646eb4bb1d68355c01b18ae02e7cf42d120"
+TOKENIZER_MODEL = TARGET_REPO
+TOKENIZER_REVISION = TARGET_REVISION
 DRAFT_MODEL = "z-lab/Qwen3-Coder-30B-A3B-DFlash"
 DRAFT_REVISION = "98ca0e3e2e6a372f2789d3a5e146566194084317"
-TARGET_MODEL = TARGET_REPO = "FastFlowLM/Qwen3-8B-NPU2"
-TARGET_REVISION = "941c148c228496682e95c413cb90025f73200af2"
 
 
 def cache_root() -> Path:
@@ -30,7 +32,11 @@ def default_draft_cache() -> Path:
     ).expanduser()
 
 
-default_target_cache = default_draft_cache
+def default_target_cache() -> Path:
+    """The target's weights in the verify pass's layout."""
+    return Path(
+        os.environ.get("DFLASH_TARGET_CACHE", cache_root() / "target_tiled")
+    ).expanduser()
 
 
 def default_draft_snapshot() -> Path:
@@ -60,10 +66,19 @@ def draft_snapshot(path=None) -> Path:
 
 
 def resolve_target_model(model=TARGET_MODEL, *, offline=False):
-    if model != TARGET_REPO:
-        return model
-    from huggingface_hub import hf_hub_download
+    """The target's Q4_K bundle: `model` itself unless it names the pinned
+    checkpoint."""
+    from paths import TARGET
+    import sys
 
-    return hf_hub_download(
-        TARGET_REPO, "model.q4nx", revision=TARGET_REVISION, local_files_only=offline
-    )
+    sys.path.insert(0, str(TARGET))
+    import qwen3_coder_30b_a3b_q4k_weights as W
+
+    return W.bundle_path(None if model == TARGET_REPO else model)
+
+
+def load_tokenizer(model=TOKENIZER_MODEL):
+    from transformers import AutoTokenizer
+
+    options = {"revision": TOKENIZER_REVISION} if model == TARGET_REPO else {}
+    return AutoTokenizer.from_pretrained(model, **options)

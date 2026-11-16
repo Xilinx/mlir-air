@@ -16,7 +16,7 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 from paths import HERE
-from drafter import Safetensors, source_identity
+from draft_weights import Safetensors, source_identity
 from model_paths import default_draft_cache, draft_snapshot
 from common.prepare_draft_8b import quantized_blocks
 from common.prepare_target_8b import cascade, inverse

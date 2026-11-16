@@ -170,9 +170,10 @@ def compile_head(root):
 class VerifyB8:
     """The device buffers of the verify pass and its two dispatches."""
 
-    def __init__(self, w, root, cap, reads, layers=None, log=print):
+    def __init__(self, w, root, cap, reads, layers=None, log=print, tiled=None):
         """The weights and the cache are one buffer each, a layer's part a
-        view of it; every read bucket is built up front."""
+        view of it; every read bucket is built up front. tiled: the cache of
+        the weights in the device's layout, default <root>/weights_tiled."""
         import pyxrt as xrt
 
         self.xrt, self.w, self.root, self.cap = xrt, w, Path(root), cap
@@ -189,7 +190,7 @@ class VerifyB8:
         # host work to do while a dispatch runs
         self.work = []
         t0 = time.time()
-        cache = self.root / "weights_tiled"
+        cache = Path(tiled) if tiled else self.root / "weights_tiled"
         cache.mkdir(parents=True, exist_ok=True)
         # tiled weights made from other layouts or another bundle are stale
         ws, wf = _weights_stamp(w), cache / "stamp.txt"
@@ -349,6 +350,10 @@ class VerifyB8:
 
     def head(self, x, norm=True):
         """The LM head's argmax of each of 8 rows; norm: the final norm first."""
+        return self.logits(x, norm).argmax(-1)
+
+    def logits(self, x, norm=True):
+        """The LM head's logits [8, vocab] of the rows; norm: as head's."""
         import torch
 
         x = np.asarray(x, np.float32)
@@ -359,7 +364,7 @@ class VerifyB8:
         self._go(run, "lm head")
         y = self._get(self.yl, bfloat16, (LH.NCOL, LH.ROUNDS, LH.NROW * LH.YB))
         lg = torch.from_numpy(LH.unpack_logits(y.view(np.int16)).copy())
-        return (lg.to(torch.int32) << 16).view(torch.float32).argmax(-1).numpy()
+        return (lg.to(torch.int32) << 16).view(torch.float32).numpy()
 
     def forward(self, h, pos, times=None, taps=None):
         """h [8, D] float32 at positions pos ..; returns the last layer's.
@@ -461,6 +466,7 @@ def main():
     ap.add_argument("--reads", default="256")
     ap.add_argument("--cap", type=int, default=4096)
     ap.add_argument("--root", default="builds")
+    ap.add_argument("--tiled", help="the tiled weights' cache, default the target's")
     ap.add_argument("--bench", type=int, default=0, help="then time n passes")
     ap.add_argument(
         "--compile-only", action="store_true", help="build every read and the head"
@@ -513,7 +519,10 @@ def main():
     want = np.stack(rows)
     print(f"reference: {time.time() - t0:.0f} s, block {block}")
 
-    v = VerifyB8(w, a.root, a.cap, reads, a.layers)
+    import model_paths
+
+    tiled = a.tiled or model_paths.default_target_cache()
+    v = VerifyB8(w, a.root, a.cap, reads, a.layers, tiled=tiled)
     v.seed(kv, n)
     h0 = w.embed(block).astype(np.float32)
     t0 = time.time()

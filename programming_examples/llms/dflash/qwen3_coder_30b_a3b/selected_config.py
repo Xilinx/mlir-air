@@ -8,10 +8,7 @@ from dataclasses import asdict
 
 from target_config import TargetConfig
 
-from model_spec import DRAFT_LAYERS
-
-CAPACITY = 4096
-BATCH = 8
+from model_spec import BLOCK_SIZE as BATCH, CAPACITY, DRAFT_LAYERS
 
 
 def selected_config(role: str, block_size: int = BATCH) -> TargetConfig:
