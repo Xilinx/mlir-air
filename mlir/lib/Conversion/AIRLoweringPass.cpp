@@ -24,6 +24,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -1051,18 +1052,6 @@ LogicalResult generateLoadForHierarchy(Operation *op) {
   return success();
 }
 
-class ScfYieldOpConversion : public OpConversionPattern<scf::YieldOp> {
-public:
-  using OpConversionPattern<scf::YieldOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<scf::YieldOp>(op, adaptor.getOperands());
-    return success();
-  }
-};
-
 class ScfReduceOpConversion : public OpConversionPattern<scf::ReduceOp> {
 public:
   using OpConversionPattern<scf::ReduceOp>::OpConversionPattern;
@@ -1125,96 +1114,6 @@ public:
     }
     rewriter.replaceOpWithNewOp<scf::ReduceReturnOp>(op, retTys,
                                                      adaptor.getOperands());
-    return success();
-  }
-};
-
-class ScfIfOpConversion : public OpConversionPattern<scf::IfOp> {
-public:
-  using OpConversionPattern<scf::IfOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(scf::IfOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-
-    SmallVector<Type, 2> retTys;
-    for (auto t : op->getResultTypes()) {
-      if (llvm::isa<air::AsyncTokenType>(t)) {
-        retTys.push_back(airrt::EventType::get(op->getContext()));
-      } else {
-        retTys.push_back(t);
-      }
-    }
-
-    bool hasElseBlock = op.elseBlock() != nullptr;
-    auto newIf = rewriter.replaceOpWithNewOp<scf::IfOp>(
-        op, retTys, op.getCondition(), hasElseBlock);
-
-    IRMapping remap;
-    rewriter.setInsertionPointToStart(newIf.thenBlock());
-    for (auto &o : op.thenBlock()->getOperations())
-      rewriter.clone(o, remap);
-
-    if (!hasElseBlock)
-      return success();
-
-    rewriter.setInsertionPointToStart(newIf.elseBlock());
-    for (auto &o : op.elseBlock()->getOperations())
-      rewriter.clone(o, remap);
-
-    return success();
-  }
-};
-
-class ScfForOpConversion : public OpConversionPattern<scf::ForOp> {
-public:
-  using OpConversionPattern<scf::ForOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    scf::ForOp newOp = dyn_cast_if_present<scf::ForOp>(
-        rewriter.cloneWithoutRegions(*op.getOperation()));
-    rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(),
-                                newOp.getRegion().end());
-
-    // Set operands and update block argument and result types.
-    newOp->setOperands(adaptor.getOperands());
-    if (failed(rewriter.convertRegionTypes(&newOp.getRegion(), *typeConverter)))
-      return failure();
-    for (auto result : newOp.getResults())
-      result.setType(typeConverter->convertType(result.getType()));
-
-    rewriter.replaceOp(op, newOp.getResults());
-    return success();
-  }
-};
-
-class ScfIndexSwitchOpConversion
-    : public OpConversionPattern<scf::IndexSwitchOp> {
-public:
-  using OpConversionPattern<scf::IndexSwitchOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(scf::IndexSwitchOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    scf::IndexSwitchOp newOp = dyn_cast_if_present<scf::IndexSwitchOp>(
-        rewriter.cloneWithoutRegions(*op.getOperation()));
-    for (unsigned i = 0; i < op->getNumRegions(); i++)
-      rewriter.inlineRegionBefore(op->getRegion(i), newOp->getRegion(i),
-                                  newOp->getRegion(i).end());
-
-    // Update the switch arg and convert region + result types (air.async.token
-    // -> airrt.event), mirroring ScfForOpConversion.
-    newOp->setOperands(adaptor.getOperands());
-    for (unsigned i = 0; i < newOp->getNumRegions(); i++)
-      if (failed(rewriter.convertRegionTypes(&newOp->getRegion(i),
-                                             *typeConverter)))
-        return failure();
-    for (auto result : newOp.getResults())
-      result.setType(typeConverter->convertType(result.getType()));
-
-    rewriter.replaceOp(op, newOp.getResults());
     return success();
   }
 };
@@ -1811,23 +1710,7 @@ public:
       return !air::isL2(llvm::cast<BaseMemRefType>(op.getMemref().getType()));
     });
 
-    target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {
-      for (auto o : op.getRegionIterArgs()) {
-        if (llvm::isa<air::AsyncTokenType>(o.getType()))
-          return false;
-      }
-      return true;
-    });
-
     target.addDynamicallyLegalOp<scf::ParallelOp>([&](scf::ParallelOp op) {
-      for (auto v : op.getResults()) {
-        if (llvm::isa<air::AsyncTokenType>(v.getType()))
-          return false;
-      }
-      return true;
-    });
-
-    target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
       for (auto v : op.getResults()) {
         if (llvm::isa<air::AsyncTokenType>(v.getType()))
           return false;
@@ -1850,21 +1733,6 @@ public:
             return true;
         });
 
-    target.addDynamicallyLegalOp<scf::IfOp>([&](scf::IfOp op) {
-      for (auto v : op.getResults()) {
-        if (llvm::isa<air::AsyncTokenType>(v.getType()))
-          return false;
-      }
-      return true;
-    });
-    target.addDynamicallyLegalOp<scf::IndexSwitchOp>(
-        [&](scf::IndexSwitchOp op) {
-          for (auto v : op.getResults()) {
-            if (llvm::isa<air::AsyncTokenType>(v.getType()))
-              return false;
-          }
-          return true;
-        });
     target.addIllegalOp<air::WaitAllOp>();
     target.addLegalOp<UnrealizedConversionCastOp>();
     // A host-issued patch stays for airrt-to-npu, which streams it.
@@ -1878,12 +1746,11 @@ public:
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);
 
-    air_patterns
-        .add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
-             ScfIndexSwitchOpConversion, ScfParOpConversion,
-             ScfReduceReturnOpConversion, ScfReduceOpConversion,
-             AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion>(
-            converter, context);
+    scf::populateSCFStructuralTypeConversionsAndLegality(converter,
+                                                         air_patterns, target);
+    air_patterns.add<ScfParOpConversion, ScfReduceReturnOpConversion,
+                     ScfReduceOpConversion, AIRDmaMemcpyNdToAIRRtConversion,
+                     AIRWaitAllToAIRRtConversion>(converter, context);
 
     // Build channel counterpart cache to avoid O(n) module walks per channel
     // op during conversion. Without this cache, each of the N channel ops

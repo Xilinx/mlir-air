@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
@@ -453,51 +454,6 @@ public:
   }
 };
 
-class ScfYieldOpConversion : public OpConversionPattern<scf::YieldOp> {
-public:
-  using OpConversionPattern<scf::YieldOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    SmallVector<Value, 8> operands{adaptor.getOperands()};
-    SmallVector<Type, 2> retTys;
-    for (auto t : op->getResultTypes()) {
-      if (llvm::isa<air::AsyncTokenType>(t)) {
-        retTys.push_back(async::TokenType::get(op->getContext()));
-      } else {
-        retTys.push_back(t);
-      }
-    }
-    rewriter.replaceOpWithNewOp<scf::YieldOp>(op, retTys, operands);
-    return success();
-  }
-};
-
-class ScfForOpConversion : public OpConversionPattern<scf::ForOp> {
-public:
-  using OpConversionPattern<scf::ForOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto newOp = rewriter.replaceOpWithNewOp<scf::ForOp>(
-        op, adaptor.getLowerBound(), adaptor.getUpperBound(), adaptor.getStep(),
-        adaptor.getInitArgs());
-    auto body = op.getBody();
-    auto newBody = newOp.getBody();
-
-    for (int i = 0, e = body->getNumArguments(); i < e; i++) {
-      body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
-    }
-
-    auto &ops = body->getOperations();
-    auto &newOps = newBody->getOperations();
-    newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
-    return success();
-  }
-};
-
 class ScfParallelOpConversion : public OpConversionPattern<scf::ParallelOp> {
 public:
   using OpConversionPattern<scf::ParallelOp>::OpConversionPattern;
@@ -863,24 +819,8 @@ public:
               !llvm::any_of(op->getOperandTypes(), isIllegal));
     });
 
-    target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {
-      for (auto o : op.getRegionIterArgs()) {
-        if (llvm::isa<air::AsyncTokenType>(o.getType()))
-          return false;
-      }
-      return true;
-    });
-
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp op) { return false; });
-
-    target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
-      for (auto v : op.getResults()) {
-        if (llvm::isa<air::AsyncTokenType>(v.getType()))
-          return false;
-      }
-      return true;
-    });
 
     target.addDynamicallyLegalOp<memref::AllocOp>(
         [&](memref::AllocOp op) { return air::isL3(op.getType()); });
@@ -893,11 +833,12 @@ public:
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
         typeConversionPatterns, converter);
 
+    scf::populateSCFStructuralTypeConversionsAndLegality(
+        converter, typeConversionPatterns, target);
     typeConversionPatterns
-        .add<ScfYieldOpConversion, ScfForOpConversion, ScfParallelOpConversion,
-             AsyncCallOpConversion, AllocOpConversion, DeallocOpConversion,
-             CallOpConversion, ChannelGetOpConversion, ChannelPutOpConversion>(
-            converter, context);
+        .add<ScfParallelOpConversion, AsyncCallOpConversion, AllocOpConversion,
+             DeallocOpConversion, CallOpConversion, ChannelGetOpConversion,
+             ChannelPutOpConversion>(converter, context);
 
     if (failed(applyPartialConversion(module, target,
                                       std::move(typeConversionPatterns)))) {
