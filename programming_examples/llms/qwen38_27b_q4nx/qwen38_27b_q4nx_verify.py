@@ -118,9 +118,10 @@ def build_module(waves, maxl):
     rope_t = k_("rope2", "rope_compute_t", [i32, i32])
     qpack_t = k_("rope2", "q_pack_t", [i32, i32])
     qk = k_("attn_qk", "attn_qk_blk", [i32, i32])
-    kv = k_("attn_kv_q36", "attn_kv_blk", [i32, i32])
-    fin = k_("attn_kv_q36", "attn_kv_fin")
-    o_nat = k_("attn_kv_q36", "o_natural")
+    # the masked keys' values zeroed first (kernels/attn_kv_q38.cc)
+    kv = k_("attn_kv_q38", "attn_kv_blk_z", [i32, i32])
+    fin = k_("attn_kv_q38", "attn_kv_fin")
+    o_nat = k_("attn_kv_q38", "o_natural")
 
     arr = M2.TwoTokenArray(
         step2,
@@ -578,7 +579,10 @@ def build_module(waves, maxl):
                                 for b in air.sequential(0, nb):
                                     for kk in range(KPU):
                                         v_cu.get(vb, indices=[c])
-                                        for t in range(2):
+                                        # token 1 first: token 0's mask is
+                                        # one key shorter, and its call
+                                        # zeroes that key's value in vb
+                                        for t in (1, 0):
                                             kv(
                                                 s_blk[c][kk][t],
                                                 vb,
@@ -712,7 +716,7 @@ def compile_all(maxl):
     """Kernels and the verify ELF (one wave), here."""
     for k in ("q4k_mvm2", "q38_ffn", "gdn_prep2", "gdn_decode2", "gate2", "router"):
         common.compile_kernel(k)
-    for k in ("rope2", "attn_qk", "attn_kv_q36"):
+    for k in ("rope2", "attn_qk", "attn_kv_q38"):
         common.compile_kernel(k, engine=True)
     art = XRTBackend(instance_name="verify", output_format="elf").compile(
         build_module(1, maxl)
@@ -796,6 +800,7 @@ class Q38Verifier:
             self.runs.append(r)
             self.params.append(ParameterScratchpad(r, str(params)))
         self.writers = param_writers(params, {"L": len(self.bos)})
+        self.queue = False
 
     def _sub(self, i, wv):
         """Wave wv's share of argument i's buffer."""
@@ -827,13 +832,22 @@ class Q38Verifier:
             for name, fn in self.writers:
                 ps.write(name, np.int32(fn({len(self.bos): L})))
             ps.sync()
+        # one context runs its commands in order: with queue, every wave's
+        # is submitted before the first one's end is awaited
         for r in self.runs:
             r.start()
-            st = r.wait(120000)
-            if st != xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED:
-                raise RuntimeError(f"verify dispatch at L={L} ended in {st}")
+            if not self.queue:
+                self._wait(r, L)
+        if self.queue:
+            for r in self.runs:
+                self._wait(r, L)
         self.bos[self.X].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
         return xs.copy()
+
+    def _wait(self, r, L):
+        st = r.wait(120000)
+        if st != self.xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED:
+            raise RuntimeError(f"verify dispatch at L={L} ended in {st}")
 
     def _swap(self, a, b):
         self.bos[a], self.bos[b] = self.bos[b], self.bos[a]

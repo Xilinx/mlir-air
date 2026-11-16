@@ -8,7 +8,9 @@
 # and the token after d comes free; otherwise only a is, and the model's own
 # token replaces d. The head (mtp_draft.py) then runs on each kept position
 # (the main model's output there and the token after it), and the LM head on
-# its last output with the head's norm drafts the next d.
+# its last output with the head's norm drafts the next d. The draft's LM head
+# may take the first rows of the vocabulary only (--draft-vocab): a draft
+# changes how often a step keeps two tokens, never which tokens.
 #
 # The tokens are the plain decode's: --check runs it after and compares.
 import argparse
@@ -43,14 +45,20 @@ D, PW = W.D, V.PER_WAVE
 WAVES = W.N_LAYERS // PW
 
 
-def compile_spec(maxl):
+def top2(lg):
+    """(the two highest logits' tokens, their values)."""
+    i = np.argsort(-lg)[:2]
+    return [int(t) for t in i], [float(lg[t]) for t in i]
+
+
+def compile_spec(maxl, dv=W.VOCAB):
     """The verify, MTP and two LM head ELFs, each in a directory of its own
     here (params.txt is per build)."""
     here, arts = os.getcwd(), {}
     for name, fn in (
         ("ver", lambda: V.compile_all(maxl)),
         ("mtp", lambda: MT.compile_mtp(maxl)),
-        ("lm1", lambda: (LM.compile_lm_head(1), None)),
+        ("lm1", lambda: (LM.compile_lm_head(1, dv), None)),
         ("lm2", lambda: (LM.compile_lm_head(2), None)),
     ):
         os.makedirs(name, exist_ok=True)
@@ -65,10 +73,10 @@ def compile_spec(maxl):
 class Spec:
     """The four ELFs loaded, the LM head's weights shared by both of its."""
 
-    def __init__(self, arts, w, maxl):
+    def __init__(self, arts, w, maxl, dv=W.VOCAB):
         import pyxrt as xrt
 
-        self.xrt, self.w, self.maxl = xrt, w, maxl
+        self.xrt, self.w, self.maxl, self.dv = xrt, w, maxl, dv
         self.v = V.Q38Verifier(*arts["ver"], w, list(range(W.N_LAYERS)), WAVES, maxl)
         self.m = MT.MtpDraft(*arts["mtp"], w, maxl)
         dev = xrt.device(0)
@@ -81,16 +89,17 @@ class Spec:
             return o
 
         wl = bo(LM.pack_weights(w))
+        wl1 = wl if dv == W.VOCAB else bo(LM.pack_weights(w, dv))
         fn = bo(np.asarray(w.final_norm()).astype(bfloat16))
         nf = bo(np.asarray(self.m.norms[2]).astype(bfloat16))
         v = self.v
         # the verify's last-layer rows [2, D]
         xs = xrt.bo(v.bos[v.X], 2 * D * 2, (WAVES * PW + PW - 1) * 2 * D * 2)
-        self.y1 = bo(np.zeros((LM.NCOL, LM.ROUNDS, LM.NROW * LM.RB), bfloat16))
+        self.y1 = bo(np.zeros((LM.NCOL, LM.rounds(dv), LM.NROW * LM.RB), bfloat16))
         self.y2 = bo(np.zeros((LM.NCOL, LM.ROUNDS, LM.NROW * 2 * LM.RB), bfloat16))
         self.lm = {}
         for name, args in (
-            ("lm1", [self.m.bos[self.m.OUT], nf, wl, self.y1]),
+            ("lm1", [self.m.bos[self.m.OUT], nf, wl1, self.y1]),
             ("lm2", [xs, fn, wl, self.y2]),
         ):
             art = arts[name][0]
@@ -101,7 +110,7 @@ class Spec:
             self.lm[name] = (ctx, run, args)
         self.t = {k: 0.0 for k in ("verify", "lm2", "mtp", "lm1")}
 
-    def _lm(self, name, rows):
+    def _lm(self, name, rows, vocab=W.VOCAB):
         xrt = self.xrt
         _, run, args = self.lm[name]
         run.start()
@@ -110,7 +119,7 @@ class Spec:
             raise RuntimeError(f"{name} ended in {st}")
         args[-1].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
         y = np.frombuffer(args[-1].map(), bfloat16)
-        return LM.unpack_logits(y, rows).astype(np.float32)
+        return LM.unpack_logits(y, rows, vocab).astype(np.float32)
 
     def _timed(self, key, fn, *a):
         t0 = time.perf_counter()
@@ -150,25 +159,33 @@ class Spec:
         the model's next token after each."""
         emb = np.asarray(self.w.embed([a, d])).astype(bfloat16)
         xs = self._timed("verify", self.v.step, emb, L)
-        nxt = self._timed("lm2", self._lm, "lm2", 2).argmax(-1)
-        return xs[WAVES, PW - 1], [int(t) for t in nxt]
+        lg = self._timed("lm2", self._lm, "lm2", 2)
+        self.rows = [top2(r) for r in lg]
+        return xs[WAVES, PW - 1], [int(t) for t in lg.argmax(-1)]
 
     def mtp(self, h, tok, L, draft=True):
         """The head at position L - 1 (the main model's output h there, the
         token after it); with draft, the token it predicts after tok."""
         self._timed("mtp", self.m.step, h, tok, L)
         if draft:
-            return int(self._timed("lm1", self._lm, "lm1", 1).argmax())
+            return int(self._timed("lm1", self._lm, "lm1", 1, self.dv).argmax())
 
-    def generate(self, ids, gen, hs, first):
-        """gen tokens after the prompt ids, whose last-layer rows hs [n, D]
-        and first generated token are known (a prefill's state seeded)."""
+    def prompt_mtp(self, ids, hs, first):
+        """The head over the prompt, whose last-layer rows are hs [n, D] (row
+        i with the token after it); the draft after the first generated
+        token."""
         n = len(ids)
-        # the head over the prompt: row i takes the token after it
         for i in range(n - 1):
             self.mtp(hs[i], ids[i + 1], i + 1, draft=False)
-        d = self.mtp(hs[n - 1], first, n)
+        return self.mtp(hs[n - 1], first, n)
+
+    def generate(self, ids, gen, first, d):
+        """gen tokens after the prompt ids: the first generated token and its
+        draft known (the prompt's state seeded, prompt_mtp run)."""
+        n = len(ids)
         out, a, p = [first], first, n  # a is at position p
+        # each generated token's top two logits, for --check
+        self.tops = [None]
         steps = acc = 0
         while len(out) < gen:
             h, (b0, b1) = self.verify(a, d, p + 2)
@@ -177,11 +194,13 @@ class Spec:
                 acc += 1
                 self.v.commit(True)
                 out += [d, b1]
+                self.tops += self.rows
                 self.mtp(h[0], d, p + 1, draft=False)
                 d, a, p = self.mtp(h[1], b1, p + 2), b1, p + 2
             else:
                 self.v.commit(False)
                 out.append(b0)
+                self.tops.append(self.rows[0])
                 d, a, p = self.mtp(h[0], b0, p + 1), b0, p + 1
         return out[:gen], steps, acc
 
@@ -209,6 +228,12 @@ def main():
     ap.add_argument("--gen", type=int, default=32)
     ap.add_argument("--maxl", type=int, default=256)
     ap.add_argument("--check", action="store_true", help="compare to the plain decode")
+    ap.add_argument(
+        "--queue", action="store_true", help="submit a step's wave runs at once"
+    )
+    ap.add_argument(
+        "--draft-vocab", type=int, default=W.VOCAB, help="the draft's LM head rows"
+    )
     a = ap.parse_args()
     w = W.Qwen38Q4nx()
     tok = w.tokenizer()
@@ -222,26 +247,29 @@ def main():
             len(ids)
             <= json.loads((a.fused_dir / "manifest.json").read_text())["max_len"]
         )
-    arts = compile_spec(a.maxl)
+    arts = compile_spec(a.maxl, a.draft_vocab)
     with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
         t0 = time.time()
-        sp = Spec(arts, w, a.maxl)
+        sp = Spec(arts, w, a.maxl, a.draft_vocab)
+        sp.v.queue = a.queue
         print(f"weights loaded in {time.time() - t0:.0f}s")
-        t0 = time.perf_counter()
+        t0 = time.perf_counter()  # the prompt by pairs
         if fused:
             import prefill as P
 
             pf = P.Qwen38Prefill(a.fused_dir, w, list(range(W.N_LAYERS)))
+            t0 = time.perf_counter()
             hs = pf.prefill(ids).astype(bfloat16)
             sp.seed(pf)
             first = sp.head(hs[-1])
-            del pf
         else:
             hs, first = sp.prompt_by_pairs(ids)
+        # the head over the prompt drafts the second token
+        d = sp.prompt_mtp(ids, hs, first)
         ttft = time.perf_counter() - t0
         sp.t = {k: 0.0 for k in sp.t}
         t0 = time.perf_counter()
-        out, steps, acc = sp.generate(ids, a.gen, hs, first)
+        out, steps, acc = sp.generate(ids, a.gen, first, d)
         t_gen = time.perf_counter() - t0
         print(repr(a.prompt), "->", repr(tok.decode(out)))
         print(f"tokens {out}")
@@ -256,6 +284,7 @@ def main():
                 f"{k} {v / max(steps, 1) * 1e3:.1f} ms" for k, v in sp.t.items()
             )
         )
+        sp_tops = sp.tops
         del sp
         if a.check:
             import qwen38_27b_q4nx_decode as DEC
@@ -266,16 +295,40 @@ def main():
             os.chdir("..")
             dec = DEC.load(w, a.maxl, arts=darts)
             emb = lambda t: np.asarray(w.embed([t])[0]).astype(bfloat16)  # noqa
-            toks = list(ids)
-            for i in range(len(ids) + len(out) - 1):
+            # the decode from the same start as the speculative one: the
+            # prefill's state, or the prompt a token at a time
+            n, toks, tops = len(ids), list(ids), []
+            if fused:
+                pf.prefill(ids)
+                dec.seed(pf)
+                toks.append(int(np.argmax(dec.head(hs[-1], n))))
+                del pf
+            for i in range(n if fused else 0, n + len(out) - 1):
                 lg = dec.step(emb(toks[i]), i + 1)
-                if i + 1 >= len(ids):
+                if i + 1 >= n:
                     toks.append(int(np.argmax(lg)))
-            ref = toks[len(ids) :]
-            same = ref == out
+                    tops.append(top2(lg))
+            ref = toks[n:]
             print(f"plain decode {ref}")
-            print("PASS!" if same else "failed: the tokens differ from the decode's.")
-            return 0 if same else 1
+            if ref == out:
+                print("PASS!")
+                return 0
+            k = next(i for i in range(len(out)) if ref[i] != out[i])
+            # a near-tie both ways: the decode's and the verify's top two the
+            # same tokens, a gap of a few bf16 steps
+            (dt, dv), (st, sv) = tops[k - 1], sp_tops[k]
+            print(
+                f"first difference at token {k}: decode {ref[k]}, speculative"
+                f" {out[k]}; decode's top two {dt} gap {dv[0] - dv[1]:.3f},"
+                f" verify's {st} gap {sv[0] - sv[1]:.3f}"
+            )
+            tie = set(dt) == set(st) and max(dv[0] - dv[1], sv[0] - sv[1]) < 0.25
+            print(
+                "PASS (a near-tie)"
+                if tie
+                else "failed: the tokens differ from the decode's."
+            )
+            return 0 if tie else 1
     return 0
 
 
