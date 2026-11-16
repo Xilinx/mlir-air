@@ -3063,6 +3063,13 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
       auto src_op = graph.g[TRVertex].op;
       if (!src_op)
         continue;
+      // A vertex for an op in an air.execute's body other than its first
+      // (e.g. the terminator, which edges leave the execute from) holds that
+      // op: the dependency is on the execute.
+      if (!isa<xilinx::air::AsyncOpInterface>(src_op))
+        if (auto exec = dyn_cast_if_present<xilinx::air::ExecuteOp>(
+                src_op->getParentOp()))
+          src_op = exec;
       if (op == src_op)
         continue; // Avoid dep to itself
       if (graph.g[TRVertex].asyncEventType == "for_loop") {
