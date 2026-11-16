@@ -7,5 +7,9 @@
   "strix-halo": {
     "label": "Strix Halo",
     "detail": "AMD Ryzen AI Max+ 395, NPU2"
+  },
+  "strix-point": {
+    "label": "Strix Point",
+    "detail": "AMD Ryzen AI 9 HX 370, NPU2"
   }
 }
