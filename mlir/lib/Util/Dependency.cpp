@@ -3002,25 +3002,49 @@ void dependencyCanonicalizer::purgeAIRDepList(dependencyGraph &graph) {
 }
 
 // A loop's token used after a branch op (scf.if, affine.if, scf.index_switch)
-// that holds the loop: the token of the outermost branch op that must be
-// crossed for it to dominate `user`. Null if that branch op holds `user`.
-static Value elevateTokenOutOfBranches(Value token, Operation *user) {
-  Operation *src = token ? token.getDefiningOp() : nullptr;
-  if (!src)
-    return token;
-  while (isa_and_present<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(
-      src->getParentOp())) {
+// that holds the loop: the tokens of the outermost branch op that must be
+// crossed for it to dominate `user`. A token a region yields maps to the
+// branch op's result at the same position; one it does not yield directly
+// maps to every token result. Empty if that branch op holds `user`.
+static SmallVector<Value> elevateTokenOutOfBranches(Value token,
+                                                    Operation *user) {
+  if (!token)
+    return {};
+  Operation *src = token.getDefiningOp();
+  SmallVector<Value> cur = {token};
+  while (src &&
+         isa_and_present<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(
+             src->getParentOp())) {
     DominanceInfo domInfo(src);
-    if (domInfo.properlyDominates(token, user))
+    if (llvm::all_of(
+            cur, [&](Value v) { return domInfo.properlyDominates(v, user); }))
       break;
-    src = src->getParentOp();
-    if (src->isAncestor(user))
-      return Value();
-    token = getAsyncTokenFromOp(src);
-    if (!token)
-      return Value();
+    Operation *branch = src->getParentOp();
+    if (branch->isAncestor(user))
+      return {};
+    Block *block = src->getBlock();
+    Operation *term =
+        block->mightHaveTerminator() ? block->getTerminator() : nullptr;
+    llvm::SetVector<Value> next;
+    for (Value v : cur) {
+      bool yielded = false;
+      if (term)
+        for (auto [i, y] : llvm::enumerate(term->getOperands()))
+          if (y == v && i < branch->getNumResults()) {
+            next.insert(branch->getResult(i));
+            yielded = true;
+          }
+      if (!yielded)
+        for (Value r : branch->getResults())
+          if (isa<air::AsyncTokenType>(r.getType()))
+            next.insert(r);
+    }
+    if (next.empty())
+      return {};
+    cur.assign(next.begin(), next.end());
+    src = branch;
   }
-  return token;
+  return cur;
 }
 
 void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
@@ -3054,7 +3078,7 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
             // or the token of a branch op around the loop.
             for (auto res : for_op->getResults()) {
               if (isa<air::AsyncTokenType>(res.getType())) {
-                if (auto value = elevateTokenOutOfBranches(res, op))
+                for (Value value : elevateTokenOutOfBranches(res, op))
                   async_op.addAsyncDependency(value);
                 break;
               }
@@ -3062,17 +3086,15 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
           }
         }
       } else if (graph.g[TRVertex].asyncEventType == "parallel_loop") {
-        auto value = elevateTokenOutOfBranches(
-            getLoopCarriedTokenFromScfOp(
-                dyn_cast_if_present<scf::ParallelOp>(src_op)),
-            op);
-        if (value)
+        for (Value value : elevateTokenOutOfBranches(
+                 getLoopCarriedTokenFromScfOp(
+                     dyn_cast_if_present<scf::ParallelOp>(src_op)),
+                 op))
           async_op.addAsyncDependency(value);
       } else if (graph.g[TRVertex].asyncEventType == "terminator") {
         auto parent_op = src_op->getParentOp();
-        auto value =
-            elevateTokenOutOfBranches(getAsyncTokenFromOp(parent_op), op);
-        if (value)
+        for (Value value :
+             elevateTokenOutOfBranches(getAsyncTokenFromOp(parent_op), op))
           async_op.addAsyncDependency(value);
       } else if (auto async_src_op =
                      dyn_cast_if_present<xilinx::air::AsyncOpInterface>(
