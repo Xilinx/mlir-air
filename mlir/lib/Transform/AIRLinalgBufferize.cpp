@@ -217,7 +217,7 @@ std::optional<Value> hoistOneStaticallyBoundAllocation(
         continue;
       }
       // Dynamic shaped allocLike unsupported (NYI).
-      return nullptr;
+      return std::nullopt;
     }
 
     SmallVector<int64_t> staticShape;
