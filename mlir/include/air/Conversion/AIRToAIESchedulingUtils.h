@@ -224,7 +224,6 @@ struct allocation_info_t {
   // meaningful when the tile has a known column.
   bool foundAllocInColumn(int32_t col);
   bool foundAllocInColumn(int32_t col, AIE::DMAChannel channel);
-  bool foundPacketFlowAllocInColumn(int32_t col);
 
   bool operator==(const allocation_info_t &other) const {
     // op interface getOperation() isn't const-qualified; cast away the
@@ -572,11 +571,6 @@ void reorderL3PacketPutsByFlowOrder(
 // are hardware limits a pin cannot override.
 LogicalResult
 verifyDmaPortSharing(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
-
-template <typename T>
-int foundInVector(T item, std::vector<T> vec);
-int getSCFForLoopDepth(Operation *o);
-bool groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 
 } // namespace air
 } // namespace xilinx

@@ -1286,18 +1286,6 @@ std::string to_string(std::vector<unsigned> vec) {
 }
 std::string to_string(dependencyNodeEntry &c) { return air::to_string(c.op); }
 
-std::string lookUpMemorySpaceFromInt(unsigned memory_space) {
-  if (auto ms = symbolizeMemorySpace(memory_space))
-    return std::string(stringifyMemorySpace(*ms));
-  return "";
-}
-
-unsigned lookUpMemorySpaceIntFromString(std::string memory_space) {
-  if (auto ms = symbolizeMemorySpace(llvm::StringRef(memory_space)))
-    return static_cast<unsigned>(*ms);
-  return 0;
-}
-
 template <typename T>
 void push_back_if_unique(std::vector<T> &vec, T entry) {
   if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {

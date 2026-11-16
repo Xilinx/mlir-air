@@ -43,8 +43,6 @@ std::string to_string(std::vector<unsigned> vec);
 std::string to_string(dependencyNodeEntry &c);
 std::string to_string(mlir::Type t);
 std::string getElementTypeAsString(const mlir::Type ty);
-std::string lookUpMemorySpaceFromInt(unsigned memory_space);
-unsigned lookUpMemorySpaceIntFromString(std::string memory_space);
 template <typename T>
 void push_back_if_unique(std::vector<T> &vec, T entry);
 

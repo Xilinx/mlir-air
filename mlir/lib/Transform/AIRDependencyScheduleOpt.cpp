@@ -8802,23 +8802,6 @@ private:
   }
 };
 
-// Get all users to the async op's async token, with type T.
-template <typename T>
-SmallVector<T> getTokenUsersOfType(air::AsyncOpInterface asyncOp) {
-  SmallVector<T> tokenUsers;
-  Value token = asyncOp.getAsyncToken();
-  for (auto token_user : token.getUsers()) {
-    if (auto token_user_of_type = dyn_cast_if_present<T>(token_user))
-      tokenUsers.push_back(token_user_of_type);
-    else if (auto token_user_wait_all =
-                 dyn_cast_if_present<air::WaitAllOp>(token_user))
-      for (auto wa_user : token_user_wait_all.getAsyncToken().getUsers())
-        if (auto token_user_of_type = dyn_cast_if_present<T>(wa_user))
-          tokenUsers.push_back(token_user_of_type);
-  }
-  return tokenUsers;
-}
-
 // Scf.for loop tiling. This simple tiling implementation generates a new
 // inner scf.for loop which starts from the original loop's lower bound. It
 // may change the meaning of the original scf.for loop, therefore it requires
@@ -9366,20 +9349,6 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
 
   return success();
 }
-
-struct AIRFuncLoopFusionPattern : public OpRewritePattern<func::FuncOp> {
-  using OpRewritePattern<func::FuncOp>::OpRewritePattern;
-
-  AIRFuncLoopFusionPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
-
-  LogicalResult matchAndRewrite(func::FuncOp op,
-                                PatternRewriter &rewriter) const override {
-    return fuseLoopsInRegion(&op.getRegion(), rewriter,
-                             /*fuseWithAllocDeallocs*/ false, /*maxDepth*/ -1);
-  }
-
-private:
-};
 
 struct AIRLaunchLoopFusionPattern : public OpRewritePattern<air::LaunchOp> {
   using OpRewritePattern<air::LaunchOp>::OpRewritePattern;
@@ -11779,11 +11748,6 @@ std::unique_ptr<Pass> createAIRShrinkMemrefSizesByAccess() {
   return std::make_unique<AIRShrinkMemrefSizesByAccess>();
 }
 
-void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
-  MLIRContext *ctx = patterns.getContext();
-  patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
-}
-
 // Fold affine.apply operations on loop induction variables into the loop
 // bounds. Returns success if any transformation was applied.
 FailureOr<scf::ForOp> foldAffineApplyIntoLoopBounds(scf::ForOp forOp,
@@ -11829,13 +11793,6 @@ void applyAIRSpecializeChannelWrapAndStridePattern(
   (void)AIRSpecializeChannelWrapAndStrideImpl(
       region, limits, enableForLoopUnrolling, enableRepeatAtHighestDim,
       skipZeroStride);
-}
-
-void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {
-  MLIRContext *ctx = patterns.getContext();
-  patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar, UnrollScfParallel,
-                  AIRSegmentLoopFusionPattern, AIRLaunchLoopFusionPattern,
-                  AIRFuncLoopFusionPattern>(ctx);
 }
 
 void applyAIRIsolateAsyncDmaLoopNestsPattern(Region *region) {

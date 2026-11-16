@@ -189,7 +189,6 @@ FailureOr<SmallVector<MemrefAccessPattern>>
 getAllReadAccessedMemrefOperandsFromOp(Operation *op);
 FailureOr<SmallVector<MemrefAccessPattern>>
 getAllWriteAccessedMemrefOperandsFromOp(Operation *op);
-FailureOr<SmallVector<Value>> getAllAccessedIndexOperandsFromOp(Operation *op);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph

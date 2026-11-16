@@ -3362,24 +3362,6 @@ static Operation *getSlice(OpBuilder &b, Location loc, Value source,
       .Default([&](Type t) -> Operation * { return nullptr; });
 }
 
-/// Materialize the OpFoldResults into Values.
-SmallVector<Value> materializeOpFoldResultAsValues(ArrayRef<OpFoldResult> ofrs,
-                                                   Location loc,
-                                                   OpBuilder &builder) {
-  SmallVector<Value> values;
-  for (OpFoldResult ofr : ofrs) {
-    if (auto val = dyn_cast_if_present<Value>(ofr)) {
-      values.push_back(val);
-    } else if (auto attr = dyn_cast_if_present<Attribute>(ofr)) {
-      // Create an arith.constant if the OpFoldResult is an Attribute.
-      auto constAttr = cast<IntegerAttr>(attr);
-      values.push_back(
-          arith::ConstantIndexOp::create(builder, loc, constAttr.getInt()));
-    }
-  }
-  return values;
-}
-
 // Required by TilingInterface.
 //
 // Constructs the iteration domain (i.e., a list of Ranges) for a given

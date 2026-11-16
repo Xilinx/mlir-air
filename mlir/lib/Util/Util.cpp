@@ -734,14 +734,6 @@ affine::AffineIfOp air::getAffineIfInBlock(mlir::Block *block) {
   return affine::AffineIfOp();
 }
 
-// Returns the first air.dma op in block; nullptr otherwise
-air::DmaMemcpyNdOp air::getAIRDmaInBlock(mlir::Block *block) {
-  for (auto op : block->getOps<air::DmaMemcpyNdOp>()) {
-    return op;
-  }
-  return air::DmaMemcpyNdOp();
-}
-
 void air::collectBufferAliases(Value buffer,
                                llvm::SmallDenseSet<Value> &aliases) {
   if (!buffer)
@@ -799,43 +791,6 @@ Value air::resolveBufferRoot(Value v) {
     return v;
   }
   return v;
-}
-
-// Erase a kernel operand from air.hierarchy op
-void air::eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
-  if (index + 1 > op->getNumOperands()) {
-    op->emitOpError("index out of range");
-    return;
-  }
-  auto numAsyncDeps =
-      dyn_cast_if_present<air::AsyncOpInterface>(op.getOperation())
-          .getAsyncDependencies()
-          .size();
-  auto removed_operand_index = index + numAsyncDeps + op.getNumDims();
-  op->eraseOperands(removed_operand_index);
-  if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
-    return;
-  auto attrName =
-      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
-  auto sizeAttr = op->template getAttrOfType<DenseI32ArrayAttr>(attrName);
-  if (!sizeAttr)
-    return; // Async dependencies is the only variadic operand.
-  SmallVector<int32_t, 8> sizes;
-  for (auto size : sizeAttr.asArrayRef()) {
-    sizes.push_back(size);
-  }
-  // Find which bin the erased operand belongs to in OperandSegmentSizes
-  unsigned sum = 0;
-  unsigned i = 0;
-  for (auto s : sizes) {
-    sum += s;
-    if (sum > removed_operand_index) {
-      sizes[i]--;
-      break;
-    }
-    i++;
-  }
-  op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
 }
 
 // Get channel declaration through channel symbol
@@ -1565,19 +1520,6 @@ std::vector<unsigned> air::getMDVectorFromIterator(std::vector<unsigned> dims,
     output.push_back((iter / stride) % dims[i]);
   }
   return output;
-}
-
-// Recursively trace back in defining ops
-void air::getDefiningOpsToOperands(Operation *op,
-                                   SmallVector<Operation *> &def_ops) {
-  if (!op)
-    return;
-  for (auto oper : op->getOperands()) {
-    if (auto def_op = oper.getDefiningOp()) {
-      getDefiningOpsToOperands(def_op, def_ops);
-      def_ops.push_back(def_op);
-    }
-  }
 }
 
 // Erase dims; recalculate offsets if needed.
@@ -3359,12 +3301,6 @@ bool air::hasNImpureOps(Block *block, unsigned N) {
     counter++;
   }
   return counter == N;
-}
-
-// Return if the given block contains N ops or not, not counting the block's
-// terminator.
-bool air::hasNElements(Block *block, unsigned N) {
-  return llvm::range_size(block->without_terminator()) == N;
 }
 
 // Get backward slice to a vector of values, within a specified region.
