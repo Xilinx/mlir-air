@@ -82,4 +82,51 @@ void residual_round2(bf16 *__restrict x, bf16 *__restrict rnd, int j, int n) {
       }
 }
 
+// does nothing: a core whose loop calls no kernel compiles to a self-call,
+// which the stack measurement takes for recursion
+void core_tick(bf16 *__restrict x) { (void)x; }
+
+// The verify pass's RMS core takes x and the norm weights a 1024-element
+// round at a time, into one buffer: a channel that carries x once a wave and
+// the weights each layer would need two buffers in a rotation they do not
+// follow. x and y are [2][n], both tokens.
+
+// x[1024 k ..] = rnd
+void x_round(bf16 *__restrict x, bf16 *__restrict rnd, int k) {
+  for (int i = 0; i < 1024; i += V)
+    aie::store_v(x + 1024 * k + i, aie::load_v<V>(rnd + i));
+}
+
+// inv[t] = 1 / sqrt(mean(x[t]^2) + eps), as rms_norm takes it
+void rms_inv2(bf16 *__restrict x, float *__restrict inv, int n) {
+  for (int t = 0; t < 2; t++) {
+    const bf16 *xt = x + t * n;
+    aie::accum<accfloat, V> s0 = aie::zeros<accfloat, V>();
+    aie::accum<accfloat, V> s1 = aie::zeros<accfloat, V>();
+    for (int i = 0; i < n; i += 2 * V) {
+      s0 = aie::mac_square(s0, aie::load_v<V>(xt + i));
+      s1 = aie::mac_square(s1, aie::load_v<V>(xt + i + V));
+    }
+    float sum = aie::reduce_add(aie::add(s0.template to_vector<float>(),
+                                         s1.template to_vector<float>()));
+    sum = sum / (float)n + 1e-6f;
+    inv[t] = aie::invsqrt(aie::broadcast<float, V>(sum))[0];
+  }
+}
+
+// y[t][1024 k ..] = bf16(x[t] * w * inv[t]) over chunk k, both tokens, with
+// the weight's chunk k in rnd, as rms_norm rounds it
+void rms_apply2(bf16 *__restrict y, bf16 *__restrict x, float *__restrict inv,
+                bf16 *__restrict rnd, int k, int n) {
+  for (int t = 0; t < 2; t++) {
+    const float it = inv[t];
+    for (int i = 0; i < 1024; i += V) {
+      int o = t * n + 1024 * k + i;
+      aie::vector<float, V> wx =
+          aie::mul(aie::load_v<V>(x + o), aie::load_v<V>(rnd + i));
+      aie::store_v(y + o, aie::mul(wx, it).template to_vector<bf16>());
+    }
+  }
+}
+
 } // extern "C"
