@@ -140,12 +140,10 @@ public:
           else
             createAsyncExecute(rewriter, op);
         } else if (isa<memref::CopyOp>(op)) {
-          // Skip wrapping memref.copy in air.execute when inside scf.if,
-          // as the resulting async token would not dominate uses outside
-          // the enclosing loop. L1-to-L1 copies are synchronous and don't
-          // need async tracking.
-          if (!op->getParentOfType<scf::IfOp>())
-            createAsyncExecute(rewriter, op);
+          // Inside a branch op too: ops after the branch wait for the branch
+          // op's token (addBranchDeps), so the copy is ordered like any
+          // other access.
+          createAsyncExecute(rewriter, op);
         } else if (auto hierarchy_op =
                        dyn_cast_if_present<air::HierarchyInterface>(op))
           createAsyncHierarchyImpls(rewriter, hierarchy_op);
@@ -370,6 +368,15 @@ public:
         if (isOnlyUsedByNoLoopCarryOpsInBlock(token, &region.front()))
           yielded_tokens.push_back(token);
       }
+      // Nested branch ops, made async before this region's op (post-order
+      // walk): their tokens must reach this op's.
+      for (auto &child : region.front()) {
+        if (!isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp>(child))
+          continue;
+        auto token = air::getAsyncTokenFromOp(&child);
+        if (token && isOnlyUsedByNoLoopCarryOpsInBlock(token, &region.front()))
+          yielded_tokens.push_back(token);
+      }
       return yielded_tokens;
     };
 
@@ -410,16 +417,33 @@ public:
                   [](SmallVector<Value, 1> toks) { return toks.empty(); }))
             return; // No async op in branch successors, continue.
           auto new_branch_op = createAsyncRegionBranchOp(rewriter, branch_op);
+          // Every region also yields the token collecting the branch op's
+          // incoming deps: the transitive reduction may have dropped an
+          // edge to an op after the branch because a path went through one
+          // region, which other regions do not have.
+          Value incoming;
+          if (auto wa = dyn_cast_if_present<air::WaitAllOp>(
+                  (*new_branch_op)->getPrevNode()))
+            incoming = wa.getAsyncToken();
           auto new_regions = (*new_branch_op)->getRegions();
           for (unsigned i = 0; i < new_regions.size(); i++) {
             if (new_regions[i].empty())
               continue;
+            if (incoming &&
+                !tokensFollowAll(yielded_tokens_per_region[i],
+                                 incoming.getDefiningOp<air::WaitAllOp>()
+                                     .getAsyncDependencies()))
+              yielded_tokens_per_region[i].push_back(incoming);
             insertLoopCarriedDepsInRegion(rewriter, new_regions[i],
                                           yielded_tokens_per_region[i]);
           }
         }
       });
     }
+
+    // Dependencies on ops inside branch ops, now that branch ops have
+    // tokens.
+    addBranchDeps();
 
     // 5th traversal: channel endpoint ordering.
     //
@@ -1218,6 +1242,12 @@ private:
         src_id = getGraphGVertexFromAIROp(
             scf_parallel_op); // g_to_tr not needed since wait_all created after
                               // TR
+      } else if (auto wa_op = dyn_cast_if_present<air::WaitAllOp>(
+                     token.getDefiningOp())) {
+        src_id = getGraphGVertexFromAIROp(wa_op);
+      } else {
+        // A branch op's token: no vertex of its own.
+        continue;
       }
       asyncExecuteGraph.addEdge(src_id, wait_all_op_yielded_v);
     }
@@ -1890,6 +1920,10 @@ private:
   operation_id_to_vertex_map
       wa_to_g; // Map between air wait_all and vertices in graph
 
+  // (sink, source) dependencies whose source is inside a branch op not
+  // containing the sink; resolved by addBranchDeps.
+  SmallVector<std::pair<Operation *, Operation *>> branchDeps;
+
   // g vertex to air op mapping
   air::ExecuteOp getExecuteOpFromVertex(
       ExecuteGraph::VertexId v, ExecuteGraph g,
@@ -2007,20 +2041,99 @@ private:
           op->emitOpError("unknown async event type");
           continue;
         }
-        // Skip dependency if the source op is inside an scf.if that does
-        // not contain the sink op. The token defined inside scf.if cannot
-        // dominate ops outside it; the 4th traversal (loop-carried deps)
-        // will handle this by threading the token through iter_args.
-        if (srcOp) {
-          if (auto ifOp = srcOp->getParentOfType<scf::IfOp>()) {
-            if (!ifOp->isAncestor(op))
-              continue;
-          }
+        // A source op inside a branch op (scf.if, affine.if,
+        // scf.index_switch) that does not contain the sink: its token cannot
+        // dominate the sink. The branch op only gets a token in the 4th
+        // traversal, so record the dependency and make the sink wait for the
+        // branch op's token then (addBranchDeps).
+        if (srcOp && getEnclosingBranchNotContaining(srcOp, op)) {
+          branchDeps.push_back({op.getOperation(), srcOp});
+          continue;
         }
         async_op.addAsyncDependency(depToken);
       }
     } else
       op->emitOpError("operation has no async interface");
+  }
+
+  // Whether every token of `targets` is reached from `tokens` through async
+  // dependencies (and scf.for/scf.parallel init tokens). Conservative: false
+  // when unsure.
+  bool tokensFollowAll(ArrayRef<Value> tokens, OperandRange targets) {
+    llvm::SmallPtrSet<void *, 16> seen;
+    llvm::SmallVector<Value> work(tokens.begin(), tokens.end());
+    llvm::SmallPtrSet<void *, 16> reached;
+    while (!work.empty()) {
+      Value v = work.pop_back_val();
+      if (!seen.insert(v.getAsOpaquePointer()).second)
+        continue;
+      reached.insert(v.getAsOpaquePointer());
+      Operation *d = v.getDefiningOp();
+      if (!d)
+        continue;
+      if (auto a = dyn_cast<air::AsyncOpInterface>(d))
+        for (Value dep : a.getAsyncDependencies())
+          work.push_back(dep);
+      else if (auto f = dyn_cast<scf::ForOp>(d))
+        for (Value init : f.getInitArgs())
+          work.push_back(init);
+      else if (auto par = dyn_cast<scf::ParallelOp>(d))
+        for (Value init : par.getInitVals())
+          work.push_back(init);
+    }
+    return llvm::all_of(targets, [&](Value t) {
+      return reached.contains(t.getAsOpaquePointer());
+    });
+  }
+
+  // The outermost branch op (scf.if, affine.if, scf.index_switch) enclosing
+  // `src` but not `sink`, if any.
+  Operation *getEnclosingBranchNotContaining(Operation *src, Operation *sink) {
+    Operation *found = nullptr;
+    for (Operation *a = src->getParentOp(); a; a = a->getParentOp()) {
+      if (a->isAncestor(sink))
+        break;
+      if (isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp>(a))
+        found = a;
+    }
+    return found;
+  }
+
+  // After the 4th traversal: each sink recorded in `branchDeps` waits for the
+  // token of the op that encloses its source op in the block holding the sink
+  // (or one of its ancestors): the branch op, now async, or a loop around it.
+  void addBranchDeps() {
+    for (auto [sink, src] : branchDeps) {
+      auto async_sink = dyn_cast<air::AsyncOpInterface>(sink);
+      if (!async_sink)
+        continue;
+      Operation *a = src;
+      Operation *sinkAncestor = nullptr;
+      for (; a; a = a->getParentOp()) {
+        if (!a->getBlock())
+          continue;
+        if ((sinkAncestor = a->getBlock()->findAncestorOpInBlock(*sink)))
+          break;
+      }
+      if (!a || !sinkAncestor || a == sinkAncestor ||
+          !a->isBeforeInBlock(sinkAncestor))
+        continue;
+      // A token cannot cross into an op isolated from above (a hierarchy
+      // op); the hierarchy op's own dependencies order it instead.
+      bool isolated = false;
+      for (Operation *p = sink->getParentOp();
+           p && p != sinkAncestor->getParentOp(); p = p->getParentOp())
+        if (p->hasTrait<OpTrait::IsIsolatedFromAbove>())
+          isolated = true;
+      if (isolated)
+        continue;
+      Value token = air::getAsyncTokenFromOp(a);
+      if (!token ||
+          llvm::is_contained(async_sink.getAsyncDependencies(), token))
+        continue;
+      async_sink.addAsyncDependency(token);
+    }
+    branchDeps.clear();
   }
 
   template <typename T>
