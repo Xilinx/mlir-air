@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide64.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide64.mlir' %s | FileCheck %s --implicit-check-not=bf.mul.conf
 // RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide64_nocontract.mlir' %s | FileCheck %s --check-prefix=NOCONTRACT
 
 // w = bf16(bf16(0x4300 | q) * s + base) on 64 lanes, with f32_lanes = 64:
@@ -16,9 +16,6 @@
 
 // CHECK-DAG: func.func private @llvm.aie2p.vshuffle(vector<16xi32>, vector<16xi32>, i32) -> vector<16xi32>
 // CHECK-DAG: func.func private @llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf(vector<64xbf16>, vector<64xbf16>, vector<64xf32>, i32) -> vector<64xf32>
-// No accumulator is widened by the multiplier anywhere in the file.
-// CHECK-NOT: bf.mul.conf
-
 // CHECK-LABEL: @dequant64
 // CHECK: %[[U:.*]] = aievec.unpack
 // CHECK: %[[W:.*]] = vector.bitcast %[[U]] : vector<64xi8> to vector<16xi32>
