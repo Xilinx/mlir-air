@@ -3001,6 +3001,28 @@ void dependencyCanonicalizer::purgeAIRDepList(dependencyGraph &graph) {
   }
 }
 
+// A loop's token used after a branch op (scf.if, affine.if, scf.index_switch)
+// that holds the loop: the token of the outermost branch op that must be
+// crossed for it to dominate `user`. Null if that branch op holds `user`.
+static Value elevateTokenOutOfBranches(Value token, Operation *user) {
+  Operation *src = token ? token.getDefiningOp() : nullptr;
+  if (!src)
+    return token;
+  while (isa_and_present<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(
+      src->getParentOp())) {
+    DominanceInfo domInfo(src);
+    if (domInfo.properlyDominates(token, user))
+      break;
+    src = src->getParentOp();
+    if (src->isAncestor(user))
+      return Value();
+    token = getAsyncTokenFromOp(src);
+    if (!token)
+      return Value();
+  }
+  return token;
+}
+
 void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
     dependencyGraph &graph) {
   auto vp = graph.g.getVertices();
@@ -3028,23 +3050,28 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
             if (value)
               async_op.addAsyncDependency(value);
           } else {
-            // Destination is outside (after) the loop: use loop result.
+            // Destination is outside (after) the loop: use loop result,
+            // or the token of a branch op around the loop.
             for (auto res : for_op->getResults()) {
               if (isa<air::AsyncTokenType>(res.getType())) {
-                async_op.addAsyncDependency(res);
+                if (auto value = elevateTokenOutOfBranches(res, op))
+                  async_op.addAsyncDependency(value);
                 break;
               }
             }
           }
         }
       } else if (graph.g[TRVertex].asyncEventType == "parallel_loop") {
-        auto value = getLoopCarriedTokenFromScfOp(
-            dyn_cast_if_present<scf::ParallelOp>(src_op));
+        auto value = elevateTokenOutOfBranches(
+            getLoopCarriedTokenFromScfOp(
+                dyn_cast_if_present<scf::ParallelOp>(src_op)),
+            op);
         if (value)
           async_op.addAsyncDependency(value);
       } else if (graph.g[TRVertex].asyncEventType == "terminator") {
         auto parent_op = src_op->getParentOp();
-        auto value = getAsyncTokenFromOp(parent_op);
+        auto value =
+            elevateTokenOutOfBranches(getAsyncTokenFromOp(parent_op), op);
         if (value)
           async_op.addAsyncDependency(value);
       } else if (auto async_src_op =
