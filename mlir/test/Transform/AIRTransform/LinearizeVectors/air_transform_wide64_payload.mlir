@@ -16,6 +16,9 @@
 
 // CHECK-DAG: func.func private @llvm.aie2p.vshuffle(vector<16xi32>, vector<16xi32>, i32) -> vector<16xi32>
 // CHECK-DAG: func.func private @llvm.aie2p.I1024.I1024.ACC2048.bf.mac.conf(vector<64xbf16>, vector<64xbf16>, vector<64xf32>, i32) -> vector<64xf32>
+// No accumulator is widened by the multiplier anywhere in the file.
+// CHECK-NOT: bf.mul.conf
+
 // CHECK-LABEL: @dequant64
 // CHECK: %[[U:.*]] = aievec.unpack
 // CHECK: %[[W:.*]] = vector.bitcast %[[U]] : vector<64xi8> to vector<16xi32>
@@ -107,11 +110,11 @@ func.func @trunc_unit_lead(%a: memref<64xf32>, %w: memref<1x8x8xbf16>) {
 }
 
 // m - 128 s on 64 lanes, s and m widened from bf16: one multiply-subtract.
-// The accumulator, m widened, comes from the multiplier as m * 1.0.
+// The accumulator is m widened by conversion, not by the multiplier.
 // CHECK-LABEL: @base_msc
+// CHECK: %[[MV:.*]] = vector.transfer_read %arg1
+// CHECK: %[[M:.*]] = arith.extf %[[MV]] : vector<64xbf16> to vector<64xf32>
 // CHECK: %[[C:.*]] = arith.constant dense<1.280000e+02> : vector<64xbf16>
-// CHECK: %[[ONE:.*]] = arith.constant dense<1.000000e+00> : vector<64xbf16>
-// CHECK: %[[M:.*]] = call @llvm.aie2p.I1024.I1024.ACC2048.bf.mul.conf(%{{.*}}, %[[ONE]], %{{.*}})
 // CHECK: call @llvm.aie2p.I1024.I1024.ACC2048.bf.msc.conf(%{{.*}}, %[[C]], %[[M]], %{{.*}})
 // CHECK-NOT: arith.subf
 // CHECK-NOT: arith.extf
