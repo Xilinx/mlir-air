@@ -63,8 +63,9 @@ G_PARTS = [(0, G_FC + A.G_MIX), (G_FC + A.G_MIX, G_ALL)]
 ROPE, GATE, RMS, GLU = range(4)  # the array's consumers
 MISC, MISC_LEN = A.MISC, A.MISC_LEN
 # main()'s elementwise gate on the head's normed output, a fraction of
-# max |want| at common's rtol (measured: at most 1.0e-2)
-ATOL = 3e-2
+# max |want| at common's rtol (measured: at most 1.0e-2 unwindowed, 2.3e-2
+# windowed)
+ATOL = 5e-2
 
 
 def build_module(maxl):
@@ -501,9 +502,20 @@ class MtpDraft:
         return self.map(self.OUT, bfloat16).copy()
 
 
+def window_lo(L, lo):
+    """The first key MtpDraft.step's window keeps at L (the kernels' window
+    is whole 16-key blocks): lo, or up to 15 keys past it."""
+    w = min((L - lo) // 16, 0x7FF) if lo > 0 else 0
+    return L - 16 * w if w else 0
+
+
 def main():
     """The head over a few positions of a prompt against the reference's
-    Mtp, h from the reference's main model."""
+    Mtp, h from the reference's main model. Then windowed, as the
+    speculative decode runs it on a long prompt: the rows below r0 never
+    run (noise in their cache rows), the rest with lo = r0, each output a
+    draft would take (L - r0 >= 16) against the reference with the same
+    window, for a 16-key-aligned r0 and not, across block boundaries."""
     import torch
 
     from reference import Mtp, Reference
@@ -512,10 +524,14 @@ def main():
     ap.add_argument("--maxl", type=int, default=64)
     ap.add_argument("--prompt", default="The capital of France is a city that")
     ap.add_argument("--layers", type=int, default=4, help="main-model layers for h")
+    ap.add_argument("--window-len", type=int, default=48, help="rows, windowed")
     a = ap.parse_args()
     w = W.Qwen38Q4nx()
     ids = w.tokenizer().encode(a.prompt).ids
+    # the windowed check's rows: the prompt repeated
+    ids = (ids * (a.window_len // len(ids) + 2))[: a.window_len + 1]
     n = len(ids) - 1
+    assert n < a.maxl
     # h: any hidden state will do for the head's check; a few layers' output
     hs = Reference(w, list(range(a.layers))).forward(ids[:n], lm=False)
     hs = hs.numpy().astype(bfloat16)
@@ -524,13 +540,36 @@ def main():
     ok = True
     with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
         d = MtpDraft(art, params, w, a.maxl)
-        for i in range(n):
+        nf = np.asarray(d.norms[2], np.float32)
+        for i in range(min(n, 8)):
             got = d.step(hs[i], ids[i + 1], i + 1)
             # both through the head's final norm, the reference's output
-            got = rms(got, np.asarray(d.norms[2], np.float32))
+            got = rms(got, nf)
             h = torch.from_numpy(hs[i : i + 1].astype(np.float32))
             want = mtp.forward(h, ids[i + 1 : i + 2])[0].double().numpy()
             ok &= common.check(f"L={i + 1}", got, want, ATOL)
+        rng = np.random.default_rng(0)
+        to = d.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
+        for r0 in (5, 16):
+            kv = d.map(d.KV, bfloat16)
+            kv[:] = rng.normal(0, 2, kv.shape).astype(bfloat16)
+            d.bos[d.KV].sync(to)
+            ref = Mtp(w)
+            for i in range(n):
+                L = i + 1
+                h = torch.from_numpy(hs[i : i + 1].astype(np.float32))
+                ref.window_lo = window_lo(L, r0) if i >= r0 else 0
+                want = ref.forward(h, ids[i + 1 : i + 2])[0].double().numpy()
+                if i < r0:
+                    continue  # the reference's cache rows only
+                got = d.step(hs[i], ids[i + 1], L, lo=r0)
+                if L - r0 >= 16:
+                    ok &= common.check(
+                        f"r0={r0} L={L} window from {window_lo(L, r0)}",
+                        rms(got, nf),
+                        want,
+                        ATOL,
+                    )
         del d
     print("PASS!" if ok else "failed.")
     return 0 if ok else 1

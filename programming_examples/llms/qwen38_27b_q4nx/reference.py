@@ -131,6 +131,8 @@ class Reference:
         s = torch.einsum("qhd,khd->hqk", q, kk) * W.DH**-0.5
         n = k.shape[0]
         mask = torch.arange(n)[None] > (pos[:, None])  # key after query
+        # a sliding window's start: the keys below it masked too
+        mask |= torch.arange(n)[None] < getattr(self, "window_lo", 0)
         s = s.masked_fill(mask[None], float("-inf"))
         o = torch.einsum("hqk,khd->qhd", s.softmax(-1), vv).reshape(L, -1)
         o = o * torch.sigmoid(x @ g_w.T)
