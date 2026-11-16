@@ -788,23 +788,6 @@ LogicalResult PacketRoutingDomainAnalysis::verify() const {
 // Reporting
 //===----------------------------------------------------------------------===//
 
-void PacketRoutingDomainAnalysis::printReport(llvm::raw_ostream &os) const {
-  for (auto [i, domRef] : llvm::enumerate(domains)) {
-    PacketRoutingDomain dom = domRef;
-    os << "packet routing domain #" << i << ": " << dom.ids.size()
-       << " id(s) [";
-    llvm::interleaveComma(dom.ids, os);
-    os << "] (" << (dom.idsDeclared ? "declared" : "allocated") << ")\n";
-    for (ChannelPutOp p : dom.originators)
-      os << "  originator  " << p.getChanName() << " (dest)\n";
-    for (ChannelOp h : dom.hops)
-      os << "  hop         @" << h.getSymName() << " (" << getFacts(h).numDests
-         << " dest)\n";
-    os << "  demux       @" << dom.demux.getSymName() << " ("
-       << getFacts(dom.demux).numDests << " dests)\n";
-  }
-}
-
 void PacketRoutingDomainAnalysis::emitReportRemarks() const {
   for (ChannelOp c : packetChans) {
     const PacketChannelFacts &f = getFacts(c);
