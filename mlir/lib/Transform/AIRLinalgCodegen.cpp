@@ -23,7 +23,6 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
-#include "mlir/Dialect/Linalg/Transforms/Hoisting.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -47,6 +46,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Inliner.h"
 #include "mlir/Transforms/InliningUtils.h"
+#include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/ScopeExit.h"
@@ -2657,6 +2657,45 @@ static Value cloneOpAndOperands(Operation *op, Value loopIV, scf::ForOp loopOp,
     return cloned->getResult(0);
 }
 
+/// Find a read/write pair in the loop body that can become an iter_arg: same
+/// memref, indices and type, all operands defined outside the loop, and every
+/// other access to the memref in the loop provably disjoint from it.
+static std::optional<std::pair<vector::TransferReadOp, vector::TransferWriteOp>>
+findHoistableTransferPair(scf::ForOp loop) {
+  auto loopLike = cast<LoopLikeOpInterface>(loop.getOperation());
+  for (auto write : loop.getBody()->getOps<vector::TransferWriteOp>()) {
+    Value base = write.getBase();
+    if (!isa<MemRefType>(base.getType()) || write.getMask() ||
+        isa_and_present<ViewLikeOpInterface>(base.getDefiningOp()) ||
+        llvm::any_of(base.getUsers(), llvm::IsaPred<ViewLikeOpInterface>))
+      continue;
+    if (!llvm::all_of(write.getIndices(), [&](Value v) {
+          return loopLike.isDefinedOutsideOfLoop(v);
+        }))
+      continue;
+    for (auto read : loop.getBody()->getOps<vector::TransferReadOp>()) {
+      if (read.getBase() != base || read.getMask() ||
+          read.getIndices() != write.getIndices() ||
+          read.getVectorType() != write.getVectorType() ||
+          read.getPermutationMap() != write.getPermutationMap() ||
+          !read->isBeforeInBlock(write) ||
+          !loopLike.isDefinedOutsideOfLoop(read.getPadding()))
+        continue;
+      bool disjoint = llvm::all_of(base.getUsers(), [&](Operation *user) {
+        if (user == read || user == write || !loop->isAncestor(user))
+          return true;
+        auto other = dyn_cast<VectorTransferOpInterface>(user);
+        return other && vector::isDisjointTransferSet(
+                            cast<VectorTransferOpInterface>(*write), other,
+                            /*testDynamicValueUsingBounds=*/true);
+      });
+      if (disjoint)
+        return std::make_pair(read, write);
+    }
+  }
+  return std::nullopt;
+}
+
 DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
     transform::TransformRewriter &rewriter,
     transform::TransformResults &results, transform::TransformState &state) {
@@ -2697,32 +2736,36 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
     rewriter.replaceOp(apply, it->getResult());
   }
 
-  // The writes come out of the loop in reverse; restore body order after.
-  SmallVector<Operation *> bodyWrites;
-  for (auto write : loopOp.getBody()->getOps<vector::TransferWriteOp>())
-    bodyWrites.push_back(write);
+  moveLoopInvariantCode(cast<LoopLikeOpInterface>(loopOp.getOperation()));
 
-  // The hoist replaces the loop; a marker attribute finds the new one.
-  StringRef marker = "air.hoist_loop_invariant_transfers";
-  loopOp->setAttr(marker, rewriter.getUnitAttr());
-  Operation *parent = loopOp->getParentOp();
-  linalg::hoistRedundantVectorTransfers(parent);
+  scf::ForOp newLoop = loopOp;
+  Operation *lastWrite = nullptr;
+  while (auto pair = findHoistableTransferPair(newLoop)) {
+    vector::TransferReadOp read = pair->first;
+    vector::TransferWriteOp write = pair->second;
+    rewriter.moveOpBefore(read, newLoop);
+    // Keep the hoisted writes in loop-body order.
+    if (lastWrite)
+      rewriter.moveOpAfter(write, lastWrite);
+    else
+      rewriter.moveOpAfter(write, newLoop);
+    lastWrite = write;
 
-  scf::ForOp newLoop;
-  parent->walk([&](scf::ForOp forOp) {
-    if (forOp->hasAttr(marker))
-      newLoop = forOp;
-  });
-  if (!newLoop)
-    return emitDefiniteFailure() << "failed to find the hoisted loop";
-  newLoop->removeAttr(marker);
-
-  Operation *insertAfter = newLoop;
-  for (Operation *write : bodyWrites) {
-    if (write->getBlock() != newLoop->getBlock())
-      continue;
-    write->moveAfter(insertAfter);
-    insertAfter = write;
+    NewYieldValuesFn yieldFn = [&](OpBuilder &, Location,
+                                   ArrayRef<BlockArgument>) {
+      return SmallVector<Value>{write.getVector()};
+    };
+    FailureOr<LoopLikeOpInterface> replaced =
+        cast<LoopLikeOpInterface>(newLoop.getOperation())
+            .replaceWithAdditionalYields(rewriter, read.getVector(),
+                                         /*replaceInitOperandUsesInLoop=*/true,
+                                         yieldFn);
+    if (failed(replaced))
+      return emitDefiniteFailure() << "failed to hoist transfer pair";
+    newLoop = cast<scf::ForOp>(replaced->getOperation());
+    rewriter.modifyOpInPlace(write, [&] {
+      write.getValueToStoreMutable().assign(newLoop.getResults().back());
+    });
   }
 
   results.set(llvm::cast<OpResult>(getResult()), {newLoop.getOperation()});

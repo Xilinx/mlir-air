@@ -1183,12 +1183,10 @@ def HoistLoopInvariantTransfersOp : Op<Transform_Dialect, "air.hoist_loop_invari
     order the writes had in the loop body.
 
     Identical affine.apply ops in the loop body are merged first so that a
-    read and write computing the same index separately match. Hoisting is
-    done by
-    `linalg::hoistRedundantVectorTransfers` on the loop's parent, which also
-    moves loop-invariant ops and unaliased invariant reads out of the loops
-    there, and skips a pair unless every other access to the memref in the
-    loop is provably disjoint from it.
+    read and write computing the same index separately match, and
+    loop-invariant ops are moved out of the loop. A pair is skipped unless
+    every other access to the memref in the loop is provably disjoint from
+    it. Only the given loop is rewritten.
 
     This eliminates the need for fragile split_handle patterns that depend on the
     exact number and ordering of transfer operations, which can change with

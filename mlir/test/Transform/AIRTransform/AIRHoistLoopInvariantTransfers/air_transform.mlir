@@ -48,6 +48,24 @@ module attributes {transform.with_named_sequence} {
   %func7 = transform.structured.match ops{["func.func"]} attributes{sym_name = "hoist_equivalent_indices"} in %arg1 : (!transform.any_op) -> !transform.any_op
   %loop7 = transform.structured.match ops{["scf.for"]} in %func7 : (!transform.any_op) -> !transform.any_op
   %loop7_final = transform.air.hoist_loop_invariant_transfers %func7, %loop7 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+
+  // Test case 8: Only the given loop is rewritten
+  %func8 = transform.structured.match ops{["func.func"]} attributes{sym_name = "hoist_only_target_loop"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loops8 = transform.structured.match ops{["scf.for"]} in %func8 : (!transform.any_op) -> !transform.any_op
+  %inner8, %outer8 = transform.split_handle %loops8 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+  %loop8_final = transform.air.hoist_loop_invariant_transfers %func8, %inner8 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+  transform.debug.emit_remark_at %inner8, "input handle" : !transform.any_op
+
+  // Test case 9: Pairs that cannot become an iter_arg
+  %f_keep_masked_pair = transform.structured.match ops{["func.func"]} attributes{sym_name = "keep_masked_pair"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %l_keep_masked_pair = transform.structured.match ops{["scf.for"]} in %f_keep_masked_pair : (!transform.any_op) -> !transform.any_op
+  %r_keep_masked_pair = transform.air.hoist_loop_invariant_transfers %f_keep_masked_pair, %l_keep_masked_pair : (!transform.any_op, !transform.any_op) -> !transform.any_op
+  %f_keep_view_base = transform.structured.match ops{["func.func"]} attributes{sym_name = "keep_view_base"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %l_keep_view_base = transform.structured.match ops{["scf.for"]} in %f_keep_view_base : (!transform.any_op) -> !transform.any_op
+  %r_keep_view_base = transform.air.hoist_loop_invariant_transfers %f_keep_view_base, %l_keep_view_base : (!transform.any_op, !transform.any_op) -> !transform.any_op
+  %f_keep_write_before_read = transform.structured.match ops{["func.func"]} attributes{sym_name = "keep_write_before_read"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %l_keep_write_before_read = transform.structured.match ops{["scf.for"]} in %f_keep_write_before_read : (!transform.any_op) -> !transform.any_op
+  %r_keep_write_before_read = transform.air.hoist_loop_invariant_transfers %f_keep_write_before_read, %l_keep_write_before_read : (!transform.any_op, !transform.any_op) -> !transform.any_op
     transform.yield
   }
 }

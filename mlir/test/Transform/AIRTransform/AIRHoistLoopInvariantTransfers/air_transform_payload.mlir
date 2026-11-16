@@ -205,3 +205,90 @@ func.func @hoist_equivalent_indices(%arg0: memref<32x32xf32, 2>, %x: index) {
   // CHECK: vector.transfer_write %[[LOOP]], %{{.*}}[%[[X]], %{{.*}}]
   return
 }
+
+// Test case 8: Only the given loop is rewritten, even when the pair is also
+// invariant in the enclosing loop. A read with no matching write stays put.
+// CHECK-LABEL: @hoist_only_target_loop
+func.func @hoist_only_target_loop(%arg0: memref<32x32xf32, 2>, %arg1: memref<32x32xf32, 2>) -> vector<4x4xf32> {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  %cst = arith.constant 0.0 : f32
+  %init = arith.constant dense<0.0> : vector<4x4xf32>
+  // CHECK: scf.for {{.*}} iter_args({{.*}}) -> (vector<4x4xf32>)
+  // CHECK: vector.transfer_read
+  // CHECK: scf.for {{.*}} iter_args
+  // CHECK: vector.transfer_read %{{.*}}
+  // CHECK: scf.yield
+  // CHECK: vector.transfer_write
+  %res = scf.for %j = %c0 to %c4 step %c1 iter_args(%acc = %init) -> (vector<4x4xf32>) {
+    // expected-remark @below {{input handle}}
+    %in = scf.for %i = %c0 to %c4 step %c1 iter_args(%a = %acc) -> (vector<4x4xf32>) {
+      %v = vector.transfer_read %arg0[%c0, %c0], %cst {in_bounds = [true, true]} : memref<32x32xf32, 2>, vector<4x4xf32>
+      %u = vector.transfer_read %arg1[%c0, %c0], %cst {in_bounds = [true, true]} : memref<32x32xf32, 2>, vector<4x4xf32>
+      %r = arith.addf %v, %u : vector<4x4xf32>
+      %s = arith.addf %a, %u : vector<4x4xf32>
+      vector.transfer_write %r, %arg0[%c0, %c0] {in_bounds = [true, true]} : vector<4x4xf32>, memref<32x32xf32, 2>
+      scf.yield %s : vector<4x4xf32>
+    }
+    scf.yield %in : vector<4x4xf32>
+  }
+  return %res : vector<4x4xf32>
+}
+
+// Test case 9: Pairs that cannot become an iter_arg stay in the loop: a masked
+// pair, a pair on a view of another buffer, and a write before its read.
+// CHECK-LABEL: @keep_masked_pair
+// CHECK: scf.for
+// CHECK-NOT: iter_args
+// CHECK: vector.transfer_read
+// CHECK: vector.transfer_write
+func.func @keep_masked_pair(%arg0: memref<32x32xf32, 2>, %m: vector<4x4xi1>) {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  %cst = arith.constant 0.0 : f32
+  scf.for %i = %c0 to %c4 step %c1 {
+    %v = vector.transfer_read %arg0[%c0, %c0], %cst, %m {in_bounds = [true, true]} : memref<32x32xf32, 2>, vector<4x4xf32>
+    %r = arith.addf %v, %v : vector<4x4xf32>
+    vector.transfer_write %r, %arg0[%c0, %c0], %m {in_bounds = [true, true]} : vector<4x4xf32>, memref<32x32xf32, 2>
+  }
+  return
+}
+
+// CHECK-LABEL: @keep_view_base
+// CHECK: scf.for
+// CHECK-NOT: iter_args
+// CHECK: vector.transfer_read
+// CHECK: vector.transfer_write
+func.func @keep_view_base(%arg0: memref<32x32xf32, 2>) {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  %cst = arith.constant 0.0 : f32
+  %sv = memref.subview %arg0[0, 0] [8, 8] [1, 1] : memref<32x32xf32, 2> to memref<8x8xf32, strided<[32, 1]>, 2>
+  scf.for %i = %c0 to %c4 step %c1 {
+    %v = vector.transfer_read %sv[%c0, %c0], %cst {in_bounds = [true, true]} : memref<8x8xf32, strided<[32, 1]>, 2>, vector<4x4xf32>
+    %r = arith.addf %v, %v : vector<4x4xf32>
+    vector.transfer_write %r, %sv[%c0, %c0] {in_bounds = [true, true]} : vector<4x4xf32>, memref<8x8xf32, strided<[32, 1]>, 2>
+  }
+  return
+}
+
+// CHECK-LABEL: @keep_write_before_read
+// CHECK: scf.for
+// CHECK-NOT: iter_args
+// CHECK: vector.transfer_write
+// CHECK: vector.transfer_read
+func.func @keep_write_before_read(%arg0: memref<32x32xf32, 2>, %arg1: memref<32x32xf32, 2>, %w: vector<4x4xf32>) {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  %cst = arith.constant 0.0 : f32
+  scf.for %i = %c0 to %c4 step %c1 {
+    vector.transfer_write %w, %arg0[%c0, %c0] {in_bounds = [true, true]} : vector<4x4xf32>, memref<32x32xf32, 2>
+    %v = vector.transfer_read %arg0[%c0, %c0], %cst {in_bounds = [true, true]} : memref<32x32xf32, 2>, vector<4x4xf32>
+    vector.transfer_write %v, %arg1[%c0, %c0] {in_bounds = [true, true]} : vector<4x4xf32>, memref<32x32xf32, 2>
+  }
+  return
+}
