@@ -123,7 +123,7 @@ static cl::opt<unsigned>
 
 static cl::list<std::string>
     traceTiles("trace-tiles", cl::CommaSeparated,
-               cl::desc("With --trace-size, trace only these tiles"),
+               cl::desc("With --trace-size, trace only these core tiles"),
                cl::value_desc("col:row,..."), cl::cat(airCompilerOptions));
 
 static cl::opt<unsigned>

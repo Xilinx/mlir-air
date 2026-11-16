@@ -10248,15 +10248,24 @@ public:
         signalPassFailure();
         return;
       }
+      if (!target_model.isCoreTile(0, r)) {
+        device.emitError("trace-tiles: ") << spec << " is not a core tile";
+        signalPassFailure();
+        return;
+      }
       only.insert({c, r});
     }
+    // An unrolled segment's device is merged at this column.
+    int colOffset = 0;
+    if (auto ux = device->getAttrOfType<IntegerAttr>("segment_unroll_x"))
+      colOffset = ux.getInt() * target_model.columns();
 
     // Create packet flows
     for (auto srcTile : device.getOps<AIE::TileOp>()) {
       int srcColIndex = srcTile.colIndex();
       int srcRowIndex = srcTile.rowIndex();
       AIE::TileOp destTile;
-      bool listed = only.count({srcColIndex, srcRowIndex});
+      bool listed = only.count({srcColIndex + colOffset, srcRowIndex});
       if (!only.empty() && !listed)
         continue;
 

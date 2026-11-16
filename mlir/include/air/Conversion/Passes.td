@@ -214,8 +214,9 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
           /*default=*/"false",
           "Create packet routed traces for cores and memtiles">,
     ListOption<"clTraceTiles", "trace-tiles", "std::string",
-          "With insert-trace-packet-flow, trace only these tiles, each given "
-          "as col:row. A core tile listed is traced even where the south "
+          "With insert-trace-packet-flow, trace only these core tiles, each "
+          "given as col:row, the column that of the merged device when a "
+          "segment is unrolled. A tile listed is traced even where the south "
           "channels below it look taken by data flows.">,
     Option<"clUseLockRaceConditionFix", "use-lock-race-condition-fix", "bool",
           /*default=*/"false",
