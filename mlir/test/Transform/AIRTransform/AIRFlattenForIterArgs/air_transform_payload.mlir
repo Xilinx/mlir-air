@@ -124,9 +124,9 @@ func.func @flatten_different_vector_types(%v0: vector<4x4xf32>, %v1: vector<2x2x
     
     // CHECK: %{{.*}} = arith.addf %[[ARG0_SHAPED]], %[[ARG0_SHAPED]]
     // CHECK: %{{.*}} = arith.addf %[[ARG1_SHAPED]], %[[ARG1_SHAPED]]
-    // CHECK: %{{.*}} = vector.shape_cast %{{.*}} : vector<4x4xf32> to vector<16xf32>
-    // CHECK: %{{.*}} = vector.shape_cast %{{.*}} : vector<2x2x2xf16> to vector<8xf16>
-    // CHECK: scf.yield %{{.*}}, %{{.*}} : vector<16xf32>, vector<8xf16>
+    // CHECK-DAG: %[[Y0:.*]] = vector.shape_cast %{{.*}} : vector<4x4xf32> to vector<16xf32>
+    // CHECK-DAG: %[[Y1:.*]] = vector.shape_cast %{{.*}} : vector<2x2x2xf16> to vector<8xf16>
+    // CHECK: scf.yield %[[Y0]], %[[Y1]] : vector<16xf32>, vector<8xf16>
     scf.yield %r0, %r1 : vector<4x4xf32>, vector<2x2x2xf16>
   }
   
@@ -181,4 +181,21 @@ func.func @flatten_nested_loops(%v0: vector<2x2xi16>) -> vector<2x2xi16> {
   }
   
   return %outer : vector<2x2xi16>
+}
+
+// Test case 7: The new loop keeps the loop's attributes, and the result
+// handle points at it.
+// CHECK-LABEL: @flatten_keeps_loop_attrs
+func.func @flatten_keeps_loop_attrs(%v0: vector<2x4xf32>) -> vector<2x4xf32> {
+  %c0 = arith.constant 0 : index
+  %c2 = arith.constant 2 : index
+  %c1 = arith.constant 1 : index
+  // CHECK: scf.for {{.*}} -> (vector<8xf32>)
+  // CHECK: } {k_reduction_loop}
+  // expected-remark @below {{flattened loop}}
+  %r = scf.for %i = %c0 to %c2 step %c1 iter_args(%a = %v0) -> (vector<2x4xf32>) {
+    %s = arith.addf %a, %a : vector<2x4xf32>
+    scf.yield %s : vector<2x4xf32>
+  } {k_reduction_loop}
+  return %r : vector<2x4xf32>
 }
