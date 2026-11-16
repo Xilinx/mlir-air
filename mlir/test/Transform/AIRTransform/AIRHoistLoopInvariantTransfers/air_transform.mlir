@@ -32,11 +32,22 @@ module attributes {transform.with_named_sequence} {
   %loop4 = transform.structured.match ops{["scf.for"]} in %func4 : (!transform.any_op) -> !transform.any_op
   // Auto-discover hoists both pairs in a single call
   %loop4_final = transform.air.hoist_loop_invariant_transfers %func4, %loop4 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+  transform.debug.emit_remark_at %loop4_final, "hoisted loop" : !transform.any_op
 
   // Test case 5: Hoisted writes keep their order in the loop body
   %func5 = transform.structured.match ops{["func.func"]} attributes{sym_name = "hoist_three_pairs_keeps_write_order"} in %arg1 : (!transform.any_op) -> !transform.any_op
   %loop5 = transform.structured.match ops{["scf.for"]} in %func5 : (!transform.any_op) -> !transform.any_op
   %loop5_final = transform.air.hoist_loop_invariant_transfers %func5, %loop5 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+
+  // Test case 6: Overlapping pairs stay in the loop
+  %func6 = transform.structured.match ops{["func.func"]} attributes{sym_name = "keep_overlapping_pairs"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop6 = transform.structured.match ops{["scf.for"]} in %func6 : (!transform.any_op) -> !transform.any_op
+  %loop6_final = transform.air.hoist_loop_invariant_transfers %func6, %loop6 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+
+  // Test case 7: Read and write compute the same index separately
+  %func7 = transform.structured.match ops{["func.func"]} attributes{sym_name = "hoist_equivalent_indices"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop7 = transform.structured.match ops{["scf.for"]} in %func7 : (!transform.any_op) -> !transform.any_op
+  %loop7_final = transform.air.hoist_loop_invariant_transfers %func7, %loop7 : (!transform.any_op, !transform.any_op) -> !transform.any_op
     transform.yield
   }
 }

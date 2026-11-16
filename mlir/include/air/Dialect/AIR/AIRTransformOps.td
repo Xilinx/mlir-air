@@ -1180,13 +1180,15 @@ def HoistLoopInvariantTransfersOp : Op<Transform_Dialect, "air.hoist_loop_invari
 
     Each discovered pair is hoisted out of the loop: the read is moved before the
     loop (with an iter_arg), and the write is moved after the loop, keeping the
-    order the writes had in the loop body. All necessary
-    operand-producing operations (constants, affine.apply, etc.) are also hoisted
-    to maintain SSA dominance.
+    order the writes had in the loop body.
 
-    Index equivalence is checked using areEquivalentIndices(), which handles direct
-    SSA value equality, affine.apply ops with the same map and operands, and
-    constant index equality.
+    Identical affine.apply ops in the loop body are merged first so that a
+    read and write computing the same index separately match. Hoisting is
+    done by
+    `linalg::hoistRedundantVectorTransfers` on the loop's parent, which also
+    moves loop-invariant ops and unaliased invariant reads out of the loops
+    there, and skips a pair unless every other access to the memref in the
+    loop is provably disjoint from it.
 
     This eliminates the need for fragile split_handle patterns that depend on the
     exact number and ordering of transfer operations, which can change with

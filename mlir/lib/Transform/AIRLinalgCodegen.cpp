@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
+#include "mlir/Dialect/Linalg/Transforms/Hoisting.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -2656,75 +2657,6 @@ static Value cloneOpAndOperands(Operation *op, Value loopIV, scf::ForOp loopOp,
     return cloned->getResult(0);
 }
 
-/// Hoist a single transfer read/write pair out of a loop. The read is cloned
-/// before the loop, the write is cloned after the loop, and an iter_arg is
-/// added to carry the accumulator value through the loop body. The write goes
-/// after `lastHoistedWrite` when that is set, so that writes hoisted one after
-/// another keep their order in the loop body; it is updated to the new write.
-/// Returns the new ForOp on success.
-static FailureOr<scf::ForOp> hoistTransferPairFromLoop(
-    vector::TransferReadOp readOp, vector::TransferWriteOp writeOp,
-    scf::ForOp loopOp, Operation *&lastHoistedWrite, RewriterBase &rewriter) {
-  Value loopIV = loopOp.getInductionVar();
-
-  // Clone the read and its operands before the loop
-  rewriter.setInsertionPoint(loopOp);
-  IRMapping readMapping;
-  Value clonedReadResult =
-      cloneOpAndOperands(readOp, loopIV, loopOp, rewriter, readMapping);
-
-  // Capture writeVector before replaceWithAdditionalYields
-  Value writeVector = writeOp.getVector();
-  auto yieldValuesFn =
-      [&](OpBuilder &b, Location loc,
-          ArrayRef<BlockArgument> newBbArgs) -> SmallVector<Value> {
-    BlockArgument readIterArg = newBbArgs.back();
-    rewriter.replaceAllUsesWith(readOp.getResult(), readIterArg);
-    SmallVector<Value> yieldValues;
-    yieldValues.push_back(writeVector);
-    return yieldValues;
-  };
-
-  FailureOr<LoopLikeOpInterface> newLoopResult =
-      cast<LoopLikeOpInterface>(loopOp.getOperation())
-          .replaceWithAdditionalYields(rewriter, ValueRange{clonedReadResult},
-                                       true, yieldValuesFn);
-  if (failed(newLoopResult))
-    return failure();
-
-  auto newLoop = cast<scf::ForOp>(newLoopResult->getOperation());
-  rewriter.eraseOp(readOp);
-
-  // Clone the write operation after the loop using the yielded value
-  Value valueToWrite = newLoop.getResults().back();
-  IRMapping writeMapping;
-  writeMapping.map(writeVector, valueToWrite);
-
-  if (lastHoistedWrite)
-    rewriter.setInsertionPointAfter(lastHoistedWrite);
-  else
-    rewriter.setInsertionPointAfter(newLoop);
-
-  for (Value index : writeOp.getIndices()) {
-    Operation *defOp = index.getDefiningOp();
-    if (!defOp || dependsOnLoopIV(index, loopIV))
-      continue;
-    if (!newLoop->isProperAncestor(defOp))
-      continue;
-    if (!writeMapping.contains(index)) {
-      Value clonedIndex =
-          cloneOpAndOperands(defOp, loopIV, newLoop, rewriter, writeMapping);
-      if (clonedIndex)
-        writeMapping.map(index, clonedIndex);
-    }
-  }
-
-  lastHoistedWrite = rewriter.clone(*writeOp.getOperation(), writeMapping);
-  rewriter.eraseOp(writeOp);
-
-  return newLoop;
-}
-
 DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
     transform::TransformRewriter &rewriter,
     transform::TransformResults &results, transform::TransformState &state) {
@@ -2749,78 +2681,51 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
     return emitDefiniteFailure() << "loop must be inside the scope operation";
   }
 
-  // Iteratively discover and hoist one loop-invariant transfer pair at a time.
-  // After each hoist, the loop is replaced with a new loop, so we re-discover
-  // pairs in the new loop to avoid stale Operation* pointers.
-  scf::ForOp currentLoop = loopOp;
-  Operation *lastHoistedWrite = nullptr;
-
-  while (true) {
-    Value loopIV = currentLoop.getInductionVar();
-
-    // Find one loop-invariant write and its paired read
-    vector::TransferWriteOp foundWrite = nullptr;
-    vector::TransferReadOp foundRead = nullptr;
-
-    currentLoop->walk([&](vector::TransferWriteOp writeOp) {
-      if (foundWrite)
-        return;
-      if (writeOp->getParentOfType<scf::ForOp>() != currentLoop)
-        return;
-
-      // Check all write indices are loop-invariant
-      bool allInvariant = true;
-      for (Value index : writeOp.getIndices()) {
-        if (dependsOnLoopIV(index, loopIV)) {
-          allInvariant = false;
-          break;
-        }
-      }
-      if (!allInvariant)
-        return;
-
-      // Find paired read with same memref and matching loop-invariant indices
-      currentLoop->walk([&](vector::TransferReadOp readOp) {
-        if (foundRead)
-          return;
-        if (readOp->getParentOfType<scf::ForOp>() != currentLoop)
-          return;
-        if (readOp.getBase() != writeOp.getBase())
-          return;
-
-        for (Value index : readOp.getIndices()) {
-          if (dependsOnLoopIV(index, loopIV))
-            return;
-        }
-
-        if (readOp.getIndices().size() != writeOp.getIndices().size())
-          return;
-        for (auto [ri, wi] :
-             llvm::zip(readOp.getIndices(), writeOp.getIndices())) {
-          if (!areEquivalentIndices(ri, wi))
-            return;
-        }
-
-        foundRead = readOp;
-      });
-
-      if (foundRead)
-        foundWrite = writeOp;
+  // Matching pairs must share index values. Only index ops are merged: later
+  // transform steps match the remaining body ops by count.
+  SmallVector<affine::AffineApplyOp> applies;
+  for (auto apply : llvm::make_early_inc_range(
+           loopOp.getBody()->getOps<affine::AffineApplyOp>())) {
+    auto it = llvm::find_if(applies, [&](affine::AffineApplyOp prev) {
+      return OperationEquivalence::isEquivalentTo(
+          prev, apply, OperationEquivalence::IgnoreLocations);
     });
-
-    if (!foundWrite || !foundRead)
-      break; // No more pairs to hoist
-
-    FailureOr<scf::ForOp> newLoop = hoistTransferPairFromLoop(
-        foundRead, foundWrite, currentLoop, lastHoistedWrite, rewriter);
-    if (failed(newLoop)) {
-      return emitDefiniteFailure() << "failed to hoist transfer pair";
+    if (it == applies.end()) {
+      applies.push_back(apply);
+      continue;
     }
-    currentLoop = *newLoop;
+    rewriter.replaceOp(apply, it->getResult());
   }
 
-  SmallVector<Operation *> resultOps = {currentLoop.getOperation()};
-  results.set(llvm::cast<OpResult>(getResult()), resultOps);
+  // The writes come out of the loop in reverse; restore body order after.
+  SmallVector<Operation *> bodyWrites;
+  for (auto write : loopOp.getBody()->getOps<vector::TransferWriteOp>())
+    bodyWrites.push_back(write);
+
+  // The hoist replaces the loop; a marker attribute finds the new one.
+  StringRef marker = "air.hoist_loop_invariant_transfers";
+  loopOp->setAttr(marker, rewriter.getUnitAttr());
+  Operation *parent = loopOp->getParentOp();
+  linalg::hoistRedundantVectorTransfers(parent);
+
+  scf::ForOp newLoop;
+  parent->walk([&](scf::ForOp forOp) {
+    if (forOp->hasAttr(marker))
+      newLoop = forOp;
+  });
+  if (!newLoop)
+    return emitDefiniteFailure() << "failed to find the hoisted loop";
+  newLoop->removeAttr(marker);
+
+  Operation *insertAfter = newLoop;
+  for (Operation *write : bodyWrites) {
+    if (write->getBlock() != newLoop->getBlock())
+      continue;
+    write->moveAfter(insertAfter);
+    insertAfter = write;
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), {newLoop.getOperation()});
   return DiagnosedSilenceableFailure::success();
 }
 
