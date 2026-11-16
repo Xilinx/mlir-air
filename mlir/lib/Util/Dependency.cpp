@@ -3001,6 +3001,52 @@ void dependencyCanonicalizer::purgeAIRDepList(dependencyGraph &graph) {
   }
 }
 
+// A loop's token used after a branch op (scf.if, affine.if, scf.index_switch)
+// that holds the loop: the tokens of the outermost branch op that must be
+// crossed for it to dominate `user`. A token a region yields maps to the
+// branch op's result at the same position; one it does not yield directly
+// maps to every token result. Empty if that branch op holds `user`.
+static SmallVector<Value> elevateTokenOutOfBranches(Value token,
+                                                    Operation *user) {
+  if (!token)
+    return {};
+  Operation *src = token.getDefiningOp();
+  SmallVector<Value> cur = {token};
+  while (src &&
+         isa_and_present<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(
+             src->getParentOp())) {
+    DominanceInfo domInfo(src);
+    if (llvm::all_of(
+            cur, [&](Value v) { return domInfo.properlyDominates(v, user); }))
+      break;
+    Operation *branch = src->getParentOp();
+    if (branch->isAncestor(user))
+      return {};
+    Block *block = src->getBlock();
+    Operation *term =
+        block->mightHaveTerminator() ? block->getTerminator() : nullptr;
+    llvm::SetVector<Value> next;
+    for (Value v : cur) {
+      bool yielded = false;
+      if (term)
+        for (auto [i, y] : llvm::enumerate(term->getOperands()))
+          if (y == v && i < branch->getNumResults()) {
+            next.insert(branch->getResult(i));
+            yielded = true;
+          }
+      if (!yielded)
+        for (Value r : branch->getResults())
+          if (isa<air::AsyncTokenType>(r.getType()))
+            next.insert(r);
+    }
+    if (next.empty())
+      return {};
+    cur.assign(next.begin(), next.end());
+    src = branch;
+  }
+  return cur;
+}
+
 void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
     dependencyGraph &graph) {
   auto vp = graph.g.getVertices();
@@ -3028,24 +3074,27 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
             if (value)
               async_op.addAsyncDependency(value);
           } else {
-            // Destination is outside (after) the loop: use loop result.
+            // Destination is outside (after) the loop: use loop result,
+            // or the token of a branch op around the loop.
             for (auto res : for_op->getResults()) {
               if (isa<air::AsyncTokenType>(res.getType())) {
-                async_op.addAsyncDependency(res);
+                for (Value value : elevateTokenOutOfBranches(res, op))
+                  async_op.addAsyncDependency(value);
                 break;
               }
             }
           }
         }
       } else if (graph.g[TRVertex].asyncEventType == "parallel_loop") {
-        auto value = getLoopCarriedTokenFromScfOp(
-            dyn_cast_if_present<scf::ParallelOp>(src_op));
-        if (value)
+        for (Value value : elevateTokenOutOfBranches(
+                 getLoopCarriedTokenFromScfOp(
+                     dyn_cast_if_present<scf::ParallelOp>(src_op)),
+                 op))
           async_op.addAsyncDependency(value);
       } else if (graph.g[TRVertex].asyncEventType == "terminator") {
         auto parent_op = src_op->getParentOp();
-        auto value = getAsyncTokenFromOp(parent_op);
-        if (value)
+        for (Value value :
+             elevateTokenOutOfBranches(getAsyncTokenFromOp(parent_op), op))
           async_op.addAsyncDependency(value);
       } else if (auto async_src_op =
                      dyn_cast_if_present<xilinx::air::AsyncOpInterface>(
