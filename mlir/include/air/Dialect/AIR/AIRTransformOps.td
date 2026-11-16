@@ -1184,6 +1184,36 @@ def AccumulateIntoLoopInitOp : Op<Transform_Dialect, "air.accumulate_into_loop_i
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
+def MergeAdjacentReadsOp : Op<Transform_Dialect, "air.merge_adjacent_reads",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Read two adjacent pieces of memory as one wider vector";
+  let description = [{
+    Merges two `vector.transfer_read` ops in one block of `target` into one
+    read of both, whose halves (`vector.extract_strided_slice` of it
+    flattened, cast back to the reads' type) replace them. The reads take
+    the same type from the same memref with a minor identity map, the same
+    padding, no mask and all dims in bounds, at indices that differ only in
+    one dim d, where the second's is one more. The memref holds scalars of
+    the vector's element type. In d and every dim before it in the vector, the
+    vectors have extent 1; every vector dim after d covers its memref dim,
+    and the memref is contiguous from d on: the reads are adjacent pieces.
+    The merged vector, the reads' type with extent 2 in d, holds at most
+    `max_bits` bits, and nothing between the reads may write what the
+    second one reads. The merged read takes the place of the first.
+
+    With `max_bits` set to a vector register's width, two reads of half a
+    register each become one read of the whole register.
+
+    Returns a handle to the target.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   I64Attr:$max_bits);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target `max_bits` `=` $max_bits attr-dict `:` functional-type(operands, results)";
+}
+
 def EliminateRedundantVectorTransfersOp : Op<Transform_Dialect, "air.eliminate_redundant_vector_transfers",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
