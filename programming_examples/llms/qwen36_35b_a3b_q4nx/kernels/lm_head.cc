@@ -35,11 +35,10 @@ namespace {
 constexpr int MODEL_DIM = LM_DIM;
 } // namespace
 
-extern "C" {
+namespace {
 
-// xw = [x | w]: x <- x / rms(x) * w, in place.
-void lm_rms_norm(bf16 *__restrict xw) {
-  bf16 *x = xw, *w = xw + MODEL_DIM;
+// x <- x / rms(x) * w, in place
+void rms_norm_inplace(bf16 *__restrict x, const bf16 *__restrict w) {
   constexpr int V = 16, F = MODEL_DIM / V;
   constexpr float one_over_D = 1.0f / (float)MODEL_DIM;
   aie::accum<accfloat, V> sq = aie::zeros<accfloat, V>();
@@ -67,5 +66,12 @@ void lm_rms_norm(bf16 *__restrict xw) {
     aie::store_v(x + V * i, o);
   }
 }
+
+} // namespace
+
+extern "C" {
+
+// xw = [x | w]: x <- x / rms(x) * w, in place.
+void lm_rms_norm(bf16 *__restrict xw) { rms_norm_inplace(xw, xw + MODEL_DIM); }
 
 } // extern "C"

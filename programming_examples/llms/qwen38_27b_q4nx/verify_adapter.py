@@ -101,7 +101,7 @@ class NpuRunner:
     def __init__(self):
         import filelock
 
-        import decode
+        import qwen38_27b_q4nx_decode as dec
 
         self._w = _w.Qwen38Q4nx()
         self._lock = filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock"))
@@ -111,7 +111,7 @@ class NpuRunner:
         here = os.getcwd()
         os.chdir(build)
         try:
-            self.dec = decode.load(self._w, _MAXL)
+            self.dec = dec.load(self._w, _MAXL)
         finally:
             os.chdir(here)
         self.pf, self.pf_len = None, 0

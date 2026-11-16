@@ -154,13 +154,6 @@ public:
     return true;
   }
 
-  // Helper: Get IntegerAttr from ArrayAttr at index, with type check
-  static IntegerAttr getIntegerAttrAt(ArrayAttr arr, size_t idx) {
-    if (idx >= arr.size())
-      return nullptr;
-    return dyn_cast_if_present<IntegerAttr>(arr[idx]);
-  }
-
   // Helper: Find first dimension with size > 1, with type check
   static std::optional<std::pair<size_t, int64_t>>
   findSpecializeDim(ArrayAttr sizeAttr,

@@ -104,6 +104,8 @@ class TxnBuilder:
         self._include_dirs = list(include_dirs or _default_include_dirs())
         self._workdir = workdir
         self._lib = None
+        # per function, the buffer the last stream was assembled into
+        self._buffers = {}
         self._build()
 
     @property
@@ -178,14 +180,22 @@ class TxnBuilder:
                 f"generate_txn_{name} takes {len(params)} argument(s), got {len(args)}"
             )
         fn = getattr(self._lib, f"air_txn_{name}")
-        null = ctypes.POINTER(ctypes.c_uint32)()
-        n = fn(*args, null, 0)
+        # Assemble into the buffer this function's last call left; only a
+        # longer stream (its length follows the run-time trip counts) needs a
+        # second call, into a buffer of the size the first one returned.
+        buf = self._buffers.get(name)
+        cap = 0 if buf is None else buf.size
+        ptr = ctypes.POINTER(ctypes.c_uint32)
+        n = fn(*args, buf.ctypes.data_as(ptr) if cap else ptr(), cap)
         if n < 0:
             raise TxnBuilderError(f"generate_txn_{name}{args} returned no stream")
-        words = np.zeros(n, dtype=np.uint32)
-        got = fn(*args, words.ctypes.data_as(ctypes.POINTER(ctypes.c_uint32)), n)
-        if got != n:
-            raise TxnBuilderError(
-                f"generate_txn_{name}{args} is not deterministic: {n} then {got} words"
-            )
-        return words
+        if n > cap:
+            buf = np.zeros(n, dtype=np.uint32)
+            got = fn(*args, buf.ctypes.data_as(ptr), n)
+            if got != n:
+                raise TxnBuilderError(
+                    f"generate_txn_{name}{args} is not deterministic: {n} then "
+                    f"{got} words"
+                )
+            self._buffers[name] = buf
+        return buf[:n].copy()

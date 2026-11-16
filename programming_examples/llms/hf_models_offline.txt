@@ -52,3 +52,7 @@ Qwen/Qwen3.8-27B@37561816e66b5b9153b1b64c10968c18c1e6f4a0
 # example quantizes to its Q4_K bundle (`make prepare`) and `make verify`
 # compares against.
 Qwen/Qwen3-Coder-30B-A3B-Instruct@b2cff646eb4bb1d68355c01b18ae02e7cf42d120
+
+# Qwen3-Coder-30B-A3B DFlash B8 (llms/dflash/qwen3_coder_30b_a3b): the drafter;
+# the target is the bundle above.
+z-lab/Qwen3-Coder-30B-A3B-DFlash@98ca0e3e2e6a372f2789d3a5e146566194084317

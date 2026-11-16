@@ -114,8 +114,6 @@ public:
   /// error and showing up as a device timeout.
   LogicalResult verify() const;
 
-  /// One block per domain: originators, hops in order, the demux, the ids.
-  void printReport(llvm::raw_ostream &os) const;
   /// Same, as op remarks, for `-air-annotate-packet-ids=report=true`.
   void emitReportRemarks() const;
 

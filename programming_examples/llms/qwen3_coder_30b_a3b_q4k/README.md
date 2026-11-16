@@ -46,13 +46,15 @@ How each side takes them:
 - **Decode**: the Q4_K blocks as stored. The experts of all 48 layers sit in
   one buffer (`WE`, about 16.8 GB) that the router core reads at the chosen
   experts' offsets.
-- **Prefill**: the same blocks, read in place by the fused prefill device's
-  Q4_K GEMM (`Config.q4k`): the experts from the decode's `WE`, the dense
-  projections from the prefill's own copy.
+- **Prefill**: the same blocks in the fused prefill device's layout of them
+  (`hostops.q4k_prefill`: the nibbles in the order its dequant reads them,
+  each group's scale and min products precomputed), 5120 bytes a block. The
+  prefill holds its own copy of the dense projections and of the experts
+  (the experts about 18.2 GB), apart from the decode's `WE`.
 
 ## Placement
 
-Decode (`decode.py`), one launch repeated once per four layers:
+Decode (`qwen3_coder_30b_a3b_q4k_decode.py`), one launch repeated once per four layers:
 
 | Columns | Role |
 | --- | --- |
@@ -73,9 +75,14 @@ Prefill (`prefill.py`, device spec `fused_spec.py`):
 | norms, residual adds, q/k norm, RoPE, K/V records | host | `hostops` (shared) |
 | router, expert GLU, the experts' weighted sum | host | torch, the Qwen3.6 example's `exp_glu_tile` |
 
-Each expert is an up | gate dispatch, the GLU on the host and a down dispatch;
-the busiest experts go first, and the next expert's up | gate is queued while
-the host works on the current one. After prefill the host writes the prompt's
+An expert's rows run in blocks of up to 256, the busiest experts first. A
+layer's blocks go in `MOE_GROUPS` (8) groups, each one up | gate dispatch, the
+GLU on the host and one down dispatch: the dispatch is the GEMM's "x" op
+(`shared/fused_prefill/device.py`), a launch repeated once per block, whose
+block count, blocks and experts are run-time arguments of the op's C++ TXN
+builder; each wave reads its block's A and C and its expert's part of the
+prefill's copy of the experts. The host's GLU of a group
+overlaps the device's up | gate of the next. After prefill the host writes the prompt's
 K / V rows into the decode's cache, and the LM head takes the last row for the
 first token.
 
@@ -101,9 +108,9 @@ measured with `llama-bench`.
 | --- | --- | --- |
 | decode, 1024-token context | 45.5 ms/token (22.0 tok/s) | 36.3 ms/token (27.5 tok/s) |
 | decode, 4096-token context | 56.2 ms/token (17.8 tok/s) | 35.7 ms/token (28.0 tok/s) |
-| prefill, 1024-token prompt | 2.45 s | 1.92 s |
-| prefill, 2048-token prompt | 4.66 s | 4.11 s |
-| prefill, 4096-token prompt | 11.7 s | 10.2 s |
+| prefill, 1024-token prompt | 1.67 s | 1.92 s |
+| prefill, 2048-token prompt | 3.06 s | 4.11 s |
+| prefill, 4096-token prompt | 6.71 s | 10.2 s |
 
 Decode streams about 1.9 GB of weights a token; the NPU's DDR reads top out
 near 58 GB/s, so its floor is above llama.cpp's on the integrated GPU.
@@ -143,7 +150,8 @@ make profile-prefill CTX=2048 # TTFT of a 2048-token prompt
 
 | File | Purpose |
 | --- | --- |
-| `decode.py` | The 48-layer decode ELF, the LM head dispatch, the prefill hand-off (`Q3CDecoder`); `make run` / `profile` |
+| `qwen3_coder_30b_a3b_q4k_inference.py` | End to end: the prompt (fused prefill or decode), then the decode; TTFT and tok/s; `make run` / `profile` |
+| `qwen3_coder_30b_a3b_q4k_decode.py` | The 48-layer decode ELF, the LM head dispatch, the prefill hand-off (`Q3CDecoder`) |
 | `attn_layer.py`, `lm_head.py` | One layer (attention and MoE) and the LM head alone, each against the reference |
 | `moe_block.py` | The MoE block's shapes and weight layout |
 | `prefill.py` | The prefill on the fused prefill device (`Q3CPrefill`) |

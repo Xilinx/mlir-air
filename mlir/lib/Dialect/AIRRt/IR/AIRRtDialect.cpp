@@ -26,7 +26,6 @@ void AIRRtDialect::initialize() {
 #define GET_OP_LIST
 #include "air/Dialect/AIRRt/AIRRtOps.cpp.inc"
       >();
-  addTypes<TensorType>();
 }
 
 Type AIRRtDialect::parseType(DialectAsmParser &parser) const {

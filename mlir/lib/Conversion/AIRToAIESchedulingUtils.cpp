@@ -1113,21 +1113,6 @@ bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileLike tile,
     return false;
 }
 
-// Is there a packet-flow allocation owned by a tile in the given column?
-bool xilinx::air::allocation_info_t::foundPacketFlowAllocInColumn(int32_t col) {
-  if (!foundAllocInColumn(col))
-    return false;
-  for (auto o : memcpyOps) {
-    auto memcpy_op = dyn_cast_if_present<air::MemcpyInterface>(o);
-    if (!memcpy_op)
-      continue;
-    auto chanTypeRes = air::getChannelType(memcpy_op);
-    if (succeeded(chanTypeRes))
-      return chanTypeRes.value() == "npu_dma_packet";
-  }
-  return false;
-}
-
 // TileLike-keyed overloads (RFC #1567). Pointer-equality on the underlying
 // Operation* of dma_tile replaces (col, row) integer comparison; same answer,
 // no dependence on physical placement coordinates. Works for both AIE::TileOp
@@ -4614,74 +4599,6 @@ LogicalResult air::simpleDMAChannelAllocation(
       if (failed(allocateL3(f)))
         return failure();
   return success();
-}
-
-// If found item in vector, return index; else return -1.
-template <typename T>
-int air::foundInVector(T item, std::vector<T> vec) {
-  auto it = std::find(vec.begin(), vec.end(), item);
-  int index = it - vec.begin();
-  return index;
-}
-
-int air::getSCFForLoopDepth(Operation *o) {
-  int for_loop_depth = 0;
-  Operation *parentFor = o->getParentOfType<scf::ForOp>();
-  while (parentFor) {
-    for_loop_depth++;
-    parentFor = parentFor->getParentOfType<scf::ForOp>();
-  }
-  return for_loop_depth;
-}
-
-// AIR channel to AIE flow scheduling strategy 2: grouped by for loop
-// Only those air channel puts and gets which share the same for loop level can
-// share the same AIE DMA channel. TODO: what if same level but different parent
-// loops?
-bool air::groupingMemcpysByLoop(
-    std::vector<air::MemcpyBundleAsFlow> &memcpy_flows) {
-  // Group memcpy_flows based on L1-side puts/gets' loop structure
-  std::map<AIE::CoreOp, std::vector<scf::ForOp>> for_loops_log_mm2s,
-      for_loops_log_s2mm;
-  for (auto &f : memcpy_flows) {
-    {
-      // Group by loop only for L1 producers (dispatch per-producer, since a
-      // convergent flow may also have L2 memtile producers with no aie.core).
-      for (auto o : f.MM2S) {
-        if (getMM2SProducerMemorySpace(o) != air::MemorySpace::L1)
-          continue;
-        auto core = o->getParentOfType<AIE::CoreOp>();
-        f.flow_op_group = foundInVector<scf::ForOp>(
-            o->getParentOfType<scf::ForOp>(), for_loops_log_mm2s[core]);
-        if ((size_t)f.flow_op_group == for_loops_log_mm2s[core].size()) {
-          for_loops_log_mm2s[core].push_back(o->getParentOfType<scf::ForOp>());
-        }
-      }
-    }
-    {
-      // Group by loop only for L1 receivers (dispatch per-receiver, since a
-      // broadcast/demux flow may also have L2 dests with no aie.core parent).
-      for (size_t i = 0; i < f.S2MM.size(); i++) {
-        for (auto o : f.S2MM[i]) {
-          if (getS2MMReceiverMemorySpace(o) != air::MemorySpace::L1)
-            continue;
-          auto core = o->getParentOfType<AIE::CoreOp>();
-          f.flow_op_group = foundInVector<scf::ForOp>(
-              o->getParentOfType<scf::ForOp>(), for_loops_log_s2mm[core]);
-          if ((size_t)f.flow_op_group == for_loops_log_s2mm[core].size()) {
-            for_loops_log_s2mm[core].push_back(
-                o->getParentOfType<scf::ForOp>());
-          }
-        }
-      }
-    }
-  }
-  // Toggle scheduling strategy
-  int flow_op_group_max = 0;
-  for (auto &f : memcpy_flows) {
-    flow_op_group_max = std::max(flow_op_group_max, f.flow_op_group);
-  }
-  return flow_op_group_max;
 }
 
 LogicalResult

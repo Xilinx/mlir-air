@@ -363,7 +363,15 @@ def open_launch_region(launch, tensors, counts, body, repeat=None, attrs=None):
         from air.dialects import arith
         from air.dialects.scf import for_ as scf_for, yield_
 
-        bounds = [arith.ConstantOp.create_index(v).result for v in repeat]
+        from ._index import coerce_index, materialize_index
+
+        # A run-time count is a rank-0 tensor: the func argument itself, at
+        # this scope.
+        bounds = [materialize_index(coerce_index(v)) for v in repeat]
+        bounds = [
+            arith.ConstantOp.create_index(b).result if isinstance(b, int) else b
+            for b in bounds
+        ]
         for _iv in scf_for(*bounds):
             _emit_launch(launch, tensors, counts, body, operands + [_iv], attrs, closed)
             yield_([])
