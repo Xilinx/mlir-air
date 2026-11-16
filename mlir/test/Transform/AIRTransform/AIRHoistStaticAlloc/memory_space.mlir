@@ -70,3 +70,36 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// A dynamically sized allocation stays in the loop; a static one after it is
+// still hoisted.
+// CHECK-LABEL: @dynamic_size
+// CHECK: memref.alloc() : memref<16xf32>
+// CHECK-NOT: memref.alloc
+// CHECK: scf.for
+// CHECK: %[[A:.*]] = memref.alloc(%{{.*}}) : memref<?xf32>
+// CHECK: memref.dealloc %[[A]] : memref<?xf32>
+// CHECK: }
+func.func @dynamic_size(%x: f32, %n: index) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  scf.for %i = %c0 to %n step %c1 {
+    %a = memref.alloc(%n) : memref<?xf32>
+    %b = memref.alloc() : memref<16xf32>
+    memref.store %x, %a[%c0] : memref<?xf32>
+    memref.store %x, %b[%c0] : memref<16xf32>
+    memref.dealloc %a : memref<?xf32>
+    memref.dealloc %b : memref<16xf32>
+  }
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    transform.air.hoist_static_alloc %f : (!transform.any_op) -> ()
+    transform.yield
+  }
+}
