@@ -925,25 +925,10 @@ struct SubMul64ToMsc : public OpRewritePattern<arith::SubFOp> {
                                     DenseElementsAttr::get(bf16Vec, *bSplat));
     Value conf = arith::ConstantOp::create(rewriter, loc,
                                            rewriter.getI32IntegerAttr(828));
-    // An accumulator widened from bf16 is produced by the multiplier
-    // (c * 1.0) instead of two conversions on the vector unit, which stays
-    // free for other work.
+    // The accumulator is used as is, including when it is a bf16 value
+    // widened by extf: computing it as c * 1.0 would need the multiplier,
+    // which the msc itself uses.
     Value acc = sub.getLhs();
-    if (Value c = bf16Source(acc)) {
-      FunctionType mulTy = rewriter.getFunctionType(
-          {c.getType(), bf16Vec, rewriter.getI32Type()}, {vt});
-      if (canDeclareAIE2p(sub, "llvm.aie2p.I1024.I1024.ACC2048.bf.mul.conf",
-                          mulTy)) {
-        Value one = arith::ConstantOp::create(
-            rewriter, loc,
-            DenseElementsAttr::get(bf16Vec, APFloat(APFloat::BFloat(), "1")));
-        Value mulConf = arith::ConstantOp::create(
-            rewriter, loc, rewriter.getI32IntegerAttr(60));
-        acc = callAIE2p(rewriter, loc, vt,
-                        "llvm.aie2p.I1024.I1024.ACC2048.bf.mul.conf",
-                        {c, one, mulConf});
-      }
-    }
     Value msc = callAIE2p(rewriter, loc, vt,
                           "llvm.aie2p.I1024.I1024.ACC2048.bf.msc.conf",
                           {a, b, acc, conf});

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide64.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide64.mlir' %s | FileCheck %s --implicit-check-not=bf.mul.conf
 // RUN: air-opt -air-transform='filename=%S/Inputs/air_transform_wide64_nocontract.mlir' %s | FileCheck %s --check-prefix=NOCONTRACT
 
 // w = bf16(bf16(0x4300 | q) * s + base) on 64 lanes, with f32_lanes = 64:
@@ -107,11 +107,11 @@ func.func @trunc_unit_lead(%a: memref<64xf32>, %w: memref<1x8x8xbf16>) {
 }
 
 // m - 128 s on 64 lanes, s and m widened from bf16: one multiply-subtract.
-// The accumulator, m widened, comes from the multiplier as m * 1.0.
+// The accumulator is m widened by conversion, not by the multiplier.
 // CHECK-LABEL: @base_msc
+// CHECK: %[[MV:.*]] = vector.transfer_read %arg1
+// CHECK: %[[M:.*]] = arith.extf %[[MV]] : vector<64xbf16> to vector<64xf32>
 // CHECK: %[[C:.*]] = arith.constant dense<1.280000e+02> : vector<64xbf16>
-// CHECK: %[[ONE:.*]] = arith.constant dense<1.000000e+00> : vector<64xbf16>
-// CHECK: %[[M:.*]] = call @llvm.aie2p.I1024.I1024.ACC2048.bf.mul.conf(%{{.*}}, %[[ONE]], %{{.*}})
 // CHECK: call @llvm.aie2p.I1024.I1024.ACC2048.bf.msc.conf(%{{.*}}, %[[C]], %[[M]], %{{.*}})
 // CHECK-NOT: arith.subf
 // CHECK-NOT: arith.extf
