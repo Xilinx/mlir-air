@@ -5690,6 +5690,17 @@ static bool areIdenticalReads(vector::TransferReadOp read1,
   if (vec1Ty != vec2Ty)
     return false;
 
+  if (read1.getPermutationMap() != read2.getPermutationMap() ||
+      read1.getInBoundsAttr() != read2.getInBoundsAttr() ||
+      read1.getMask() != read2.getMask())
+    return false;
+
+  Attribute pad1, pad2;
+  if (read1.getPadding() != read2.getPadding() &&
+      !(matchPattern(read1.getPadding(), m_Constant(&pad1)) &&
+        matchPattern(read2.getPadding(), m_Constant(&pad2)) && pad1 == pad2))
+    return false;
+
   return true;
 }
 
@@ -5711,14 +5722,10 @@ static bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
   for (auto it = ++firstIt; it != secondIt; ++it) {
     Operation *op = &(*it);
 
-    // Check if this operation writes to the source memref
+    // Ops without declared effects (calls, ops with regions) may write.
     auto memInterface = dyn_cast_if_present<MemoryEffectOpInterface>(op);
-    if (!memInterface) {
-      // Conservative: if we can't determine effects, assume it might write
-      if (!op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
-        continue;
+    if (!memInterface)
       return true;
-    }
 
     SmallVector<MemoryEffects::EffectInstance> effects;
     memInterface.getEffects(effects);
