@@ -458,13 +458,21 @@ class MtpDraft:
             self.run.set_arg(i, b)
         self.params = ParameterScratchpad(self.run, str(params))
         self.writers = param_writers(params, {"L": len(self.bos)})
+        self.core = {
+            ln.split()[0]
+            for ln in Path(params).read_text().splitlines()
+            if len(ln.split()) > 3 and ln.split()[3] == "core"
+        }
 
     def map(self, i, dt):
         return np.frombuffer(self.bos[i].map(), dt)
 
-    def step(self, h, tok, L):
+    def step(self, h, tok, L, lo=0):
         """The head at position L - 1 on the main model's output h there and
-        the next token; returns its output before the final norm."""
+        the next token; returns its output before the final norm. With lo,
+        its attention skips the keys below lo (a window of whole 16-key
+        blocks, so up to 15 keys from lo up as well): the rows a caller never
+        ran the head on."""
         from rope import rope_weights
 
         xrt = self.xrt
@@ -473,8 +481,14 @@ class MtpDraft:
         self.map(self.RW, bfloat16)[:] = rope_weights(L - 1, self.qn, self.kn)
         for i in (self.XF, self.RW):
             self.bos[i].sync(to)
+        # the attention cores' L carries the window in bits 20-30
+        # (aie_kernel_utils.h attn_window_lo); the cache offsets take L
+        win = min((L - lo) // 16, 0x7FF) << 20 if lo > 0 else 0
         for name, fn in self.writers:
-            self.params.write(name, np.int32(fn({len(self.bos): L})))
+            v = fn({len(self.bos): L})
+            if name in self.core:
+                v |= win
+            self.params.write(name, np.int32(v))
         self.params.sync()
         self.run.start()
         st = self.run.wait(120000)

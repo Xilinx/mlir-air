@@ -800,7 +800,7 @@ class Q38Verifier:
             self.runs.append(r)
             self.params.append(ParameterScratchpad(r, str(params)))
         self.writers = param_writers(params, {"L": len(self.bos)})
-        self.queue = False
+        self.queue = True
 
     def _sub(self, i, wv):
         """Wave wv's share of argument i's buffer."""

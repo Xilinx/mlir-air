@@ -43,6 +43,12 @@ import qwen38_27b_q4nx_weights as W  # noqa: E402
 
 D, PW = W.D, V.PER_WAVE
 WAVES = W.N_LAYERS // PW
+# the draft's LM head rows: a quarter of the vocabulary drafts as well as the
+# whole of it on prose, in 7.6 ms rather than 26
+DRAFT_VOCAB = 65536
+# the prompt rows the head runs on (6 ms each): on a 1295-token prompt the last
+# 128 draft as well as all of them, the TTFT 7.2 s rather than 14.1
+MTP_PROMPT = 128
 
 
 def top2(lg):
@@ -109,6 +115,7 @@ class Spec:
                 run.set_arg(i, b)
             self.lm[name] = (ctx, run, args)
         self.t = {k: 0.0 for k in ("verify", "lm2", "mtp", "lm1")}
+        self.lo = 0
 
     def _lm(self, name, rows, vocab=W.VOCAB):
         xrt = self.xrt
@@ -166,16 +173,22 @@ class Spec:
     def mtp(self, h, tok, L, draft=True):
         """The head at position L - 1 (the main model's output h there, the
         token after it); with draft, the token it predicts after tok."""
-        self._timed("mtp", self.m.step, h, tok, L)
+        self._timed("mtp", self.m.step, h, tok, L, self.lo)
         if draft:
             return int(self._timed("lm1", self._lm, "lm1", 1, self.dv).argmax())
 
-    def prompt_mtp(self, ids, hs, first):
+    def prompt_mtp(self, ids, hs, first, k=0):
         """The head over the prompt, whose last-layer rows are hs [n, D] (row
         i with the token after it); the draft after the first generated
-        token."""
+        token. With k, over its last k rows only, the head's attention from
+        then on windowed above them. A row's K and V take only its own
+        input, so the rows run before a window covers them are right."""
+        # a draft's window must cover a whole 16-key block
+        assert k == 0 or k >= 16
         n = len(ids)
-        for i in range(n - 1):
+        r0 = max(0, n - 1 - k) if k else 0
+        self.lo = r0
+        for i in range(r0, n - 1):
             self.mtp(hs[i], ids[i + 1], i + 1, draft=False)
         return self.mtp(hs[n - 1], first, n)
 
@@ -222,6 +235,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--prompt", default="The capital of France")
     ap.add_argument("--prompt-len", type=int, default=0)
+    ap.add_argument("--prompt-file", type=Path, help="the prompt from a file")
     ap.add_argument(
         "--fused-dir", type=Path, default=os.environ.get("FUSED_PREFILL_DIR")
     )
@@ -229,14 +243,22 @@ def main():
     ap.add_argument("--maxl", type=int, default=256)
     ap.add_argument("--check", action="store_true", help="compare to the plain decode")
     ap.add_argument(
-        "--queue", action="store_true", help="submit a step's wave runs at once"
+        "--mtp-prompt",
+        type=int,
+        default=MTP_PROMPT,
+        help="run the head on the prompt's last rows only (0: all)",
     )
     ap.add_argument(
-        "--draft-vocab", type=int, default=W.VOCAB, help="the draft's LM head rows"
+        "--draft-vocab",
+        type=int,
+        default=DRAFT_VOCAB,
+        help="the draft's LM head rows (the vocabulary's first)",
     )
     a = ap.parse_args()
     w = W.Qwen38Q4nx()
     tok = w.tokenizer()
+    if a.prompt_file:
+        a.prompt = a.prompt_file.read_text()
     ids = tok.encode(a.prompt).ids
     if a.prompt_len:
         ids = (ids * (a.prompt_len // len(ids) + 1))[: a.prompt_len]
@@ -251,7 +273,6 @@ def main():
     with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
         t0 = time.time()
         sp = Spec(arts, w, a.maxl, a.draft_vocab)
-        sp.v.queue = a.queue
         print(f"weights loaded in {time.time() - t0:.0f}s")
         t0 = time.perf_counter()  # the prompt by pairs
         if fused:
@@ -265,13 +286,14 @@ def main():
         else:
             hs, first = sp.prompt_by_pairs(ids)
         # the head over the prompt drafts the second token
-        d = sp.prompt_mtp(ids, hs, first)
+        d = sp.prompt_mtp(ids, hs, first, a.mtp_prompt)
         ttft = time.perf_counter() - t0
         sp.t = {k: 0.0 for k in sp.t}
         t0 = time.perf_counter()
         out, steps, acc = sp.generate(ids, a.gen, first, d)
         t_gen = time.perf_counter() - t0
-        print(repr(a.prompt), "->", repr(tok.decode(out)))
+        shown = a.prompt if len(a.prompt) < 200 else "..." + a.prompt[-120:]
+        print(repr(shown), "->", repr(tok.decode(out)))
         print(f"tokens {out}")
         print(
             f"TTFT {ttft:.3f}s; {len(out)} tokens in {t_gen:.3f}s:"
