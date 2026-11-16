@@ -16,6 +16,7 @@
 #include "air/Util/Outliner.h"
 #include "air/Util/Util.h"
 
+#include "mlir/Analysis/AliasAnalysis/LocalAliasAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -2583,9 +2584,6 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
 //===----------------------------------------------------------------------===//
 // HoistLoopInvariantTransfersOp / HoistAllAccumulatorTransfersOp
 //===----------------------------------------------------------------------===//
-
-// Forward declaration (defined in EliminateRedundantVectorTransfersOp section)
-static bool areEquivalentIndices(Value idx1, Value idx2);
 
 /// Check if a value depends on the given loop induction variable
 static bool dependsOnLoopIV(Value val, Value loopIV) {
@@ -5578,86 +5576,31 @@ transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
 // EliminateRedundantVectorTransfersOp
 //===----------------------------------------------------------------------===//
 
-/// Check if two values are semantically equivalent indices
-static bool areEquivalentIndices(Value idx1, Value idx2) {
-  // Direct SSA value equality
-  if (idx1 == idx2)
-    return true;
-
-  // Check if both are results of affine.apply with the same map and operands
-  auto affineOp1 = idx1.getDefiningOp<affine::AffineApplyOp>();
-  auto affineOp2 = idx2.getDefiningOp<affine::AffineApplyOp>();
-
-  if (affineOp1 && affineOp2) {
-    // Check if they use the same affine map
-    if (affineOp1.getAffineMap() != affineOp2.getAffineMap())
-      return false;
-
-    // Check if they have the same number of operands
-    if (affineOp1.getMapOperands().size() != affineOp2.getMapOperands().size())
-      return false;
-
-    // Check if all operands are identical
-    for (auto [op1, op2] :
-         llvm::zip(affineOp1.getMapOperands(), affineOp2.getMapOperands())) {
-      if (op1 != op2)
-        return false;
-    }
-
-    return true;
-  }
-
-  // Check if both are constants with the same value
-  auto constOp1 = idx1.getDefiningOp<arith::ConstantIndexOp>();
-  auto constOp2 = idx2.getDefiningOp<arith::ConstantIndexOp>();
-
-  if (constOp1 && constOp2) {
-    return constOp1.value() == constOp2.value();
-  }
-
-  return false;
-}
-
-/// Check if two vector.transfer_read operations read from the same location
+/// Check if two vector.transfer_read operations read the same data. Operands
+/// match if they are the same value or come from identical pure ops, such as
+/// two affine.apply ops with the same map and operands.
 static bool areIdenticalReads(vector::TransferReadOp read1,
                               vector::TransferReadOp read2) {
-  // Check if they read from the same memref
-  if (read1.getBase() != read2.getBase())
-    return false;
-
-  // Check if they have the same number of indices
-  if (read1.getIndices().size() != read2.getIndices().size())
-    return false;
-
-  // Check if all indices are semantically equivalent
-  for (auto [idx1, idx2] : llvm::zip(read1.getIndices(), read2.getIndices())) {
-    if (!areEquivalentIndices(idx1, idx2))
-      return false;
-  }
-
-  // Check if they have the same result type
-  auto vec1Ty = llvm::cast<VectorType>(read1.getVector().getType());
-  auto vec2Ty = llvm::cast<VectorType>(read2.getVector().getType());
-  if (vec1Ty != vec2Ty)
-    return false;
-
-  if (read1.getPermutationMap() != read2.getPermutationMap() ||
-      read1.getInBoundsAttr() != read2.getInBoundsAttr() ||
-      read1.getMask() != read2.getMask())
-    return false;
-
-  Attribute pad1, pad2;
-  if (read1.getPadding() != read2.getPadding() &&
-      !(matchPattern(read1.getPadding(), m_Constant(&pad1)) &&
-        matchPattern(read2.getPadding(), m_Constant(&pad2)) && pad1 == pad2))
-    return false;
-
-  return true;
+  auto sameValue = [](Value a, Value b) {
+    if (a == b)
+      return success();
+    Operation *defA = a.getDefiningOp();
+    Operation *defB = b.getDefiningOp();
+    return success(defA && defB && isPure(defA) && isPure(defB) &&
+                   OperationEquivalence::isEquivalentTo(
+                       defA, defB, OperationEquivalence::exactValueMatch,
+                       /*markEquivalent=*/nullptr,
+                       OperationEquivalence::IgnoreLocations));
+  };
+  return OperationEquivalence::isEquivalentTo(
+      read1, read2, sameValue, /*markEquivalent=*/nullptr,
+      OperationEquivalence::IgnoreLocations);
 }
 
 /// Check if there are any writes to the memref between two operations
 static bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
-                                  vector::TransferReadOp secondRead) {
+                                  vector::TransferReadOp secondRead,
+                                  LocalAliasAnalysis &aliasAnalysis) {
   Value sourceMemref = firstRead.getBase();
 
   // Get the block containing both reads
@@ -5689,15 +5632,8 @@ static bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
       if (!effectValue)
         return true; // Unknown write target, be conservative
 
-      // Check if the write is to the same memref or a view of it
-      if (effectValue == sourceMemref)
+      if (!aliasAnalysis.alias(effectValue, sourceMemref).isNo())
         return true;
-
-      // Check if the effect value is derived from the same memref
-      if (auto subview = effectValue.getDefiningOp<memref::SubViewOp>()) {
-        if (subview.getSource() == sourceMemref)
-          return true;
-      }
     }
   }
 
@@ -5719,6 +5655,7 @@ transform::EliminateRedundantVectorTransfersOp::apply(
 
   SmallVector<Operation *> transformedOps;
   int eliminatedCount = 0;
+  LocalAliasAnalysis aliasAnalysis;
 
   for (Operation *target : targets) {
     // Collect all vector.transfer_read operations in this target
@@ -5747,7 +5684,7 @@ transform::EliminateRedundantVectorTransfersOp::apply(
           continue;
 
         // Check if there are writes between them
-        if (hasWritesBetweenReads(firstRead, secondRead))
+        if (hasWritesBetweenReads(firstRead, secondRead, aliasAnalysis))
           continue;
 
         // Replace the second read with the result of the first read
