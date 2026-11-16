@@ -179,8 +179,8 @@ apart than the links hold.
 
 The tokens are the plain decode's, bit for bit (`make spec` checks it): the
 two-token pass computes each token exactly as the decode does.
-`kernels/attn_kv_q38.cc` makes that so. The attention's probabilities x V runs
-in BFP16, whose blocks of 8 keys share an exponent, so a masked key's value
+`attn_kv_blk_z` (`../qwen36_35b_a3b_q4nx/kernels/attn_kv_q36.cc`) makes that
+so. The attention's probabilities x V runs in BFP16, whose blocks of 8 keys share an exponent, so a masked key's value
 still changed the others' rounding: the verify's token 0 depended on the
 draft, and every decode on its cache's stale rows. The masked values are now
 zeroed first. On the prompt the head runs over the last 128 rows only, its

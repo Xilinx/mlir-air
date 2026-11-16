@@ -118,10 +118,10 @@ def build_module(waves, maxl):
     rope_t = k_("rope2", "rope_compute_t", [i32, i32])
     qpack_t = k_("rope2", "q_pack_t", [i32, i32])
     qk = k_("attn_qk", "attn_qk_blk", [i32, i32])
-    # the masked keys' values zeroed first (kernels/attn_kv_q38.cc)
-    kv = k_("attn_kv_q38", "attn_kv_blk_z", [i32, i32])
-    fin = k_("attn_kv_q38", "attn_kv_fin")
-    o_nat = k_("attn_kv_q38", "o_natural")
+    # the masked keys' values zeroed first (qwen36_35b_a3b_q4nx/kernels/attn_kv_q36.cc)
+    kv = k_("attn_kv_q36", "attn_kv_blk_z", [i32, i32])
+    fin = k_("attn_kv_q36", "attn_kv_fin")
+    o_nat = k_("attn_kv_q36", "o_natural")
 
     arr = M2.TwoTokenArray(
         step2,
@@ -716,7 +716,7 @@ def compile_all(maxl):
     """Kernels and the verify ELF (one wave), here."""
     for k in ("q4k_mvm2", "q38_ffn", "gdn_prep2", "gdn_decode2", "gate2", "router"):
         common.compile_kernel(k)
-    for k in ("rope2", "attn_qk", "attn_kv_q38"):
+    for k in ("rope2", "attn_qk", "attn_kv_q36"):
         common.compile_kernel(k, engine=True)
     art = XRTBackend(instance_name="verify", output_format="elf").compile(
         build_module(1, maxl)

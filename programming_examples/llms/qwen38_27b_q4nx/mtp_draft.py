@@ -82,10 +82,10 @@ def build_module(maxl):
     rope = k_("rope_rounds", "rope_compute", [i32])
     q_pack = k_("rope_rounds", "q_pack")
     qk = k_("attn_qk", "attn_qk_blk", [i32, i32])
-    # the masked keys' values zeroed first (kernels/attn_kv_q38.cc)
-    kv = k_("attn_kv_q38", "attn_kv_blk_z", [i32, i32])
-    fin = k_("attn_kv_q38", "attn_kv_fin")
-    o_nat = k_("attn_kv_q38", "o_natural")
+    # the masked keys' values zeroed first (qwen36_35b_a3b_q4nx/kernels/attn_kv_q36.cc)
+    kv = k_("attn_kv_q36", "attn_kv_blk_z", [i32, i32])
+    fin = k_("attn_kv_q36", "attn_kv_fin")
+    o_nat = k_("attn_kv_q36", "o_natural")
     z_rd, gsig = k_("gate", "z_round", [i32]), k_("gate", "gate_sigmoid", [i32])
 
     arr = MvmArray(
@@ -408,7 +408,7 @@ def compile_mtp(maxl):
     """Kernels and the head's ELF, built in cwd; (artifact, params.txt)."""
     for k in ("q4k_mvm", "q38_ffn", "gate"):
         common.compile_kernel(k)
-    for k in ("rope_rounds", "attn_qk", "attn_kv_q38"):
+    for k in ("rope_rounds", "attn_qk", "attn_kv_q36"):
         common.compile_kernel(k, engine=True)
     art = XRTBackend(instance_name="mtp", output_format="elf").compile(
         build_module(maxl)
