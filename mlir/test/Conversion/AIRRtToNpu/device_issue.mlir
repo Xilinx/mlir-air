@@ -457,3 +457,371 @@ module {
     return
   }
 }
+
+// -----
+
+// Each run of a rolled launch rewrites the BD of a put the core starts an
+// uncounted number of times, then sets the core's arm count. The core is
+// released only after that count: an arm its last run left unused would let
+// it read the BD back before the host rewrites it. The RTP write still leads.
+
+// CHECK-LABEL: aie.runtime_sequence @release_after_arm
+// CHECK: scf.for
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2
+// CHECK-NOT: aiex.set_lock(%__air_herd_lock_0_2
+// CHECK: aiex.dma_configure_task_for @air_Wexp
+// CHECK-NOT: aiex.set_lock(%__air_herd_lock_0_2
+// CHECK: aiex.set_lock(%__air_device_issue_lock_0_2, %{{.*}}) {air.device_issue}
+// CHECK-NEXT: aiex.set_lock(%__air_herd_lock_0_2
+module {
+  aie.device(npu2) @seg {
+    %shim_noc_tile_1_0 = aie.tile(1, 0) {controller_id = #aie.packet_info<pkt_type = 0, pkt_id = 15>}
+    %tile_0_2 = aie.tile(0, 2)
+    %herd_lock = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %rtp = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    %lock = aie.lock(%tile_0_2, 4) {init = 0 : i32, sym_name = "__air_device_issue_lock_0_2"}
+    %ctrl = aie.buffer(%tile_0_2) {sym_name = "__air_issue_ctrl_out_0_2"} : memref<4xi32>
+    %core = aie.core(%tile_0_2) {
+      %c2 = arith.constant 2 : index
+      %q15 = arith.constant -2147483633 : i32
+      memref.store %q15, %ctrl[%c2] {air.device_issue = 0 : i64} : memref<4xi32>
+      aie.end
+    }
+    aie.shim_dma_allocation @air_Wexp(%shim_noc_tile_1_0, MM2S, 0)
+    aie.shim_dma_allocation @air_In(%shim_noc_tile_1_0, MM2S, 1)
+  } {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>}
+  airrt.module_metadata{
+    airrt.segment_metadata attributes {dma_allocations = [], sym_name = "seg"}{
+      airrt.herd_metadata {dma_allocations = [], loc_x = 0 : i64, loc_y = 2 : i64, size_x = 1 : i64, size_y = 1 : i64, sym_name = "router"}
+    }
+  }
+  func.func @release_after_arm(%arg0: memref<32x256xbf16>, %arg1: memref<8x256xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %w = %c0 to %c3 step %c1 {
+      %c2_i32 = arith.constant 2 : i32
+      %c3_i32 = arith.constant 3 : i32
+      %c0_i64 = arith.constant 0 : i64
+      %layer = arith.index_cast %w : index to i32
+      affine.for %arg2 = 0 to 1 {
+        %p = airrt.segment_load "seg" : i64
+        %0 = arith.index_cast %arg2 : index to i64
+        %1 = airrt.dma_memcpy_nd(%c3_i32, %0, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+        %2 = airrt.dma_memcpy_nd(%c2_i32, %0, %c0_i64, %arg0[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {air.device_issue = 0 : i64, air.device_issue_bd = 15 : i32, air.device_issue_count = 0 : i64, air.device_issue_lock = "__air_device_issue_lock_0_2", chan_name = @Wexp, metadata = @air_Wexp} : (i32, i64, i64, memref<32x256xbf16>) : !airrt.event
+        affine.for %arg3 = 0 to 1 {
+          %h = airrt.herd_load "router" (%layer) {segment_name = "seg"} : (i32) -> i64
+        }
+        airrt.wait_all %1, %2 {air.launch_end}
+      } {affine_opt_label = "tiling"}
+    }
+    return
+  }
+}
+
+// -----
+
+// The same, but the core starts its put exactly once a run: it takes every
+// arm, so its release keeps its place ahead of the wave's feeds.
+
+// CHECK-LABEL: aie.runtime_sequence @counted_release_at_top
+// CHECK: scf.for
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2
+// CHECK-NEXT: aiex.set_lock(%__air_herd_lock_0_2
+// CHECK: aiex.dma_configure_task_for @air_In
+// CHECK: aiex.set_lock(%__air_device_issue_lock_0_2, %{{.*}}) {air.device_issue}
+module {
+  aie.device(npu2) @seg {
+    %shim_noc_tile_1_0 = aie.tile(1, 0) {controller_id = #aie.packet_info<pkt_type = 0, pkt_id = 15>}
+    %tile_0_2 = aie.tile(0, 2)
+    %herd_lock = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %rtp = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    %lock = aie.lock(%tile_0_2, 4) {init = 0 : i32, sym_name = "__air_device_issue_lock_0_2"}
+    %ctrl = aie.buffer(%tile_0_2) {sym_name = "__air_issue_ctrl_out_0_2"} : memref<4xi32>
+    %core = aie.core(%tile_0_2) {
+      %c2 = arith.constant 2 : index
+      %q15 = arith.constant -2147483633 : i32
+      memref.store %q15, %ctrl[%c2] {air.device_issue = 0 : i64} : memref<4xi32>
+      aie.end
+    }
+    aie.shim_dma_allocation @air_Wexp(%shim_noc_tile_1_0, MM2S, 0)
+    aie.shim_dma_allocation @air_In(%shim_noc_tile_1_0, MM2S, 1)
+  } {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>}
+  airrt.module_metadata{
+    airrt.segment_metadata attributes {dma_allocations = [], sym_name = "seg"}{
+      airrt.herd_metadata {dma_allocations = [], loc_x = 0 : i64, loc_y = 2 : i64, size_x = 1 : i64, size_y = 1 : i64, sym_name = "router"}
+    }
+  }
+  func.func @counted_release_at_top(%arg0: memref<32x256xbf16>, %arg1: memref<8x256xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %w = %c0 to %c3 step %c1 {
+      %c2_i32 = arith.constant 2 : i32
+      %c3_i32 = arith.constant 3 : i32
+      %c0_i64 = arith.constant 0 : i64
+      %layer = arith.index_cast %w : index to i32
+      affine.for %arg2 = 0 to 1 {
+        %p = airrt.segment_load "seg" : i64
+        %0 = arith.index_cast %arg2 : index to i64
+        %1 = airrt.dma_memcpy_nd(%c3_i32, %0, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+        %2 = airrt.dma_memcpy_nd(%c2_i32, %0, %c0_i64, %arg0[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {air.device_issue = 0 : i64, air.device_issue_bd = 15 : i32, air.device_issue_count = 1 : i64, air.device_issue_lock = "__air_device_issue_lock_0_2", chan_name = @Wexp, metadata = @air_Wexp} : (i32, i64, i64, memref<32x256xbf16>) : !airrt.event
+        affine.for %arg3 = 0 to 1 {
+          %h = airrt.herd_load "router" (%layer) {segment_name = "seg"} : (i32) -> i64
+        }
+        airrt.wait_all %1, %2 {air.launch_end}
+      } {affine_opt_label = "tiling"}
+    }
+    return
+  }
+}
+
+// -----
+
+// The core's put is uncounted in the first wave and counted in the second. An
+// arm the first leaves unused stays on the lock, so the second wave's release
+// also waits for its own arm.
+
+// CHECK-LABEL: aie.runtime_sequence @transition
+// CHECK: aiex.dma_configure_task_for @air_Wexp
+// CHECK: aiex.set_lock(%__air_device_issue_lock_0_2, %{{.*}}) {air.device_issue}
+// CHECK-NEXT: aiex.set_lock(%__air_herd_lock_0_2
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2
+// CHECK-NOT: aiex.set_lock(%__air_herd_lock_0_2
+// CHECK: aiex.dma_configure_task_for @air_Wexp
+// CHECK: aiex.set_lock(%__air_device_issue_lock_0_2, %{{.*}}) {air.device_issue}
+// CHECK-NEXT: aiex.set_lock(%__air_herd_lock_0_2
+module {
+  aie.device(npu2) @seg {
+    %shim_noc_tile_1_0 = aie.tile(1, 0) {controller_id = #aie.packet_info<pkt_type = 0, pkt_id = 15>}
+    %tile_0_2 = aie.tile(0, 2)
+    %herd_lock = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %rtp = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    %lock = aie.lock(%tile_0_2, 4) {init = 0 : i32, sym_name = "__air_device_issue_lock_0_2"}
+    %ctrl = aie.buffer(%tile_0_2) {sym_name = "__air_issue_ctrl_out_0_2"} : memref<4xi32>
+    %core = aie.core(%tile_0_2) {
+      %c2 = arith.constant 2 : index
+      %q15 = arith.constant -2147483633 : i32
+      memref.store %q15, %ctrl[%c2] {air.device_issue = 0 : i64} : memref<4xi32>
+      %q14 = arith.constant -2147483634 : i32
+      memref.store %q14, %ctrl[%c2] {air.device_issue = 1 : i64} : memref<4xi32>
+      aie.end
+    }
+    aie.shim_dma_allocation @air_Wexp(%shim_noc_tile_1_0, MM2S, 0)
+    aie.shim_dma_allocation @air_In(%shim_noc_tile_1_0, MM2S, 1)
+    aie.shim_dma_allocation @air_Out(%shim_noc_tile_1_0, S2MM, 0)
+  } {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>}
+  airrt.module_metadata{
+    airrt.segment_metadata attributes {dma_allocations = [], sym_name = "seg"}{
+      airrt.herd_metadata {dma_allocations = [], loc_x = 0 : i64, loc_y = 2 : i64, size_x = 1 : i64, size_y = 1 : i64, sym_name = "router"}
+    }
+  }
+  func.func @transition(%arg0: memref<32x256xbf16>, %arg1: memref<8x256xbf16>) {
+    %c2_i32 = arith.constant 2 : i32
+    %c3_i32 = arith.constant 3 : i32
+    %c0_i64 = arith.constant 0 : i64
+    %r = arith.constant 7 : i32
+    affine.for %a = 0 to 1 {
+      %p = airrt.segment_load "seg" : i64
+      %f0 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      %e0 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {air.device_issue = 0 : i64, air.device_issue_bd = 15 : i32, air.device_issue_count = 0 : i64, air.device_issue_lock = "__air_device_issue_lock_0_2", chan_name = @Wexp, metadata = @air_Wexp} : (i32, i64, i64, memref<32x256xbf16>) : !airrt.event
+      affine.for %h0 = 0 to 1 {
+        %h = airrt.herd_load "router" (%r) {segment_name = "seg"} : (i32) -> i64
+      }
+      %o0 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @Out, metadata = @air_Out} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      airrt.wait_all %f0, %e0, %o0 {air.launch_end}
+    } {affine_opt_label = "tiling"}
+    affine.for %a = 0 to 1 {
+      %p = airrt.segment_load "seg" : i64
+      %f1 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      %e1 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[0, 0, 0, 256], [1, 1, 1, 256], [0, 0, 0, 1]) {air.device_issue = 1 : i64, air.device_issue_bd = 14 : i32, air.device_issue_count = 1 : i64, air.device_issue_lock = "__air_device_issue_lock_0_2", chan_name = @Wexp, metadata = @air_Wexp} : (i32, i64, i64, memref<32x256xbf16>) : !airrt.event
+      affine.for %h0 = 0 to 1 {
+        %h = airrt.herd_load "router" (%r) {segment_name = "seg"} : (i32) -> i64
+      }
+      %o1 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @Out, metadata = @air_Out} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      airrt.wait_all %f1, %e1, %o1 {air.launch_end}
+    } {affine_opt_label = "tiling"}
+    return
+  }
+}
+
+// -----
+
+// Five feeds on another channel overrun its queue, so a wait goes in before
+// the fifth. The core's arm moves ahead of that wait, and its release with it.
+
+// CHECK-LABEL: aie.runtime_sequence @burst
+// CHECK: aiex.dma_configure_task_for @air_Wexp
+// CHECK-NOT: aiex.dma_await_task
+// CHECK: aiex.set_lock(%__air_device_issue_lock_0_2, %{{.*}}) {air.device_issue}
+// CHECK-NEXT: aiex.set_lock(%__air_herd_lock_0_2
+// CHECK: aiex.dma_await_task
+module {
+  aie.device(npu2) @seg {
+    %shim_noc_tile_1_0 = aie.tile(1, 0) {controller_id = #aie.packet_info<pkt_type = 0, pkt_id = 15>}
+    %tile_0_2 = aie.tile(0, 2)
+    %herd_lock = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %rtp = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    %lock = aie.lock(%tile_0_2, 4) {init = 0 : i32, sym_name = "__air_device_issue_lock_0_2"}
+    %ctrl = aie.buffer(%tile_0_2) {sym_name = "__air_issue_ctrl_out_0_2"} : memref<4xi32>
+    %core = aie.core(%tile_0_2) {
+      %c2 = arith.constant 2 : index
+      %q15 = arith.constant -2147483633 : i32
+      memref.store %q15, %ctrl[%c2] {air.device_issue = 0 : i64} : memref<4xi32>
+      %q14 = arith.constant -2147483634 : i32
+      memref.store %q14, %ctrl[%c2] {air.device_issue = 1 : i64} : memref<4xi32>
+      aie.end
+    }
+    aie.shim_dma_allocation @air_Wexp(%shim_noc_tile_1_0, MM2S, 0)
+    aie.shim_dma_allocation @air_In(%shim_noc_tile_1_0, MM2S, 1)
+  } {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>}
+  airrt.module_metadata{
+    airrt.segment_metadata attributes {dma_allocations = [], sym_name = "seg"}{
+      airrt.herd_metadata {dma_allocations = [], loc_x = 0 : i64, loc_y = 2 : i64, size_x = 1 : i64, size_y = 1 : i64, sym_name = "router"}
+    }
+  }
+  func.func @burst(%arg0: memref<32x256xbf16>, %arg1: memref<8x256xbf16>) {
+    %c2_i32 = arith.constant 2 : i32
+    %c3_i32 = arith.constant 3 : i32
+    %c0_i64 = arith.constant 0 : i64
+    %r = arith.constant 7 : i32
+    affine.for %a = 0 to 1 {
+      %p = airrt.segment_load "seg" : i64
+      %e = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {air.device_issue = 0 : i64, air.device_issue_bd = 15 : i32, air.device_issue_count = 0 : i64, air.device_issue_lock = "__air_device_issue_lock_0_2", chan_name = @Wexp, metadata = @air_Wexp} : (i32, i64, i64, memref<32x256xbf16>) : !airrt.event
+      %f0 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      %f1 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      %f2 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      %f3 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      %f4 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      affine.for %h0 = 0 to 1 {
+        %h = airrt.herd_load "router" (%r) {segment_name = "seg"} : (i32) -> i64
+      }
+      airrt.wait_all %e, %f0, %f1, %f2, %f3, %f4 {air.launch_end}
+    } {affine_opt_label = "tiling"}
+    return
+  }
+}
+
+// -----
+
+// The five feeds come before the core's put, so the wait before the fifth
+// lands ahead of its descriptor. The descriptor, arm and release move up
+// ahead of that wait, still after the core's RTP write.
+
+// CHECK-LABEL: aie.runtime_sequence @burst_late
+// CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2
+// CHECK-NOT: aiex.dma_await_task
+// CHECK: aiex.dma_configure_task_for @air_Wexp
+// CHECK-NOT: aiex.dma_await_task
+// CHECK: aiex.set_lock(%__air_device_issue_lock_0_2, %{{.*}}) {air.device_issue}
+// CHECK-NEXT: aiex.set_lock(%__air_herd_lock_0_2
+// CHECK: aiex.dma_await_task
+module {
+  aie.device(npu2) @seg {
+    %shim_noc_tile_1_0 = aie.tile(1, 0) {controller_id = #aie.packet_info<pkt_type = 0, pkt_id = 15>}
+    %tile_0_2 = aie.tile(0, 2)
+    %herd_lock = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %rtp = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    %lock = aie.lock(%tile_0_2, 4) {init = 0 : i32, sym_name = "__air_device_issue_lock_0_2"}
+    %ctrl = aie.buffer(%tile_0_2) {sym_name = "__air_issue_ctrl_out_0_2"} : memref<4xi32>
+    %core = aie.core(%tile_0_2) {
+      %c2 = arith.constant 2 : index
+      %q15 = arith.constant -2147483633 : i32
+      memref.store %q15, %ctrl[%c2] {air.device_issue = 0 : i64} : memref<4xi32>
+      %q14 = arith.constant -2147483634 : i32
+      memref.store %q14, %ctrl[%c2] {air.device_issue = 1 : i64} : memref<4xi32>
+      aie.end
+    }
+    aie.shim_dma_allocation @air_Wexp(%shim_noc_tile_1_0, MM2S, 0)
+    aie.shim_dma_allocation @air_In(%shim_noc_tile_1_0, MM2S, 1)
+  } {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>}
+  airrt.module_metadata{
+    airrt.segment_metadata attributes {dma_allocations = [], sym_name = "seg"}{
+      airrt.herd_metadata {dma_allocations = [], loc_x = 0 : i64, loc_y = 2 : i64, size_x = 1 : i64, size_y = 1 : i64, sym_name = "router"}
+    }
+  }
+  func.func @burst_late(%arg0: memref<32x256xbf16>, %arg1: memref<8x256xbf16>) {
+    %c2_i32 = arith.constant 2 : i32
+    %c3_i32 = arith.constant 3 : i32
+    %c0_i64 = arith.constant 0 : i64
+    %r = arith.constant 7 : i32
+    affine.for %a = 0 to 1 {
+      %p = airrt.segment_load "seg" : i64
+      %f0 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      %f1 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      %f2 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      %f3 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      %f4 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg1[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {chan_name = @In, metadata = @air_In} : (i32, i64, i64, memref<8x256xbf16>) : !airrt.event
+      %e = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {air.device_issue = 0 : i64, air.device_issue_bd = 15 : i32, air.device_issue_count = 0 : i64, air.device_issue_lock = "__air_device_issue_lock_0_2", chan_name = @Wexp, metadata = @air_Wexp} : (i32, i64, i64, memref<32x256xbf16>) : !airrt.event
+      affine.for %h0 = 0 to 1 {
+        %h = airrt.herd_load "router" (%r) {segment_name = "seg"} : (i32) -> i64
+      }
+      airrt.wait_all %e, %f0, %f1, %f2, %f3, %f4 {air.launch_end}
+    } {affine_opt_label = "tiling"}
+    return
+  }
+}
+
+// -----
+
+// One branch starts the core's put an uncounted number of times, the other
+// once. An arm the first leaves stays for a later run of the second, so both
+// branches release the core after their own arm.
+
+// CHECK-LABEL: aie.runtime_sequence @branch_transition
+// CHECK: scf.if
+// CHECK: aiex.set_lock(%__air_device_issue_lock_0_2, %{{.*}}) {air.device_issue}
+// CHECK-NEXT: aiex.set_lock(%__air_herd_lock_0_2
+// CHECK: } else {
+// CHECK-NOT: aiex.set_lock(%__air_herd_lock_0_2
+// CHECK: aiex.set_lock(%__air_device_issue_lock_0_2, %{{.*}}) {air.device_issue}
+// CHECK-NEXT: aiex.set_lock(%__air_herd_lock_0_2
+module {
+  aie.device(npu2) @seg {
+    %shim_noc_tile_1_0 = aie.tile(1, 0) {controller_id = #aie.packet_info<pkt_type = 0, pkt_id = 15>}
+    %tile_0_2 = aie.tile(0, 2)
+    %herd_lock = aie.lock(%tile_0_2, 0) {init = 0 : i32, sym_name = "__air_herd_lock_0_2"}
+    %rtp = aie.buffer(%tile_0_2) {sym_name = "__air_herd_rtp_0_2"} : memref<1xi32>
+    %lock = aie.lock(%tile_0_2, 4) {init = 0 : i32, sym_name = "__air_device_issue_lock_0_2"}
+    %ctrl = aie.buffer(%tile_0_2) {sym_name = "__air_issue_ctrl_out_0_2"} : memref<4xi32>
+    %core = aie.core(%tile_0_2) {
+      %c2 = arith.constant 2 : index
+      %q15 = arith.constant -2147483633 : i32
+      memref.store %q15, %ctrl[%c2] {air.device_issue = 0 : i64} : memref<4xi32>
+      %q14 = arith.constant -2147483634 : i32
+      memref.store %q14, %ctrl[%c2] {air.device_issue = 1 : i64} : memref<4xi32>
+      aie.end
+    }
+    aie.shim_dma_allocation @air_Wexp(%shim_noc_tile_1_0, MM2S, 0)
+    aie.shim_dma_allocation @air_In(%shim_noc_tile_1_0, MM2S, 1)
+  } {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>}
+  airrt.module_metadata{
+    airrt.segment_metadata attributes {dma_allocations = [], sym_name = "seg"}{
+      airrt.herd_metadata {dma_allocations = [], loc_x = 0 : i64, loc_y = 2 : i64, size_x = 1 : i64, size_y = 1 : i64, sym_name = "router"}
+    }
+  }
+  func.func @branch_transition(%arg0: memref<32x256xbf16>, %arg1: memref<8x256xbf16>, %cond: i1) {
+    %c2_i32 = arith.constant 2 : i32
+    %c3_i32 = arith.constant 3 : i32
+    %c0_i64 = arith.constant 0 : i64
+    %r = arith.constant 7 : i32
+    affine.for %a = 0 to 1 {
+      %p = airrt.segment_load "seg" : i64
+      scf.if %cond {
+        %e = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[0, 0, 0, 0], [1, 1, 1, 256], [0, 0, 0, 1]) {air.device_issue = 0 : i64, air.device_issue_bd = 15 : i32, air.device_issue_count = 0 : i64, air.device_issue_lock = "__air_device_issue_lock_0_2", chan_name = @Wexp, metadata = @air_Wexp} : (i32, i64, i64, memref<32x256xbf16>) : !airrt.event
+        airrt.wait_all %e
+        affine.for %h0 = 0 to 1 {
+          %h = airrt.herd_load "router" (%r) {segment_name = "seg"} : (i32) -> i64
+        }
+      } else {
+        %g = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[0, 0, 0, 256], [1, 1, 1, 256], [0, 0, 0, 1]) {air.device_issue = 1 : i64, air.device_issue_bd = 14 : i32, air.device_issue_count = 1 : i64, air.device_issue_lock = "__air_device_issue_lock_0_2", chan_name = @Wexp, metadata = @air_Wexp} : (i32, i64, i64, memref<32x256xbf16>) : !airrt.event
+        airrt.wait_all %g
+        affine.for %h0 = 0 to 1 {
+          %h = airrt.herd_load "router" (%r) {segment_name = "seg"} : (i32) -> i64
+        }
+      }
+      airrt.wait_all {air.launch_end}
+    } {affine_opt_label = "tiling"}
+    return
+  }
+}
