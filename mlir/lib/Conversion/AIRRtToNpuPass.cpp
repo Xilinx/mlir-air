@@ -3405,6 +3405,21 @@ static std::optional<int64_t> shimChannelOf(AIEX::DMAConfigureTaskForOp cfg) {
          alloc.getChannelIndex();
 }
 
+// The symbol name of the lock a set_lock sets.
+static StringRef setLockName(Operation *set) {
+  auto lock = cast<AIEX::SetLockOp>(set).getLock().getDefiningOp<AIE::LockOp>();
+  return lock && lock.getSymName() ? *lock.getSymName() : "";
+}
+
+// The arm lock of the core a herd release lets run, or "" for another lock.
+static std::string issueLockOfRelease(Operation *set) {
+  StringRef herd = setLockName(set);
+  if (set->hasAttr("air.device_issue") ||
+      !herd.consume_front("__air_herd_lock_"))
+    return "";
+  return ("__air_device_issue_lock_" + herd).str();
+}
+
 struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   // Tasks in flight per shim feed channel: the shim DMA task queue depth,
   // which a channel holds regardless of how large its tasks are.
@@ -3748,21 +3763,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // the next run, which must then not start before the host has rewritten
     // the descriptors. So such a core is released after its run's arm.
     auto issueArmFor = [](ArrayRef<Operation *> arms,
-                          const llvm::StringSet<> &uncounted,
-                          Operation *release) -> Operation * {
-      auto name = [](Operation *set) -> StringRef {
-        auto lock =
-            cast<AIEX::SetLockOp>(set).getLock().getDefiningOp<AIE::LockOp>();
-        return lock && lock.getSymName() ? *lock.getSymName() : "";
-      };
-      StringRef herd = name(release);
-      if (!herd.consume_front("__air_herd_lock_"))
-        return nullptr;
-      std::string issue = ("__air_device_issue_lock_" + herd).str();
-      if (!uncounted.contains(issue))
-        return nullptr;
+                          StringRef issue) -> Operation * {
       for (Operation *arm : arms)
-        if (name(arm) == issue)
+        if (setLockName(arm) == issue)
           return arm;
       return nullptr;
     };
@@ -3830,14 +3833,25 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           // scalar in place, and the set_locks below it are what let the cores
           // read that scalar.
           SmallVector<Operation *> syncs;
-          // The counts that arm the transfers cores start, and the cores that
-          // start one of theirs an uncounted number of times.
+          // The counts that arm the transfers cores start; the cores armed
+          // inside a branch of the group instead, and those with a transfer
+          // configured in the group.
           SmallVector<Operation *> issueArms;
-          llvm::StringSet<> uncounted;
+          llvm::StringSet<> nestedArms, issuing;
           // A PDI reload rewrites tile memory, so the per-core parameter
           // buffers the sync populated are gone and the arm needs its own.
           bool afterLoadPdi = false;
         };
+        // Cores that start a transfer an uncounted number of times. An arm one
+        // leaves unused stays until a reset, so this holds for every wave of
+        // the block, whatever that wave starts.
+        llvm::StringSet<> uncounted;
+        blk.walk([&](AIEX::DMAConfigureTaskForOp t) {
+          auto n = t->getAttrOfType<IntegerAttr>("air.device_issue_count");
+          auto lock = t->getAttrOfType<StringAttr>("air.device_issue_lock");
+          if (n && lock && n.getInt() == 0)
+            uncounted.insert(lock.getValue());
+        });
         SmallVector<ArmGroup, 1> groups(1);
         std::optional<int64_t> curWave;
         for (Operation *o : ops) {
@@ -3862,10 +3876,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           else {
             if (isa<AIEX::SetLockOp>(o))
               g.issueArms.push_back(o);
-            auto n = o->getAttrOfType<IntegerAttr>("air.device_issue_count");
-            auto lock = o->getAttrOfType<StringAttr>("air.device_issue_lock");
-            if (n && lock && n.getInt() == 0)
-              g.uncounted.insert(lock.getValue());
+            if (auto lock =
+                    o->getAttrOfType<StringAttr>("air.device_issue_lock"))
+              g.issuing.insert(lock.getValue());
+            for (Region &r : o->getRegions())
+              r.walk([&](AIEX::SetLockOp in) {
+                if (in->hasAttr("air.device_issue"))
+                  g.nestedArms.insert(setLockName(in));
+              });
             if (!g.anchor)
               g.anchor = o;
           }
@@ -3893,8 +3911,23 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           for (auto *rtp : g.rtps)
             moveRtpBefore(rtp, g.anchor);
           for (auto *lk : g.locks) {
-            Operation *arm = issueArmFor(g.issueArms, g.uncounted, lk);
-            if (!arm) {
+            std::string issue = issueLockOfRelease(lk);
+            Operation *arm = uncounted.contains(issue)
+                                 ? issueArmFor(g.issueArms, issue)
+                                 : nullptr;
+            if (!arm && uncounted.contains(issue) &&
+                g.nestedArms.contains(issue)) {
+              lk->emitOpError("releases a core whose transfers are armed "
+                              "inside a branch of its run");
+              hoistFailed = true;
+            } else if (!arm && uncounted.contains(issue) &&
+                       g.issuing.contains(issue)) {
+              // Its arm comes after a later wave's RTP write, which the core
+              // must not see first.
+              lk->emitOpError("releases a core whose transfers are armed only "
+                              "after its run");
+              hoistFailed = true;
+            } else if (!arm) {
               lk->moveBefore(g.anchor);
             } else if (waitsBetween(g.anchor, arm)) {
               // Released after the wait it may have to feed, the core could
@@ -4144,6 +4177,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       SmallVector<Operation *> group;
       for (Operation *o = first; o != rel->getNextNode(); o = o->getNextNode())
         group.push_back(o);
+      // A core released right after its arm goes with it.
+      SmallVector<Operation *> release;
+      Operation *next = rel->getNextNode();
+      for (; next && isa<arith::ConstantOp>(next); next = next->getNextNode())
+        release.push_back(next);
+      if (next && isa<AIEX::SetLockOp>(next) &&
+          issueLockOfRelease(next) == lockName) {
+        release.push_back(next);
+        group.append(release);
+      }
       for (Operation *o : group)
         o->moveBefore(wait);
     }
@@ -6158,10 +6201,43 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (!device || seq->getRegion(0).empty())
         continue;
       llvm::SetVector<Block *> blocks;
+      // Per core: its tasks, and whether one is started an uncounted number
+      // of times.
+      llvm::MapVector<StringAttr, SmallVector<AIEX::DMAConfigureTaskForOp>>
+          coreTasks;
+      llvm::DenseSet<StringAttr> uncounted;
       seq->walk([&](AIEX::DMAConfigureTaskForOp t) {
-        if (t->hasAttr("air.device_issue_lock"))
-          blocks.insert(t->getBlock());
+        auto lock = t->getAttrOfType<StringAttr>("air.device_issue_lock");
+        if (!lock)
+          return;
+        blocks.insert(t->getBlock());
+        if (lock.getValue().empty())
+          return;
+        coreTasks[lock].push_back(t);
+        auto n = t->getAttrOfType<IntegerAttr>("air.device_issue_count");
+        if (n && n.getInt() == 0)
+          uncounted.insert(lock);
       });
+      // Each block arms its own batch. For such a core, two blocks that can
+      // both run in one dispatch are two batches of a run; only the arms of
+      // one branch or the other are a single batch.
+      for (auto &[lock, tasks] : coreTasks) {
+        if (!uncounted.contains(lock))
+          continue;
+        Block *first = tasks.front()->getBlock();
+        for (auto t : tasks) {
+          Block *other = t->getBlock();
+          if (other == first || (other->getParentOp() == first->getParentOp() &&
+                                 other->getParent() != first->getParent()))
+            continue;
+          return t->emitOpError("is armed in another block than an earlier "
+                                "transfer of its core, which may have left "
+                                "arms for this one to take before it is "
+                                "written")
+                     .attachNote(tasks.front().getLoc())
+                 << "the earlier transfer";
+        }
+      }
       for (Block *b : blocks)
         if (failed(armDeviceIssuedTasks(device, *b)))
           return failure();
