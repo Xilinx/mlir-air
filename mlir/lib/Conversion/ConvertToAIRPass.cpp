@@ -2068,7 +2068,9 @@ struct AIRRankToLaunchPass
               builder, loc, SmallVector<Value>(rankOp.getNumDims(), c0),
               sizeOpers, SmallVector<Value>(rankOp.getNumDims(), c1))
               .loops;
-      builder.setInsertionPointToStart(loops.back().getBody());
+      // A rank with no dimensions has no loops; its body goes before it.
+      if (!loops.empty())
+        builder.setInsertionPointToStart(loops.back().getBody());
 
       // Clone the body of rank into the innermost loop.
       IRMapping remap;
