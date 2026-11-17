@@ -207,6 +207,15 @@ def refusals():
                                 s.case(1)
                             except ValueError as e:
                                 print("NO CASE:", e)
+                            # One arm runs instead of the other, so neither
+                            # opens inside the other -- even one fetched early.
+                            first, second = s.case(0), s.case(2)
+                            with first:
+                                try:
+                                    with second:
+                                        pass
+                                except RuntimeError as e:
+                                    print("NESTED ARM:", e)
                             ops.store(l1, D[0:W])
 
     lch.build(target="npu2")
@@ -220,6 +229,7 @@ def refusals():
 # CHECK: REPEATED: ops.switch cases repeat a value: [0, 0]
 # CHECK: VALUES CASES: air.api.ops.switch takes cases= in its region form only
 # CHECK: NO CASE: ops.switch has no case 1; its cases are [0, 2]
+# CHECK: NESTED ARM: an ops.switch case opened inside another of the same switch
 refusals()
 
 

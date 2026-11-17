@@ -36,6 +36,42 @@
 // CHECK-DAG: air.channel.get async {{.*}}@chan[] (%[[C]][
 // CHECK: air.segment
 
+// A switch inside a branch that yields tokens: the branch joins the switch's
+// result, not the tokens inside its cases.
+
+// CHECK-LABEL: func.func @switch_in_branch
+// CHECK: air.launch
+// CHECK: scf.if
+// CHECK: %[[S:.*]] = scf.index_switch
+// CHECK: air.channel.get async
+// CHECK: air.channel.get async
+// CHECK: air.wait_all async [{{.*}}%[[S]]{{[],]}}
+// CHECK: air.segment
+
+// An effect-free switch that only picks an offset is copied whole.
+
+// CHECK-LABEL: func.func @switch_offset
+// CHECK: air.launch
+// CHECK: %[[ROW:.*]] = scf.index_switch %{{.*}} -> index
+// CHECK: air.channel.get async {{.*}}@chan[] (%{{.*}}[%[[ROW]],
+// CHECK: air.segment
+
+// In a loop, each trip's hoisted switch is joined into the loop's token.
+
+// CHECK-LABEL: func.func @switch_in_loop
+// CHECK: scf.for {{.*}} iter_args(%[[T:.*]] = %{{.*}})
+// CHECK: %[[S:.*]] = scf.index_switch
+// CHECK: air.wait_all async [%[[T]], %[[S]]]
+
+// Two switches on the same selector, each getting from the channel in case 0:
+// the second get follows the first switch.
+
+// CHECK-LABEL: func.func @two_switches
+// CHECK: air.launch {{.*}} args(%[[A:.*]]=%arg0, %[[B:.*]]=%arg1)
+// CHECK: %[[FIRST:.*]] = scf.index_switch
+// CHECK: air.channel.get async {{.*}}@chan[] (%[[A]][
+// CHECK: air.channel.get async [%[[FIRST]]{{[],]}}{{.*}}@chan[] (%[[B]][
+
 module {
   air.channel @chan [1, 1]
   func.func @pick_buffer(%a: memref<4x16xi32>, %b: memref<4x16xi32>) {
@@ -112,6 +148,152 @@ module {
           %l1 = memref.alloc() : memref<16xi32, 2>
           air.channel.put @chan[] (%l1[] [] []) : (memref<16xi32, 2>)
           memref.dealloc %l1 : memref<16xi32, 2>
+        }
+      }
+    }
+    return
+  }
+  func.func @switch_in_branch(%a: memref<4x16xi32>, %b: memref<4x16xi32>, %on: i32) {
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    air.launch (%lx, %ly) in (%lsx=%c8, %lsy=%c1) args(%la=%a, %lb=%b, %lon=%on) : memref<4x16xi32>, memref<4x16xi32>, i32 {
+      air.segment @segb args(%w=%lx, %sa=%la, %sb=%lb, %son=%lon) : index, memref<4x16xi32>, memref<4x16xi32>, i32 {
+        %c0 = arith.constant 0 : index
+        %c1_s = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %c16 = arith.constant 16 : index
+        %c0_i32 = arith.constant 0 : i32
+        %c1_i32 = arith.constant 1 : i32
+        %go = arith.cmpi ne, %son, %c0_i32 : i32
+        scf.if %go {
+          %later = arith.cmpi sge, %w, %c4 : index
+          %k = arith.select %later, %c1_i32, %c0_i32 : i32
+          %key = arith.index_cast %k : i32 to index
+          scf.index_switch %key
+          case 0 {
+            air.channel.get @chan[] (%sa[%w, %c0] [%c1_s, %c16] [%c16, %c1_s]) : (memref<4x16xi32>)
+            scf.yield
+          }
+          default {
+            %r = arith.subi %w, %c4 : index
+            air.channel.get @chan[] (%sb[%r, %c0] [%c1_s, %c16] [%c16, %c1_s]) : (memref<4x16xi32>)
+            scf.yield
+          }
+        }
+        air.herd @hb tile (%x, %y) in (%sx=%c1_s, %sy=%c1_s) {
+          %l1 = memref.alloc() : memref<16xi32, 2>
+          air.channel.put @chan[] (%l1[] [] []) : (memref<16xi32, 2>)
+          memref.dealloc %l1 : memref<16xi32, 2>
+        }
+      }
+    }
+    return
+  }
+  func.func @switch_offset(%a: memref<4x16xi32>) {
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    air.launch (%lx, %ly) in (%lsx=%c8, %lsy=%c1) args(%la=%a) : memref<4x16xi32> {
+      air.segment @sego args(%w=%lx, %sa=%la) : index, memref<4x16xi32> {
+        %c0 = arith.constant 0 : index
+        %c1_s = arith.constant 1 : index
+        %c3 = arith.constant 3 : index
+        %c16 = arith.constant 16 : index
+        %row = scf.index_switch %w -> index
+        case 0 {
+          scf.yield %c3 : index
+        }
+        default {
+          scf.yield %c0 : index
+        }
+        air.channel.get @chan[] (%sa[%row, %c0] [%c1_s, %c16] [%c16, %c1_s]) : (memref<4x16xi32>)
+        air.herd @ho tile (%x, %y) in (%sx=%c1_s, %sy=%c1_s) {
+          %l1 = memref.alloc() : memref<16xi32, 2>
+          air.channel.put @chan[] (%l1[] [] []) : (memref<16xi32, 2>)
+          memref.dealloc %l1 : memref<16xi32, 2>
+        }
+      }
+    }
+    return
+  }
+  func.func @switch_in_loop(%a: memref<4x16xi32>, %b: memref<4x16xi32>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%lx, %ly) in (%lsx=%c1, %lsy=%c1) args(%la=%a, %lb=%b) : memref<4x16xi32>, memref<4x16xi32> {
+      air.segment @segl args(%sa=%la, %sb=%lb) : memref<4x16xi32>, memref<4x16xi32> {
+        %c0 = arith.constant 0 : index
+        %c1_s = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c4 = arith.constant 4 : index
+        %c16 = arith.constant 16 : index
+        %c0_i32 = arith.constant 0 : i32
+        %c1_i32 = arith.constant 1 : i32
+        scf.for %i = %c0 to %c4 step %c1_s {
+          %later = arith.cmpi sge, %i, %c2 : index
+          %k = arith.select %later, %c1_i32, %c0_i32 : i32
+          %key = arith.index_cast %k : i32 to index
+          scf.index_switch %key
+          case 0 {
+            air.channel.get @chan[] (%sa[%i, %c0] [%c1_s, %c16] [%c16, %c1_s]) : (memref<4x16xi32>)
+            scf.yield
+          }
+          default {
+            %r = arith.subi %i, %c2 : index
+            air.channel.get @chan[] (%sb[%r, %c0] [%c1_s, %c16] [%c16, %c1_s]) : (memref<4x16xi32>)
+            scf.yield
+          }
+        }
+        air.herd @hl tile (%x, %y) in (%sx=%c1_s, %sy=%c1_s) {
+          %c0_h = arith.constant 0 : index
+          %c1_h = arith.constant 1 : index
+          %c4_h = arith.constant 4 : index
+          scf.for %j = %c0_h to %c4_h step %c1_h {
+            %l1 = memref.alloc() : memref<16xi32, 2>
+            air.channel.put @chan[] (%l1[] [] []) : (memref<16xi32, 2>)
+            memref.dealloc %l1 : memref<16xi32, 2>
+          }
+        }
+      }
+    }
+    return
+  }
+  func.func @two_switches(%a: memref<4x16xi32>, %b: memref<4x16xi32>) {
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    air.launch (%lx, %ly) in (%lsx=%c8, %lsy=%c1) args(%la=%a, %lb=%b) : memref<4x16xi32>, memref<4x16xi32> {
+      air.segment @segf args(%w=%lx, %sa=%la, %sb=%lb) : index, memref<4x16xi32>, memref<4x16xi32> {
+        %c0 = arith.constant 0 : index
+        %c1_s = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %c16 = arith.constant 16 : index
+        %c0_i32 = arith.constant 0 : i32
+        %c1_i32 = arith.constant 1 : i32
+        %later = arith.cmpi sge, %w, %c4 : index
+        %k = arith.select %later, %c1_i32, %c0_i32 : i32
+        %key = arith.index_cast %k : i32 to index
+        scf.index_switch %key
+        case 0 {
+          air.channel.get @chan[] (%sa[%c0, %c0] [%c1_s, %c16] [%c16, %c1_s]) : (memref<4x16xi32>)
+          scf.yield
+        }
+        default {
+          scf.yield
+        }
+        scf.index_switch %key
+        case 0 {
+          air.channel.get @chan[] (%sb[%c0, %c0] [%c1_s, %c16] [%c16, %c1_s]) : (memref<4x16xi32>)
+          scf.yield
+        }
+        default {
+          scf.yield
+        }
+        air.herd @hf tile (%x, %y) in (%sx=%c1_s, %sy=%c1_s) {
+          %c0_h = arith.constant 0 : index
+          %c1_h = arith.constant 1 : index
+          %c2_h = arith.constant 2 : index
+          scf.for %j = %c0_h to %c2_h step %c1_h {
+            %l1 = memref.alloc() : memref<16xi32, 2>
+            air.channel.put @chan[] (%l1[] [] []) : (memref<16xi32, 2>)
+            memref.dealloc %l1 : memref<16xi32, 2>
+          }
         }
       }
     }

@@ -707,13 +707,29 @@ static bool isConditionalOp(Operation *op) {
   return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp>(op);
 }
 
+// Are `a` and `b` the same value, or computed by the same pure ops from the
+// same values? Hoisting copies a selector once per transfer it hoists.
+static bool sameValue(Value a, Value b) {
+  if (a == b)
+    return true;
+  Operation *da = a.getDefiningOp(), *db = b.getDefiningOp();
+  if (!da || !db || !mlir::isPure(da) || !mlir::isPure(db) ||
+      da->getNumRegions() || db->getNumRegions() ||
+      cast<OpResult>(a).getResultNumber() !=
+          cast<OpResult>(b).getResultNumber())
+    return false;
+  return OperationEquivalence::isEquivalentTo(
+      da, db, [](Value x, Value y) { return success(sameValue(x, y)); },
+      /*markEquivalent=*/nullptr, OperationEquivalence::IgnoreLocations);
+}
+
 // Do two conditionals select on the same runtime value?
 static bool sameCondition(Operation *a, Operation *b) {
   if (a == b)
     return true;
   if (auto ifA = dyn_cast<scf::IfOp>(a)) {
     auto ifB = dyn_cast<scf::IfOp>(b);
-    return ifB && ifA.getCondition() == ifB.getCondition();
+    return ifB && sameValue(ifA.getCondition(), ifB.getCondition());
   }
   if (auto afA = dyn_cast<affine::AffineIfOp>(a)) {
     auto afB = dyn_cast<affine::AffineIfOp>(b);
@@ -722,7 +738,7 @@ static bool sameCondition(Operation *a, Operation *b) {
   }
   if (auto swA = dyn_cast<scf::IndexSwitchOp>(a)) {
     auto swB = dyn_cast<scf::IndexSwitchOp>(b);
-    return swB && swA.getArg() == swB.getArg() &&
+    return swB && sameValue(swA.getArg(), swB.getArg()) &&
            swA.getCases() == swB.getCases();
   }
   return false;
@@ -788,17 +804,24 @@ void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
     }
     if (!isConditionalOp(parent))
       break;
-    // Promote to the result that carries `token` out of this arm, found by
-    // matching the arm's yielded operand. A conditional can have several token
-    // results -- rebuildIndexSwitchWithTrailingAsyncToken appends its summary
-    // token after the existing ones -- so taking the first would publish a
-    // result that says nothing about this endpoint. Where no yielded operand
-    // is `token`, the relationship cannot be established and the walk stops.
+    // Promote to the result that carries `token` out of this arm: the arm's
+    // yielded operand that is `token`, or else one that waits on it. A
+    // conditional can have several token results --
+    // rebuildIndexSwitchWithTrailingAsyncToken appends its summary token after
+    // the existing ones -- so taking the first would publish a result that
+    // says nothing about this endpoint. Where no yielded operand carries
+    // `token`, the relationship cannot be established and the walk stops.
     Operation *term = block->getTerminator();
     if (!term)
       break;
     auto operands = term->getOperands();
     auto it = llvm::find(operands, token);
+    if (it == operands.end())
+      it = llvm::find_if(operands, [&](Value v) {
+        llvm::SmallPtrSet<Operation *, 16> visited;
+        return isa<air::AsyncTokenType>(v.getType()) &&
+               tokenWaitsOn(v, token, visited);
+      });
     if (it == operands.end())
       break;
     unsigned idx = std::distance(operands.begin(), it);
@@ -3583,16 +3606,18 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
   if (!async_op)
     op->emitOpError("is not an async op");
 
-  // Under an scf.if that yields tokens, the op's token leaves through every
-  // token the branch yields, and the loop waits on the scf.if's results.
+  // Under an scf.if or scf.index_switch that yields tokens, the op's token
+  // leaves through every token the branch yields, and the loop waits on the
+  // branch op's results.
   SmallVector<Value> opTokens;
   if (Value t = getAsyncTokenFromOp(op))
     opTokens.push_back(t);
   auto parent = op->getParentOp();
   Operation *child = op;
-  while (auto ifOp = dyn_cast_if_present<scf::IfOp>(parent)) {
-    if (ifOp.getNumResults() == 0 ||
-        !llvm::all_of(ifOp.getResultTypes(),
+  while (isa_and_present<scf::IfOp, scf::IndexSwitchOp>(parent)) {
+    Operation *ifOp = parent;
+    if (ifOp->getNumResults() == 0 ||
+        !llvm::all_of(ifOp->getResultTypes(),
                       [](Type t) { return isa<air::AsyncTokenType>(t); }))
       return;
     auto yield = cast<scf::YieldOp>(child->getBlock()->getTerminator());
@@ -3604,7 +3629,7 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
       for (Value t : opTokens)
         addAsyncDependencyIfNew(yieldWaitAll, t);
     }
-    opTokens.assign(ifOp.getResults().begin(), ifOp.getResults().end());
+    opTokens.assign(ifOp->getResults().begin(), ifOp->getResults().end());
     child = ifOp;
     parent = ifOp->getParentOp();
   }
