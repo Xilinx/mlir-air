@@ -180,35 +180,6 @@ func::FuncOp air::getMangledFunction(ModuleOp module, std::string prefix,
   return fn;
 }
 
-LogicalResult air::normalizeLoop(affine::AffineForOp afo) {
-  auto ubMap = afo.getUpperBoundMap();
-  auto lbMap = afo.getLowerBoundMap();
-  auto ctx = afo.getContext();
-  auto loc = afo.getLoc();
-
-  auto step_expr = getAffineConstantExpr(afo.getStepAsInt(), ctx);
-
-  auto ub_expr = ubMap.getResult(0);
-  auto lb_expr = lbMap.getResult(0);
-  auto sub_expr = ub_expr - lb_expr;
-  auto new_ub_expr = sub_expr.ceilDiv(step_expr);
-
-  auto iv = afo.getInductionVar();
-
-  afo.setLowerBoundMap(AffineMap::get(0, 0, getAffineConstantExpr(0, ctx)));
-  afo.setUpperBoundMap(AffineMap::get(0, 0, new_ub_expr));
-  afo.setStep(1);
-
-  auto dim0_expr = getAffineDimExpr(0, ctx);
-  auto iv_expr = dim0_expr * step_expr + lb_expr;
-  auto iv_map = AffineMap::get(1, 0, iv_expr);
-  auto builder = OpBuilder::atBlockBegin(afo.getBody());
-  auto new_iv = affine::AffineApplyOp::create(builder, loc, iv_map, iv);
-  SmallPtrSet<Operation *, 1> keep{new_iv};
-  iv.replaceAllUsesExcept(new_iv, keep);
-  return success();
-}
-
 uint64_t air::getTensorVolume(const ShapedType ty) {
 
   if (!ty.hasRank())
