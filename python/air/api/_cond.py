@@ -254,10 +254,11 @@ class _Region:
     it instead.
     """
 
-    def __init__(self, at, terminate, arm=None, what="ops.branch"):
+    def __init__(self, at, terminate, arm=None, what="ops.branch", on_enter=None):
         self._at = at
         self._terminate = terminate
         self._what = what
+        self._on_enter = on_enter
         # (branch, index) while this region is open, so air.alloc can tell a
         # buffer in the then arm from one in the else arm.
         self._arm = arm
@@ -266,6 +267,8 @@ class _Region:
     def __enter__(self):
         from air.ir import InsertionPoint
 
+        if self._on_enter is not None:
+            self._on_enter()
         self._ip = InsertionPoint(self._at) if self._terminate else self._at
         self._ip.__enter__()
         self.open = True
@@ -397,6 +400,7 @@ class SwitchRegion:
         self._body = None
         self._case_terminators = {}
         self._taken = set()
+        self._arms = []
 
     def _switch_operand(self):
         """The index the switch keys on, as an index-typed Value.
@@ -472,12 +476,23 @@ class SwitchRegion:
         if value in self._taken:
             raise RuntimeError(f"this ops.switch region already has case {value}")
         self._taken.add(value)
-        return _Region(
+        region = _Region(
             InsertionPoint(self._case_terminators[value]),
             terminate=False,
             arm=(self, 1 + self._cases.index(value)),
             what="ops.switch",
+            on_enter=self._none_open,
         )
+        self._arms.append(region)
+        return region
+
+    def _none_open(self):
+        """An arm runs instead of its siblings, so it cannot open inside one."""
+        if self._body.open or any(r.open for r in self._arms):
+            raise RuntimeError(
+                "an ops.switch case opened inside another of the same switch; "
+                "close one arm before opening the next"
+            )
 
     def otherwise(self):
         """``case(0)``: the region taken when the key is zero."""

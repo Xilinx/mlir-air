@@ -9926,19 +9926,26 @@ public:
     // air.launch_end.
     {
       OpBuilder b(ctx);
-      SmallVector<scf::IndexSwitchOp> switchesToFix;
-      SmallVector<scf::IfOp> ifsToFix;
+      // Nested branches first: a rebuilt inner branch's token is then a
+      // dangling token of the outer branch's region.
+      SmallVector<Operation *> branchesToFix;
       func.walk([&](air::LaunchOp launch) {
-        Block &body = launch.getBody().front();
-        for (auto sw : body.getOps<scf::IndexSwitchOp>())
-          switchesToFix.push_back(sw);
-        for (auto ifOp : body.getOps<scf::IfOp>())
-          ifsToFix.push_back(ifOp);
+        launch.getBody().walk([&](Operation *op) {
+          if (!isa<scf::IndexSwitchOp, scf::IfOp>(op))
+            return;
+          for (Operation *p = op->getParentOp(); p != launch;
+               p = p->getParentOp())
+            if (!isa<scf::IndexSwitchOp, scf::IfOp>(p))
+              return;
+          branchesToFix.push_back(op);
+        });
       });
-      for (auto sw : switchesToFix)
-        restoreIndexSwitchDrainToken(sw, b);
-      for (auto ifOp : ifsToFix)
-        restoreIfDrainToken(ifOp, b);
+      for (Operation *op : branchesToFix) {
+        if (auto sw = dyn_cast<scf::IndexSwitchOp>(op))
+          restoreIndexSwitchDrainToken(sw, b);
+        else
+          restoreIfDrainToken(cast<scf::IfOp>(op), b);
+      }
     }
 
     // Convert air.launch to scf.for.
