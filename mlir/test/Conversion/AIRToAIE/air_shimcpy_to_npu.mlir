@@ -190,18 +190,20 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK-LABEL:   aie.device(npu1) @segment0 {
 // CHECK-DAG:         %[[VAL_3:.*]] = aie.tile(0, 2)
 // CHECK-DAG:         %[[VAL_4:.*]] = aie.logical_tile<ShimNOCTile>({{.*}}, ?)
-// CHECK-DAG:         %[[VAL_17:.*]] = aie.lock(%[[VAL_3]], 3) {init = 1 : i32}
-// CHECK-DAG:         %[[VAL_18:.*]] = aie.lock(%[[VAL_3]], 2) {init = 0 : i32}
-// CHECK-DAG:         %[[VAL_19:.*]] = aie.lock(%[[VAL_3]], 1) {init = 1 : i32}
-// CHECK-DAG:         %[[VAL_20:.*]] = aie.lock(%[[VAL_3]], 0) {init = 0 : i32}
+// The herd relays one buffer in place (get into it, put from it): the S2MM, the
+// core and the MM2S hand it on through three locks, and the S2MM refills it
+// only after the MM2S has sent it.
+// CHECK-DAG:         %[[VAL_17:.*]] = aie.lock(%[[VAL_3]], {{.*}}) {init = 1 : i32, sym_name = "{{.*}}_prod_lock"}
+// CHECK-DAG:         %[[VAL_18:.*]] = aie.lock(%[[VAL_3]], {{.*}}) {init = 0 : i32, sym_name = "{{.*}}_cons_lock"}
+// CHECK-DAG:         %[[VAL_19:.*]] = aie.lock(%[[VAL_3]], {{.*}}) {init = 0 : i32, sym_name = "{{.*}}_send_lock"}
 // CHECK-DAG:         %[[VAL_23:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<1024xi32, 2>
 
 // CHECK:    aie.mem(%[[VAL_3]])  {
 // CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           aie.use_lock(%[[VAL_20]], AcquireGreaterEqual, %{{.*}})
+// CHECK:           aie.use_lock(%[[VAL_19]], AcquireGreaterEqual, %{{.*}})
 // CHECK:           aie.dma_bd(%[[VAL_23]] : memref<1024xi32, 2> offset = 0 len = 1024)
-// CHECK:           aie.use_lock(%[[VAL_19]], Release, %{{.*}})
+// CHECK:           aie.use_lock(%[[VAL_17]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
 // CHECK:           aie.end
@@ -213,13 +215,10 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           aie.use_lock(%[[VAL_18]], Release, %{{.*}})
 // CHECK:           aie.next_bd ^bb4
 // CHECK:         }
-
 // CHECK:    aie.core(%[[VAL_3]]) {
-// CHECK:           aie.use_lock(%[[VAL_19]], AcquireGreaterEqual, %{{.*}})
 // CHECK:           aie.use_lock(%[[VAL_18]], AcquireGreaterEqual, %{{.*}})
-// CHECK-DAG:       aie.use_lock(%[[VAL_20]], Release, %{{.*}})
-// CHECK-DAG:       aie.use_lock(%[[VAL_17]], Release, %{{.*}})
-// CHECK:           aie.end
+// CHECK-NEXT:      aie.use_lock(%[[VAL_19]], Release, %{{.*}})
+// CHECK-NEXT:      aie.end
 // CHECK:         }
 
 // CHECK-DAG:         %[[VAL_2:.*]] = aie.logical_tile<MemTile>({{.*}}, ?)

@@ -7877,6 +7877,43 @@ public:
     return false;
   }
 
+  /// If `op` is the get or the put of an L1 buffer the core only relays, the
+  /// two ops: the buffer's only uses, besides its dealloc, are one channel get
+  /// filling it and one channel put later in the same block sending it once.
+  static std::optional<std::pair<Operation *, Operation *>>
+  findL1Relay(air::MemcpyInterface op) {
+    Value buf;
+    if (auto get = dyn_cast<air::ChannelGetOp>(op.getOperation()))
+      buf = get.getMemref();
+    else if (auto put = dyn_cast<air::ChannelPutOp>(op.getOperation()))
+      buf = put.getMemref();
+    if (!buf)
+      return std::nullopt;
+    air::ChannelGetOp get;
+    air::ChannelPutOp put;
+    for (Operation *user : buf.getUsers()) {
+      if (isa<memref::DeallocOp>(user))
+        continue;
+      if (auto g = dyn_cast<air::ChannelGetOp>(user);
+          g && !get && g.getMemref() == buf) {
+        get = g;
+        continue;
+      }
+      if (auto p = dyn_cast<air::ChannelPutOp>(user);
+          p && !put && p.getMemref() == buf) {
+        put = p;
+        continue;
+      }
+      return std::nullopt;
+    }
+    if (!get || !put || get->getBlock() != put->getBlock() ||
+        !get->isBeforeInBlock(put))
+      return std::nullopt;
+    if (air::getRefeedCount(cast<air::ChannelInterface>(*put)) > 1)
+      return std::nullopt;
+    return std::make_pair(get.getOperation(), put.getOperation());
+  }
+
   /// Whether `op` is a channel get and every get on its channel in the same
   /// isolated region (the core) fills a different buffer.
   static bool getsFillDistinctBuffers(Operation *op) {
@@ -8111,6 +8148,52 @@ public:
     // deadlock. The op carries the shared prod/cons symbol-refs; skip the
     // core-side lock. The DMA-side BD still picks up the shared pair via
     // getLockForDMA in generateDmaBdProgram.
+    //
+    // An L1 buffer the core only relays (a get fills it, a later put sends
+    // it, nothing else here touches it) is chained through three locks: the
+    // S2MM takes "empty" and gives "full", the core takes "full" at the get
+    // and gives "ready" at the put, the MM2S takes "ready" and gives "empty".
+    // So the S2MM refills the buffer only after the MM2S has sent it. With a
+    // lock pair per direction, the core would give the S2MM's lock back at
+    // the put, before the MM2S has read the buffer. The DMA BDs pick up the
+    // locks the same way as for a 3-way buffer.
+    auto relay = findL1Relay(memcpyOpIf);
+    if (relay && UsesSemaphoreLocks && bufferOp->getSymName()) {
+      auto device = tile->getParentOfType<AIE::DeviceOp>();
+      auto *ctx = device.getContext();
+      std::string name = bufferOp->getSymName()->str();
+      std::string empty = name + "_prod_lock", full = name + "_cons_lock",
+                  ready = name + "_send_lock";
+      if (!relay->first->hasAttr("air.shared_prod_lock")) {
+        air::allocateLockOp(device, tile, /*init=*/1, -1,
+                            StringAttr::get(ctx, empty));
+        air::allocateLockOp(device, tile, /*init=*/0, -1,
+                            StringAttr::get(ctx, full));
+        air::allocateLockOp(device, tile, /*init=*/0, -1,
+                            StringAttr::get(ctx, ready));
+        for (auto [op, cons] : {std::make_pair(relay->first, full),
+                                std::make_pair(relay->second, ready)}) {
+          op->setAttr("air.shared_prod_lock",
+                      FlatSymbolRefAttr::get(ctx, empty));
+          op->setAttr("air.shared_cons_lock",
+                      FlatSymbolRefAttr::get(ctx, cons));
+        }
+      }
+      bool isGet = memcpyOpIf.getOperation() == relay->first;
+      auto lock =
+          air::lookupBySymName<AIE::LockOp>(device, isGet ? full : ready);
+      if (isGet)
+        builder.setInsertionPoint(memcpyOpIf);
+      else
+        builder.setInsertionPointAfter(memcpyOpIf);
+      AIE::UseLockOp::create(builder, memcpyOpIf->getLoc(), lock,
+                             isGet ? AIE::LockAction::AcquireGreaterEqual
+                                   : AIE::LockAction::Release,
+                             1);
+      Value buf = isGet ? memcpyOpIf.getDstMemref() : memcpyOpIf.getSrcMemref();
+      allocs_to_remap.insert(buf.getDefiningOp());
+      return success();
+    }
     if (memcpyOpIf->hasAttr("air.shared_prod_lock"))
       return success();
     auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, tile,
