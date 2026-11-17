@@ -2102,18 +2102,21 @@ std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
         continue;
       auto offsetZip = llvm::zip_equal(air::getOffsetsAsValues(ci),
                                        air::getOffsetsAsValues(cj));
+      // Operands only count as different when both are constants.
+      auto sameUnlessDistinctConsts = [](Value a, Value b) {
+        auto ca = getConstantIntValue(a), cb = getConstantIntValue(b);
+        return failure(ca && cb && *ca != *cb);
+      };
       auto d =
-          llvm::find_if(offsetZip, [](std::tuple<Value, Value> offsetPair) {
+          llvm::find_if(offsetZip, [&](std::tuple<Value, Value> offsetPair) {
             auto [o1, o2] = offsetPair;
-            auto defO1 = o1.getDefiningOp();
-            auto defO2 = o2.getDefiningOp();
-            if (defO1 && defO2) {
-              if (air::isEquivalentTo(defO1, defO2))
-                return false;
-              else
-                return true;
-            }
-            return false;
+            Operation *defO1 = o1.getDefiningOp();
+            Operation *defO2 = o2.getDefiningOp();
+            return defO1 && defO2 &&
+                   !OperationEquivalence::isEquivalentTo(
+                       defO1, defO2, sameUnlessDistinctConsts,
+                       /*markEquivalent=*/nullptr,
+                       OperationEquivalence::IgnoreLocations);
           });
       if (d != offsetZip.end())
         memrefDim = std::distance(offsetZip.begin(), d);

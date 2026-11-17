@@ -624,13 +624,6 @@ void populateBufferMemrefToFuncArgsPattern(RewritePatternSet &patterns);
 Region *findCommonRegionContainingAllAncestors(SmallVector<Operation *> ops,
                                                Operation *until = nullptr);
 
-// A lite version of OperationEquivalence::isRegionEquivalentTo which only
-// checks for const value equivalences.
-bool isRegionEquivalentTo(Region *lhs, Region *rhs);
-// A lite version of OperationEquivalence::isEquivalentTo which only checks for
-// const value equivalences.
-bool isEquivalentTo(Operation *lhs, Operation *rhs);
-
 // Generate composed affine apply op from arith addi op operating on Index
 // values.
 affine::AffineApplyOp
