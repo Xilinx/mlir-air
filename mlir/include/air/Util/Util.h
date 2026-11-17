@@ -108,8 +108,6 @@ MemorySpace moreLocal(MemorySpace a, MemorySpace b);
 
 // ===----------------------------------------------------------------------===//
 
-LogicalResult normalizeLoop(affine::AffineForOp afo);
-
 func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
                                 ArrayRef<Value> operands,
                                 ArrayRef<Type> retTys);

@@ -12,6 +12,7 @@
 
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -56,9 +57,9 @@ public:
     affine::AffineForOp outer = nest[depth];
     affine::AffineForOp inner = nest[depth + 1];
 
-    if (failed(xilinx::air::normalizeLoop(inner)))
+    if (failed(affine::normalizeAffineFor(inner)))
       return;
-    if (failed(xilinx::air::normalizeLoop(outer)))
+    if (failed(affine::normalizeAffineFor(outer)))
       return;
     {
       OpBuilder builder(outer);

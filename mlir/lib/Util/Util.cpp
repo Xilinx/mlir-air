@@ -180,35 +180,6 @@ func::FuncOp air::getMangledFunction(ModuleOp module, std::string prefix,
   return fn;
 }
 
-LogicalResult air::normalizeLoop(affine::AffineForOp afo) {
-  auto ubMap = afo.getUpperBoundMap();
-  auto lbMap = afo.getLowerBoundMap();
-  auto ctx = afo.getContext();
-  auto loc = afo.getLoc();
-
-  auto step_expr = getAffineConstantExpr(afo.getStepAsInt(), ctx);
-
-  auto ub_expr = ubMap.getResult(0);
-  auto lb_expr = lbMap.getResult(0);
-  auto sub_expr = ub_expr - lb_expr;
-  auto new_ub_expr = sub_expr.ceilDiv(step_expr);
-
-  auto iv = afo.getInductionVar();
-
-  afo.setLowerBoundMap(AffineMap::get(0, 0, getAffineConstantExpr(0, ctx)));
-  afo.setUpperBoundMap(AffineMap::get(0, 0, new_ub_expr));
-  afo.setStep(1);
-
-  auto dim0_expr = getAffineDimExpr(0, ctx);
-  auto iv_expr = dim0_expr * step_expr + lb_expr;
-  auto iv_map = AffineMap::get(1, 0, iv_expr);
-  auto builder = OpBuilder::atBlockBegin(afo.getBody());
-  auto new_iv = affine::AffineApplyOp::create(builder, loc, iv_map, iv);
-  SmallPtrSet<Operation *, 1> keep{new_iv};
-  iv.replaceAllUsesExcept(new_iv, keep);
-  return success();
-}
-
 uint64_t air::getTensorVolume(const ShapedType ty) {
 
   if (!ty.hasRank())
@@ -599,29 +570,17 @@ air::getAffineApplyCoefficient(affine::AffineApplyOp applyOp, Value v) {
 
 // Get a static scf.for trip count as int
 std::optional<int64_t> air::getStaticScfForTripCountAsInt(scf::ForOp for_op) {
-  std::optional<int64_t> output = std::nullopt;
-  // Get for loop iteration count
-  std::optional<int64_t> LbCstOp =
-      mlir::getConstantIntValue(for_op.getLowerBound());
-  std::optional<int64_t> UbCstOp =
-      mlir::getConstantIntValue(for_op.getUpperBound());
-  std::optional<int64_t> StepCstOp =
-      mlir::getConstantIntValue(for_op.getStep());
-  if (LbCstOp && UbCstOp && StepCstOp)
-    output = llvm::divideCeilSigned((*UbCstOp - *LbCstOp), *StepCstOp);
-  return output;
+  if (std::optional<APInt> n = for_op.getStaticTripCount())
+    return n->getSExtValue();
+  return std::nullopt;
 }
 
 // Get a static affine.for trip count as int
 std::optional<int64_t>
 air::getStaticAffineForTripCountAsInt(affine::AffineForOp for_op) {
-  std::optional<int64_t> output = std::nullopt;
-  if (for_op.hasConstantBounds()) {
-    output = llvm::divideCeilSigned(
-        (for_op.getConstantUpperBound() - for_op.getConstantLowerBound()),
-        for_op.getStepAsInt());
-  }
-  return output;
+  if (std::optional<uint64_t> n = affine::getConstantTripCount(for_op))
+    return *n;
+  return std::nullopt;
 }
 
 std::optional<int64_t> air::getStaticTripCountInRange(Operation *inner,
