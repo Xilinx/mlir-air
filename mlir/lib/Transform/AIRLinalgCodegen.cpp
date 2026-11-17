@@ -5584,9 +5584,13 @@ static bool areIdenticalReads(vector::TransferReadOp read1,
   auto sameValue = [](Value a, Value b) {
     if (a == b)
       return success();
-    Operation *defA = a.getDefiningOp();
-    Operation *defB = b.getDefiningOp();
-    return success(defA && defB && isPure(defA) && isPure(defB) &&
+    auto resA = dyn_cast<OpResult>(a);
+    auto resB = dyn_cast<OpResult>(b);
+    if (!resA || !resB || resA.getResultNumber() != resB.getResultNumber())
+      return failure();
+    Operation *defA = resA.getOwner();
+    Operation *defB = resB.getOwner();
+    return success(isPure(defA) && isPure(defB) &&
                    OperationEquivalence::isEquivalentTo(
                        defA, defB, OperationEquivalence::exactValueMatch,
                        /*markEquivalent=*/nullptr,
@@ -5733,134 +5737,39 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
       return emitDefiniteFailure() << "target must be an scf.for operation";
     }
 
-    Location loc = forOp.getLoc();
-
-    // Collect vector-typed iter_args
-    SmallVector<unsigned> vectorIterArgIndices;
-    SmallVector<VectorType> originalVectorTypes;
-    SmallVector<VectorType> flattenedVectorTypes;
-
-    for (auto [idx, iterArg] : llvm::enumerate(forOp.getInitArgs())) {
-      if (auto vecType = dyn_cast_if_present<VectorType>(iterArg.getType())) {
-        vectorIterArgIndices.push_back(idx);
-        originalVectorTypes.push_back(vecType);
-
-        // Create flattened vector type
-        int64_t numElements = getVectorNumElements(vecType);
-        VectorType flatType =
-            VectorType::get({numElements}, vecType.getElementType());
-        flattenedVectorTypes.push_back(flatType);
-      }
-    }
-
-    // If no vector iter_args, nothing to do
-    if (vectorIterArgIndices.empty()) {
-      transformedOps.push_back(target);
-      continue;
-    }
-
-    // Step 1: Insert vector.shape_cast operations before the loop to flatten
-    // init values
+    auto shapeCast = [](OpBuilder &b, Location loc, Type type, Value v) {
+      return vector::ShapeCastOp::create(b, loc, type, v).getResult();
+    };
+    SmallVector<Value> flatInits;
     rewriter.setInsertionPoint(forOp);
-    SmallVector<Value> newInitArgs(forOp.getInitArgs().begin(),
-                                   forOp.getInitArgs().end());
-
-    for (auto [idx, vecIdx] : llvm::enumerate(vectorIterArgIndices)) {
-      Value initArg = forOp.getInitArgs()[vecIdx];
-      auto shapeCast = vector::ShapeCastOp::create(
-          rewriter, loc, flattenedVectorTypes[idx], initArg);
-      newInitArgs[vecIdx] = shapeCast.getResult();
-    }
-
-    // Step 2: Create new result types (flattened for vector types)
-    SmallVector<Type> newResultTypes;
-    for (auto [idx, resultType] : llvm::enumerate(forOp.getResultTypes())) {
-      auto it = llvm::find(vectorIterArgIndices, idx);
-      if (it != vectorIterArgIndices.end()) {
-        size_t vecIdx = std::distance(vectorIterArgIndices.begin(), it);
-        newResultTypes.push_back(flattenedVectorTypes[vecIdx]);
-      } else {
-        newResultTypes.push_back(resultType);
+    for (Value init : forOp.getInitArgs()) {
+      auto vecType = dyn_cast<VectorType>(init.getType());
+      if (!vecType || vecType.getRank() <= 1) {
+        flatInits.push_back(nullptr);
+        continue;
       }
+      auto flatType = VectorType::get({getVectorNumElements(vecType)},
+                                      vecType.getElementType());
+      flatInits.push_back(shapeCast(rewriter, forOp.getLoc(), flatType, init));
+    }
+    // Last to first, so the casts each call adds inside the loop and after it
+    // come out in iter_arg order.
+    for (int i = flatInits.size() - 1; i >= 0; --i) {
+      if (!flatInits[i])
+        continue;
+      rewriter.setInsertionPoint(forOp);
+      SmallVector<Value> newResults = scf::replaceAndCastForOpIterArg(
+          rewriter, forOp, forOp.getInitArgsMutable()[i], flatInits[i],
+          shapeCast);
+      auto newForOp = newResults[i]
+                          .getDefiningOp<vector::ShapeCastOp>()
+                          .getSource()
+                          .getDefiningOp<scf::ForOp>();
+      rewriter.replaceOp(forOp, newResults);
+      forOp = newForOp;
     }
 
-    // Step 3: Create new scf.for with flattened iter_args
-    auto newForOp =
-        scf::ForOp::create(rewriter, loc, forOp.getLowerBound(),
-                           forOp.getUpperBound(), forOp.getStep(), newInitArgs);
-
-    // Step 4: Clone the loop body and insert shape_cast operations
-    Block *oldBody = forOp.getBody();
-    Block *newBody = newForOp.getBody();
-
-    rewriter.setInsertionPointToStart(newBody);
-    IRMapping mapping;
-
-    // Map the induction variable
-    mapping.map(oldBody->getArgument(0), newBody->getArgument(0));
-
-    // For vector iter_args, insert shape_cast to convert back to original shape
-    for (auto [idx, vecIdx] : llvm::enumerate(vectorIterArgIndices)) {
-      BlockArgument newArg = newBody->getArgument(vecIdx + 1);
-      auto shapeCast = vector::ShapeCastOp::create(
-          rewriter, loc, originalVectorTypes[idx], newArg);
-      mapping.map(oldBody->getArgument(vecIdx + 1), shapeCast.getResult());
-    }
-
-    // Map non-vector iter_args directly
-    for (auto [idx, arg] :
-         llvm::enumerate(oldBody->getArguments().drop_front(1))) {
-      if (llvm::find(vectorIterArgIndices, idx) == vectorIterArgIndices.end()) {
-        mapping.map(arg, newBody->getArgument(idx + 1));
-      }
-    }
-
-    // Clone operations from old body (except the terminator)
-    for (Operation &op : oldBody->without_terminator()) {
-      rewriter.clone(op, mapping);
-    }
-
-    // Step 5: Handle the yield operation
-    auto oldYield = cast<scf::YieldOp>(oldBody->getTerminator());
-    SmallVector<Value> newYieldOperands;
-
-    for (auto [idx, yieldValue] : llvm::enumerate(oldYield.getOperands())) {
-      auto it = llvm::find(vectorIterArgIndices, idx);
-      if (it != vectorIterArgIndices.end()) {
-        // Flatten the yielded vector value
-        size_t vecIdx = std::distance(vectorIterArgIndices.begin(), it);
-        Value mappedValue = mapping.lookup(yieldValue);
-        auto shapeCast = vector::ShapeCastOp::create(
-            rewriter, loc, flattenedVectorTypes[vecIdx], mappedValue);
-        newYieldOperands.push_back(shapeCast.getResult());
-      } else {
-        newYieldOperands.push_back(mapping.lookup(yieldValue));
-      }
-    }
-
-    scf::YieldOp::create(rewriter, loc, newYieldOperands);
-
-    // Step 6: Insert shape_cast operations after the loop to convert results
-    // back
-    rewriter.setInsertionPointAfter(newForOp);
-    SmallVector<Value> finalResults;
-
-    for (auto [idx, result] : llvm::enumerate(newForOp.getResults())) {
-      auto it = llvm::find(vectorIterArgIndices, idx);
-      if (it != vectorIterArgIndices.end()) {
-        size_t vecIdx = std::distance(vectorIterArgIndices.begin(), it);
-        auto shapeCast = vector::ShapeCastOp::create(
-            rewriter, loc, originalVectorTypes[vecIdx], result);
-        finalResults.push_back(shapeCast.getResult());
-      } else {
-        finalResults.push_back(result);
-      }
-    }
-
-    // Replace uses of the old loop's results
-    rewriter.replaceOp(forOp, finalResults);
-
-    transformedOps.push_back(newForOp.getOperation());
+    transformedOps.push_back(forOp.getOperation());
   }
 
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);

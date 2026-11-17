@@ -45,6 +45,12 @@ module attributes {transform.with_named_sequence} {
   %new_loop6_outer = transform.air.flatten_for_iter_args %loop6_outer : (!transform.any_op) -> !transform.any_op
   // Flatten inner loop
   %new_loop6_inner = transform.air.flatten_for_iter_args %loop6_inner : (!transform.any_op) -> !transform.any_op
+
+  // Test case 7: Loop attributes are kept
+  %func7 = transform.structured.match ops{["func.func"]} attributes{sym_name = "flatten_keeps_loop_attrs"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %loop7 = transform.structured.match ops{["scf.for"]} in %func7 : (!transform.any_op) -> !transform.any_op
+  %new_loop7 = transform.air.flatten_for_iter_args %loop7 : (!transform.any_op) -> !transform.any_op
+  transform.debug.emit_remark_at %new_loop7, "flattened loop" : !transform.any_op
     transform.yield
   }
 }
