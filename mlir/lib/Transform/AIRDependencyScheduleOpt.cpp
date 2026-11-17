@@ -26,6 +26,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -3454,16 +3455,8 @@ static std::optional<int64_t> tripsWithinHierarchy(Operation *op) {
 // nullopt if any producer's (or the get's) indices are not constant.
 static std::optional<int64_t> sendsInto(air::ChannelGetOp get,
                                         air::ChannelOp chan) {
-  auto constIndices =
-      [](air::ChannelInterface op) -> std::optional<SmallVector<int64_t>> {
-    SmallVector<int64_t> idx;
-    for (Value v : op.getIndices()) {
-      auto c = getConstantIntValue(v);
-      if (!c)
-        return std::nullopt;
-      idx.push_back(*c);
-    }
-    return idx;
+  auto constIndices = [](air::ChannelInterface op) {
+    return getConstantIntValues(getAsOpFoldResult(op.getIndices()));
   };
   auto getIdx = constIndices(get);
   if (!getIdx)
@@ -10724,19 +10717,6 @@ static bool isPadded(air::ChannelPutOp put) {
   return put.getPadBefore().has_value() || put.getPadAfter().has_value();
 }
 
-// Returns the constant values of `indices`, or nothing if any is not
-// constant.
-static std::optional<SmallVector<int64_t>> constantIndices(ValueRange indices) {
-  SmallVector<int64_t> out;
-  for (Value v : indices) {
-    auto c = getConstantIntValue(v);
-    if (!c)
-      return std::nullopt;
-    out.push_back(*c);
-  }
-  return out;
-}
-
 // The shim DMA channel (column, direction, index) air-to-aie gave a host
 // transfer: none if it has no allocation, failure if it has one whose channel
 // cannot be told yet (an unplaced shim tile with no column hint).
@@ -10747,7 +10727,7 @@ shimChannelOf(air::ChannelPutOp op) {
   if (!meta || meta.empty())
     return std::optional<ShimChannel>();
   // the entry lowering picks for the put's bundle indices
-  if (!constantIndices(op.getIndices()))
+  if (!getConstantIntValues(getAsOpFoldResult(op.getIndices())))
     return failure();
   auto i = air::getIndexToMetadataArrayFromChannelIndices(op);
   if (!i || *i < 0 || (size_t)*i >= meta.size())
@@ -10795,8 +10775,8 @@ static bool mayCross(Operation *op, air::ChannelPutOp first) {
   if (!put)
     return false;
   if (put.getChanName() == first.getChanName()) {
-    auto a = constantIndices(first.getIndices());
-    auto b = constantIndices(put.getIndices());
+    auto a = getConstantIntValues(getAsOpFoldResult(first.getIndices()));
+    auto b = getConstantIntValues(getAsOpFoldResult(put.getIndices()));
     if (!a || !b || *a == *b)
       return false;
   }

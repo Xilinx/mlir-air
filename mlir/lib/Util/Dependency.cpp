@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
@@ -3130,12 +3131,8 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
 // Get number of cores in herd
 unsigned dependencyCanonicalizer::getTripCountInHierarchyOp(
     air::HierarchyInterface hier) {
-  auto sizes = hier.getSizeOperands();
-  unsigned output = 1;
-  for (unsigned i = 0; i < sizes.size(); i++) {
-    output *= sizes[i].getDefiningOp<arith::ConstantIndexOp>().value();
-  }
-  return output;
+  return llvm::product_of(
+      *getConstantIntValues(getAsOpFoldResult(hier.getSizeOperands())));
 }
 
 // Write position of each core to dependency graph, if showing cores
