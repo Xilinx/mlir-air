@@ -1180,28 +1180,17 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
               .value());
 
     OpBuilder builder(scf_par);
-    SmallVector<affine::AffineForOp> loops;
-    for (unsigned i = 0; i < par_sizes.size(); i++) {
-      if (i == 0)
-        loops.push_back(affine::AffineForOp::create(builder, scf_par.getLoc(),
-                                                    0, par_sizes[0]));
-      else {
-        auto inner_builder = OpBuilder::atBlockBegin(loops[i - 1].getBody());
-        loops.push_back(affine::AffineForOp::create(
-            inner_builder, scf_par.getLoc(), 0, par_sizes[i]));
-      }
-    }
-
-    builder.setInsertionPointToStart(loops.back().getBody());
-    IRMapping remap;
-    for (unsigned i = 0; i < par_sizes.size(); i++)
-      remap.map(scf_par.getInductionVars()[i], loops[i].getInductionVar());
-    for (auto &o : scf_par.getBody()->getOperations()) {
-      if (!isa<scf::ReduceOp>(o) && !isa<scf::YieldOp>(o) &&
-          !isa<scf::ParallelOp>(o)) {
-        builder.clone(o, remap);
-      }
-    }
+    affine::buildAffineLoopNest(
+        builder, scf_par.getLoc(), SmallVector<int64_t>(par_sizes.size(), 0),
+        SmallVector<int64_t>(par_sizes.begin(), par_sizes.end()),
+        SmallVector<int64_t>(par_sizes.size(), 1),
+        [&](OpBuilder &b, Location, ValueRange ivs) {
+          IRMapping remap;
+          remap.map(scf_par.getInductionVars(), ivs);
+          for (auto &o : scf_par.getBody()->getOperations())
+            if (!isa<scf::ReduceOp, scf::YieldOp, scf::ParallelOp>(o))
+              b.clone(o, remap);
+        });
     erased.insert(scf_par);
   }
   for (auto a : erased) {
