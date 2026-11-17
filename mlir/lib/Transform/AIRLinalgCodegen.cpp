@@ -1034,17 +1034,6 @@ static LogicalResult deallocBufferCallBack(OpBuilder &b, Value buffer) {
   return success();
 }
 
-// Create channel name as string
-static std::string createChannelName(ModuleOp module) {
-  std::string new_cname = "channel_0";
-  std::string cname = "channel";
-  int which_try = 0;
-  while (module.lookupSymbol(new_cname))
-    new_cname = cname + "_" + std::to_string(++which_try);
-  cname = new_cname;
-  return cname;
-}
-
 // Split a linalg reduction into 'pipeline_depth' consecutive
 // stages, each one feeding partial reductions to the next stage.
 // Stages are mapped to Nx1 or Nx1 herd.
