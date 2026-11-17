@@ -1243,12 +1243,6 @@ LogicalResult outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
   return success();
 }
 
-template <typename T>
-void push_back_if_unique(std::vector<T> &vec, T entry) {
-  if (std::find(vec.begin(), vec.end(), entry) == vec.end())
-    vec.push_back(entry);
-}
-
 /// Collect all values that alias the given buffer through view-like operations.
 /// This includes memref.subview, memref.collapse_shape, memref.expand_shape,
 /// memref.reinterpret_cast, etc.

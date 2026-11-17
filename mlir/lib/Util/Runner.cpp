@@ -1287,12 +1287,5 @@ std::string to_string(std::vector<unsigned> vec) {
 }
 std::string to_string(dependencyNodeEntry &c) { return air::to_string(c.op); }
 
-template <typename T>
-void push_back_if_unique(std::vector<T> &vec, T entry) {
-  if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
-    vec.push_back(entry);
-  }
-}
-
 } // namespace air
 } // namespace xilinx

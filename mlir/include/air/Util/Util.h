@@ -152,6 +152,13 @@ T getScfParentOpFromYieldOp(Operation *yield) {
   return dyn_cast_if_present<T>(yield->getParentOp());
 }
 
+// Appends `entry` to `vec` unless `vec` already contains it.
+template <typename T, typename Container>
+void push_back_if_unique(Container &vec, T entry) {
+  if (!llvm::is_contained(vec, entry))
+    vec.push_back(entry);
+}
+
 // The coefficient of `v` in the single result of `applyOp`, summed over every
 // operand position `v` takes (0 if `v` is not an operand). std::nullopt if the
 // map has several results or is not linear in its operands: mod, floordiv,

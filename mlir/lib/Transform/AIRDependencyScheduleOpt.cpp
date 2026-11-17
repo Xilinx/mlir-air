@@ -1624,13 +1624,6 @@ private:
     return new_loop_op;
   }
 
-  template <typename T>
-  void push_back_if_unique(SmallVector<T> &vec, T entry) const {
-    if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
-      vec.push_back(entry);
-    }
-  }
-
   Value getTokenFromOutermostParentAffineIfOp(Operation *op) const {
     Value token = nullptr;
     Operation *parent = op->getParentOp();
@@ -8508,13 +8501,6 @@ private:
       }
     }
     return true;
-  }
-
-  template <typename T>
-  void push_back_if_unique(SmallVector<T> &vec, T entry) const {
-    if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
-      vec.push_back(entry);
-    }
   }
 
   LogicalResult getAllChanUsers(Value memref, SmallVector<Operation *> &users,
