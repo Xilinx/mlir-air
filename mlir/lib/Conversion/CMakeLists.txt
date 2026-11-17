@@ -63,6 +63,7 @@ if(AIR_ENABLE_GPU)
   )
   list(APPEND CONVERSION_LINK_LIBS
     MLIRGPUDialect
+    MLIRGPUTransforms
     MLIRGPUToROCDLTransforms
     MLIRAffineToStandard
     MLIRSCFToControlFlow
