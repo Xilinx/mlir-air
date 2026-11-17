@@ -822,16 +822,6 @@ static LogicalResult writeHostSidecars(ModuleOp moduleOp) {
   return success();
 }
 
-/// Clone a module (by serializing and re-parsing).
-static OwningOpRef<ModuleOp> cloneModule(ModuleOp moduleOp) {
-  std::string irStr;
-  raw_string_ostream os(irStr);
-  moduleOp.print(os);
-
-  MLIRContext *ctx = moduleOp.getContext();
-  return parseSourceString<ModuleOp>(irStr, ctx);
-}
-
 //===----------------------------------------------------------------------===//
 // GPU Compilation Pipeline
 //===----------------------------------------------------------------------===//
@@ -1236,11 +1226,7 @@ static LogicalResult runAieCompilation() {
   }
 
   // Clone module for placed version
-  auto placedModule = cloneModule(moduleOp);
-  if (!placedModule) {
-    llvm::errs() << "Error: failed to clone module for placement\n";
-    return failure();
-  }
+  OwningOpRef<ModuleOp> placedModule = moduleOp.clone();
 
   SmallString<256> placedFile(tmpDir);
   sys::path::append(placedFile, "placed." + airMlirFilename);
@@ -1329,11 +1315,7 @@ static LogicalResult runAieCompilation() {
     os << ")";
   }
 
-  auto aieModule = cloneModule(placedModule.get());
-  if (!aieModule) {
-    llvm::errs() << "Error: failed to clone module for AIR-to-AIE\n";
-    return failure();
-  }
+  OwningOpRef<ModuleOp> aieModule = placedModule.get().clone();
 
   SmallString<256> aieFile(tmpDir);
   sys::path::append(aieFile, "aie." + airMlirFilename);
@@ -1401,11 +1383,7 @@ static LogicalResult runAieCompilation() {
     os << ")";
   }
 
-  auto npuModule = cloneModule(aieModule.get());
-  if (!npuModule) {
-    llvm::errs() << "Error: failed to clone module for NPU lowering\n";
-    return failure();
-  }
+  OwningOpRef<ModuleOp> npuModule = aieModule.get().clone();
 
   SmallString<256> npuFile(tmpDir);
   sys::path::append(npuFile, "npu." + airMlirFilename);

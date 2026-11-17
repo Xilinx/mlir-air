@@ -53,3 +53,18 @@ func.func @unpack_outer_perm_one_tile(%src: memref<8x4x1x1x8xf32, 2>, %dst: memr
   linalg.unpack %src outer_dims_perm = [3, 0, 1, 2] inner_dims_pos = [3] inner_tiles = [8] into %dst : memref<8x4x1x1x8xf32, 2> -> memref<4x1x1x64xf32, 1>
   return
 }
+
+// Several tiles per dim with a transposed outer order: expand + transpose.
+// CHECK-LABEL: func.func @pack_outer_perm_tiled
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[0, 0, 0, 0] [4, 8, 8, 8] [8, 256, 32, 1])
+func.func @pack_outer_perm_tiled(%src: memref<64x32xbf16, 1>, %dst: memref<4x8x8x8xbf16, 2>) {
+  linalg.pack %src outer_dims_perm = [1, 0] inner_dims_pos = [0, 1] inner_tiles = [8, 8] into %dst : memref<64x32xbf16, 1> -> memref<4x8x8x8xbf16, 2>
+  return
+}
+
+// CHECK-LABEL: func.func @unpack_outer_perm_tiled
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[0, 0, 0, 0] [8, 8, 4, 8] [64, 8, 512, 1])
+func.func @unpack_outer_perm_tiled(%src: memref<4x8x8x8xbf16, 2>, %dst: memref<64x32xbf16, 1>) {
+  linalg.unpack %src outer_dims_perm = [1, 0] inner_dims_pos = [0, 1] inner_tiles = [8, 8] into %dst : memref<4x8x8x8xbf16, 2> -> memref<64x32xbf16, 1>
+  return
+}
