@@ -1024,50 +1024,18 @@ std::vector<AIE::TileLike> getMemtilesFromDeviceOp(AIE::DeviceOp d) {
 // at compile time.
 FailureOr<std::pair<int64_t, int64_t>>
 getSegmentUnrollFactors(air::SegmentOp seg) {
-  int64_t unrollX = 1, unrollY = 1;
-  unsigned numDims = seg.getNumDims();
-  if (numDims > 0) {
-    auto sizeOperands = seg.getSizeOperands();
-    if (auto constOp =
-            sizeOperands[0].getDefiningOp<arith::ConstantIndexOp>()) {
-      unrollX = constOp.value();
-    } else if (auto constIntOp =
-                   sizeOperands[0].getDefiningOp<arith::ConstantOp>()) {
-      if (auto intAttr =
-              dyn_cast_if_present<IntegerAttr>(constIntOp.getValue()))
-        unrollX = intAttr.getInt();
-      else {
-        seg.emitOpError("segment unroll X-dimension size must be a static "
-                        "constant, but got non-integer constant");
-        return failure();
-      }
-    } else {
-      seg.emitOpError(
-          "segment unroll X-dimension size must be a static constant");
+  int64_t factors[2] = {1, 1};
+  auto sizes = seg.getSizeOperands();
+  for (unsigned i = 0, e = std::min(seg.getNumDims(), 2u); i < e; ++i) {
+    std::optional<int64_t> size = getConstantIntValue(sizes[i]);
+    if (!size) {
+      seg.emitOpError() << "segment unroll " << (i ? 'Y' : 'X')
+                        << "-dimension size must be a static constant";
       return failure();
     }
-    if (numDims > 1) {
-      if (auto constOp =
-              sizeOperands[1].getDefiningOp<arith::ConstantIndexOp>()) {
-        unrollY = constOp.value();
-      } else if (auto constIntOp =
-                     sizeOperands[1].getDefiningOp<arith::ConstantOp>()) {
-        if (auto intAttr =
-                dyn_cast_if_present<IntegerAttr>(constIntOp.getValue()))
-          unrollY = intAttr.getInt();
-        else {
-          seg.emitOpError("segment unroll Y-dimension size must be a static "
-                          "constant, but got non-integer constant");
-          return failure();
-        }
-      } else {
-        seg.emitOpError(
-            "segment unroll Y-dimension size must be a static constant");
-        return failure();
-      }
-    }
+    factors[i] = *size;
   }
-  return std::make_pair(unrollX, unrollY);
+  return std::make_pair(factors[0], factors[1]);
 }
 
 // Validate segment unroll factors for AIE lowering.

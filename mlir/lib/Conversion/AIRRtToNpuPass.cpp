@@ -16,6 +16,7 @@
 #include "aie/Dialect/AIE/IR/AIETargetModel.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
+#include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -117,13 +118,10 @@ static int64_t enclosingLoopTrips(mlir::Operation *op) {
   int64_t trips = 1;
   for (mlir::Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
     if (auto forOp = llvm::dyn_cast<mlir::affine::AffineForOp>(p)) {
-      if (!forOp.hasConstantBounds())
+      std::optional<uint64_t> n = mlir::affine::getConstantTripCount(forOp);
+      if (!n)
         return std::numeric_limits<int64_t>::max();
-      int64_t lb = forOp.getConstantLowerBound();
-      int64_t ub = forOp.getConstantUpperBound();
-      int64_t step = forOp.getStepAsInt();
-      int64_t n = (step > 0 && ub > lb) ? (ub - lb + step - 1) / step : 1;
-      trips *= n;
+      trips *= std::max<int64_t>(*n, 1);
     } else if (llvm::isa<mlir::scf::ForOp, mlir::scf::WhileOp>(p)) {
       return std::numeric_limits<int64_t>::max();
     }
