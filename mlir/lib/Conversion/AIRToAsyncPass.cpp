@@ -501,24 +501,12 @@ public:
           auto group = async::CreateGroupOp::create(r, loc, size);
 
           // create nested for loops
-          auto ivs = op.getInductionVars().begin();
-          auto step = op.getStep().begin();
-          auto lowerBound = op.getLowerBound().begin();
-          auto upperBound = op.getUpperBound().begin();
-          SmallVector<scf::ForOp> loops;
-          for (int i = 0, e = op.getNumLoops(); i < e; i++) {
-            Value sv = *step++;
-            Value lbv = *lowerBound++;
-            Value ubv = *upperBound++;
-            Value iv = *ivs++;
-            auto l = scf::ForOp::create(r, loc, lbv, ubv, sv);
-            mapper.map(lbv, l.getLowerBound());
-            mapper.map(ubv, l.getUpperBound());
-            mapper.map(sv, l.getStep());
-            mapper.map(iv, l.getInductionVar());
-            r.setInsertionPointToStart(l.getBody());
-            loops.push_back(l);
-          }
+          scf::LoopNest nest = scf::buildLoopNest(
+              r, loc, op.getLowerBound(), op.getUpperBound(), op.getStep());
+          for (auto [iv, loop] :
+               llvm::zip_equal(op.getInductionVars(), nest.loops))
+            mapper.map(iv, loop.getInductionVar());
+          r.setInsertionPointToStart(nest.loops.back().getBody());
 
           // create an async.execute and clone the scf.parallel body into it
           auto coreExeOp = async::ExecuteOp::create(
@@ -530,7 +518,7 @@ public:
                 async::YieldOp::create(b, loc, empty);
               });
           async::AddToGroupOp::create(r, loc, coreExeOp.getResult(0), group);
-          r.setInsertionPointAfter(loops[0]);
+          r.setInsertionPointAfter(nest.loops.front());
 
           async::AwaitAllOp::create(r, loc, group);
           async::YieldOp::create(r, loc, empty);

@@ -37,6 +37,20 @@ func.func @test_rank_2d_serialization(%arg0 : memref<16x16xf32>) {
   return
 }
 
+// CHECK-LABEL: func.func @test_rank_0d
+// CHECK-NOT: air.rank
+// CHECK-NOT: scf.for
+// CHECK: air.launch
+// CHECK: return
+func.func @test_rank_0d(%arg0 : memref<16x16xf32>) {
+  air.rank () in () args(%a=%arg0) : memref<16x16xf32> {
+    %c1 = arith.constant 1 : index
+    air.launch (%lx) in (%ls = %c1) args(%la=%a) : memref<16x16xf32> {
+    }
+  }
+  return
+}
+
 // CHECK-LABEL: func.func @test_rank_async_serialization
 // CHECK-NOT: air.rank
 // CHECK: scf.for

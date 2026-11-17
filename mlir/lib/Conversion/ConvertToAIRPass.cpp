@@ -2053,13 +2053,15 @@ struct AIRRankToLaunchPass
       auto c1 = arith::ConstantIndexOp::create(builder, loc, 1);
 
       // Build nested scf.for loops for each rank dimension.
-      SmallVector<scf::ForOp> loops;
       auto sizeOpers = rankOp.getSizeOperands();
-      for (unsigned d = 0; d < rankOp.getNumDims(); ++d) {
-        auto loop = scf::ForOp::create(builder, loc, c0, sizeOpers[d], c1);
-        loops.push_back(loop);
-        builder.setInsertionPointToStart(loop.getBody());
-      }
+      SmallVector<scf::ForOp> loops =
+          scf::buildLoopNest(
+              builder, loc, SmallVector<Value>(rankOp.getNumDims(), c0),
+              sizeOpers, SmallVector<Value>(rankOp.getNumDims(), c1))
+              .loops;
+      // A rank with no dimensions has no loops; its body goes before it.
+      if (!loops.empty())
+        builder.setInsertionPointToStart(loops.back().getBody());
 
       // Clone the body of rank into the innermost loop.
       IRMapping remap;
