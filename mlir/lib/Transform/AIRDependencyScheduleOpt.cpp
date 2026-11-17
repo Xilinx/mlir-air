@@ -2496,20 +2496,12 @@ FailureOr<scf::ForOp> updateScfForBounds(RewriterBase &rewriter,
 
   auto newFor = scf::ForOp::create(rewriter, loc, lbVal, ubVal, stepVal,
                                    loopOp.getInitArgs());
-  auto &bb = newFor.getBody()->getOperations();
-  auto &body = loopOp.getBody()->getOperations();
-  // The new ForOp is created with a default terminator.
-  // Erase it before splicing the old body, which has its own terminator.
-  // This preserves any operands the old yield might have (for iter_args).
-  if (!bb.empty() && bb.back().hasTrait<OpTrait::IsTerminator>() &&
-      !body.empty() && body.back().hasTrait<OpTrait::IsTerminator>()) {
-    bb.back().erase();
-  }
-  bb.splice(bb.begin(), body, body.begin(), body.end());
-  rewriter.replaceAllUsesWith(loopOp.getInductionVar(),
-                              newFor.getInductionVar());
-  rewriter.replaceAllUsesWith(loopOp.getRegionIterArgs(),
-                              newFor.getRegionIterArgs());
+  // The old body brings its own yield, so drop the one the builder may have
+  // added.
+  Block *newBody = newFor.getBody();
+  if (!newBody->empty() && newBody->back().hasTrait<OpTrait::IsTerminator>())
+    rewriter.eraseOp(&newBody->back());
+  rewriter.mergeBlocks(loopOp.getBody(), newBody, newBody->getArguments());
   rewriter.replaceOp(loopOp, newFor);
   return newFor;
 }
@@ -11520,9 +11512,11 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
       if (llvm::is_contained(kernelOpers, op.getKernelOperand(i)))
         rewriter.replaceAllUsesWith(op.getKernelArgument(i),
                                     newHerd.getKernelArgument(newIdx++));
-    auto &bb = newHerd.getBody().front().getOperations();
-    auto &body = op.getBody().front().getOperations();
-    bb.splice(bb.begin(), body, body.begin(), --body.end());
+    Block &newBody = newHerd.getBody().front();
+    Block::iterator insertPt = newBody.begin();
+    for (Operation &o :
+         llvm::make_early_inc_range(op.getBody().front().without_terminator()))
+      rewriter.moveOpBefore(&o, &newBody, insertPt);
     rewriter.replaceOp(op, newHerd);
     return success();
   }
