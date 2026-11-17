@@ -740,20 +740,12 @@ ParseResult air::LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
     result.addTypes(asyncTokenType);
 
   if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
-      parser.parseKeyword("in") || parser.parseLParen())
+      parser.parseKeyword("in") ||
+      parser.parseAssignmentList(tileSizeRef, tileSize))
     return failure();
-
-  tileSize.resize(tileArgs.size());
-  tileSizeRef.resize(tileArgs.size());
-  for (unsigned i = 0; i < tileArgs.size(); ++i) {
-    if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
-        parser.parseOperand(tileSize[i]))
-      return failure();
-    (void)parser.parseOptionalComma();
-  }
-
-  if (parser.parseRParen())
-    return failure();
+  if (tileSize.size() != tileArgs.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected one size per id");
 
   Type indexType = parser.getBuilder().getIndexType();
 
@@ -771,23 +763,13 @@ ParseResult air::LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
-    if (parser.parseLParen())
+    if (parser.parseAssignmentList(kernelArguments, kernelOperands))
       return failure();
-    if (parser.parseOptionalRParen()) {
-      do {
-        OpAsmParser::Argument argument;
-        OpAsmParser::UnresolvedOperand operand;
-        if (parser.parseArgument(argument) || parser.parseEqual() ||
-            parser.parseOperand(operand))
-          return failure();
-        kernelArguments.push_back(argument);
-        kernelOperands.push_back(operand);
-      } while (succeeded(parser.parseOptionalComma()));
-      if (parser.parseRParen())
-        return failure();
-      if (parser.parseColonTypeList(types))
-        return failure();
-    }
+    if (!kernelOperands.empty() && parser.parseColonTypeList(types))
+      return failure();
+    if (types.size() != kernelOperands.size())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one type per kernel operand");
   }
 
   for (int i = 0, e = kernelOperands.size(); i < e; i++) {
@@ -1174,20 +1156,12 @@ ParseResult air::RankOp::parse(OpAsmParser &parser, OperationState &result) {
   }
 
   if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
-      parser.parseKeyword("in") || parser.parseLParen())
+      parser.parseKeyword("in") ||
+      parser.parseAssignmentList(tileSizeRef, tileSize))
     return failure();
-
-  tileSize.resize(tileArgs.size());
-  tileSizeRef.resize(tileArgs.size());
-  for (unsigned i = 0; i < tileArgs.size(); ++i) {
-    if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
-        parser.parseOperand(tileSize[i]))
-      return failure();
-    (void)parser.parseOptionalComma();
-  }
-
-  if (parser.parseRParen())
-    return failure();
+  if (tileSize.size() != tileArgs.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected one size per id");
 
   Type indexType = parser.getBuilder().getIndexType();
 
@@ -1213,23 +1187,13 @@ ParseResult air::RankOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
-    if (parser.parseLParen())
+    if (parser.parseAssignmentList(kernelArguments, kernelOperands))
       return failure();
-    if (parser.parseOptionalRParen()) {
-      do {
-        OpAsmParser::Argument argument;
-        OpAsmParser::UnresolvedOperand operand;
-        if (parser.parseArgument(argument) || parser.parseEqual() ||
-            parser.parseOperand(operand))
-          return failure();
-        kernelArguments.push_back(argument);
-        kernelOperands.push_back(operand);
-      } while (succeeded(parser.parseOptionalComma()));
-      if (parser.parseRParen())
-        return failure();
-      if (parser.parseColonTypeList(types))
-        return failure();
-    }
+    if (!kernelOperands.empty() && parser.parseColonTypeList(types))
+      return failure();
+    if (types.size() != kernelOperands.size())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one type per kernel operand");
   }
 
   for (int i = 0, e = kernelOperands.size(); i < e; i++) {
@@ -1492,20 +1456,12 @@ ParseResult air::SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
 
   if (succeeded(parser.parseOptionalKeyword("unroll"))) {
     if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
-        parser.parseKeyword("in") || parser.parseLParen())
+        parser.parseKeyword("in") ||
+        parser.parseAssignmentList(tileSizeRef, tileSize))
       return failure();
-
-    tileSize.resize(tileArgs.size());
-    tileSizeRef.resize(tileArgs.size());
-    for (unsigned i = 0; i < tileArgs.size(); ++i) {
-      if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
-          parser.parseOperand(tileSize[i]))
-        return failure();
-      (void)parser.parseOptionalComma();
-    }
-
-    if (parser.parseRParen())
-      return failure();
+    if (tileSize.size() != tileArgs.size())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one size per id");
 
     tileArgs.append(tileSizeRef);
     for (auto &a : tileArgs)
@@ -1519,23 +1475,13 @@ ParseResult air::SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
-    if (parser.parseLParen())
+    if (parser.parseAssignmentList(kernelArguments, kernelOperands))
       return failure();
-    if (parser.parseOptionalRParen()) {
-      do {
-        OpAsmParser::Argument argument;
-        OpAsmParser::UnresolvedOperand operand;
-        if (parser.parseArgument(argument) || parser.parseEqual() ||
-            parser.parseOperand(operand))
-          return failure();
-        kernelArguments.push_back(argument);
-        kernelOperands.push_back(operand);
-      } while (succeeded(parser.parseOptionalComma()));
-      if (parser.parseRParen())
-        return failure();
-      if (parser.parseColonTypeList(types))
-        return failure();
-    }
+    if (!kernelOperands.empty() && parser.parseColonTypeList(types))
+      return failure();
+    if (types.size() != kernelOperands.size())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one type per kernel operand");
   }
 
   for (int i = 0, e = kernelOperands.size(); i < e; i++) {
@@ -1897,20 +1843,12 @@ ParseResult air::HerdOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
-      parser.parseKeyword("in") || parser.parseLParen())
+      parser.parseKeyword("in") ||
+      parser.parseAssignmentList(tileSizeRef, tileSize))
     return failure();
-
-  tileSize.resize(tileArgs.size());
-  tileSizeRef.resize(tileArgs.size());
-  for (unsigned i = 0; i < tileArgs.size(); ++i) {
-    if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
-        parser.parseOperand(tileSize[i]))
-      return failure();
-    (void)parser.parseOptionalComma();
-  }
-
-  if (parser.parseRParen())
-    return failure();
+  if (tileSize.size() != tileArgs.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected one size per id");
 
   Type indexType = parser.getBuilder().getIndexType();
 
@@ -1928,23 +1866,13 @@ ParseResult air::HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
-    if (parser.parseLParen())
+    if (parser.parseAssignmentList(kernelArguments, kernelOperands))
       return failure();
-    if (parser.parseOptionalRParen()) {
-      do {
-        OpAsmParser::Argument argument;
-        OpAsmParser::UnresolvedOperand operand;
-        if (parser.parseArgument(argument) || parser.parseEqual() ||
-            parser.parseOperand(operand))
-          return failure();
-        kernelArguments.push_back(argument);
-        kernelOperands.push_back(operand);
-      } while (succeeded(parser.parseOptionalComma()));
-      if (parser.parseRParen())
-        return failure();
-      if (parser.parseColonTypeList(types))
-        return failure();
-    }
+    if (!kernelOperands.empty() && parser.parseColonTypeList(types))
+      return failure();
+    if (types.size() != kernelOperands.size())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one type per kernel operand");
   }
 
   for (int i = 0, e = kernelOperands.size(); i < e; i++) {
