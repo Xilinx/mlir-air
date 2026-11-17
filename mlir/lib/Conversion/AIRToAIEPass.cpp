@@ -7878,16 +7878,18 @@ public:
   }
 
   /// If `op` is the get or the put of an L1 buffer the core only relays, the
-  /// two ops: the buffer's only uses, besides its dealloc, are one channel get
-  /// filling it and one channel put later in the same block sending it once.
-  static std::optional<std::pair<Operation *, Operation *>>
-  findL1Relay(air::MemcpyInterface op) {
-    Value buf;
-    if (auto get = dyn_cast<air::ChannelGetOp>(op.getOperation()))
-      buf = get.getMemref();
-    else if (auto put = dyn_cast<air::ChannelPutOp>(op.getOperation()))
-      buf = put.getMemref();
-    if (!buf)
+  /// two ops: the buffer is a whole allocation whose only uses, besides its
+  /// dealloc, are one channel get filling it and one channel put later in the
+  /// same block sending it once, both through this tile's DMA. Every other
+  /// buffer the core moves on either channel must be such a relay too, as a
+  /// channel's buffers may share one counting lock pair.
+  std::optional<std::pair<Operation *, Operation *>>
+  findL1Relay(Operation *op, air::TileDMAAllocator &tileDmaAlloc,
+              AIE::TileOp tile, bool wholeChannels = true) {
+    if (!isa<air::ChannelGetOp, air::ChannelPutOp>(op))
+      return std::nullopt;
+    Value buf = cast<air::ChannelInterface>(op).getMemref();
+    if (!isa_and_present<memref::AllocOp, AIE::BufferOp>(buf.getDefiningOp()))
       return std::nullopt;
     air::ChannelGetOp get;
     air::ChannelPutOp put;
@@ -7911,6 +7913,34 @@ public:
       return std::nullopt;
     if (air::getRefeedCount(cast<air::ChannelInterface>(*put)) > 1)
       return std::nullopt;
+    auto onTileDma = [&](Operation *o) {
+      for (auto *allocs :
+           {&tileDmaAlloc.mm2s_allocs, &tileDmaAlloc.s2mm_allocs})
+        for (auto &alloc : *allocs)
+          if (alloc.foundAlloc(tile, cast<air::MemcpyInterface>(o)))
+            return true;
+      return false;
+    };
+    if (!onTileDma(get) || !onTileDma(put))
+      return std::nullopt;
+    if (wholeChannels) {
+      auto core = op->getParentOfType<AIE::CoreOp>();
+      if (!core)
+        return std::nullopt;
+      bool allRelays = true;
+      core->walk([&](Operation *other) {
+        auto chan = dyn_cast<air::ChannelInterface>(other);
+        if (!chan || !isa<air::ChannelGetOp, air::ChannelPutOp>(other))
+          return;
+        if (chan.getChanName() != get.getChanName() &&
+            chan.getChanName() != put.getChanName())
+          return;
+        if (!findL1Relay(other, tileDmaAlloc, tile, /*wholeChannels=*/false))
+          allRelays = false;
+      });
+      if (!allRelays)
+        return std::nullopt;
+    }
     return std::make_pair(get.getOperation(), put.getOperation());
   }
 
@@ -8157,7 +8187,7 @@ public:
     // lock pair per direction, the core would give the S2MM's lock back at
     // the put, before the MM2S has read the buffer. The DMA BDs pick up the
     // locks the same way as for a 3-way buffer.
-    auto relay = findL1Relay(memcpyOpIf);
+    auto relay = findL1Relay(memcpyOpIf, tileDmaAlloc, tile);
     if (relay && UsesSemaphoreLocks && bufferOp->getSymName()) {
       auto device = tile->getParentOfType<AIE::DeviceOp>();
       auto *ctx = device.getContext();
