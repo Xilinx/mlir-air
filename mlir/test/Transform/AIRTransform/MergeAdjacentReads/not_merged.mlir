@@ -100,3 +100,18 @@ func.func @masked_or_padded(%m: memref<2x16xbf16, 2>, %k: vector<1x16xi1>) -> (v
   %f = vector.transfer_read %m[%c1, %c0], %q {in_bounds = [true, true]} : memref<2x16xbf16, 2>, vector<1x16xbf16>
   return %a, %b, %c, %d, %e, %f : vector<1x16xbf16>, vector<1x16xbf16>, vector<1x16xbf16>, vector<1x16xbf16>, vector<1x16xbf16>, vector<1x16xbf16>
 }
+
+// A scalable write between the reads may reach the second one's element.
+// CHECK-LABEL: @scalable_write_between
+// CHECK-COUNT-2: vector.transfer_read {{.*}} vector<1xf32>
+func.func @scalable_write_between(%v: vector<[1]xf32>) -> (vector<1xf32>, vector<1xf32>) {
+  %c0 = arith.constant 0 : index
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  %p = arith.constant 0.0 : f32
+  %m = memref.alloc() : memref<4xf32>
+  %a = vector.transfer_read %m[%c2], %p {in_bounds = [true]} : memref<4xf32>, vector<1xf32>
+  vector.transfer_write %v, %m[%c0] : vector<[1]xf32>, memref<4xf32>
+  %b = vector.transfer_read %m[%c3], %p {in_bounds = [true]} : memref<4xf32>, vector<1xf32>
+  return %a, %b : vector<1xf32>, vector<1xf32>
+}

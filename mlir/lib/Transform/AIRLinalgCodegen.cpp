@@ -7605,7 +7605,8 @@ static bool disjointTransfers(VectorTransferOpInterface w,
   if (w.getBase() != r.getBase() ||
       w.getIndices().size() != r.getIndices().size() ||
       !w.getPermutationMap().isMinorIdentity() ||
-      !r.getPermutationMap().isMinorIdentity())
+      !r.getPermutationMap().isMinorIdentity() ||
+      w.getVectorType().isScalable() || r.getVectorType().isScalable())
     return false;
   int64_t rank = w.getIndices().size();
   auto extent = [&](VectorTransferOpInterface t, int64_t d) -> int64_t {
@@ -7715,6 +7716,11 @@ transform::MergeAdjacentReadsOp::apply(transform::TransformRewriter &rewriter,
                                        transform::TransformState &state) {
   SmallVector<Operation *> targets =
       llvm::to_vector(state.getPayloadOps(getTarget()));
+  // A read may be erased by a merge, so it cannot be a target itself.
+  for (Operation *target : targets)
+    if (isa<vector::TransferReadOp>(target))
+      return emitSilenceableError()
+             << "expected targets that contain reads, not a read";
   for (Operation *target : targets) {
     SmallVector<vector::TransferReadOp> reads;
     target->walk([&](vector::TransferReadOp rd) { reads.push_back(rd); });
