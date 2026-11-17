@@ -11,7 +11,7 @@
 This covers the two forms added for the shared ``fused_decode`` builder.
 
 **Region form** -- ``ops.switch(k)`` with no values -- runs statements, and
-lowers to a single-case ``scf.index_switch``. It exists because the op a
+lowers to an ``scf.index_switch``: one case unless ``cases=`` lists more. It exists because the op a
 position needs is not always the op its control flow suggests: an N-way
 statement is nested ``ops.branch``, which is where this was first routed, but
 that emits an ``scf.if``, leaving a region that must be an ``scf.index_switch``
@@ -116,8 +116,7 @@ def gated_launch():
 # CHECK: %[[S:.*]] = arith.select %[[P]], %{{.*}}, %{{.*}} : i32
 # CHECK: %[[K:.*]] = arith.index_cast %[[S]] : i32 to index
 # CHECK: scf.index_switch %[[K]]
-# The body is the default; case 0 is otherwise(), or empty if unclaimed. One
-# case region, never two -- see SwitchRegion's docstring.
+# The body is the default; case 0 is otherwise(), or empty if unclaimed.
 # CHECK-NEXT: case 0 {
 # CHECK-NEXT: air.channel.put @toc[] (%{{.*}}[0]
 # CHECK-NEXT: scf.yield
@@ -168,9 +167,7 @@ def refusals():
 
                         @h.body
                         def _(tx, ty):
-                            # otherwise() fills case 0, and there is only one
-                            # of those -- a second case region is what breaks
-                            # air-to-aie's L2 receiver allocation.
+                            # otherwise() fills case 0, once.
                             g = ops.switch(tx == 0)
                             with g:
                                 l1[:] = 1.0
@@ -190,6 +187,26 @@ def refusals():
                                 ops.switch(l1)
                             except TypeError as e:
                                 print("BUFFER:", type(e).__name__)
+                            # A condition is 0 or 1: case 0 is its only case.
+                            try:
+                                ops.switch(tx == 0, cases=[0, 1])
+                            except ValueError as e:
+                                print("COND CASES:", e)
+                            try:
+                                ops.switch(tx, cases=[0, 0])
+                            except ValueError as e:
+                                print("REPEATED:", e)
+                            try:
+                                ops.switch(tx, [1, 2], cases=[0])
+                            except TypeError as e:
+                                print("VALUES CASES:", e)
+                            s = ops.switch(tx, cases=[0, 2])
+                            with s:
+                                l1[:] = 1.0
+                            try:
+                                s.case(1)
+                            except ValueError as e:
+                                print("NO CASE:", e)
                             ops.store(l1, D[0:W])
 
     lch.build(target="npu2")
@@ -199,4 +216,52 @@ def refusals():
 # CHECK: FRACTIONAL: air.api.ops.switch: 1.5 is not an integer
 # CHECK-SAME: used as an index
 # CHECK: BUFFER: TypeError
+# CHECK: COND CASES: a condition keys an ops.switch to 0 or 1
+# CHECK: REPEATED: ops.switch cases repeat a value: [0, 0]
+# CHECK: VALUES CASES: air.api.ops.switch takes cases= in its region form only
+# CHECK: NO CASE: ops.switch has no case 1; its cases are [0, 2]
 refusals()
+
+
+def cases():
+    """A region per case: ``cases=[0, 1]``, each filled with ``case(v)``."""
+    A = air.tensor([3 * W], bf16)
+    ch = air.channel("pick")
+
+    with air.launch(repeat=3, name="cases") as lch:
+
+        @lch.body
+        def _(wave):
+            with ops.switch(wave, cases=[0, 1]) as arm:
+                ch.put(A[2 * W : 3 * W])
+            with arm.case(0):
+                ch.put(A[0:W])
+            with arm.case(1):
+                ch.put(A[W : 2 * W])
+            with air.segment(name="s") as seg:
+
+                @seg.body
+                def _():
+                    l1 = air.alloc([W], bf16, scope=seg.per_core())
+                    with air.herd([range(1), range(1)], name="h", at=(0, 2)) as h:
+
+                        @h.body
+                        def _(tx, ty):
+                            ch.get(l1)
+
+    return lch.build(target="npu2")
+
+
+# CHECK-LABEL: func.func @cases
+# CHECK: scf.index_switch
+# CHECK-NEXT: case 0 {
+# CHECK-NEXT: air.channel.put @pick[] (%{{.*}}[0]
+# CHECK-NEXT: scf.yield
+# CHECK-NEXT: }
+# CHECK-NEXT: case 1 {
+# CHECK-NEXT: air.channel.put @pick[] (%{{.*}}[256]
+# CHECK-NEXT: scf.yield
+# CHECK-NEXT: }
+# CHECK-NEXT: default {
+# CHECK-NEXT: air.channel.put @pick[] (%{{.*}}[512]
+print(cases())

@@ -296,6 +296,10 @@ struct UnguardedCloneScope {
 };
 } // namespace
 
+static SmallVector<Operation *>
+cloneScfIndexSwitchUsingRemap(OpBuilder &builder, IRMapping &remap,
+                              scf::IndexSwitchOp sw);
+
 // Clone ops in a block.
 SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
                                               IRMapping &remap) {
@@ -345,6 +349,10 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
           air::cloneScfIfUsingRemap(builder, remap, scf_if_op);
       clonedOps.insert(clonedOps.end(), clonedScfIfOps.begin(),
                        clonedScfIfOps.end());
+    } else if (auto sw = dyn_cast<scf::IndexSwitchOp>(o)) {
+      auto clonedSwitchOps = cloneScfIndexSwitchUsingRemap(builder, remap, sw);
+      clonedOps.insert(clonedOps.end(), clonedSwitchOps.begin(),
+                       clonedSwitchOps.end());
     } else if (auto dma_op = dyn_cast_if_present<air::DmaMemcpyNdOp>(o)) {
       if (o.hasAttr("loop-carried-dep"))
         clonedOps.push_back(builder.clone(o, remap));
@@ -577,6 +585,59 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
        llvm::zip(scf_if_op.getResults(), newIfOp.getResults()))
     remap.map(oldRes, newRes);
 
+  return clonedOps;
+}
+
+// Clone an scf.index_switch keeping its cases, each yielding the tokens of what
+// it cloned. Unlike an scf.if it is never flattened: the cases are
+// alternatives.
+static SmallVector<Operation *>
+cloneScfIndexSwitchUsingRemap(OpBuilder &builder, IRMapping &remap,
+                              scf::IndexSwitchOp sw) {
+  SmallVector<Operation *> clonedOps;
+  bool onlyTokens = llvm::all_of(
+      sw.getResultTypes(), [](Type t) { return isa<air::AsyncTokenType>(t); });
+  if (!onlyTokens || !remap.contains(sw.getArg())) {
+    sw.emitOpError("cannot be hoisted with the transfers it holds: its "
+                   "results must be async tokens and its selector computable "
+                   "outside the hierarchy");
+    return clonedOps;
+  }
+  auto newSw = scf::IndexSwitchOp::create(
+      builder, sw.getLoc(), sw.getResultTypes(), remap.lookup(sw.getArg()),
+      sw.getCases(), sw.getCases().size());
+  newSw->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
+  clonedOps.push_back(newSw);
+  for (auto [from, to] :
+       llvm::zip_equal(sw->getRegions(), newSw->getRegions())) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.createBlock(&to);
+    auto cloned = air::cloneOpsInBlock(&from.front(), builder, remap);
+    SmallVector<Value> tokens;
+    for (auto *op : cloned) {
+      clonedOps.push_back(op);
+      // a nested switch returns its cases' ops too; only this case's join here
+      if (op->getBlock() != &to.front())
+        continue;
+      if (auto asyncOp = dyn_cast<air::AsyncOpInterface>(op))
+        if (auto token = asyncOp.getAsyncToken())
+          tokens.push_back(token);
+    }
+    SmallVector<Value> yielded;
+    for (Value v : from.front().getTerminator()->getOperands()) {
+      SmallVector<Value> deps(tokens);
+      if (remap.contains(v) && !llvm::is_contained(deps, remap.lookup(v)))
+        deps.push_back(remap.lookup(v));
+      auto wa = air::WaitAllOp::create(
+          builder, sw.getLoc(), air::AsyncTokenType::get(builder.getContext()),
+          deps);
+      wa->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
+      yielded.push_back(wa.getAsyncToken());
+    }
+    scf::YieldOp::create(builder, sw.getLoc(), yielded);
+  }
+  for (auto [oldRes, newRes] : llvm::zip(sw.getResults(), newSw.getResults()))
+    remap.map(oldRes, newRes);
   return clonedOps;
 }
 
