@@ -3167,14 +3167,11 @@ dependencyCanonicalizer::getIteratorFromPosition(std::vector<unsigned> position,
 // Write position in string
 std::string
 dependencyCanonicalizer::toPositionString(std::vector<unsigned> position) {
-  std::string output = "[";
-  for (unsigned i = 0; i < position.size(); i++) {
-    output += std::to_string(position[i]);
-    if (i < position.size() - 1) {
-      output += ",";
-    }
-  }
-  output += "]";
+  std::string output;
+  llvm::raw_string_ostream os(output);
+  os << '[';
+  llvm::interleave(position, os, ",");
+  os << ']';
   return output;
 }
 

@@ -1276,13 +1276,9 @@ void AIRRunner::scheduleFunction(func::FuncOp &toplevel) {
 //===----------------------------------------------------------------------===//
 
 std::string to_string(std::vector<unsigned> vec) {
-  std::string output = "";
-  for (unsigned i = 0; i < vec.size(); i++) {
-    output += std::to_string(vec[i]);
-    if (i != vec.size() - 1) {
-      output += ",";
-    }
-  }
+  std::string output;
+  llvm::raw_string_ostream os(output);
+  llvm::interleave(vec, os, ",");
   return output;
 }
 std::string to_string(dependencyNodeEntry &c) { return air::to_string(c.op); }
