@@ -1884,14 +1884,12 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
       if (!loop)
         continue;
       outerLoop = loop;
-      auto lb = getConstantIntValue(loop.getLowerBound());
-      auto ub = getConstantIntValue(loop.getUpperBound());
-      auto st = getConstantIntValue(loop.getStep());
-      if (!lb || !ub || !st || *st <= 0) {
+      auto trips = air::getStaticScfForTripCountAsInt(loop);
+      if (!trips) {
         counted = false;
         continue;
       }
-      issueCount *= std::max<int64_t>(0, llvm::divideCeil(*ub - *lb, *st));
+      issueCount *= *trips;
     }
   if (outerLoop && guard)
     counted = false;
