@@ -20,6 +20,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/ComposeSubView.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -324,8 +325,8 @@ class LinalgCopyToMemRefCopy : public OpRewritePattern<linalg::CopyOp> {
   }
 };
 
-// Helpers for linalg.pack → DMA lowering (copied from
-// AIRBufferizationInterfaces.cpp for standalone use in ConvertToAIRPass).
+// Transpose for a pack/unpack with one outer tile per tiled dim: the dims not
+// in `perm` in order, then `perm`; identity when `perm` covers every dim.
 static SmallVector<int64_t>
 getPackUnpackNormalizedPerm(int rank, ArrayRef<int64_t> perm) {
   if (rank == (int)perm.size()) {
@@ -342,28 +343,6 @@ getPackUnpackNormalizedPerm(int rank, ArrayRef<int64_t> perm) {
   }
   vec.insert(vec.end(), perm.begin(), perm.end());
   return vec;
-}
-
-static SmallVector<int64_t>
-getPackUnpackStripMinedPerm(ArrayRef<int64_t> shape,
-                            ArrayRef<int64_t> innerDimsPos,
-                            ArrayRef<int64_t> outerDimsPerm) {
-  int64_t numPackedDims = innerDimsPos.size();
-  int64_t packedRank = shape.size();
-  auto lastDims = llvm::to_vector(
-      llvm::seq<int64_t>(packedRank - numPackedDims, packedRank));
-  PackingMetadata packingMetadata =
-      computePackingMetadata(packedRank, innerDimsPos);
-  SmallVector<int64_t> innerPositionsPerm = computePermutationVector(
-      packedRank, lastDims, packingMetadata.insertPositions);
-  SmallVector<int64_t> outerPos = packingMetadata.outerPositions;
-  if (!outerDimsPerm.empty())
-    applyPermutationToVector(outerPos, outerDimsPerm);
-  SmallVector<int64_t> outerPositionPerm = computePermutationVector(
-      packedRank, packingMetadata.outerPositions, outerPos);
-  SmallVector<int64_t> result = innerPositionsPerm;
-  applyPermutationToVector(result, outerPositionPerm);
-  return result;
 }
 
 // Pattern to lower `linalg.pack` on memrefs into expand_shape + transpose +
@@ -402,9 +381,8 @@ class LinalgPackToAIRDma : public OpRewritePattern<linalg::PackOp> {
     if (!identityOuter || llvm::any_of(innerDimsPos, [&](int64_t i) {
           return outerSize(i) != 1;
         })) {
-      auto packMeta = computePackingMetadata(dstType.getRank(), innerDimsPos);
-      auto perm = getPackUnpackStripMinedPerm(destShape, innerDimsPos,
-                                              op.getOuterDimsPerm());
+      PackingMetadata packMeta;
+      auto perm = linalg::getPackInverseDestPerm(op, packMeta);
       SmallVector<int64_t> stripMinedShape(destShape);
       applyPermutationToVector(stripMinedShape, perm);
       tile = memref::ExpandShapeOp::create(rewriter, loc, stripMinedShape,
@@ -465,8 +443,8 @@ class LinalgUnPackToAIRDma : public OpRewritePattern<linalg::UnPackOp> {
           return outerSize(i) != 1;
         })) {
       // Non-degenerate case: transpose from packed layout to strip-mined.
-      auto perm = getPackUnpackStripMinedPerm(srcShape, innerDimsPos,
-                                              op.getOuterDimsPerm());
+      PackingMetadata packMeta;
+      auto perm = linalg::getUnPackInverseSrcPerm(op, packMeta);
       tile = op.getSource();
       transpPerm = perm;
     } else {
