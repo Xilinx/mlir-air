@@ -1406,12 +1406,9 @@
 <th style="text-align: left;">Model</th>
 <th style="text-align: left;">Hardware</th>
 <th style="text-align: left;">Weights</th>
-<th style="text-align: right;">1k</th>
 <th style="text-align: right;">2k</th>
-<th style="text-align: right;">4k</th>
 <th style="text-align: right;">8k</th>
 <th style="text-align: right;">32k</th>
-<th style="text-align: right;">64k</th>
 <th style="text-align: right;">128k</th>
 <th style="text-align: right;">KLD</th>
 <th style="text-align: right;">GSM8K</th>
@@ -1424,12 +1421,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma3_4b_q4nx/">gemma-3-4b-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma3-4B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">20.96</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">15.55</td>
 <td style="text-align: right;">7.52</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.40</td>
 <td style="text-align: right;"><span title="KLD 0.0925 ± 0.0049; same top-1 89.9%; 4092 tokens; 8k: KLD 0.0971; PPL vs the bf16 checkpoint +3.2%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0925</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 1, only on the reference 10; McNemar p = 0.012; Krackan Point, 2026-10-30, mlir-air a96acba">71 / 80</span></td>
@@ -1440,12 +1434,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma4_e2b_q4nx/">gemma-4-E2B-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma4e.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma4-E2B-IT-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">35.93</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">33.67</td>
 <td style="text-align: right;">27.10</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">14.96</td>
 <td style="text-align: right;"></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 8, only on the reference 10; McNemar p = 0.815; Strix Halo, 2026-11-06, mlir-air b51b307">66 / 68</span></td>
@@ -1456,12 +1447,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma4_e4b_q4nx/">gemma-4-E4B-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma4e.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma4-E4B-IT-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">17.38</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">15.60</td>
 <td style="text-align: right;">11.21</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">5.23</td>
 <td style="text-align: right;"></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 5, only on the reference 3; McNemar p = 0.727; Strix Halo, 2026-11-07, mlir-air b51b307">80 / 78</span></td>
@@ -1469,31 +1457,12 @@
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
-<td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gpt_oss_20b_q4nx/">gpt-oss-20b</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gpt_oss.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/GPT-OSS-20B-NPU2">HF</a>)</span></td>
-<td style="text-align: left;">Strix Halo</td>
-<td style="text-align: left;">Q4NX, MXFP4 experts</td>
-<td style="text-align: right;">17.62</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">15.82</td>
-<td style="text-align: right;">13.92</td>
-<td style="text-align: right;">8.12</td>
-<td style="text-align: right;">5.20</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;"></td>
-<td style="text-align: right;"></td>
-<td style="text-align: right;"></td>
-<td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
-</tr>
-<tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/granite33_2b_q4nx/">Granite-3.3-2B</a> <span class="air-nowrap">(<a href="https://huggingface.co/ibm-granite/granite-3.3-2b-instruct">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">31.90</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">19.81</td>
 <td style="text-align: right;">7.93</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.33</td>
 <td style="text-align: right;"><span title="KLD 0.0397 ± 0.0012; same top-1 91.3%; 4092 tokens; PPL vs the bf16 checkpoint +6.9%; Strix Halo, 2026-11-05, mlir-air 7433428">0.0397</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 17, only on the reference 11; McNemar p = 0.345; Strix Halo, 2026-11-05, mlir-air 7433428">61 / 55</span></td>
@@ -1504,12 +1473,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/lfm2_1_2b_q4nx/">LFM2-1.2B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_lfm2.cpp">FLM</a>, <a href="https://huggingface.co/LiquidAI/LFM2-1.2B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4_0</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">65.10</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">47.82</td>
 <td style="text-align: right;">23.38</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">7.68</td>
 <td style="text-align: right;"><span title="KLD 0.0011 ± 0.0000; same top-1 98.3%; 4092 tokens; 8k: KLD 0.0009 (Krackan Point, 2026-10-29, mlir-air 74985f0); PPL vs the bf16 checkpoint +7.7%; Krackan Point, 2026-10-28, mlir-air 74985f0">0.0011</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 4, only on the reference 18; McNemar p = 0.004; Krackan Point, 2026-10-30, mlir-air a96acba">53 / 67</span></td>
@@ -1520,12 +1486,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama31_8b_q4nx/">Llama-3.1-8B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">13.38</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">11.04</td>
 <td style="text-align: right;">6.41</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.33</td>
 <td style="text-align: right;"><span title="KLD 0.0137 ± 0.0005; same top-1 94.6%; 4092 tokens; 8k: KLD 0.0113; PPL vs the bf16 checkpoint +5.3%; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0137</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 7, only on the reference 8; McNemar p = 1.000; Strix Halo, 2026-10-30, mlir-air 78b621b">80 / 81</span></td>
@@ -1536,12 +1499,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b/">Llama-3.2-1B</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.2-1B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">9.09</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">4.63</td>
 <td style="text-align: right;">1.16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">0.21</td>
 <td style="text-align: right;"><span title="KLD 0.0056 ± 0.0001; same top-1 96.6%; 4092 tokens; PPL vs the bf16 checkpoint -0.4%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0056</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 4, only on the reference 6; McNemar p = 0.754; Krackan Point, 2026-10-29, mlir-air a96acba">39 / 41</span></td>
@@ -1552,12 +1512,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_q4nx/">Llama-3.2-1B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.2-1B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">66.33</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">48.63</td>
 <td style="text-align: right;">23.47</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">7.68</td>
 <td style="text-align: right;"><span title="KLD 0.0107 ± 0.0002; same top-1 94.1%; 4092 tokens; 8k: KLD 0.0108; PPL vs the bf16 checkpoint +6.1%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0107</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 11, only on the reference 15; McNemar p = 0.557; Krackan Point, 2026-10-30, mlir-air a96acba">37 / 41</span></td>
@@ -1568,12 +1525,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b/">Llama-3.2-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.2-3B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">3.50</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">1.68</td>
 <td style="text-align: right;">0.29</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;"><span title="KLD 0.0031 ± 0.0001; same top-1 96.9%; 4092 tokens; PPL vs the bf16 checkpoint +0.4%; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0031</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 3, only on the reference 4; McNemar p = 1.000; Strix Halo, 2026-10-30, mlir-air 78b621b">75 / 76</span></td>
@@ -1584,12 +1538,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b_q4nx/">Llama-3.2-3B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.2-3B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">26.66</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">17.67</td>
 <td style="text-align: right;">7.58</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.31</td>
 <td style="text-align: right;"><span title="KLD 0.0109 ± 0.0003; same top-1 95.2%; 4092 tokens; 8k: KLD 0.0102; PPL vs the bf16 checkpoint +3.2%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0109</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 7, only on the reference 12; McNemar p = 0.359; Krackan Point, 2026-10-30, mlir-air a96acba">72 / 77</span></td>
@@ -1600,12 +1551,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/mistral7b_v03_q4nx/">Mistral-7B-Instruct-v0.3</a> <span class="air-nowrap">(<a href="https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3">HF</a>)</span></td>
 <td style="text-align: left;">Strix Halo</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">11.17</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">8.88</td>
 <td style="text-align: right;">4.87</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;"><span title="KLD 0.0115 ± 0.0004; same top-1 95.9%; 4092 tokens; PPL vs the bf16 checkpoint +1.4%; Strix Halo, 2026-11-05, mlir-air f3aff7e">0.0115</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 11, only on the reference 16; McNemar p = 0.442; Strix Halo, 2026-11-05, mlir-air f3aff7e">46 / 51</span></td>
@@ -1616,10 +1564,7 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/olmo2_1b_q4nx/">OLMo2-1B</a> <span class="air-nowrap">(<a href="https://huggingface.co/allenai/OLMo-2-0425-1B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">26.30</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
@@ -1632,10 +1577,7 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/openelm_1b_q4nx/">OpenELM-1.1B</a> <span class="air-nowrap">(<a href="https://huggingface.co/apple/OpenELM-1_1B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">34.83</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
@@ -1648,10 +1590,7 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/phi2_2_7b_q4nx/">Phi-2</a> <span class="air-nowrap">(<a href="https://huggingface.co/microsoft/phi-2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">6.78</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
@@ -1664,12 +1603,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/phi4_mini_q4nx/">Phi-4-mini-instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_phi4.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Phi4-mini-Instruct-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">22.36</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">15.05</td>
 <td style="text-align: right;">6.56</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.01</td>
 <td style="text-align: right;"><span title="KLD 0.0274 ± 0.0007; same top-1 90.4%; 4092 tokens; 8k: KLD 0.0247 (Krackan Point, 2026-10-30, mlir-air a96acba); PPL vs the bf16 checkpoint +52.3%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0274</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 11, only on the reference 11; McNemar p = 1.000; Krackan Point, 2026-10-30, mlir-air a96acba">81 / 81</span></td>
@@ -1680,12 +1616,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_0_5b/">Qwen2.5-0.5B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-0.5B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">9.27</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">5.99</td>
 <td style="text-align: right;">1.78</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">0.30</td>
 <td style="text-align: right;"><span title="KLD 0.0030 ± 0.0001; same top-1 96.5%; 4092 tokens; PPL vs the bf16 checkpoint +0.5%; Krackan Point, 2026-10-31, mlir-air 04fdada">0.0030</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 7, only on the reference 13; McNemar p = 0.263; Krackan Point, 2026-10-31, mlir-air 04fdada">35 / 41</span></td>
@@ -1696,12 +1629,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_1_5b/">Qwen2.5-1.5B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-1.5B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">5.92</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">3.56</td>
 <td style="text-align: right;">0.80</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">0.16</td>
 <td style="text-align: right;"><span title="KLD 0.0019 ± 0.0001; same top-1 97.5%; 4092 tokens; PPL vs the bf16 checkpoint -0.0%; Krackan Point, 2026-10-30, mlir-air dd97081">0.0019</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 11, only on the reference 4; McNemar p = 0.118; Krackan Point, 2026-10-30, mlir-air 570464f">69 / 62</span></td>
@@ -1712,12 +1642,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b/">Qwen2.5-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-3B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">3.54</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.21</td>
 <td style="text-align: right;">0.49</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">0.10</td>
 <td style="text-align: right;"><span title="KLD 0.0108 ± 0.0004; same top-1 94.6%; 4092 tokens; PPL vs the bf16 checkpoint +1.3%; Strix Halo, 2026-11-06, mlir-air 7433428">0.0108</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 14, only on the reference 2; McNemar p = 0.004; Strix Halo, 2026-11-06, mlir-air 7433428">68 / 56</span></td>
@@ -1728,12 +1655,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b_q4/">Qwen2.5-3B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4_0</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">21.20</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">15.57</td>
 <td style="text-align: right;">7.56</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.48</td>
 <td style="text-align: right;"><span title="KLD 0.0262 ± 0.0008; same top-1 92.2%; 4092 tokens; 8k: KLD 0.0370; PPL vs the bf16 checkpoint +13.0%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0262</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 10, only on the reference 7; McNemar p = 0.629; Krackan Point, 2026-10-31, mlir-air 570464f">59 / 56</span></td>
@@ -1744,12 +1668,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">Qwen2.5-7B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">12.81</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">10.21</td>
 <td style="text-align: right;">5.64</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.02</td>
 <td style="text-align: right;"><span title="KLD 0.0183 ± 0.0005; same top-1 94.5%; 4092 tokens; 8k: KLD 0.0107; PPL vs the bf16 checkpoint +7.9%; Strix Halo, 2026-10-30, mlir-air 78b621b">0.0183</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 3, only on the reference 10; McNemar p = 0.092; Strix Halo, 2026-10-30, mlir-air 78b621b">69 / 76</span></td>
@@ -1760,12 +1681,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">Qwen2.5-7B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Strix Halo</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">11.02</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">8.66</td>
 <td style="text-align: right;">4.69</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">1.55</td>
 <td style="text-align: right;"><span title="KLD 0.0183 ± 0.0005; same top-1 94.5%; 4092 tokens; 8k: KLD 0.0107; PPL vs the bf16 checkpoint +7.9%; Strix Halo, 2026-10-30, mlir-air 78b621b">0.0183</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 3, only on the reference 10; McNemar p = 0.092; Strix Halo, 2026-10-30, mlir-air 78b621b">69 / 76</span></td>
@@ -1776,12 +1694,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen35_0_8b_q4nx/">Qwen3.5-0.8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3_5vl.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3.5-0.8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">51.31</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">45.40</td>
 <td style="text-align: right;">30.07</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;"></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 4, only on the reference 28; McNemar p = 0.000; Strix Halo, 2026-11-06, mlir-air b51b307">30 / 54</span></td>
@@ -1792,13 +1707,10 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen36_35b_a3b_q4nx/">Qwen3.6-35B-A3B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/1b5585bd1a18d4b2fbe360963b2156a966c73f0d/src/common/AutoModel/modeling_qwen3_6_moe.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3.6-35B-A3B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Strix Point</td>
 <td style="text-align: left;">Q4NX, Q4_K experts</td>
-<td style="text-align: right;">18.64</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">17.62</td>
-<td style="text-align: right;">16.43</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">—</td>
+<td style="text-align: right;">18.27</td>
+<td style="text-align: right;">16.51</td>
+<td style="text-align: right;">11.84</td>
+<td style="text-align: right;">5.56</td>
 <td style="text-align: right;"></td>
 <td style="text-align: right;"></td>
 <td style="text-align: right;"></td>
@@ -1808,12 +1720,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_0_6b/">Qwen3-0.6B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-0.6B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">6.34</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.76</td>
 <td style="text-align: right;">0.52</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;"><span title="KLD 0.0121 ± 0.0003; same top-1 94.6%; 4092 tokens; PPL vs the bf16 checkpoint +0.4%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0121</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 8, only on the reference 10; McNemar p = 0.815; Krackan Point, 2026-10-29, mlir-air a96acba">42 / 44</span></td>
@@ -1824,12 +1733,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_1_7b/">Qwen3-1.7B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-1.7B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">4.84</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.56</td>
 <td style="text-align: right;">0.50</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;"><span title="KLD 0.0120 ± 0.0007; same top-1 95.0%; 4092 tokens; PPL vs the bf16 checkpoint +0.9%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0120</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 6, only on the reference 10; McNemar p = 0.454; Krackan Point, 2026-10-30, mlir-air a96acba">63 / 67</span></td>
@@ -1840,12 +1746,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.29</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">1.34</td>
 <td style="text-align: right;">0.24</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;"><span title="KLD 0.0043 ± 0.0003; same top-1 97.6%; 4092 tokens; PPL vs the bf16 checkpoint +0.4%; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0043</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 7, only on the reference 4; McNemar p = 0.549; Strix Halo, 2026-10-30, mlir-air 78b621b">78 / 75</span></td>
@@ -1856,12 +1759,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b_q4nx/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">19.68</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">13.01</td>
 <td style="text-align: right;">5.56</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">1.69</td>
 <td style="text-align: right;"><span title="KLD 0.0306 ± 0.0033; same top-1 93.7%; 4092 tokens; 8k: KLD 0.0381 (Strix Halo, 2026-10-30, mlir-air 78b621b); 32k: KLD 0.0271 (Strix Halo, 2026-10-30, mlir-air 78b621b); PPL vs the bf16 checkpoint +13.2%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0306</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 7, only on the reference 2; McNemar p = 0.180; Krackan Point, 2026-10-30, mlir-air a96acba">80 / 75</span></td>
@@ -1872,12 +1772,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">12.06</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">9.17</td>
 <td style="text-align: right;">4.70</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">1.59</td>
 <td style="text-align: right;"><span title="KLD 0.0189 ± 0.0011; same top-1 95.0%; 4092 tokens; 8k: KLD 0.0210; PPL vs the bf16 checkpoint +4.9%; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0189</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 6, only on the reference 5; McNemar p = 1.000; Strix Halo, 2026-10-30, mlir-air 78b621b">87 / 86</span></td>
@@ -1888,12 +1785,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Strix Halo</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">10.16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">8.02</td>
 <td style="text-align: right;">4.38</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">1.55</td>
 <td style="text-align: right;"><span title="KLD 0.0189 ± 0.0011; same top-1 95.0%; 4092 tokens; 8k: KLD 0.0210; PPL vs the bf16 checkpoint +4.9%; Strix Halo, 2026-10-29, mlir-air 66a24f9">0.0189</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 6, only on the reference 5; McNemar p = 1.000; Strix Halo, 2026-10-30, mlir-air 78b621b">87 / 86</span></td>
@@ -1904,13 +1798,10 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_coder_30b_a3b_q4k/">Qwen3-Coder-30B-A3B-Instruct</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Strix Point</td>
 <td style="text-align: left;">Q4_K</td>
-<td style="text-align: right;">21.72</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">17.76</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">—</td>
+<td style="text-align: right;">20.14</td>
+<td style="text-align: right;">14.40</td>
+<td style="text-align: right;">6.59</td>
+<td style="text-align: right;">✗</td>
 <td style="text-align: right;"></td>
 <td style="text-align: right;"></td>
 <td style="text-align: right;"></td>
@@ -1920,11 +1811,8 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm2_1_7b/">SmolLM2-1.7B</a> <span class="air-nowrap">(<a href="https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">4.79</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">2.15</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;"><span title="KLD 0.0061 ± 0.0002; same top-1 95.9%; 4092 tokens; PPL vs the bf16 checkpoint +0.7%; Krackan Point, 2026-10-29, mlir-air 74985f0">0.0061</span></td>
@@ -1936,12 +1824,9 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm3_3b_q4nx/">SmolLM3-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/HuggingFaceTB/SmolLM3-3B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">26.03</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">16.94</td>
 <td style="text-align: right;">7.11</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;"><span title="KLD 0.0236 ± 0.0005; same top-1 92.1%; 4092 tokens; PPL vs the bf16 checkpoint +10.5%; Strix Halo, 2026-11-06, mlir-air 7433428">0.0236</span></td>
 <td style="text-align: right;"><span title="100 questions; right only on the NPU 9, only on the reference 10; McNemar p = 1.000; Strix Halo, 2026-11-06, mlir-air 7433428">70 / 71</span></td>
@@ -1951,6 +1836,7 @@
 </tbody>
 </table>
 <p>— not swept at this context, or an expected failure.</p>
+<p>✗ unexpected failure.</p>
 <p><strong>Accuracy</strong> (the decode table's KLD, GSM8K and MMLU; the prefill table's KLD).
 The NPU is compared with the same model on the CPU (PyTorch): on wikitext-2 the
 way llama.cpp's <code>llama-perplexity --kl-divergence</code> does, and on benchmark
@@ -1976,7 +1862,6 @@ than the number of real prompt tokens.</p>
 <th style="text-align: left;">Model</th>
 <th style="text-align: left;">Hardware</th>
 <th style="text-align: left;">Weights</th>
-<th style="text-align: right;">128</th>
 <th style="text-align: right;">512</th>
 <th style="text-align: right;">1k</th>
 <th style="text-align: right;">2k</th>
@@ -1992,7 +1877,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/d3_edge/">d3-edge</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3_5vl.cpp">FLM</a>, <a href="https://huggingface.co/vllm-sr/d3-edge">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">81</td>
 <td style="text-align: right;">153</td>
 <td style="text-align: right;">317</td>
@@ -2006,7 +1890,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/d3_lite_q4nx/">d3-lite</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3_5vl.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/D3-Lite-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">150</td>
 <td style="text-align: right;">288</td>
 <td style="text-align: right;">593</td>
@@ -2020,7 +1903,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma3_4b_q4nx/">gemma-3-4b-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma3-4B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">320</td>
 <td style="text-align: right;">579</td>
 <td style="text-align: right;">1159</td>
@@ -2034,7 +1916,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma4_e2b_q4nx/">gemma-4-E2B-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma4e.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma4-E2B-IT-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">292</td>
 <td style="text-align: right;">568</td>
 <td style="text-align: right;">1207</td>
@@ -2048,7 +1929,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gemma4_e4b_q4nx/">gemma-4-E4B-it</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gemma4e.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Gemma4-E4B-IT-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">476</td>
 <td style="text-align: right;">883</td>
 <td style="text-align: right;">1865</td>
@@ -2059,24 +1939,9 @@ than the number of real prompt tokens.</p>
 <td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
 </tr>
 <tr>
-<td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gpt_oss_20b_q4nx/">gpt-oss-20b</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gpt_oss.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/GPT-OSS-20B-NPU2">HF</a>)</span></td>
-<td style="text-align: left;">Strix Halo</td>
-<td style="text-align: left;">Q4NX, MXFP4 experts</td>
-<td style="text-align: right;">726</td>
-<td style="text-align: right;">980</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">2535</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;"></td>
-<td style="text-align: center;"><span class="air-verify-pass" title="pass"></span></td>
-</tr>
-<tr>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/granite33_2b_q4nx/">Granite-3.3-2B</a> <span class="air-nowrap">(<a href="https://huggingface.co/ibm-granite/granite-3.3-2b-instruct">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">285</td>
 <td style="text-align: right;">571</td>
 <td style="text-align: right;">1425</td>
@@ -2090,7 +1955,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/lfm2_1_2b_q4nx/">LFM2-1.2B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_lfm2.cpp">FLM</a>, <a href="https://huggingface.co/LiquidAI/LFM2-1.2B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4_0</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">137</td>
 <td style="text-align: right;">248</td>
 <td style="text-align: right;">539</td>
@@ -2104,7 +1968,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama31_8b_q4nx/">Llama-3.1-8B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.1-8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">573</td>
 <td style="text-align: right;">1172</td>
 <td style="text-align: right;">2594</td>
@@ -2118,7 +1981,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b/">Llama-3.2-1B</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.2-1B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">268</td>
 <td style="text-align: right;">455</td>
 <td style="text-align: right;">871</td>
@@ -2132,7 +1994,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_1b_q4nx/">Llama-3.2-1B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.2-1B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">120</td>
 <td style="text-align: right;">236</td>
 <td style="text-align: right;">580</td>
@@ -2146,7 +2007,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b/">Llama-3.2-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/meta-llama/Llama-3.2-3B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">611</td>
 <td style="text-align: right;">1071</td>
 <td style="text-align: right;">2184</td>
@@ -2160,7 +2020,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/llama32_3b_q4nx/">Llama-3.2-3B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_llama3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Llama-3.2-3B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">276</td>
 <td style="text-align: right;">553</td>
 <td style="text-align: right;">1274</td>
@@ -2174,7 +2033,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/mistral7b_v03_q4nx/">Mistral-7B-Instruct-v0.3</a> <span class="air-nowrap">(<a href="https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3">HF</a>)</span></td>
 <td style="text-align: left;">Strix Halo</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">1442</td>
 <td style="text-align: right;">2746</td>
 <td style="text-align: right;">5436</td>
@@ -2188,7 +2046,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/olmo2_1b_q4nx/">OLMo2-1B</a> <span class="air-nowrap">(<a href="https://huggingface.co/allenai/OLMo-2-0425-1B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">154</td>
 <td style="text-align: right;">282</td>
 <td style="text-align: right;">622</td>
@@ -2202,7 +2059,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/openelm_1b_q4nx/">OpenELM-1.1B</a> <span class="air-nowrap">(<a href="https://huggingface.co/apple/OpenELM-1_1B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">196</td>
 <td style="text-align: right;">394</td>
 <td style="text-align: right;">983</td>
@@ -2216,7 +2072,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/phi2_2_7b_q4nx/">Phi-2</a> <span class="air-nowrap">(<a href="https://huggingface.co/microsoft/phi-2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">347</td>
 <td style="text-align: right;">703</td>
 <td style="text-align: right;">1697</td>
@@ -2230,7 +2085,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/phi4_mini_q4nx/">Phi-4-mini-instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_phi4.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Phi4-mini-Instruct-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">322</td>
 <td style="text-align: right;">637</td>
 <td style="text-align: right;">1462</td>
@@ -2244,7 +2098,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_0_5b/">Qwen2.5-0.5B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-0.5B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">328</td>
 <td style="text-align: right;">490</td>
 <td style="text-align: right;">824</td>
@@ -2258,7 +2111,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_1_5b/">Qwen2.5-1.5B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-1.5B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">719</td>
 <td style="text-align: right;">1134</td>
 <td style="text-align: right;">2201</td>
@@ -2272,7 +2124,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b/">Qwen2.5-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen2.5-3B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">1138</td>
 <td style="text-align: right;">2058</td>
 <td style="text-align: right;">4010</td>
@@ -2286,7 +2137,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_3b_q4/">Qwen2.5-3B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4_0</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">293</td>
 <td style="text-align: right;">541</td>
 <td style="text-align: right;">1237</td>
@@ -2300,7 +2150,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">Qwen2.5-7B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">565</td>
 <td style="text-align: right;">1096</td>
 <td style="text-align: right;">2197</td>
@@ -2314,7 +2163,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen25_7b_q4nx/">Qwen2.5-7B-Instruct</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen2.cpp">FLM</a>, <a href="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Strix Halo</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">582</td>
 <td style="text-align: right;">1046</td>
 <td style="text-align: right;">2192</td>
@@ -2328,7 +2176,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen35_0_8b_q4nx/">Qwen3.5-0.8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3_5vl.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3.5-0.8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">176</td>
 <td style="text-align: right;">330</td>
 <td style="text-align: right;">650</td>
@@ -2342,11 +2189,10 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen36_35b_a3b_q4nx/">Qwen3.6-35B-A3B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/1b5585bd1a18d4b2fbe360963b2156a966c73f0d/src/common/AutoModel/modeling_qwen3_6_moe.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3.6-35B-A3B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Strix Point</td>
 <td style="text-align: left;">Q4NX, Q4_K experts</td>
-<td style="text-align: right;">862</td>
-<td style="text-align: right;">1304</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">3589</td>
-<td style="text-align: right;">—</td>
+<td style="text-align: right;">1256</td>
+<td style="text-align: right;">1993</td>
+<td style="text-align: right;">4242</td>
+<td style="text-align: right;">8401</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;"></td>
@@ -2356,7 +2202,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_0_6b/">Qwen3-0.6B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-0.6B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">383</td>
 <td style="text-align: right;">668</td>
 <td style="text-align: right;">1247</td>
@@ -2370,7 +2215,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_1_7b/">Qwen3-1.7B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-1.7B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">550</td>
 <td style="text-align: right;">938</td>
 <td style="text-align: right;">1815</td>
@@ -2384,7 +2228,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-4B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">1241</td>
 <td style="text-align: right;">2392</td>
 <td style="text-align: right;">4738</td>
@@ -2398,7 +2241,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_4b_q4nx/">Qwen3-4B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-4B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">375</td>
 <td style="text-align: right;">762</td>
 <td style="text-align: right;">1839</td>
@@ -2412,7 +2254,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">571</td>
 <td style="text-align: right;">1187</td>
 <td style="text-align: right;">2660</td>
@@ -2426,7 +2267,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_8b_q4nx/">Qwen3-8B</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_qwen3.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/Qwen3-8B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Strix Halo</td>
 <td style="text-align: left;">Q4NX</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">570</td>
 <td style="text-align: right;">1183</td>
 <td style="text-align: right;">2658</td>
@@ -2440,11 +2280,10 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_coder_30b_a3b_q4k/">Qwen3-Coder-30B-A3B-Instruct</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Strix Point</td>
 <td style="text-align: left;">Q4_K</td>
-<td style="text-align: right;">762</td>
-<td style="text-align: right;">1213</td>
-<td style="text-align: right;">—</td>
-<td style="text-align: right;">3511</td>
-<td style="text-align: right;">—</td>
+<td style="text-align: right;">1100</td>
+<td style="text-align: right;">1846</td>
+<td style="text-align: right;">3454</td>
+<td style="text-align: right;">8272</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;">—</td>
 <td style="text-align: right;"></td>
@@ -2454,7 +2293,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm2_1_7b/">SmolLM2-1.7B</a> <span class="air-nowrap">(<a href="https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">bf16</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">434</td>
 <td style="text-align: right;">776</td>
 <td style="text-align: right;">1468</td>
@@ -2468,7 +2306,6 @@ than the number of real prompt tokens.</p>
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/smollm3_3b_q4nx/">SmolLM3-3B</a> <span class="air-nowrap">(<a href="https://huggingface.co/HuggingFaceTB/SmolLM3-3B">HF</a>)</span></td>
 <td style="text-align: left;">Krackan Point</td>
 <td style="text-align: left;">Affine Q4</td>
-<td style="text-align: right;">—</td>
 <td style="text-align: right;">294</td>
 <td style="text-align: right;">543</td>
 <td style="text-align: right;">1228</td>
