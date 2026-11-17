@@ -78,8 +78,51 @@ extractOperandsFromSubview(memref::SubViewOp subview, OpBuilder &builder,
     strides.push_back(arith::ConstantIndexOp::create(builder, loc, ls));
   }
 
-  // Offsets and sizes: use getMixed* APIs to handle static/dynamic uniformly.
-  for (auto ofr : subview.getMixedOffsets())
+  // Offsets: the subview's are in the source's coordinates, but the DMA counts
+  // an offset in units of its stride, the layout stride above (the source's
+  // times the subview's step). In a dim of step s, a constant offset o becomes
+  // o / s, with (o mod s) times the source stride carried into the dim of
+  // stride 1. An offset that cannot be placed so (dynamic, or no dim of
+  // stride 1) becomes a leading unit dim with the source stride.
+  auto mixedOffsets = subview.getMixedOffsets();
+  int64_t carry = 0;
+  SmallVector<OpFoldResult> scaled(mixedOffsets);
+  SmallVector<std::pair<OpFoldResult, int64_t>> lead;
+  for (unsigned i = 0; i < mixedOffsets.size(); ++i) {
+    int64_t step = static_strides[i];
+    if (step == 1 || isConstantIntValue(mixedOffsets[i], 0))
+      continue;
+    if (ShapedType::isDynamic(step) || step <= 0 || layout_strides[i] % step)
+      return failure();
+    int64_t srcStride = layout_strides[i] / step;
+    if (auto off = getConstantIntValue(mixedOffsets[i])) {
+      scaled[i] = builder.getIndexAttr(*off / step);
+      carry += (*off % step) * srcStride;
+      continue;
+    }
+    lead.push_back({mixedOffsets[i], srcStride});
+    scaled[i] = builder.getIndexAttr(0);
+  }
+  if (carry) {
+    auto unit = llvm::find(layout_strides, 1);
+    std::optional<int64_t> off;
+    if (unit != layout_strides.end())
+      off = getConstantIntValue(scaled[unit - layout_strides.begin()]);
+    if (off)
+      scaled[unit - layout_strides.begin()] =
+          builder.getIndexAttr(*off + carry);
+    else
+      lead.push_back({builder.getIndexAttr(carry), 1});
+  }
+  for (auto [o, st] : llvm::reverse(lead)) {
+    offsets.insert(offsets.begin(),
+                   getValueOrCreateConstantIndexOp(builder, loc, o));
+    sizes.insert(sizes.begin(),
+                 arith::ConstantIndexOp::create(builder, loc, 1));
+    strides.insert(strides.begin(),
+                   arith::ConstantIndexOp::create(builder, loc, st));
+  }
+  for (auto ofr : scaled)
     offsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
   for (auto ofr : subview.getMixedSizes())
     sizes.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
