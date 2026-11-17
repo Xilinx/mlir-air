@@ -26,6 +26,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
@@ -1494,15 +1495,9 @@ unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
                                       std::vector<unsigned> position) {
   if (dims.size() != position.size())
     return 0;
-
-  unsigned output = 0;
-  for (unsigned i = 0; i < dims.size(); i++) {
-    unsigned stride = 1;
-    for (unsigned j = i + 1; j < dims.size(); j++)
-      stride *= dims[j];
-    output += position[i] * stride;
-  }
-  return output;
+  SmallVector<int64_t> sizes(dims.begin(), dims.end());
+  SmallVector<int64_t> offsets(position.begin(), position.end());
+  return mlir::linearize(offsets, mlir::computeStrides(sizes));
 }
 
 // Get coordinates corresponding to a position in a multi-dimensional vector
@@ -1512,14 +1507,13 @@ unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
 // 0 <= iter < product(dims).
 std::vector<unsigned> air::getMDVectorFromIterator(std::vector<unsigned> dims,
                                                    unsigned iter) {
-  std::vector<unsigned> output;
-  for (unsigned i = 0; i < dims.size(); i++) {
-    unsigned stride = 1;
-    for (unsigned j = i + 1; j < dims.size(); j++)
-      stride *= dims[j];
-    output.push_back((iter / stride) % dims[i]);
-  }
-  return output;
+  if (dims.empty())
+    return {};
+  SmallVector<int64_t> sizes(dims.begin(), dims.end());
+  SmallVector<int64_t> strides = mlir::computeStrides(sizes);
+  SmallVector<int64_t> output =
+      mlir::delinearize(iter % (strides.front() * sizes.front()), strides);
+  return {output.begin(), output.end()};
 }
 
 // Erase dims; recalculate offsets if needed.
