@@ -47,12 +47,7 @@ static bool memrefIsAtLevel(MemRefType ty, xilinx::air::MemorySpace level) {
 
 // True if `op` is lexically inside `region` (any depth).
 static bool insideRegion(Region &region, Operation *op) {
-  if (!op)
-    return false;
-  for (Operation *p = op; p; p = p->getParentOp())
-    if (p->getParentRegion() == &region)
-      return true;
-  return false;
+  return op && region.findAncestorOpInRegion(*op);
 }
 
 // Walk the use chain of a kernel block argument inside the hierarchy body,

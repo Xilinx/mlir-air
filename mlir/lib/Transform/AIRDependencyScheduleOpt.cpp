@@ -8946,10 +8946,7 @@ LogicalResult fuseAllocDeallocExecsIntoBlock(
     for (auto user : asyncUsers) {
       if (!blk->getParent()->isAncestor(user->getParentRegion()))
         continue;
-      Operation *userParent = user;
-      while (blk->getParent()->isProperAncestor(userParent->getParentRegion()))
-        userParent = userParent->getParentOp();
-      asyncUsersInBlk.insert(userParent);
+      asyncUsersInBlk.insert(blk->getParent()->findAncestorOpInRegion(*user));
     }
     for (auto user : asyncUsersInBlk)
       air::addAsyncDependencyIfNew(dealloc, air::getAsyncTokenFromOp(user));
@@ -9314,10 +9311,8 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
     for (auto user : putOp.getMemref().getUsers())
       if (auto get_user = dyn_cast_if_present<air::ChannelGetOp>(user))
         getOp = get_user;
-    Operation *put_parent = putOp;
-    while (put_parent->getParentOp() != new_loop_op) {
-      put_parent = put_parent->getParentOp();
-    }
+    Operation *put_parent =
+        new_loop_op.getBody()->findAncestorOpInBlock(*putOp);
     Operation *get_parent = getOp;
     if (!get_parent) {
       if (fuseWithAllocDeallocs)
@@ -9327,9 +9322,7 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
             "likely indicates a failure in the compiler pass.");
       return;
     }
-    while (get_parent->getParentOp() != new_loop_op) {
-      get_parent = get_parent->getParentOp();
-    }
+    get_parent = new_loop_op.getBody()->findAncestorOpInBlock(*getOp);
     put_get_mapping[put_parent] = get_parent;
     put_parents.push_back(put_parent);
   });
@@ -11424,10 +11417,7 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
         for (auto user : asyncUsers) {
           if (!dest->isAncestor(user->getParentRegion()))
             continue;
-          Operation *userParent = user;
-          while (dest->isProperAncestor(userParent->getParentRegion()))
-            userParent = userParent->getParentOp();
-          asyncUsersInDest.insert(userParent);
+          asyncUsersInDest.insert(dest->findAncestorOpInRegion(*user));
         }
         for (auto user : asyncUsersInDest)
           air::addAsyncDependencyIfNew(dealloc, air::getAsyncTokenFromOp(user));
