@@ -30,31 +30,12 @@ namespace air {
 /// Extract the base segment name from a device symbol name.
 /// E.g., "segment_with_unroll_0_0" -> "segment_with_unroll"
 static std::string extractBaseSegmentName(StringRef fullName) {
-  // Pattern: {base}_{unroll_x}_{unroll_y}
-  // Find the last two underscore-separated numeric components
-  size_t lastUnderscore = fullName.rfind('_');
-  if (lastUnderscore == StringRef::npos)
+  auto [prefix, unrollY] = fullName.rsplit('_');
+  auto [base, unrollX] = prefix.rsplit('_');
+  int unused;
+  if (unrollY.getAsInteger(10, unused) || unrollX.getAsInteger(10, unused))
     return fullName.str();
-
-  StringRef afterLast = fullName.substr(lastUnderscore + 1);
-  // Check if it's a number
-  int dummy;
-  if (afterLast.getAsInteger(10, dummy))
-    return fullName.str(); // Not a number, return as-is
-
-  // Find the second-to-last underscore
-  StringRef prefix = fullName.substr(0, lastUnderscore);
-  size_t secondLastUnderscore = prefix.rfind('_');
-  if (secondLastUnderscore == StringRef::npos)
-    return fullName.str();
-
-  StringRef afterSecondLast = prefix.substr(secondLastUnderscore + 1);
-  if (afterSecondLast.getAsInteger(10, dummy))
-    return fullName.str(); // Not a number
-
-  // Both are numbers, so the base name is everything before the second-to-last
-  // underscore
-  return prefix.substr(0, secondLastUnderscore).str();
+  return base.str();
 }
 
 /// Get the number of columns for an AIE device type using the target model.

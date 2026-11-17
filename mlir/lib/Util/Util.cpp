@@ -46,6 +46,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "iostream"
@@ -662,12 +663,7 @@ std::string air::to_string(Operation *op) {
 }
 
 // Return mlir type name as string
-std::string air::to_string(mlir::Type t) {
-  std::string type_str;
-  llvm::raw_string_ostream rso(type_str);
-  t.print(rso);
-  return type_str;
-}
+std::string air::to_string(mlir::Type t) { return llvm::to_string(t); }
 
 // Create channel name as string
 std::string air::createChannelName(Operation *scope) {
