@@ -1590,15 +1590,12 @@ RMS_LAYER = N_NORMS * K  # rms weights / layer (2 llama pre-norm / 4 Gemma sandw
 KV_LAYER = ATTN_MAXL * KVSZ_TOK  # KV cache / layer
 # ShortConv carried state [BX[t-2] | BX[t-1]] per layer, also in arg4.
 CONV_ST_LAYER = 2 * CONV_DIM if CONV_MIXER else 0
-# KV-buffer grouping, the KV counterpart of W_GROUP. A shim BD offset is an i32
-# count of bf16 elements (AIRRtToNpuPass, aie.dma_bd), so it reaches 4 GiB into a
-# buffer. Past that it goes negative: an xclbin dispatch then reads and writes
-# outside the buffer without any error, and a full ELF fails to link (aiebu
-# rejects relocation addends wider than 32 bits). A cache larger than that is
-# split evenly over the fewest buffers that fit. Group 0 stays in the kvc arg,
-# followed by any ShortConv state; the other groups come after the weight
-# groups. With a single group the emitted IR does not change.
-BO_REACH_ELEMS = (1 << 32) // 2
+# KV-buffer grouping, the KV counterpart of W_GROUP: a cache larger than a shim
+# BD reaches (kv_bos.BO_REACH_ELEMS) is split evenly over the fewest buffers that
+# fit. Group 0 stays in the kvc arg, followed by any ShortConv state; the other
+# groups come after the weight groups. With a single group the emitted IR does
+# not change.
+from kv_bos import BO_REACH_ELEMS, kv_groups
 
 
 def kv_layout(attn_maxl):
@@ -1613,14 +1610,8 @@ def kv_layout(attn_maxl):
     """
     kv_layer = attn_maxl * KVSZ_TOK
     extra0 = UNI_DEC * CONV_ST_LAYER if CONV_MIXER else 0
-    if kv_layer > BO_REACH_ELEMS - extra0:
-        raise SystemExit(
-            f"one layer's KV slab is {kv_layer * 2 / 2**30:.2f} GiB, past the "
-            f"4 GiB a shim BD reaches; lower ATTN_MAXL={attn_maxl}"
-        )
-    n = -(-UNI_DEC // ((BO_REACH_ELEMS - extra0) // kv_layer))
-    group = -(-UNI_DEC // n)
-    lens = [min(group, UNI_DEC - g * group) * kv_layer for g in range(n)]
+    group, lens = kv_groups(UNI_DEC, kv_layer, extra0)
+    n = len(lens)
     if not CONV_MIXER:
         bo0 = lens[0]
     elif HYBRID_MIXER:

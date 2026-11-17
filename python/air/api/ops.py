@@ -1082,7 +1082,7 @@ def reduce_max(x):
     return _reduce("reduce_max", "max", x)
 
 
-def switch(index, values=None):
+def switch(index, values=None, *, cases=None):
     """Pick one of ``values`` by a runtime ``index``.
 
         addend = air.api.ops.switch(step, [1.0, 10.0])
@@ -1097,6 +1097,16 @@ def switch(index, values=None):
         with air.api.ops.switch(wave < n_decode):
             ops.load(staged, W[...])
             ch.put(staged)
+
+    ``cases`` gives the region form more arms. The ``with`` body is the
+    default, and ``case(v)`` fills case ``v``; ``otherwise()`` is ``case(0)``::
+
+        with air.api.ops.switch(group, cases=[0, 1]) as arm:
+            ch.get(kv2[...])
+        with arm.case(0):
+            ch.get(kv0[...])
+        with arm.case(1):
+            ch.get(kv1[...])
 
     One op, two forms. The region form was originally routed to ``ops.branch``,
     on the reasoning that an N-way statement is nested branches -- true of the
@@ -1127,7 +1137,12 @@ def switch(index, values=None):
     # No values: the region form. A Condition is legal here and only here --
     # the expression form keys on an integer, and says so below.
     if values is None:
-        return switch_region(index)
+        return switch_region(index, cases)
+    if cases is not None:
+        raise TypeError(
+            "air.api.ops.switch takes cases= in its region form only; with "
+            "values the cases are their positions"
+        )
 
     # Name the neighbour rather than complaining about a type. The three are
     # told apart by what they key on, and handing one the other's key is the

@@ -54,6 +54,7 @@ from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
 from attn_block import BLK, CU_LOC, DK, DQ, NCU, QH, QKV, SLAB, S_BLK  # noqa: E402
+from kv_bos import kv_groups  # noqa: E402
 from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
 from air_examples.llms.shared.moe.ffn import Moe, MoeShape, router_kernels  # noqa: E402
 
@@ -107,8 +108,6 @@ WD_QKV = NRG_QKV * NCB * R * g.BLOCK_BYTES
 WD_O = NRG_O * NCB_O * R * g.BLOCK_BYTES
 WD_LAYER = WD_QKV + WD_O
 ARGS = ("X", "WD", "WL", "WE", "M", "RP", "KV", "LG", "L")
-# A shim BD offset reaches 4 GiB into a buffer (fused_decode.kv_layout).
-BO_REACH_ELEMS = (1 << 32) // 2
 
 
 def kv_layout(maxl, n_layers=g.N_LAYERS):
@@ -116,10 +115,8 @@ def kv_layout(maxl, n_layers=g.N_LAYERS):
     layers per buffer, elements per buffer, buffer-arg index per buffer).
     Buffers past the first follow LG."""
     layer = 4 * maxl * SLAB
-    n = -(-n_layers // (BO_REACH_ELEMS // layer))
-    group = -(-n_layers // n)
-    sizes = [min(group, n_layers - i * group) * layer for i in range(n)]
-    args = [ARGS.index("KV")] + [len(ARGS) - 1 + i for i in range(n - 1)]
+    group, sizes = kv_groups(n_layers, layer)
+    args = [ARGS.index("KV")] + [len(ARGS) - 1 + i for i in range(len(sizes) - 1)]
     return layer, group, sizes, args
 
 
@@ -217,14 +214,15 @@ def build_module(maxl, n_layers=g.N_LAYERS, lm=True, lm_rounds=NRD_LM):
                     k_rd.put(kv[j, 2 * half, :, :], indices=[half])
                     v_rd.put(kv[j, 2 * half + 1, :, :], indices=[half])
 
-            def kv_group_of(i, pos):
-                # the wave's KV buffer; folds once the waves unroll
-                if i == len(KVS) - 1:
-                    return kv_traffic(i, pos)
-                with air.ops.switch(w >= (i + 1) * kv_group) as later:
-                    kv_group_of(i + 1, pos)
-                with later.otherwise():
-                    kv_traffic(i, pos)
+            def kv_split_traffic(pos):
+                # one case per KV buffer, keyed by the wave's; folds once the
+                # waves unroll
+                last = len(KVS) - 1
+                with air.ops.switch(w // kv_group, cases=list(range(last))) as arm:
+                    kv_traffic(last, pos)
+                for i in range(last):
+                    with arm.case(i):
+                        kv_traffic(i, pos)
 
             with air.segment(name="seg", params=[Lp, last, win, ebase]) as seg:
 
@@ -258,9 +256,9 @@ def build_module(maxl, n_layers=g.N_LAYERS, lm=True, lm_rounds=NRD_LM):
                         ]
                     )
                     # a split KV cache waits for each append inside its
-                    # buffer's arm, so the K/V weights go out first
+                    # buffer's case, so the K/V weights go out first
                     if len(KVS) > 1:
-                        kv_group_of(0, pos)
+                        kv_split_traffic(pos)
 
                     # ---- assemble memtile (column 1)
                     def l2(shape, col=1, dt=bf16):

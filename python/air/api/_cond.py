@@ -378,28 +378,25 @@ class Branch:
 
 
 class SwitchRegion:
-    """``ops.switch``'s statement form: a region, run unless the key is zero.
+    """``ops.switch``'s statement form: an ``scf.index_switch`` of regions.
 
     ``ops.switch`` with values is an expression and picks a number;
     ``ops.switch`` without them is this, and runs statements. One op, two
     forms, rather than a second construct that looks like a third conditional.
 
-    The ``with`` body is the **default** region -- what runs unless the key is
-    zero -- and ``otherwise()`` fills the *existing* ``case 0``. That is one
-    case region plus a default, never two: an ``scf.index_switch`` with a
-    second case region breaks ``air-to-aie``'s L2 receiver allocation, which
-    then reports the failure on the far side of the flow as
-    ``'air.channel.put' op failed to get S2MM tile for L3 allocation`` -- on a
-    shim put that is itself fine. There is no way to ask for a second one, so
-    that stays unrepresentable rather than merely documented.
+    The ``with`` body is the **default** region. ``cases`` lists the case
+    values, ``[0]`` unless given, and ``case(v)`` fills case ``v``'s region; a
+    case left unfilled is empty. ``otherwise()`` is ``case(0)``, the spelling
+    for the usual two arms: the body runs unless the key is zero.
     """
 
-    def __init__(self, key):
+    def __init__(self, key, cases=(0,)):
         self._key = key
+        self._cases = tuple(cases)
         self._op = None
         self._body = None
-        self._case_terminator = None
-        self._otherwise_taken = False
+        self._case_terminators = {}
+        self._taken = set()
 
     def _switch_operand(self):
         """The index the switch keys on, as an index-typed Value.
@@ -434,12 +431,15 @@ class SwitchRegion:
 
         if self._op is not None:
             raise RuntimeError("ops.switch region entered twice")
-        self._op = IndexSwitchOp(results=[], arg=self._switch_operand(), cases=[0])
-        # Terminate case 0 now, whether or not otherwise() will claim it. It is
-        # the idle arm by default, and a block with no terminator turns a
-        # diagnosable error into a verifier crash somewhere unrelated.
-        with InsertionPoint(self._op.case_block(0)):
-            self._case_terminator = yield_([])
+        self._op = IndexSwitchOp(
+            results=[], arg=self._switch_operand(), cases=list(self._cases)
+        )
+        # Terminate every case now, filled later or not. An unfilled case is
+        # an idle arm, and a block with no terminator turns a diagnosable error
+        # into a verifier crash somewhere unrelated.
+        for i, v in enumerate(self._cases):
+            with InsertionPoint(self._op.case_block(i)):
+                self._case_terminators[v] = yield_([])
         self._body = _Region(
             self._op.default_block, terminate=True, arm=(self, 0), what="ops.switch"
         )
@@ -449,34 +449,41 @@ class SwitchRegion:
     def __exit__(self, exc_type, exc, tb):
         return self._body.__exit__(exc_type, exc, tb)
 
-    def otherwise(self):
-        """The ``case 0`` region, as a second ``with`` block.
-
-        Not a second case region -- ``case 0`` is built by ``__enter__`` either
-        way, and this fills it instead of leaving it idle.
-        """
+    def case(self, value):
+        """Case ``value``'s region, as another ``with`` block."""
         from air.ir import InsertionPoint
 
         if self._op is None:
             raise RuntimeError(
-                "otherwise() on an ops.switch whose region was never opened; "
-                "the spelling is `with ops.switch(...) as arm:` followed by "
-                "`with arm.otherwise():`"
+                "case() on an ops.switch whose region was never opened; the "
+                "spelling is `with ops.switch(...) as arm:` followed by "
+                "`with arm.case(v):`"
             )
         if self._body.open:
             raise RuntimeError(
-                "otherwise() inside the body of an ops.switch region; close "
-                "the first `with` block before opening the second"
+                "case() inside the body of an ops.switch region; close the "
+                "first `with` block before opening another"
             )
-        if self._otherwise_taken:
-            raise RuntimeError("this ops.switch region already has an otherwise()")
-        self._otherwise_taken = True
+        if value not in self._case_terminators:
+            raise ValueError(
+                f"ops.switch has no case {value}; its cases are "
+                f"{list(self._cases)} (ops.switch(key, cases=[...]))"
+            )
+        if value in self._taken:
+            raise RuntimeError(f"this ops.switch region already has case {value}")
+        self._taken.add(value)
         return _Region(
-            InsertionPoint(self._case_terminator),
+            InsertionPoint(self._case_terminators[value]),
             terminate=False,
-            arm=(self, 1),
+            arm=(self, 1 + self._cases.index(value)),
             what="ops.switch",
         )
+
+    def otherwise(self):
+        """``case(0)``: the region taken when the key is zero."""
+        if self._op is not None and 0 in self._taken:
+            raise RuntimeError("this ops.switch region already has an otherwise()")
+        return self.case(0)
 
 
 def _i32():
@@ -491,20 +498,36 @@ def _index_type():
     return IndexType.get()
 
 
-def switch_region(key):
+def switch_region(key, cases=None):
     """Build :class:`SwitchRegion`; ``ops.switch`` calls this when given no values.
 
     ``key`` is what ``ops.branch`` takes -- a comparison between index
     expressions -- or a bare index. A comparison reaches the switch as
     ``select(pred, 1, 0)`` then an ``index_cast`` rather than as a raw ``i1``.
+    ``cases`` lists the case values, ``[0]`` unless given.
     """
+    cases = (0,) if cases is None else tuple(cases)
+    if not cases or any(
+        not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in cases
+    ):
+        raise ValueError(
+            f"ops.switch cases are non-negative integers, got {list(cases)}"
+        )
+    if len(set(cases)) != len(cases):
+        raise ValueError(f"ops.switch cases repeat a value: {list(cases)}")
     key = _as_condition(key)
     if isinstance(key, (Condition, ValueCondition)):
+        if cases != (0,):
+            raise ValueError(
+                "a condition keys an ops.switch to 0 or 1, so its only case is "
+                "0 and the default is the condition holding; key on an index "
+                "for more cases"
+            )
         return SwitchRegion(key)
     from ._index import coerce_index
 
     try:
-        return SwitchRegion(coerce_index(key))
+        return SwitchRegion(coerce_index(key), cases)
     except TypeError:
         raise TypeError(
             "ops.switch's region form takes a comparison between index "

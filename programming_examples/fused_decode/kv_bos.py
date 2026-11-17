@@ -1,14 +1,37 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
-# Host-side KV cache buffers for the fused decode.
+# KV cache buffers of a decode build.
 #
 # A decode build may split its KV cache over several buffers because one buffer
-# is only addressable over 4 GiB (see kv_layout in fused_decode.py). Drivers
-# allocate, seed and bind the cache through KVBuffers so the host layout always
-# comes from the builder.
+# is only addressable over 4 GiB. Builders size the buffers with kv_groups, in
+# their kv_layout; drivers allocate, seed and bind the cache through KVBuffers
+# so the host layout always comes from the builder.
 
 import numpy as np
+
+# A shim BD offset is an i32 count of bf16 elements (AIRRtToNpuPass,
+# aie.dma_bd), so it reaches 4 GiB into a buffer. Past that it goes negative: an
+# xclbin dispatch then reads and writes outside the buffer without any error,
+# and a full ELF fails to link (aiebu rejects relocation addends wider than 32
+# bits).
+BO_REACH_ELEMS = (1 << 32) // 2
+
+
+def kv_groups(n_slabs, slab, extra0=0):
+    """Split `n_slabs` KV slabs of `slab` elements evenly over the fewest
+    buffers that a shim BD reaches, buffer 0 also holding `extra0` elements.
+
+    Returns (slabs per buffer, KV elements of each buffer).
+    """
+    if slab > BO_REACH_ELEMS - extra0:
+        raise SystemExit(
+            f"one layer's KV slab is {slab * 2 / 2**30:.2f} GiB, past the 4 GiB "
+            "a shim BD reaches; lower the context"
+        )
+    n = -(-n_slabs // ((BO_REACH_ELEMS - extra0) // slab))
+    group = -(-n_slabs // n)
+    return group, [min(group, n_slabs - g * group) * slab for g in range(n)]
 
 
 class KVBuffers:
