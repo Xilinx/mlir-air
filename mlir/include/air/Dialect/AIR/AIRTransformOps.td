@@ -925,8 +925,13 @@ def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
 def AIRHerdVectorizeOp : Op<Transform_Dialect, "air.herd_vectorize",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      TransformOpInterface, TransformEachOpTrait]> {
-  let summary = "Vectorize operations inside air.herd operations";
+  let summary = "Vectorize operations inside air.herd operations (deprecated)";
   let description = [{
+    Deprecated: use `transform.structured.vectorize_children_and_apply_patterns`,
+    which applies the same patterns to any isolated-from-above target, air.herd
+    included. Its options are unit attributes, e.g. `{vectorize_padding}`
+    instead of `{vectorize_padding = true}`.
+
     This transform takes a handle to air.herd operations and vectorizes the operations
     inside their bodies using the same logic as the AIRHerdVectorizePass. It walks the
     body of each herd operation and applies vectorization patterns to linalg operations

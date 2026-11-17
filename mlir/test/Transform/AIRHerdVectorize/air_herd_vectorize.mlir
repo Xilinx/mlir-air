@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-herd-vectorize | FileCheck %s
+// RUN: air-opt %s -air-herd-vectorize 2>&1 >/dev/null | FileCheck %s --check-prefix=DEPRECATED
+
+// DEPRECATED: warning: air-herd-vectorize is deprecated
 
 // CHECK-LABEL: func.func @test_herd_vectorize
 func.func @test_herd_vectorize() {

@@ -146,13 +146,26 @@ pipeline = (
             "air-par-to-herd{depth=-1}",
             "air-par-to-launch{depth=-1 has-air-segment=true}",
             "func.func(air-fuse-alloc-dealloc)",
-            "func.func(air-herd-vectorize)",
         ]
     )
     + ")"
 )
 pm = air.passmanager.PassManager.parse(pipeline, context=context)
 pm.run(air_module.operation)
+
+vectorize_ir = Module.parse(
+    """
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %herds = transform.structured.match ops{["air.herd"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %vectorized = transform.structured.vectorize_children_and_apply_patterns %herds : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+""",
+    context=context,
+)
+run_transform(vectorize_ir, air_module)
 
 ###############################################
 # Compile, run and compare results

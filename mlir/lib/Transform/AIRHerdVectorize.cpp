@@ -127,7 +127,7 @@ public:
 
   StringRef getArgument() const override { return "air-herd-vectorize"; }
   StringRef getDescription() const override {
-    return "Vectorize operations inside air.herd operations";
+    return "Vectorize operations inside air.herd operations (deprecated)";
   }
 
   void runOnOperation() override;
@@ -148,6 +148,9 @@ private:
 void AIRHerdVectorizePass::runOnOperation() {
   auto func = getOperation();
   MLIRContext *ctx = &getContext();
+  func.emitWarning("air-herd-vectorize is deprecated; apply "
+                   "transform.structured.vectorize_children_and_apply_patterns "
+                   "to the air.herd ops instead");
 
   func.walk([&](air::HerdOp herdOp) {
     if (!herdOp->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
@@ -196,6 +199,9 @@ AIRHerdVectorizeOp::applyToOne(transform::TransformRewriter &rewriter,
                                Operation *target,
                                transform::ApplyToEachResultList &results,
                                transform::TransformState &state) {
+
+  emitWarning("transform.air.herd_vectorize is deprecated; use "
+              "transform.structured.vectorize_children_and_apply_patterns");
 
   // Cast the target to HerdOp and verify it's the right type
   auto herdOp = dyn_cast<xilinx::air::HerdOp>(target);

@@ -154,7 +154,7 @@ module attributes {transform.with_named_sequence} {
         %copies_in_herd = transform.structured.match ops{["memref.copy", "linalg.copy"]} in %herd : (!transform.any_op) -> !transform.any_op
         %dmas_from_copies = transform.air.copy_to_dma %copies_in_herd : (!transform.any_op) -> !transform.any_op
         
-        %vectorized_herd = transform.air.herd_vectorize %herd : (!transform.any_op) -> !transform.any_op
+        %vectorized_herd = transform.structured.vectorize_children_and_apply_patterns %herd : (!transform.any_op) -> !transform.any_op
 
         %vector_reductions_in_herd = transform.structured.match ops{["vector.multi_reduction"]} in %vectorized_herd : (!transform.any_op) -> !transform.any_op
         %result10 = transform.air.vector_type_cast %vector_reductions_in_herd <{target_element_type = bf16}> : (!transform.any_op) -> !transform.any_op
