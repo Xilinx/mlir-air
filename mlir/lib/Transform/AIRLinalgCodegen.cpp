@@ -1335,31 +1335,6 @@ public:
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
-  /// Collect perfectly nested loops starting from `rootForOps`.  Loops are
-  /// perfectly nested if each loop is the first and only non-terminator
-  /// operation in the parent loop.  Collect at most `maxLoops` loops and append
-  /// them to `forOps`.
-  template <typename T>
-  static void getPerfectlyNestedLoopsImpl(
-      SmallVectorImpl<T> &forOps, T rootForOp,
-      unsigned maxLoops = std::numeric_limits<unsigned>::max()) {
-    for (unsigned i = 0; i < maxLoops; ++i) {
-      forOps.push_back(rootForOp);
-      Block &body = rootForOp.getRegion().front();
-      if (body.begin() != std::prev(body.end(), 2))
-        return;
-
-      rootForOp = dyn_cast_if_present<T>(&body.front());
-      if (!rootForOp)
-        return;
-    }
-  }
-
-  void getPerfectlyNestedLoops(SmallVectorImpl<scf::ForOp> &nestedLoops,
-                               scf::ForOp root) {
-    getPerfectlyNestedLoopsImpl(nestedLoops, root);
-  }
-
   static SmallVector<int64_t> getTripCounts(linalg::LinalgOp op) {
 
     SmallVector<int64_t, 4> tripCounts;
