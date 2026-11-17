@@ -2633,6 +2633,47 @@ static bool chainMayDropOffsetDims(ArrayRef<Operation *> chain) {
   });
 }
 
+// Whether composing `chain` would fold a subview whose step is not 1 in a way
+// ComposeMemrefOp does not support: anywhere but at the front of the chain;
+// at the front, with an explicit access pattern, followed by an op that does
+// not keep each dim's step, or with a dynamic step or source layout. Only
+// matters when an offset in the chain is not 0. Checked without touching the
+// IR, so a pattern can bail out before materializing anything.
+static bool chainHasUnsupportedSteps(ArrayRef<Operation *> chain,
+                                     bool explicitPattern) {
+  auto unitSteps = [](memref::SubViewOp sv) {
+    return llvm::all_of(sv.getStaticStrides(),
+                        [](int64_t st) { return st == 1; });
+  };
+  bool anyOffset = llvm::any_of(chain, [](Operation *op) {
+    auto o = dyn_cast<OffsetSizeAndStrideOpInterface>(op);
+    return o && llvm::any_of(o.getMixedOffsets(), [](OpFoldResult x) {
+             return !isConstantIntValue(x, 0);
+           });
+  });
+  if (!anyOffset)
+    return false;
+  for (Operation *op : llvm::drop_begin(chain))
+    if (auto sv = dyn_cast<memref::SubViewOp>(op); sv && !unitSteps(sv))
+      return true;
+  auto front = dyn_cast<memref::SubViewOp>(chain.front());
+  if (!front || unitSteps(front))
+    return false;
+  if (explicitPattern)
+    return true;
+  if (!llvm::all_of(llvm::drop_begin(chain), [](Operation *op) {
+        return isa<memref::CastOp, memref::TransposeOp, memref::ExpandShapeOp,
+                   memref::CollapseShapeOp, memref::SubViewOp>(op);
+      }))
+    return true;
+  SmallVector<int64_t> srcStrides;
+  int64_t srcOffset;
+  return ShapedType::isDynamicShape(front.getStaticStrides()) ||
+         failed(front.getSourceType().getStridesAndOffset(srcStrides,
+                                                          srcOffset)) ||
+         ShapedType::isDynamicShape(srcStrides);
+}
+
 static bool memcpyAccessPatternNeedsRewrite(Value memref,
                                             ArrayRef<OpFoldResult> offsets,
                                             ArrayRef<OpFoldResult> sizes,
@@ -2641,7 +2682,8 @@ static bool memcpyAccessPatternNeedsRewrite(Value memref,
   // unit dims to an explicit access pattern.
   std::vector<Operation *> chain = getComposableMemrefChain(memref);
   bool explicitPattern = !offsets.empty() || !sizes.empty() || !strides.empty();
-  if (!chain.empty() && !(explicitPattern && chainMayDropOffsetDims(chain)))
+  if (!chain.empty() && !(explicitPattern && chainMayDropOffsetDims(chain)) &&
+      !chainHasUnsupportedSteps(chain, explicitPattern))
     return true;
   // Mirrors canonicalizeEmptyLists.
   if (offsets.empty() && sizes.empty() && strides.empty())
@@ -2728,6 +2770,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     return failure();
   // Whether the access pattern comes from the sink's type alone.
   bool implicitPattern = offsets.empty() && sizes.empty() && strides.empty();
+  if (chainHasUnsupportedSteps(memrefOpVec, !implicitPattern))
+    return failure();
 
   // Init. source memref and offsets at the front of the vector of memref ops.
   auto constZero =
@@ -2938,30 +2982,15 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   // subview's strides). An access pattern counts an offset in units of its
   // stride, the layout stride: the source's times the step. Convert, and
   // carry what the step does not divide into the dim of stride 1.
-  // Only for a chain starting at a subview: initialStrides holds its steps
-  // there (a reinterpret_cast's are linear strides). Casts, transposes,
-  // expand/collapse_shape (which keep each dim's step) and unit-step subviews
-  // may follow.
-  if (auto front = dyn_cast<memref::SubViewOp>(memrefOpVec.front())) {
-    bool stepsKept =
-        llvm::all_of(llvm::drop_begin(memrefOpVec), [](Operation *op) {
-          if (isa<memref::CastOp, memref::TransposeOp, memref::ExpandShapeOp,
-                  memref::CollapseShapeOp>(op))
-            return true;
-          auto sv = dyn_cast<memref::SubViewOp>(op);
-          return sv && llvm::all_of(sv.getStaticStrides(),
-                                    [](int64_t st) { return st == 1; });
-        });
-    bool unitSteps = llvm::all_of(front.getMixedStrides(), [](OpFoldResult st) {
-      return isConstantIntValue(st, 1);
-    });
-    // An explicit pattern's offsets are combined above without the steps.
-    if (!unitSteps && (!stepsKept || !implicitPattern ||
-                       failed(scaleOffsetsBySteps(
-                           rewriter, loc, initialOffsets, initialStrides,
-                           strides, droppedOffsets, droppedStrides))))
+  // A chain starting at a subview whose step is not 1 (chainHasUnsupportedSteps
+  // rejected every other such chain above): initialStrides holds the steps.
+  if (auto front = dyn_cast<memref::SubViewOp>(memrefOpVec.front());
+      front && !llvm::all_of(front.getStaticStrides(),
+                             [](int64_t st) { return st == 1; }))
+    if (failed(scaleOffsetsBySteps(rewriter, loc, initialOffsets,
+                                   initialStrides, strides, droppedOffsets,
+                                   droppedStrides)))
       return failure();
-  }
   offsets = initialOffsets;
   if (!droppedOffsets.empty())
     while (offsets.size() < strides.size())
@@ -3647,7 +3676,8 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
   bool hasPadding =
       op->template getAttrOfType<DenseI32ArrayAttr>("pad_before") ||
       op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
-  if (hasPadding ? getComposableMemrefChain(memref).empty()
+  std::vector<Operation *> chain = getComposableMemrefChain(memref);
+  if (hasPadding ? chain.empty() || chainHasUnsupportedSteps(chain, true)
                  : !memcpyAccessPatternNeedsRewrite(
                        memref, op.getMixedOffsets(), op.getMixedSizes(),
                        op.getMixedStrides()))
