@@ -1710,12 +1710,10 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       auto forOp = dyn_cast<scf::ForOp>(p);
       if (!forOp)
         return std::nullopt;
-      auto lb = getConstantIntValue(forOp.getLowerBound());
-      auto ub = getConstantIntValue(forOp.getUpperBound());
-      auto step = getConstantIntValue(forOp.getStep());
-      if (!lb || !ub || !step || *step <= 0)
+      auto trips = air::getStaticScfForTripCountAsInt(forOp);
+      if (!trips)
         return std::nullopt;
-      n *= std::max<int64_t>(0, llvm::divideCeil(*ub - *lb, *step));
+      n *= *trips;
     }
     return n;
   };
