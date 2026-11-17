@@ -84,3 +84,19 @@ func.func @noop(%a : memref<8xf32>) -> memref<8xf32> {
   return %a : memref<8xf32>
 }
 
+
+// -----
+
+// Strided source: the descriptor takes its offset and strides from the type.
+// CHECK-LABEL: func.func @translate_strided
+// CHECK:       llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
+// CHECK:       %[[OFF:.+]] = llvm.mlir.constant(128 : i64)
+// CHECK:       llvm.insertvalue %[[OFF]], %{{.*}}[2]
+// CHECK:       %[[S0:.+]] = llvm.mlir.constant(64 : i64)
+// CHECK:       llvm.insertvalue %[[S0]], %{{.*}}[4, 0]
+// CHECK:       %[[S1:.+]] = llvm.mlir.constant(2 : i64)
+// CHECK:       llvm.insertvalue %[[S1]], %{{.*}}[4, 1]
+func.func @translate_strided(%src : memref<16x8xf32, strided<[64, 2], offset: 128>>, %from : index, %to : index, %bases : memref<?xindex>) -> memref<16x8xf32, strided<[64, 2], offset: 128>> {
+  %peer = air.translate %src, %from, %to, %bases : memref<16x8xf32, strided<[64, 2], offset: 128>>, memref<?xindex>
+  return %peer : memref<16x8xf32, strided<[64, 2], offset: 128>>
+}
