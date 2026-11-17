@@ -3453,7 +3453,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       removeDeadDeviceComputeOps(f);
 
     // Purge all wait all ops
-    purgeSCFParContainingOnlyWaitAllOps(module);
+    if (failed(purgeSCFParContainingOnlyWaitAllOps(module))) {
+      signalPassFailure();
+      return;
+    }
 
     // Purge airrt.dma x and y fields, as they are obsolete for AIE2.
     purgeAIRRtDmaXAndY(module);
@@ -7175,7 +7178,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
   }
 
-  void purgeSCFParContainingOnlyWaitAllOps(ModuleOp module) {
+  LogicalResult purgeSCFParContainingOnlyWaitAllOps(ModuleOp module) {
     SmallVector<scf::ParallelOp> scf_pars;
     module.walk([&](mlir::func::FuncOp f) {
       f.walk([&](scf::ParallelOp par_op) { scf_pars.push_back(par_op); });
@@ -7190,11 +7193,17 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           return;
         else if (o->mightHaveTrait<OpTrait::IsTerminator>())
           return;
+        else if (isMemoryEffectFree(o))
+          return;
         else {
           containsOnlyWaitAll = false;
           return;
         }
       });
+      if (!containsOnlyWaitAll)
+        return par_op->emitOpError(
+            "scf.parallel with side-effecting ops other than airrt.wait_all "
+            "is not supported by airrt-to-npu");
       builder.setInsertionPoint(par_op);
       auto newWaitAll = airrt::WaitAllOp::create(
           builder, par_op->getLoc(),
@@ -7203,6 +7212,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         res.replaceAllUsesWith(newWaitAll->getResult(0));
       par_op->erase();
     }
+    return success();
   }
 
   std::optional<AIE::ShimDMAAllocationOp>
