@@ -42,17 +42,18 @@ module {
 module {
   aie.device(npu1_1col) {
     %tile_0_0 = aie.tile(0, 0)
-    aie.shim_dma_allocation @airMemcpyId2(%tile_0_0, MM2S, 0)
   } {sym_name = "segment_0"}
   func.func @pure_ops_in_scf_parallel() {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
-    %c32 = arith.constant 32 : i64
     %init = airrt.wait_all : !airrt.event
     %r = scf.parallel (%i) = (%c0) to (%c2) step (%c1) init (%init) -> !airrt.event {
-      %ii = arith.index_cast %i : index to i64
-      %off = arith.muli %ii, %c32 : i64
+      %ub = arith.addi %i, %c1 : index
+      scf.parallel (%j) = (%c0) to (%ub) step (%c1) {
+        %w = airrt.wait_all : !airrt.event
+        scf.reduce
+      }
       %e = airrt.wait_all : !airrt.event
       scf.reduce(%e : !airrt.event) {
       ^bb0(%a: !airrt.event, %b: !airrt.event):
