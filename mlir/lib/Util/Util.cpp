@@ -570,17 +570,29 @@ air::getAffineApplyCoefficient(affine::AffineApplyOp applyOp, Value v) {
 
 // Get a static scf.for trip count as int
 std::optional<int64_t> air::getStaticScfForTripCountAsInt(scf::ForOp for_op) {
-  if (std::optional<APInt> n = for_op.getStaticTripCount())
-    return n->getSExtValue();
-  return std::nullopt;
+  std::optional<int64_t> output = std::nullopt;
+  // Get for loop iteration count
+  std::optional<int64_t> LbCstOp =
+      mlir::getConstantIntValue(for_op.getLowerBound());
+  std::optional<int64_t> UbCstOp =
+      mlir::getConstantIntValue(for_op.getUpperBound());
+  std::optional<int64_t> StepCstOp =
+      mlir::getConstantIntValue(for_op.getStep());
+  if (LbCstOp && UbCstOp && StepCstOp)
+    output = llvm::divideCeilSigned((*UbCstOp - *LbCstOp), *StepCstOp);
+  return output;
 }
 
 // Get a static affine.for trip count as int
 std::optional<int64_t>
 air::getStaticAffineForTripCountAsInt(affine::AffineForOp for_op) {
-  if (std::optional<uint64_t> n = affine::getConstantTripCount(for_op))
-    return *n;
-  return std::nullopt;
+  std::optional<int64_t> output = std::nullopt;
+  if (for_op.hasConstantBounds()) {
+    output = llvm::divideCeilSigned(
+        (for_op.getConstantUpperBound() - for_op.getConstantLowerBound()),
+        for_op.getStepAsInt());
+  }
+  return output;
 }
 
 std::optional<int64_t> air::getStaticTripCountInRange(Operation *inner,
