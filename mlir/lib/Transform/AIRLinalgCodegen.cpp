@@ -7433,6 +7433,253 @@ void transform::CoalesceSlicesOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
+// MergeAdjacentReadsOp
+//===----------------------------------------------------------------------===//
+
+namespace {
+// The allocation or block argument `v` views, through view-like ops and
+// the kernel arguments of air hierarchies (which are their operands).
+static Value memrefRoot(Value v) {
+  while (true) {
+    if (auto arg = dyn_cast<BlockArgument>(v)) {
+      auto h = dyn_cast_if_present<xilinx::air::HierarchyInterface>(
+          arg.getOwner()->getParentOp());
+      Value outer = h ? h.getTiedKernelOperand(arg) : Value();
+      if (!outer)
+        break;
+      v = outer;
+      continue;
+    }
+    Operation *def = v.getDefiningOp();
+    if (auto view = dyn_cast<ViewLikeOpInterface>(def))
+      v = view.getViewSource();
+    else if (auto c = dyn_cast<memref::CollapseShapeOp>(def))
+      v = c.getSrc();
+    else if (auto e = dyn_cast<memref::ExpandShapeOp>(def))
+      v = e.getSrc();
+    else
+      break;
+  }
+  return v;
+}
+
+// Whether the memrefs viewing the roots `a` and `b` may overlap: unless they
+// are two allocations, or an allocation and a function's argument.
+static bool mayAlias(Value a, Value b) {
+  if (a == b)
+    return true;
+  auto isAlloc = [](Value v) {
+    return static_cast<bool>(v.getDefiningOp<memref::AllocOp>());
+  };
+  auto isFuncArg = [](Value v) {
+    auto arg = dyn_cast<BlockArgument>(v);
+    return arg && arg.getOwner()->isEntryBlock() &&
+           isa<FunctionOpInterface>(arg.getOwner()->getParentOp());
+  };
+  if (isAlloc(a) && (isAlloc(b) || isFuncArg(b)))
+    return false;
+  if (isAlloc(b) && isFuncArg(a))
+    return false;
+  return true;
+}
+
+// `v` as a value plus a constant (a null value for a constant).
+static std::pair<Value, int64_t> splitIndexConstant(Value v) {
+  if (auto c = getConstantIntValue(v))
+    return {Value(), *c};
+  if (auto add = v.getDefiningOp<arith::AddIOp>()) {
+    if (auto c = getConstantIntValue(add.getRhs()))
+      return {add.getLhs(), *c};
+    if (auto c = getConstantIntValue(add.getLhs()))
+      return {add.getRhs(), *c};
+  }
+  if (auto ap = v.getDefiningOp<affine::AffineApplyOp>()) {
+    AffineMap m = ap.getAffineMap();
+    if (m.getNumResults() == 1 && ap.getMapOperands().size() == 1) {
+      AffineExpr x = m.getNumDims() ? getAffineDimExpr(0, ap.getContext())
+                                    : getAffineSymbolExpr(0, ap.getContext());
+      if (auto c = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
+              m.getResult(0) - x, m.getNumDims(), m.getNumSymbols())))
+        return {ap.getMapOperands()[0], c.getValue()};
+    }
+  }
+  return {v, 0};
+}
+
+// Whether the transfers `w` and `r` of one memref provably touch different
+// elements: in some dim their indices are one value plus constants further
+// apart than either's extent there.
+static bool disjointTransfers(VectorTransferOpInterface w,
+                              VectorTransferOpInterface r) {
+  if (w.getBase() != r.getBase() ||
+      w.getIndices().size() != r.getIndices().size() ||
+      !w.getPermutationMap().isMinorIdentity() ||
+      !r.getPermutationMap().isMinorIdentity() ||
+      w.getVectorType().isScalable() || r.getVectorType().isScalable())
+    return false;
+  int64_t rank = w.getIndices().size();
+  auto extent = [&](VectorTransferOpInterface t, int64_t d) -> int64_t {
+    auto vt = t.getVectorType();
+    int64_t off = rank - vt.getRank();
+    return d < off ? 1 : vt.getDimSize(d - off);
+  };
+  for (int64_t d = 0; d < rank; ++d) {
+    auto [bw, cw] = splitIndexConstant(w.getIndices()[d]);
+    auto [br, cr] = splitIndexConstant(r.getIndices()[d]);
+    if (bw != br)
+      continue;
+    if (cw + extent(w, d) <= cr || cr + extent(r, d) <= cw)
+      return true;
+  }
+  return false;
+}
+
+// Whether an op in [from, to) of one block may write `root`'s memory where
+// `rd` (if given) reads it.
+static bool mayWriteBetween(Operation *from, Operation *to, Value root,
+                            vector::TransferReadOp rd = nullptr) {
+  for (Operation *op = from; op && op != to; op = op->getNextNode()) {
+    bool may = false;
+    op->walk([&](Operation *o) {
+      if (may || isPure(o))
+        return;
+      if (auto w = dyn_cast<vector::TransferWriteOp>(o))
+        if (rd && disjointTransfers(cast<VectorTransferOpInterface>(*w),
+                                    cast<VectorTransferOpInterface>(*rd)))
+          return;
+      auto eff = dyn_cast<MemoryEffectOpInterface>(o);
+      if (!eff) {
+        may = !o->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
+        return;
+      }
+      SmallVector<MemoryEffects::EffectInstance> effects;
+      eff.getEffects(effects);
+      for (auto &e : effects)
+        if (isa<MemoryEffects::Write, MemoryEffects::Free>(e.getEffect()) &&
+            (!e.getValue() || mayAlias(memrefRoot(e.getValue()), root)))
+          may = true;
+    });
+    if (may)
+      return true;
+  }
+  return false;
+}
+} // namespace
+
+// The dim in which `b` reads the piece of memory after the one `a` reads,
+// if the reads are adjacent pieces as merge_adjacent_reads describes.
+static std::optional<int64_t> adjacentReadDim(vector::TransferReadOp a,
+                                              vector::TransferReadOp b) {
+  if (a.getBase() != b.getBase() || a.getType() != b.getType() ||
+      a.getPermutationMap() != b.getPermutationMap() ||
+      !a.getPermutationMap().isMinorIdentity() ||
+      a.getPadding() != b.getPadding() || a.getMask() || b.getMask() ||
+      llvm::any_of(a.getInBoundsValues(), [](bool x) { return !x; }) ||
+      llvm::any_of(b.getInBoundsValues(), [](bool x) { return !x; }))
+    return std::nullopt;
+  // The memref must hold scalars of the vector's element type; a memref of
+  // vectors does not map its dims onto the vector's this way.
+  auto memTy = dyn_cast<MemRefType>(a.getBase().getType());
+  VectorType vt = a.getVectorType();
+  if (!memTy || !memTy.hasStaticShape() || vt.isScalable() ||
+      memTy.getElementType() != vt.getElementType() ||
+      !vt.getElementType().isIntOrFloat())
+    return std::nullopt;
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  if (failed(memTy.getStridesAndOffset(strides, offset)))
+    return std::nullopt;
+  int64_t m = memTy.getRank(), r = a.getVectorType().getRank();
+  std::optional<int64_t> dim;
+  for (int64_t i = 0; i < m; ++i) {
+    Value x = a.getIndices()[i], y = b.getIndices()[i];
+    if (x == y)
+      continue;
+    std::optional<int64_t> cx = getConstantIntValue(x),
+                           cy = getConstantIntValue(y);
+    if (dim || !cx || !cy || *cy != *cx + 1)
+      return std::nullopt;
+    dim = i;
+  }
+  if (!dim || *dim < m - r)
+    return std::nullopt;
+  // Extent 1 up to d in the vector, whole memref dims after it, contiguous.
+  ArrayRef<int64_t> vs = a.getVectorType().getShape();
+  int64_t piece = 1;
+  for (int64_t i = m - 1; i > *dim; --i) {
+    if (vs[i - (m - r)] != memTy.getDimSize(i) || strides[i] != piece)
+      return std::nullopt;
+    piece *= memTy.getDimSize(i);
+  }
+  for (int64_t i = m - r; i <= *dim; ++i)
+    if (vs[i - (m - r)] != 1)
+      return std::nullopt;
+  if (strides[*dim] != piece)
+    return std::nullopt;
+  return *dim - (m - r);
+}
+
+DiagnosedSilenceableFailure
+transform::MergeAdjacentReadsOp::apply(transform::TransformRewriter &rewriter,
+                                       transform::TransformResults &results,
+                                       transform::TransformState &state) {
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+  // A read may be erased by a merge, so it cannot be a target itself.
+  for (Operation *target : targets)
+    if (isa<vector::TransferReadOp>(target))
+      return emitSilenceableError()
+             << "expected targets that contain reads, not a read";
+  for (Operation *target : targets) {
+    SmallVector<vector::TransferReadOp> reads;
+    target->walk([&](vector::TransferReadOp rd) { reads.push_back(rd); });
+    llvm::SmallPtrSet<Operation *, 16> merged;
+    for (vector::TransferReadOp a : reads) {
+      if (merged.contains(a))
+        continue;
+      VectorType vt = a.getVectorType();
+      for (Operation *op = a->getNextNode(); op; op = op->getNextNode()) {
+        auto b = dyn_cast<vector::TransferReadOp>(op);
+        if (!b || merged.contains(b))
+          continue;
+        std::optional<int64_t> d = adjacentReadDim(a, b);
+        if (!d || 2 * vt.getNumElements() * vt.getElementTypeBitWidth() >
+                      (int64_t)getMaxBits())
+          continue;
+        if (mayWriteBetween(a->getNextNode(), b, memrefRoot(b.getBase()), b))
+          break;
+        SmallVector<int64_t> shape(vt.getShape());
+        shape[*d] = 2;
+        rewriter.setInsertionPoint(a);
+        Location loc = a.getLoc();
+        auto wide = vector::TransferReadOp::create(
+            rewriter, loc, VectorType::get(shape, vt.getElementType()),
+            a.getBase(), a.getIndices(), a.getPermutationMapAttr(),
+            a.getPadding(), /*mask=*/Value(), a.getInBoundsAttr());
+        // Each half as a 1-D slice of the flattened read.
+        int64_t n = vt.getNumElements();
+        auto flatTy = VectorType::get({2 * n}, vt.getElementType());
+        Value flat = vector::ShapeCastOp::create(rewriter, loc, flatTy, wide);
+        auto half = [&](int64_t at) -> Value {
+          Value h = vector::ExtractStridedSliceOp::create(
+              rewriter, loc, flat, ArrayRef<int64_t>{at}, ArrayRef<int64_t>{n},
+              ArrayRef<int64_t>{1});
+          return vector::ShapeCastOp::create(rewriter, loc, vt, h);
+        };
+        Value lo = half(0), hi = half(n);
+        merged.insert(a);
+        merged.insert(b);
+        rewriter.replaceOp(a, lo);
+        rewriter.replaceOp(b, hi);
+        break;
+      }
+    }
+  }
+  results.set(llvm::cast<OpResult>(getResult()), targets);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
 // SinkOperandProducersOp
 //===----------------------------------------------------------------------===//
 
