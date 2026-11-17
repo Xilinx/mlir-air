@@ -25,6 +25,13 @@ can be lowered to a combination of standard and LLVM dialects.
   let useStrictPropertiesInAssemblyFormat = 0;
 }
 
+include "mlir/IR/AttrTypeBase.td"
+
+def AIRRt_EventType : TypeDef<AIRRt_Dialect, "Event"> {
+  let mnemonic = "event";
+  let summary = "Completion event of an AIR runtime operation";
+}
+
 def AIRRt_Event : DialectType<
   AIRRt_Dialect, CPred<"llvm::isa<xilinx::airrt::EventType>($_self)">, "event type">,
              BuildableType<"xilinx::airrt::EventType::get($_builder.getContext())">;

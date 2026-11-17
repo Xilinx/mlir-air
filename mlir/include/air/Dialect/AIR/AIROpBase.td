@@ -77,6 +77,19 @@ def air_Dialect : Dialect {
 class air_Attr<string name, list<Trait> traits = []>
     : AttrDef<air_Dialect, name, traits>;
 
+class air_Type<string name, string typeMnemonic>
+    : TypeDef<air_Dialect, name> {
+  let mnemonic = typeMnemonic;
+}
+
+def air_AsyncTokenType : air_Type<"AsyncToken", "async.token"> {
+  let summary = "Token that orders asynchronous AIR operations";
+}
+
+def air_UniverseType : air_Type<"Universe", "universe"> {
+  let summary = "Bounded pool of devices or hosts that air.rank runs on";
+}
+
 def air_AnyScalarOrTensor : TypeConstraint<Or<[AnySignlessInteger.predicate,
                                            AnyFloat.predicate,
                                            AnyTensor.predicate]>,

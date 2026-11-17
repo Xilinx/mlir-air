@@ -37,11 +37,16 @@ using namespace mlir;
 
 #define GET_ATTRDEF_CLASSES
 #include "air/Dialect/AIR/AIRAttrs.cpp.inc"
+#define GET_TYPEDEF_CLASSES
+#include "air/Dialect/AIR/AIRTypes.cpp.inc"
 
 namespace xilinx {
 
 void air::airDialect::initialize() {
-  addTypes<AsyncTokenType, UniverseType>();
+  addTypes<
+#define GET_TYPEDEF_LIST
+#include "air/Dialect/AIR/AIRTypes.cpp.inc"
+      >();
   addAttributes<
 #define GET_ATTRDEF_LIST
 #include "air/Dialect/AIR/AIRAttrs.cpp.inc"
@@ -50,32 +55,6 @@ void air::airDialect::initialize() {
 #define GET_OP_LIST
 #include "air/Dialect/AIR/AIR.cpp.inc"
       >();
-}
-
-Type air::airDialect::parseType(DialectAsmParser &parser) const {
-  // Parse the main keyword for the type.
-  StringRef keyword;
-  if (parser.parseKeyword(&keyword))
-    return Type();
-  MLIRContext *context = getContext();
-
-  // Handle 'async token' types.
-  if (keyword == "async.token")
-    return AsyncTokenType::get(context);
-
-  // Handle 'universe' types.
-  if (keyword == "universe")
-    return UniverseType::get(context);
-
-  parser.emitError(parser.getNameLoc(), "unknown air type: " + keyword);
-  return Type();
-}
-
-void air::airDialect::printType(Type type, DialectAsmPrinter &os) const {
-  TypeSwitch<Type>(type)
-      .Case<AsyncTokenType>([&](Type) { os << "async.token"; })
-      .Case<UniverseType>([&](Type) { os << "universe"; })
-      .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
 }
 
 template <class T>
