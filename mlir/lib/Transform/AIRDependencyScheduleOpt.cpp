@@ -2721,9 +2721,11 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
     // Apply arith muli to loop step and bound
     int muli_factor = *mlir::getConstantIntValue(const_val);
     if (auto sfo = dyn_cast_if_present<scf::ForOp>(containingOp)) {
-      if (!getStaticScfForTripCountAsInt(sfo))
+      std::optional<int64_t> trips = getStaticScfForTripCountAsInt(sfo);
+      // The new step divides by the trip count.
+      if (!trips || *trips == 0)
         return failure();
-      int tripCount = *getStaticScfForTripCountAsInt(sfo);
+      int tripCount = *trips;
       int new_ub =
           *mlir::getConstantIntValue(sfo.getUpperBound()) * muli_factor;
       int new_lb =
@@ -2738,9 +2740,10 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
         return failure();
     } else if (auto afo =
                    dyn_cast_if_present<affine::AffineForOp>(containingOp)) {
-      if (!afo.hasConstantBounds())
+      std::optional<int64_t> trips = getStaticAffineForTripCountAsInt(afo);
+      if (!afo.hasConstantBounds() || !trips || *trips == 0)
         return failure();
-      int tripCount = *getStaticAffineForTripCountAsInt(afo);
+      int tripCount = *trips;
       int new_ub = afo.getConstantUpperBound() * muli_factor;
       int new_lb = afo.getConstantLowerBound() * muli_factor;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
@@ -2803,9 +2806,11 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
     // Apply arith muli to loop step and bound
     int addi_operand = *mlir::getConstantIntValue(const_val);
     if (auto sfo = dyn_cast_if_present<scf::ForOp>(containingOp)) {
-      if (!getStaticScfForTripCountAsInt(sfo))
+      std::optional<int64_t> trips = getStaticScfForTripCountAsInt(sfo);
+      // The new step divides by the trip count.
+      if (!trips || *trips == 0)
         return failure();
-      int tripCount = *getStaticScfForTripCountAsInt(sfo);
+      int tripCount = *trips;
       int new_ub =
           *mlir::getConstantIntValue(sfo.getUpperBound()) + addi_operand;
       int new_lb =
@@ -2820,9 +2825,10 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
         return failure();
     } else if (auto afo =
                    dyn_cast_if_present<affine::AffineForOp>(containingOp)) {
-      if (!afo.hasConstantBounds())
+      std::optional<int64_t> trips = getStaticAffineForTripCountAsInt(afo);
+      if (!afo.hasConstantBounds() || !trips || *trips == 0)
         return failure();
-      int tripCount = *getStaticAffineForTripCountAsInt(afo);
+      int tripCount = *trips;
       int new_ub = afo.getConstantUpperBound() + addi_operand;
       int new_lb = afo.getConstantLowerBound() + addi_operand;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
