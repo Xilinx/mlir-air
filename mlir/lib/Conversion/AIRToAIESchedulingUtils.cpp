@@ -1279,25 +1279,12 @@ SmallVector<Operation *> air::getCircularChainBDs(
 
 // DMAAllocator impl.
 
-// A simple selection sorting implementation.
-static inline void swap(std::vector<Operation *> &a, int i, int j) {
-  Operation *t = a[i];
-  a[i] = a[j];
-  a[j] = t;
-}
-
+// Sort memcpy ops by id.
 static void selection(std::vector<Operation *> &a) {
-  size_t i, j, min;
-  for (i = 0; i < a.size() - 1; i++) {
-    min = i;
-    for (j = i + 1; j < a.size(); j++) {
-      auto a_j = dyn_cast_if_present<air::MemcpyInterface>(a[j]);
-      auto a_min = dyn_cast_if_present<air::MemcpyInterface>(a[min]);
-      if (a_j.getId() < a_min.getId())
-        min = j;
-    }
-    swap(a, min, i);
-  }
+  llvm::stable_sort(a, [](Operation *x, Operation *y) {
+    return cast<air::MemcpyInterface>(x).getId() <
+           cast<air::MemcpyInterface>(y).getId();
+  });
 }
 
 } // namespace xilinx
