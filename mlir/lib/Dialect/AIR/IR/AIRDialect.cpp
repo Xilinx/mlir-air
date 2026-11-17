@@ -2074,17 +2074,6 @@ LogicalResult air::HerdOp::verify() {
 // Asynchronous execute
 //
 
-LogicalResult air::ExecuteOp::verify() {
-  if (getOperation()->getNumRegions() != 1)
-    return emitOpError("ExecuteOp has zero region.");
-  if (getRegion().empty())
-    return emitOpError("ExecuteOp should have non-empty region.");
-  if (getBody().empty())
-    return emitOpError("ExecuteOp should have non-empty body.");
-
-  return success();
-}
-
 // Mirror body effects up to the execute op. Inner Allocate effects on
 // yielded values get retargeted to the outer result so alias analysis
 // can prove distinct execute-yielded memrefs NoAlias. Inner ops with no
