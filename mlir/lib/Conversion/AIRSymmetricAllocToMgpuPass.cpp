@@ -21,6 +21,8 @@
 #include "air/Conversion/GPUPassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#include "mlir/Conversion/LLVMCommon/MemRefBuilder.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -61,54 +63,6 @@ static Value computeMemrefByteSize(OpBuilder &b, Location loc, MemRefType ty) {
                                    b.getI64IntegerAttr(totalBytes));
 }
 
-// Build an LLVM memref descriptor struct populated with the given pointer.
-// For now we support only static-shape, contiguous, identity-layout memrefs
-// without an offset. For dimensions: sizes from the type, strides as
-// row-major (innermost stride = 1).
-static Value buildMemrefDescriptor(OpBuilder &b, Location loc,
-                                   MemRefType memrefTy, Value ptr) {
-  ArrayRef<int64_t> shape = memrefTy.getShape();
-  unsigned rank = shape.size();
-  auto i64Ty = b.getI64Type();
-  auto ptrTy = LLVM::LLVMPointerType::get(b.getContext());
-
-  // Build the descriptor type: !llvm.struct<(ptr, ptr, i64, array<R x i64>,
-  // array<R x i64>)>. For rank-0 memrefs, MLIR omits the size/stride arrays.
-  SmallVector<Type, 5> descFields;
-  descFields.push_back(ptrTy);
-  descFields.push_back(ptrTy);
-  descFields.push_back(i64Ty);
-  if (rank > 0) {
-    descFields.push_back(LLVM::LLVMArrayType::get(i64Ty, rank));
-    descFields.push_back(LLVM::LLVMArrayType::get(i64Ty, rank));
-  }
-  auto structTy = LLVM::LLVMStructType::getLiteral(b.getContext(), descFields);
-
-  Value desc = LLVM::PoisonOp::create(b, loc, structTy);
-  desc = LLVM::InsertValueOp::create(b, loc, desc, ptr, ArrayRef<int64_t>{0});
-  desc = LLVM::InsertValueOp::create(b, loc, desc, ptr, ArrayRef<int64_t>{1});
-  Value zero = LLVM::ConstantOp::create(b, loc, i64Ty, b.getI64IntegerAttr(0));
-  desc = LLVM::InsertValueOp::create(b, loc, desc, zero, ArrayRef<int64_t>{2});
-
-  if (rank > 0) {
-    // Compute row-major strides from shape (innermost = 1).
-    SmallVector<int64_t> strides(rank, 1);
-    for (int i = static_cast<int>(rank) - 2; i >= 0; --i)
-      strides[i] = strides[i + 1] * shape[i + 1];
-    for (unsigned i = 0; i < rank; ++i) {
-      Value sz = LLVM::ConstantOp::create(b, loc, i64Ty,
-                                          b.getI64IntegerAttr(shape[i]));
-      desc = LLVM::InsertValueOp::create(b, loc, desc, sz,
-                                         ArrayRef<int64_t>{3, (int64_t)i});
-      Value st = LLVM::ConstantOp::create(b, loc, i64Ty,
-                                          b.getI64IntegerAttr(strides[i]));
-      desc = LLVM::InsertValueOp::create(b, loc, desc, st,
-                                         ArrayRef<int64_t>{4, (int64_t)i});
-    }
-  }
-  return desc;
-}
-
 struct AIRSymmetricAllocToMgpuPass
     : public xilinx::air::impl::AIRSymmetricAllocToMgpuBase<
           AIRSymmetricAllocToMgpuPass> {
@@ -143,6 +97,7 @@ struct AIRSymmetricAllocToMgpuPass
     // Track the !llvm.ptr backing each lowered memref so deallocs can look
     // them up.
     DenseMap<Value, Value> symmetricMemrefToPtr;
+    LLVMTypeConverter typeConverter(module.getContext());
 
     for (memref::AllocOp alloc : symAllocs) {
       auto memrefTy = alloc.getType();
@@ -157,11 +112,8 @@ struct AIRSymmetricAllocToMgpuPass
         signalPassFailure();
         return;
       }
-      // buildMemrefDescriptor below assumes identity (row-major,
-      // innermost-stride-1, zero-offset) layout. Reject anything else
-      // explicitly — a strided / non-identity layout would silently get a
-      // wrong descriptor (the helper hard-codes row-major strides from the
-      // shape and offset=0) and miscompile.
+      // The allocation size above is computed from the shape alone, which
+      // only covers an identity layout.
       if (!memrefTy.getLayout().isIdentity()) {
         alloc.emitOpError(
             "memref.alloc with #air.symmetric_heap memory_space requires an "
@@ -175,7 +127,11 @@ struct AIRSymmetricAllocToMgpuPass
                                        ValueRange{sizeBytes, nullPtr})
                       .getResult(0);
 
-      Value desc = buildMemrefDescriptor(builder, loc, memrefTy, ptr);
+      // The type converter has no address space for #air.symmetric_heap;
+      // the descriptor holds plain pointers.
+      Value desc = MemRefDescriptor::fromStaticShape(
+          builder, loc, typeConverter,
+          MemRefType::Builder(memrefTy).setMemorySpace(nullptr), ptr);
       Value newMemref = UnrealizedConversionCastOp::create(
                             builder, loc, TypeRange{memrefTy}, ValueRange{desc})
                             .getResult(0);
