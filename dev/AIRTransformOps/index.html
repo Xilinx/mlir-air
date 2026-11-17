@@ -6154,7 +6154,7 @@ pressure.</p>
 </code></pre></div>
 <p>This transform takes a handle to an scf.for loop and flattens all vector-typed
 iter_args by inserting vector.shape_cast operations. The transformation:
-1. Identifies all iter_args with vector types
+1. Identifies all iter_args with multi-dimensional vector types
 2. For each vector iter_arg, inserts a vector.shape_cast before the loop to flatten it
 3. Updates the iter_arg type to the flattened vector type
 4. Inserts vector.shape_cast operations inside the loop body to convert back to the original shape
