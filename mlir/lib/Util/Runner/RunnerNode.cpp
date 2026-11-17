@@ -13,6 +13,18 @@ namespace air {
 
 using Graph = dependencyGraph::Graph;
 
+// Iterations of an scf.parallel. A dim whose trip count is not a constant
+// counts as one iteration.
+static int64_t parallelTripCount(scf::ParallelOp par) {
+  int64_t count = 1;
+  for (auto [lb, ub, step] :
+       llvm::zip_equal(par.getLowerBound(), par.getUpperBound(), par.getStep()))
+    if (std::optional<APInt> n = constantTripCount(
+            lb, ub, step, /*isSigned=*/true, scf::computeUbMinusLb))
+      count *= n->getSExtValue();
+  return count;
+}
+
 class runnerNode {
 
 public:
@@ -1858,17 +1870,7 @@ private:
     for (auto parent = op->getParentOp(); !isa<func::FuncOp>(parent);
          parent = parent->getParentOp()) {
       if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
-        for (unsigned i = 0; i < scf_par.getNumLoops(); i++) {
-          auto lbCstOp = scf_par.getLowerBound()[i]
-                             .getDefiningOp<arith::ConstantIndexOp>();
-          auto ubCstOp = scf_par.getUpperBound()[i]
-                             .getDefiningOp<arith::ConstantIndexOp>();
-          auto stepCstOp =
-              scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
-          int64_t tripCount = llvm::divideCeilSigned(
-              ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
-          output *= tripCount;
-        }
+        output *= parallelTripCount(scf_par);
       } else if (auto hier =
                      dyn_cast_if_present<air::HierarchyInterface>(parent)) {
         if (this->sim_granularity == "core" && isa<air::HerdOp>(parent)) {
@@ -1925,17 +1927,7 @@ private:
     for (auto parent = op->getParentOp(); !isa<func::FuncOp>(parent);
          parent = parent->getParentOp()) {
       if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
-        for (unsigned i = 0; i < scf_par.getNumLoops(); i++) {
-          auto lbCstOp = scf_par.getLowerBound()[i]
-                             .getDefiningOp<arith::ConstantIndexOp>();
-          auto ubCstOp = scf_par.getUpperBound()[i]
-                             .getDefiningOp<arith::ConstantIndexOp>();
-          auto stepCstOp =
-              scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
-          int64_t tripCount = llvm::divideCeilSigned(
-              ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
-          output *= tripCount;
-        }
+        output *= parallelTripCount(scf_par);
       } else if (auto hier =
                      dyn_cast_if_present<air::HierarchyInterface>(parent)) {
         if (this->sim_granularity == "core" && isa<air::HerdOp>(parent)) {
@@ -1990,17 +1982,7 @@ private:
       if (!parent)
         break;
       if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
-        for (unsigned i = 0; i < scf_par.getNumLoops(); i++) {
-          auto lbCstOp = scf_par.getLowerBound()[i]
-                             .getDefiningOp<arith::ConstantIndexOp>();
-          auto ubCstOp = scf_par.getUpperBound()[i]
-                             .getDefiningOp<arith::ConstantIndexOp>();
-          auto stepCstOp =
-              scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
-          int64_t tripCount = llvm::divideCeilSigned(
-              ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
-          output *= tripCount;
-        }
+        output *= parallelTripCount(scf_par);
       } else if (isa<air::HierarchyInterface>(parent) &&
                  !isa<air::LaunchOp>(parent)) {
         auto hier = dyn_cast_if_present<air::HierarchyInterface>(parent);
