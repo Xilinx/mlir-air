@@ -3439,23 +3439,6 @@ void air::DmaMemcpyNdOp::getCanonicalizationPatterns(
 // Channel put/get utilities
 //
 
-/// Return a `memref.dim` or `tensor.dim` for the shape of `v` at `dim`.
-static OpFoldResult getDimValue(OpBuilder &builder, Location loc, Value v,
-                                int64_t dim) {
-  auto type = cast<ShapedType>(v.getType());
-  if (!type.isDynamicDim(dim))
-    return builder.getIndexAttr(type.getDimSize(dim));
-
-  return getAsOpFoldResult(
-      TypeSwitch<Type, Value>(v.getType())
-          .Case<RankedTensorType>([&](RankedTensorType t) -> Value {
-            return tensor::DimOp::create(builder, loc, v, dim);
-          })
-          .Case<MemRefType>([&](MemRefType t) -> Value {
-            return memref::DimOp::create(builder, loc, v, dim);
-          }));
-}
-
 /// Returns a memref.subview or a tensor.extract_slice based on the type of the
 /// `source`.
 static Operation *getSlice(OpBuilder &b, Location loc, Value source,
@@ -3498,7 +3481,8 @@ SmallVector<Range> getIterationDomainFromChanIf(OpBuilder &builder,
     Value one = arith::ConstantIndexOp::create(builder, loc, 1);
     for (auto dim : llvm::seq<int64_t>(0, operandRank)) {
       loopBounds[dim].offset = zero;
-      loopBounds[dim].size = getDimValue(builder, loc, source, dim);
+      loopBounds[dim].size =
+          linalg::createFoldedDimOp(builder, loc, source, dim);
       loopBounds[dim].stride = one;
     }
     return loopBounds;
