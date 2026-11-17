@@ -671,13 +671,15 @@ std::string air::createChannelName(Operation *scope) {
   if (!scope->hasTrait<OpTrait::SymbolTable>()) {
     scope->emitOpError("has no symbol table trait");
   }
-  std::string new_cname = "channel_0";
-  std::string cname = "channel";
-  int which_try = 0;
-  while (mlir::SymbolTable::lookupSymbolIn(scope, new_cname))
-    new_cname = cname + "_" + std::to_string(++which_try);
-  cname = new_cname;
-  return cname;
+  unsigned counter = 0;
+  return SymbolTable::generateSymbolName<16>(
+             "channel",
+             [&](StringRef name) {
+               return SymbolTable::lookupSymbolIn(scope, name) != nullptr;
+             },
+             counter)
+      .str()
+      .str();
 }
 
 // Return memory space as string

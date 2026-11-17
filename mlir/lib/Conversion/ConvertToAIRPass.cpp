@@ -1538,6 +1538,18 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
   }
 };
 
+// Returns `prefix_N` for the smallest N that is not in `taken`.
+static std::string getUniqueName(StringRef prefix,
+                                 ArrayRef<std::string> taken) {
+  unsigned counter = 0;
+  return SymbolTable::generateSymbolName<32>(
+             prefix,
+             [&](StringRef name) { return llvm::is_contained(taken, name); },
+             counter)
+      .str()
+      .str();
+}
+
 static void getHerdNames(ModuleOp module) {
   std::vector<std::string> herd_syms;
   for (auto f : module.getOps<func::FuncOp>()) {
@@ -1581,15 +1593,8 @@ static void getHerdNames(ModuleOp module) {
               else if (auto attr = herdJ->getAttrOfType<StringAttr>(
                            SymbolTable::getSymbolAttrName()))
                 name = attr.getValue().str();
-              else {
-                unsigned id = 0;
-                do {
-                  std::stringstream ss;
-                  ss << "herd_" << id++;
-                  name = ss.str();
-                } while (std::find(herd_syms.begin(), herd_syms.end(), name) !=
-                         herd_syms.end());
-              }
+              else
+                name = getUniqueName("herd", herd_syms);
               herdI->setAttr(SymbolTable::getSymbolAttrName(),
                              StringAttr::get(herdI->getContext(), name));
               herdJ->setAttr(SymbolTable::getSymbolAttrName(),
@@ -1602,14 +1607,7 @@ static void getHerdNames(ModuleOp module) {
     // generate missing symbol names
     f.walk([&](air::HerdOp op) {
       if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-        unsigned id = 0;
-        std::string name;
-        do {
-          std::stringstream ss;
-          ss << "herd_" << id++;
-          name = ss.str();
-        } while (std::find(herd_syms.begin(), herd_syms.end(), name) !=
-                 herd_syms.end());
+        std::string name = getUniqueName("herd", herd_syms);
         herd_syms.push_back(name);
         op->setAttr(SymbolTable::getSymbolAttrName(),
                     StringAttr::get(op->getContext(), name));
@@ -1631,21 +1629,14 @@ static void getSegmentNames(ModuleOp module) {
     // generate missing symbol names
     f.walk([&](air::SegmentOp op) {
       if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-        unsigned id = 0;
-        std::string name;
-        do {
-          std::stringstream ss;
-          if (!f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-            op->emitOpError("enclosing function of air.sgement op expected to "
-                            "have a symbol name.");
-            return;
-          }
-          ss << f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
-                    .str()
-             << "_" << id++;
-          name = ss.str();
-        } while (std::find(seg_syms.begin(), seg_syms.end(), name) !=
-                 seg_syms.end());
+        auto funcName =
+            f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+        if (!funcName) {
+          op->emitOpError("enclosing function of air.sgement op expected to "
+                          "have a symbol name.");
+          return;
+        }
+        std::string name = getUniqueName(funcName.getValue(), seg_syms);
         seg_syms.push_back(name);
         op->setAttr(SymbolTable::getSymbolAttrName(),
                     StringAttr::get(op->getContext(), name));
