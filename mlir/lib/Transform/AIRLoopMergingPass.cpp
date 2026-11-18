@@ -100,6 +100,14 @@ void AIRLoopMergingPass::runOnOperation() {
       band[0]->emitOpError("loop-merge-levels exceed the loop band depth");
       return signalPassFailure();
     }
+    // coalesceLoops hoists the inner bounds out of the merged loops, so they
+    // must not depend on the merged induction variables.
+    for (unsigned i = at; i < at + count; i++) {
+      if (!band[i].hasConstantBounds()) {
+        band[i]->emitOpError("non-static loop bounds");
+        return signalPassFailure();
+      }
+    }
     auto stringAttr = band[0]->getAttrOfType<StringAttr>(
         AIRLoopMergingPass::affineOptAttrName);
     if (failed(affine::coalesceLoops(
