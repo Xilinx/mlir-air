@@ -1460,10 +1460,10 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/gpt_oss_20b_q4nx/">gpt-oss-20b</a> <span class="air-nowrap">(<a href="https://github.com/ROCm/FastFlowLM/blob/e2d0144fb868018f9777ae661daa0d6163932974/src/common/AutoModel/modeling_gpt_oss.cpp">FLM</a>, <a href="https://huggingface.co/FastFlowLM/GPT-OSS-20B-NPU2">HF</a>)</span></td>
 <td style="text-align: left;">Strix Point</td>
 <td style="text-align: left;">Q4NX, MXFP4 experts</td>
-<td style="text-align: right;">15.87</td>
-<td style="text-align: right;">13.67</td>
+<td style="text-align: right;">16.58</td>
+<td style="text-align: right;">13.68</td>
 <td style="text-align: right;">8.02</td>
-<td style="text-align: right;">✗</td>
+<td style="text-align: right;">3.02</td>
 <td style="text-align: right;"></td>
 <td style="text-align: right;"></td>
 <td style="text-align: right;"></td>
@@ -1811,10 +1811,10 @@
 <td style="text-align: left;"><a class="air-nowrap" href="https://github.com/Xilinx/mlir-air/tree/main/programming_examples/llms/qwen3_coder_30b_a3b_q4k/">Qwen3-Coder-30B-A3B-Instruct</a> <span class="air-nowrap">(<a href="https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct">HF</a>)</span></td>
 <td style="text-align: left;">Strix Point</td>
 <td style="text-align: left;">Q4_K</td>
-<td style="text-align: right;">20.14</td>
-<td style="text-align: right;">14.40</td>
-<td style="text-align: right;">6.59</td>
-<td style="text-align: right;">✗</td>
+<td style="text-align: right;">20.17</td>
+<td style="text-align: right;">14.27</td>
+<td style="text-align: right;">6.54</td>
+<td style="text-align: right;">2.07</td>
 <td style="text-align: right;"></td>
 <td style="text-align: right;"></td>
 <td style="text-align: right;"></td>
@@ -1849,7 +1849,6 @@
 </tbody>
 </table>
 <p>— not swept at this context, or an expected failure.</p>
-<p>✗ unexpected failure.</p>
 <p><strong>Accuracy</strong> (the decode table's KLD, GSM8K and MMLU; the prefill table's KLD).
 The NPU is compared with the same model on the CPU (PyTorch): on wikitext-2 the
 way llama.cpp's <code>llama-perplexity --kl-divergence</code> does, and on benchmark
