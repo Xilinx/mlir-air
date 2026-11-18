@@ -25,13 +25,13 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 ["air-ping-pong-transform{keep-memref-dealloc=true}"](#air-ping-pong-transform)  
 "canonicalize", "cse"  
 ["air-specialize-channel-wrap-and-stride"](#air-specialize-channel-wrap-and-stride)  
-"canonicalize", "cse"
+"canonicalize", "cse"  
 ["air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}"](#air-place-herds)  
 'canonicalize', 'cse'  
-'func.func(air-renumber-dma)'
+'func.func(air-renumber-dma)'  
 'canonicalize', 'cse'  
 ['air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}'](#air-to-aie)  
-'canonicalize'
+'canonicalize'  
 ['air-to-std'](#air-to-std)  
 'canonicalize'  
 'symbol-dce'  
@@ -39,23 +39,22 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 ['func.func(air-unroll-outer-affine-loops{depth=2})'](#air-unroll-outer-affine-loops)  
 'affine-expand-index-ops'  
 ['airrt-to-npu'](#airrt-to-npu)  
-'canonicalize'
+'canonicalize'  
 
 ## Overview
 
 |Compilation Stage |Passes |Description |
 |:--- |:--- |:--- |
-|Convert to MLIR-AIR    |   <br> <ul><li>`air-linalg-to-func{link-with=mm.o}`</li><li>`air-par-to-herd{depth=1}`</li><li>`air-par-to-launch{has-air-segment=true}`</li><li>`air-copy-to-dma`</li></ul>    |   Binding parallelizable loops to `air` hierarchies; binding data movement operations to `air.dma_memcpy_nd` operations; binding linear algebra compute operations with link to AIE core kernel. |
-|Asynchronous dependency analysis    |   <br> <ul><li>`air-dependency`</li><li>`air-dependency-canonicalize`</li></ul>    |   Construction of asynchronous task graph, as an explicit representation of the asynchronous concurrency in the hardware schedule. |
-|Broadcast    |   <br> <ul><li>`air-dependency-schedule-opt`</li><li>`air-specialize-dma-broadcast`</li></ul>    |   Detection and lowering of broadcasting data movement to map to circuit-routed streaming interconnects. |
-|Generate half-dma operations    |   <br> <ul><li>`air-dma-to-channel`</li></ul>    |   Lowering synchronous or asynchronous `air.dma_memcpy_nd` operations to `air.channel.put` or `air.channel.get` operations representing half-dma data sends and receives. |
-|Outline L2 memrefs to memtile buffers    |   <br> <ul><li>`func.func(air-split-l2-memref)`</li></ul>    |   Tiling L2 memrefs based on parallelizable data movements, explicitly represented via `scf.parallel` or `air.channel.put/get` operations, in order to maximize memtile bandwidth utilization. |
-|Memtile DMA BD Optimization    |   <br> <ul><li>`air-isolate-async-dma-loop-nests`</li><li>`func.func(air-loop-fusion)`</li><li>`air-specialize-channel-wrap-and-stride`</li></ul>    |   Lowering L2 control flow program into finite-state machines made of Block Descriptors as states. |
-|Double buffering    |   <br> <ul><li>`air-label-scf-for-to-ping-pong`</li><li>`air-ping-pong-transform{keep-memref-dealloc=true}`</li></ul>    |   Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a `memref` within an `scf.for` loop; explicitly represent the multiple asynchronous threads traversing through the loop. |
-|Outline air.herd to aie.tiles    |   <br> <ul><li>`air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}`</li><li>`func.func(air-renumber-dma)`</li></ul>    |   Placing `air.herd` onto `air.segment`; inferring `air.segment` shape and size. |
-|Convert MLIR-AIR to MLIR-AIE    |   <br> <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. |
-|SHIM DMA BD Optimization    |   <br> <ul><li>`air-to-std`</li><li>`func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})`</li><li>`func.func(air-unroll-outer-affine-loops{depth=2})`</li><li>`airrt-to-npu`</li></ul>    |   Converting the control code via AIRRt and AIEX.NPU dialect to NPU SHIM DMA instruction sequence. |
-||||||
+|Convert to MLIR-AIR    |   <ul><li>`air-linalg-to-func{link-with=mm.o}`</li><li>`air-par-to-herd{depth=1}`</li><li>`air-par-to-launch{has-air-segment=true}`</li><li>`air-copy-to-dma`</li></ul>    |   Binding parallelizable loops to `air` hierarchies; binding data movement operations to `air.dma_memcpy_nd` operations; binding linear algebra compute operations with link to AIE core kernel. |
+|Asynchronous dependency analysis    |   <ul><li>`air-dependency`</li><li>`air-dependency-canonicalize`</li></ul>    |   Construction of asynchronous task graph, as an explicit representation of the asynchronous concurrency in the hardware schedule. |
+|Broadcast    |   <ul><li>`air-dependency-schedule-opt`</li><li>`air-specialize-dma-broadcast`</li></ul>    |   Detection and lowering of broadcasting data movement to map to circuit-routed streaming interconnects. |
+|Generate half-dma operations    |   <ul><li>`air-dma-to-channel`</li></ul>    |   Lowering synchronous or asynchronous `air.dma_memcpy_nd` operations to `air.channel.put` or `air.channel.get` operations representing half-dma data sends and receives. |
+|Outline L2 memrefs to memtile buffers    |   <ul><li>`func.func(air-split-l2-memref)`</li></ul>    |   Tiling L2 memrefs based on parallelizable data movements, explicitly represented via `scf.parallel` or `air.channel.put/get` operations, in order to maximize memtile bandwidth utilization. |
+|Memtile DMA BD Optimization    |   <ul><li>`air-isolate-async-dma-loop-nests`</li><li>`func.func(air-loop-fusion)`</li><li>`air-specialize-channel-wrap-and-stride`</li></ul>    |   Lowering L2 control flow program into finite-state machines made of Block Descriptors as states. |
+|Double buffering    |   <ul><li>`air-label-scf-for-to-ping-pong`</li><li>`air-ping-pong-transform{keep-memref-dealloc=true}`</li></ul>    |   Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a `memref` within an `scf.for` loop; explicitly represent the multiple asynchronous threads traversing through the loop. |
+|Outline air.herd to aie.tiles    |   <ul><li>`air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}`</li><li>`func.func(air-renumber-dma)`</li></ul>    |   Placing `air.herd` onto `air.segment`; inferring `air.segment` shape and size. |
+|Convert MLIR-AIR to MLIR-AIE    |   <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. |
+|SHIM DMA BD Optimization    |   <ul><li>`air-to-std`</li><li>`func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})`</li><li>`func.func(air-unroll-outer-affine-loops{depth=2})`</li><li>`airrt-to-npu`</li></ul>    |   Converting the control code via AIRRt and AIEX.NPU dialect to NPU SHIM DMA instruction sequence. |
 
 ## MLIR-AIR Passes
 
@@ -64,7 +63,7 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 Links `linalg.generic` operation and variants with object file (.o) compiled from each `aie.core`'s compute kernel.
 
 *Input IR:*
-```
+```mlir
 linalg.generic {library_call = "zero_f32", indexing_maps = [#map, #map1], iterator_types = ["parallel", "parallel"]} ins(%cst : f32) outs(%arg2 : memref<64x64xf32>) {
 ^bb0(%in: f32, %out: f32):
   linalg.yield %in : f32
@@ -79,7 +78,7 @@ linalg.generic {library_call = "matmul_f32", indexing_maps = [#map2, #map3, #map
 The input IR has `linalg.generic` attribute `library_call` that specifies the name of an external library call.
 
 *Output IR:*
-```
+```mlir
 func.func private @zero_f32(f32, memref<64x64xf32>) attributes {link_with = "test.o", llvm.emit_c_interface}
 func.func private @matmul_f32(memref<64x256xf32>, memref<256x64xf32>, memref<64x64xf32>) attributes {link_with = "test.o", llvm.emit_c_interface}
 call @zero_f32(%cst, %arg2) : (f32, memref<64x64xf32>) -> ()
@@ -92,7 +91,7 @@ The output IR generates the `func.func` declaration to the function call, and re
 Converts parallel computations, represented by `scf.parallel` or `scf.forall`, into a more optimized, hardware-specific form called `air.herd`. This transformation is targeted towards accelerating the matrix multiplication problem, by partitioning the proglem into strictly spatial concurrent threads represented by the iteration space of `air.herd`.
 
 *Input IR:*
-```
+```mlir
 module {
   func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
     ...
@@ -114,7 +113,7 @@ The input IR sets up a matrix multiplication operation, with input and output da
 It features nested `scf.parallel` and `scf.for` loops to iterate over matrix elements, creating subviews and temporary buffers (`memref.alloc`) for storing intermediate results in each AIE tile's local (L1) memory. Inside these loops, `memref.copy` and `linalg.copy` operations are used to move data between different parts of memory, indicating a complex memory management pattern aimed at optimizing data locality and access patterns for the matrix multiplication.
 
 *Output IR:*
-```
+```mlir
 module {
   func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
     ...
@@ -142,7 +141,7 @@ The L1 memory allocation, deallocation, and copying operations that prepare data
 Converts parallel computations, represented by `scf.parallel` or `scf.forall`, into `air.launch` construct. This transformation is targeted towards the dispatching of the already parallelized computations---represented by `air.herd`---in a more structured and *potentially* parallelized manner that is better suited for the dynamic launching of program iterations to reuse hardware configurations by the host.
 
 *Input IR:*
-```
+```mlir
 module {
   func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
     ...
@@ -164,7 +163,7 @@ The input IR uses nested loops (`scf.parallel` and `scf.for`) to iterate over th
 Inside the parallel and for-loop constructs, there are detailed memory management operations (`memref.alloc`, `memref.copy`) and computational kernels (encapsulated in the `air.herd` operation).
 
 *Output IR:*
-```
+```mlir
 module {
   func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
     ...
@@ -195,7 +194,7 @@ The transformation retains the explicit management of L2 memory (allocations and
 Converts memory operations to optimize data transfer through Direct Memory Access (DMA) operations, targeting AIE's DMA hardware.
 
 *Input IR:*
-```
+```mlir
 scf.for %arg12 = %c0_1 to %c1024 step %c256 {
   %subview_4 = memref.subview %arg10[%3, %arg12] [128, 256] [1,1] : memref<512x1024xi32> to memref<128x256xi32, strided<[1024,1], offset: ?>>
   %subview_5 = memref.subview %alloc[0, %arg12] [128, 256] [1, 1]: memref<128x1024xi32, 1 : i32> to memref<128x256xi32, strided[1024, 1], offset: ?>, 1 : i32>
@@ -206,7 +205,7 @@ The input IR contains some generic memory copy operations (`memref.copy` or `lin
 
 
 *Output IR:*
-```
+```mlir
 scf.for %arg12 = %c0_1 to %c1024 step %c256 {
   %subview_5 = memref.subview %arg10[%3, %arg12] [128, 256] [11] : memref<512x1024xi32> to memref<128x256xi32, stride[1024, 1], offset: ?>>
   %subview_6 = memref.subview %alloc[0, %arg12] [128, 256] [11] : memref<128x1024xi32, 1 : i32> to memref<128x256xi32strided<[1024, 1], offset: ?>, 1 : i32>
@@ -246,7 +245,7 @@ Please check out this [link](https://github.com/Xilinx/mlir-air/blob/main/docs/A
 Optimizes the scheduling of dependencies in the MLIR module, specifically focusing on improving the parallelism and efficiency of execution through the asynchronous execution model. One key optimization introduced is the detection of broadcasting data movement opportunities, and the subsequent inferring of broadcasting pattern.
 
 *Input IR:*
-```
+```mlir
 %6 = air.herd @herd_0 async [%async_token_13, %async_token_15, %async_token_17]  tile (%arg12, %arg13) in (%arg14=%c4_7, %arg15=%c4_7) args(%arg16=%results_14, %arg17=%results_16, %arg18=%results_18) : memref<128x1024xi32, 1 : i32>, memref<1024x128xi32, 1 : i32>, memref<128x128xi32, 1 : i32> attributes {id = 1 : i32} {
   ..
   %async_token_31, %results_32 = air.execute -> (memref<8x8x4x4xi32, 2   32>) {
@@ -276,7 +275,7 @@ Optimizes the scheduling of dependencies in the MLIR module, specifically focusi
 The input IR has the L1 memory management and computation encapsulated within `air.herd`, and any direct memory-to-memory transfers represented with `air.dma_memcpy_nd` operations.
 
 *Output IR:*
-```
+```mlir
 %6 = air.herd @herd_0 async [%async_token_13, %async_token_15, %async_token_17]  tile (%arg12, %arg13) in (%arg14=%c4_7, %arg15=%c4_7) args(%arg16=%results_14, %arg17=%results_16, %arg18=%results_18) : memref<128x1024xi32, 1 : i32>, memref<1024x128xi32, 1 : i32>, memref<128x128xi32, 1 : i32> attributes {id = 1 : i32} {
   ...
   %9 = scf.for %arg19 = %c0_23 to %c128_26 step %c4_24 iter_args(%arg20 = %8) -> (!air.async.token) {
@@ -311,7 +310,7 @@ The specific details of the broadcast_pattern attribute (e.g., `affine_set<(d0, 
 Specializes `air.dma_memcpy_nd` operations for broadcast patterns within a computation. This specialization involves transforming data movement operations into more optimized versions that are aware of the broadcast semantics.
 
 *Input IR*
-```
+```mlir
 ...
 %6 = air.herd @herd_0 async [%async_token_13, %async_token_15, %async_token_17]  tile (%arg12, %arg13) in (%arg14=%c4_7, %arg15=%c4_7) args(%arg16=%results_14, %arg17=%results_16, %arg18=%results_18) : memref<128x1024xi32, 1 : i32>, memref<1024x128xi32, 1 : i32>, memref<128x128xi32, 1 : i32> attributes {id = 1 : i32} {
   ...
@@ -324,7 +323,7 @@ Specializes `air.dma_memcpy_nd` operations for broadcast patterns within a compu
 The input IR has the L1 memory management and computation encapsulated within `air.herd`, and any direct memory-to-memory transfers represented with `air.dma_memcpy_nd` operations, some of which annotated with a `broadcast_pattern` attribute, indicating broadcasting data movement opportunity.
 
 *Output IR*
-```
+```mlir
 ...
 %6 = air.herd @herd_0 async [%async_token_13, %async_token_15, %async_token_17]  tile (%arg12, %arg13) in (%arg14=%c4_7, %arg15=%c4_7) args(%arg16=%results_14, %arg17=%results_16, %arg18=%results_18) : memref<128x1024xi32, 1 : i32>, memref<1024x128xi32, 1 : i32>, memref<128x128xi32, 1 : i32> attributes {id = 1 : i32} {
   ...
@@ -367,7 +366,7 @@ By specializing the `air.dma_memcpy_nd` operations for broadcast patterns, this 
 Transforms direct memory access (DMA) operations into channel-based communications, consisting of a series of channel put and get operations via shared channel constructs.
 
 *Input IR:*
-```
+```mlir
 %0 = air.launch async [%async_token_0, %async_token_3, %async_token_6] (%arg0, %arg1) in (%arg2=%c4, %arg3=%c4) args(%arg4=%results_5, %arg5=%results, %arg6=%results_2) : memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> attributes {id = 3 : i32} {
   %1 = air.segment @segment_0 async  args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg4, %arg10=%arg5, %arg11=%arg6) : index, index, memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> attributes {id = 2 : i32} {
     ...
@@ -394,7 +393,7 @@ Transforms direct memory access (DMA) operations into channel-based communicatio
 The input IR has the L1 memory management and computation encapsulated within `air.herd`, the L2 memory management optionally encapsulate within `air.segment`, and any direct memory-to-memory transfers represented with `air.dma_memcpy_nd` operations. The input IR may or may not have MLIR-AIR asynchronous interface.
 
 *Output IR:*
-```
+```mlir
 ...
 air.channel @channel_8 [1, 1]
 ...
@@ -447,7 +446,7 @@ By organizing data movement through channels, the transformed IR is better suite
 Transforms the input IR by optimizing and restructuring the dependency and execution flow of the operations without altering the semantics of the original program. 
 
 *Input IR:*
-```
+```mlir
 ...
 %8 = scf.for %arg9 = %c0_23 to %c1024_24 step %c256_25 iter_args(%arg10 = %7) -> (!air.async.token) {
   %22 = air.channel.get async [%arg10, %arg10]  @channel_8[] (%results_31[%c0_23, %arg9] [%c128_21, %c256_25] [%c1024_24, %c1_20]) : (memref<128x1024xi32, 1 : i32>)
@@ -476,7 +475,7 @@ Transforms the input IR by optimizing and restructuring the dependency and execu
 The pass consists of asynchronous data transfer, computational and synchronization tasks, explicitly managed through asynchronous tokens (`%async_token`), which represent dependencies between operations.
 
 *Output IR:*
-```
+```mlir
 ...
 %7 = scf.for %arg9 = %c0_19 to %c1024_20 step %c256_21 iter_args(%arg10 = %async_token_22) -> (!air.async.token) {
   %20 = air.channel.get async [%arg10]  @channel_8[] (%results_23[%c0_19, %arg9] [%c128_17, %c256_21] [%c1024_20, %c1_16]) {id = 4 : i32} : (memref<128x1024xi32, 1 : i32>)
@@ -512,7 +511,7 @@ The pass simplifies the loop-carred async tokens in control flow constructs (`sc
 Transforms the input IR by splitting certain L2 memory references (`memrefs`) to adhere to AIE memtile-specific buffer and DMA channel constraints or optimization opportunities.
 
 *Input IR:*
-```
+```mlir
 %0 = air.launch async [%async_token_0, %async_token_3, %async_token_6] (%arg0, %arg1) in (%arg2=%c4, %arg3=%c4) args(%arg4=%results_5, %arg5=%results, %arg6=%results_2) : memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> attributes {id = 1 : i32} {
   ...
   %1 = scf.for %arg7 = %c0_7 to %c1024 step %c256 iter_args(%arg8 = %async_token_8) -> (!air.async.token) {
@@ -572,7 +571,7 @@ Transforms the input IR by splitting certain L2 memory references (`memrefs`) to
 The input IR consists of some L2 memory references (`memrefs`) accessed by `air.channel.put` and `air.channel.get` data movement operations.
 
 *Output IR:*
-```
+```mlir
 %0 = air.launch async [%async_token_0, %async_token_3, %async_token_6] (%arg0, %arg1) in (%arg2=%c4, %arg3=%c4) args(%arg4=%results_5, %arg5=%results, %arg6=%results_2) : memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> attributes {id = 1 : i32} {
   ...
   %5 = scf.for %arg7 = %c0_7 to %c1024 step %c256 iter_args(%arg8 = %async_token_8) -> (!air.async.token) {
@@ -665,7 +664,7 @@ The pass introduces explicit memory allocation and deallocation operations for t
 Transforms the IR by splitting the `scf.for` loop nests in `air.segment` body, based on the loop-carried async dependency of the original loop. The goal is to attempt to split nested `scf.for` loops around `air.channel.put/get` operations into perfect `scf.for` loop nests where only a single `air.channel.put`, or `air.channel.get` operation exists. This exposes DMA channel optimization opportunities, where perfectly nested parent for loops can fold as extra DMA channel wrap-and-stride dimensions.
 
 *Input IR:*
-```
+```mlir
 %0 = air.launch async [%async_token_0, %async_token_3, %async_token_6] (%arg0, %arg1) in (%arg2=%c4, %arg3=%c4) args(%arg4=%results_5, %arg5=%results, %arg6=%results_2) : memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> attributes {id = 1 : i32} {
   ...
   %20 = air.segment @segment_0 async  attributes {id = 2 : i32} {
@@ -687,7 +686,7 @@ Transforms the IR by splitting the `scf.for` loop nests in `air.segment` body, b
 The input IR consists of some L2 memory references (`memrefs`) accessed by `air.channel.put` and `air.channel.get` data movement operations under some imperfect `scf.for` loop nest. L2 memory operations have been encapsulated within `air.segment`.
 
 *Output IR:*
-```
+```mlir
 %0 = air.launch async [%async_token_0, %async_token_3, %async_token_6] (%arg0, %arg1) in (%arg2=%c4, %arg3=%c4) args(%arg4=%results_5, %arg5=%results, %arg6=%results_2) : memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> attributes {id = 1 : i32} {
   ...
   %40 = air.segment @segment_0 async  attributes {id = 2 : i32} {
@@ -734,7 +733,7 @@ In addition, the pass also eliminates any perfectly nested for loops surrounding
 Optimizes the data movement around L2 memories by rearranging and potentially fusing perfect `scf.for` loop nests of `air.channel.put` and `air.channel.get`, which access the same L2 memref, into `scf.for` loop nest patterns mappable to a complex finite-state machine consisting of a multiple of AIE DMA Block Descriptors.
 
 *Input IR:*
-```
+```mlir
 %30 = air.segment @segment_0 async  attributes {id = 2 : i32} {
   ...
   %async_token_25, %results_26 = air.execute -> (memref<32x1024xi32, 1>) {
@@ -778,7 +777,7 @@ Optimizes the data movement around L2 memories by rearranging and potentially fu
 The input IR consists of some L2 memory references (`memrefs`) accessed by `air.channel.put` and `air.channel.get` data movement operations, nested under some perfect `scf.for` loop nest. L2 memory operations have been encapsulated within `air.segment`.
 
 *Output IR:*
-```
+```mlir
 %30 = air.segment @segment_0 async  attributes {id = 2 : i32} {
   ...
   %35 = scf.for %arg7 = %c0_22 to %c1024_23 step %c256_24 iter_args(%arg8 = %34) -> (!air.async.token) {
@@ -828,7 +827,7 @@ After loop fusion, the compilation pass analyzes the data production and consupt
 The analysis pass detects ping-pong buffering opportunities implied in a `scf.for` loop, based on inspection of the data production and consumption around a `memref` with a lifetime within its body. Upon successful detection of ping-pong buffering opportunities, the pass assigns an `unroll=2` attribute, as compiler flag for a downstream pass to transform the loop into explicitly representing the ping-pong schedule.
 
 *Input IR:*
-```
+```mlir
 %30 = air.segment @segment_0 async  attributes {id = 2 : i32} {
   ...
   %35 = scf.for %arg7 = %c0_22 to %c1024_23 step %c256_24 iter_args(%arg8 = %34) -> (!air.async.token) {
@@ -856,7 +855,7 @@ The analysis pass detects ping-pong buffering opportunities implied in a `scf.fo
 The input IR consists of some memory references (`memrefs`) accessed by `air.channel.put/get` data movement operations and `linalg.generic` compute operations, nested under some `scf.for` loop. The `memref` allocation and deallocation are located within the for loop iteration space, if its lifetime is strictly scoped within each iteration of the for loop. The `scf.for` loop needs to have MLIR-AIR async interface, in order for any subsequent ping-pong transformation (`air-ping-pong-transform`) pass to successfully represent the ping-pong schedule via async tokens.
 
 *Output IR:*
-```
+```mlir
 %30 = air.segment @segment_0 async  attributes {id = 2 : i32} {
   ...
   %35 = scf.for %arg7 = %c0_22 to %c1024_23 step %c256_24 iter_args(%arg8 = %34) -> (!air.async.token) {
@@ -888,7 +887,7 @@ The pass analyzes the computational graph of an `scf.for` loop body, and detect 
 Transforms the IR into explicitly representing a ping-pong buffered hardware schedule, via unrolling the `scf.for` loop by two, and explicitly representing a multiple of async threads passing through the `scf.for` loop body in parallel.
 
 *Input IR:*
-```
+```mlir
 %30 = air.segment @segment_0 async  attributes {id = 2 : i32} {
   ...
   %35 = scf.for %arg7 = %c0_22 to %c1024_23 step %c256_24 iter_args(%arg8 = %34) -> (!air.async.token) {
@@ -916,7 +915,7 @@ Transforms the IR into explicitly representing a ping-pong buffered hardware sch
 The input IR consists of some memory references (`memrefs`) accessed by `air.channel.put` and `air.channel.get` data movement operations, nested under some `scf.for` loop, possibly labelled with an attribute `unroll=2` which is generated by a prior pass (`air-label-scf-for-to-ping-pong`).
 
 *Output IR:*
-```
+```mlir
 %30 = air.segment @segment_0 async  attributes {id = 2 : i32} {
   ...
   %async_token_40, %results_41 = air.execute [%async_token_38] -> (memref<256x32xi32, 1>) {
@@ -971,7 +970,7 @@ The `scf.for` body is transformed into having a multiple of async tokens (`%asyn
 Canonicalizes `air.channel.put` and `air.channel.get` operations' `offsets`, `sizes` and `strides` list by fold any perfectly nested parent `scf.for` loop into the list, and removing any redundant wrap-and-stride dimensions.
 
 *Input IR*
-```
+```mlir
 scf.for %arg2 = %c0 to %c128 step %c32 {
   air.channel.put  @channel_1[%c0, %c0] (%arg0[%arg2] [%c32] [%c1]) : (memref<128xf32>)
 }
@@ -985,7 +984,7 @@ scf.for %arg2 = %c0 to %c128 step %c32 {
 The input IR contains data movement The input IR consists of some memory references (`memrefs`) accessed by `air.channel.put` and `air.channel.get` data movement operations, nested under some `scf.for` loop.
 
 *Output IR*
-```
+```mlir
 air.channel.put  @channel_1[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
 ...
 air.channel.get  @channel_2[%c0, %c0] (%arg1[%c0, %c0, %c0, %c0] [%c4, %c4, %c32, %c32] [%c4096, %c32, %c128, %c1]) : (memref<128x128xf32>)
@@ -999,7 +998,7 @@ The pass also identifies and eliminates any redundant entries in the `offsets`, 
 Places `air.herd` within its parent `air.segment` using Greedy method; infers `air.segment` shape based on the shape and size of all `air.herd` operations within its body.
 
 *Input IR:*
-```
+```mlir
 %31 = air.segment @segment_0 async  attributes {id = 2 : i32} {
   ...
   %52 = air.herd @herd_0 async  tile (%arg7, %arg8) in (%arg9=%c4_17, %arg10=%c4_17) attributes {id = 3 : i32}
@@ -1007,7 +1006,7 @@ Places `air.herd` within its parent `air.segment` using Greedy method; infers `a
 The input IR has the L1 memory management and computation encapsulated within `air.herd`, and L2 memory management and `air.herd` encapsulated within `air.segment`.
 
 *Output IR:*
-```
+```mlir
 %31 = air.segment @segment_0 async  attributes {id = 2 : i32, x_loc = 0 : i64, x_size = 4 : i64, y_loc = 2 : i64, y_size = 4 : i64} {
   ...
   %52 = air.herd @herd_0 async  tile (%arg7, %arg8) in (%arg9=%c4_17, %arg10=%c4_17) attributes {id = 3 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
@@ -1025,7 +1024,7 @@ Converts an input IR from MLIR-AIR dialect into MLIR-AIE dialect, for efficient 
 #### Outline air.herd to aie.cores and aie.mems
 
 *Input IR:*
-```
+```mlir
 air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="herd1"} {
   %buf0 = memref.alloc() : memref<1024xi32, 2>
   %buf1 = memref.alloc() : memref<512xi32, 2>
@@ -1039,7 +1038,7 @@ air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ex
 The input MLIR-AIR dialect code specifies the spatial compute across a rectangular plot of AIE cores using `air.herd`.
 
 *Output IR:*
-```
+```mlir
 %buf1 = aie.buffer(%tile_2_3) {sym_name = "buf1"} : memref<1024xi32, 2> 
 %buf0 = aie.buffer(%tile_2_3) {sym_name = "buf0"} : memref<512xi32, 2> 
 ...
@@ -1077,7 +1076,7 @@ The output IR outlines the computation in each AIE core using `aie.core`, and da
 #### Outline air.segment to aie.memtile
 
 *Input IR:*
-```
+```mlir
 air.segment @segment0 {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
@@ -1099,7 +1098,7 @@ air.segment @segment0 {
 The input MLIR-AIR dialect code encapsulates any L2 memory allocation, deallocation, and data movement within `air.segment`.
 
 *Output IR:*
-```
+```mlir
 %buf2 = aie.buffer(%tile_2_1) {sym_name = "buf2"} : memref<1024xi32, 1> 
 %buf1 = aie.buffer(%tile_2_1) {sym_name = "buf1"} : memref<1024xi32, 1> 
 ...
@@ -1140,7 +1139,7 @@ The output IR outlines the data movement to/from each memtile using `aie.memtile
 #### Outline AIE circuit-switched streaming interconnects using aie.flow.
 
 *Input IR:*
-```
+```mlir
 func.func @func4(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
   ...
   air.segment @segment0  {
@@ -1163,7 +1162,7 @@ func.func @func4(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
 The input IR represents data movement across memory spaces using `air.channel.put/get`, paired using channel symbols.
 
 *Output IR:*
-```
+```mlir
 aie.flow(%tile_2_1, DMA : 0, %tile_2_3, DMA : 0)
 ```
 The output IR outlines circuit-switched streaming dataflow using `aie.flow`, connecting the source and destination DMA channels.
@@ -1171,7 +1170,7 @@ The output IR outlines circuit-switched streaming dataflow using `aie.flow`, con
 #### Generate aie.shim_dma_allocation as handle to runtime operations.
 
 *Input IR:*
-```
+```mlir
 func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   ...
   air.channel.put @channel_2[] (%arg0[] [] []) {id = 1 : i32} : (memref<1024xi32>)
@@ -1191,7 +1190,7 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 The input IR represent data movements to/from external memory using `air.channel.put/get` on L3 memref.
 
 *Output IR:*
-```
+```mlir
 aie.device(xcve2802) {
   ...
   aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 2)
@@ -1217,7 +1216,7 @@ The output IR generates `aie.shim_dma_allocation` as handle to link with the run
 Converts the MLIR-AIR dialect code into AIRRt dialect which represents the runtime code dispatching the program by pushing and pulling data from the AIE SHIM tile DMAs.
 
 *Input IR:*
-```
+```mlir
 module {
   aie.device(npu1_4col) {
     ...
@@ -1251,7 +1250,7 @@ module {
 The input IR contains some `air.channel.put` and `air.channel.get` memory operations on external (L3) memory references (`memrefs`), optionally encapsulated within `air.launch`. Those memory operations are annotated by `metadata` attribute which maintains a symbolic link to an AIE SHIM DMA channel.
 
 *Output IR:*
-```
+```mlir
 module {
   aie.device(npu1_4col) {
     ...
@@ -1299,7 +1298,7 @@ The transformation includes explicit synchronization points (`airrt.wait_all`), 
 Transforms the IR by optimizing `affine` loop nests. `affine` loop nests are loops that iterate over multi-dimensional arrays in a manner that can be described using `affine` transformations.
 
 *Input IR:*
-```
+```mlir
 func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
   ...
   affine.for %arg0 = 0 to 4 {
@@ -1319,7 +1318,7 @@ func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
 The input AIRRt dialect code represents the runtime program for the AIE accelerator, where the control flow is represented as `affine` and `scf` loops.
 
 *Output IR:*
-```
+```mlir
 func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
   ...
   affine.for %arg0 = 0 to 4 step 4 {
@@ -1346,7 +1345,7 @@ The most notable transformation applied by the pass is loop tiling on `affine` l
 Unrolls the outermost dimensions in `affine` loop nests of the AIRRt runtime code.
 
 *Input IR:*
-```
+```mlir
 func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
   ...
   affine.for %arg0 = 0 to 4 step 4 {
@@ -1370,7 +1369,7 @@ func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
 The input IR contains nested `affine.for` loops, previously tiled by a prior pass (`affine-loop-opt`) into having a desirable number of dimensions. Inside the loops, there are operations like `airrt.segment_load`, `arith.constant`, `arith.index_cast`, `airrt.dma_memcpy_nd`, and `airrt.wait_all`, representing program memory operations, arithmetic operations, and synchronization points. These operations are related to loading the binaries for AIE tiles, performing computation, and ensuring data is moved efficiently between the AIE device and external memory.
 
 *Output IR:*
-```
+```mlir
 func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
   ...
   affine.for %arg0 = affine_map<(d0) -> (d0)>(%c0) to affine_map<(d0) -> (d0 + 4)>(%c0) {
@@ -1393,7 +1392,7 @@ This pass works together with a prior pass (`affine-loop-opt`) to generate a des
 Converts the runtime program, described in AIRRt dialect, into instruction sequence specific to the SHIM DMA controllers on Ryzen AI platform.
 
 *Input IR:*
-```
+```mlir
 module {
   aie.device(npu1_4col) {
     ...
@@ -1428,7 +1427,7 @@ module {
 The input IR contains some L3 memory operations (`airrt.dma_memcpy_nd`) optionally nested within some nested `affine.for` loops.
 
 *Output IR:*
-```
+```mlir
 module {
   aie.device(npu1_4col) {
     ...

@@ -23,7 +23,7 @@ can be found in:
 
 The AIR model defines a three-level execution hierarchy:
 
-```
+```text
 air.launch          — outermost level; groups co-resident work
   air.segment       — intermediate level; groups cores with shared on-device memory
     air.herd        — innermost level; an array of processing elements (PEs)
@@ -31,8 +31,8 @@ air.launch          — outermost level; groups co-resident work
 
 Each level defines an **iteration space** (a multi-dimensional index range) and a **body
 region** that executes across that iteration space. The bodies of `launch` and `segment`
-execute at the _host/controller_ level, while the body of `herd` executes in _data-
-parallel_ fashion across each point of its iteration space.
+execute at the _host/controller_ level, while the body of `herd` executes in
+_data-parallel_ fashion across each point of its iteration space.
 
 Execution at each level is **spatially parallel**: points in the iteration space may
 execute concurrently on distinct hardware resources.
@@ -101,14 +101,14 @@ existing uses of `air.async.token` are dependency tokens.
 A token is created in one of two ways:
 
 **1. Explicit allocation:**
-```
+```text
 %t = air.token.alloc : !air.token
 ```
 Used to introduce a token that groups a set of ops under a shared affinity or
 concurrency constraint without one op "owning" the token.
 
 **2. Op result:**
-```
+```text
 %t = air.segment @foo { … }
 %t = air.herd tile (%x,%y) in (%sx=%Nx,%sy=%Ny) [dependency = [%dep]] { … }
 ```
@@ -121,7 +121,7 @@ form of the op.
 Tokens are consumed by including them in named attribute lists on hierarchy and
 data-movement ops. An op may carry any combination of the three lists:
 
-```
+```text
 air.segment @bar [dependency = [%t0, %t1]]
                  [affinity   = [%ta]]
                  [concurrency = [%tc]]
@@ -169,7 +169,7 @@ launch would contradict its execution model.
 
 #### Syntax
 
-```
+```text
 // Asynchronous form — produces !air.token, non-blocking
 [%token =] air.launch (%x₀, …, %xₙ) in (%sx₀=%N₀, …, %sxₙ=%Nₙ)
            args(%a₀=%v₀, …) : <types>
@@ -218,6 +218,7 @@ independent and may be run in any order or concurrently at the runtime's
 discretion.
 
 Use the launch iteration space when:
+
 - Each instance is fully self-contained and produces no result that another
   instance depends on.
 - The workload naturally decomposes into a variable number of tiles determined
@@ -302,7 +303,7 @@ reverse.
 
 #### Syntax
 
-```
+```text
 // Asynchronous form — produces !air.token, non-blocking
 [%token =] air.segment [@name]
            (%x₀, …, %xₙ) in (%sx₀=%N₀, …)
@@ -518,6 +519,7 @@ contiguous region: the compiler allocates a contiguous block per instance and
 may place those blocks anywhere in the device array that fits.
 
 These statically computed totals are used to:
+
 1. Verify that the segment hierarchy (across all iterations at all levels) fits
    within the target hardware partition before lowering begins.
 2. Assign physical resources (tile columns/rows, memory banks, DMA engines) to
@@ -546,6 +548,7 @@ When `backend-granularity` is absent the backend applies its default mapping
 (e.g., one workgroup / thread block on GPU).
 
 **Nesting constraints**:
+
 - `air.segment` must be nested inside `air.launch` or inside another
   `air.segment` (directly or indirectly — the outermost segment must be inside
   a launch).
@@ -560,7 +563,7 @@ When `backend-granularity` is absent the backend applies its default mapping
 
 #### Syntax
 
-```
+```text
 // Synchronous form — acquires resources immediately, blocks until all PEs complete
 air.herd [@name] tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
          args(%a₀=%v₀, …) : <types>
@@ -649,7 +652,7 @@ object to link into the herd at compile time.
 
 ### 2.4 `air.dma_memcpy_nd`
 
-```
+```text
 air.dma_memcpy_nd (dst[dst_offsets][dst_sizes][dst_strides],
                    src[src_offsets][src_sizes][src_strides]) : (type_dst, type_src)
 ```
@@ -677,7 +680,7 @@ GPU backend (planned: `air-cross-rank-dma-to-mgpu`) will expand these into
 `mgpuGetHeapBases()`-based peer-VA arithmetic + `mgpuMemcpy`; the NPU
 backend does not support these attributes.
 
-```
+```text
 // Read 1024 floats from rank 0's symmetric buffer into local L1.
 air.dma_memcpy_nd (%local[][][], %sym[][][]) {src_rank = 0 : i64}
     : (memref<1024xf32, 2>, memref<1024xf32, 0>)
@@ -687,7 +690,7 @@ air.dma_memcpy_nd (%local[][][], %sym[][][]) {src_rank = 0 : i64}
 
 ### 2.5 `air.channel`, `air.channel.put`, `air.channel.get`
 
-```
+```text
 // Channel declaration — at module scope
 air.channel @name [dim₀, dim₁, …] {channel_type = "npu_dma_stream", depth = <N>}
 
@@ -908,7 +911,7 @@ Cross-rank addressing (via `air.dma_memcpy_nd` `src_rank`/`dst_rank` attributes
 or `air.channel` with `channel_type = "gpu_symmetric_heap"`) refers to peer
 ranks' symmetric memrefs at the same logical offset.
 
-```
+```text
 %buf = memref.alloc() {air.symmetric} : memref<1024xf32>
 ```
 
@@ -1106,6 +1109,7 @@ air.launch (%bx, %by) in (%nbx=%c32, %nby=%c32)
 ```
 
 The mapping:
+
 - `air.launch` → `gpu.launch` with `gridDim = (32, 32, 1)`
 - `air.segment` → workgroup body (executed once per thread block)
 - `air.herd tile (%tx, .) in (%c4, %c1)` → `blockDim = (4 * wave_size, 1, 1)`; `%tx` is the warp-id within the block; lane index inside the PE comes from `gpu.lane_id`
@@ -1123,8 +1127,8 @@ The full GPU lowering pipeline is:
    a `gpu.module`, injects `gpu.BlockIdOp`, `gpu.ThreadIdOp`, etc., and converts
    the launch site to `gpu.launch_func`.
 3. **LLVM lowering** — Lowers affine, SCF, and CF dialects.
-4. **ROCDL binary generation** — Attaches a ROCDL target descriptor (`rocdl-attach-
-   target`), converts `gpu.module` to ROCDL IR (`convert-gpu-to-rocdl`), and
+4. **ROCDL binary generation** — Attaches a ROCDL target descriptor
+   (`rocdl-attach-target`), converts `gpu.module` to ROCDL IR (`convert-gpu-to-rocdl`), and
    serialises the GPU binary with `gpu-module-to-binary`.
 
 See [buildingGPU.md](buildingGPU.md) for build instructions and the complete
