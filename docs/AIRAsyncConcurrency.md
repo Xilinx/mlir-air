@@ -136,10 +136,9 @@ The rendered CDFG below is generated from the matrix multiplication example in t
 
 ![CDFG of the matrix multiplication example](assets/images/air_cdfg_example.svg)
 
-### Step three: CDFG optimization using `-air-dependency-schedule-opt`
+### Step three: broadcast detection using `-air-broadcast-detection`
 
-Having extracted a CDFG from the MLIR-AIR code, the `-air-dependency-schedule-opt` pass performs scheduling optimization by detecting and transforming inefficient code patterns in CDFG.
-Data broadcasting opportunities across spatially mapped AIE cores are automatically detected and labelled.
+The `-air-broadcast-detection` pass traces the source indices of each DMA to the induction variables of the enclosing spatial loops. A DMA whose source does not depend on some of those variables is a broadcast, and is annotated with a `broadcast_pattern` affine set describing its recipients.
 Below is the output code snippet lowered from the tiled matrix multiplication example above.
 Here, data broadcasting opportunities are labelled with keyword `broadcast_pattern`, followed by an affine set representing the address pattern of broadcast copy recepients.
 

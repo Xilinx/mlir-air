@@ -13,7 +13,8 @@ A detailed description of the dialect and its use for mapping AI workloads onto 
 can be found in:
 
 > E. Wang et al. "[From Loop Nests to Silicon: Mapping AI Workloads onto AMD NPUs with
-> MLIR-AIR](https://arxiv.org/abs/2510.14871)". arXiv:2510.14871, October 2025.
+> MLIR-AIR](https://doi.org/10.1145/3785670)". ACM Transactions on Reconfigurable
+> Technology and Systems (TRETS), 19(2), Article 28, June 2026.
 
 ---
 
@@ -901,25 +902,29 @@ in the async dependency graph.
 
 ---
 
-### 2.7 `air.symmetric` memref attribute (multi-GPU)
+### 2.7 Symmetric heap memory (multi-GPU)
 
-A `memref.alloc` op may carry the unit attribute `air.symmetric` to indicate
-that the allocation should be backed by the **symmetric heap** runtime. Every
+A `memref.alloc` in the `#air.symmetric_heap` memory space is backed by the
+**symmetric heap** runtime. Every
 rank in the enclosing `air.rank` scope performs the same allocation in lockstep,
 so each rank has a memref of the same size at the same offset within the heap.
 Cross-rank addressing (via `air.dma_memcpy_nd` `src_rank`/`dst_rank` attributes
 or `air.channel` with `channel_type = "gpu_symmetric_heap"`) refers to peer
 ranks' symmetric memrefs at the same logical offset.
 
-```text
-%buf = memref.alloc() {air.symmetric} : memref<1024xf32>
+```mlir
+%buf = memref.alloc() : memref<1024xf32, #air.symmetric_heap>
 ```
 
-The GPU lowering (planned: `air-symmetric-alloc-to-mgpu`) will route such
-allocations through `mgpuSymmetricAlloc` (`runtime_lib/airgpu/gpu_runtime.cpp`)
-instead of plain `mgpuMemAlloc`. Peer ranks' base pointers are obtained at
-runtime via `mgpuGetHeapBases()`. The NPU backend does not interpret this
-attribute.
+`air-symmetric-alloc-to-mgpu` lowers each such allocation to
+`mgpuSymmetricAlloc` (`runtime_lib/airgpu/gpu_runtime.cpp`) instead of plain
+`mgpuMemAlloc`, and the matching `memref.dealloc` to `mgpuSymmetricFree`. Peer
+ranks' base pointers are obtained at runtime via `mgpuGetHeapBases()`. The NPU
+backend does not interpret this memory space.
+
+The verifier of a cross-rank `air.dma_memcpy_nd` checks a different marker: a
+`memref.alloc` referenced through `src_rank` or `dst_rank` must carry the unit
+attribute `air.symmetric`.
 
 ---
 
@@ -933,7 +938,7 @@ directly to physical hardware structures:
 | `air.launch` | Device-level kernel dispatch; L3 = DDR via NOC |
 | `air.segment` | A contiguous rectangle of AIE tiles + associated memory tiles or URAMs (L2) |
 | `air.herd tile (x, y)` | A single AIE compute tile at physical column/row offset `(x_loc+x, y_loc+y)` |
-| L1 memory (space 2) | Per-tile local data memory (32 KB on AIE2) |
+| L1 memory (space 2) | Per-tile local data memory (64 KB on AIE2/AIE2P) |
 | L2 memory (space 1) | Shared memory tiles or URAMs accessible via the tile interconnect |
 | L3 memory (space 0) | DDR accessible via AXI4-MM NOC |
 
@@ -943,9 +948,9 @@ directly to physical hardware structures:
 |---------------|--------------|
 | `air.dma_memcpy_nd` (L3→L2) | Shim DMA + AXI-S routing + memory tile DMA |
 | `air.dma_memcpy_nd` (L2→L1) | Tile DMA + local AXI-S stream |
-| `air.channel` (`dma_stream`) | DMA + circuit-switched streaming interconnect |
-| `air.channel` (`dma_packet`) | DMA + packet-switched overlay network |
-| `air.channel` (`cascade`) | Core cascade interface (direct register-to-register) |
+| `air.channel` (`npu_dma_stream`) | DMA + circuit-switched streaming interconnect |
+| `air.channel` (`npu_dma_packet`) | DMA + packet-switched overlay network |
+| `air.channel` (`npu_cascade`) | Core cascade interface (direct register-to-register) |
 
 The `air-to-aie` pass translates each `air.herd` into AIE tile operations (`aie.core`,
 `aie.buffer`, `aie.lock`), routes channels through the switch boxes, and generates the
@@ -1143,7 +1148,7 @@ See [buildingGPU.md](buildingGPU.md) for build instructions and the complete
 | `air.launch` iteration point | Device-level work unit | One GPU thread block |
 | `air.segment` | Rectangle of AIE tiles + memory tiles | Thread block workgroup body |
 | `air.herd` tile | Single AIE compute tile | Single GPU wavefront |
-| L1 (space 2) | 32 KB tile-local data memory | Thread-private VGPRs / scratch |
+| L1 (space 2) | 64 KB tile-local data memory (AIE2/AIE2P) | Thread-private VGPRs / scratch |
 | L2 (space 1) | Memory tiles / URAMs | LDS (shared memory, ~64 KB / CU) |
 | L3 (space 0) | DDR via NOC | HBM via global memory |
 | `dma_memcpy_nd` (intra-rank) | AIE Shim/Tile DMA engines | SCF load/store loops |
@@ -1152,7 +1157,7 @@ See [buildingGPU.md](buildingGPU.md) for build instructions and the complete
 | `channel` (`npu_dma_packet`) | Packet-switched AXI-S overlay | n/a |
 | `channel` (`npu_cascade`) | Core cascade interface | n/a |
 | `channel` (`npu_mmio`) | Host MMIO blockwrite | n/a |
-| `channel` (`gpu_symmetric_heap`) | n/a | Symmetric heap peer addressing (planned) |
-| `air.symmetric` memref alloc | n/a | `mgpuSymmetricAlloc` (planned) |
+| `channel` (`gpu_symmetric_heap`) | n/a | Symmetric heap peer addressing (`air-gpu-channel-to-cacheline`) |
+| `#air.symmetric_heap` memref alloc | n/a | `mgpuSymmetricAlloc` (`air-symmetric-alloc-to-mgpu`) |
 | Synchronization | AIE locks | `gpu.barrier` (intra-rank), `mgpuBarrier` (cross-rank) |
 | `!air.token` (dependency) | AIE runtime completion signals | GPU stream/event dependencies |

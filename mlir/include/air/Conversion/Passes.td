@@ -172,7 +172,7 @@ def AIRLinalgToFunc : Pass<"air-linalg-to-func", "ModuleOp"> {
 }
 
 def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
-  let summary = "Lower air.launch_herd to AIE dialect";
+  let summary = "Lower air.segment and air.herd to the AIE dialect";
   let constructor = "xilinx::air::createAIRToAIEPass()";
   let options = [
     Option<"clRowOffset", "row-offset", "unsigned", /*default=*/"1",

@@ -117,12 +117,22 @@ jobs:
             exit 1
           fi
           # mlir-tblgen emits a Hugo "[TOC]" marker in dialect docs and no
-          # top-level heading in pass and op docs.
+          # top-level heading in pass and op docs. It also emits an H4 for every
+          # op's operands, results and attributes and every pass's options;
+          # render those as bold labels so they stay out of the page outline.
           sed -i '/^\[TOC\]$/d' docs/AIRDialect.md docs/AIRRtDialect.md
+          sed -i -E 's/^#### (.+)$/**\1**/' docs/AIRDialect.md docs/AIRRtDialect.md \
+            docs/AIRConversionPasses.md docs/AIRTransformPasses.md docs/AIRTransformOps.md
           for page in "AIRConversionPasses:AIR Conversion Passes" \
                       "AIRTransformPasses:AIR Transformation Passes" \
                       "AIRTransformOps:AIR Transform Ops"; do
             sed -i "1a # ${page#*:}" "docs/${page%%:*}.md"
+          done
+          # Dialect docs also list each type constraint, the wrapper ops use to
+          # name a type, as an empty section repeating the Types section.
+          for f in docs/AIRDialect.md docs/AIRRtDialect.md; do
+            awk '/^## Type constraints$/ {skip=1; next} /^## / {skip=0} !skip' \
+              "$f" > "$f.tmp" && mv "$f.tmp" "$f"
           done
 
       # Pull perf.json from the most recent nightly LLM benchmark that produced

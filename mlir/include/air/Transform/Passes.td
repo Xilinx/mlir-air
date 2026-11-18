@@ -629,7 +629,8 @@ def AIRDependency : Pass<"air-dependency", "ModuleOp"> {
   let summary = "AIR dependency analysis";
   let constructor = "xilinx::air::createAIRDependencyPass()";
   let description = [{
-    This pass analyzes dependencies among air.async_region ops, and constructs
+    This pass analyzes dependencies among `air.execute` regions and asynchronous
+    AIR ops, and constructs
     the dependency relationship between asynchronous events for scheduling. 
     The pass also generates a dot file which visualizes the dependency graph.
 
