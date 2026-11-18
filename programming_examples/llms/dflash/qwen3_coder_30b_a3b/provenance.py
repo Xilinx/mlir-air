@@ -39,7 +39,10 @@ SHARED = (
     "qwen3_coder_30b_a3b_q4k/moe_block.py",
     "qwen3_coder_30b_a3b_q4k/lm_head.py",
 )
-BASELINE = ("qwen3_coder_30b_a3b_q4k/qwen3_coder_30b_a3b_q4k_decode.py",)
+BASELINE = (
+    "qwen3_coder_30b_a3b_q4k/qwen3_coder_30b_a3b_q4k_decode.py",
+    "shared/moe/wave_decode.py",
+)
 
 
 def _sha(path):
