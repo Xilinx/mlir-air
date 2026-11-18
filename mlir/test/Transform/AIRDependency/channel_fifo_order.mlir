@@ -459,3 +459,230 @@ module {
     return
   }
 }
+
+// -----
+
+// The case yields a wait on a branch result that carries the get's token in one
+// arm only. That result does not say the get finished, so the next switch's get
+// is not ordered behind it.
+
+// CHECK-LABEL: func.func @chan_fifo_one_arm_wait
+// CHECK: scf.index_switch
+// CHECK: air.channel.get async [%{{[a-z_0-9]+}}] @channel_10
+// CHECK: scf.index_switch
+// CHECK: air.channel.get async [%{{[a-z_0-9]+}}] @channel_10
+
+module {
+  air.channel @channel_10 [1]
+  func.func @chan_fifo_one_arm_wait(%arg: index, %p: i1) {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) args(%larg=%arg, %lp=%p) : index, i1 {
+      air.segment @seg args(%sel=%larg, %go=%lp) : index, i1 {
+        %c0 = arith.constant 0 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %t1, %r1 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %w = air.wait_all async
+        %s0 = scf.index_switch %sel -> !air.async.token
+        case 0 {
+          %g0 = air.channel.get async [%t0] @channel_10[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+          %c = scf.if %go -> (!air.async.token) {
+            scf.yield %g0 : !air.async.token
+          } else {
+            scf.yield %w : !air.async.token
+          }
+          %j = air.wait_all async [%c]
+          scf.yield %j : !air.async.token
+        }
+        default {
+          scf.yield %w : !air.async.token
+        }
+        %s1 = scf.index_switch %sel -> !air.async.token
+        case 0 {
+          %g1 = air.channel.get async [%t1] @channel_10[%c0] (%r1[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %g1 : !air.async.token
+        }
+        default {
+          scf.yield %w : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// The same, with every arm waiting on the get: the next get follows the switch.
+
+// CHECK-LABEL: func.func @chan_fifo_all_arms_wait
+// CHECK: %[[S0:.*]] = scf.index_switch
+// CHECK: air.channel.get async [%{{[a-z_0-9]+}}] @channel_11
+// CHECK: scf.index_switch
+// CHECK: air.channel.get async [{{.*}}%[[S0]]{{.*}}] @channel_11
+
+module {
+  air.channel @channel_11 [1]
+  func.func @chan_fifo_all_arms_wait(%arg: index, %p: i1) {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) args(%larg=%arg, %lp=%p) : index, i1 {
+      air.segment @seg args(%sel=%larg, %go=%lp) : index, i1 {
+        %c0 = arith.constant 0 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %t1, %r1 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %w = air.wait_all async
+        %s0 = scf.index_switch %sel -> !air.async.token
+        case 0 {
+          %g0 = air.channel.get async [%t0] @channel_11[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+          %c = scf.if %go -> (!air.async.token) {
+            scf.yield %g0 : !air.async.token
+          } else {
+            %e = air.wait_all async [%g0]
+            scf.yield %e : !air.async.token
+          }
+          %j = air.wait_all async [%c]
+          scf.yield %j : !air.async.token
+        }
+        default {
+          scf.yield %w : !air.async.token
+        }
+        %s1 = scf.index_switch %sel -> !air.async.token
+        case 0 {
+          %g1 = air.channel.get async [%t1] @channel_11[%c0] (%r1[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %g1 : !air.async.token
+        }
+        default {
+          scf.yield %w : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Two switches on selectors computed the same way, 30 additions deep: the same
+// condition, found without comparing the shared subexpressions repeatedly.
+
+// CHECK-LABEL: func.func @chan_fifo_deep_selector
+// CHECK: %[[S0:.*]] = scf.index_switch
+// CHECK: air.channel.get async [%{{[a-z_0-9]+}}] @channel_12
+// CHECK: scf.index_switch
+// CHECK: air.channel.get async [{{.*}}%[[S0]]{{.*}}] @channel_12
+
+module {
+  air.channel @channel_12 [1]
+  func.func @chan_fifo_deep_selector(%arg: index, %p: i1) {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) args(%larg=%arg, %lp=%p) : index, i1 {
+      air.segment @seg args(%sel=%larg, %go=%lp) : index, i1 {
+        %c0 = arith.constant 0 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %t1, %r1 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %w = air.wait_all async
+        %x0 = arith.addi %sel, %sel : index
+        %x1 = arith.addi %x0, %x0 : index
+        %x2 = arith.addi %x1, %x1 : index
+        %x3 = arith.addi %x2, %x2 : index
+        %x4 = arith.addi %x3, %x3 : index
+        %x5 = arith.addi %x4, %x4 : index
+        %x6 = arith.addi %x5, %x5 : index
+        %x7 = arith.addi %x6, %x6 : index
+        %x8 = arith.addi %x7, %x7 : index
+        %x9 = arith.addi %x8, %x8 : index
+        %x10 = arith.addi %x9, %x9 : index
+        %x11 = arith.addi %x10, %x10 : index
+        %x12 = arith.addi %x11, %x11 : index
+        %x13 = arith.addi %x12, %x12 : index
+        %x14 = arith.addi %x13, %x13 : index
+        %x15 = arith.addi %x14, %x14 : index
+        %x16 = arith.addi %x15, %x15 : index
+        %x17 = arith.addi %x16, %x16 : index
+        %x18 = arith.addi %x17, %x17 : index
+        %x19 = arith.addi %x18, %x18 : index
+        %x20 = arith.addi %x19, %x19 : index
+        %x21 = arith.addi %x20, %x20 : index
+        %x22 = arith.addi %x21, %x21 : index
+        %x23 = arith.addi %x22, %x22 : index
+        %x24 = arith.addi %x23, %x23 : index
+        %x25 = arith.addi %x24, %x24 : index
+        %x26 = arith.addi %x25, %x25 : index
+        %x27 = arith.addi %x26, %x26 : index
+        %x28 = arith.addi %x27, %x27 : index
+        %x29 = arith.addi %x28, %x28 : index
+        %y0 = arith.addi %sel, %sel : index
+        %y1 = arith.addi %y0, %y0 : index
+        %y2 = arith.addi %y1, %y1 : index
+        %y3 = arith.addi %y2, %y2 : index
+        %y4 = arith.addi %y3, %y3 : index
+        %y5 = arith.addi %y4, %y4 : index
+        %y6 = arith.addi %y5, %y5 : index
+        %y7 = arith.addi %y6, %y6 : index
+        %y8 = arith.addi %y7, %y7 : index
+        %y9 = arith.addi %y8, %y8 : index
+        %y10 = arith.addi %y9, %y9 : index
+        %y11 = arith.addi %y10, %y10 : index
+        %y12 = arith.addi %y11, %y11 : index
+        %y13 = arith.addi %y12, %y12 : index
+        %y14 = arith.addi %y13, %y13 : index
+        %y15 = arith.addi %y14, %y14 : index
+        %y16 = arith.addi %y15, %y15 : index
+        %y17 = arith.addi %y16, %y16 : index
+        %y18 = arith.addi %y17, %y17 : index
+        %y19 = arith.addi %y18, %y18 : index
+        %y20 = arith.addi %y19, %y19 : index
+        %y21 = arith.addi %y20, %y20 : index
+        %y22 = arith.addi %y21, %y21 : index
+        %y23 = arith.addi %y22, %y22 : index
+        %y24 = arith.addi %y23, %y23 : index
+        %y25 = arith.addi %y24, %y24 : index
+        %y26 = arith.addi %y25, %y25 : index
+        %y27 = arith.addi %y26, %y26 : index
+        %y28 = arith.addi %y27, %y27 : index
+        %y29 = arith.addi %y28, %y28 : index
+        %s0 = scf.index_switch %x29 -> !air.async.token
+        case 0 {
+          %g0 = air.channel.get async [%t0] @channel_12[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+          %c = scf.if %go -> (!air.async.token) {
+            scf.yield %g0 : !air.async.token
+          } else {
+            %e = air.wait_all async [%g0]
+            scf.yield %e : !air.async.token
+          }
+          %j = air.wait_all async [%c]
+          scf.yield %j : !air.async.token
+        }
+        default {
+          scf.yield %w : !air.async.token
+        }
+        %s1 = scf.index_switch %y29 -> !air.async.token
+        case 0 {
+          %g1 = air.channel.get async [%t1] @channel_12[%c0] (%r1[] [] []) : (memref<8xi32, 1 : i32>)
+          scf.yield %g1 : !air.async.token
+        }
+        default {
+          scf.yield %w : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
