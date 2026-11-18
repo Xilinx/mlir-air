@@ -105,10 +105,8 @@ The region form exists because the op a position needs is not always the op its
 control flow suggests. An N-way statement *is* nested branches, which is why it
 was first routed there -- but that makes the emitted op an ``scf.if``, and a
 region that has to be an ``scf.index_switch`` then cannot be written at all.
-The ``with`` body is the *default* region and ``otherwise()`` fills ``case 0``,
-which ``__enter__`` builds either way -- so a two-armed switch is one case
-region, and there is no spelling for a second. That is deliberate: a second
-case region breaks ``air-to-aie``'s L2 receiver allocation.
+The ``with`` body is the *default* region and ``otherwise()`` fills ``case 0``;
+``cases=[...]`` adds case regions, each filled with ``case(v)``.
 
 ``ops.branch`` has to be a region rather than a Python ``if`` because the herd
 body is traced once for the whole herd: a comparison against a coordinate has no

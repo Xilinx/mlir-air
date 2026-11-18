@@ -67,6 +67,10 @@ static void generateYieldAndOrReduceToScfLoop(OpBuilder builder,
 }
 
 static void getLeavesInDepGraph(Operation *op, SetVector<Value> &leaves_list) {
+  // A token yielded out of a branch leaves through the branch's results.
+  if (isa<scf::YieldOp>(op) &&
+      isa<scf::IfOp, scf::IndexSwitchOp>(op->getParentOp()))
+    op = op->getParentOp();
   SmallVector<Value> tokens;
   for (auto res : op->getResults())
     if (isa<air::AsyncTokenType>(res.getType()))
@@ -124,6 +128,14 @@ static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder &builder,
       if (leaves.empty())
         wa_op.getAsyncDependenciesMutable().append(t);
     }
+    // A region op with no async operands (an scf.index_switch) is not reached
+    // from the loop's tokens; its dangling results are waited on too.
+    for (Operation &op : scf_loop.getBody()->without_terminator())
+      if (&op != wa_op && op.getNumRegions())
+        for (Value r : op.getResults())
+          if (isa<air::AsyncTokenType>(r.getType()) && r.use_empty() &&
+              !llvm::is_contained(wa_op.getAsyncDependencies(), r))
+            wa_op.getAsyncDependenciesMutable().append(r);
     wa_op->setAttr("hoist", StringAttr::get(ctx, "dep"));
     token = wa_op.getAsyncToken();
   }
@@ -254,8 +266,14 @@ static void keepUsedOpsAndCarriedValues(SetVector<Operation *> &slice,
       values.push_back(yielded);
   };
   auto useOperands = [&](Operation *op) {
-    if (auto exec = dyn_cast<air::ExecuteOp>(op); exec && air::isPure(exec))
-      visitUsedValuesDefinedAbove(exec->getRegions(), [&](OpOperand *use) {
+    // An effect-free region op is cloned whole, so what its regions use from
+    // above is used too.
+    bool whole = isa<air::ExecuteOp>(op)
+                     ? air::isPure(op)
+                     : op->getNumRegions() && !isa<LoopLikeOpInterface>(op) &&
+                           air::isEffectFree(op);
+    if (whole)
+      visitUsedValuesDefinedAbove(op->getRegions(), [&](OpOperand *use) {
         values.push_back(use->get());
       });
     auto loop = dyn_cast<scf::ForOp>(op);
@@ -297,6 +315,29 @@ struct UnguardedCloneScope {
   ~UnguardedCloneScope() { --unguardedCloneDepth; }
 };
 } // namespace
+
+static SmallVector<Operation *>
+cloneScfIndexSwitchUsingRemap(OpBuilder &builder, IRMapping &remap,
+                              scf::IndexSwitchOp sw);
+
+namespace air {
+static bool isHostComputable(Value v, Operation *herd);
+} // namespace air
+
+// Set when a switch cannot be cloned; the pass then fails.
+static thread_local bool switchCloneRejected = false;
+
+// The async tokens `ops` define in `blk`. A cloned region op also returns the
+// ops of its regions, whose tokens do not dominate a join in `blk`.
+static SmallVector<Value> visibleTokens(ArrayRef<Operation *> ops, Block *blk) {
+  SmallVector<Value> tokens;
+  for (Operation *op : ops)
+    if (op->getBlock() == blk)
+      for (Value r : op->getResults())
+        if (isa<air::AsyncTokenType>(r.getType()))
+          tokens.push_back(r);
+  return tokens;
+}
 
 // Clone ops in a block.
 SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
@@ -347,6 +388,11 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
           air::cloneScfIfUsingRemap(builder, remap, scf_if_op);
       clonedOps.insert(clonedOps.end(), clonedScfIfOps.begin(),
                        clonedScfIfOps.end());
+    } else if (auto sw = dyn_cast<scf::IndexSwitchOp>(o);
+               sw && !air::isEffectFree(&o)) {
+      auto clonedSwitchOps = cloneScfIndexSwitchUsingRemap(builder, remap, sw);
+      clonedOps.insert(clonedOps.end(), clonedSwitchOps.begin(),
+                       clonedSwitchOps.end());
     } else if (auto dma_op = dyn_cast_if_present<air::DmaMemcpyNdOp>(o)) {
       if (o.hasAttr("loop-carried-dep"))
         clonedOps.push_back(builder.clone(o, remap));
@@ -414,14 +460,8 @@ air::cloneAffineIfUsingRemap(OpBuilder builder, IRMapping &remap,
     air::WaitAllOp waitAllOp;
     if (hasAsyncTokenResult) {
       // Collect async tokens produced by cloned ops to create a wait_all.
-      SmallVector<Value> asyncDeps;
-      for (auto *clonedOp : clonedOps) {
-        if (auto asyncOp =
-                dyn_cast_if_present<air::AsyncOpInterface>(clonedOp)) {
-          if (auto token = asyncOp.getAsyncToken())
-            asyncDeps.push_back(token);
-        }
-      }
+      SmallVector<Value> asyncDeps =
+          visibleTokens(clonedOps, builder.getInsertionBlock());
       // Create a wait_all that merges all cloned ops' async tokens, which
       // can be used to replace async-token results of the affine.if.
       if (!asyncDeps.empty()) {
@@ -494,14 +534,8 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
 
     air::WaitAllOp waitAllOp;
     if (hasAsyncTokenResult) {
-      SmallVector<Value> asyncDeps;
-      for (auto *clonedOp : clonedOps) {
-        if (auto asyncOp =
-                dyn_cast_if_present<air::AsyncOpInterface>(clonedOp)) {
-          if (auto token = asyncOp.getAsyncToken())
-            asyncDeps.push_back(token);
-        }
-      }
+      SmallVector<Value> asyncDeps =
+          visibleTokens(clonedOps, builder.getInsertionBlock());
       if (!asyncDeps.empty()) {
         waitAllOp = air::WaitAllOp::create(
             builder, scf_if_op.getLoc(),
@@ -538,6 +572,8 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
   // the cleanup step that removes non-hoisted ops from the hoisted
   // scf.parallel.
   newIfOp->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
+  // Returned so that an enclosing join sees its token.
+  clonedOps.push_back(newIfOp);
 
   auto cloneBranch = [&](Block *from, Block *to) {
     OpBuilder::InsertionGuard guard(builder);
@@ -546,14 +582,10 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
     else
       builder.setInsertionPointToEnd(to);
     auto cloned = cloneOpsInBlock(from, builder, remap);
-    SmallVector<Value> tokens;
-    for (auto *op : cloned) {
+    for (auto *op : cloned)
       if (isa<air::ChannelInterface>(op))
         clonedOps.push_back(op);
-      if (auto asyncOp = dyn_cast<air::AsyncOpInterface>(op))
-        if (auto token = asyncOp.getAsyncToken())
-          tokens.push_back(token);
-    }
+    SmallVector<Value> tokens = visibleTokens(cloned, to);
     if (newIfOp.getNumResults() == 0)
       return;
     // Each result also waits on what the branch yielded for it, where that
@@ -579,6 +611,64 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
        llvm::zip(scf_if_op.getResults(), newIfOp.getResults()))
     remap.map(oldRes, newRes);
 
+  return clonedOps;
+}
+
+// Clone an scf.index_switch keeping its cases, each yielding the tokens of what
+// it cloned. Unlike an scf.if it is never flattened: the cases are
+// alternatives.
+static SmallVector<Operation *>
+cloneScfIndexSwitchUsingRemap(OpBuilder &builder, IRMapping &remap,
+                              scf::IndexSwitchOp sw) {
+  SmallVector<Operation *> clonedOps;
+  bool onlyTokens = llvm::all_of(
+      sw.getResultTypes(), [](Type t) { return isa<air::AsyncTokenType>(t); });
+  auto hier = sw->getParentOfType<air::HierarchyInterface>();
+  if (!onlyTokens || !remap.contains(sw.getArg()) ||
+      (hier && !air::isHostComputable(sw.getArg(), hier))) {
+    sw.emitOpError("cannot be hoisted with the transfers it holds: its "
+                   "results must be async tokens and its selector computable "
+                   "outside the hierarchy");
+    switchCloneRejected = true;
+    return clonedOps;
+  }
+  // A switch with no results gets a token, so that what encloses it can wait
+  // for the transfers in its cases.
+  SmallVector<Type> resultTypes(sw.getResultTypes());
+  bool summary = resultTypes.empty();
+  if (summary)
+    resultTypes.push_back(air::AsyncTokenType::get(builder.getContext()));
+  auto newSw = scf::IndexSwitchOp::create(builder, sw.getLoc(), resultTypes,
+                                          remap.lookup(sw.getArg()),
+                                          sw.getCases(), sw.getCases().size());
+  newSw->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
+  clonedOps.push_back(newSw);
+  for (auto [from, to] :
+       llvm::zip_equal(sw->getRegions(), newSw->getRegions())) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.createBlock(&to);
+    auto cloned = air::cloneOpsInBlock(&from.front(), builder, remap);
+    clonedOps.append(cloned.begin(), cloned.end());
+    SmallVector<Value> tokens = visibleTokens(cloned, &to.front());
+    SmallVector<Value> yielded;
+    auto join = [&](Value v) {
+      SmallVector<Value> deps(tokens);
+      if (v && remap.contains(v) && !llvm::is_contained(deps, remap.lookup(v)))
+        deps.push_back(remap.lookup(v));
+      auto wa = air::WaitAllOp::create(
+          builder, sw.getLoc(), air::AsyncTokenType::get(builder.getContext()),
+          deps);
+      wa->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
+      yielded.push_back(wa.getAsyncToken());
+    };
+    for (Value v : from.front().getTerminator()->getOperands())
+      join(v);
+    if (summary)
+      join(nullptr);
+    scf::YieldOp::create(builder, sw.getLoc(), yielded);
+  }
+  for (auto [oldRes, newRes] : llvm::zip(sw.getResults(), newSw.getResults()))
+    remap.map(oldRes, newRes);
   return clonedOps;
 }
 
@@ -1680,16 +1770,43 @@ class AIRDemoteDmaToAIRHierarchyConversion
 // descriptors take several dims. Copying the elements in another order puts
 // each in the same place.
 // Whether the host can evaluate `v` when it arms a hoisted L3 transfer: `v`
-// is built only from hierarchy arguments, loop ivs and pure index arithmetic.
-static bool isHostComputable(Value v, Operation *herd) {
+// is built only from hierarchy arguments, loop ivs and iter_args over such
+// values, and pure index arithmetic. `seen` breaks the cycle an iter_arg
+// closes through its loop's yield.
+static bool isHostComputable(Value v, Operation *herd,
+                             llvm::SmallPtrSetImpl<Value> &seen) {
+  if (!seen.insert(v).second)
+    return true;
+  auto all = [&](auto values) {
+    return llvm::all_of(
+        values, [&](Value x) { return isHostComputable(x, herd, seen); });
+  };
   if (auto arg = dyn_cast<BlockArgument>(v)) {
     Operation *owner = arg.getOwner()->getParentOp();
     if (isa<air::HierarchyInterface>(owner))
       return true;
-    if (auto loop = dyn_cast<LoopLikeOpInterface>(owner))
-      return llvm::is_contained(
-          loop.getLoopInductionVars().value_or(SmallVector<Value>{}), v);
-    return false;
+    auto loop = dyn_cast<LoopLikeOpInterface>(owner);
+    if (!loop)
+      return false;
+    // An iv: its bounds and step have to be computable too.
+    if (llvm::is_contained(
+            loop.getLoopInductionVars().value_or(SmallVector<Value>{}), v)) {
+      SmallVector<Value> control;
+      for (auto range : {loop.getLoopLowerBounds(), loop.getLoopUpperBounds(),
+                         loop.getLoopSteps()})
+        for (OpFoldResult r : range.value_or(SmallVector<OpFoldResult>{}))
+          if (auto x = dyn_cast<Value>(r))
+            control.push_back(x);
+      return all(control);
+    }
+    // An iter_arg: its initial value and what the body yields for it.
+    auto forOp = dyn_cast<scf::ForOp>(owner);
+    if (!forOp)
+      return false;
+    unsigned i = arg.getArgNumber() - forOp.getNumInductionVars();
+    return isHostComputable(forOp.getInitArgs()[i], herd, seen) &&
+           isHostComputable(forOp.getBody()->getTerminator()->getOperand(i),
+                            herd, seen);
   }
   Operation *def = v.getDefiningOp();
   if (!herd->isProperAncestor(def))
@@ -1701,13 +1818,27 @@ static bool isHostComputable(Value v, Operation *herd) {
       return false;
     Value yielded = exec.getRegion().front().getTerminator()->getOperand(
         result.getResultNumber() - 1);
-    return isHostComputable(yielded, herd);
+    return isHostComputable(yielded, herd, seen);
   }
-  if (!mlir::isPure(def) || def->getNumRegions())
+  // A region op without effects (a switch picking an index): what it reads
+  // from above, and its operands.
+  if (def->getNumRegions()) {
+    if (!air::isEffectFree(def))
+      return false;
+    SmallVector<Value> above;
+    visitUsedValuesDefinedAbove(def->getRegions(), [&](OpOperand *use) {
+      above.push_back(use->get());
+    });
+    return all(def->getOperands()) && all(above);
+  }
+  if (!mlir::isPure(def))
     return false;
-  return llvm::all_of(def->getOperands(), [&](Value operand) {
-    return isHostComputable(operand, herd);
-  });
+  return all(def->getOperands());
+}
+
+static bool isHostComputable(Value v, Operation *herd) {
+  llvm::SmallPtrSet<Value, 16> seen;
+  return isHostComputable(v, herd, seen);
 }
 
 // Whether `v` depends on data the core reads from memory, which the host
@@ -2387,12 +2518,17 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           return true;
         });
 
+    switchCloneRejected = false;
     RewritePatternSet air_dma_demotion(context);
     air_dma_demotion.add<AIRDemoteDmaToAIRHierarchyConversion>(context);
     if (failed(applyPartialConversion(module, target_0,
                                       std::move(air_dma_demotion)))) {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
+    }
+    if (switchCloneRejected) {
+      signalPassFailure();
+      return;
     }
 
     // Dep tracing
@@ -2480,6 +2616,10 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           .add<AIRHoistExternalAIRChannelPattern<air::HerdOp>,
                AIRHoistExternalAIRChannelPattern<air::SegmentOp>>(context);
       (void)applyPatternsGreedily(module, std::move(hoistChannelPatterns));
+    }
+    if (switchCloneRejected) {
+      signalPassFailure();
+      return;
     }
 
     // Dep tracing

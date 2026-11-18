@@ -155,3 +155,65 @@ func.func @index_switch_split_memtiles(%ex: memref<2048xbf16>, %ey: memref<2048x
   }
   return
 }
+
+// -----
+
+// Three arms (cases 0 and 1, and the default) on one memtile: unified above
+// the switch like two.
+// CHECK-LABEL: aie.device(xcve2802) @three_arms
+// CHECK: %[[X:.*]] = memref.alloc() {air.memtile_col = 2 : i32} : memref<2048xbf16, 1>
+// CHECK-NOT: memref.alloc
+// CHECK: scf.index_switch
+// CHECK: case 0
+// CHECK: air.channel.get {{.*}} @xin_v[] (%[[X]][] [] [])
+// CHECK: case 1
+// CHECK: air.channel.get {{.*}} @xin_v[] (%[[X]][] [] [])
+// CHECK: default
+// CHECK: air.channel.get {{.*}} @xin_v[] (%[[X]][] [] [])
+// CHECK: air.channel.put @relay[] (%[[X]][] [] [])
+
+air.channel @xin_v [1, 1]
+air.channel @relay [1, 1]
+func.func @index_switch_three_arms(%ex: memref<2048xbf16>, %sel: i32) {
+  %c1 = arith.constant 1 : index
+  %0 = air.launch async (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ex, %s=%sel) : memref<2048xbf16>, i32 {
+    %px = air.channel.put async @xin_v[] (%e[] [] []) {id = 1 : i32} : (memref<2048xbf16>)
+    %1 = air.segment @three_arms async args(%arm=%s) : i32 {
+      %c1_0 = arith.constant 1 : index
+      %2 = air.herd @dummy async tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) {}
+        %armi = arith.index_cast %arm : i32 to index
+        scf.index_switch %armi
+        case 0 {
+          %tA, %bA = air.execute -> (memref<2048xbf16, 1>) {
+            %a = memref.alloc() {air.memtile_col = 2 : i32} : memref<2048xbf16, 1>
+            air.execute_terminator %a : memref<2048xbf16, 1>
+          }
+          %gA = air.channel.get async [%tA] @xin_v[] (%bA[] [] []) : (memref<2048xbf16, 1>)
+          air.channel.put @relay[] (%bA[] [] []) : (memref<2048xbf16, 1>)
+          air.execute [%gA] { memref.dealloc %bA : memref<2048xbf16, 1> }
+          scf.yield
+        }
+        case 1 {
+          %tB, %bB = air.execute -> (memref<2048xbf16, 1>) {
+            %b = memref.alloc() {air.memtile_col = 2 : i32} : memref<2048xbf16, 1>
+            air.execute_terminator %b : memref<2048xbf16, 1>
+          }
+          %gB = air.channel.get async [%tB] @xin_v[] (%bB[] [] []) : (memref<2048xbf16, 1>)
+          air.channel.put @relay[] (%bB[] [] []) : (memref<2048xbf16, 1>)
+          air.execute [%gB] { memref.dealloc %bB : memref<2048xbf16, 1> }
+          scf.yield
+        }
+        default {
+          %tC, %bC = air.execute -> (memref<2048xbf16, 1>) {
+            %c = memref.alloc() {air.memtile_col = 2 : i32} : memref<2048xbf16, 1>
+            air.execute_terminator %c : memref<2048xbf16, 1>
+          }
+          %gC = air.channel.get async [%tC] @xin_v[] (%bC[] [] []) : (memref<2048xbf16, 1>)
+          air.channel.put @relay[] (%bC[] [] []) : (memref<2048xbf16, 1>)
+          air.execute [%gC] { memref.dealloc %bC : memref<2048xbf16, 1> }
+          scf.yield
+        }
+    }
+  }
+  return
+}
