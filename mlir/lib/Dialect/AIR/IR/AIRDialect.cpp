@@ -703,20 +703,10 @@ void air::LaunchOp::print(OpAsmPrinter &p) {
     }
   }
 
-  SmallVector<NamedAttribute, 8> filteredAttrs(
-      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == getOperandSegmentSizeAttr())
-          return false;
-        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-          return false;
-        return true;
-      }));
-  p << " ";
-  if (filteredAttrs.size()) {
-    p << "attributes";
-    p.printOptionalAttrDict(filteredAttrs);
-    p << " ";
-  }
+  p.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(),
+      {getOperandSegmentSizeAttr(), mlir::SymbolTable::getSymbolAttrName()});
+  p << ' ';
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
@@ -1127,20 +1117,10 @@ void air::RankOp::print(OpAsmPrinter &p) {
     }
   }
 
-  SmallVector<NamedAttribute, 8> filteredAttrs(
-      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == getOperandSegmentSizeAttr())
-          return false;
-        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-          return false;
-        return true;
-      }));
-  p << " ";
-  if (filteredAttrs.size()) {
-    p << "attributes";
-    p.printOptionalAttrDict(filteredAttrs);
-    p << " ";
-  }
+  p.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(),
+      {getOperandSegmentSizeAttr(), mlir::SymbolTable::getSymbolAttrName()});
+  p << ' ';
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
@@ -1448,20 +1428,10 @@ void air::SegmentOp::print(OpAsmPrinter &p) {
     }
   }
 
-  SmallVector<NamedAttribute, 8> filteredAttrs(
-      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == getOperandSegmentSizeAttr())
-          return false;
-        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-          return false;
-        return true;
-      }));
-  p << " ";
-  if (filteredAttrs.size()) {
-    p << "attributes";
-    p.printOptionalAttrDict(filteredAttrs);
-    p << " ";
-  }
+  p.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(),
+      {getOperandSegmentSizeAttr(), mlir::SymbolTable::getSymbolAttrName()});
+  p << ' ';
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
@@ -1857,20 +1827,10 @@ void air::HerdOp::print(OpAsmPrinter &p) {
     }
   }
 
-  SmallVector<NamedAttribute, 8> filteredAttrs(
-      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == getOperandSegmentSizeAttr())
-          return false;
-        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-          return false;
-        return true;
-      }));
-  p << " ";
-  if (filteredAttrs.size()) {
-    p << "attributes";
-    p.printOptionalAttrDict(filteredAttrs);
-    p << " ";
-  }
+  p.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(),
+      {getOperandSegmentSizeAttr(), mlir::SymbolTable::getSymbolAttrName()});
+  p << ' ';
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
@@ -4184,20 +4144,9 @@ void air::CustomOp::print(OpAsmPrinter &p) {
     }
   }
 
-  SmallVector<NamedAttribute, 8> filteredAttrs(
-      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == getOperandSegmentSizeAttr())
-          return false;
-        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-          return false;
-        return true;
-      }));
-  p << " ";
-  if (filteredAttrs.size()) {
-    p << "attributes";
-    p.printOptionalAttrDict(filteredAttrs);
-    p << " ";
-  }
+  p.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(),
+      {getOperandSegmentSizeAttr(), mlir::SymbolTable::getSymbolAttrName()});
 }
 
 ParseResult air::CustomOp::parse(OpAsmParser &parser, OperationState &result) {
