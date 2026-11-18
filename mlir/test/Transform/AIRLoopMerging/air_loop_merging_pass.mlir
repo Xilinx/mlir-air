@@ -7,9 +7,18 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-loop-merging="loop-merge-levels=1,2 air-label=xten.binary_op" -affine-simplify-structures -cse | FileCheck %s
+// The merged loop runs 2 * 7 times and recovers the outer index with a
+// floordiv and the inner one with a mod.
+// CHECK-DAG: #[[ROW:.*]] = affine_map<(d0, d1, d2) -> (d0 * 7 + d1 * 14 + d2 mod 7)>
+// CHECK-DAG: #[[COL:.*]] = affine_map<(d0, d1) -> (d0 + (d1 floordiv 7) * 5)>
 // CHECK: affine.for {{.*}} = 0 to 7
 // CHECK: {affine_opt_label = "affine_opt"}
-// CHECK: affine.for {{.*}} = 0 to 14
+// CHECK: affine.for %[[I:.*]] = 0 to 5
+// CHECK: affine.for %[[M:.*]] = 0 to 14
+// CHECK: affine.for %[[J:.*]] = 0 to 2
+// CHECK: affine.for %[[K:.*]] = 0 to 2
+// CHECK: affine.apply #[[ROW]](%[[J]], %[[K]], %[[M]])
+// CHECK: affine.apply #[[COL]](%[[I]], %[[M]])
 // CHECK: {affine_opt_label = "xten.binary_op"}
 
 #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
