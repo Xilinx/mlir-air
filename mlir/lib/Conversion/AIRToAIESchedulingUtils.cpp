@@ -3736,8 +3736,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   // getNumDestConnections is interface-defined and works for both physical
   // TileOp and LogicalTileOp (LogicalTileOp consults the targetModel via
   // its tile_type).
-  int memtile_dma_channels =
-      getNumTileDMAChannels(tile, isMM2S.value());
+  int memtile_dma_channels = getNumTileDMAChannels(tile, isMM2S.value());
   if (chan == -1) {
     // The lowest channel of the tile no allocation holds yet; past them all,
     // one holding flows of this one's switching kind (a switchbox port is
