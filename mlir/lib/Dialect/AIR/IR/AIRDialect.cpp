@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -37,11 +38,16 @@ using namespace mlir;
 
 #define GET_ATTRDEF_CLASSES
 #include "air/Dialect/AIR/AIRAttrs.cpp.inc"
+#define GET_TYPEDEF_CLASSES
+#include "air/Dialect/AIR/AIRTypes.cpp.inc"
 
 namespace xilinx {
 
 void air::airDialect::initialize() {
-  addTypes<AsyncTokenType, UniverseType>();
+  addTypes<
+#define GET_TYPEDEF_LIST
+#include "air/Dialect/AIR/AIRTypes.cpp.inc"
+      >();
   addAttributes<
 #define GET_ATTRDEF_LIST
 #include "air/Dialect/AIR/AIRAttrs.cpp.inc"
@@ -50,32 +56,6 @@ void air::airDialect::initialize() {
 #define GET_OP_LIST
 #include "air/Dialect/AIR/AIR.cpp.inc"
       >();
-}
-
-Type air::airDialect::parseType(DialectAsmParser &parser) const {
-  // Parse the main keyword for the type.
-  StringRef keyword;
-  if (parser.parseKeyword(&keyword))
-    return Type();
-  MLIRContext *context = getContext();
-
-  // Handle 'async token' types.
-  if (keyword == "async.token")
-    return AsyncTokenType::get(context);
-
-  // Handle 'universe' types.
-  if (keyword == "universe")
-    return UniverseType::get(context);
-
-  parser.emitError(parser.getNameLoc(), "unknown air type: " + keyword);
-  return Type();
-}
-
-void air::airDialect::printType(Type type, DialectAsmPrinter &os) const {
-  TypeSwitch<Type>(type)
-      .Case<AsyncTokenType>([&](Type) { os << "async.token"; })
-      .Case<UniverseType>([&](Type) { os << "universe"; })
-      .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
 }
 
 template <class T>
@@ -702,20 +682,10 @@ void air::LaunchOp::print(OpAsmPrinter &p) {
     }
   }
 
-  SmallVector<NamedAttribute, 8> filteredAttrs(
-      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == getOperandSegmentSizeAttr())
-          return false;
-        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-          return false;
-        return true;
-      }));
-  p << " ";
-  if (filteredAttrs.size()) {
-    p << "attributes";
-    p.printOptionalAttrDict(filteredAttrs);
-    p << " ";
-  }
+  p.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(),
+      {getOperandSegmentSizeAttr(), mlir::SymbolTable::getSymbolAttrName()});
+  p << ' ';
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
@@ -740,20 +710,12 @@ ParseResult air::LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
     result.addTypes(asyncTokenType);
 
   if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
-      parser.parseKeyword("in") || parser.parseLParen())
+      parser.parseKeyword("in") ||
+      parser.parseAssignmentList(tileSizeRef, tileSize))
     return failure();
-
-  tileSize.resize(tileArgs.size());
-  tileSizeRef.resize(tileArgs.size());
-  for (unsigned i = 0; i < tileArgs.size(); ++i) {
-    if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
-        parser.parseOperand(tileSize[i]))
-      return failure();
-    (void)parser.parseOptionalComma();
-  }
-
-  if (parser.parseRParen())
-    return failure();
+  if (tileSize.size() != tileArgs.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected one size per id");
 
   Type indexType = parser.getBuilder().getIndexType();
 
@@ -771,23 +733,13 @@ ParseResult air::LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
-    if (parser.parseLParen())
+    if (parser.parseAssignmentList(kernelArguments, kernelOperands))
       return failure();
-    if (parser.parseOptionalRParen()) {
-      do {
-        OpAsmParser::Argument argument;
-        OpAsmParser::UnresolvedOperand operand;
-        if (parser.parseArgument(argument) || parser.parseEqual() ||
-            parser.parseOperand(operand))
-          return failure();
-        kernelArguments.push_back(argument);
-        kernelOperands.push_back(operand);
-      } while (succeeded(parser.parseOptionalComma()));
-      if (parser.parseRParen())
-        return failure();
-      if (parser.parseColonTypeList(types))
-        return failure();
-    }
+    if (!kernelOperands.empty() && parser.parseColonTypeList(types))
+      return failure();
+    if (types.size() != kernelOperands.size())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one type per kernel operand");
   }
 
   for (int i = 0, e = kernelOperands.size(); i < e; i++) {
@@ -1126,20 +1078,10 @@ void air::RankOp::print(OpAsmPrinter &p) {
     }
   }
 
-  SmallVector<NamedAttribute, 8> filteredAttrs(
-      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == getOperandSegmentSizeAttr())
-          return false;
-        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-          return false;
-        return true;
-      }));
-  p << " ";
-  if (filteredAttrs.size()) {
-    p << "attributes";
-    p.printOptionalAttrDict(filteredAttrs);
-    p << " ";
-  }
+  p.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(),
+      {getOperandSegmentSizeAttr(), mlir::SymbolTable::getSymbolAttrName()});
+  p << ' ';
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
@@ -1174,20 +1116,12 @@ ParseResult air::RankOp::parse(OpAsmParser &parser, OperationState &result) {
   }
 
   if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
-      parser.parseKeyword("in") || parser.parseLParen())
+      parser.parseKeyword("in") ||
+      parser.parseAssignmentList(tileSizeRef, tileSize))
     return failure();
-
-  tileSize.resize(tileArgs.size());
-  tileSizeRef.resize(tileArgs.size());
-  for (unsigned i = 0; i < tileArgs.size(); ++i) {
-    if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
-        parser.parseOperand(tileSize[i]))
-      return failure();
-    (void)parser.parseOptionalComma();
-  }
-
-  if (parser.parseRParen())
-    return failure();
+  if (tileSize.size() != tileArgs.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected one size per id");
 
   Type indexType = parser.getBuilder().getIndexType();
 
@@ -1213,23 +1147,13 @@ ParseResult air::RankOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
-    if (parser.parseLParen())
+    if (parser.parseAssignmentList(kernelArguments, kernelOperands))
       return failure();
-    if (parser.parseOptionalRParen()) {
-      do {
-        OpAsmParser::Argument argument;
-        OpAsmParser::UnresolvedOperand operand;
-        if (parser.parseArgument(argument) || parser.parseEqual() ||
-            parser.parseOperand(operand))
-          return failure();
-        kernelArguments.push_back(argument);
-        kernelOperands.push_back(operand);
-      } while (succeeded(parser.parseOptionalComma()));
-      if (parser.parseRParen())
-        return failure();
-      if (parser.parseColonTypeList(types))
-        return failure();
-    }
+    if (!kernelOperands.empty() && parser.parseColonTypeList(types))
+      return failure();
+    if (types.size() != kernelOperands.size())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one type per kernel operand");
   }
 
   for (int i = 0, e = kernelOperands.size(); i < e; i++) {
@@ -1447,20 +1371,10 @@ void air::SegmentOp::print(OpAsmPrinter &p) {
     }
   }
 
-  SmallVector<NamedAttribute, 8> filteredAttrs(
-      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == getOperandSegmentSizeAttr())
-          return false;
-        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-          return false;
-        return true;
-      }));
-  p << " ";
-  if (filteredAttrs.size()) {
-    p << "attributes";
-    p.printOptionalAttrDict(filteredAttrs);
-    p << " ";
-  }
+  p.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(),
+      {getOperandSegmentSizeAttr(), mlir::SymbolTable::getSymbolAttrName()});
+  p << ' ';
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
@@ -1492,20 +1406,12 @@ ParseResult air::SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
 
   if (succeeded(parser.parseOptionalKeyword("unroll"))) {
     if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
-        parser.parseKeyword("in") || parser.parseLParen())
+        parser.parseKeyword("in") ||
+        parser.parseAssignmentList(tileSizeRef, tileSize))
       return failure();
-
-    tileSize.resize(tileArgs.size());
-    tileSizeRef.resize(tileArgs.size());
-    for (unsigned i = 0; i < tileArgs.size(); ++i) {
-      if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
-          parser.parseOperand(tileSize[i]))
-        return failure();
-      (void)parser.parseOptionalComma();
-    }
-
-    if (parser.parseRParen())
-      return failure();
+    if (tileSize.size() != tileArgs.size())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one size per id");
 
     tileArgs.append(tileSizeRef);
     for (auto &a : tileArgs)
@@ -1519,23 +1425,13 @@ ParseResult air::SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
-    if (parser.parseLParen())
+    if (parser.parseAssignmentList(kernelArguments, kernelOperands))
       return failure();
-    if (parser.parseOptionalRParen()) {
-      do {
-        OpAsmParser::Argument argument;
-        OpAsmParser::UnresolvedOperand operand;
-        if (parser.parseArgument(argument) || parser.parseEqual() ||
-            parser.parseOperand(operand))
-          return failure();
-        kernelArguments.push_back(argument);
-        kernelOperands.push_back(operand);
-      } while (succeeded(parser.parseOptionalComma()));
-      if (parser.parseRParen())
-        return failure();
-      if (parser.parseColonTypeList(types))
-        return failure();
-    }
+    if (!kernelOperands.empty() && parser.parseColonTypeList(types))
+      return failure();
+    if (types.size() != kernelOperands.size())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one type per kernel operand");
   }
 
   for (int i = 0, e = kernelOperands.size(); i < e; i++) {
@@ -1856,20 +1752,10 @@ void air::HerdOp::print(OpAsmPrinter &p) {
     }
   }
 
-  SmallVector<NamedAttribute, 8> filteredAttrs(
-      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == getOperandSegmentSizeAttr())
-          return false;
-        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-          return false;
-        return true;
-      }));
-  p << " ";
-  if (filteredAttrs.size()) {
-    p << "attributes";
-    p.printOptionalAttrDict(filteredAttrs);
-    p << " ";
-  }
+  p.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(),
+      {getOperandSegmentSizeAttr(), mlir::SymbolTable::getSymbolAttrName()});
+  p << ' ';
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
@@ -1897,20 +1783,12 @@ ParseResult air::HerdOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
-      parser.parseKeyword("in") || parser.parseLParen())
+      parser.parseKeyword("in") ||
+      parser.parseAssignmentList(tileSizeRef, tileSize))
     return failure();
-
-  tileSize.resize(tileArgs.size());
-  tileSizeRef.resize(tileArgs.size());
-  for (unsigned i = 0; i < tileArgs.size(); ++i) {
-    if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
-        parser.parseOperand(tileSize[i]))
-      return failure();
-    (void)parser.parseOptionalComma();
-  }
-
-  if (parser.parseRParen())
-    return failure();
+  if (tileSize.size() != tileArgs.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected one size per id");
 
   Type indexType = parser.getBuilder().getIndexType();
 
@@ -1928,23 +1806,13 @@ ParseResult air::HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
-    if (parser.parseLParen())
+    if (parser.parseAssignmentList(kernelArguments, kernelOperands))
       return failure();
-    if (parser.parseOptionalRParen()) {
-      do {
-        OpAsmParser::Argument argument;
-        OpAsmParser::UnresolvedOperand operand;
-        if (parser.parseArgument(argument) || parser.parseEqual() ||
-            parser.parseOperand(operand))
-          return failure();
-        kernelArguments.push_back(argument);
-        kernelOperands.push_back(operand);
-      } while (succeeded(parser.parseOptionalComma()));
-      if (parser.parseRParen())
-        return failure();
-      if (parser.parseColonTypeList(types))
-        return failure();
-    }
+    if (!kernelOperands.empty() && parser.parseColonTypeList(types))
+      return failure();
+    if (types.size() != kernelOperands.size())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "expected one type per kernel operand");
   }
 
   for (int i = 0, e = kernelOperands.size(); i < e; i++) {
@@ -2073,17 +1941,6 @@ LogicalResult air::HerdOp::verify() {
 //
 // Asynchronous execute
 //
-
-LogicalResult air::ExecuteOp::verify() {
-  if (getOperation()->getNumRegions() != 1)
-    return emitOpError("ExecuteOp has zero region.");
-  if (getRegion().empty())
-    return emitOpError("ExecuteOp should have non-empty region.");
-  if (getBody().empty())
-    return emitOpError("ExecuteOp should have non-empty body.");
-
-  return success();
-}
 
 // Mirror body effects up to the execute op. Inner Allocate effects on
 // yielded values get retargeted to the outer result so alias analysis
@@ -2351,26 +2208,11 @@ static bool isDefaultDataAccessPattern(ArrayRef<OpFoldResult> memcpy_sizes,
 // or memref shape isn't static.
 static bool isVolumeEqualToMemrefVolume(ArrayRef<OpFoldResult> memcpy_sizes,
                                         BaseMemRefType memref) {
-  // Return false if memref doesn't have static shape
   if (!memref.hasStaticShape())
     return false;
-
-  // Calculate memref volume
-  int64_t memref_volume = 1;
-  for (auto dim : memref.getShape()) {
-    memref_volume *= dim;
-  }
-
-  // Calculate sizes volume
-  int64_t sizes_volume = 1;
-  for (auto size : memcpy_sizes) {
-    auto constant_size = mlir::getConstantIntValue(size);
-    if (!constant_size)
-      return false; // Size value is not constant
-    sizes_volume *= *constant_size;
-  }
-
-  return memref_volume == sizes_volume;
+  std::optional<SmallVector<int64_t>> sizes =
+      getConstantIntValues(memcpy_sizes);
+  return sizes && llvm::product_of(*sizes) == memref.getNumElements();
 }
 
 static LogicalResult canonicalizeEmptyLists(SmallVector<Value> &offsets,
@@ -4198,20 +4040,9 @@ void air::CustomOp::print(OpAsmPrinter &p) {
     }
   }
 
-  SmallVector<NamedAttribute, 8> filteredAttrs(
-      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == getOperandSegmentSizeAttr())
-          return false;
-        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-          return false;
-        return true;
-      }));
-  p << " ";
-  if (filteredAttrs.size()) {
-    p << "attributes";
-    p.printOptionalAttrDict(filteredAttrs);
-    p << " ";
-  }
+  p.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(),
+      {getOperandSegmentSizeAttr(), mlir::SymbolTable::getSymbolAttrName()});
 }
 
 ParseResult air::CustomOp::parse(OpAsmParser &parser, OperationState &result) {

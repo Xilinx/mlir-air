@@ -26,6 +26,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -1624,13 +1625,6 @@ private:
     return new_loop_op;
   }
 
-  template <typename T>
-  void push_back_if_unique(SmallVector<T> &vec, T entry) const {
-    if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
-      vec.push_back(entry);
-    }
-  }
-
   Value getTokenFromOutermostParentAffineIfOp(Operation *op) const {
     Value token = nullptr;
     Operation *parent = op->getParentOp();
@@ -2713,9 +2707,11 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
     // Apply arith muli to loop step and bound
     int muli_factor = *mlir::getConstantIntValue(const_val);
     if (auto sfo = dyn_cast_if_present<scf::ForOp>(containingOp)) {
-      if (!getStaticScfForTripCountAsInt(sfo))
+      std::optional<int64_t> trips = getStaticScfForTripCountAsInt(sfo);
+      // The new step divides by the trip count.
+      if (!trips || *trips == 0)
         return failure();
-      int tripCount = *getStaticScfForTripCountAsInt(sfo);
+      int tripCount = *trips;
       int new_ub =
           *mlir::getConstantIntValue(sfo.getUpperBound()) * muli_factor;
       int new_lb =
@@ -2730,9 +2726,10 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
         return failure();
     } else if (auto afo =
                    dyn_cast_if_present<affine::AffineForOp>(containingOp)) {
-      if (!afo.hasConstantBounds())
+      std::optional<int64_t> trips = getStaticAffineForTripCountAsInt(afo);
+      if (!afo.hasConstantBounds() || !trips || *trips == 0)
         return failure();
-      int tripCount = *getStaticAffineForTripCountAsInt(afo);
+      int tripCount = *trips;
       int new_ub = afo.getConstantUpperBound() * muli_factor;
       int new_lb = afo.getConstantLowerBound() * muli_factor;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
@@ -2795,9 +2792,11 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
     // Apply arith muli to loop step and bound
     int addi_operand = *mlir::getConstantIntValue(const_val);
     if (auto sfo = dyn_cast_if_present<scf::ForOp>(containingOp)) {
-      if (!getStaticScfForTripCountAsInt(sfo))
+      std::optional<int64_t> trips = getStaticScfForTripCountAsInt(sfo);
+      // The new step divides by the trip count.
+      if (!trips || *trips == 0)
         return failure();
-      int tripCount = *getStaticScfForTripCountAsInt(sfo);
+      int tripCount = *trips;
       int new_ub =
           *mlir::getConstantIntValue(sfo.getUpperBound()) + addi_operand;
       int new_lb =
@@ -2812,9 +2811,10 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
         return failure();
     } else if (auto afo =
                    dyn_cast_if_present<affine::AffineForOp>(containingOp)) {
-      if (!afo.hasConstantBounds())
+      std::optional<int64_t> trips = getStaticAffineForTripCountAsInt(afo);
+      if (!afo.hasConstantBounds() || !trips || *trips == 0)
         return failure();
-      int tripCount = *getStaticAffineForTripCountAsInt(afo);
+      int tripCount = *trips;
       int new_ub = afo.getConstantUpperBound() + addi_operand;
       int new_lb = afo.getConstantLowerBound() + addi_operand;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
@@ -3446,16 +3446,8 @@ static std::optional<int64_t> tripsWithinHierarchy(Operation *op) {
 // nullopt if any producer's (or the get's) indices are not constant.
 static std::optional<int64_t> sendsInto(air::ChannelGetOp get,
                                         air::ChannelOp chan) {
-  auto constIndices =
-      [](air::ChannelInterface op) -> std::optional<SmallVector<int64_t>> {
-    SmallVector<int64_t> idx;
-    for (Value v : op.getIndices()) {
-      auto c = getConstantIntValue(v);
-      if (!c)
-        return std::nullopt;
-      idx.push_back(*c);
-    }
-    return idx;
+  auto constIndices = [](air::ChannelInterface op) {
+    return getConstantIntValues(getAsOpFoldResult(op.getIndices()));
   };
   auto getIdx = constIndices(get);
   if (!getIdx)
@@ -8502,13 +8494,6 @@ private:
     return true;
   }
 
-  template <typename T>
-  void push_back_if_unique(SmallVector<T> &vec, T entry) const {
-    if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
-      vec.push_back(entry);
-    }
-  }
-
   LogicalResult getAllChanUsers(Value memref, SmallVector<Operation *> &users,
                                 memref::DeallocOp &dealloc,
                                 OpBuilder &builder) const {
@@ -8938,10 +8923,7 @@ LogicalResult fuseAllocDeallocExecsIntoBlock(
     for (auto user : asyncUsers) {
       if (!blk->getParent()->isAncestor(user->getParentRegion()))
         continue;
-      Operation *userParent = user;
-      while (blk->getParent()->isProperAncestor(userParent->getParentRegion()))
-        userParent = userParent->getParentOp();
-      asyncUsersInBlk.insert(userParent);
+      asyncUsersInBlk.insert(blk->getParent()->findAncestorOpInRegion(*user));
     }
     for (auto user : asyncUsersInBlk)
       air::addAsyncDependencyIfNew(dealloc, air::getAsyncTokenFromOp(user));
@@ -9306,10 +9288,8 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
     for (auto user : putOp.getMemref().getUsers())
       if (auto get_user = dyn_cast_if_present<air::ChannelGetOp>(user))
         getOp = get_user;
-    Operation *put_parent = putOp;
-    while (put_parent->getParentOp() != new_loop_op) {
-      put_parent = put_parent->getParentOp();
-    }
+    Operation *put_parent =
+        new_loop_op.getBody()->findAncestorOpInBlock(*putOp);
     Operation *get_parent = getOp;
     if (!get_parent) {
       if (fuseWithAllocDeallocs)
@@ -9319,9 +9299,7 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
             "likely indicates a failure in the compiler pass.");
       return;
     }
-    while (get_parent->getParentOp() != new_loop_op) {
-      get_parent = get_parent->getParentOp();
-    }
+    get_parent = new_loop_op.getBody()->findAncestorOpInBlock(*getOp);
     put_get_mapping[put_parent] = get_parent;
     put_parents.push_back(put_parent);
   });
@@ -10762,19 +10740,6 @@ static bool isPadded(air::ChannelPutOp put) {
   return put.getPadBefore().has_value() || put.getPadAfter().has_value();
 }
 
-// Returns the constant values of `indices`, or nothing if any is not
-// constant.
-static std::optional<SmallVector<int64_t>> constantIndices(ValueRange indices) {
-  SmallVector<int64_t> out;
-  for (Value v : indices) {
-    auto c = getConstantIntValue(v);
-    if (!c)
-      return std::nullopt;
-    out.push_back(*c);
-  }
-  return out;
-}
-
 // The shim DMA channel (column, direction, index) air-to-aie gave a host
 // transfer: none if it has no allocation, failure if it has one whose channel
 // cannot be told yet (an unplaced shim tile with no column hint).
@@ -10785,7 +10750,7 @@ shimChannelOf(air::ChannelPutOp op) {
   if (!meta || meta.empty())
     return std::optional<ShimChannel>();
   // the entry lowering picks for the put's bundle indices
-  if (!constantIndices(op.getIndices()))
+  if (!getConstantIntValues(getAsOpFoldResult(op.getIndices())))
     return failure();
   auto i = air::getIndexToMetadataArrayFromChannelIndices(op);
   if (!i || *i < 0 || (size_t)*i >= meta.size())
@@ -10833,8 +10798,8 @@ static bool mayCross(Operation *op, air::ChannelPutOp first) {
   if (!put)
     return false;
   if (put.getChanName() == first.getChanName()) {
-    auto a = constantIndices(first.getIndices());
-    auto b = constantIndices(put.getIndices());
+    auto a = getConstantIntValues(getAsOpFoldResult(first.getIndices()));
+    auto b = getConstantIntValues(getAsOpFoldResult(put.getIndices()));
     if (!a || !b || *a == *b)
       return false;
   }
@@ -11462,10 +11427,7 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
         for (auto user : asyncUsers) {
           if (!dest->isAncestor(user->getParentRegion()))
             continue;
-          Operation *userParent = user;
-          while (dest->isProperAncestor(userParent->getParentRegion()))
-            userParent = userParent->getParentOp();
-          asyncUsersInDest.insert(userParent);
+          asyncUsersInDest.insert(dest->findAncestorOpInRegion(*user));
         }
         for (auto user : asyncUsersInDest)
           air::addAsyncDependencyIfNew(dealloc, air::getAsyncTokenFromOp(user));

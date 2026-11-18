@@ -1538,13 +1538,6 @@ private:
                                        SmallVector<int> memrefShape);
 };
 
-template <typename T>
-void push_back_if_unique(SmallVector<T> &vec, T entry) {
-  if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
-    vec.push_back(entry);
-  }
-}
-
 // Tile air.channel put/get wrt a memref.
 FailureOr<Value> tileChannelOpByFactor(
     air::ChannelInterface originalChanOp, int factor, int originalMemrefSize,
@@ -1876,7 +1869,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
         }
         if (offset_key < 0)
           return;
-        push_back_if_unique<int>(keys, offset_key);
+        air::push_back_if_unique<int>(keys, offset_key);
         chanOpPartitions[offset_key].push_back(op);
       };
 
@@ -2066,7 +2059,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       if (!isa<scf::ForOp>(op->getParentOp()))
         continue;
       auto parentForOp = dyn_cast_if_present<scf::ForOp>(op->getParentOp());
-      push_back_if_unique<scf::ForOp>(mutatedScfForOps, parentForOp);
+      air::push_back_if_unique<scf::ForOp>(mutatedScfForOps, parentForOp);
     }
   }
   // Reconnect async dependency of parent scf.for op, if any.
@@ -2276,12 +2269,12 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     for (auto user : memref.getUsers()) {
       if (auto put = dyn_cast_if_present<air::ChannelPutOp>(user)) {
         // Condition 2: accessed by multiple puts with unique names.
-        push_back_if_unique<SmallVector<Value>>(
+        air::push_back_if_unique<SmallVector<Value>>(
             MM2SChannels[air::getChannelDeclarationThroughSymbol(put)],
             put.getIndices());
       } else if (auto get = dyn_cast_if_present<air::ChannelGetOp>(user)) {
         // Condition 3: accessed by multiple gets with unique names.
-        push_back_if_unique<SmallVector<Value>>(
+        air::push_back_if_unique<SmallVector<Value>>(
             S2MMChannels[air::getChannelDeclarationThroughSymbol(get)],
             get.getIndices());
       }

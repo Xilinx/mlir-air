@@ -1178,7 +1178,6 @@ def air_ExecuteOp : air_Op<"execute", [SingleBlockImplicitTerminator<"ExecuteTer
     }
   }];
 
-  let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
 

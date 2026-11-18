@@ -27,6 +27,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
@@ -46,6 +47,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "iostream"
@@ -571,29 +573,16 @@ air::getAffineApplyCoefficient(affine::AffineApplyOp applyOp, Value v) {
 
 // Get a static scf.for trip count as int
 std::optional<int64_t> air::getStaticScfForTripCountAsInt(scf::ForOp for_op) {
-  std::optional<int64_t> output = std::nullopt;
-  // Get for loop iteration count
-  std::optional<int64_t> LbCstOp =
-      mlir::getConstantIntValue(for_op.getLowerBound());
-  std::optional<int64_t> UbCstOp =
-      mlir::getConstantIntValue(for_op.getUpperBound());
-  std::optional<int64_t> StepCstOp =
-      mlir::getConstantIntValue(for_op.getStep());
-  if (LbCstOp && UbCstOp && StepCstOp)
-    output = llvm::divideCeilSigned((*UbCstOp - *LbCstOp), *StepCstOp);
-  return output;
+  std::optional<APInt> tripCount = for_op.getStaticTripCount();
+  if (!tripCount)
+    return std::nullopt;
+  return tripCount->getZExtValue();
 }
 
 // Get a static affine.for trip count as int
 std::optional<int64_t>
 air::getStaticAffineForTripCountAsInt(affine::AffineForOp for_op) {
-  std::optional<int64_t> output = std::nullopt;
-  if (for_op.hasConstantBounds()) {
-    output = llvm::divideCeilSigned(
-        (for_op.getConstantUpperBound() - for_op.getConstantLowerBound()),
-        for_op.getStepAsInt());
-  }
-  return output;
+  return affine::getConstantTripCount(for_op);
 }
 
 std::optional<int64_t> air::getStaticTripCountInRange(Operation *inner,
@@ -662,25 +651,22 @@ std::string air::to_string(Operation *op) {
 }
 
 // Return mlir type name as string
-std::string air::to_string(mlir::Type t) {
-  std::string type_str;
-  llvm::raw_string_ostream rso(type_str);
-  t.print(rso);
-  return type_str;
-}
+std::string air::to_string(mlir::Type t) { return llvm::to_string(t); }
 
 // Create channel name as string
 std::string air::createChannelName(Operation *scope) {
   if (!scope->hasTrait<OpTrait::SymbolTable>()) {
     scope->emitOpError("has no symbol table trait");
   }
-  std::string new_cname = "channel_0";
-  std::string cname = "channel";
-  int which_try = 0;
-  while (mlir::SymbolTable::lookupSymbolIn(scope, new_cname))
-    new_cname = cname + "_" + std::to_string(++which_try);
-  cname = new_cname;
-  return cname;
+  unsigned counter = 0;
+  return SymbolTable::generateSymbolName<16>(
+             "channel",
+             [&](StringRef name) {
+               return SymbolTable::lookupSymbolIn(scope, name) != nullptr;
+             },
+             counter)
+      .str()
+      .str();
 }
 
 // Return memory space as string
@@ -2605,26 +2591,11 @@ bool air::isContiguousRowMajorOrRepeated(ArrayRef<OpFoldResult> sizes,
 // or memref shape isn't static.
 bool air::isVolumeEqualToMemrefVolume(SmallVector<Value> memcpy_sizes,
                                       BaseMemRefType memref) {
-  // Return false if memref doesn't have static shape
   if (!memref.hasStaticShape())
     return false;
-
-  // Calculate memref volume
-  int64_t memref_volume = 1;
-  for (auto dim : memref.getShape()) {
-    memref_volume *= dim;
-  }
-
-  // Calculate sizes volume
-  int64_t sizes_volume = 1;
-  for (auto size : memcpy_sizes) {
-    auto constant_size = mlir::getConstantIntValue(size);
-    if (!constant_size)
-      return false; // Size value is not constant
-    sizes_volume *= *constant_size;
-  }
-
-  return memref_volume == sizes_volume;
+  std::optional<SmallVector<int64_t>> sizes =
+      getConstantIntValues(getAsOpFoldResult(memcpy_sizes));
+  return sizes && llvm::product_of(*sizes) == memref.getNumElements();
 }
 
 // Get the memref size along a given dimension, that the access pattern actually

@@ -1243,12 +1243,6 @@ LogicalResult outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
   return success();
 }
 
-template <typename T>
-void push_back_if_unique(std::vector<T> &vec, T entry) {
-  if (std::find(vec.begin(), vec.end(), entry) == vec.end())
-    vec.push_back(entry);
-}
-
 /// Collect all values that alias the given buffer through view-like operations.
 /// This includes memref.subview, memref.collapse_shape, memref.expand_shape,
 /// memref.reinterpret_cast, etc.
@@ -1710,12 +1704,10 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       auto forOp = dyn_cast<scf::ForOp>(p);
       if (!forOp)
         return std::nullopt;
-      auto lb = getConstantIntValue(forOp.getLowerBound());
-      auto ub = getConstantIntValue(forOp.getUpperBound());
-      auto step = getConstantIntValue(forOp.getStep());
-      if (!lb || !ub || !step || *step <= 0)
+      auto trips = air::getStaticScfForTripCountAsInt(forOp);
+      if (!trips)
         return std::nullopt;
-      n *= std::max<int64_t>(0, llvm::divideCeil(*ub - *lb, *step));
+      n *= *trips;
     }
     return n;
   };
@@ -2592,15 +2584,14 @@ struct SpecializeAffineIfPattern : public OpRewritePattern<affine::AffineIfOp> {
     } else if (op.hasElse()) {
       bb = op.getElseBlock();
     }
-    if (bb) {
-      auto t = bb->getTerminator();
-      auto &ops = bb->getOperations();
-      op->getBlock()->getOperations().splice(Block::iterator(op), ops,
-                                             ops.begin(), --ops.end());
-      for (int i = 0, e = op.getNumResults(); i < e; i++)
-        op.getResult(i).replaceAllUsesWith(t->getOperand(i));
+    if (!bb) {
+      rewriter.eraseOp(op);
+      return success();
     }
-    rewriter.eraseOp(op);
+    Operation *t = bb->getTerminator();
+    rewriter.inlineBlockBefore(bb, op);
+    rewriter.replaceOp(op, t->getOperands());
+    rewriter.eraseOp(t);
     return success();
   }
 };
@@ -2659,15 +2650,14 @@ struct SpecializeScfIfPattern : public OpRewritePattern<scf::IfOp> {
     } else if (op.elseBlock()) {
       bb = op.elseBlock();
     }
-    if (bb) {
-      auto t = bb->getTerminator();
-      auto &ops = bb->getOperations();
-      op->getBlock()->getOperations().splice(Block::iterator(op), ops,
-                                             ops.begin(), --ops.end());
-      for (int i = 0, e = op.getNumResults(); i < e; i++)
-        op.getResult(i).replaceAllUsesWith(t->getOperand(i));
+    if (!bb) {
+      rewriter.eraseOp(op);
+      return success();
     }
-    rewriter.eraseOp(op);
+    Operation *t = bb->getTerminator();
+    rewriter.inlineBlockBefore(bb, op);
+    rewriter.replaceOp(op, t->getOperands());
+    rewriter.eraseOp(t);
     return success();
   }
 };
@@ -2703,13 +2693,10 @@ struct SpecializeScfIndexSwitchPattern
     if (!bb)
       bb = &op.getDefaultRegion().front();
 
-    auto t = bb->getTerminator();
-    auto &ops = bb->getOperations();
-    op->getBlock()->getOperations().splice(Block::iterator(op), ops,
-                                           ops.begin(), --ops.end());
-    for (int i = 0, e = op.getNumResults(); i < e; i++)
-      op.getResult(i).replaceAllUsesWith(t->getOperand(i));
-    rewriter.eraseOp(op);
+    Operation *t = bb->getTerminator();
+    rewriter.inlineBlockBefore(bb, op);
+    rewriter.replaceOp(op, t->getOperands());
+    rewriter.eraseOp(t);
     return success();
   }
 };
@@ -2730,33 +2717,26 @@ struct LowerAIRExecutePattern : public OpRewritePattern<air::ExecuteOp> {
 
   LogicalResult matchAndRewrite(air::ExecuteOp op,
                                 PatternRewriter &rewriter) const override {
-    auto &bb = op.getRegion().front();
-    unsigned idx = 0;
-    for (auto &arg : bb.getArguments()) {
-      arg.replaceAllUsesWith(op.getOperand(idx));
-      idx++;
-    }
+    Block &bb = op.getRegion().front();
     if (op.getAsyncDependencies().size()) {
       air::WaitAllOp::create(rewriter, op->getLoc(), Type{},
                              op.getAsyncDependencies());
     }
+    Operation *t = bb.getTerminator();
+    rewriter.inlineBlockBefore(
+        &bb, op, op->getOperands().take_front(bb.getNumArguments()));
+    // Result 0 is the async token; the rest are the terminator's operands.
+    SmallVector<Value> results;
     if (op.getNumResults() > 0) {
       rewriter.setInsertionPointAfter(op);
       auto w = air::WaitAllOp::create(
           rewriter, op->getLoc(), air::AsyncTokenType::get(op->getContext()),
           SmallVector<Value, 1>{});
-      op.getResult(0).replaceAllUsesWith(w.getResult(0));
+      results.push_back(w.getResult(0));
+      llvm::append_range(results, t->getOperands());
     }
-    op.walk([&](air::ExecuteTerminatorOp t) {
-      int resultIdx = 1;
-      for (auto r : t->getOperands())
-        op.getResult(resultIdx++).replaceAllUsesWith(r);
-    });
-    auto &ops = bb.getOperations();
-    op->getBlock()->getOperations().splice(Block::iterator(op), ops,
-                                           ops.begin(), --ops.end());
-
-    rewriter.eraseOp(op);
+    rewriter.replaceOp(op, results);
+    rewriter.eraseOp(t);
     return success();
   }
 };

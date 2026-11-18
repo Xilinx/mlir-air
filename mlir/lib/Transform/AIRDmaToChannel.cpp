@@ -16,6 +16,8 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -2013,14 +2015,12 @@ static LogicalResult splitDeviceIssued(air::ChannelInterface op,
       if (!loop)
         continue;
       outerLoop = loop;
-      auto lb = getConstantIntValue(loop.getLowerBound());
-      auto ub = getConstantIntValue(loop.getUpperBound());
-      auto st = getConstantIntValue(loop.getStep());
-      if (!lb || !ub || !st || *st <= 0) {
+      auto trips = air::getStaticScfForTripCountAsInt(loop);
+      if (!trips) {
         counted = false;
         continue;
       }
-      issueCount *= std::max<int64_t>(0, llvm::divideCeil(*ub - *lb, *st));
+      issueCount *= *trips;
     }
   if (outerLoop && guard)
     counted = false;
@@ -2247,14 +2247,10 @@ static void putL3SideInMemoryOrder(air::DmaMemcpyNdOp dma) {
     return;
   auto constants =
       [](ArrayRef<OpFoldResult> ofrs) -> std::optional<SmallVector<int64_t>> {
-    SmallVector<int64_t> out;
-    for (OpFoldResult ofr : ofrs) {
-      auto c = getConstantIntValue(ofr);
-      if (!c || *c <= 0)
-        return std::nullopt;
-      out.push_back(*c);
-    }
-    return out;
+    std::optional<SmallVector<int64_t>> vals = getConstantIntValues(ofrs);
+    if (!vals || llvm::any_of(*vals, [](int64_t v) { return v <= 0; }))
+      return std::nullopt;
+    return vals;
   };
   SmallVector<OpFoldResult> l3Offsets =
       srcIsL3 ? dma.getMixedSrcOffsets() : dma.getMixedDstOffsets();
@@ -2281,9 +2277,7 @@ static void putL3SideInMemoryOrder(air::DmaMemcpyNdOp dma) {
         !llvm::equal(l2Ty.getShape(), *l3Sizes))
       return;
     l2Offsets.assign(rank, b.getIndexAttr(0));
-    l2Strides.assign(rank, 1);
-    for (int i = rank - 2; i >= 0; --i)
-      l2Strides[i] = l2Strides[i + 1] * (*l3Sizes)[i + 1];
+    l2Strides = computeSuffixProduct(*l3Sizes);
   } else {
     auto sizes = constants(l2Sizes);
     auto strides = constants(srcIsL3 ? dma.getMixedDstStrides()

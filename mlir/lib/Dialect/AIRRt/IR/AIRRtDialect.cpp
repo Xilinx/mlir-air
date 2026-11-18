@@ -18,35 +18,20 @@ using namespace mlir;
 
 #include "air/Dialect/AIRRt/AIRRtOpsDialect.cpp.inc"
 
+#define GET_TYPEDEF_CLASSES
+#include "air/Dialect/AIRRt/AIRRtOpsTypes.cpp.inc"
+
 namespace xilinx::airrt {
 
 void AIRRtDialect::initialize() {
-  addTypes<EventType>();
+  addTypes<
+#define GET_TYPEDEF_LIST
+#include "air/Dialect/AIRRt/AIRRtOpsTypes.cpp.inc"
+      >();
   addOperations<
 #define GET_OP_LIST
 #include "air/Dialect/AIRRt/AIRRtOps.cpp.inc"
       >();
-}
-
-Type AIRRtDialect::parseType(DialectAsmParser &parser) const {
-  // Parse the main keyword for the type.
-  StringRef keyword;
-  if (parser.parseKeyword(&keyword))
-    return Type();
-  MLIRContext *context = getContext();
-
-  // Handle 'event' types.
-  if (keyword == "event")
-    return EventType::get(context);
-
-  parser.emitError(parser.getNameLoc(), "unknown airrt type: " + keyword);
-  return Type();
-}
-
-void AIRRtDialect::printType(Type type, DialectAsmPrinter &os) const {
-  TypeSwitch<Type>(type)
-      .Case<EventType>([&](Type) { os << "event"; })
-      .Default([](Type) { llvm_unreachable("unexpected 'airrt' type"); });
 }
 
 static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {

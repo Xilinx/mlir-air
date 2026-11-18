@@ -7,11 +7,11 @@
 
 // RUN: air-opt %s | FileCheck %s
 
-// CHECK: transform.air.get_segment_for
+// CHECK: transform.get_parent_op
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
     %0 = transform.structured.match ops{["arith.addi"]} in %arg1: (!transform.any_op) -> !transform.any_op
-    %1 = transform.air.get_segment_for %0 : (!transform.any_op) -> !transform.any_op
+    %1 = transform.get_parent_op %0 <deduplicate, op_name = "air.segment"> : (!transform.any_op) -> !transform.any_op
     transform.debug.emit_remark_at %1, "found segment" : !transform.any_op
       transform.yield
   }

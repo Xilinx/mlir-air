@@ -10,20 +10,14 @@
 #define AIRRT_DIALECT_H
 
 #include "mlir/IR/Dialect.h"
+#include "mlir/IR/DialectImplementation.h"
+#include "mlir/IR/Types.h"
 #include "llvm/ADT/StringRef.h"
 
 using namespace mlir;
 
-namespace xilinx {
-namespace airrt {
-class EventType : public Type::TypeBase<EventType, Type, TypeStorage> {
-public:
-  using Base::Base;
-  static constexpr StringLiteral name = "xilinx.airrt.event";
-};
-
-} // namespace airrt
-} // namespace xilinx
+#define GET_TYPEDEF_CLASSES
+#include "air/Dialect/AIRRt/AIRRtOpsTypes.h.inc"
 
 #include "air/Dialect/AIRRt/AIRRtOpsDialect.h.inc"
 

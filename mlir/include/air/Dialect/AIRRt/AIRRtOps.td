@@ -29,7 +29,7 @@ def AIRRt_ModuleMetadataOp : AIRRt_Op<"module_metadata", [
   let arguments = (ins);
   let results = (outs);
   let regions = (region SizedRegion<1>:$segments);
-  let hasCustomAssemblyFormat = 1;
+  let assemblyFormat = "attr-dict-with-keyword $segments";
 }
 
 def AIRRt_ModuleMetadataTerminatorOp
@@ -55,7 +55,7 @@ def AIRRt_SegmentMetadataOp : AIRRt_Op<"segment_metadata", [
   );
   let results = (outs);
   let regions = (region SizedRegion<1>:$herds);
-  let hasCustomAssemblyFormat = 1;
+  let assemblyFormat = "attr-dict-with-keyword $herds";
 }
 
 def AIRRt_SegmentMetadataTerminatorOp

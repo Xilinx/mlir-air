@@ -7,8 +7,8 @@
 
 // RUN: air-opt -air-transform='filename=%S/air_transform.mlir' -verify-diagnostics %s | FileCheck %s
 
-// CHECK-LABEL: @get_segment_for_op
-func.func @get_segment_for_op(%arg0: i32, %arg1: i32) {
+// CHECK-LABEL: @get_parent_segment
+func.func @get_parent_segment(%arg0: i32, %arg1: i32) {
   // expected-remark @below {{found segment}}
   air.segment args (%arg2=%arg0, %arg3=%arg1) : i32, i32 {
     %c1 = arith.constant 1 : index

@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
@@ -3177,12 +3178,8 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
 // Get number of cores in herd
 unsigned dependencyCanonicalizer::getTripCountInHierarchyOp(
     air::HierarchyInterface hier) {
-  auto sizes = hier.getSizeOperands();
-  unsigned output = 1;
-  for (unsigned i = 0; i < sizes.size(); i++) {
-    output *= sizes[i].getDefiningOp<arith::ConstantIndexOp>().value();
-  }
-  return output;
+  return llvm::product_of(
+      *getConstantIntValues(getAsOpFoldResult(hier.getSizeOperands())));
 }
 
 // Write position of each core to dependency graph, if showing cores
@@ -3217,14 +3214,11 @@ dependencyCanonicalizer::getIteratorFromPosition(std::vector<unsigned> position,
 // Write position in string
 std::string
 dependencyCanonicalizer::toPositionString(std::vector<unsigned> position) {
-  std::string output = "[";
-  for (unsigned i = 0; i < position.size(); i++) {
-    output += std::to_string(position[i]);
-    if (i < position.size() - 1) {
-      output += ",";
-    }
-  }
-  output += "]";
+  std::string output;
+  llvm::raw_string_ostream os(output);
+  os << '[';
+  llvm::interleave(position, os, ",");
+  os << ']';
   return output;
 }
 
