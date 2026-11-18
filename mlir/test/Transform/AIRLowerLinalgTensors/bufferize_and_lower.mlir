@@ -5,6 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+// REQUIRES: aie
 // RUN: air-opt %s -air-lower-linalg-tensors | FileCheck %s
 
 // The linalg.generic is bufferized in place, the to_tensor/to_buffer pair
