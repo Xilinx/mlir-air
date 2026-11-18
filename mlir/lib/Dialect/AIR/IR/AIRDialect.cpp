@@ -2137,40 +2137,6 @@ static SmallVector<Value> extractSizesFromMemrefType(MemRefType memrefTy,
   return sizes;
 }
 
-// Generic template to extract offsets from memref operations.
-template <typename OpType>
-static void extractOffsetsFromOp(OpType op, OpBuilder &builder,
-                                 SmallVector<Value> &offsets) {
-  auto op_offsets = op.getOffsets().begin();
-  auto static_offsets = op.getStaticOffsets();
-  auto loc = op.getLoc();
-
-  for (auto o : static_offsets) {
-    if (o >= 0)
-      offsets.push_back(getValueOrCreateConstantIndexOp(
-          builder, loc, builder.getIndexAttr(o)));
-    else
-      offsets.push_back(*op_offsets++);
-  }
-}
-
-// Generic template to extract strides from memref operations.
-template <typename OpType>
-static void extractStridesFromOp(OpType op, OpBuilder &builder,
-                                 SmallVector<Value> &strides) {
-  auto op_strides = op.getStrides().begin();
-  auto static_strides = op.getStaticStrides();
-  auto loc = op.getLoc();
-
-  for (auto o : static_strides) {
-    if (o >= 0)
-      strides.push_back(getValueOrCreateConstantIndexOp(
-          builder, loc, builder.getIndexAttr(o)));
-    else
-      strides.push_back(*op_strides++);
-  }
-}
-
 // Check if the access pattern represents the default (contiguous, row-major)
 // data access pattern.
 static bool isDefaultDataAccessPattern(ArrayRef<OpFoldResult> memcpy_sizes,
@@ -2629,8 +2595,10 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     auto offSizStrOp =
         dyn_cast_if_present<OffsetSizeAndStrideOpInterface>(memrefOpVec[0]);
     input_memref = viewLikeOp.getViewSource();
-    extractOffsetsFromOp(offSizStrOp, rewriter, initialOffsets);
-    extractStridesFromOp(offSizStrOp, rewriter, initialStrides);
+    initialOffsets = getValueOrCreateConstantIndexOp(
+        rewriter, offSizStrOp.getLoc(), offSizStrOp.getMixedOffsets());
+    initialStrides = getValueOrCreateConstantIndexOp(
+        rewriter, offSizStrOp.getLoc(), offSizStrOp.getMixedStrides());
     // A rank-reducing subview: the ops after it index its result, which has
     // no dims for the dropped ones. Their offsets still address the source:
     // they become leading unit dims of the access pattern, with the source's

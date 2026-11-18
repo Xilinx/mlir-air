@@ -251,15 +251,9 @@ uint64_t air::getElementSizeInBytes(const mlir::Type ty) {
 
 // Get the parent scf.for op of an iter_arg
 scf::ForOp air::getForRegionIterArgsOwner(Value val) {
-  auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
-  if (!ivArg)
+  if (!val)
     return scf::ForOp();
-  if (!ivArg.getOwner()) {
-    val.getDefiningOp()->emitOpError("unlinked block argument");
-    return scf::ForOp();
-  }
-  auto *containingOp = ivArg.getOwner()->getParentOp();
-  return dyn_cast_if_present<scf::ForOp>(containingOp);
+  return scf::getForInductionVarOwner(val);
 }
 
 // Get the parent scf.parallel op of an init_val
