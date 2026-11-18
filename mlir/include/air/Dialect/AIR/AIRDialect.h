@@ -213,19 +213,14 @@ struct AttrBasedSymbolVisibility
   }
 };
 
-class AsyncTokenType
-    : public Type::TypeBase<AsyncTokenType, Type, TypeStorage> {
-public:
-  // Used for generic hooks in TypeBase.
-  using Base::Base;
-  static constexpr StringLiteral name = "xilinx.air.async_token";
-};
+} // namespace air
+} // namespace xilinx
 
-class UniverseType : public Type::TypeBase<UniverseType, Type, TypeStorage> {
-public:
-  using Base::Base;
-  static constexpr StringLiteral name = "xilinx.air.universe";
-};
+#define GET_TYPEDEF_CLASSES
+#include "air/Dialect/AIR/AIRTypes.h.inc"
+
+namespace xilinx {
+namespace air {
 
 // Adds a `air.async.token` to the front of the argument list.
 void addAsyncDependency(Operation *op, Value token);
