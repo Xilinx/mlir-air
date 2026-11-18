@@ -1588,6 +1588,34 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#eventtype" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        EventType
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2159,6 +2187,34 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#eventtype" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        EventType
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2240,6 +2296,10 @@ can be lowered to a combination of standard and LLVM dialects.</p>
 </li>
 <li><a href="#type-constraints">Type constraints</a><ul>
 <li><a href="#event-type">event type</a></li>
+</ul>
+</li>
+<li><a href="#types">Types</a><ul>
+<li><a href="#eventtype">EventType</a></li>
 </ul>
 </li>
 </ul>
@@ -2529,6 +2589,9 @@ to read an entry without caring which form it takes.</p>
 </table>
 <h3 id="airrtmodule_metadata-xilinxairrtmodulemetadataop"><code>airrt.module_metadata</code> (xilinx::airrt::ModuleMetadataOp)<a class="headerlink" href="#airrtmodule_metadata-xilinxairrtmodulemetadataop" title="Permanent link">&para;</a></h3>
 <p><em>Global metadata for the module</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>operation ::= `airrt.module_metadata` attr-dict-with-keyword $segments
+</code></pre></div>
 <p>This op contains a region containing airrt.segment_metadata ops,
 which give information about the segments in the module.</p>
 <p>There is one of these per module.</p>
@@ -2536,13 +2599,13 @@ which give information about the segments in the module.</p>
 <h3 id="airrtmodule_metadata_terminator-xilinxairrtmodulemetadataterminatorop"><code>airrt.module_metadata_terminator</code> (xilinx::airrt::ModuleMetadataTerminatorOp)<a class="headerlink" href="#airrtmodule_metadata_terminator-xilinxairrtmodulemetadataterminatorop" title="Permanent link">&para;</a></h3>
 <p><em>Implicit terminator for ModuleMetadataOp's region</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>operation ::= `airrt.module_metadata_terminator` attr-dict
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>operation ::= `airrt.module_metadata_terminator` attr-dict
 </code></pre></div>
 <p>Traits: <code>HasParent&lt;ModuleMetadataOp&gt;</code>, <code>Terminator</code></p>
 <h3 id="airrtsegment_load-xilinxairrtsegmentloadop"><code>airrt.segment_load</code> (xilinx::airrt::SegmentLoadOp)<a class="headerlink" href="#airrtsegment_load-xilinxairrtsegmentloadop" title="Permanent link">&para;</a></h3>
 <p><em>Load a segment</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>operation ::= `airrt.segment_load` $sym_name attr-dict `:` type($p) (`,` type($event)^)?
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>operation ::= `airrt.segment_load` $sym_name attr-dict `:` type($p) (`,` type($event)^)?
 </code></pre></div>
 <h4 id="attributes_3">Attributes:<a class="headerlink" href="#attributes_3" title="Permanent link">&para;</a></h4>
 <table>
@@ -2571,6 +2634,9 @@ which give information about the segments in the module.</p>
 </table>
 <h3 id="airrtsegment_metadata-xilinxairrtsegmentmetadataop"><code>airrt.segment_metadata</code> (xilinx::airrt::SegmentMetadataOp)<a class="headerlink" href="#airrtsegment_metadata-xilinxairrtsegmentmetadataop" title="Permanent link">&para;</a></h3>
 <p><em>Runtime metadata for one air region</em></p>
+<p>Syntax:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>operation ::= `airrt.segment_metadata` attr-dict-with-keyword $herds
+</code></pre></div>
 <p>This op contains a region containing airrt.herd_metadata ops,
 which give information about the herds in the module.</p>
 <p>Traits: <code>HasParent&lt;ModuleMetadataOp&gt;</code>, <code>SingleBlockImplicitTerminator&lt;SegmentMetadataTerminatorOp&gt;</code>, <code>SingleBlock</code></p>
@@ -2583,13 +2649,13 @@ which give information about the herds in the module.</p>
 <h3 id="airrtsegment_metadata_terminator-xilinxairrtsegmentmetadataterminatorop"><code>airrt.segment_metadata_terminator</code> (xilinx::airrt::SegmentMetadataTerminatorOp)<a class="headerlink" href="#airrtsegment_metadata_terminator-xilinxairrtsegmentmetadataterminatorop" title="Permanent link">&para;</a></h3>
 <p><em>Implicit terminator for SegmentMetadataOp's region</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>operation ::= `airrt.segment_metadata_terminator` attr-dict
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>operation ::= `airrt.segment_metadata_terminator` attr-dict
 </code></pre></div>
 <p>Traits: <code>HasParent&lt;SegmentMetadataOp&gt;</code>, <code>Terminator</code></p>
 <h3 id="airrtwait_all-xilinxairrtwaitallop"><code>airrt.wait_all</code> (xilinx::airrt::WaitAllOp)<a class="headerlink" href="#airrtwait_all-xilinxairrtwaitallop" title="Permanent link">&para;</a></h3>
 <p><em>Wait for all operator</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>operation ::= `airrt.wait_all` ($events^)? attr-dict (`:` type($event)^)?
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>operation ::= `airrt.wait_all` ($events^)? attr-dict (`:` type($event)^)?
 </code></pre></div>
 <p>Block and wait for all events before preceding.
 Optionally return an event.</p>
@@ -2625,6 +2691,10 @@ Optionally return an event.</p>
 </table>
 <h2 id="type-constraints">Type constraints<a class="headerlink" href="#type-constraints" title="Permanent link">&para;</a></h2>
 <h3 id="event-type">event type<a class="headerlink" href="#event-type" title="Permanent link">&para;</a></h3>
+<h2 id="types">Types<a class="headerlink" href="#types" title="Permanent link">&para;</a></h2>
+<h3 id="eventtype">EventType<a class="headerlink" href="#eventtype" title="Permanent link">&para;</a></h3>
+<p><em>Completion event of an AIR runtime operation</em></p>
+<p>Syntax: <code>!airrt.event</code></p>
 
 
 
