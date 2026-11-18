@@ -46,6 +46,7 @@ from air_examples.llms.shared.fused_prefill.engine import (  # noqa: E402
     TO,
     Engine,
     view,
+    built_max_len,
 )
 
 HOST_C = HERE / "kernels" / "q36_host.c"
@@ -94,7 +95,8 @@ class Qwen36Prefill(Engine):
         so = Path(build_dir) / "libq36host.so"
         if not so.exists() or so.stat().st_mtime < HOST_C.stat().st_mtime:
             build_host(build_dir)
-        super().__init__(build_dir, S.CFG, S.max_len)
+        max_len = built_max_len(build_dir, S.max_len)
+        super().__init__(build_dir, S.config(max_len), max_len)
         self.w = w
         self.layers = list(range(W.N_LAYERS)) if layers is None else list(layers)
         self.q = ctypes.CDLL(str(so))
@@ -102,7 +104,7 @@ class Qwen36Prefill(Engine):
         self.q.o_gate_tile.argtypes = [_p] + [_i] * 9 + [_p, _i, _p, _i]
         self.nt = threads
         inv = 1.0 / W.THETA ** (np.arange(0, W.ROPE_DIM, 2) / W.ROPE_DIM)
-        ang = np.arange(S.max_len)[:, None] * inv[None]
+        ang = np.arange(self.max_len)[:, None] * inv[None]
         self.cs = np.ascontiguousarray(np.cos(ang), np.float32)
         self.sn = np.ascontiguousarray(np.sin(ang), np.float32)
         self.times = {}

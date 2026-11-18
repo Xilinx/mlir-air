@@ -40,7 +40,11 @@ import qwen38_27b_q4nx_weights as W  # noqa: E402
 from air_examples.llms.qwen38_27b_q4nx import fused_spec as S  # noqa: E402
 from air_examples.llms.shared.fused_prefill import device as D  # noqa: E402
 from air_examples.llms.shared.fused_prefill import hostops as H  # noqa: E402
-from air_examples.llms.shared.fused_prefill.engine import TO, Engine  # noqa: E402
+from air_examples.llms.shared.fused_prefill.engine import (  # noqa: E402
+    TO,
+    Engine,
+    built_max_len,
+)
 
 HOST_C = HERE / "kernels" / "q38_host.c"
 HOST_DEPS = (HOST_C, HERE.parent / "qwen35_0_8b_q4nx" / "kernels" / "q35_host.c")
@@ -75,7 +79,8 @@ class Qwen38Prefill(Engine):
             p.stat().st_mtime for p in HOST_DEPS
         ):
             build_host(build_dir)
-        super().__init__(build_dir, S.CFG, S.max_len)
+        max_len = built_max_len(build_dir, S.max_len)
+        super().__init__(build_dir, S.config(max_len), max_len)
         self.w = w
         self.layers = list(range(W.N_LAYERS)) if layers is None else list(layers)
         self.q = ctypes.CDLL(str(so))
@@ -84,7 +89,7 @@ class Qwen38Prefill(Engine):
         self.q.glu_tile.argtypes = [_p] + [_i] * 7 + [_p, _i]
         self.nt = threads
         inv = 1.0 / W.THETA ** (np.arange(0, W.ROPE_DIM, 2) / W.ROPE_DIM)
-        ang = np.arange(S.max_len)[:, None] * inv[None]
+        ang = np.arange(self.max_len)[:, None] * inv[None]
         self.cs = np.ascontiguousarray(np.cos(ang), np.float32)
         self.sn = np.ascontiguousarray(np.sin(ang), np.float32)
         self.times = {}

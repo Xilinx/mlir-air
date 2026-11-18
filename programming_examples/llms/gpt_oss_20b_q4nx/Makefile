@@ -8,6 +8,7 @@
 #
 #   make compile         Build the decode ELF
 #   make compile-fused-prefill  Build the fused prefill device into FUSED_DIR
+#                       (prompts up to FUSED_MAX_LEN tokens, default 4096)
 #   make run             Greedy decode of PROMPT, checked against the CPU reference
 #   make prefill-fused   The fused prefill of PROMPT repeated to LONG_LEN tokens
 #                        vs the CPU reference
@@ -66,10 +67,12 @@ compile:
 	$(DRIVER) --compile-only --maxl $(MAXL) --build-dir $(BUILD_DIR)
 
 compile-fused-prefill:
-	$(PYTHON) $(srcdir)/fused_build.py $(FUSED_DIR) -j $(FUSED_JOBS)
+	$(PYTHON) $(srcdir)/fused_build.py $(FUSED_DIR) -j $(FUSED_JOBS) \
+		$(if $(FUSED_MAX_LEN),--max-len $(FUSED_MAX_LEN))
 
 %/manifest.json:
-	$(PYTHON) $(srcdir)/fused_build.py $* -j $(FUSED_JOBS)
+	$(PYTHON) $(srcdir)/fused_build.py $* -j $(FUSED_JOBS) \
+		$(if $(FUSED_MAX_LEN),--max-len $(FUSED_MAX_LEN))
 
 run: $(FUSED_DEP)
 	$(DRIVER) --maxl $(MAXL) --steps $(STEPS) --prompt "$(PROMPT)" \
