@@ -306,6 +306,12 @@ struct ChainLockSet {
   bool isFanOut() const { return n_writers == 1 && n_readers > 1; }
 };
 
+// The number of DMA channels `tile` has in one direction: MM2S if `isMM2S`,
+// else S2MM. A tile counts its DMA connections from the DMA's side, so MM2S
+// channels are its destination connections and S2MM channels its sources, as
+// mlir-aie's own DMA-channel verifier counts them.
+int getNumTileDMAChannels(AIE::TileLike tile, bool isMM2S);
+
 class DMAAllocator {
 
 public:
