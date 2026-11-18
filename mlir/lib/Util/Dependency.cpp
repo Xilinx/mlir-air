@@ -772,30 +772,32 @@ bool sameGuardChain(ArrayRef<std::pair<Operation *, unsigned>> a,
 }
 
 // Does token `v` wait on token `target`, through the async dependency lists
-// of the ops that produce it?
+// of the ops that produce it? `memo` holds each token's answer, so a token
+// several paths reach is walked once.
 static bool tokenWaitsOn(Value v, Value target,
-                         llvm::SmallPtrSetImpl<Operation *> &visited) {
+                         llvm::DenseMap<Value, bool> &memo) {
   if (v == target)
     return true;
+  auto [it, fresh] = memo.try_emplace(v, false);
+  if (!fresh)
+    return it->second;
   Operation *def = v.getDefiningOp();
-  if (!def || !visited.insert(def).second)
-    return false;
-  // A branch result waits on `target` only if every arm's yield for it does.
-  if (isa<scf::IfOp, scf::IndexSwitchOp>(def)) {
+  bool waits = false;
+  if (isa_and_present<scf::IfOp, scf::IndexSwitchOp>(def)) {
+    // A branch result waits on `target` only if every arm's yield for it does.
     unsigned i = cast<OpResult>(v).getResultNumber();
-    return llvm::all_of(def->getRegions(), [&](Region &r) {
-      if (r.empty())
-        return false;
-      llvm::SmallPtrSet<Operation *, 16> armVisited(visited.begin(),
-                                                    visited.end());
-      return tokenWaitsOn(r.front().getTerminator()->getOperand(i), target,
-                          armVisited);
+    waits = llvm::all_of(def->getRegions(), [&](Region &r) {
+      return !r.empty() &&
+             tokenWaitsOn(r.front().getTerminator()->getOperand(i), target,
+                          memo);
+    });
+  } else if (def) {
+    waits = llvm::any_of(getAsyncDependenciesFromOp(def), [&](Value dep) {
+      return tokenWaitsOn(dep, target, memo);
     });
   }
-  for (Value dep : getAsyncDependenciesFromOp(def))
-    if (tokenWaitsOn(dep, target, visited))
-      return true;
-  return false;
+  memo[v] = waits;
+  return waits;
 }
 
 void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
@@ -811,9 +813,9 @@ void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
       auto yield = cast<scf::YieldOp>(block->getTerminator());
       Value promoted;
       for (auto [i, v] : llvm::enumerate(yield.getOperands())) {
-        llvm::SmallPtrSet<Operation *, 16> visited;
+        llvm::DenseMap<Value, bool> memo;
         if (isa<air::AsyncTokenType>(v.getType()) &&
-            tokenWaitsOn(v, token, visited)) {
+            tokenWaitsOn(v, token, memo)) {
           promoted = loop->getResult(i);
           break;
         }
@@ -843,9 +845,9 @@ void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
     auto it = llvm::find(operands, token);
     if (it == operands.end())
       it = llvm::find_if(operands, [&](Value v) {
-        llvm::SmallPtrSet<Operation *, 16> visited;
+        llvm::DenseMap<Value, bool> memo;
         return isa<air::AsyncTokenType>(v.getType()) &&
-               tokenWaitsOn(v, token, visited);
+               tokenWaitsOn(v, token, memo);
       });
     if (it == operands.end())
       break;

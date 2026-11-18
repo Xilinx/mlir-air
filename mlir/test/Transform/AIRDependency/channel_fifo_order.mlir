@@ -686,3 +686,318 @@ module {
     return
   }
 }
+
+// -----
+
+// A get in a loop, then 40 branches whose arms all wait on the one before:
+// the loop's result waits on the get, so the get after the loop follows it.
+// Each branch result is decided once, not once per path through the chain.
+
+// CHECK-LABEL: func.func @chan_fifo_long_branch_chain
+// CHECK: %[[L:.*]] = scf.for
+// CHECK: air.channel.get async [%{{[a-z_0-9]+}}] @channel_13
+// CHECK: air.channel.get async [%[[L]]] @channel_13
+
+module {
+  air.channel @channel_13 [1]
+  func.func @chan_fifo_long_branch_chain(%p: i1) {
+    %c1 = arith.constant 1 : index
+    air.launch (%a, %b) in (%ax=%c1, %ay=%c1) args(%lp=%p) : i1 {
+      air.segment @seg args(%go=%lp) : i1 {
+        %c0 = arith.constant 0 : index
+        %c2 = arith.constant 2 : index
+        %c1s = arith.constant 1 : index
+        %t0, %r0 = air.execute -> (memref<8xi32, 1 : i32>) {
+          %m = memref.alloc() : memref<8xi32, 1 : i32>
+          air.execute_terminator %m : memref<8xi32, 1 : i32>
+        }
+        %l = scf.for %i = %c0 to %c2 step %c1s iter_args(%t = %t0) -> (!air.async.token) {
+          %g0 = air.channel.get async [%t] @channel_13[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+          %s1 = scf.if %go -> (!air.async.token) {
+            %w1 = air.wait_all async [%g0]
+            scf.yield %w1 : !air.async.token
+          } else {
+            %e1 = air.wait_all async [%g0]
+            scf.yield %e1 : !air.async.token
+          }
+          %s2 = scf.if %go -> (!air.async.token) {
+            %w2 = air.wait_all async [%s1]
+            scf.yield %w2 : !air.async.token
+          } else {
+            %e2 = air.wait_all async [%s1]
+            scf.yield %e2 : !air.async.token
+          }
+          %s3 = scf.if %go -> (!air.async.token) {
+            %w3 = air.wait_all async [%s2]
+            scf.yield %w3 : !air.async.token
+          } else {
+            %e3 = air.wait_all async [%s2]
+            scf.yield %e3 : !air.async.token
+          }
+          %s4 = scf.if %go -> (!air.async.token) {
+            %w4 = air.wait_all async [%s3]
+            scf.yield %w4 : !air.async.token
+          } else {
+            %e4 = air.wait_all async [%s3]
+            scf.yield %e4 : !air.async.token
+          }
+          %s5 = scf.if %go -> (!air.async.token) {
+            %w5 = air.wait_all async [%s4]
+            scf.yield %w5 : !air.async.token
+          } else {
+            %e5 = air.wait_all async [%s4]
+            scf.yield %e5 : !air.async.token
+          }
+          %s6 = scf.if %go -> (!air.async.token) {
+            %w6 = air.wait_all async [%s5]
+            scf.yield %w6 : !air.async.token
+          } else {
+            %e6 = air.wait_all async [%s5]
+            scf.yield %e6 : !air.async.token
+          }
+          %s7 = scf.if %go -> (!air.async.token) {
+            %w7 = air.wait_all async [%s6]
+            scf.yield %w7 : !air.async.token
+          } else {
+            %e7 = air.wait_all async [%s6]
+            scf.yield %e7 : !air.async.token
+          }
+          %s8 = scf.if %go -> (!air.async.token) {
+            %w8 = air.wait_all async [%s7]
+            scf.yield %w8 : !air.async.token
+          } else {
+            %e8 = air.wait_all async [%s7]
+            scf.yield %e8 : !air.async.token
+          }
+          %s9 = scf.if %go -> (!air.async.token) {
+            %w9 = air.wait_all async [%s8]
+            scf.yield %w9 : !air.async.token
+          } else {
+            %e9 = air.wait_all async [%s8]
+            scf.yield %e9 : !air.async.token
+          }
+          %s10 = scf.if %go -> (!air.async.token) {
+            %w10 = air.wait_all async [%s9]
+            scf.yield %w10 : !air.async.token
+          } else {
+            %e10 = air.wait_all async [%s9]
+            scf.yield %e10 : !air.async.token
+          }
+          %s11 = scf.if %go -> (!air.async.token) {
+            %w11 = air.wait_all async [%s10]
+            scf.yield %w11 : !air.async.token
+          } else {
+            %e11 = air.wait_all async [%s10]
+            scf.yield %e11 : !air.async.token
+          }
+          %s12 = scf.if %go -> (!air.async.token) {
+            %w12 = air.wait_all async [%s11]
+            scf.yield %w12 : !air.async.token
+          } else {
+            %e12 = air.wait_all async [%s11]
+            scf.yield %e12 : !air.async.token
+          }
+          %s13 = scf.if %go -> (!air.async.token) {
+            %w13 = air.wait_all async [%s12]
+            scf.yield %w13 : !air.async.token
+          } else {
+            %e13 = air.wait_all async [%s12]
+            scf.yield %e13 : !air.async.token
+          }
+          %s14 = scf.if %go -> (!air.async.token) {
+            %w14 = air.wait_all async [%s13]
+            scf.yield %w14 : !air.async.token
+          } else {
+            %e14 = air.wait_all async [%s13]
+            scf.yield %e14 : !air.async.token
+          }
+          %s15 = scf.if %go -> (!air.async.token) {
+            %w15 = air.wait_all async [%s14]
+            scf.yield %w15 : !air.async.token
+          } else {
+            %e15 = air.wait_all async [%s14]
+            scf.yield %e15 : !air.async.token
+          }
+          %s16 = scf.if %go -> (!air.async.token) {
+            %w16 = air.wait_all async [%s15]
+            scf.yield %w16 : !air.async.token
+          } else {
+            %e16 = air.wait_all async [%s15]
+            scf.yield %e16 : !air.async.token
+          }
+          %s17 = scf.if %go -> (!air.async.token) {
+            %w17 = air.wait_all async [%s16]
+            scf.yield %w17 : !air.async.token
+          } else {
+            %e17 = air.wait_all async [%s16]
+            scf.yield %e17 : !air.async.token
+          }
+          %s18 = scf.if %go -> (!air.async.token) {
+            %w18 = air.wait_all async [%s17]
+            scf.yield %w18 : !air.async.token
+          } else {
+            %e18 = air.wait_all async [%s17]
+            scf.yield %e18 : !air.async.token
+          }
+          %s19 = scf.if %go -> (!air.async.token) {
+            %w19 = air.wait_all async [%s18]
+            scf.yield %w19 : !air.async.token
+          } else {
+            %e19 = air.wait_all async [%s18]
+            scf.yield %e19 : !air.async.token
+          }
+          %s20 = scf.if %go -> (!air.async.token) {
+            %w20 = air.wait_all async [%s19]
+            scf.yield %w20 : !air.async.token
+          } else {
+            %e20 = air.wait_all async [%s19]
+            scf.yield %e20 : !air.async.token
+          }
+          %s21 = scf.if %go -> (!air.async.token) {
+            %w21 = air.wait_all async [%s20]
+            scf.yield %w21 : !air.async.token
+          } else {
+            %e21 = air.wait_all async [%s20]
+            scf.yield %e21 : !air.async.token
+          }
+          %s22 = scf.if %go -> (!air.async.token) {
+            %w22 = air.wait_all async [%s21]
+            scf.yield %w22 : !air.async.token
+          } else {
+            %e22 = air.wait_all async [%s21]
+            scf.yield %e22 : !air.async.token
+          }
+          %s23 = scf.if %go -> (!air.async.token) {
+            %w23 = air.wait_all async [%s22]
+            scf.yield %w23 : !air.async.token
+          } else {
+            %e23 = air.wait_all async [%s22]
+            scf.yield %e23 : !air.async.token
+          }
+          %s24 = scf.if %go -> (!air.async.token) {
+            %w24 = air.wait_all async [%s23]
+            scf.yield %w24 : !air.async.token
+          } else {
+            %e24 = air.wait_all async [%s23]
+            scf.yield %e24 : !air.async.token
+          }
+          %s25 = scf.if %go -> (!air.async.token) {
+            %w25 = air.wait_all async [%s24]
+            scf.yield %w25 : !air.async.token
+          } else {
+            %e25 = air.wait_all async [%s24]
+            scf.yield %e25 : !air.async.token
+          }
+          %s26 = scf.if %go -> (!air.async.token) {
+            %w26 = air.wait_all async [%s25]
+            scf.yield %w26 : !air.async.token
+          } else {
+            %e26 = air.wait_all async [%s25]
+            scf.yield %e26 : !air.async.token
+          }
+          %s27 = scf.if %go -> (!air.async.token) {
+            %w27 = air.wait_all async [%s26]
+            scf.yield %w27 : !air.async.token
+          } else {
+            %e27 = air.wait_all async [%s26]
+            scf.yield %e27 : !air.async.token
+          }
+          %s28 = scf.if %go -> (!air.async.token) {
+            %w28 = air.wait_all async [%s27]
+            scf.yield %w28 : !air.async.token
+          } else {
+            %e28 = air.wait_all async [%s27]
+            scf.yield %e28 : !air.async.token
+          }
+          %s29 = scf.if %go -> (!air.async.token) {
+            %w29 = air.wait_all async [%s28]
+            scf.yield %w29 : !air.async.token
+          } else {
+            %e29 = air.wait_all async [%s28]
+            scf.yield %e29 : !air.async.token
+          }
+          %s30 = scf.if %go -> (!air.async.token) {
+            %w30 = air.wait_all async [%s29]
+            scf.yield %w30 : !air.async.token
+          } else {
+            %e30 = air.wait_all async [%s29]
+            scf.yield %e30 : !air.async.token
+          }
+          %s31 = scf.if %go -> (!air.async.token) {
+            %w31 = air.wait_all async [%s30]
+            scf.yield %w31 : !air.async.token
+          } else {
+            %e31 = air.wait_all async [%s30]
+            scf.yield %e31 : !air.async.token
+          }
+          %s32 = scf.if %go -> (!air.async.token) {
+            %w32 = air.wait_all async [%s31]
+            scf.yield %w32 : !air.async.token
+          } else {
+            %e32 = air.wait_all async [%s31]
+            scf.yield %e32 : !air.async.token
+          }
+          %s33 = scf.if %go -> (!air.async.token) {
+            %w33 = air.wait_all async [%s32]
+            scf.yield %w33 : !air.async.token
+          } else {
+            %e33 = air.wait_all async [%s32]
+            scf.yield %e33 : !air.async.token
+          }
+          %s34 = scf.if %go -> (!air.async.token) {
+            %w34 = air.wait_all async [%s33]
+            scf.yield %w34 : !air.async.token
+          } else {
+            %e34 = air.wait_all async [%s33]
+            scf.yield %e34 : !air.async.token
+          }
+          %s35 = scf.if %go -> (!air.async.token) {
+            %w35 = air.wait_all async [%s34]
+            scf.yield %w35 : !air.async.token
+          } else {
+            %e35 = air.wait_all async [%s34]
+            scf.yield %e35 : !air.async.token
+          }
+          %s36 = scf.if %go -> (!air.async.token) {
+            %w36 = air.wait_all async [%s35]
+            scf.yield %w36 : !air.async.token
+          } else {
+            %e36 = air.wait_all async [%s35]
+            scf.yield %e36 : !air.async.token
+          }
+          %s37 = scf.if %go -> (!air.async.token) {
+            %w37 = air.wait_all async [%s36]
+            scf.yield %w37 : !air.async.token
+          } else {
+            %e37 = air.wait_all async [%s36]
+            scf.yield %e37 : !air.async.token
+          }
+          %s38 = scf.if %go -> (!air.async.token) {
+            %w38 = air.wait_all async [%s37]
+            scf.yield %w38 : !air.async.token
+          } else {
+            %e38 = air.wait_all async [%s37]
+            scf.yield %e38 : !air.async.token
+          }
+          %s39 = scf.if %go -> (!air.async.token) {
+            %w39 = air.wait_all async [%s38]
+            scf.yield %w39 : !air.async.token
+          } else {
+            %e39 = air.wait_all async [%s38]
+            scf.yield %e39 : !air.async.token
+          }
+          %s40 = scf.if %go -> (!air.async.token) {
+            %w40 = air.wait_all async [%s39]
+            scf.yield %w40 : !air.async.token
+          } else {
+            %e40 = air.wait_all async [%s39]
+            scf.yield %e40 : !air.async.token
+          }
+          scf.yield %s40 : !air.async.token
+        }
+        %g1 = air.channel.get async @channel_13[%c0] (%r0[] [] []) : (memref<8xi32, 1 : i32>)
+      }
+    }
+    return
+  }
+}
