@@ -138,7 +138,7 @@ The rendered CDFG below is generated from the matrix multiplication example in t
 
 ### Step three: broadcast detection using `-air-broadcast-detection`
 
-The `-air-broadcast-detection` pass traces the source indices of each DMA to the induction variables of the enclosing spatial loops. A DMA whose source does not depend on some of those variables is a broadcast, and is annotated with a `broadcast_pattern` affine set describing its recipients.
+For each DMA inside an `air.herd` that reads or writes L1, the `-air-broadcast-detection` pass traces which loop induction variables its source and destination offsets, sizes and strides, and any enclosing `scf.if` or `affine.if` conditions, depend on. A DMA that does not vary along some dimensions of the herd moves the same data to every core along them, and is annotated with a `broadcast_pattern` affine set describing its recipients.
 Below is the output code snippet lowered from the tiled matrix multiplication example above.
 Here, data broadcasting opportunities are labelled with keyword `broadcast_pattern`, followed by an affine set representing the address pattern of broadcast copy recepients.
 

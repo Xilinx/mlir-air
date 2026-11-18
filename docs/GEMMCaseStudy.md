@@ -242,7 +242,7 @@ Please check out this [link](https://github.com/Xilinx/mlir-air/blob/main/docs/A
 
 ### air-broadcast-detection
 
-Traces the source indices of each DMA to the induction variables of the enclosing spatial loops. A DMA whose source does not depend on some of those variables is a broadcast, and is annotated with a `broadcast_pattern` affine set describing its recipients.
+For each DMA inside an `air.herd` that reads or writes L1, traces which loop induction variables its source and destination offsets, sizes and strides, and any enclosing `scf.if` or `affine.if` conditions, depend on. A DMA that does not vary along some dimensions of the herd moves the same data to every core along them, and is annotated with a `broadcast_pattern` affine set describing its recipients.
 
 *Input IR:*
 ```mlir
