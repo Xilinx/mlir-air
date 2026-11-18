@@ -8,9 +8,9 @@
 //
 // RUN: mkdir -p test_peano_sweep
 // RUN: cd test_peano_sweep
-// RUN: %PYTHON %S/../bench/sweep_decode_runtime.py --model-name qwen3_coder_30b_a3b_q4k --makefile %S/Makefile --contexts 1024,4096 --peano-dir %PEANO_INSTALL_DIR --out qwen3_coder_30b_a3b_q4k.sweep.json
+// RUN: %PYTHON %S/../bench/sweep_decode_runtime.py --model-name qwen3_coder_30b_a3b_q4k --makefile %S/Makefile --contexts 2048,8192,32768,131072 --peano-dir %PEANO_INSTALL_DIR --out qwen3_coder_30b_a3b_q4k.sweep.json
 // RUN: FileCheck %s < qwen3_coder_30b_a3b_q4k.sweep.json
 // CHECK: "model": "qwen3_coder_30b_a3b_q4k"
 // CHECK: "axis": "context_len"
-// CHECK: "context_len": 1024
+// CHECK: "context_len": 2048
 // CHECK-NEXT: "decode_tokens_per_sec": {{[0-9]}}
