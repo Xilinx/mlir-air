@@ -54,6 +54,7 @@ from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
 from attn_block import BLK, CU_LOC, DK, DQ, NCU, QH, QKV, SLAB, S_BLK  # noqa: E402
+from kv_bos import kv_groups  # noqa: E402
 from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
 from air_examples.llms.shared.moe.ffn import Moe, MoeShape, router_kernels  # noqa: E402
 
@@ -109,6 +110,22 @@ WD_LAYER = WD_QKV + WD_O
 ARGS = ("X", "WD", "WL", "WE", "M", "RP", "KV", "LG", "L")
 
 
+def kv_layout(maxl, n_layers=g.N_LAYERS):
+    """KV buffers at `maxl`, as fused_decode.kv_layout: (elements per layer,
+    layers per buffer, elements per buffer, buffer-arg index per buffer).
+    Buffers past the first follow LG."""
+    layer = 4 * maxl * SLAB
+    group, sizes = kv_groups(n_layers, layer)
+    args = [ARGS.index("KV")] + [len(ARGS) - 1 + i for i in range(len(sizes) - 1)]
+    return layer, group, sizes, args
+
+
+def arg_names(maxl, n_layers=g.N_LAYERS):
+    """The kernel's buffer args in order, then L."""
+    n = len(kv_layout(maxl, n_layers)[2])
+    return ARGS[:-1] + tuple(f"KV{i}" for i in range(1, n)) + ARGS[-1:]
+
+
 def build_module(maxl, n_layers=g.N_LAYERS, lm=True, lm_rounds=NRD_LM):
     assert maxl % 16 == 0
     nb = maxl // 16
@@ -139,8 +156,11 @@ def build_module(maxl, n_layers=g.N_LAYERS, lm=True, lm_rounds=NRD_LM):
     WE = air.tensor([NL * g.N_EXPERTS, NRG_EX, NCB, R, g.BLOCK_BYTES], ui8)
     M = air.tensor([NL * MISC_LEN + g.D], bf16)
     RP = air.tensor([maxl, DH], bf16)  # cos|sin of each position
-    KV = air.tensor([NL, 4, maxl, SLAB], bf16, inout=True)
+    _, kv_group, kv_sizes, _ = kv_layout(maxl, NL)
+    kv_rows = [n // (4 * maxl * SLAB) for n in kv_sizes]
+    KV = air.tensor([kv_rows[0], 4, maxl, SLAB], bf16, inout=True)
     LG = air.tensor([LM_ROWS], bf16)
+    KVS = [KV] + [air.tensor([n, 4, maxl, SLAB], bf16, inout=True) for n in kv_rows[1:]]
     SEQ = air.tensor([], i32, name="L")
 
     ch = air.channel
@@ -181,6 +201,29 @@ def build_module(maxl, n_layers=g.N_LAYERS, lm=True, lm_rounds=NRD_LM):
             def m_(n):
                 return M[ml + MISC[n][0] : ml + MISC[n][1]]
 
+            def kv_traffic(i, pos):
+                kv, j = KVS[i], (w - i * kv_group if i else w)
+                appends = [(half, r) for half in range(2) for r in range(2)]
+                if len(KVS) > 1:
+                    # each append is waited for before the next starts, and
+                    # RoPE sends all of k before v
+                    appends.sort(key=lambda a: a[1])
+                for half, r in appends:
+                    (v_out if r else k_out).get(kv[j, 2 * half + r, pos, :])
+                for half in range(2):
+                    k_rd.put(kv[j, 2 * half, :, :], indices=[half])
+                    v_rd.put(kv[j, 2 * half + 1, :, :], indices=[half])
+
+            def kv_split_traffic(pos):
+                # one case per KV buffer, keyed by the wave's; folds once the
+                # waves unroll
+                last = len(KVS) - 1
+                with air.ops.switch(w // kv_group, cases=list(range(last))) as arm:
+                    kv_traffic(last, pos)
+                for i in range(last):
+                    with arm.case(i):
+                        kv_traffic(i, pos)
+
             with air.segment(name="seg", params=[Lp, last, win, ebase]) as seg:
 
                 @seg.body
@@ -196,12 +239,8 @@ def build_module(maxl, n_layers=g.N_LAYERS, lm=True, lm_rounds=NRD_LM):
                     # the position's RoPE row, then the biases and the sinks
                     rw_in.put(RP[pos, :])
                     rw_in.put(M[ml + MISC["bias"][0] : ml + MISC["sinks"][1]])
-                    for half in range(2):
-                        k_out.get(KV[w, 2 * half, pos, :])
-                        v_out.get(KV[w, 2 * half + 1, pos, :])
-                    for half in range(2):
-                        k_rd.put(KV[w, 2 * half, :, :], indices=[half])
-                        v_rd.put(KV[w, 2 * half + 1, :, :], indices=[half])
+                    if len(KVS) == 1:
+                        kv_traffic(0, pos)
                     # dense weights; the experts' come from the router slave.
                     # Column i takes row groups 4r + i.
                     wd = w * WD_LAYER
@@ -216,6 +255,10 @@ def build_module(maxl, n_layers=g.N_LAYERS, lm=True, lm_rounds=NRD_LM):
                             v[:, i, :, 2 * h : 2 * h + 2, :] for v in (wq, wo)
                         ]
                     )
+                    # a split KV cache waits for each append inside its
+                    # buffer's case, so the K/V weights go out first
+                    if len(KVS) > 1:
+                        kv_split_traffic(pos)
 
                     # ---- assemble memtile (column 1)
                     def l2(shape, col=1, dt=bf16):
@@ -552,6 +595,7 @@ class NpuDecoder:
             ParameterScratchpad,
         )
         from decode_elf import param_writers
+        from kv_bos import KVBuffers
 
         self.xrt, self.maxl, self.w = xrt, maxl, w
         nl = len(layers)
@@ -564,7 +608,6 @@ class NpuDecoder:
             + 2 * g.EXPERT_BYTES // g.EXPERT_ROW_GROUPS,
             M=(nl * MISC_LEN + g.D) * 2,
             RP=maxl * DH * 2,
-            KV=nl * 4 * maxl * SLAB * 2,
             LG=LM_ROWS * 2,
         )
         self.dev = xrt.device(0)
@@ -572,6 +615,8 @@ class NpuDecoder:
         self.kern = xrt.ext.kernel(self.ctx, kernel)
         self.bo = {n: xrt.ext.bo(self.dev, s) for n, s in sizes.items()}
         self.map = {n: np.frombuffer(b.map(), np.uint8) for n, b in self.bo.items()}
+        layout = types.SimpleNamespace(kv_layout=lambda m: kv_layout(m, nl))
+        self.kv = KVBuffers(layout, maxl, lambda n, a: xrt.ext.bo(self.dev, n))
         t0 = time.time()
         for j, l in enumerate(layers):
             p = f"model.layers.{l}.self_attn."
@@ -590,29 +635,37 @@ class NpuDecoder:
         self.map["M"][:] = _bf16(misc)
         cos, sin = g.rope_cos_sin(list(range(maxl)))
         self.map["RP"][:] = _bf16(torch.cat((cos, sin), dim=1))
-        self.map["KV"][:] = 0
-        for b in self.bo.values():
+        for b in self.kv.bos:
+            np.frombuffer(b.map(), np.uint8)[:] = 0
+        for b in [*self.bo.values(), *self.kv.bos]:
             b.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
         print(f"weights in {time.time() - t0:.0f}s")
         self.run = xrt.run(self.kern)
-        for i, n in enumerate(ARGS[:-1]):
-            self.run.set_arg(i, self.bo[n])
+        names = arg_names(maxl, nl)
+        bos = dict(self.bo, KV=self.kv.kvc)
+        bos.update((f"KV{i + 1}", b) for i, b in enumerate(self.kv.extra))
+        for i, n in enumerate(names[:-1]):
+            self.run.set_arg(i, bos[n])
+        self.l_arg = len(names) - 1
         params = elf.parent / "params.txt"
         self.params = ParameterScratchpad(self.run, str(params))
-        self.writers = param_writers(params, {"L": len(ARGS) - 1})
+        self.writers = param_writers(params, {"L": self.l_arg})
 
     def seed_kv(self, kv):
         """Write the prompt's K and V, kv[layer] = (k, v) [KV heads, n, DH],
         into the cache at positions 0..n-1."""
         n = kv[0][0].shape[1]
         assert n <= self.maxl
-        cache = self.map["KV"].view(bfloat16).reshape(-1, 4, self.maxl, SLAB)
+        to_dev = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         for j, (k, v) in enumerate(kv):
+            bo, off = self.kv.locate(j)
             for half in range(2):
                 for r, t in ((2 * half, k), (2 * half + 1, v)):
                     heads = t[half * 4 : half * 4 + 4].permute(1, 0, 2).reshape(n, SLAB)
-                    cache[j, r, :n] = _bf16(heads).view(bfloat16).reshape(n, SLAB)
-        self.bo["KV"].sync(self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+                    rows = _bf16(heads)
+                    at = off + r * self.maxl * SLAB * 2
+                    bo.write(rows, at)
+                    bo.sync(to_dev, rows.nbytes, at)
 
     @functools.lru_cache(maxsize=None)
     def experts(self, j):
@@ -632,7 +685,7 @@ class NpuDecoder:
         self.map["X"][:] = _bf16(self.w.embed(torch.tensor([token]))[0])
         self.bo["X"].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
         for name, fn in self.writers:
-            self.params.write(name, np.int32(fn({len(ARGS) - 1: L})))
+            self.params.write(name, np.int32(fn({self.l_arg: L})))
         self.params.sync()
         self.run.start()
         state = self.run.wait(120000)
@@ -651,7 +704,7 @@ class NpuDecoder:
     def bench(self, L, n):
         """Wall time of n dispatches at context length L, nothing else."""
         for name, fn in self.writers:
-            self.params.write(name, np.int32(fn({len(ARGS) - 1: L})))
+            self.params.write(name, np.int32(fn({self.l_arg: L})))
         self.params.sync()
         times = []
         for _ in range(n):

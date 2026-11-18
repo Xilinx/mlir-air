@@ -1981,11 +1981,12 @@ def model_kv_src(n_waves):
 
 
 KV_SLABS, KV_SLOT_WR, KV_SLOT_RD = kv_slots(KV_SRC, UNI_DEC)
-# How far a shim BD reaches into one host buffer. The offset is an i32 count of
-# elements (AIRRtToNpuPass, aie.dma_bd), so past 4 GiB of bf16 it goes negative
-# and points before the buffer. kv_layout splits the KV cache to stay below this,
-# and build_module() rejects any operand that is still larger.
-BO_REACH_BYTES = 1 << 32
+# How far a shim BD reaches into one host buffer (kv_bos.BO_REACH_ELEMS).
+# kv_layout splits the KV cache to stay below this, and build_module() rejects
+# any operand that is still larger.
+from kv_bos import BO_REACH_ELEMS, kv_groups
+
+BO_REACH_BYTES = 2 * BO_REACH_ELEMS
 # ShortConv carried state [BX[t-2] | BX[t-1]] per layer, also in arg4.
 CONV_ST_LAYER = 2 * CONV_DIM if CONV_MIXER else 0
 
@@ -2000,16 +2001,9 @@ def kv_layout(attn_maxl, kv_src=None):
     """
     kv_layer = attn_maxl * KVSZ_TOK
     n_slabs = kv_slots(KV_SRC if kv_src is None else kv_src, UNI_DEC)[0]
-    reach = BO_REACH_BYTES // 2
     extra0 = UNI_DEC * CONV_ST_LAYER if CONV_MIXER else 0
-    if kv_layer > reach - extra0:
-        raise SystemExit(
-            f"one layer's KV slab is {kv_layer * 2 / 2**30:.2f} GiB, past the "
-            f"4 GiB a shim BD reaches; lower ATTN_MAXL={attn_maxl}"
-        )
-    n = -(-n_slabs // ((reach - extra0) // kv_layer))
-    group = -(-n_slabs // n)
-    lens = [min(group, n_slabs - g * group) * kv_layer for g in range(n)]
+    group, lens = kv_groups(n_slabs, kv_layer, extra0)
+    n = len(lens)
     if not CONV_MIXER:
         bo0 = lens[0]
     elif HYBRID_MIXER:

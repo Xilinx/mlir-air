@@ -44,6 +44,7 @@ from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
 from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
+from kv_bos import kv_groups  # noqa: E402
 
 R, RB, CB, BB, D, I, E = A.R, A.RB, A.CB, A.BB, A.D, A.I, A.E
 NCOL, TURNS, SLICES = A.NCOL, A.TURNS, A.SLICES
@@ -58,6 +59,15 @@ G_EXP = RG_GU * NCB_X + RG_DN * NCB_H
 # a slot that stands in for x in the layers that do not take it from the host
 MISC = {"xpad": (0, D), **{n: (a + D, b + D) for n, (a, b) in A.MISC.items()}}
 MISC_LEN = A.MISC_LEN + D
+
+
+def kv_layout(cap, nl=W.N_LAYERS):
+    """KV buffers for a cache of `cap` positions, as fused_decode.kv_layout:
+    (elements per layer, layers per buffer, elements per buffer, buffer-arg
+    index per buffer). Buffers past the first follow RW."""
+    layer = 2 * cap * DK
+    group, sizes = kv_groups(nl, layer)
+    return layer, group, sizes, [4] + [6 + i for i in range(len(sizes) - 1)]
 
 
 def build_module(waves, maxl, cap=None):
@@ -105,8 +115,11 @@ def build_module(waves, maxl, cap=None):
     X = air.tensor([waves + 1, pw, D], bf16)
     WD = air.tensor([nl, NCOL, A.G_DENSE, R, BB], ui8)
     M = air.tensor([nl, MISC_LEN], bf16)
-    KV = air.tensor([nl, 2, cap, DK], bf16, inout=True)
+    _, kv_group, kv_sizes, _ = kv_layout(cap, nl)
+    kv_rows = [n // (2 * cap * DK) for n in kv_sizes]
+    KV = air.tensor([kv_rows[0], 2, cap, DK], bf16, inout=True)
     RW = air.tensor([nl, 3 * DH], bf16)
+    KVS = [KV] + [air.tensor([n, 2, cap, DK], bf16, inout=True) for n in kv_rows[1:]]
     # the context length, this token's position + 1
     SEQ = air.tensor([], i32, name="L")
 
@@ -132,6 +145,28 @@ def build_module(waves, maxl, cap=None):
             ebase = air.rtp(w * (pw * E))
             lbase = air.rtp(w * pw)
             Lp = air.rtp(SEQ.value)
+
+            def kv_traffic(i, lay, pos):
+                kv, l = KVS[i], (lay - i * kv_group if i else lay)
+                k_out.get(kv[l, 0, pos, :])
+                v_out.get(kv[l, 1, pos, :])
+                for c in range(len(CU_COLS)):
+                    hs = slice(c * HPM, (c + 1) * HPM)
+                    k_rd.put(kv[l, 0, 0:maxl, hs], indices=[c])
+                    v_rd.put(kv[l, 1, 0:maxl, hs], indices=[c])
+
+            def kv_split_traffic(lay, pos):
+                # one case per KV buffer, keyed by the layer's; folds once the
+                # waves unroll
+                if len(KVS) == 1:
+                    return kv_traffic(0, lay, pos)
+                last = len(KVS) - 1
+                with air.ops.switch(lay // kv_group, cases=list(range(last))) as arm:
+                    kv_traffic(last, lay, pos)
+                for i in range(last):
+                    with arm.case(i):
+                        kv_traffic(i, lay, pos)
+
             with air.segment(name="seg", params=[ebase, lbase, Lp]) as seg:
 
                 @seg.body
@@ -436,12 +471,7 @@ def build_module(waves, maxl, cap=None):
                         ab_w.put(M[lay, MISC["router"][0] : MISC["router"][1]])
                         rw_in.put(RW[lay, :])
                         pos = Lp.as_index() - 1
-                        k_out.get(KV[lay, 0, pos, :])
-                        v_out.get(KV[lay, 1, pos, :])
-                        for c in range(len(CU_COLS)):
-                            hs = slice(c * HPM, (c + 1) * HPM)
-                            k_rd.put(KV[lay, 0, 0:maxl, hs], indices=[c])
-                            v_rd.put(KV[lay, 1, 0:maxl, hs], indices=[c])
+                        kv_split_traffic(lay, pos)
 
         launch.body(body)
 
@@ -469,13 +499,15 @@ class Q3CDecoder:
     Per token the host writes x, the layers' RoPE rows and L, and runs the
     layers' ELF with the shortest cache read that covers L."""
 
-    def __init__(self, decs, lart, args, lm_args, waves, pw, qkn, we_slack=0):
+    def __init__(self, decs, lart, args, lm_args, waves, pw, qkn, cap, we_slack=0):
         """decs: (positions read, ELF artifact, params.txt) per layers' ELF,
-        all on the same buffers. we_slack: bytes past the experts (args[0])
-        that a reader of WE other than this decode may touch."""
+        all on the same buffers. args: the buffer args but the KV cache, which
+        is allocated here for `cap` positions. we_slack: bytes past the experts
+        (args[0]) that a reader of WE other than this decode may touch."""
         import pyxrt as xrt
 
         from decode_elf import param_writers
+        from kv_bos import KVBuffers
         from aie.utils.hostruntime.xrtruntime.parameter_scratchpad import (
             ParameterScratchpad,
         )
@@ -499,7 +531,16 @@ class Q3CDecoder:
             except RuntimeError:  # a repeated launch's kernel sits in the segment
                 return ctx, xrt.ext.kernel(ctx, art.kernel.replace("main:", "seg:"))
 
-        self.bos = [bo(t, we_slack if i == 0 else 0) for i, t in enumerate(args)]
+        def zeros(n, _arg):
+            o = xrt.ext.bo(dev, n)
+            np.frombuffer(o.map(), np.uint8)[:] = 0
+            o.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+            return o
+
+        bos = [bo(t, we_slack if i == 0 else 0) for i, t in enumerate(args)]
+        layout = types.SimpleNamespace(kv_layout=lambda c: kv_layout(c, waves * pw))
+        self.cap, self.kv = cap, KVBuffers(layout, cap, zeros)
+        self.bos = bos[:4] + [self.kv.kvc] + bos[4:] + list(self.kv.extra)
         self.decs = []
         for read, art, params in sorted(decs, key=lambda d: d[0]):
             ctx, kern = kernel(art)
@@ -512,7 +553,7 @@ class Q3CDecoder:
                     ctx=ctx,
                     run=run,
                     params=ParameterScratchpad(run, str(params)),
-                    writers=param_writers(params, {"L": len(args)}),
+                    writers=param_writers(params, {"L": len(self.bos)}),
                 )
             )
         self.xmap = np.frombuffer(self.bos[1].map(), bfloat16).reshape(waves + 1, pw, D)
@@ -560,10 +601,14 @@ class Q3CDecoder:
     def seed(self, kv, n):
         """A prefill's K and V rows of its n positions, per layer:
         kv[layer] = (K [n, DK], V [n, DK])."""
-        cache = np.frombuffer(self.bos[4].map(), bfloat16).reshape(len(kv), 2, -1, DK)
+        to_dev = self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         for l, (k, v) in enumerate(kv):
-            cache[l, 0, :n], cache[l, 1, :n] = k, v
-        self.bos[4].sync(self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+            bo, off = self.kv.locate(l)
+            for r, t in enumerate((k, v)):
+                rows = np.ascontiguousarray(np.asarray(t[:n], bfloat16)).view(np.uint8)
+                at = off + r * self.cap * DK * 2
+                bo.write(rows.ravel(), at)
+                bo.sync(to_dev, rows.nbytes, at)
 
     def head(self, x, L):
         """The LM head alone on the last layer's output x, at position L - 1."""
@@ -637,7 +682,6 @@ def load(w, maxl, waves=W.N_LAYERS // PER_WAVE, we_slack=0, reads=()):
     decs, lart = compile_all(waves, maxl, reads)
     layers = list(range(PER_WAVE * waves))
     we, wd, M, qkn = layer_inputs(w, layers)
-    KV = np.zeros((len(layers), 2, maxl, DK), bfloat16)
     xs = np.zeros((waves + 1, PER_WAVE, D), bfloat16)
     rw = np.zeros((len(layers), 3 * DH), bfloat16)
     nw = np.asarray(w.final_norm()).astype(bfloat16)
@@ -645,10 +689,11 @@ def load(w, maxl, waves=W.N_LAYERS // PER_WAVE, we_slack=0, reads=()):
     return Q3CDecoder(
         decs,
         lart,
-        [we, xs, wd, M, KV, rw],
+        [we, xs, wd, M, rw],
         [nw, LM.pack_weights(w), y],
         waves,
         PER_WAVE,
         qkn,
+        maxl,
         we_slack,
     )
