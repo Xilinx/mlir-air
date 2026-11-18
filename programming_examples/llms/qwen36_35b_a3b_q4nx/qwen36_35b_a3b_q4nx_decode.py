@@ -32,7 +32,6 @@
 # cache back whole, maxl positions.
 import os
 import sys
-import time
 import types
 from pathlib import Path
 
@@ -56,6 +55,7 @@ import qwen36_35b_a3b_q4nx_weights as W  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
+from air_examples.llms.shared.moe import decode as MD  # noqa: E402
 from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
 from rope import rope_weights  # noqa: E402
 
@@ -120,6 +120,23 @@ def build_module(waves, maxl):
     kv = k_("attn_kv_q36", "attn_kv_blk_z", [i32, i32])
     fin = k_("attn_kv_q36", "attn_kv_fin")
     o_nat = k_("attn_kv_q36", "o_natural")
+    K = types.SimpleNamespace(
+        rms_norm=rms_norm,
+        res_add=res_add,
+        copy_r=copy_r,
+        sg_dot=sg_dot,
+        sg_apply=sg_apply,
+        glu_s=glu_s,
+        glu_e=glu_e,
+        acc_r=acc_r,
+        copy_up=copy_up,
+        acc_zero=acc_zero,
+        out_k=out_k,
+        r_zero=r_zero,
+        r_mvm=r_mvm,
+        r_topk=r_topk,
+        r_slot=r_slot,
+    )
 
     arr = MvmArray(
         row_block=RB,
@@ -183,35 +200,27 @@ def build_module(waves, maxl):
                 @seg.body
                 def _():
                     def l2(shape, col, dt=bf16):
-                        return air.alloc(shape, dt, scope=seg.private(), column=col)
+                        return MD.l2(seg, shape, col, dt)
 
-                    def wave_loop(n):
-                        return air.sequential(0, n)
+                    wave_loop, herd = MD.wave_loop, MD.herd
 
                     # ---- shared L1
                     ab_sh = air.alloc([2 * NV], f32, scope=seg.shared())
-                    logits = air.alloc([E], f32, scope=seg.shared())
-                    scores = air.alloc([16], f32, scope=seg.shared())
-                    turn_go = air.alloc([16], f32, scope=seg.shared())
+                    l1 = MD.moe_l1(seg, E)
+                    logits = l1[0]
 
-                    # ---- memtile 5: the RMS core's inputs and side outputs.
-                    # The memtiles' buffers serve every layer: allocated in the
-                    # layer loop, each would be doubled for ping-pong
-                    ins = [l2([D], 5) for _ in range(4)]
-                    moe5 = l2([D], 5)
-                    xs5, x25, sd5, y5 = (l2([D], 5) for _ in range(4))
-                    for _j in wave_loop(pw):
-                        for b in ins:
-                            m_in.get(b)
-                            to_rms.put(b)
-                        glu_y.get(moe5)
-                        to_rms.put(moe5)
-                        for b in (xs5, x25, sd5, y5):
-                            xs_ch.get(b)
-                        to_ab.put(xs5)
-                        to_ab.put(x25)
-                        to_glu.put(sd5)
-                        out_ch.put(y5)
+                    # ---- memtile 5: the RMS core's inputs and side outputs
+                    MD.memtile5(
+                        seg,
+                        pw,
+                        D,
+                        4,
+                        (to_ab, to_ab, to_glu, out_ch),
+                        m_in,
+                        to_rms,
+                        glu_y,
+                        xs_ch,
+                    )
 
                     # ---- memtile 3: the norm weight and the mixer output to
                     # the gate core; the KV cache to the attention units
@@ -249,23 +258,20 @@ def build_module(waves, maxl):
                             s_l3o.put(ob)
                             air.dealloc(ob)
 
-                    # ---- the assemble memtile
-                    # one buffer for both normed x of a layer and one for both
-                    # turns' GLU outputs: each is broadcast before the next
-                    # fills it (and a buffer filled twice a layer keeps the
-                    # loop from being doubled for ping-pong, which would take
-                    # more locks than the memtile has)
-                    xa = l2([D], G.ASM)
-                    gyl, hs = l2([DQ], G.ASM), l2([I], G.ASM)
-                    hx = l2([NCOL, I], G.ASM)
-                    for _j in wave_loop(pw):
-                        xn_ch.get(xa)
-                        xn_ch.get(xa)
-                        to_asm.get(gyl)
-                        to_asm.get(hs)
-                        for _t in range(TURNS):
-                            to_asm.get(hx)
-                        arr.broadcast(lambda i: [xa, gyl, xa, hs] + [hx[i, :]] * TURNS)
+                    # ---- the assemble memtile: both normed x, the mixer's
+                    # output, the shared expert's and each turn's GLU outputs
+                    MD.assemble(
+                        seg,
+                        arr,
+                        pw,
+                        G.ASM,
+                        (D, DQ, I, [NCOL, I]),
+                        2,
+                        TURNS,
+                        xn_ch,
+                        to_asm,
+                        lambda xa, b, i: [xa, b[0], xa, b[1]] + [b[2][i, :]] * TURNS,
+                    )
                     rd_gdn = G.RG_QKV + G.RG_Z + G.RG_O
                     rd_moe = G.RG_SGU + G.RG_SDN + TURNS * (G.RG_GU + G.RG_DN)
                     arr.gather(seg, pw * (rd_gdn + rd_moe))
@@ -274,53 +280,18 @@ def build_module(waves, maxl):
                         pw * (G.G_DENSE + TURNS * G_EXP),
                     )
 
-                    def herd(name, at, params=()):
-                        return air.herd(
-                            [range(1)],
-                            name=name,
-                            shape=(1,),
-                            at=at,
-                            params=list(params),
-                        )
-
-                    # ---- RMS core
-                    with herd("rms", G.RMS_AT) as h:
-
-                        @h.body
-                        def _(tx):
-                            p = h.private()
-                            x, w1, w2, wsg, xn, xn2, mix, sdn, moe, y, xin = (
-                                air.alloc([D], bf16, scope=p) for _ in range(11)
-                            )
-                            u = air.alloc([arr.round], bf16, scope=p)
-                            gsc = air.alloc([16], bf16, scope=p)
-                            # x carries over from layer to layer; only the
-                            # wave's first takes it from the host
-                            for j in wave_loop(pw):
-                                for b in (xin, w1, w2, wsg):
-                                    to_rms.get(b)
-                                with air.ops.branch(j == 0):
-                                    x[:] = xin[:]
-                                rms_norm(xn, x, w1, D)
-                                xn_ch.put(xn)
-                                xs_ch.put(xn)
-                                for jj in air.sequential(0, G.RG_O):
-                                    arr.out_y.get(u, indices=[0, RMS])
-                                    copy_r(mix, u, jj)
-                                res_add(y, x, mix, D)
-                                rms_norm(xn2, x, w2, D)
-                                # done with xn2 before it goes
-                                sg_dot(xn2, wsg, gsc, D)
-                                xn_ch.put(xn2)
-                                xs_ch.put(xn2)
-                                for jj in air.sequential(0, G.RG_SDN):
-                                    arr.out_y.get(u, indices=[0, RMS])
-                                    copy_r(sdn, u, jj)
-                                sg_apply(gsc, sdn, D)
-                                xs_ch.put(sdn)
-                                to_rms.get(moe)
-                                res_add(y, x, moe, D)
-                                xs_ch.put(y)
+                    # ---- RMS core, with the shared expert's gate
+                    MD.rms_core(
+                        arr,
+                        pw,
+                        G.RMS_AT,
+                        D,
+                        G.RG_O,
+                        1,
+                        (to_rms, xn_ch, xs_ch, RMS),
+                        K,
+                        shared=G.RG_SDN,
+                    )
 
                     # ---- alpha / beta (GDN layers) and the router GEMV
                     with herd("ab", G.AB_AT) as h:
@@ -345,13 +316,9 @@ def build_module(waves, maxl):
                                 ab_act(ab, adt)
                                 with air.ops.branch(j < ngw):
                                     ab_sh[:] = ab[:]
-                                to_ab.get(x)
-                                r_zero(lg)
-                                for rb in air.sequential(0, G.NRB_R):
-                                    for cb in air.sequential(0, NCB_X):
-                                        ab_w.get(blk)
-                                        r_mvm(blk, x, lg, rb, cb)
-                                logits[:] = lg[:]
+                                MD.router_gemv(
+                                    x, blk, lg, logits, to_ab, ab_w, K, G.NRB_R, NCB_X
+                                )
 
                     # ---- conv (GDN layers)
                     with herd("conv", G.CONV_AT) as h:
@@ -543,79 +510,35 @@ def build_module(waves, maxl):
                         unit(c, col, row)
 
                     # ---- router: each layer's dense weights, then its two
-                    # turns of experts, on the array's shim channels
-                    with herd("router", G.ROUTER_AT, params=[ebase, lbase]) as h:
+                    # turns of experts
+                    MD.router_core(
+                        arr,
+                        pw,
+                        G.ROUTER_AT,
+                        ebase,
+                        lbase,
+                        E,
+                        NCOL,
+                        TURNS,
+                        WD,
+                        WE,
+                        l1,
+                        K,
+                    )
 
-                        @h.body
-                        def _(tx):
-                            p = h.private()
-                            lg = air.alloc([E], f32, scope=p)
-                            idx = air.alloc([16], i32, scope=p)
-                            sc = air.alloc([16], f32, scope=p)
-                            go = air.alloc([16], f32, scope=p)
-
-                            for j in wave_loop(pw):
-                                r_slot(idx, 8, lbase, j)
-                                arr.put_weights(
-                                    lambda i, hh: [
-                                        WD[idx[8], i, :, 2 * hh : 2 * hh + 2, :]
-                                    ]
-                                )
-                                lg[:] = logits[:]
-                                r_topk(lg, idx, sc, ebase, j)
-                                scores[:] = sc[:]
-                                for t in range(TURNS):
-                                    # turn 1 waits for the GLU core to finish turn 0's gate/up
-                                    if t:
-                                        go[:] = turn_go[:]
-                                    arr.put_weights(
-                                        lambda i, hh, t=t: [
-                                            WE[
-                                                idx[NCOL * t + i],
-                                                :,
-                                                2 * hh : 2 * hh + 2,
-                                                :,
-                                            ]
-                                        ]
-                                    )
-
-                    # ---- GLU
-                    with herd("glu", G.GLU_AT) as h:
-
-                        @h.body
-                        def _(tx):
-                            p = h.private()
-                            u = air.alloc([arr.round], bf16, scope=p)
-                            g = air.alloc([arr.round], bf16, scope=p)
-                            hsl = air.alloc([I], bf16, scope=p)
-                            hh = air.alloc([NCOL * I], bf16, scope=p)
-                            sdn = air.alloc([D], bf16, scope=p)
-                            acc = air.alloc([D], f32, scope=p)
-                            y = air.alloc([D], bf16, scope=p)
-                            sc = air.alloc([16], f32, scope=p)
-                            for _j in wave_loop(pw):
-                                for jj in air.sequential(0, G.RG_SGU):
-                                    arr.out_y.get(u, indices=[0, GLU])
-                                    glu_s(hsl, u, jj)
-                                to_asm.put(hsl)
-                                acc_zero(acc, D)
-                                sc[:] = scores[:]
-                                for t in range(TURNS):
-                                    for s_ in air.sequential(0, G.RG_GU // 2):
-                                        # every round lands in u
-                                        arr.out_y.get(u, indices=[0, GLU])
-                                        copy_up(g, u)
-                                        arr.out_y.get(u, indices=[0, GLU])
-                                        glu_e(hh, g, u, s_)
-                                    to_asm.put(hh)
-                                    if t + 1 < TURNS:
-                                        turn_go[:] = sc[:]
-                                    for rg in air.sequential(0, G.RG_DN):
-                                        arr.out_y.get(u, indices=[0, GLU])
-                                        acc_r(acc, u, sc, t, rg)
-                                to_glu.get(sdn)
-                                out_k(y, sdn, acc, D)
-                                glu_y.put(y)
+                    # ---- GLU, with the shared expert
+                    MD.glu_core(
+                        arr,
+                        pw,
+                        G.GLU_AT,
+                        (D, I, NCOL),
+                        (G.RG_GU // 2, G.RG_DN, TURNS),
+                        l1,
+                        (to_asm, glu_y, to_glu),
+                        K,
+                        GLU,
+                        shared=G.RG_SGU,
+                    )
 
                     # ---- the GEMV array: a GDN layer's qkv goes to the conv
                     # core, an attention layer's k, v, q to the RoPE core
@@ -632,15 +555,14 @@ def build_module(waves, maxl):
                             D, G.RG_Z * NCB_X // 2, NCB_X, step, GATE, fresh=False
                         )
                         yield Phase(DQ, G.RG_O * NCB_O // 2, NCB_O, step, RMS, xbuf=1)
-                        yield Phase(D, G.RG_SGU * NCB_X // 2, NCB_X, step, GLU)
-                        yield Phase(I, G.RG_SDN * NCB_H // 2, NCB_H, step, RMS, xbuf=1)
-                        for _t in range(TURNS):
-                            yield Phase(
-                                D, G.RG_GU * NCB_X // 2, NCB_X, step, GLU, fresh=False
-                            )
-                            yield Phase(
-                                I, G.RG_DN * NCB_H // 2, NCB_H, step, GLU, xbuf=1
-                            )
+                        yield from MD.moe_phases(
+                            step,
+                            (D, I),
+                            (G.RG_GU, G.RG_DN, TURNS, NCB_X, NCB_H),
+                            (GLU, RMS),
+                            fresh=False,
+                            shared=(G.RG_SGU, G.RG_SDN),
+                        )
 
                     arr.herd([DQ, DQ], flush, phases, layers=pw)
 
@@ -652,11 +574,7 @@ def build_module(waves, maxl):
                     # mixer
                     g0 = w * ngw
                     cw_out.get(CWO[g0 : g0 + ngw, :, 0 : 3 * HD])
-                    # x in before the outputs: with the wave a loop index the
-                    # two regions of X are not known apart, and a read after
-                    # the write would wait for the whole wave
-                    m_in.put(X[w, pw - 1, :])
-                    out_ch.get(X[w + 1, :, :])
+                    MD.wave_x(m_in, out_ch, X, w, pw)
                     s_l3.put(SI[g0 : g0 + ngw, :, :, :])
                     s_l3o.get(SO[g0 : g0 + ngw, :, :, :])
                     for j in range(pw):
@@ -664,11 +582,7 @@ def build_module(waves, maxl):
                         is_att = j == pw - 1
                         if j < ngw:
                             cw_in.put(CWI[g0 + j, :, :])
-                        if j == 0:
-                            m_in.put(M[lay, MISC["w1"][0] : MISC["wsg"][1]])
-                        else:
-                            m_in.put(M[lay, 0 : MISC["wsg"][1]])
-                        ab_w.put(M[lay, MISC["adt"][0] : MISC["router"][1]])
+                        MD.layer_misc(m_in, ab_w, M, MISC, lay, j, "wsg", "adt")
                         m_dn.put(M[lay, MISC["dnw"][0] : MISC["dnw"][1]])
                         if is_att:
                             rw_in.put(RW[w, :])
@@ -723,7 +637,7 @@ def layer_inputs(w, layers, waves):
     return np.ascontiguousarray(np.concatenate(WE)), np.stack(WD), M, qkn, conv_w
 
 
-class Q36Decoder:
+class Q36Decoder(MD.MoeDecoder):
     """The layers' ELF and the LM head's, their buffers, and a run of each.
     Per token the host writes x, the attention layers' RoPE rows and L, and
     swaps the conv caches' and the GDN states' in and out buffers."""
@@ -731,47 +645,23 @@ class Q36Decoder:
     def __init__(self, arts, args, lm_args, waves, pw, qkn, params, we_slack=0):
         """we_slack: bytes past the experts (args[0]) that a reader of WE
         other than this decode may touch."""
-        import pyxrt as xrt
-
+        import lm_head as LM
         from decode_elf import param_writers
         from aie.utils.hostruntime.xrtruntime.parameter_scratchpad import (
             ParameterScratchpad,
         )
 
-        self.xrt, self.waves, self.pw, self.qkn = xrt, waves, pw, qkn
-        dev = xrt.device(0)
-
-        def bo(t, extra=0):
-            b = np.ascontiguousarray(t).view(np.uint8).ravel()
-            o = xrt.ext.bo(dev, b.nbytes + extra)
-            m = np.frombuffer(o.map(), np.uint8)
-            m[: b.nbytes] = b
-            m[b.nbytes :] = 0
-            o.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-            return o
-
-        def kernel(art):
-            ctx = xrt.hw_context(dev, xrt.elf(art.output_binary))
-            try:
-                return ctx, xrt.ext.kernel(ctx, art.kernel)
-            except RuntimeError:  # a repeated launch's kernel sits in the segment
-                return ctx, xrt.ext.kernel(ctx, art.kernel.replace("main:", "seg:"))
-
-        self.bos = [bo(t, we_slack if i == 0 else 0) for i, t in enumerate(args)]
-        self.ctx, kern = kernel(arts[0])
-        self.run = xrt.run(kern)
+        super().__init__(waves, pw, D, LM.unpack_logits)
+        self.qkn = qkn
+        self.bos = [self.bo(t, we_slack if i == 0 else 0) for i, t in enumerate(args)]
+        self.ctx, kern = self.kernel(arts[0])
+        self.run = self.xrt.run(kern)
         for i, b in enumerate(self.bos):
             self.run.set_arg(i, b)
         self.params = ParameterScratchpad(self.run, str(params))
         self.writers = param_writers(params, {"L": len(args)})
-        self.xmap = np.frombuffer(self.bos[1].map(), bfloat16).reshape(waves + 1, pw, D)
         self.rwmap = np.frombuffer(self.bos[7].map(), bfloat16).reshape(waves, 3 * DH)
-        xsub = xrt.bo(self.bos[1], D * 2, (waves * pw + pw - 1) * D * 2)
-        self.lbos = [xsub] + [bo(t) for t in lm_args]
-        self.lctx, lkern = kernel(arts[1])
-        self.lrun = xrt.run(lkern)
-        for i, b in enumerate(self.lbos):
-            self.lrun.set_arg(i, b)
+        self.attach_lm(arts[1], lm_args)
 
     def _set(self, x, L):
         xrt = self.xrt
@@ -790,19 +680,6 @@ class Q36Decoder:
             self.bos[a], self.bos[b] = self.bos[b], self.bos[a]
             self.run.set_arg(a, self.bos[a])
             self.run.set_arg(b, self.bos[b])
-
-    def _go(self, runs, L):
-        import lm_head as LM
-
-        xrt = self.xrt
-        for r in runs:
-            r.start()
-            st = r.wait(120000)
-            if st != xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED:
-                raise RuntimeError(f"dispatch at L={L} ended in {st}")
-        yb = self.lbos[-1]
-        yb.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-        return LM.unpack_logits(np.frombuffer(yb.map(), bfloat16)).astype(np.float32)
 
     def step(self, x, L):
         """Decode x at position L - 1; returns the logits."""
@@ -831,37 +708,6 @@ class Q36Decoder:
                 g += 1
         for i in (4, 5, 6):
             self.bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-
-    def head(self, x, L):
-        """The LM head alone on the last layer's output x, at position L - 1."""
-        self.xmap[self.waves, self.pw - 1] = x
-        self.bos[1].sync(self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-        return self._go((self.lrun,), L)
-
-    def bench(self, x, L, n):
-        """n tokens at context length L, the layers' run then the LM head's;
-        the state is not carried (the same inputs every time)."""
-        self._set(x, L)
-        t = []
-        for _ in range(n + 1):
-            t0 = time.perf_counter()
-            self.run.start()
-            self.run.wait(120000)
-            t1 = time.perf_counter()
-            self.lrun.start()
-            self.lrun.wait(120000)
-            t.append((t1 - t0, time.perf_counter() - t1))
-        t = np.array(t[1:]) * 1e3
-        tot = t.sum(1)
-        med = float(np.median(tot))
-        print(
-            f"L={L}, {n} tokens: layers {np.median(t[:, 0]):.3f} ms + LM head"
-            f" {np.median(t[:, 1]):.3f} ms = {med:.3f} ms median"
-        )
-        print(
-            f"[bench] decode ctx={L} median {med:.2f} ms min {tot.min():.2f} ms "
-            f"({1e3 / med:.2f} tok/s)"
-        )
 
 
 def compile_all(waves, maxl):
