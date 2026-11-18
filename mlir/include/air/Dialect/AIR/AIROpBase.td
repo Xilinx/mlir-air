@@ -24,8 +24,10 @@ def air_Dialect : Dialect {
     the [AIR Compute Model](AIRComputeModel.md).
 
     ### Hierarchy
-    Computation is organized in three nested levels. Each level defines an
-    iteration space and a body region that is isolated from above.
+    Computation on a single device is organized in three nested levels. Each
+    level defines an iteration space and a body region that is isolated from
+    above. An optional enclosing `rank` level spans multiple devices.
+
     - `launch` groups segments and L3 allocations that must be co-resident on
       the device. Iterations of a `launch` may execute in parallel.
     - `segment` groups the processing elements, L2 memory, and data-movement
@@ -33,15 +35,17 @@ def air_Dialect : Dialect {
       parallel, each on its own copy of these resources.
     - `herd` is an array of processing elements executing the same body; each
       point of its iteration space executes on a distinct processing element.
-      Code in a `herd` accesses L1 memory directly and reaches other memory
-      levels only through data-movement operations.
+      Code in a `herd` accesses L1 memory directly and reaches L2 and L3 only
+      through data-movement operations.
 
     ### Memory Hierarchy
     - `L1`: local memory of a single processing element.
     - `L2`: on-device memory shared within a `segment`.
     - `L3`: off-chip or host-accessible memory.
 
-    The memory spaces are enumerated in `air::MemorySpace`.
+    The memory spaces are enumerated in `air::MemorySpace`. On GPUs, memory in
+    the `#air.symmetric_heap` space is directly addressable from a `herd` and
+    from peer ranks.
 
     ### Data Movement
     `dma_memcpy_nd` is an asynchronous multi-dimensional copy between memory
@@ -50,9 +54,9 @@ def air_Dialect : Dialect {
     channel must balance on every control-flow path.
 
     ### Asynchrony
-    Operations may execute asynchronously and return an `!air.token`. Token
-    operands order an operation after its producers, and `wait_all` joins
-    multiple tokens.
+    Operations may execute asynchronously and return an `!air.async.token`.
+    Token operands order an operation after its producers, and `wait_all`
+    joins multiple tokens.
   }];
   let useDefaultTypePrinterParser = 1;
   let useDefaultAttributePrinterParser = 1;
