@@ -22,32 +22,6 @@
 using namespace mlir;
 
 //===----------------------------------------------------------------------===//
-// GetSegmentForOp
-//===----------------------------------------------------------------------===//
-
-DiagnosedSilenceableFailure
-transform::GetSegmentForOp::apply(transform::TransformRewriter &rewriter,
-                                  transform::TransformResults &results,
-                                  transform::TransformState &state) {
-  SetVector<Operation *> segments;
-  for (Operation *target : state.getPayloadOps(getTarget())) {
-    xilinx::air::SegmentOp segment =
-        target->getParentOfType<xilinx::air::SegmentOp>();
-    if (!segment) {
-      DiagnosedSilenceableFailure diag =
-          emitSilenceableError()
-          << "could not find an '" << xilinx::air::SegmentOp::getOperationName()
-          << "' parent";
-      diag.attachNote(target->getLoc()) << "target op";
-      return diag;
-    }
-    segments.insert(segment);
-  }
-  results.set(llvm::cast<OpResult>(getResult()), segments.getArrayRef());
-  return DiagnosedSilenceableFailure::success();
-}
-
-//===----------------------------------------------------------------------===//
 // SegmentToAIEOp
 //===----------------------------------------------------------------------===//
 
