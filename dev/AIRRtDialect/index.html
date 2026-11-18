@@ -1639,7 +1639,7 @@
   <span class="md-ellipsis">
     
   
-    Conversion Passes
+    AIR Conversion Passes
   
 
     
@@ -1667,7 +1667,7 @@
   <span class="md-ellipsis">
     
   
-    Transform Passes
+    AIR Transformation Passes
   
 
     
@@ -1695,7 +1695,7 @@
   <span class="md-ellipsis">
     
   
-    Transform Ops
+    AIR Transform Ops
   
 
     
@@ -2239,73 +2239,8 @@
 
 <h1 id="airrt-dialect">'airrt' Dialect<a class="headerlink" href="#airrt-dialect" title="Permanent link">&para;</a></h1>
 <p>The <code>airrt</code> dialect is an IR for interacting with the AIR runtime.
-It enapsulates data structures and functions available in the runtime and
+It encapsulates data structures and functions available in the runtime and
 can be lowered to a combination of standard and LLVM dialects.</p>
-<div class="toc">
-<ul>
-<li><a href="#airrt-dialect">'airrt' Dialect</a><ul>
-<li><a href="#operations">Operations</a><ul>
-<li><a href="#airrtalloc-xilinxairrtallocop">airrt.alloc (xilinx::airrt::AllocOp)</a><ul>
-<li><a href="#results">Results:</a></li>
-</ul>
-</li>
-<li><a href="#airrtdealloc-xilinxairrtdeallocop">airrt.dealloc (xilinx::airrt::DeallocOp)</a><ul>
-<li><a href="#operands">Operands:</a></li>
-</ul>
-</li>
-<li><a href="#airrtdma_memcpy_nd-xilinxairrtdmamemcpyndop">airrt.dma_memcpy_nd (xilinx::airrt::DmaMemcpyNdOp)</a><ul>
-<li><a href="#attributes">Attributes:</a></li>
-<li><a href="#operands_1">Operands:</a></li>
-<li><a href="#results_1">Results:</a></li>
-</ul>
-</li>
-<li><a href="#airrtherd_load-xilinxairrtherdloadop">airrt.herd_load (xilinx::airrt::HerdLoadOp)</a><ul>
-<li><a href="#attributes_1">Attributes:</a></li>
-<li><a href="#operands_2">Operands:</a></li>
-<li><a href="#results_2">Results:</a></li>
-</ul>
-</li>
-<li><a href="#airrtherd_metadata-xilinxairrtherdmetadataop">airrt.herd_metadata (xilinx::airrt::HerdMetadataOp)</a><ul>
-<li><a href="#attributes_2">Attributes:</a></li>
-</ul>
-</li>
-<li><a href="#airrtherd_metadata_terminator-xilinxairrtherdmetadataterminatorop">airrt.herd_metadata_terminator (xilinx::airrt::HerdMetadataTerminatorOp)</a></li>
-<li><a href="#airrtmemcpy_nd-xilinxairrtmemcpyndop">airrt.memcpy_nd (xilinx::airrt::MemcpyNdOp)</a><ul>
-<li><a href="#operands_3">Operands:</a></li>
-<li><a href="#results_3">Results:</a></li>
-</ul>
-</li>
-<li><a href="#airrtmodule_metadata-xilinxairrtmodulemetadataop">airrt.module_metadata (xilinx::airrt::ModuleMetadataOp)</a></li>
-<li><a href="#airrtmodule_metadata_terminator-xilinxairrtmodulemetadataterminatorop">airrt.module_metadata_terminator (xilinx::airrt::ModuleMetadataTerminatorOp)</a></li>
-<li><a href="#airrtsegment_load-xilinxairrtsegmentloadop">airrt.segment_load (xilinx::airrt::SegmentLoadOp)</a><ul>
-<li><a href="#attributes_3">Attributes:</a></li>
-<li><a href="#results_4">Results:</a></li>
-</ul>
-</li>
-<li><a href="#airrtsegment_metadata-xilinxairrtsegmentmetadataop">airrt.segment_metadata (xilinx::airrt::SegmentMetadataOp)</a><ul>
-<li><a href="#attributes_4">Attributes:</a></li>
-</ul>
-</li>
-<li><a href="#airrtsegment_metadata_terminator-xilinxairrtsegmentmetadataterminatorop">airrt.segment_metadata_terminator (xilinx::airrt::SegmentMetadataTerminatorOp)</a></li>
-<li><a href="#airrtwait_all-xilinxairrtwaitallop">airrt.wait_all (xilinx::airrt::WaitAllOp)</a><ul>
-<li><a href="#operands_4">Operands:</a></li>
-<li><a href="#results_5">Results:</a></li>
-</ul>
-</li>
-</ul>
-</li>
-<li><a href="#type-constraints">Type constraints</a><ul>
-<li><a href="#event-type">event type</a></li>
-</ul>
-</li>
-<li><a href="#types">Types</a><ul>
-<li><a href="#eventtype">EventType</a></li>
-</ul>
-</li>
-</ul>
-</li>
-</ul>
-</div>
 <h2 id="operations">Operations<a class="headerlink" href="#operations" title="Permanent link">&para;</a></h2>
 <h3 id="airrtalloc-xilinxairrtallocop"><code>airrt.alloc</code> (xilinx::airrt::AllocOp)<a class="headerlink" href="#airrtalloc-xilinxairrtallocop" title="Permanent link">&para;</a></h3>
 <p><em>AIRRt Allocation Op</em></p>
@@ -2749,13 +2684,13 @@ Optionally return an event.</p>
         
         
           
-          <a href="../AIRConversionPasses/" class="md-footer__link md-footer__link--next" aria-label="Next: Conversion Passes">
+          <a href="../AIRConversionPasses/" class="md-footer__link md-footer__link--next" aria-label="Next: AIR Conversion Passes">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Conversion Passes
+                AIR Conversion Passes
               </div>
             </div>
             <div class="md-footer__button md-icon">
