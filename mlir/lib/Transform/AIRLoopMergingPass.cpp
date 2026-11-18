@@ -74,159 +74,6 @@ private:
 
 const char *AIRLoopMergingPass::affineOptAttrName = "affine_opt_label";
 
-static void
-constructReducedLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
-                         unsigned total_width,
-                         MutableArrayRef<affine::AffineForOp> reducedLoops,
-                         SmallVectorImpl<unsigned> &loopMergeLevels) {
-
-  affine::AffineForOp rootLoop = origLoops[0];
-  Location rootLoopLoc = rootLoop.getLoc();
-  Operation *rootLoopOp = rootLoop.getOperation();
-  affine::AffineForOp innermostLoop;
-
-  // Create an affine loop band
-  for (unsigned i = 0; i < total_width; i++) {
-    OpBuilder builder(rootLoopOp);
-    affine::AffineForOp intraLoop =
-        affine::AffineForOp::create(builder, rootLoopLoc, 0, 0);
-    intraLoop.getBody()->getOperations().splice(
-        intraLoop.getBody()->begin(), rootLoopOp->getBlock()->getOperations(),
-        rootLoopOp);
-    reducedLoops[total_width - 1 - i] = intraLoop;
-    rootLoopOp = intraLoop.getOperation();
-    if (i == 0)
-      innermostLoop = intraLoop;
-  }
-
-  // Move the innermost Loop body into the specified location
-  affine::AffineForOp src = origLoops.back();
-  auto &ops = src.getBody()->getOperations();
-  Block::iterator innerForLoc = innermostLoop.getBody()->begin();
-  innermostLoop.getBody()->getOperations().splice(innerForLoc, ops, ops.begin(),
-                                                  std::prev(ops.end()));
-
-  // Manage the reduced loop bounds
-  unsigned reduceAtLevel = loopMergeLevels[0];
-  unsigned reduceExitLevel = loopMergeLevels[loopMergeLevels.size() - 1] + 1;
-  // Preserve the lower bounds, upper bounds and step sizes for loops prior to
-  // the reduced ones.
-  for (unsigned i = 0; i < reduceAtLevel; i++) {
-    OperandRange newLbOperands = origLoops[i].getLowerBoundOperands();
-    OperandRange newUbOperands = origLoops[i].getUpperBoundOperands();
-    reducedLoops[i].setLowerBound(newLbOperands,
-                                  origLoops[i].getLowerBoundMap());
-    reducedLoops[i].setUpperBound(newUbOperands,
-                                  origLoops[i].getUpperBoundMap());
-    reducedLoops[i].setStep(origLoops[i].getStep());
-  }
-
-  // Compute the loop tripcount = product of subloop tripcounts
-  unsigned reducedSize = loopMergeLevels.size();
-  reducedLoops[reduceAtLevel].setStep(1);
-  int64_t newUpperBound = 1;
-  int64_t newLowerBound = 0;
-  for (unsigned i = 0; i < reducedSize; i++) {
-    unsigned loopLevel = loopMergeLevels[i];
-    if (!origLoops[loopLevel].hasConstantBounds()) {
-      origLoops[loopLevel]->emitOpError("non-static loop bounds");
-      return;
-    }
-    auto lb_map = origLoops[loopLevel].getLowerBoundMap();
-    auto ub_map = origLoops[loopLevel].getUpperBoundMap();
-    int64_t lb_const = lb_map.getSingleConstantResult();
-    int64_t ub_const = ub_map.getSingleConstantResult();
-    if (lb_const != newLowerBound) {
-      origLoops[loopLevel]->emitOpError(
-          "lower bound mismatch with the newLowerBound");
-      return;
-    }
-    newUpperBound = newUpperBound * ub_const;
-  }
-  reducedLoops[reduceAtLevel].setConstantLowerBound(newLowerBound);
-  reducedLoops[reduceAtLevel].setConstantUpperBound(newUpperBound);
-
-  // Preserve the lower bounds, upper bounds and step sizes for loops following
-  // the reduced ones.
-  for (unsigned i = reduceAtLevel + 1; i < total_width; i++) {
-    OperandRange newLbOperands =
-        origLoops[i - 1 + reducedSize].getLowerBoundOperands();
-    OperandRange newUbOperands =
-        origLoops[i - 1 + reducedSize].getUpperBoundOperands();
-    reducedLoops[i].setLowerBound(
-        newLbOperands, origLoops[i - 1 + reducedSize].getLowerBoundMap());
-    reducedLoops[i].setUpperBound(
-        newUbOperands, origLoops[i - 1 + reducedSize].getUpperBoundMap());
-    reducedLoops[i].setStep(origLoops[i - 1 + reducedSize].getStep());
-  }
-
-  // Restore the original induction variables
-  affine::AffineForOp innerFor = reducedLoops[total_width - 1];
-  affine::AffineForOp singleFor = reducedLoops[reduceAtLevel];
-  SmallVector<affine::AffineApplyOp, 3> restoredIVs;
-  OpBuilder applyBuilder = OpBuilder::atBlockBegin(innerFor.getBody());
-  // The IV in the outermost original reduced loop nest can be calculated as
-  // i0 = i / a1*a2*...*an
-  AffineExpr dim0 = applyBuilder.getAffineDimExpr(0);
-  int64_t divConst = 1;
-  for (unsigned i = 1; i < reducedSize; i++) {
-    unsigned loopLevel = loopMergeLevels[i];
-    divConst *= origLoops[loopLevel].getConstantUpperBound();
-  }
-  auto map_0 = AffineMap::get(1, 0, dim0.floorDiv(divConst));
-  affine::AffineApplyOp apply_0 = affine::AffineApplyOp::create(
-      applyBuilder, innerFor.getLoc(), map_0, singleFor.getInductionVar());
-  restoredIVs.push_back(apply_0);
-
-  // The IV in the middle loop nests can be calculated as
-  // ik = (i / divConst) % ak
-  for (unsigned i = 1; i < reducedSize - 1; i++) {
-    unsigned loopLevel = loopMergeLevels[i];
-    int64_t modConst = origLoops[loopLevel].getConstantUpperBound();
-    int64_t divConst = 1;
-    for (unsigned j = i + 1; j < reducedSize; j++) {
-      unsigned loopLevel = loopMergeLevels[j];
-      divConst *= origLoops[loopLevel].getConstantUpperBound();
-    }
-    AffineExpr dim0 = applyBuilder.getAffineDimExpr(0);
-    auto map = AffineMap::get(1, 0, dim0.floorDiv(divConst) % modConst);
-    affine::AffineApplyOp apply = affine::AffineApplyOp::create(
-        applyBuilder, innerFor.getLoc(), map, singleFor.getInductionVar());
-    restoredIVs.push_back(apply);
-  }
-
-  // The IV in the innermost original reduced loop nest can be restored as
-  // in = i % an
-  unsigned loopLevel = loopMergeLevels[reducedSize - 1];
-  int64_t modConst = origLoops[loopLevel].getConstantUpperBound();
-  auto map_1 = AffineMap::get(1, 0, dim0 % modConst);
-  affine::AffineApplyOp apply_1 = affine::AffineApplyOp::create(
-      applyBuilder, innerFor.getLoc(), map_1, singleFor.getInductionVar());
-  restoredIVs.push_back(apply_1);
-  if (restoredIVs.size() != loopMergeLevels.size()) {
-    apply_1->emitOpError("restoredIVs.size() != loopMergeLevels.size()");
-    return;
-  }
-
-  // Replace all original reduced subloop IVs with the new single loop IV
-  SmallVector<Value, 6> origLoopIVs;
-  extractForInductionVars(origLoops, &origLoopIVs);
-  for (unsigned i = 0; i < reduceAtLevel; i++) {
-    origLoopIVs[i].replaceAllUsesWith(reducedLoops[i].getInductionVar());
-  }
-  for (unsigned i = 0; i < loopMergeLevels.size(); i++) {
-    unsigned loopLevel = loopMergeLevels[i];
-    origLoopIVs[loopLevel].replaceAllUsesWith(restoredIVs[i]);
-  }
-  for (unsigned i = reduceExitLevel; i < origLoopIVs.size(); i++) {
-    origLoopIVs[i].replaceAllUsesWith(
-        reducedLoops[i - loopMergeLevels.size() + 1].getInductionVar());
-  }
-
-  // Erase the old loop nest.
-  origLoops[0].erase();
-}
-
 void AIRLoopMergingPass::runOnOperation() {
 
   auto func = getOperation();
@@ -241,23 +88,33 @@ void AIRLoopMergingPass::runOnOperation() {
       func, bands, AIRLoopMergingPass::affineOptAttrName, clAIROptLabel);
 
   for (auto &band : bands) {
-    MutableArrayRef<affine::AffineForOp> origLoops = band;
-    unsigned total_width = origLoops.size() - reduceLoopLevels.size() + 1;
-    SmallVector<affine::AffineForOp, 6> reducedLoops(total_width);
-
-    constructReducedLoopNest(origLoops, total_width, reducedLoops,
-                             reduceLoopLevels);
-
-    // Preserve the loop band label
+    unsigned at = reduceLoopLevels.front();
+    unsigned count = reduceLoopLevels.size();
+    for (unsigned i = 1; i < count; i++) {
+      if (reduceLoopLevels[i] != at + i) {
+        band[0]->emitOpError("loop-merge-levels must be consecutive");
+        return signalPassFailure();
+      }
+    }
+    if (at + count > band.size()) {
+      band[0]->emitOpError("loop-merge-levels exceed the loop band depth");
+      return signalPassFailure();
+    }
     auto stringAttr = band[0]->getAttrOfType<StringAttr>(
         AIRLoopMergingPass::affineOptAttrName);
+    if (failed(affine::coalesceLoops(
+            MutableArrayRef<affine::AffineForOp>(band).slice(at, count)))) {
+      band[at]->emitOpError("cannot merge loops that are not normalized");
+      return signalPassFailure();
+    }
+
+    // Preserve the loop band label
     if (stringAttr) {
       StringAttr postLabel =
           clAIROptPostLabel.empty()
               ? stringAttr
               : StringAttr::get(clAIROptPostLabel, stringAttr.getType());
-      reducedLoops[0]->setAttr(AIRLoopMergingPass::affineOptAttrName,
-                               postLabel);
+      band[0]->setAttr(AIRLoopMergingPass::affineOptAttrName, postLabel);
     }
   }
 }
