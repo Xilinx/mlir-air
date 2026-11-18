@@ -1,12 +1,5 @@
 # Used in / Cited in
 
-MLIR-AIR is a spatial-compute compiler stack for AMD NPUs and Versal AI Engine
-arrays. This page collects how to cite the project and a selection of work that
-builds on it. It is curated rather than exhaustive.
-
-If you have built on MLIR-AIR and would like your work considered for this page,
-open a pull request.
-
 ## How to cite
 
 Work that uses MLIR-AIR should cite the toolchain paper:
@@ -61,14 +54,33 @@ Work that uses the MLIR-AIR **agent skills** for LLM deployment should cite:
 }
 ```
 
+## Publications using MLIR-AIR
+
+- **[KernelCraft: Benchmarking for Agentic Close-to-Metal Kernel Generation on
+  Emerging Hardware](https://arxiv.org/abs/2603.08721)**<br>
+  J. Nie, H. Wu, Y. Lai, Z. Cao, C. Zhang, B. Lou, E. Wang, J. Cheng,
+  T. M. Jones, R. Mullins, R. Antonova, and Y. Zhao. International Conference on
+  Machine Learning (ICML), 2026.
+
+- **[Practical Formal Verification for MLIR Programs](https://arxiv.org/abs/2605.01124)**<br>
+  E. Tucker, L.-N. Pouchet, E. Hunhoff, S. Neuendorffer, and E. Wang.
+  International Conference on Parallel Architectures and Compilation Techniques
+  (PACT), 2026.
+
+- **[Programming AMD XDNA NPUs with Open-source Compiler Tools: A FlashAttention
+  Case Study](https://arxiv.org/abs/2609.21264)**<br>
+  E. Wang, E. Wu, V. J. B. Jung, J. Li, A. Rosti, J. Melber, and S. Bayliss.
+  arXiv preprint arXiv:2609.21264, September 2026.
+
 ## Repositories
 
 - [amd/IRON](https://github.com/amd/IRON) — IRON operators, AIE kernels, and
   example applications, built on the MLIR-AIE Python bindings.
 - [Xilinx/mlir-aie](https://github.com/Xilinx/mlir-aie) — the MLIR-AIE backend
-  MLIR-AIR lowers onto (per-tile code, DMA descriptors, hardware locks).
-- [Xilinx/llvm-aie (Peano)](https://github.com/Xilinx/llvm-aie) — the LLVM fork
+  MLIR-AIR lowers onto.
+- [Xilinx/llvm-aie (Peano)](https://github.com/Xilinx/llvm-aie) — a fork of the
+  LLVM compiler infrastructure ([llvm/llvm-project](https://github.com/llvm/llvm-project))
   adding the AI Engine as a target architecture.
 - [amd/Triton-XDNA](https://github.com/amd/Triton-XDNA) — a Triton frontend that
-  targets MLIR-AIR as its AMD XDNA NPU backend, alongside Triton's native GPU
+  adds MLIR-AIR as its AMD XDNA NPU backend, alongside Triton's native GPU
   backends.

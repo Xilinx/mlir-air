@@ -51,13 +51,16 @@ substantially more accessible.
 <span class="air-card-desc">Decoder-only models running end-to-end on NPU2, with a nightly benchmark.</span>
 </a>
 
-<a class="air-card" href="https://arxiv.org/abs/2510.14871">
+<a class="air-card" href="https://doi.org/10.1145/3785670">
 <span class="air-card-icon">📄</span>
 <span class="air-card-title">Read the Paper</span>
-<span class="air-card-desc">From Loop Nests to Silicon: Mapping AI Workloads onto AMD NPUs with MLIR-AIR.</span>
+<span class="air-card-desc">From Loop Nests to Silicon: Mapping AI Workloads onto AMD NPUs with MLIR-AIR (ACM TRETS).</span>
 </a>
 
 </div>
+
+[Publications using MLIR-AIR](used_in.md#publications-using-mlir-air) ·
+[Citing MLIR-AIR](used_in.md#how-to-cite)
 
 ## A simple AIR program
 
