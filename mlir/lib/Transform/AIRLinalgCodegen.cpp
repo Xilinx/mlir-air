@@ -1325,38 +1325,12 @@ public:
   }
 
   static SmallVector<int64_t> getTripCounts(linalg::LinalgOp op) {
-
-    SmallVector<int64_t, 4> tripCounts;
-    OpBuilder b(op);
-    auto loc = op.getLoc();
-
-    auto allShapeSizes = op.createFlatListOfOperandDims(b, loc);
-    AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
-    if (!shapeSizesToLoopsMap)
+    if (!op.getShapesToLoopsMap())
       return {};
-
-    SmallVector<OpFoldResult> shapeSizes =
-        affine::makeComposedFoldedMultiResultAffineApply(
-            b, loc, shapeSizesToLoopsMap, allShapeSizes);
-    for (auto size : shapeSizes) {
-      if (auto v = llvm::dyn_cast_if_present<Value>(size)) {
-        auto c = dyn_cast_if_present<arith::ConstantIndexOp>(v.getDefiningOp());
-        if (!c) {
-          LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
-          return {};
-        }
-        tripCounts.push_back(c.value());
-      } else {
-        auto a = llvm::dyn_cast_if_present<Attribute>(size);
-        auto c = llvm::dyn_cast_if_present<IntegerAttr>(a);
-        if (!c) {
-          LLVM_DEBUG(llvm::outs() << "unhandled addr!\n");
-          return {};
-        }
-        tripCounts.push_back(c.getInt());
-      }
-    }
-    return std::move(tripCounts);
+    SmallVector<int64_t> tripCounts = op.getStaticLoopRanges();
+    if (llvm::any_of(tripCounts, ShapedType::isDynamic))
+      return {};
+    return tripCounts;
   }
 
   static void
