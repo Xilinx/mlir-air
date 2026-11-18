@@ -80,7 +80,7 @@ With GPU-only build, the following passes are available:
 | `air-to-async` | Lower AIR dialect to async dialect |
 | `air-par-to-herd`, `air-par-to-launch`, `air-par-to-segment`, `air-copy-to-dma` | Convert `scf.parallel` loops and memory copies to AIR operations |
 
-All AIR transformation passes are also available. AIE-specific passes, such as `air-to-aie`, are not registered when `AIR_ENABLE_AIE=OFF`.
+A subset of the AIR transformation passes is also registered; see the `AIR_ENABLE_AIE=OFF` branch of `registerTransformPasses()` in [`mlir/lib/Transform/Passes.cpp`](https://github.com/Xilinx/mlir-air/blob/main/mlir/lib/Transform/Passes.cpp). AIE-specific passes, such as `air-to-aie`, are not registered.
 
 ## GPU Compilation with aircc
 
@@ -109,7 +109,7 @@ aircc --target gpu --gpu-arch gfx942 -v --tmpdir /tmp/mytest -o output.mlir test
 | `--target` | `aie` | Target backend: `aie` or `gpu` |
 | `--gpu-arch` | `gfx942` | GPU architecture |
 | `--gpu-runtime` | `HIP` | GPU runtime: `HIP` or `OpenCL` |
-| `-o <file>` | `<tmpdir>/<input>_final.mlir` | Output file |
+| `-o <file>` | none | Output file. Without `-o`, the final IR is written to `<tmpdir>/<stem>_final.mlir`, where `<stem>` is the input file name without its extension, and also printed to stdout. |
 | `--tmpdir <dir>` | `air_project` | Directory for intermediate files |
 | `-v` | off | Show compilation steps |
 

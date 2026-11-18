@@ -209,19 +209,19 @@ call .\iron_env.cmd
 
 `--dev` installs the pinned CMake, Ninja, and lit into `ironenv`. Reusing that environment keeps MLIR-AIR's tool versions aligned with MLIR-AIE's.
 
-`--dev` also installs the latest `mlir_aie` development wheel, which is not necessarily the version MLIR-AIR is built and tested against. Replace it with the pinned version, given by `WHEEL_VERSION` in `utils\clone-mlir-aie.sh`:
+`--dev` also installs the latest `mlir_aie` development wheel, which is not necessarily the version MLIR-AIR is built and tested against. Replace it with the pinned version, given by `WHEEL_VERSION` in `utils\clone-mlir-aie.sh`. Substitute the printed version for `VERSION`:
 
 ```bat
 cd C:\dev\mlir-air
 python -c "import re;print(re.search(r'WHEEL_VERSION=(\S+)',open('utils/clone-mlir-aie.sh').read()).group(1))"
-pip install mlir_aie==<version> -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
+pip install mlir_aie==VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
 ```
 
-If you would rather not clone MLIR-AIE, install the CMake modules and the pinned `mlir_aie` wheel separately:
+If you would rather not clone MLIR-AIE, install the CMake modules and the pinned `mlir_aie` wheel (the same `VERSION`) separately:
 
 ```bat
 git clone --depth 1 https://github.com/Xilinx/cmakeModules.git C:\dev\cmakeModules
-pip install mlir_aie==<version> -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
+pip install mlir_aie==VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
 pip install -r C:\dev\mlir-air\utils\requirements_dev.txt
 ```
 
@@ -234,7 +234,7 @@ The pinned version lives in `utils\clone-llvm.sh`, as a `WHEEL_VERSION` built fr
 ```bat
 cd C:\dev\mlir-air
 python -c "import re;s=open('utils/clone-llvm.sh').read();g=lambda p:re.search(p,s).group(1);print(g(r'WHEEL_VERSION=(\S+)').replace('$DATETIME',g(r'DATETIME=(\d+)')).replace('${commithash:0:8}',g(r'commithash=(\w+)')[:8]))"
-REM prints the version, e.g. 24.0.0.<DATETIME>+<hash8>
+REM prints the version, e.g. 24.0.0.DATETIME+HASH8
 ```
 
 Then download and unpack it:

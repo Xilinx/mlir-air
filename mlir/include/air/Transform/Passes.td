@@ -1172,7 +1172,6 @@ def AIREnforceChannelFifoOrder: Pass<"air-enforce-channel-fifo-order", "ModuleOp
   let constructor = "xilinx::air::createAIREnforceChannelFifoOrder()";
   let description = [{
     A channel is an ordered FIFO, so ops addressing the same slot (same channel
-
     + same indices + same direction) must be totally ordered even when they
     touch different buffers. See "Endpoint ordering requirement" in
     docs/AIRComputeModel.md.
