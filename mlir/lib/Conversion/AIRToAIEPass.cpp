@@ -4839,7 +4839,13 @@ static int freeTileDmaChannel(AIE::DeviceOp device, Value tile,
         used.insert(dst.getChannel());
     }
   });
-  for (int ch = 0; ch < 2; ch++)
+  // The tile's DMA channel count from the target model. An MM2S channel
+  // feeds the switchbox, so it counts as one of its destination
+  // connections, and an S2MM channel as one of its sources.
+  auto tileOp = cast<AIE::TileOp>(tile.getDefiningOp());
+  int channels = out ? tileOp.getNumDestConnections(AIE::WireBundle::DMA)
+                     : tileOp.getNumSourceConnections(AIE::WireBundle::DMA);
+  for (int ch = 0; ch < channels; ch++)
     if (!used.contains(ch))
       return ch;
   return -1;
