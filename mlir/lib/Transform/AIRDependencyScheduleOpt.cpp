@@ -9603,6 +9603,34 @@ struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
 // threads it into the loop-carried drain. Shares the switch rebuild with
 // air-dependency's convertScfIndexSwitchToAsync via
 // air::rebuildIndexSwitchWithTrailingAsyncToken.
+// A branch that already yields a drain token also waits on the tokens of the
+// branches nested in it that were just given one (`fresh`), which nothing in
+// its regions uses yet.
+static void absorbNestedDrains(Operation *branch,
+                               const llvm::DenseSet<Value> &fresh,
+                               OpBuilder &b) {
+  for (Region &r : branch->getRegions()) {
+    if (r.empty())
+      continue;
+    Block &blk = r.front();
+    SmallVector<Value> dangling;
+    for (Operation &o : blk.without_terminator())
+      for (Value res : o.getResults())
+        if (fresh.contains(res) && res.use_empty())
+          dangling.push_back(res);
+    if (dangling.empty())
+      continue;
+    Operation *term = blk.getTerminator();
+    OpOperand &drain = term->getOpOperand(term->getNumOperands() - 1);
+    dangling.insert(dangling.begin(), drain.get());
+    b.setInsertionPoint(term);
+    drain.set(air::WaitAllOp::create(
+                  b, branch->getLoc(),
+                  air::AsyncTokenType::get(branch->getContext()), dangling)
+                  .getAsyncToken());
+  }
+}
+
 static scf::IndexSwitchOp restoreIndexSwitchDrainToken(scf::IndexSwitchOp sw,
                                                        OpBuilder &b) {
   auto tokTy = air::AsyncTokenType::get(sw.getContext());
@@ -9624,11 +9652,18 @@ static scf::IndexSwitchOp restoreIndexSwitchDrainToken(scf::IndexSwitchOp sw,
                     [&](Region &r) { return regionHasDanglingToken(r); }))
     return sw;
 
+  // The rebuild leaves each region's old yield behind: keep what it yielded.
+  SmallVector<SmallVector<Value>> oldYields;
+  for (Region &r : sw->getRegions())
+    oldYields.emplace_back(
+        r.empty()
+            ? SmallVector<Value>{}
+            : SmallVector<Value>(r.front().getTerminator()->getOperands()));
   // Shared rebuild (new switch + trailing async token + region splice + RAUW);
   // this caller then populates each region's wait_all yield and erases sw.
   auto newSw = air::rebuildIndexSwitchWithTrailingAsyncToken(b, sw);
   // Terminate each region with a yield of a wait_all over its dangling tokens.
-  for (Region &nR : newSw->getRegions()) {
+  for (auto [nR, kept] : llvm::zip_equal(newSw->getRegions(), oldYields)) {
     if (nR.empty())
       b.createBlock(&nR);
     Block &blk = nR.front();
@@ -9637,12 +9672,7 @@ static scf::IndexSwitchOp restoreIndexSwitchDrainToken(scf::IndexSwitchOp sw,
       for (Value res : o.getResults())
         if (isa<air::AsyncTokenType>(res.getType()) && res.use_empty())
           dangling.push_back(res);
-    SmallVector<Value> yieldVals;
-    if (blk.mightHaveTerminator())
-      if (auto y = dyn_cast<scf::YieldOp>(blk.getTerminator())) {
-        yieldVals.append(y.getOperands().begin(), y.getOperands().end());
-        y.erase();
-      }
+    SmallVector<Value> yieldVals(kept);
     b.setInsertionPointToEnd(&blk);
     auto wa = air::WaitAllOp::create(b, sw.getLoc(), tokTy, dangling);
     yieldVals.push_back(wa.getResult(0));
@@ -9940,11 +9970,20 @@ public:
           branchesToFix.push_back(op);
         });
       });
+      llvm::DenseSet<Value> fresh;
       for (Operation *op : branchesToFix) {
-        if (auto sw = dyn_cast<scf::IndexSwitchOp>(op))
-          restoreIndexSwitchDrainToken(sw, b);
-        else
-          restoreIfDrainToken(cast<scf::IfOp>(op), b);
+        bool async = op->getNumResults() &&
+                     isa<air::AsyncTokenType>(
+                         op->getResult(op->getNumResults() - 1).getType());
+        if (async)
+          absorbNestedDrains(op, fresh, b);
+        Operation *rebuilt =
+            isa<scf::IndexSwitchOp>(op)
+                ? restoreIndexSwitchDrainToken(cast<scf::IndexSwitchOp>(op), b)
+                      .getOperation()
+                : restoreIfDrainToken(cast<scf::IfOp>(op), b).getOperation();
+        if (!async && rebuilt != op)
+          fresh.insert(rebuilt->getResult(rebuilt->getNumResults() - 1));
       }
     }
 

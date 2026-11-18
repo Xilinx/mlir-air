@@ -708,19 +708,31 @@ static bool isConditionalOp(Operation *op) {
 }
 
 // Are `a` and `b` the same value, or computed by the same pure ops from the
-// same values? Hoisting copies a selector once per transfer it hoists.
-static bool sameValue(Value a, Value b) {
+// same values? Hoisting copies a selector once per transfer it hoists. `memo`
+// holds the pairs already compared, so shared subexpressions are compared once.
+static bool sameValue(Value a, Value b,
+                      llvm::DenseMap<std::pair<Value, Value>, bool> &memo) {
   if (a == b)
     return true;
+  auto [it, fresh] = memo.try_emplace({a, b}, false);
+  if (!fresh)
+    return it->second;
   Operation *da = a.getDefiningOp(), *db = b.getDefiningOp();
   if (!da || !db || !mlir::isPure(da) || !mlir::isPure(db) ||
       da->getNumRegions() || db->getNumRegions() ||
       cast<OpResult>(a).getResultNumber() !=
           cast<OpResult>(b).getResultNumber())
     return false;
-  return OperationEquivalence::isEquivalentTo(
-      da, db, [](Value x, Value y) { return success(sameValue(x, y)); },
+  bool same = OperationEquivalence::isEquivalentTo(
+      da, db, [&](Value x, Value y) { return success(sameValue(x, y, memo)); },
       /*markEquivalent=*/nullptr, OperationEquivalence::IgnoreLocations);
+  memo[{a, b}] = same;
+  return same;
+}
+
+static bool sameValue(Value a, Value b) {
+  llvm::DenseMap<std::pair<Value, Value>, bool> memo;
+  return sameValue(a, b, memo);
 }
 
 // Do two conditionals select on the same runtime value?
@@ -767,6 +779,18 @@ static bool tokenWaitsOn(Value v, Value target,
   Operation *def = v.getDefiningOp();
   if (!def || !visited.insert(def).second)
     return false;
+  // A branch result waits on `target` only if every arm's yield for it does.
+  if (isa<scf::IfOp, scf::IndexSwitchOp>(def)) {
+    unsigned i = cast<OpResult>(v).getResultNumber();
+    return llvm::all_of(def->getRegions(), [&](Region &r) {
+      if (r.empty())
+        return false;
+      llvm::SmallPtrSet<Operation *, 16> armVisited(visited.begin(),
+                                                    visited.end());
+      return tokenWaitsOn(r.front().getTerminator()->getOperand(i), target,
+                          armVisited);
+    });
+  }
   for (Value dep : getAsyncDependenciesFromOp(def))
     if (tokenWaitsOn(dep, target, visited))
       return true;

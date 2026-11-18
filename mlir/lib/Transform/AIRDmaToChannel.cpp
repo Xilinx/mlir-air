@@ -570,6 +570,8 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
   // the cleanup step that removes non-hoisted ops from the hoisted
   // scf.parallel.
   newIfOp->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
+  // Returned so that an enclosing join sees its token.
+  clonedOps.push_back(newIfOp);
 
   auto cloneBranch = [&](Block *from, Block *to) {
     OpBuilder::InsertionGuard guard(builder);
@@ -628,9 +630,15 @@ cloneScfIndexSwitchUsingRemap(OpBuilder &builder, IRMapping &remap,
     switchCloneRejected = true;
     return clonedOps;
   }
-  auto newSw = scf::IndexSwitchOp::create(
-      builder, sw.getLoc(), sw.getResultTypes(), remap.lookup(sw.getArg()),
-      sw.getCases(), sw.getCases().size());
+  // A switch with no results gets a token, so that what encloses it can wait
+  // for the transfers in its cases.
+  SmallVector<Type> resultTypes(sw.getResultTypes());
+  bool summary = resultTypes.empty();
+  if (summary)
+    resultTypes.push_back(air::AsyncTokenType::get(builder.getContext()));
+  auto newSw = scf::IndexSwitchOp::create(builder, sw.getLoc(), resultTypes,
+                                          remap.lookup(sw.getArg()),
+                                          sw.getCases(), sw.getCases().size());
   newSw->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
   clonedOps.push_back(newSw);
   for (auto [from, to] :
@@ -641,16 +649,20 @@ cloneScfIndexSwitchUsingRemap(OpBuilder &builder, IRMapping &remap,
     clonedOps.append(cloned.begin(), cloned.end());
     SmallVector<Value> tokens = visibleTokens(cloned, &to.front());
     SmallVector<Value> yielded;
-    for (Value v : from.front().getTerminator()->getOperands()) {
+    auto join = [&](Value v) {
       SmallVector<Value> deps(tokens);
-      if (remap.contains(v) && !llvm::is_contained(deps, remap.lookup(v)))
+      if (v && remap.contains(v) && !llvm::is_contained(deps, remap.lookup(v)))
         deps.push_back(remap.lookup(v));
       auto wa = air::WaitAllOp::create(
           builder, sw.getLoc(), air::AsyncTokenType::get(builder.getContext()),
           deps);
       wa->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
       yielded.push_back(wa.getAsyncToken());
-    }
+    };
+    for (Value v : from.front().getTerminator()->getOperands())
+      join(v);
+    if (summary)
+      join(nullptr);
     scf::YieldOp::create(builder, sw.getLoc(), yielded);
   }
   for (auto [oldRes, newRes] : llvm::zip(sw.getResults(), newSw.getResults()))
@@ -1756,16 +1768,43 @@ class AIRDemoteDmaToAIRHierarchyConversion
 // descriptors take several dims. Copying the elements in another order puts
 // each in the same place.
 // Whether the host can evaluate `v` when it arms a hoisted L3 transfer: `v`
-// is built only from hierarchy arguments, loop ivs and pure index arithmetic.
-static bool isHostComputable(Value v, Operation *herd) {
+// is built only from hierarchy arguments, loop ivs and iter_args over such
+// values, and pure index arithmetic. `seen` breaks the cycle an iter_arg
+// closes through its loop's yield.
+static bool isHostComputable(Value v, Operation *herd,
+                             llvm::SmallPtrSetImpl<Value> &seen) {
+  if (!seen.insert(v).second)
+    return true;
+  auto all = [&](auto values) {
+    return llvm::all_of(
+        values, [&](Value x) { return isHostComputable(x, herd, seen); });
+  };
   if (auto arg = dyn_cast<BlockArgument>(v)) {
     Operation *owner = arg.getOwner()->getParentOp();
     if (isa<air::HierarchyInterface>(owner))
       return true;
-    if (auto loop = dyn_cast<LoopLikeOpInterface>(owner))
-      return llvm::is_contained(
-          loop.getLoopInductionVars().value_or(SmallVector<Value>{}), v);
-    return false;
+    auto loop = dyn_cast<LoopLikeOpInterface>(owner);
+    if (!loop)
+      return false;
+    // An iv: its bounds and step have to be computable too.
+    if (llvm::is_contained(
+            loop.getLoopInductionVars().value_or(SmallVector<Value>{}), v)) {
+      SmallVector<Value> control;
+      for (auto range : {loop.getLoopLowerBounds(), loop.getLoopUpperBounds(),
+                         loop.getLoopSteps()})
+        for (OpFoldResult r : range.value_or(SmallVector<OpFoldResult>{}))
+          if (auto x = dyn_cast<Value>(r))
+            control.push_back(x);
+      return all(control);
+    }
+    // An iter_arg: its initial value and what the body yields for it.
+    auto forOp = dyn_cast<scf::ForOp>(owner);
+    if (!forOp)
+      return false;
+    unsigned i = arg.getArgNumber() - forOp.getNumInductionVars();
+    return isHostComputable(forOp.getInitArgs()[i], herd, seen) &&
+           isHostComputable(forOp.getBody()->getTerminator()->getOperand(i),
+                            herd, seen);
   }
   Operation *def = v.getDefiningOp();
   if (!herd->isProperAncestor(def))
@@ -1777,13 +1816,27 @@ static bool isHostComputable(Value v, Operation *herd) {
       return false;
     Value yielded = exec.getRegion().front().getTerminator()->getOperand(
         result.getResultNumber() - 1);
-    return isHostComputable(yielded, herd);
+    return isHostComputable(yielded, herd, seen);
   }
-  if (!mlir::isPure(def) || def->getNumRegions())
+  // A region op without effects (a switch picking an index): what it reads
+  // from above, and its operands.
+  if (def->getNumRegions()) {
+    if (!air::isEffectFree(def))
+      return false;
+    SmallVector<Value> above;
+    visitUsedValuesDefinedAbove(def->getRegions(), [&](OpOperand *use) {
+      above.push_back(use->get());
+    });
+    return all(def->getOperands()) && all(above);
+  }
+  if (!mlir::isPure(def))
     return false;
-  return llvm::all_of(def->getOperands(), [&](Value operand) {
-    return isHostComputable(operand, herd);
-  });
+  return all(def->getOperands());
+}
+
+static bool isHostComputable(Value v, Operation *herd) {
+  llvm::SmallPtrSet<Value, 16> seen;
+  return isHostComputable(v, herd, seen);
 }
 
 // Whether `v` depends on data the core reads from memory, which the host
@@ -2471,12 +2524,17 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           return true;
         });
 
+    switchCloneRejected = false;
     RewritePatternSet air_dma_demotion(context);
     air_dma_demotion.add<AIRDemoteDmaToAIRHierarchyConversion>(context);
     if (failed(applyPartialConversion(module, target_0,
                                       std::move(air_dma_demotion)))) {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
+    }
+    if (switchCloneRejected) {
+      signalPassFailure();
+      return;
     }
 
     // Dep tracing
@@ -2557,7 +2615,6 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       }
     }
 
-    switchCloneRejected = false;
     for (auto getput : externalChannelOps) {
       getput->setAttr("loop-carried-dep", StringAttr::get(context, "external"));
       RewritePatternSet hoistChannelPatterns(context);
