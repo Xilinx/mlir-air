@@ -213,3 +213,57 @@ func.func @test_no_else_scf_if_untouched(%arg0: memref<64xi32>) {
   }
   return
 }
+
+// -----
+
+// Negative test: after L2 channel ops are replaced with wait_all, the two
+// branches wait on different tokens, so the scf.if is kept.
+
+// CHECK-LABEL: func.func @test_preserve_scf_if_different_deps
+// CHECK: scf.if
+// CHECK: airrt.wait_all %[[A:.*]] : !airrt.event
+// CHECK: } else {
+// CHECK-NOT: airrt.wait_all %[[A]] : !airrt.event
+// CHECK: airrt.wait_all %{{.*}} : !airrt.event
+// CHECK: return
+
+air.channel @chan_a [1, 1]
+air.channel @chan_b [1, 1]
+
+func.func @test_preserve_scf_if_different_deps(%arg0: memref<64xi32>) {
+  %0 = air.launch async () in () args(%in=%arg0) : memref<64xi32>
+      attributes {id = 1 : i32} {
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+
+    %segment = air.segment @seg async unroll(%ux, %uy) in (%sx=%c2, %sy=%c1)
+        attributes {id = 2 : i32, x_loc = 0 : i64, x_size = 4 : i64,
+                    y_loc = 2 : i64, y_size = 2 : i64} {
+      %c0_seg = arith.constant 0 : index
+
+      %t_a, %buf_a = air.execute -> (memref<32xi32, 1 : i32>) {
+        %alloc = memref.alloc() : memref<32xi32, 1 : i32>
+        air.execute_terminator %alloc : memref<32xi32, 1 : i32>
+      }
+      %t_b, %buf_b = air.execute -> (memref<32xi32, 1 : i32>) {
+        %alloc = memref.alloc() : memref<32xi32, 1 : i32>
+        air.execute_terminator %alloc : memref<32xi32, 1 : i32>
+      }
+
+      %cond = arith.cmpi eq, %ux, %c0_seg : index
+      %3 = scf.if %cond -> (!air.async.token) {
+        %put = air.channel.put async [%t_a] @chan_a[%c0_seg, %c0_seg]
+            (%buf_a[] [] []) {id = 1 : i32} : (memref<32xi32, 1 : i32>)
+        scf.yield %put : !air.async.token
+      } else {
+        %put = air.channel.put async [%t_b] @chan_b[%c0_seg, %c0_seg]
+            (%buf_b[] [] []) {id = 2 : i32} : (memref<32xi32, 1 : i32>)
+        scf.yield %put : !air.async.token
+      }
+      %d = air.execute [%3] {
+        memref.dealloc %buf_a : memref<32xi32, 1 : i32>
+      }
+    }
+  }
+  return
+}

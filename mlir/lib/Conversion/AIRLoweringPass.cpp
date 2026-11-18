@@ -63,42 +63,6 @@ static bool isSegmentUnrollCondition(scf::IfOp ifOp) {
   return false;
 }
 
-/// Return true if two blocks are structurally equivalent: same number of ops,
-/// same op types in order, and same operands (values defined outside the
-/// blocks, such as dependencies, must match).
-static bool blocksAreEquivalent(Block *a, Block *b) {
-  auto &opsA = a->getOperations();
-  auto &opsB = b->getOperations();
-  if (opsA.size() != opsB.size())
-    return false;
-  // Build a mapping from block-a values to block-b values for results
-  // defined within the blocks.
-  DenseMap<Value, Value> valueMap;
-  auto itA = opsA.begin(), itB = opsB.begin();
-  for (; itA != opsA.end(); ++itA, ++itB) {
-    if (itA->getName() != itB->getName())
-      return false;
-    if (itA->getNumOperands() != itB->getNumOperands())
-      return false;
-    if (itA->getNumResults() != itB->getNumResults())
-      return false;
-    // Check operands are equivalent (same external value, or mapped internal).
-    for (auto [opA, opB] : llvm::zip(itA->getOperands(), itB->getOperands())) {
-      auto it = valueMap.find(opA);
-      if (it != valueMap.end()) {
-        if (it->second != opB)
-          return false;
-      } else if (opA != opB) {
-        return false;
-      }
-    }
-    // Map results from A to B for subsequent operand checks.
-    for (auto [resA, resB] : llvm::zip(itA->getResults(), itB->getResults()))
-      valueMap[resA] = resB;
-  }
-  return true;
-}
-
 /// Fold scf.if ops whose both branches contain only trivial ops (as determined
 /// by \p isEligibleOp) and are structurally equivalent, by inlining the
 /// then-branch before the scf.if. When segment-unroll channel specialization
@@ -124,7 +88,10 @@ static void foldTrivialScfIfs(Operation *rootOp,
       return;
     // Verify both branches are structurally equivalent to avoid dropping
     // dependencies that only exist in the else-branch.
-    if (blocksAreEquivalent(ifOp.thenBlock(), ifOp.elseBlock()))
+    if (OperationEquivalence::isRegionEquivalentTo(
+            &ifOp.getThenRegion(), &ifOp.getElseRegion(),
+            OperationEquivalence::IgnoreLocations |
+                OperationEquivalence::IgnoreDiscardableAttrs))
       ifsToFold.push_back(ifOp);
   });
   for (auto ifOp : ifsToFold) {
