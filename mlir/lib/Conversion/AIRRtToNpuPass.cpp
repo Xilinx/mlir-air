@@ -7203,24 +7203,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
   }
 
-  std::optional<AIE::ShimDMAAllocationOp>
-  getAllocOpForSymbol(SmallVector<AIE::ShimDMAAllocationOp> shimDmaAllocOps,
-                      StringRef sym_name) {
-    for (auto shimDmaAllocOp : shimDmaAllocOps)
-      if (shimDmaAllocOp.getSymName() == sym_name)
-        return shimDmaAllocOp;
-    return std::nullopt;
-  }
-
-  std::optional<AIE::ObjectFifoCreateOp> getObjectFifoCreateOpForSymbol(
-      SmallVector<AIE::ObjectFifoCreateOp> objectFifoCreateOps,
-      StringRef sym_name) {
-    for (auto objectFifoCreateOp : objectFifoCreateOps)
-      if (objectFifoCreateOp.getSymName().str() == sym_name.str())
-        return objectFifoCreateOp;
-    return std::nullopt;
-  }
-
   // Remove npu wait op on inbound dma data movements.
   // TODO: this is an aggressive optimization which might prove problematic
   // for some applications. To be revised.
@@ -7231,15 +7213,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       SmallVector<AIEX::NpuDmaWaitOp> waits;
       f.walk([&](AIEX::NpuDmaWaitOp wait) { waits.push_back(wait); });
       auto d = f->getParentOfType<AIE::DeviceOp>();
-
-      SmallVector<AIE::ShimDMAAllocationOp> shimDmaAllocOps;
-      if (d)
-        d.walk([&](AIE::ShimDMAAllocationOp shimDmaAllocOp) {
-          shimDmaAllocOps.push_back(shimDmaAllocOp);
-        });
-      llvm::DenseMap<StringRef, std::optional<AIE::ShimDMAAllocationOp>>
-          allocationCache;
-
       if (!d)
         continue;
       OpBuilder builder(f);
@@ -7529,18 +7502,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     std::map<int, int> chanToIdMap;
     AIE::DeviceOp d = nullptr;
     blk->walk([&](AIE::DeviceOp op) { d = op; });
-    SmallVector<AIE::ShimDMAAllocationOp> shimDmaAllocOps;
-    if (d)
-      d.walk([&](AIE::ShimDMAAllocationOp shimDmaAllocOp) {
-        shimDmaAllocOps.push_back(shimDmaAllocOp);
-      });
-    llvm::DenseMap<StringRef, std::optional<AIE::ShimDMAAllocationOp>>
-        allocationCache;
-    SmallVector<AIE::ObjectFifoCreateOp> objectFifoCreateOps;
-    if (d)
-      d.walk([&](AIE::ObjectFifoCreateOp objectFifoCreateOp) {
-        objectFifoCreateOps.push_back(objectFifoCreateOp);
-      });
     OpBuilder builder(blk->getParentOp());
     blk->walk([&](Operation *op) {
       auto dma = dyn_cast_if_present<AIEX::NpuDmaMemcpyNdOp>(op);
@@ -7558,12 +7519,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (auto infoOp = AIE::ShimDMAAllocationOp::getForSymbol(
                 d, dma.getMetadata().getRootReference())) {
           col = getColFromTileValue(infoOp.getTile());
-        } else if (auto objFifoCreateOp = getObjectFifoCreateOpForSymbol(
-                       objectFifoCreateOps,
-                       dma.getMetadata().getLeafReference().getValue())) {
-          if (isShimTileValue(objFifoCreateOp->getProducerTile()))
-            col = getColFromTileValue(objFifoCreateOp->getProducerTile());
-          for (auto consumerTileOp : objFifoCreateOp->getConsumerTiles()) {
+        } else if (auto objFifoCreateOp =
+                       d.lookupSymbol<AIE::ObjectFifoCreateOp>(
+                           dma.getMetadata().getLeafReference())) {
+          if (isShimTileValue(objFifoCreateOp.getProducerTile()))
+            col = getColFromTileValue(objFifoCreateOp.getProducerTile());
+          for (auto consumerTileOp : objFifoCreateOp.getConsumerTiles()) {
             if (isShimTileValue(consumerTileOp))
               col = getColFromTileValue(consumerTileOp);
           }
