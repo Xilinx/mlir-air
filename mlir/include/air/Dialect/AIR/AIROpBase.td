@@ -17,54 +17,42 @@ def air_Dialect : Dialect {
   let name = "air";
   let cppNamespace = "xilinx::air";
   let description = [{
-    The `air` dialect is used to describe cooperating arrays of AIE cores
-    and the bulk data movement between AIE cores and a memory hierarchy.
-    Its primary features are collective operations for executing work on
-    groups of AIE cores and multi-dimensional DMA copy operations.
+    The `air` dialect describes spatial computation on accelerators with an
+    explicit memory hierarchy and explicit data movement. It is
+    architecture-independent: the same IR lowers to AMD NPUs (AI Engine arrays)
+    and to AMD GPUs. The normative semantics of each operation are defined in
+    the [AIR Compute Model](AIRComputeModel.md).
 
-    ### Herd
-    A `herd` in the `air` dialect is a one or two dimensional array of adjacent
-    AIE cores executing the same code region. A `herd` operation defines an
-    iteration space representing the spatial parallelism of the array of cores.
-    Code within a `herd` can directly access L1 memory but must use DMA
-    operations or channels to access other levels of memory.
-
-    ### Segment
-    A `segment` in the `air` dialect represents a physically contiguous
-    grouping of AIE cores, L1 and L2 memory resources, and controllers
-    sufficient to implement the herds, memory allocations, data movement,
-    and synchronization contained in the `segment` code region. Code within
-    a `segment` can allocate L2 memory but must use DMA operations or
-    channels to access other levels of memory. A `segment` can optionally
-    define an iteration space which represents a spatial unroll of the
-    `segment`. That is, it allows the `segment` to be "stamped out" multiple
-    times, also multiplying the physical resources required by the `segment`.
-
-    ### Launch
-    A `launch` in the `air` dialect groups `segments` and L3 allocations that
-    must be co-resident within a device when execution of the `launch`
-    code region begins. A `launch` operation can optionally define a parallel
-    iteration space.
+    ### Hierarchy
+    Computation is organized in three nested levels. Each level defines an
+    iteration space and a body region that is isolated from above.
+    - `launch` groups segments and L3 allocations that must be co-resident on
+      the device. Iterations of a `launch` may execute in parallel.
+    - `segment` groups the processing elements, L2 memory, and data-movement
+      resources required by its body. The iterations of a `segment` execute in
+      parallel, each on its own copy of these resources.
+    - `herd` is an array of processing elements executing the same body; each
+      point of its iteration space executes on a distinct processing element.
+      Code in a `herd` accesses L1 memory directly and reaches other memory
+      levels only through data-movement operations.
 
     ### Memory Hierarchy
-    There are three levels of memory in the air dialect:
-    - `L1` memory corresponds to the AIE tile memory.
-    - `L2` memory corresponds to pools of on-device memory such as of URAMs,
-      memory tiles, or other memory resources.
-    - `L3` memory corresponds to off-chip memory such as DDR.
-    Each memory space has an enum defined in the air::MemorySpace namespace.
+    - `L1`: local memory of a single processing element.
+    - `L2`: on-device memory shared within a `segment`.
+    - `L3`: off-chip or host-accessible memory.
 
-    ### DMA Memory Copies
-    The `dma_memcpy_nd` operation in `air` dialect describes asynchronous
-    multi-dimensional copy operations between levels of memory.
+    The memory spaces are enumerated in `air::MemorySpace`.
 
-    ### Channels
-    A `channel` in the `air` dialect is a representation of data movement...
+    ### Data Movement
+    `dma_memcpy_nd` is an asynchronous multi-dimensional copy between memory
+    levels. `channel` declares a stream between producers and consumers, which
+    `channel.put` and `channel.get` write to and read from. Puts and gets on a
+    channel must balance on every control-flow path.
 
-    ### Asynchronous operations
-    Operations in air dialect can be asynchronous. An asynchronous token
-    interface is provided to synchronize between operations.
-
+    ### Asynchrony
+    Operations may execute asynchronously and return an `!air.token`. Token
+    operands order an operation after its producers, and `wait_all` joins
+    multiple tokens.
   }];
   let useDefaultTypePrinterParser = 1;
   let useDefaultAttributePrinterParser = 1;
