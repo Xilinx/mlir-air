@@ -29,93 +29,6 @@
 
 using namespace mlir;
 
-// Remove tensor_load followed by buffer_cast
-struct RemoveBufferCastPattern
-    : public OpRewritePattern<bufferization::ToBufferOp> {
-  using OpRewritePattern<bufferization::ToBufferOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(bufferization::ToBufferOp op,
-                                PatternRewriter &rewriter) const override {
-
-    auto load = op.getOperand().getDefiningOp<bufferization::ToTensorOp>();
-    if (!load)
-      return failure();
-
-    auto buffer = load.getBuffer();
-    if (!buffer)
-      return failure();
-    rewriter.replaceOp(op, buffer);
-    return success();
-  }
-};
-
-// Replace a pattern like this:
-//  %1 = memref.alloc() : memref<32x32xi32>
-//  linalg.copy(%2, %1) : memref<32x32xi32, 2>, memref<32x32xi32>
-//  use %1
-// with this:
-//  use %2
-struct RemoveAllocCopyPattern : public OpRewritePattern<memref::AllocOp> {
-  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(memref::AllocOp op,
-                                PatternRewriter &rewriter) const override {
-
-    Value memref;
-    if (op->use_empty()) {
-      rewriter.eraseOp(op);
-      return success();
-    }
-
-    for (auto u : op->getUsers())
-      if (auto copy = dyn_cast_if_present<linalg::CopyOp>(u)) {
-        memref = copy.getInputs()[0];
-        rewriter.eraseOp(copy);
-      }
-
-    if (!memref)
-      return failure();
-
-    rewriter.replaceOp(op, memref);
-    return success();
-  }
-};
-
-// Rewrite of this pattern:
-//   %1 = aie.buffer(%0) {..} : memref<?, 2>
-//   %2 = memref.alloc() : memref<?>
-//   <use of %2>
-//   %3 = memref.tensor_load %2 : memref<?>
-//   memref.tensor_store %3, %1 : memref<?, 2>
-// to this:
-//   <use of %1>
-// struct RemoveTensorLoadStorePattern
-//     : public OpRewritePattern<bufferization::ToTensorOp> {
-//   using OpRewritePattern<bufferization::ToTensorOp>::OpRewritePattern;
-
-//   LogicalResult matchAndRewrite(bufferization::ToTensorOp op,
-//                                 PatternRewriter &rewriter) const override {
-
-//     auto alloc = op.getOperand().getDefiningOp<memref::AllocOp>();
-//     if (!alloc)
-//       return failure();
-
-//     if (!op->hasOneUse())
-//       return failure();
-
-//     auto store =
-//     dyn_cast_if_present<memref::TensorStoreOp>(*op->user_begin()); if
-//     (!store)
-//       return failure();
-
-//     rewriter.replaceOp(alloc, store.getMemref());
-//     rewriter.eraseOp(store);
-//     rewriter.eraseOp(op);
-
-//     return success();
-//   }
-// };
-
 struct LowerLinalgOpPattern : public OpRewritePattern<linalg::GenericOp> {
   using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
 
@@ -140,13 +53,6 @@ void AIRLowerLinalgTensors::runOnOperation() {
   ModuleOp aie_module = getOperation();
   MLIRContext &context = getContext();
 
-  ConversionTarget target(context);
-  target.addLegalDialect<xilinx::AIE::AIEDialect, affine::AffineDialect,
-                         math::MathDialect, memref::MemRefDialect,
-                         func::FuncDialect, arith::ArithDialect>();
-  target.addIllegalOp<tensor::EmptyOp, tensor::ExtractSliceOp,
-                      tensor::InsertSliceOp>();
-
   bufferization::BufferizationOptions options;
   options.opFilter.allowDialect<linalg::LinalgDialect>();
 
@@ -155,9 +61,7 @@ void AIRLowerLinalgTensors::runOnOperation() {
     signalPassFailure();
 
   RewritePatternSet patterns1(&context);
-  patterns1.add<RemoveBufferCastPattern>(&context);
-  // RemoveAllocCopyPattern,
-  // RemoveTensorLoadStorePattern
+  bufferization::ToBufferOp::getCanonicalizationPatterns(patterns1, &context);
   (void)applyPatternsGreedily(aie_module, std::move(patterns1));
 
   RewritePatternSet patterns2(&context);

@@ -111,5 +111,7 @@ tools = ["air-opt", "air-translate", "air-runner", "aie-opt", "aircc"]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)
 
+if config.air_enable_aie:
+    config.available_features.add("aie")
 if config.air_enable_gpu:
     config.available_features.add("gpu")
