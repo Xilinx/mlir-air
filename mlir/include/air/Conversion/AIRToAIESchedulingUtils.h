@@ -44,10 +44,6 @@ AIE::ExternalBufferOp allocateExternalBufferOp(uint64_t &BufferId,
                                                mlir::StringAttr attr = nullptr,
                                                int x = -1, int y = -1);
 
-std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec);
-
-bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
-
 int64_t get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
                     ArrayRef<OpFoldResult> memcpy_strides);
 

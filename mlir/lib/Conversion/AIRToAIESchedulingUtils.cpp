@@ -172,15 +172,6 @@ AIE::ExternalBufferOp air::allocateExternalBufferOp(uint64_t &BufferId,
   return bufferOp;
 }
 
-std::vector<unsigned> air::convertToStdVec(SmallVector<int64_t, 6> vec) {
-  return {vec.begin(), vec.end()};
-}
-
-bool air::areIdenticalVectors(std::vector<unsigned> &a,
-                              std::vector<unsigned> &b) {
-  return a == b;
-}
-
 int64_t air::get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
                          ArrayRef<OpFoldResult> memcpy_strides) {
   if (memcpy_offsets.empty())
@@ -3990,7 +3981,8 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
     // Walk through each element in broadcast_shape
     auto bcast_sizes = extractFromIntegerArrayAttr<int64_t>(
         chan->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
-    auto bcast_sizes_stdvec = convertToStdVec(bcast_sizes);
+    auto bcast_sizes_stdvec =
+        std::vector<unsigned>(bcast_sizes.begin(), bcast_sizes.end());
     for (int iter = 0; iter < numS2MMAllocs; iter++) {
       std::vector<unsigned> position =
           getMDVectorFromIterator(bcast_sizes_stdvec, iter);
@@ -4003,7 +3995,7 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
           indices_uint[dim] = 0;
         }
       }
-      if (areIdenticalVectors(indices_uint, position)) {
+      if (indices_uint == position) {
         alloc_id = iter;
       }
     }
