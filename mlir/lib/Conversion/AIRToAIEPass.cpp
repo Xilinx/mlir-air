@@ -2596,117 +2596,24 @@ struct SpecializeAffineIfPattern : public OpRewritePattern<affine::AffineIfOp> {
   }
 };
 
-struct SpecializeScfIfPattern : public OpRewritePattern<scf::IfOp> {
-  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
-
-  SpecializeScfIfPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
-
-  LogicalResult matchAndRewrite(scf::IfOp op,
-                                PatternRewriter &rewriter) const override {
-
-    // Allow specialization inside both AIE cores and at the segment level
-    // within a device (for segment-unrolled scf.if ops on unroll indices).
-    if (!op->getParentOfType<AIE::CoreOp>() &&
-        !op->getParentOfType<AIE::DeviceOp>())
-      return failure();
-
-    // Try to resolve the condition to a constant boolean.
-    Value cond = op.getCondition();
-    std::optional<bool> condValue;
-
-    // Case 1: condition is a constant i1.
-    if (auto constOp = cond.getDefiningOp<arith::ConstantOp>()) {
-      if (auto intAttr = dyn_cast_if_present<IntegerAttr>(constOp.getValue()))
-        condValue = intAttr.getValue().getBoolValue();
-    }
-    // Case 2: condition is arith.cmpi with constant operands.
-    else if (auto cmpOp = cond.getDefiningOp<arith::CmpIOp>()) {
-      auto lhsConst = mlir::getConstantIntValue(cmpOp.getLhs());
-      auto rhsConst = mlir::getConstantIntValue(cmpOp.getRhs());
-      if (lhsConst && rhsConst) {
-        // Use 64-bit APInt for index types (which have no fixed bit width),
-        // and the actual bit width for integer types.
-        unsigned bitWidth =
-            isa<IndexType>(cmpOp.getLhs().getType())
-                ? 64
-                : cmpOp.getLhs().getType().getIntOrFloatBitWidth();
-        APInt lhs(bitWidth, *lhsConst, /*isSigned=*/true);
-        APInt rhs(bitWidth, *rhsConst, /*isSigned=*/true);
-        condValue = arith::applyCmpPredicate(cmpOp.getPredicate(), lhs, rhs);
-      }
-    }
-    // Case 3: condition is arith.index_cast of a constant to i1.
-    else if (auto castOp = cond.getDefiningOp<arith::IndexCastOp>()) {
-      if (auto constVal = mlir::getConstantIntValue(castOp.getIn()))
-        condValue = (*constVal != 0);
-    }
-
-    if (!condValue)
-      return failure();
-
-    Block *bb = nullptr;
-    if (*condValue) {
-      bb = op.thenBlock();
-    } else if (op.elseBlock()) {
-      bb = op.elseBlock();
-    }
-    if (!bb) {
-      rewriter.eraseOp(op);
-      return success();
-    }
-    Operation *t = bb->getTerminator();
-    rewriter.inlineBlockBefore(bb, op);
-    rewriter.replaceOp(op, t->getOperands());
-    rewriter.eraseOp(t);
-    return success();
-  }
-};
-
-// Specialize an scf.index_switch whose index argument is a compile-time
-// constant (an outlined herd tile id) into just the selected case body. Lets
-// per-core buffer selection via scf.index_switch be resolved the same way as
-// affine.if / scf.if in outlined cores.
-struct SpecializeScfIndexSwitchPattern
-    : public OpRewritePattern<scf::IndexSwitchOp> {
-  using OpRewritePattern<scf::IndexSwitchOp>::OpRewritePattern;
-
-  SpecializeScfIndexSwitchPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
-
-  LogicalResult matchAndRewrite(scf::IndexSwitchOp op,
-                                PatternRewriter &rewriter) const override {
-    if (!op->getParentOfType<AIE::CoreOp>() &&
-        !op->getParentOfType<AIE::DeviceOp>())
-      return failure();
-
-    auto argConst = mlir::getConstantIntValue(op.getArg());
-    if (!argConst)
-      return failure();
-
-    Block *bb = nullptr;
-    ArrayRef<int64_t> cases = op.getCases();
-    for (size_t i = 0; i < cases.size(); ++i) {
-      if (cases[i] == *argConst) {
-        bb = &op.getCaseRegions()[i].front();
-        break;
-      }
-    }
-    if (!bb)
-      bb = &op.getDefaultRegion().front();
-
-    Operation *t = bb->getTerminator();
-    rewriter.inlineBlockBefore(bb, op);
-    rewriter.replaceOp(op, t->getOperands());
-    rewriter.eraseOp(t);
-    return success();
-  }
-};
+// Inlines the taken region of an `opName` op (scf.if or scf.index_switch)
+// inside an AIE core or device once its condition or index folds to a
+// constant, such as an outlined herd tile id.
+static void addScfBranchSpecialization(RewritePatternSet &patterns,
+                                       StringRef opName) {
+  populateRegionBranchOpInterfaceInliningPattern(
+      patterns, opName, mlir::detail::defaultReplBuilderFn, [](Operation *op) {
+        return success(op->getParentOfType<AIE::CoreOp>() ||
+                       op->getParentOfType<AIE::DeviceOp>());
+      });
+}
 
 void specializeHerdAffineIf(AIE::DeviceOp m) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<SpecializeAffineIfPattern>(ctx);
-  patterns.insert<SpecializeScfIfPattern>(ctx);
-  patterns.insert<SpecializeScfIndexSwitchPattern>(ctx);
+  addScfBranchSpecialization(patterns, scf::IfOp::getOperationName());
+  addScfBranchSpecialization(patterns, scf::IndexSwitchOp::getOperationName());
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
 
@@ -10468,7 +10375,7 @@ public:
     if (clTestPatterns.find("specialize-affine-if") != std::string::npos)
       patterns.insert<SpecializeAffineIfPattern>(ctx);
     if (clTestPatterns.find("specialize-scf-if") != std::string::npos)
-      patterns.insert<SpecializeScfIfPattern>(ctx);
+      addScfBranchSpecialization(patterns, scf::IfOp::getOperationName());
     if (clTestPatterns.find("lower-scf-tokens") != std::string::npos)
       patterns
           .insert<LowerScfTokenPattern, LowerScfBranchTokenPattern<scf::IfOp>,
@@ -11522,7 +11429,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     auto ctx = aie_module->getContext();
     RewritePatternSet patterns(ctx);
     patterns.insert<SpecializeAffineIfPattern>(ctx);
-    patterns.insert<SpecializeScfIfPattern>(ctx);
+    addScfBranchSpecialization(patterns, scf::IfOp::getOperationName());
     patterns.insert<LowerAIRExecutePattern>(ctx);
     patterns.insert<AllocL1BuffersPattern>(ctx, BufferId);
     air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
