@@ -696,7 +696,7 @@ func.func @writes_on_one_dynamic_endpoint(%arg0: memref<16xi32>) {
 // CHECK: aie.dma_start(MM2S, 0
 // CHECK: aie.dma_bd(%{{.*}} : memref<3x8xbf16, 1> offset = 0 len = 0) {task_id = 0 : i32}
 // CHECK: aie.dma_bd(%{{.*}} : memref<3x8xbf16, 1> offset = 0 len = 0) {task_id = 0 : i32}
-// CHECK: aie.dma_bd(%{{.*}} : memref<3x8xbf16, 1> offset = 0 len = 24) {packet = #aie.packet_info<pkt_type = 0, pkt_id = {{[0-9]+}}>, task_id = 0 : i32}
+// CHECK: aie.dma_bd(%{{.*}} : memref<3x8xbf16, 1> offset = 0 len = 24) {packet = #aie.packet_info<pkt_id = {{[0-9]+}}>, task_id = 0 : i32}
 // CHECK: aie.dma_bd(%{{.*}} : memref<3x8xbf16, 1> offset = 0 len = 0) {task_id = 0 : i32}
 // CHECK: aie.dma_bd(%{{.*}} : memref<3x8xbf16, 1> offset = 0 len = 0) {task_id = 0 : i32}
 // CHECK: func.func @fanin_packet

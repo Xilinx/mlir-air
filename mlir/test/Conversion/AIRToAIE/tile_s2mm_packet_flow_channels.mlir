@@ -14,10 +14,10 @@
 // CHECK-LABEL: aie.device
 // CHECK: aie.mem
 // CHECK: aie.dma_start(S2MM, 0
-// CHECK: aie.dma_bd(%{{.*}}) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
+// CHECK: aie.dma_bd(%{{.*}}) {packet = #aie.packet_info<pkt_id = 0>
 // CHECK: aie.next_bd
 // CHECK: aie.dma_start(S2MM, 1
-// CHECK: aie.dma_bd(%{{.*}}) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>
+// CHECK: aie.dma_bd(%{{.*}}) {packet = #aie.packet_info<pkt_id = 1>
 // CHECK: aie.next_bd
 
 air.channel @fX [1] {channel_type = "npu_dma_packet"}

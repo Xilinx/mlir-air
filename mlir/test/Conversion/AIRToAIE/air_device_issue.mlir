@@ -13,7 +13,7 @@
 // through control packets to the shim.
 
 // CHECK-LABEL: aie.device(npu2) @seg
-// CHECK: %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>(?, ?) {controller_id = #aie.packet_info<pkt_type = 0, pkt_id = 15>}
+// CHECK: %[[SHIM:.*]] = aie.logical_tile<ShimNOCTile>(?, ?) {controller_id = #aie.packet_info<pkt_id = 15>}
 // CHECK: %[[T:.*]] = aie.tile(0, 2)
 // CHECK-DAG: %[[OUT:.*]] = aie.buffer(%[[T]]) {sym_name = "__air_issue_ctrl_out_0_2"} : memref<4xi32, 2 : i32>
 // CHECK-DAG: %[[IN:.*]] = aie.buffer(%[[T]]) {sym_name = "__air_issue_ctrl_in_0_2"} : memref<2xi32, 2 : i32>

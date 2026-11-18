@@ -20,8 +20,8 @@
 
 // Each channel.put at L3 level should get a distinct packet attribute.
 // CHECK-LABEL: func.func @test_shared_shim_packet_ids
-// CHECK-DAG:   air.channel.put{{.*}}@chan_a{{.*}}packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
-// CHECK-DAG:   air.channel.put{{.*}}@chan_b{{.*}}packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>
+// CHECK-DAG:   air.channel.put{{.*}}@chan_a{{.*}}packet = #aie.packet_info<pkt_id = 0>
+// CHECK-DAG:   air.channel.put{{.*}}@chan_b{{.*}}packet = #aie.packet_info<pkt_id = 1>
 
 module {
   // Two dma_packet channels from L3 to L1, sharing the same shim column.

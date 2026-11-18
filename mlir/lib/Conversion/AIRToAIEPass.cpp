@@ -2214,10 +2214,10 @@ LogicalResult createAIEModulesAndOutlineCores(
           builder.setInsertionPointToStart(module.getBody());
         auto aie_dev = AIE::DeviceOp::create(
             builder, module.getLoc(),
-            AIE::AIEDeviceAttr::get(builder.getContext(), subDevice));
+            AIE::AIEDeviceAttr::get(builder.getContext(), subDevice),
+            builder.getStringAttr(segment_name),
+            /*overlay=*/FlatSymbolRefAttr());
         lastDeviceOp = aie_dev;
-        aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
-                         StringAttr::get(builder.getContext(), segment_name));
         if (totalUnroll == 1) {
           devicesByName[segment_name] = aie_dev;
           bodiesByName[segment_name].push_back(seg);
@@ -2264,9 +2264,8 @@ LogicalResult createAIEModulesAndOutlineCores(
     auto builder = OpBuilder::atBlockBegin(module.getBody());
     auto aie_dev = AIE::DeviceOp::create(
         builder, module.getLoc(),
-        AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
-    aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
-                     StringAttr::get(builder.getContext(), segment_name));
+        AIE::AIEDeviceAttr::get(builder.getContext(), options.device),
+        builder.getStringAttr(segment_name), /*overlay=*/FlatSymbolRefAttr());
     setAIEDeviceDataLayout(builder, aie_dev);
     AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
                                     aie_dev.getLoc());
@@ -11419,7 +11418,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     rewriter.setInsertionPointToStart(aie_module.getBody());
     auto devOp = AIE::DeviceOp::create(
         rewriter, aie_module.getLoc(),
-        AIE::AIEDeviceAttr::get(rewriter.getContext(), options.device));
+        AIE::AIEDeviceAttr::get(rewriter.getContext(), options.device),
+        /*sym_name=*/StringAttr(), /*overlay=*/FlatSymbolRefAttr());
     setAIEDeviceDataLayout(rewriter, devOp);
     AIE::DeviceOp::ensureTerminator(devOp.getRegion(), rewriter,
                                     devOp.getLoc());
