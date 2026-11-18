@@ -128,7 +128,7 @@ nav:
     - mlir_reference.md
     - AIR Dialect: AIRDialect.md
     - AIRRt Dialect: AIRRtDialect.md
-    - Conversion Passes: AIRConversionPasses.md
-    - Transform Passes: AIRTransformPasses.md
-    - Transform Ops: AIRTransformOps.md
+    - AIR Conversion Passes: AIRConversionPasses.md
+    - AIR Transformation Passes: AIRTransformPasses.md
+    - AIR Transform Ops: AIRTransformOps.md
   - Used in / Cited in: used_in.md
