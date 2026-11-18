@@ -361,6 +361,7 @@ def AIRLowerLinalgTensors : Pass<"air-lower-linalg-tensors", "ModuleOp"> {
   let description = [{
     This pass implements a lowering pipeline from linalg on tensors to affine
     loops. There are three stages:
+
     1. Bufferize with `linalg::populateLinalgBufferizePatterns`
     2. Run some peephole optimizations to cleanup after bufferization.
     3. Named ops are transformed to linalg GenericOps then all GenericOps
@@ -1171,6 +1172,7 @@ def AIREnforceChannelFifoOrder: Pass<"air-enforce-channel-fifo-order", "ModuleOp
   let constructor = "xilinx::air::createAIREnforceChannelFifoOrder()";
   let description = [{
     A channel is an ordered FIFO, so ops addressing the same slot (same channel
+
     + same indices + same direction) must be totally ordered even when they
     touch different buffers. See "Endpoint ordering requirement" in
     docs/AIRComputeModel.md.
@@ -1262,6 +1264,7 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
     Three orthogonal axes control behavior:
 
     **Split mode** (`split-mode` option):
+
     - `multi-launch` (default): Create up to 4 separate launches (interior,
       M-boundary, N-boundary, corner), each with a specialized grid size.
       Each partition gets unique channel/segment names.
@@ -1271,6 +1274,7 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
       don't map to a single kernel dispatch.
 
     **Padding location** (`pad-location` option):
+
     - `memtile` (default): Apply padding at L2 MM2S DMAs in a 3-level
       memory hierarchy (L3->L2->L1). Only available with
       split-mode=multi-launch.
