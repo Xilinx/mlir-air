@@ -4839,12 +4839,8 @@ static int freeTileDmaChannel(AIE::DeviceOp device, Value tile,
         used.insert(dst.getChannel());
     }
   });
-  // The tile's DMA channel count from the target model. An MM2S channel
-  // feeds the switchbox, so it counts as one of its destination
-  // connections, and an S2MM channel as one of its sources.
-  auto tileOp = cast<AIE::TileOp>(tile.getDefiningOp());
-  int channels = out ? tileOp.getNumDestConnections(AIE::WireBundle::DMA)
-                     : tileOp.getNumSourceConnections(AIE::WireBundle::DMA);
+  int channels =
+      air::getNumTileDMAChannels(cast<AIE::TileOp>(tile.getDefiningOp()), out);
   for (int ch = 0; ch < channels; ch++)
     if (!used.contains(ch))
       return ch;
@@ -6564,10 +6560,8 @@ public:
     std::vector<AIE::TileLike> memtiles = getMemtilesFromDeviceOp(d);
     if (memtiles.empty())
       return;
-    int maxMemtileSrcConnections =
-        memtiles[0].getNumSourceConnections(AIE::WireBundle::DMA);
-    int maxMemtileDstConnections =
-        memtiles[0].getNumDestConnections(AIE::WireBundle::DMA);
+    int maxMemtileS2MM = air::getNumTileDMAChannels(memtiles[0], false);
+    int maxMemtileMM2S = air::getNumTileDMAChannels(memtiles[0], true);
 
     // Get L2 memrefs which require partitioning, due to having more channel
     // puts/gets than memtile hardware limit.
@@ -6588,8 +6582,8 @@ public:
                                              put.getChanName().str());
         }
         bool tooManyChannelConnections =
-            (int)uniqueS2MMChannels.size() > maxMemtileDstConnections ||
-            (int)uniqueMM2SChannels.size() > maxMemtileSrcConnections;
+            (int)uniqueS2MMChannels.size() > maxMemtileS2MM ||
+            (int)uniqueMM2SChannels.size() > maxMemtileMM2S;
         if (tooManyChannelConnections) {
           if (auto exec =
                   dyn_cast_if_present<air::ExecuteOp>(allocOp->getParentOp()))

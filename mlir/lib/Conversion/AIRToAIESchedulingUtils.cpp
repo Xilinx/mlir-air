@@ -1826,6 +1826,11 @@ static bool flowRepeats(Operation *op, Operation *scope) {
   return other;
 }
 
+int air::getNumTileDMAChannels(AIE::TileLike tile, bool isMM2S) {
+  return isMM2S ? tile.getNumDestConnections(AIE::WireBundle::DMA)
+                : tile.getNumSourceConnections(AIE::WireBundle::DMA);
+}
+
 FailureOr<air::allocation_info_t>
 air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                                              AIE::TileOp tile, int chan) {
@@ -1865,9 +1870,7 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
         // Validate against the tile's available DMA channels for this
         // direction; an out-of-range pin would otherwise create an invalid
         // allocation.
-        int numChans = isMM2S.value()
-                           ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
-                           : tile.getNumDestConnections(AIE::WireBundle::DMA);
+        int numChans = getNumTileDMAChannels(tile, isMM2S.value());
         if (pinned < 0 || pinned >= numChans)
           return memcpyOp.emitOpError("air.tile_dma_channel = ")
                  << pinned << " is out of range [0, " << numChans
@@ -1927,9 +1930,7 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     }
   }
   // Need to allocate a new one
-  int tile_dma_channels =
-      isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
-                     : tile.getNumDestConnections(AIE::WireBundle::DMA);
+  int tile_dma_channels = getNumTileDMAChannels(tile, isMM2S.value());
   // An inbound packet flow gets here when the tile has no packet ring it can
   // share (see above), so it needs an S2MM channel nothing uses yet. The
   // round-robin's pick is used when free; it is not always free once some
@@ -2165,7 +2166,7 @@ void air::TileDMAAllocator::repairS2MMChains(
     }
 
     auto &used = usedChansPerTile[key.first];
-    int numChans = tile.getNumDestConnections(AIE::WireBundle::DMA);
+    int numChans = getNumTileDMAChannels(tile, /*isMM2S=*/false);
     int freeChan = -1;
     for (int c = 0; c < numChans; c++)
       if (!used.count(c)) {
@@ -2650,8 +2651,7 @@ void air::TileDMAAllocator::spreadCollapsedPacketChannels(
       Operation *tileOp = key.first;
       auto tile = (*allocs)[chain.allocIdxs.front()].dma_tile;
       auto used = channelsInUse(tileOp);
-      int numChans = isMM2S ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
-                            : tile.getNumDestConnections(AIE::WireBundle::DMA);
+      int numChans = getNumTileDMAChannels(tile, isMM2S);
 
       bool mixed = !chain.packetDecls.empty() &&
                    chain.packetDecls.size() != chain.order.size();
@@ -3737,8 +3737,7 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   // TileOp and LogicalTileOp (LogicalTileOp consults the targetModel via
   // its tile_type).
   int memtile_dma_channels =
-      isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
-                     : tile.getNumDestConnections(AIE::WireBundle::DMA);
+      getNumTileDMAChannels(tile, isMM2S.value());
   if (chan == -1) {
     // The lowest channel of the tile no allocation holds yet; past them all,
     // one holding flows of this one's switching kind (a switchbox port is
