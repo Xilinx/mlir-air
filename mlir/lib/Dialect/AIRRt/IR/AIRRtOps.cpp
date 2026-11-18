@@ -20,46 +20,6 @@ namespace xilinx {
 namespace airrt {
 
 //===----------------------------------------------------------------------===//
-// ModuleMetadataOp
-//===----------------------------------------------------------------------===//
-
-void ModuleMetadataOp::print(OpAsmPrinter &p) {
-  p.printOptionalAttrDictWithKeyword((*this)->getAttrs());
-  p.printRegion(getSegments(), /*printEntryBlockArgs=*/false,
-                /*printBlockTerminators=*/false);
-}
-
-ParseResult ModuleMetadataOp::parse(OpAsmParser &parser,
-                                    OperationState &result) {
-  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
-    return failure();
-  auto *body = result.addRegion();
-  if (parser.parseRegion(*body, {}, false))
-    return failure();
-  ModuleMetadataOp::ensureTerminator(*body, parser.getBuilder(),
-                                     result.location);
-  return success();
-}
-
-void SegmentMetadataOp::print(OpAsmPrinter &p) {
-  p.printOptionalAttrDictWithKeyword((*this)->getAttrs());
-  p.printRegion(getHerds(), /*printEntryBlockArgs=*/false,
-                /*printBlockTerminators=*/false);
-}
-
-ParseResult SegmentMetadataOp::parse(OpAsmParser &parser,
-                                     OperationState &result) {
-  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
-    return failure();
-  auto *body = result.addRegion();
-  if (parser.parseRegion(*body, {}, false))
-    return failure();
-  SegmentMetadataOp::ensureTerminator(*body, parser.getBuilder(),
-                                      result.location);
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
 // DmaMemcpyNdOp
 //===----------------------------------------------------------------------===//
 
