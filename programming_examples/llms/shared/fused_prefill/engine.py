@@ -95,6 +95,12 @@ def view(bo, dtype, shape):
     return np.frombuffer(bo.map(), dtype, count=int(np.prod(shape))).reshape(shape)
 
 
+def built_max_len(build_dir, default):
+    """The longest prompt a build takes: its manifest's max_len, else default."""
+    man = json.loads((Path(build_dir) / "manifest.json").read_text())
+    return man.get("max_len") or default
+
+
 class Engine:
     def __init__(self, build_dir, cfg, max_len=2048):
         self.dir = Path(build_dir)

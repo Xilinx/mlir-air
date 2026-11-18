@@ -10,6 +10,8 @@ sequence per op, and an optional LM-head device. A model's spec module provides
   ATTN_POINTS    attention points, name -> (heads, nkv, q0, k0); only the
                  heads are used: attention takes (nkv, q0, k0) at run time
   lm_build()     optional: the LM-head device module (built as op "lm")
+  max_len        optional: the longest prompt CFG takes
+  config(n)      optional: CFG for prompts of up to n tokens (--max-len n)
 
 Each op is one func whose segment @seg holds only its own herds, all in one
 module, so aircc builds the device once with a runtime sequence per func. The
@@ -23,6 +25,7 @@ import importlib
 import json
 import os
 import shutil
+import types
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -49,7 +52,8 @@ def attn_points(heads):
 
 def load_spec(ref):
     """A spec module by name, or "dense:<model>[:<max_len>]" for a model in
-    models.py, with its max_len replaced when one is given."""
+    models.py, with its max_len replaced when one is given. "<module>:<max_len>"
+    is the module with CFG from its config(max_len)."""
     if ref.startswith("dense:"):
         from .models import MODELS, spec
 
@@ -58,7 +62,14 @@ def load_spec(ref):
         if max_len:
             desc = desc._replace(max_len=int(max_len))
         return spec(desc)
-    return importlib.import_module(ref)
+    name, _, max_len = ref.partition(":")
+    mod = importlib.import_module(name)
+    if not max_len:
+        return mod
+    out = types.SimpleNamespace(**vars(mod))
+    out.max_len = int(max_len)
+    out.CFG = mod.config(out.max_len)
+    return out
 
 
 def op_name(op, shape):
@@ -277,12 +288,18 @@ def _compile(args):
 
 
 def main(spec_name, argv=None):
-    """python3 build.py BUILD_DIR [-j N], for the spec spec_name (load_spec)."""
-    spec = load_spec(spec_name)
+    """python3 build.py BUILD_DIR [-j N] [--max-len N], for the spec spec_name
+    (load_spec)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("-j", type=int, default=4)
+    ap.add_argument(
+        "--max-len", type=int, help="the longest prompt (the spec's config)"
+    )
     a = ap.parse_args(argv)
+    if a.max_len:
+        spec_name = f"{spec_name}:{a.max_len}"
+    spec = load_spec(spec_name)
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     build_kernels(out, spec.CFG)

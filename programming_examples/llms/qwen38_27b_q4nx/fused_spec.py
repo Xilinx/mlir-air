@@ -48,20 +48,26 @@ SHAPES = {
 }
 assert all(n <= D.MAX_N for _, n in SHAPES.values())
 
-_attn = D.Attn(
-    col=0,
-    dh=DH,
-    lkp=32,
-    kv_heads=KV_HEADS // 2,
-    # the cores read an even number of blocks, so one past the last
-    max_blocks=-(-max_len // 32) + 1,
-)
-CFG = D.Config(
-    attn={"a0": _attn, "a1": _attn._replace(col=7)},
-    act="silu",
-    ops={"a": ("a0", "a1")},
-    q4k=True,
-)
+
+def config(max_len):
+    """The device for prompts of up to max_len tokens."""
+    attn = D.Attn(
+        col=0,
+        dh=DH,
+        lkp=32,
+        kv_heads=KV_HEADS // 2,
+        # the cores read an even number of blocks, so one past the last
+        max_blocks=-(-max_len // 32) + 1,
+    )
+    return D.Config(
+        attn={"a0": attn, "a1": attn._replace(col=7)},
+        act="silu",
+        ops={"a": ("a0", "a1")},
+        q4k=True,
+    )
+
+
+CFG = config(max_len)
 ATTN_POINTS = attn_points(HEADS)
 
 
