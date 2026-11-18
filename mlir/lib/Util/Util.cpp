@@ -3133,32 +3133,20 @@ air::evaluateConstantsInMap(AffineMap map,
 std::optional<int64_t> air::evaluateConstantsInMap(
     AffineMap map, SmallVector<std::optional<int64_t>> symbolInputs,
     SmallVector<std::optional<int64_t>> dimInputs, MLIRContext *ctx) {
-  std::optional<int64_t> output = std::nullopt;
   if (map.getNumSymbols() != symbolInputs.size())
-    return output;
+    return std::nullopt;
   if (map.getNumDims() != dimInputs.size())
-    return output;
-  auto newmap = map;
-  for (unsigned i = 0; i < map.getNumSymbols(); i++) {
-    if (!symbolInputs[i])
-      continue;
-    auto c = getAffineConstantExpr(*symbolInputs[i], ctx);
-    // Both counts, not one: `AffineMap::replace` builds the result with
-    // exactly the dim/symbol counts given, and substituting a symbol leaves
-    // every `dN` in the expression alive. Declaring 0 dims here asserts in
-    // `willBeValidAffineMap` as soon as the map has both kinds.
-    newmap = newmap.replace(getAffineSymbolExpr(i, ctx), c, map.getNumDims(),
-                            map.getNumSymbols());
-  }
-  for (unsigned i = 0; i < map.getNumDims(); i++) {
-    if (!dimInputs[i])
-      continue;
-    auto c = getAffineConstantExpr(*dimInputs[i], ctx);
-    newmap = newmap.replace(getAffineDimExpr(i, ctx), c, map.getNumDims(),
-                            map.getNumSymbols());
-  }
-  output = simplifyAffineMap(newmap).getSingleConstantResult();
-  return output;
+    return std::nullopt;
+  Builder b(ctx);
+  SmallVector<Attribute> operands;
+  for (std::optional<int64_t> v :
+       llvm::concat<std::optional<int64_t>>(dimInputs, symbolInputs))
+    operands.push_back(v ? b.getIndexAttr(*v) : Attribute());
+  SmallVector<int64_t> results;
+  map.partialConstantFold(operands, &results);
+  if (results.size() != 1)
+    return std::nullopt;
+  return results.front();
 }
 
 // Extend the lookupOrDefault method to operate on a vector of values.
