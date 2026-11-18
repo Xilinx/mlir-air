@@ -42,7 +42,7 @@ import qwen3_coder_30b_a3b_q4k_weights as W  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
-from air_examples.llms.shared.moe import wave_decode as WV  # noqa: E402
+from air_examples.llms.shared.moe import decode as MD  # noqa: E402
 from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
 from kv_bos import kv_groups  # noqa: E402
 
@@ -186,14 +186,14 @@ def build_module(waves, maxl, cap=None):
                 @seg.body
                 def _():
                     def l2(shape, col, dt=bf16):
-                        return WV.l2(seg, shape, col, dt)
+                        return MD.l2(seg, shape, col, dt)
 
-                    wave_loop, herd = WV.wave_loop, WV.herd
-                    l1 = WV.moe_l1(seg, E)
+                    wave_loop, herd = MD.wave_loop, MD.herd
+                    l1 = MD.moe_l1(seg, E)
                     logits = l1[0]
 
                     # ---- memtile 5: the RMS core's inputs and side outputs
-                    WV.memtile5(
+                    MD.memtile5(
                         seg, pw, D, 3, (to_ab, out_ch), m_in, to_rms, glu_y, xs_ch
                     )
 
@@ -229,7 +229,7 @@ def build_module(waves, maxl, cap=None):
 
                     # ---- the assemble memtile: the normed x, o, and each
                     # turn's GLU outputs
-                    WV.assemble(
+                    MD.assemble(
                         seg,
                         arr,
                         pw,
@@ -246,7 +246,7 @@ def build_module(waves, maxl, cap=None):
                     arr.feed(seg, pw * (A.G_DENSE + TURNS * G_EXP))
 
                     # ---- RMS core
-                    WV.rms_core(
+                    MD.rms_core(
                         arr,
                         pw,
                         A.RMS_AT,
@@ -336,18 +336,18 @@ def build_module(waves, maxl, cap=None):
                             blk = air.alloc([CB * RB], bf16, scope=p)
                             lg = air.alloc([E], f32, scope=p)
                             for _j in wave_loop(pw):
-                                WV.router_gemv(
+                                MD.router_gemv(
                                     x, blk, lg, logits, to_ab, ab_w, K, A.NRB_R, NCB_X
                                 )
 
                     # ---- router: each layer's dense weights, then its two
                     # turns of experts
-                    WV.router_core(
+                    MD.router_core(
                         arr, pw, MB.ROUTER, ebase, lbase, E, NCOL, TURNS, WD, WE, l1, K
                     )
 
                     # ---- GLU
-                    WV.glu_core(
+                    MD.glu_core(
                         arr,
                         pw,
                         MB.GLU_AT,
@@ -366,7 +366,7 @@ def build_module(waves, maxl, cap=None):
                             D, RG_Q * NCB_X // 2, NCB_X, step, ROPE, fresh=False
                         )
                         yield Phase(DQ, RG_O * NCB_O // 2, NCB_O, step, RMS, xbuf=1)
-                        yield from WV.moe_phases(
+                        yield from MD.moe_phases(
                             step,
                             (D, I),
                             (RG_GU, RG_DN, TURNS, NCB_X, NCB_H),
@@ -377,10 +377,10 @@ def build_module(waves, maxl, cap=None):
 
                     # ---- host side. Per wave: x in, then the layers'
                     # outputs; then each layer's transfers
-                    WV.wave_x(m_in, out_ch, X, w, pw)
+                    MD.wave_x(m_in, out_ch, X, w, pw)
                     for j in range(pw):
                         lay = w * pw + j
-                        WV.layer_misc(m_in, ab_w, M, MISC, lay, j, "w2", "router")
+                        MD.layer_misc(m_in, ab_w, M, MISC, lay, j, "w2", "router")
                         rw_in.put(RW[lay, :])
                         pos = Lp.as_index() - 1
                         kv_split_traffic(lay, pos)
@@ -406,7 +406,7 @@ def layer_inputs(w, layers):
     return np.ascontiguousarray(np.concatenate(WE)), np.stack(WD), M, qkn
 
 
-class Q3CDecoder(WV.WaveDecoder):
+class Q3CDecoder(MD.MoeDecoder):
     """The layers' ELFs and the LM head's, their buffers, and a run of each.
     Per token the host writes x, the layers' RoPE rows and L, and runs the
     layers' ELF with the shortest cache read that covers L."""

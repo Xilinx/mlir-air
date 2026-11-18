@@ -264,7 +264,7 @@ def layer_misc(m_in, ab_w, m, misc, lay, j, last, ab):
     ab_w.put(m[lay, misc[ab][0] : misc["router"][1]])
 
 
-class WaveDecoder:
+class MoeDecoder:
     """The LM head's ELF on the last layer's output, and the timing loop.
     Subclasses build self.bos (bos[1] = X) and self.run, then call
     attach_lm."""

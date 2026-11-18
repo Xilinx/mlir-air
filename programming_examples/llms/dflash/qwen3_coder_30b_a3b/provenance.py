@@ -41,7 +41,7 @@ SHARED = (
 )
 BASELINE = (
     "qwen3_coder_30b_a3b_q4k/qwen3_coder_30b_a3b_q4k_decode.py",
-    "shared/moe/wave_decode.py",
+    "shared/moe/decode.py",
 )
 
 

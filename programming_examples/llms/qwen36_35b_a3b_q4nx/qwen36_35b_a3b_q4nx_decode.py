@@ -55,7 +55,7 @@ import qwen36_35b_a3b_q4nx_weights as W  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
-from air_examples.llms.shared.moe import wave_decode as WV  # noqa: E402
+from air_examples.llms.shared.moe import decode as MD  # noqa: E402
 from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
 from rope import rope_weights  # noqa: E402
 
@@ -200,17 +200,17 @@ def build_module(waves, maxl):
                 @seg.body
                 def _():
                     def l2(shape, col, dt=bf16):
-                        return WV.l2(seg, shape, col, dt)
+                        return MD.l2(seg, shape, col, dt)
 
-                    wave_loop, herd = WV.wave_loop, WV.herd
+                    wave_loop, herd = MD.wave_loop, MD.herd
 
                     # ---- shared L1
                     ab_sh = air.alloc([2 * NV], f32, scope=seg.shared())
-                    l1 = WV.moe_l1(seg, E)
+                    l1 = MD.moe_l1(seg, E)
                     logits = l1[0]
 
                     # ---- memtile 5: the RMS core's inputs and side outputs
-                    WV.memtile5(
+                    MD.memtile5(
                         seg,
                         pw,
                         D,
@@ -260,7 +260,7 @@ def build_module(waves, maxl):
 
                     # ---- the assemble memtile: both normed x, the mixer's
                     # output, the shared expert's and each turn's GLU outputs
-                    WV.assemble(
+                    MD.assemble(
                         seg,
                         arr,
                         pw,
@@ -281,7 +281,7 @@ def build_module(waves, maxl):
                     )
 
                     # ---- RMS core, with the shared expert's gate
-                    WV.rms_core(
+                    MD.rms_core(
                         arr,
                         pw,
                         G.RMS_AT,
@@ -316,7 +316,7 @@ def build_module(waves, maxl):
                                 ab_act(ab, adt)
                                 with air.ops.branch(j < ngw):
                                     ab_sh[:] = ab[:]
-                                WV.router_gemv(
+                                MD.router_gemv(
                                     x, blk, lg, logits, to_ab, ab_w, K, G.NRB_R, NCB_X
                                 )
 
@@ -511,7 +511,7 @@ def build_module(waves, maxl):
 
                     # ---- router: each layer's dense weights, then its two
                     # turns of experts
-                    WV.router_core(
+                    MD.router_core(
                         arr,
                         pw,
                         G.ROUTER_AT,
@@ -527,7 +527,7 @@ def build_module(waves, maxl):
                     )
 
                     # ---- GLU, with the shared expert
-                    WV.glu_core(
+                    MD.glu_core(
                         arr,
                         pw,
                         G.GLU_AT,
@@ -555,7 +555,7 @@ def build_module(waves, maxl):
                             D, G.RG_Z * NCB_X // 2, NCB_X, step, GATE, fresh=False
                         )
                         yield Phase(DQ, G.RG_O * NCB_O // 2, NCB_O, step, RMS, xbuf=1)
-                        yield from WV.moe_phases(
+                        yield from MD.moe_phases(
                             step,
                             (D, I),
                             (G.RG_GU, G.RG_DN, TURNS, NCB_X, NCB_H),
@@ -574,7 +574,7 @@ def build_module(waves, maxl):
                     # mixer
                     g0 = w * ngw
                     cw_out.get(CWO[g0 : g0 + ngw, :, 0 : 3 * HD])
-                    WV.wave_x(m_in, out_ch, X, w, pw)
+                    MD.wave_x(m_in, out_ch, X, w, pw)
                     s_l3.put(SI[g0 : g0 + ngw, :, :, :])
                     s_l3o.get(SO[g0 : g0 + ngw, :, :, :])
                     for j in range(pw):
@@ -582,7 +582,7 @@ def build_module(waves, maxl):
                         is_att = j == pw - 1
                         if j < ngw:
                             cw_in.put(CWI[g0 + j, :, :])
-                        WV.layer_misc(m_in, ab_w, M, MISC, lay, j, "wsg", "adt")
+                        MD.layer_misc(m_in, ab_w, M, MISC, lay, j, "wsg", "adt")
                         m_dn.put(M[lay, MISC["dnw"][0] : MISC["dnw"][1]])
                         if is_att:
                             rw_in.put(RW[w, :])
@@ -637,7 +637,7 @@ def layer_inputs(w, layers, waves):
     return np.ascontiguousarray(np.concatenate(WE)), np.stack(WD), M, qkn, conv_w
 
 
-class Q36Decoder(WV.WaveDecoder):
+class Q36Decoder(MD.MoeDecoder):
     """The layers' ELF and the LM head's, their buffers, and a run of each.
     Per token the host writes x, the attention layers' RoPE rows and L, and
     swaps the conv caches' and the GDN states' in and out buffers."""
