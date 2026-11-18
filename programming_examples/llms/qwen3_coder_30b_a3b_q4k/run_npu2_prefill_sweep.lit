@@ -8,9 +8,9 @@
 //
 // RUN: mkdir -p test_peano_prefill_sweep
 // RUN: cd test_peano_prefill_sweep
-// RUN: %PYTHON %S/../bench/sweep_prefill.py --model-name qwen3_coder_30b_a3b_q4k --makefile %S/Makefile --lengths 128,512,2048 --peano-dir %PEANO_INSTALL_DIR --out qwen3_coder_30b_a3b_q4k.prefill_sweep.json
+// RUN: %PYTHON %S/../bench/sweep_prefill.py --model-name qwen3_coder_30b_a3b_q4k --makefile %S/Makefile --lengths 512,1024,2048,4096 --peano-dir %PEANO_INSTALL_DIR --out qwen3_coder_30b_a3b_q4k.prefill_sweep.json
 // RUN: FileCheck %s < qwen3_coder_30b_a3b_q4k.prefill_sweep.json
 // CHECK: "model": "qwen3_coder_30b_a3b_q4k"
 // CHECK: "axis": "prefill_len"
-// CHECK: "prefill_len": 128
+// CHECK: "prefill_len": 2048
 // CHECK-NEXT: "ttft_ms": {{[0-9]}}
