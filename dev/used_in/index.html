@@ -1294,6 +1294,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#publications-using-mlir-air" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publications using MLIR-AIR
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#repositories" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1350,6 +1361,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#publications-using-mlir-air" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publications using MLIR-AIR
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#repositories" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1381,11 +1403,6 @@
 
 
 <h1 id="used-in-cited-in">Used in / Cited in<a class="headerlink" href="#used-in-cited-in" title="Permanent link">&para;</a></h1>
-<p>MLIR-AIR is a spatial-compute compiler stack for AMD NPUs and Versal AI Engine
-arrays. This page collects how to cite the project and a selection of work that
-builds on it. It is curated rather than exhaustive.</p>
-<p>If you have built on MLIR-AIR and would like your work considered for this page,
-open a pull request.</p>
 <h2 id="how-to-cite">How to cite<a class="headerlink" href="#how-to-cite" title="Permanent link">&para;</a></h2>
 <p>Work that uses MLIR-AIR should cite the toolchain paper:</p>
 <blockquote>
@@ -1435,16 +1452,39 @@ arXiv:2606.07586. <a href="https://arxiv.org/abs/2606.07586v2">https://arxiv.org
 <a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="na">url</span><span class="w">       </span><span class="p">=</span><span class="w"> </span><span class="s">{https://arxiv.org/abs/2606.07586v2}</span>
 <a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="p">}</span>
 </code></pre></div>
+<h2 id="publications-using-mlir-air">Publications using MLIR-AIR<a class="headerlink" href="#publications-using-mlir-air" title="Permanent link">&para;</a></h2>
+<ul>
+<li>
+<p><strong><a href="https://arxiv.org/abs/2603.08721">KernelCraft: Benchmarking for Agentic Close-to-Metal Kernel Generation on
+  Emerging Hardware</a></strong><br>
+  J. Nie, H. Wu, Y. Lai, Z. Cao, C. Zhang, B. Lou, E. Wang, J. Cheng,
+  T. M. Jones, R. Mullins, R. Antonova, and Y. Zhao. International Conference on
+  Machine Learning (ICML), 2026.</p>
+</li>
+<li>
+<p><strong><a href="https://arxiv.org/abs/2605.01124">Practical Formal Verification for MLIR Programs</a></strong><br>
+  E. Tucker, L.-N. Pouchet, E. Hunhoff, S. Neuendorffer, and E. Wang.
+  International Conference on Parallel Architectures and Compilation Techniques
+  (PACT), 2026.</p>
+</li>
+<li>
+<p><strong><a href="https://arxiv.org/abs/2609.21264">Programming AMD XDNA NPUs with Open-source Compiler Tools: A FlashAttention
+  Case Study</a></strong><br>
+  E. Wang, E. Wu, V. J. B. Jung, J. Li, A. Rosti, J. Melber, and S. Bayliss.
+  arXiv preprint arXiv:2609.21264, September 2026.</p>
+</li>
+</ul>
 <h2 id="repositories">Repositories<a class="headerlink" href="#repositories" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="https://github.com/amd/IRON">amd/IRON</a> — IRON operators, AIE kernels, and
   example applications, built on the MLIR-AIE Python bindings.</li>
 <li><a href="https://github.com/Xilinx/mlir-aie">Xilinx/mlir-aie</a> — the MLIR-AIE backend
-  MLIR-AIR lowers onto (per-tile code, DMA descriptors, hardware locks).</li>
-<li><a href="https://github.com/Xilinx/llvm-aie">Xilinx/llvm-aie (Peano)</a> — the LLVM fork
+  MLIR-AIR lowers onto.</li>
+<li><a href="https://github.com/Xilinx/llvm-aie">Xilinx/llvm-aie (Peano)</a> — a fork of the
+  LLVM compiler infrastructure (<a href="https://github.com/llvm/llvm-project">llvm/llvm-project</a>)
   adding the AI Engine as a target architecture.</li>
 <li><a href="https://github.com/amd/Triton-XDNA">amd/Triton-XDNA</a> — a Triton frontend that
-  targets MLIR-AIR as its AMD XDNA NPU backend, alongside Triton's native GPU
+  adds MLIR-AIR as its AMD XDNA NPU backend, alongside Triton's native GPU
   backends.</li>
 </ul>
 
