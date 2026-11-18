@@ -15,26 +15,6 @@ include "mlir/Dialect/Transform/IR/TransformTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/OpBase.td"
 
-def GetSegmentForOp : Op<Transform_Dialect, "air.get_segment_for",
-    [NavigationTransformOpTrait, MemoryEffectsOpInterface,
-     DeclareOpInterfaceMethods<TransformOpInterface>]> {
-  let summary = "Gets a handle to the parent 'air.segment' of the given operation";
-  let description = [{
-    Produces a handle to the parent `air.segment` op for each payload IR
-    operation associated with the operand. Fails if a segment cannot be found.
-    The list of operations associated with the handle contains
-    parent operations in the same order as the list associated with the operand,
-    except for operations that are parents to more than one input which are only
-    present once.
-  }];
-
-  let arguments =
-    (ins TransformHandleTypeInterface:$target);
-  let results = (outs TransformHandleTypeInterface:$parent);
-
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
-}
-
 def SegmentToAIEOp : Op<Transform_Dialect, "air.segment_to_aie",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      TransformOpInterface, TransformEachOpTrait]> {
