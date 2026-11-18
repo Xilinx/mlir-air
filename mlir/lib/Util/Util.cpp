@@ -227,28 +227,6 @@ std::string air::getElementTypeAsString(const mlir::Type ty) {
   }
 }
 
-// An incomplete lookup table of common data types
-uint64_t air::getElementSizeInBytes(const mlir::Type ty) {
-  if (auto memrefTy = llvm::cast<BaseMemRefType>(ty)) {
-    return memrefTy.getElementTypeBitWidth() / 8;
-  }
-  auto typeAsString = getElementTypeAsString(ty);
-  if (typeAsString == "i32")
-    return 4;
-  else if (typeAsString == "i16")
-    return 2;
-  else if (typeAsString == "i8")
-    return 1;
-  else if (typeAsString == "f32")
-    return 4;
-  else if (typeAsString == "f16")
-    return 2;
-  else if (typeAsString == "bf16")
-    return 2;
-  else
-    return 0;
-}
-
 // Get the parent scf.for op of an iter_arg
 scf::ForOp air::getForRegionIterArgsOwner(Value val) {
   auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
@@ -2364,7 +2342,9 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     // two are one contiguous walk, which canonicalizeWrapAndStrideList
     // re-splits, so the fold is admitted when that split comes out legal.
     if (!limits.strideFits(limits.bytesToGranules(
-            new_stride_value * getElementSizeInBytes(memref.getType())))) {
+            new_stride_value *
+            cast<BaseMemRefType>(memref.getType()).getElementTypeBitWidth() /
+            8))) {
       auto outerWrap =
           wraps.empty() ? std::nullopt : getConstantIntValue(wraps[0]);
       auto outerStride =

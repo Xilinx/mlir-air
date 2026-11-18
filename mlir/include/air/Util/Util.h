@@ -117,7 +117,6 @@ uint64_t getTensorVolume(const Type ty);
 SmallVector<int> getTensorShape(const ShapedType ty);
 SmallVector<int> getTensorShape(const Type ty);
 std::string getElementTypeAsString(const mlir::Type ty);
-uint64_t getElementSizeInBytes(const mlir::Type ty);
 
 // Get the parent scf.for op of an iter_arg
 scf::ForOp getForRegionIterArgsOwner(Value val);
