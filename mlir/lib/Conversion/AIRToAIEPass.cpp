@@ -2445,8 +2445,13 @@ LogicalResult createAIEModulesAndOutlineCores(
       // landed on another core; a copy severs exactly that. A core that writes
       // the buffer itself is using its own data, and a copy is correct.
       if (!ownerTile) {
+        // A dependence herdBufferHasCrossCoreDependence already proved within
+        // one herd stands; only a buffer shared by naming it in several herds
+        // needs the per-core look below.
         llvm::SmallDenseSet<Operation *> readerCores, writerCores;
         for (auto coreOp : coreOps) {
+          if (sharedAcrossCores)
+            break;
           coreOp.walk([&](Operation *op) {
             if (!accessReachableInCore(op))
               return;
@@ -2485,8 +2490,8 @@ LogicalResult createAIEModulesAndOutlineCores(
             }
           });
         }
-        bool crossCoreHandoff = false;
-        if (!writerCores.empty())
+        bool crossCoreHandoff = sharedAcrossCores;
+        if (!crossCoreHandoff && !writerCores.empty())
           for (Operation *r : readerCores)
             if (!writerCores.contains(r)) {
               crossCoreHandoff = true;
