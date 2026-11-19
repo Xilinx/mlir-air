@@ -1863,7 +1863,7 @@
 <li><strong>XRT</strong> (optional, required only for running on hardware) — see <a href="https://github.com/Xilinx/mlir-aie#install-the-xdna-driver-and-xrt">mlir-aie's XRT install instructions</a></li>
 </ul>
 <blockquote>
-<p>This guide covers Linux only. Windows wheels are also published — see <a href="../buildingRyzenWin/">Getting Started and Running on Windows Ryzen™ AI</a> for the native Windows setup, including <code>cmd.exe</code> and PowerShell equivalents of the <code>source</code>/<code>export</code> commands below.</p>
+<p>This guide covers Linux only. Windows wheels are also published — see <a href="../buildingRyzenWin/">Getting Started on Ryzen AI (Windows)</a> for the native Windows setup, including <code>cmd.exe</code> and PowerShell equivalents of the <code>source</code>/<code>export</code> commands below.</p>
 </blockquote>
 <h3 id="steps">Steps<a class="headerlink" href="#steps" title="Permanent link">&para;</a></h3>
 <p>AIR supports multiple backends — AIE (NPU) and <a href="../buildingGPU/">GPU</a>. Backend dependencies are exposed as pip <strong>extras</strong> so you only install what you need. For the AIE backend on Ryzen™ AI, use the <code>[aie]</code> extra; pip reads the pinned <code>mlir_aie==&lt;version&gt;</code> and <code>llvm-aie</code> from the wheel's metadata and resolves them from the additional <code>--find-links</code> pages.</p>
@@ -2036,11 +2036,15 @@
 </ul>
 <hr />
 <h2 id="running-a-quick-example">Running a Quick Example<a class="headerlink" href="#running-a-quick-example" title="Permanent link">&para;</a></h2>
-<p>After building MLIR-AIR, you can try the i8 matrix multiplication example to verify your setup and understand the different compilation workflows. Matmul shapes are configurable in the Makefile.</p>
+<p>After installing or building MLIR-AIR, you can try the i8 matrix multiplication example to verify your setup and understand the different compilation workflows. Matmul shapes are configurable in the Makefile.</p>
+<p>The examples are in the MLIR-AIR repository, which the wheel does not include. If you installed the wheel, clone the repository and run the examples from it:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Xilinx/mlir-air.git
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="nb">cd</span><span class="w"> </span>mlir-air
+</code></pre></div>
 <h3 id="example-1-hardware-free-compilation-no-xrt-required">Example 1: Hardware-Free Compilation (No XRT Required)<a class="headerlink" href="#example-1-hardware-free-compilation-no-xrt-required" title="Permanent link">&para;</a></h3>
 <p>This mode is useful for <strong>cross-compilation</strong> or <strong>development without hardware access</strong>. It generates intermediate compilation artifacts without requiring XRT to be installed:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nb">cd</span><span class="w"> </span>programming_examples/matrix_multiplication/i8
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>make<span class="w"> </span>run4x4<span class="w"> </span><span class="nv">COMPILE_MODE</span><span class="o">=</span>compile-only
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nb">cd</span><span class="w"> </span>programming_examples/matrix_multiplication/i8
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>make<span class="w"> </span>run4x4<span class="w"> </span><span class="nv">COMPILE_MODE</span><span class="o">=</span>compile-only
 </code></pre></div>
 <p><strong>Expected output:</strong> <code>Compilation completed successfully!</code></p>
 <p><strong>What this does:</strong></p>
@@ -2059,8 +2063,8 @@
 </ul>
 <h3 id="example-2-full-workflow-with-hardware-default">Example 2: Full Workflow with Hardware (Default)<a class="headerlink" href="#example-2-full-workflow-with-hardware-default" title="Permanent link">&para;</a></h3>
 <p>If you have XRT and Ryzen AI hardware available, run the complete workflow:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nb">cd</span><span class="w"> </span>programming_examples/matrix_multiplication/i8
-<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>make<span class="w"> </span>run4x4
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nb">cd</span><span class="w"> </span>programming_examples/matrix_multiplication/i8
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>make<span class="w"> </span>run4x4
 </code></pre></div>
 <p><strong>Expected output:</strong> <code>PASS!</code></p>
 <p><strong>What this does:</strong></p>
@@ -2073,7 +2077,7 @@
 <p>This is the default mode (<code>COMPILE_MODE=compile-and-run</code>) for users with hardware.</p>
 <h3 id="example-3-advanced-profiling-with-custom-host-code">Example 3: Advanced - Profiling with Custom Host Code<a class="headerlink" href="#example-3-advanced-profiling-with-custom-host-code" title="Permanent link">&para;</a></h3>
 <p>For specialized workflows like profiling with custom test executables:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>make<span class="w"> </span>profile
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>make<span class="w"> </span>profile
 </code></pre></div>
 <p><strong>What this does:</strong></p>
 <ul>
@@ -2084,18 +2088,18 @@
 <p>The <code>sweep4x4</code> target similarly uses <code>compile-and-xclbin</code> to benchmark across multiple problem sizes with a custom test harness.</p>
 <h3 id="additional-examples">Additional Examples<a class="headerlink" href="#additional-examples" title="Permanent link">&para;</a></h3>
 <p><strong>Different herd configurations:</strong>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>make<span class="w"> </span>run2x2<span class="w"> </span><span class="nv">COMPILE_MODE</span><span class="o">=</span>compile-only<span class="w">  </span><span class="c1"># 2x2 herd</span>
-<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>make<span class="w"> </span>run8x4<span class="w"> </span><span class="nv">COMPILE_MODE</span><span class="o">=</span>compile-only<span class="w">  </span><span class="c1"># 8x4 herd</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>make<span class="w"> </span>run2x2<span class="w"> </span><span class="nv">COMPILE_MODE</span><span class="o">=</span>compile-only<span class="w">  </span><span class="c1"># 2x2 herd</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>make<span class="w"> </span>run8x4<span class="w"> </span><span class="nv">COMPILE_MODE</span><span class="o">=</span>compile-only<span class="w">  </span><span class="c1"># 8x4 herd</span>
 </code></pre></div></p>
 <p><strong>Different architectures:</strong>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>make<span class="w"> </span>run4x4<span class="w"> </span><span class="nv">AIE_TARGET</span><span class="o">=</span>aie2p<span class="w"> </span><span class="nv">COMPILE_MODE</span><span class="o">=</span>compile-only<span class="w">  </span><span class="c1"># For NPU2/Strix</span>
-<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>make<span class="w"> </span>run4x4<span class="w"> </span><span class="nv">AIE_TARGET</span><span class="o">=</span>aie2<span class="w">                              </span><span class="c1"># For NPU1/Phoenix (default)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>make<span class="w"> </span>run4x4<span class="w"> </span><span class="nv">AIE_TARGET</span><span class="o">=</span>aie2p<span class="w"> </span><span class="nv">COMPILE_MODE</span><span class="o">=</span>compile-only<span class="w">  </span><span class="c1"># For NPU2/Strix</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>make<span class="w"> </span>run4x4<span class="w"> </span><span class="nv">AIE_TARGET</span><span class="o">=</span>aie2<span class="w">                              </span><span class="c1"># For NPU1/Phoenix (default)</span>
 </code></pre></div></p>
 <p><strong>View generated MLIR:</strong>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>make<span class="w"> </span>print<span class="w">  </span><span class="c1"># Display MLIR module without compiling</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>make<span class="w"> </span>print<span class="w">  </span><span class="c1"># Display MLIR module without compiling</span>
 </code></pre></div></p>
 <p><strong>Clean build artifacts:</strong>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>make<span class="w"> </span>clean
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>make<span class="w"> </span>clean
 </code></pre></div></p>
 <h3 id="other-data-types">Other Data Types<a class="headerlink" href="#other-data-types" title="Permanent link">&para;</a></h3>
 <p>The same patterns work for other matrix multiplication examples:</p>
@@ -2130,65 +2134,65 @@
 </ul>
 <p>These prerequisites can be installed with some helpful scripts found in the <code>utils</code> directory in the process described below.</p>
 <p>First, clone the MLIR-AIR repo:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Xilinx/mlir-air.git
-<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="nb">cd</span><span class="w"> </span>mlir-air
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Xilinx/mlir-air.git
+<a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a><span class="nb">cd</span><span class="w"> </span>mlir-air
 </code></pre></div></p>
 <p>Next, run <code>utils/setup_python_packages.sh</code> to setup the prerequisite python packages. This script creates and installs the python packages listed in <a href="https://github.com/Xilinx/mlir-air/blob/main/utils/requirements.txt">utils/requirements.txt</a> in a virtual python environment called <code>sandbox</code>.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="nb">source</span><span class="w"> </span>utils/setup_python_packages.sh
+<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="nb">source</span><span class="w"> </span>utils/setup_python_packages.sh
 </code></pre></div>
 <p>Next, clone and build LLVM, with MLIR enabled. In addition, we make some common build optimizations to use a linker ('lld' or 'gold') other than 'ld' (which tends to be quite slow on large link jobs) and to link against libLLVM.so and libClang.so. You may find that other options are also useful. Note that due to changing MLIR APIs, only a particular revision is expected to work.</p>
 <p>Run the following to clone and build llvm:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>./utils/clone-llvm.sh
-<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>./utils/build-llvm-local.sh<span class="w"> </span>llvm
+<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>./utils/clone-llvm.sh
+<a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>./utils/build-llvm-local.sh<span class="w"> </span>llvm
 </code></pre></div>
 <p>Next, clone and build the aienginev2 module. The installed files should be generated under <code>aienginev2/install</code>.
-<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>./utils/github-clone-build-libxaie.sh
+<div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>./utils/github-clone-build-libxaie.sh
 </code></pre></div></p>
 <p>Next, clone and build MLIR-AIE with paths to llvm, aienginev2, and cmakeModules repositories.
 MLIR-AIE requires some dependent packages to be installed.
 For details on the MLIR-AIE prerequisites, please refer to the MLIR-AIE <a href="https://github.com/Xilinx/mlir-aie?tab=readme-ov-file#prerequisites">repository</a>.
 Once the prerequisites are set up, run the following commands to build MLIR-AIE.
-<div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>./utils/clone-mlir-aie.sh
-<a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a>./utils/build-mlir-aie-local.sh<span class="w"> </span>llvm<span class="w"> </span>mlir-aie/cmake/modulesXilinx<span class="w"> </span>aienginev2/install<span class="w"> </span>mlir-aie
+<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>./utils/clone-mlir-aie.sh
+<a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a>./utils/build-mlir-aie-local.sh<span class="w"> </span>llvm<span class="w"> </span>mlir-aie/cmake/modulesXilinx<span class="w"> </span>aienginev2/install<span class="w"> </span>mlir-aie
 </code></pre></div></p>
 <p>After this step, you are ready to build MLIR-AIR!</p>
 <h3 id="building">Building<a class="headerlink" href="#building" title="Permanent link">&para;</a></h3>
 <p>To build MLIR-AIR provide the paths to llvm, cmakeModules, mlir-aie, Peano (llvm-aie), and xrt:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>./utils/build-mlir-air-xrt.sh<span class="w"> </span>llvm<span class="w"> </span>mlir-aie/cmake/modulesXilinx<span class="w"> </span>mlir-aie<span class="w"> </span>/path/to/llvm-aie<span class="w"> </span>/path/to/xrt
+<div class="highlight"><pre><span></span><code><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>./utils/build-mlir-air-xrt.sh<span class="w"> </span>llvm<span class="w"> </span>mlir-aie/cmake/modulesXilinx<span class="w"> </span>mlir-aie<span class="w"> </span>/path/to/llvm-aie<span class="w"> </span>/path/to/xrt
 </code></pre></div></p>
 <h3 id="environment_1">Environment<a class="headerlink" href="#environment_1" title="Permanent link">&para;</a></h3>
 <p>To setup your environment after building:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="c1"># If you have llvm-aie (PEANO) installed via pip:</span>
-<a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup.sh<span class="w"> </span>install-xrt/<span class="w"> </span>mlir-aie/install/<span class="w"> </span><span class="k">$(</span>python3<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>show<span class="w"> </span>llvm-aie<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>Location<span class="w"> </span><span class="p">|</span><span class="w"> </span>awk<span class="w"> </span><span class="s1">'{print $2}'</span><span class="k">)</span>/llvm-aie<span class="w"> </span>llvm/install/
-<a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a>
-<a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="c1"># Or if you built llvm-aie from source:</span>
-<a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup.sh<span class="w"> </span>install-xrt/<span class="w"> </span>mlir-aie/install/<span class="w"> </span>/path/to/llvm-aie/install<span class="w"> </span>llvm/install/
-</code></pre></div></p>
-<p>Note that if you are starting a new environment (e.g., by creating a new terminal sometime after building), restore your environment with:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="c1"># If you have llvm-aie (PEANO) installed via pip:</span>
 <a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup.sh<span class="w"> </span>install-xrt/<span class="w"> </span>mlir-aie/install/<span class="w"> </span><span class="k">$(</span>python3<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>show<span class="w"> </span>llvm-aie<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>Location<span class="w"> </span><span class="p">|</span><span class="w"> </span>awk<span class="w"> </span><span class="s1">'{print $2}'</span><span class="k">)</span>/llvm-aie<span class="w"> </span>llvm/install/
-<a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a><span class="nb">source</span><span class="w"> </span>sandbox/bin/activate
-<a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a>
-<a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a><span class="c1"># Or if you built llvm-aie from source:</span>
-<a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup.sh<span class="w"> </span>install-xrt/<span class="w"> </span>mlir-aie/install/<span class="w"> </span>/path/to/llvm-aie/install<span class="w"> </span>llvm/install/
-<a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a><span class="nb">source</span><span class="w"> </span>sandbox/bin/activate
+<a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>
+<a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a><span class="c1"># Or if you built llvm-aie from source:</span>
+<a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup.sh<span class="w"> </span>install-xrt/<span class="w"> </span>mlir-aie/install/<span class="w"> </span>/path/to/llvm-aie/install<span class="w"> </span>llvm/install/
+</code></pre></div></p>
+<p>Note that if you are starting a new environment (e.g., by creating a new terminal sometime after building), restore your environment with:
+<div class="highlight"><pre><span></span><code><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="c1"># If you have llvm-aie (PEANO) installed via pip:</span>
+<a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup.sh<span class="w"> </span>install-xrt/<span class="w"> </span>mlir-aie/install/<span class="w"> </span><span class="k">$(</span>python3<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>show<span class="w"> </span>llvm-aie<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>Location<span class="w"> </span><span class="p">|</span><span class="w"> </span>awk<span class="w"> </span><span class="s1">'{print $2}'</span><span class="k">)</span>/llvm-aie<span class="w"> </span>llvm/install/
+<a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a><span class="nb">source</span><span class="w"> </span>sandbox/bin/activate
+<a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>
+<a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a><span class="c1"># Or if you built llvm-aie from source:</span>
+<a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup.sh<span class="w"> </span>install-xrt/<span class="w"> </span>mlir-aie/install/<span class="w"> </span>/path/to/llvm-aie/install<span class="w"> </span>llvm/install/
+<a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="nb">source</span><span class="w"> </span>sandbox/bin/activate
 </code></pre></div></p>
 <h3 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h3>
 <p>Some tests for MLIR-AIR are provided. Run them as demonstrated below:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="nb">cd</span><span class="w"> </span>mlir-air/build-xrt
-<a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>ninja<span class="w"> </span>install
-<a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>ninja<span class="w"> </span>check-air-cpp
-<a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>ninja<span class="w"> </span>check-air-mlir
-<a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>ninja<span class="w"> </span>check-air-python
-<a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>
-<a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="c1"># These are the ones in test/xrt, and this is about equivalent to `ninja check-air-e2e` if you set the LIT_OPS env var appropriately</span>
-<a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a>lit<span class="w"> </span>-sv<span class="w"> </span>--time-tests<span class="w"> </span>--show-unsupported<span class="w"> </span>--show-excluded<span class="w"> </span>--timeout<span class="w"> </span><span class="m">600</span><span class="w"> </span>-j5<span class="w"> </span>test/xrt
-<a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a>
-<a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a><span class="c1"># Run an individual test</span>
-<a id="__codelineno-29-11" name="__codelineno-29-11" href="#__codelineno-29-11"></a>lit<span class="w"> </span>-sv<span class="w"> </span>test/xrt/01_air_to_npu
-<a id="__codelineno-29-12" name="__codelineno-29-12" href="#__codelineno-29-12"></a>
-<a id="__codelineno-29-13" name="__codelineno-29-13" href="#__codelineno-29-13"></a><span class="c1"># Run all xrt tests on device. Takes a long time.</span>
-<a id="__codelineno-29-14" name="__codelineno-29-14" href="#__codelineno-29-14"></a>ninja<span class="w"> </span>check-air-e2e
+<div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="nb">cd</span><span class="w"> </span>mlir-air/build-xrt
+<a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>ninja<span class="w"> </span>install
+<a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>ninja<span class="w"> </span>check-air-cpp
+<a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a>ninja<span class="w"> </span>check-air-mlir
+<a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a>ninja<span class="w"> </span>check-air-python
+<a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>
+<a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a><span class="c1"># These are the ones in test/xrt, and this is about equivalent to `ninja check-air-e2e` if you set the LIT_OPS env var appropriately</span>
+<a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a>lit<span class="w"> </span>-sv<span class="w"> </span>--time-tests<span class="w"> </span>--show-unsupported<span class="w"> </span>--show-excluded<span class="w"> </span>--timeout<span class="w"> </span><span class="m">600</span><span class="w"> </span>-j5<span class="w"> </span>test/xrt
+<a id="__codelineno-30-9" name="__codelineno-30-9" href="#__codelineno-30-9"></a>
+<a id="__codelineno-30-10" name="__codelineno-30-10" href="#__codelineno-30-10"></a><span class="c1"># Run an individual test</span>
+<a id="__codelineno-30-11" name="__codelineno-30-11" href="#__codelineno-30-11"></a>lit<span class="w"> </span>-sv<span class="w"> </span>test/xrt/01_air_to_npu
+<a id="__codelineno-30-12" name="__codelineno-30-12" href="#__codelineno-30-12"></a>
+<a id="__codelineno-30-13" name="__codelineno-30-13" href="#__codelineno-30-13"></a><span class="c1"># Run all xrt tests on device. Takes a long time.</span>
+<a id="__codelineno-30-14" name="__codelineno-30-14" href="#__codelineno-30-14"></a>ninja<span class="w"> </span>check-air-e2e
 </code></pre></div>
 <hr />
 <p align="center">Copyright&copy; 2022 Advanced Micro Devices, Inc.</p>
