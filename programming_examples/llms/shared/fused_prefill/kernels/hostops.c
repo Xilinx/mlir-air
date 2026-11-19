@@ -18,12 +18,8 @@
 #endif
 
 static int row_threads(void) {
-  static int n;
-  if (!n) {
-    int p = omp_get_num_procs();
-    n = p < NT ? (p > 0 ? p : 1) : NT;
-  }
-  return n;
+  int p = omp_get_num_procs();
+  return p < NT ? (p > 0 ? p : 1) : NT;
 }
 
 // round to nearest even; NaN not handled
@@ -537,6 +533,9 @@ void head_post(const uint16_t *src, int ld, int t, int col0, int nh, int dh,
       float inv[nh + 16];
       __m512 v[32];
       if (norm) {
+        // the last 16-head group reads past nh: keep that tail benign
+        for (int h = nh; h < nh + 16; h++)
+          inv[h] = 1.f;
         // every head's sum of squares, then the factors 16 heads at a time:
         // one head's reduction, square root and division in a row would
         // stall on each other
