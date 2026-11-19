@@ -17,10 +17,10 @@ run3x3: TILE_K_L2 = 288
 run3x3: TILE_K_L1 = 48
 
 # M and N tile sizes divided by 4 and 8
-TILE_M_DIV_4 := $(shell echo $$(( $(TILE_M) / 4 )))
-TILE_N_DIV_4 := $(shell echo $$(( $(TILE_N) / 4 )))
-TILE_M_DIV_8 := $(shell echo $$(( $(TILE_M) / 8 )))
-TILE_N_DIV_8 := $(shell echo $$(( $(TILE_N) / 8 )))
+TILE_M_DIV_4 = $(shell echo $$(( $(TILE_M) / 4 )))
+TILE_N_DIV_4 = $(shell echo $$(( $(TILE_N) / 4 )))
+TILE_M_DIV_8 = $(shell echo $$(( $(TILE_M) / 8 )))
+TILE_N_DIV_8 = $(shell echo $$(( $(TILE_N) / 8 )))
 
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
