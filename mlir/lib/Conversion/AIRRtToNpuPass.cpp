@@ -7329,7 +7329,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         Region &r = pktFlow.getPorts();
         Block &b = r.front();
         int flowID = pktFlow.IDInt();
-        AIE::Port sourcePort, destPort;
+        AIE::Port sourcePort{}, destPort{};
         AIE::TileOp srcTile, destTile;
 
         // find all packet flow with trace port as source
