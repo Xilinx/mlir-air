@@ -10,7 +10,11 @@ TILE_K_L2 ?= 128
 TILE_K_L1 ?= 64
 TILE_N ?= 64
 
-# Recommended tile configuration for run3x3 (576x576x576): TILE_M=64 TILE_K_L2=288 TILE_K_L1=48
+# run3x3's 576x576x576 needs these tiles; as target-specific variables they
+# also reach compile-kernel, so the kernel is built for the same K tile.
+run3x3: TILE_M = 64
+run3x3: TILE_K_L2 = 288
+run3x3: TILE_K_L1 = 48
 
 # M and N tile sizes divided by 4 and 8
 TILE_M_DIV_4 := $(shell echo $$(( $(TILE_M) / 4 )))
@@ -111,7 +115,7 @@ compile-kernel-1x1:
 
 run3x3: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-k-l2 288 --tile-k-l1 48 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} $(PYTHON) ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
 profile: compile-kernel build-test-exe
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python ../run.py --m 1024 --k 1024 --n 1024 \

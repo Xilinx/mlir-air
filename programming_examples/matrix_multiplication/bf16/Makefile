@@ -10,7 +10,11 @@ TILE_K_L2 ?= 64
 TILE_K_L1 ?= 32
 TILE_N ?= 64
 
-# Recommended tile configuration for run3x3 (576x576x576): TILE_M=64 TILE_K_L2=288 TILE_K_L1=48
+# run3x3's 576x576x576 needs these tiles; as target-specific variables they
+# also reach compile-kernel, so the kernel is built for the same K tile.
+run3x3: TILE_M = 64
+run3x3: TILE_K_L2 = 288
+run3x3: TILE_K_L1 = 48
 
 # M and N tile sizes divided by 4 and 8
 TILE_M_DIV_4 := $(shell echo $$(( $(TILE_M) / 4 )))
