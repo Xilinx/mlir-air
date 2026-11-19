@@ -1689,17 +1689,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#-air-regularize-loop" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -air-regularize-loop
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#-air-renumber-dma" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2406,17 +2395,6 @@
     <span class="md-ellipsis">
       
         -air-prune-linalg-generic-input-dma
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#-air-regularize-loop" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -air-regularize-loop
       
     </span>
   </a>
@@ -3603,79 +3581,10 @@ output:
 <p><em>Detect and prune redundant DMA into linalg generic</em></p>
 <p>This pass detects and prunes redundant DMA which copies into linalg generic
 input operands. </p>
-<h3 id="-air-regularize-loop"><code>-air-regularize-loop</code><a class="headerlink" href="#-air-regularize-loop" title="Permanent link">&para;</a></h3>
-<p><em>Move operations inside the innermost loop body to regularize loop nests</em></p>
-<p>This pass regularizes loop nests by moving intermediate operations between
-subloops in a loop nest inside the innermost loop body. The pass is 
-essentiallythe inverse of the affine loop invariant code motion pass. For 
-each opeation that makes the loop nest non-perfect, the pass will check 
-recursively if the content of the operation is independent of the induction 
-variable of the inner loop. And if it is independent, the operation will be 
-moved inside the inner loop body until the induction variable of the inner 
-loop is dependent on the operation or there are no loops at the same level.</p>
-<p>Example: Regularize a loop nest with <code>-air-regularize-loop</code></p>
-<p>Input:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>#map0 = affine_map&lt;(d0, d1, d2) -&gt; (d0 + d1 * 7 + d2 * 14)&gt;
-<a id="__codelineno-41-2" name="__codelineno-41-2" href="#__codelineno-41-2"></a>#map1 = affine_map&lt;(d0, d1) -&gt; (d0 + d1 * 5)&gt;
-<a id="__codelineno-41-3" name="__codelineno-41-3" href="#__codelineno-41-3"></a>module  {
-<a id="__codelineno-41-4" name="__codelineno-41-4" href="#__codelineno-41-4"></a>  func.func @task(%arg0: tensor&lt;28x10xf32&gt;, %arg1: tensor&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt; {
-<a id="__codelineno-41-5" name="__codelineno-41-5" href="#__codelineno-41-5"></a>    %0 = memref.alloc() : memref&lt;28x10xf32&gt;
-<a id="__codelineno-41-6" name="__codelineno-41-6" href="#__codelineno-41-6"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-41-7" name="__codelineno-41-7" href="#__codelineno-41-7"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-41-8" name="__codelineno-41-8" href="#__codelineno-41-8"></a>    affine.for %arg2 = 0 to 2 {
-<a id="__codelineno-41-9" name="__codelineno-41-9" href="#__codelineno-41-9"></a>      affine.for %arg3 = 0 to 2 {
-<a id="__codelineno-41-10" name="__codelineno-41-10" href="#__codelineno-41-10"></a>        affine.for %arg4 = 0 to 7 {
-<a id="__codelineno-41-11" name="__codelineno-41-11" href="#__codelineno-41-11"></a>          %4 = affine.apply #map0(%arg4, %arg3, %arg2)
-<a id="__codelineno-41-12" name="__codelineno-41-12" href="#__codelineno-41-12"></a>          affine.for %arg5 = 0 to 2 {
-<a id="__codelineno-41-13" name="__codelineno-41-13" href="#__codelineno-41-13"></a>            affine.for %arg6 = 0 to 5 {
-<a id="__codelineno-41-14" name="__codelineno-41-14" href="#__codelineno-41-14"></a>              %5 = affine.apply #map1(%arg6, %arg5)
-<a id="__codelineno-41-15" name="__codelineno-41-15" href="#__codelineno-41-15"></a>              %6 = affine.load %1[%4, %5] : memref&lt;28x10xf32&gt;
-<a id="__codelineno-41-16" name="__codelineno-41-16" href="#__codelineno-41-16"></a>              %7 = affine.load %2[%4, %5] : memref&lt;28x10xf32&gt;
-<a id="__codelineno-41-17" name="__codelineno-41-17" href="#__codelineno-41-17"></a>              %8 = mulf %6, %7 : f32
-<a id="__codelineno-41-18" name="__codelineno-41-18" href="#__codelineno-41-18"></a>              affine.store %8, %0[%4, %5] : memref&lt;28x10xf32&gt;
-<a id="__codelineno-41-19" name="__codelineno-41-19" href="#__codelineno-41-19"></a>            }
-<a id="__codelineno-41-20" name="__codelineno-41-20" href="#__codelineno-41-20"></a>          }
-<a id="__codelineno-41-21" name="__codelineno-41-21" href="#__codelineno-41-21"></a>        }
-<a id="__codelineno-41-22" name="__codelineno-41-22" href="#__codelineno-41-22"></a>      }
-<a id="__codelineno-41-23" name="__codelineno-41-23" href="#__codelineno-41-23"></a>    }
-<a id="__codelineno-41-24" name="__codelineno-41-24" href="#__codelineno-41-24"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
-<a id="__codelineno-41-25" name="__codelineno-41-25" href="#__codelineno-41-25"></a>    return %3 : tensor&lt;28x10xf32&gt;
-<a id="__codelineno-41-26" name="__codelineno-41-26" href="#__codelineno-41-26"></a>  }
-<a id="__codelineno-41-27" name="__codelineno-41-27" href="#__codelineno-41-27"></a>}
-</code></pre></div>
-<p>Output:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>#map0 = affine_map&lt;(d0, d1, d2) -&gt; (d0 + d1 * 7 + d2 * 14)&gt;
-<a id="__codelineno-42-2" name="__codelineno-42-2" href="#__codelineno-42-2"></a>#map1 = affine_map&lt;(d0, d1) -&gt; (d0 + d1 * 5)&gt;
-<a id="__codelineno-42-3" name="__codelineno-42-3" href="#__codelineno-42-3"></a>module  {
-<a id="__codelineno-42-4" name="__codelineno-42-4" href="#__codelineno-42-4"></a>  func.func @task(%arg0: tensor&lt;28x10xf32&gt;, %arg1: tensor&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt; {
-<a id="__codelineno-42-5" name="__codelineno-42-5" href="#__codelineno-42-5"></a>    %0 = memref.alloc() : memref&lt;28x10xf32&gt;
-<a id="__codelineno-42-6" name="__codelineno-42-6" href="#__codelineno-42-6"></a>    %1 = "aten.type_cast"(%arg0) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-42-7" name="__codelineno-42-7" href="#__codelineno-42-7"></a>    %2 = "aten.type_cast"(%arg1) : (tensor&lt;28x10xf32&gt;) -&gt; memref&lt;28x10xf32&gt;
-<a id="__codelineno-42-8" name="__codelineno-42-8" href="#__codelineno-42-8"></a>    affine.for %arg2 = 0 to 2 {
-<a id="__codelineno-42-9" name="__codelineno-42-9" href="#__codelineno-42-9"></a>      affine.for %arg3 = 0 to 2 {
-<a id="__codelineno-42-10" name="__codelineno-42-10" href="#__codelineno-42-10"></a>        affine.for %arg4 = 0 to 7 {
-<a id="__codelineno-42-11" name="__codelineno-42-11" href="#__codelineno-42-11"></a>          affine.for %arg5 = 0 to 2 {
-<a id="__codelineno-42-12" name="__codelineno-42-12" href="#__codelineno-42-12"></a>            affine.for %arg6 = 0 to 5 {
-<a id="__codelineno-42-13" name="__codelineno-42-13" href="#__codelineno-42-13"></a>              %4 = affine.apply #map0(%arg4, %arg3, %arg2)
-<a id="__codelineno-42-14" name="__codelineno-42-14" href="#__codelineno-42-14"></a>              %5 = affine.apply #map1(%arg6, %arg5)
-<a id="__codelineno-42-15" name="__codelineno-42-15" href="#__codelineno-42-15"></a>              %6 = affine.load %1[%4, %5] : memref&lt;28x10xf32&gt;
-<a id="__codelineno-42-16" name="__codelineno-42-16" href="#__codelineno-42-16"></a>              %7 = affine.load %2[%4, %5] : memref&lt;28x10xf32&gt;
-<a id="__codelineno-42-17" name="__codelineno-42-17" href="#__codelineno-42-17"></a>              %8 = mulf %6, %7 : f32
-<a id="__codelineno-42-18" name="__codelineno-42-18" href="#__codelineno-42-18"></a>              affine.store %8, %0[%4, %5] : memref&lt;28x10xf32&gt;
-<a id="__codelineno-42-19" name="__codelineno-42-19" href="#__codelineno-42-19"></a>            }
-<a id="__codelineno-42-20" name="__codelineno-42-20" href="#__codelineno-42-20"></a>          }
-<a id="__codelineno-42-21" name="__codelineno-42-21" href="#__codelineno-42-21"></a>        }
-<a id="__codelineno-42-22" name="__codelineno-42-22" href="#__codelineno-42-22"></a>      }
-<a id="__codelineno-42-23" name="__codelineno-42-23" href="#__codelineno-42-23"></a>    }
-<a id="__codelineno-42-24" name="__codelineno-42-24" href="#__codelineno-42-24"></a>    %3 = "aten.type_cast"(%0) : (memref&lt;28x10xf32&gt;) -&gt; tensor&lt;28x10xf32&gt;
-<a id="__codelineno-42-25" name="__codelineno-42-25" href="#__codelineno-42-25"></a>    return %3 : tensor&lt;28x10xf32&gt;
-<a id="__codelineno-42-26" name="__codelineno-42-26" href="#__codelineno-42-26"></a>  }
-<a id="__codelineno-42-27" name="__codelineno-42-27" href="#__codelineno-42-27"></a>}
-</code></pre></div>
 <h3 id="-air-renumber-dma"><code>-air-renumber-dma</code><a class="headerlink" href="#-air-renumber-dma" title="Permanent link">&para;</a></h3>
 <p><em>Renumber air dma op ids</em></p>
 <p><strong>Options</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a>-mode : In which hierarchy level to renumber the dma ops
+<div class="highlight"><pre><span></span><code><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>-mode : In which hierarchy level to renumber the dma ops
 </code></pre></div>
 <h3 id="-air-resolve-tensor-opoperand-conflicts"><code>-air-resolve-tensor-opoperand-conflicts</code><a class="headerlink" href="#-air-resolve-tensor-opoperand-conflicts" title="Permanent link">&para;</a></h3>
 <p><em>Resolve tensor OpOperands leading to explicit reuse of a buffer for both reading and writing data</em></p>
@@ -3696,7 +3605,7 @@ allocate new buffers.</p>
 <p>This pass specialize air.channel op in perfect loop nest with wraps and strides, for
 efficient mapping to hardware buffer descriptors.</p>
 <p><strong>Options</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>-scope : AIR hierarchy scope to perform loop specialization under. Must be one of [all, segment, func].
+<div class="highlight"><pre><span></span><code><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>-scope : AIR hierarchy scope to perform loop specialization under. Must be one of [all, segment, func].
 </code></pre></div>
 <h3 id="-air-specialize-dma-broadcast"><code>-air-specialize-dma-broadcast</code><a class="headerlink" href="#-air-specialize-dma-broadcast" title="Permanent link">&para;</a></h3>
 <p><em>Specialize dma operations for broadcast pattern</em></p>
@@ -3766,92 +3675,92 @@ into more optimized versions that are aware of the broadcast semantics.</p>
   }
   air.launch_terminator
 }
-  <div class="highlight"><pre><span></span><code><a id="__codelineno-45-1" name="__codelineno-45-1" href="#__codelineno-45-1"></a>Output:
-<a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a>```mlir
-<a id="__codelineno-45-3" name="__codelineno-45-3" href="#__codelineno-45-3"></a>%0 = air.launch async [%async_token_0, %async_token_3, %async_token_6] (%arg0, %arg1) in (%arg2=%c4, %arg3=%c4) args(%arg4=%results_5, %arg5=%results, %arg6=%results_2) : memref&lt;512x512xi32&gt;, memref&lt;512x1024xi32&gt;, memref&lt;1024x512xi32&gt; attributes {id = 1 : i32} {
-<a id="__codelineno-45-4" name="__codelineno-45-4" href="#__codelineno-45-4"></a>  ...
-<a id="__codelineno-45-5" name="__codelineno-45-5" href="#__codelineno-45-5"></a>  %5 = scf.for %arg7 = %c0_7 to %c1024 step %c256 iter_args(%arg8 = %async_token_8) -&gt; (!air.async.token) {
-<a id="__codelineno-45-6" name="__codelineno-45-6" href="#__codelineno-45-6"></a>    %21 = air.channel.put async [%arg8]  @channel_12[%c0_7, %c0_7] (%arg5[%1, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 1 : i32} : (memref&lt;512x1024xi32&gt;)
-<a id="__codelineno-45-7" name="__codelineno-45-7" href="#__codelineno-45-7"></a>    %22 = air.channel.put async [%arg8]  @channel_12[%c1, %c0_7] (%arg5[%2, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 2 : i32} : (memref&lt;512x1024xi32&gt;)
-<a id="__codelineno-45-8" name="__codelineno-45-8" href="#__codelineno-45-8"></a>    %23 = air.channel.put async [%arg8]  @channel_12[%c2, %c0_7] (%arg5[%3, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 3 : i32} : (memref&lt;512x1024xi32&gt;)
-<a id="__codelineno-45-9" name="__codelineno-45-9" href="#__codelineno-45-9"></a>    %24 = air.channel.put async [%arg8]  @channel_12[%c3, %c0_7] (%arg5[%4, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 4 : i32} : (memref&lt;512x1024xi32&gt;)
-<a id="__codelineno-45-10" name="__codelineno-45-10" href="#__codelineno-45-10"></a>    %25 = air.wait_all async [%21, %22, %23, %24] 
-<a id="__codelineno-45-11" name="__codelineno-45-11" href="#__codelineno-45-11"></a>    scf.yield %25 : !air.async.token
-<a id="__codelineno-45-12" name="__codelineno-45-12" href="#__codelineno-45-12"></a>  }
-<a id="__codelineno-45-13" name="__codelineno-45-13" href="#__codelineno-45-13"></a>  ...
-<a id="__codelineno-45-14" name="__codelineno-45-14" href="#__codelineno-45-14"></a>  %20 = air.segment @segment_0 async  attributes {id = 2 : i32} {
-<a id="__codelineno-45-15" name="__codelineno-45-15" href="#__codelineno-45-15"></a>    ...
-<a id="__codelineno-45-16" name="__codelineno-45-16" href="#__codelineno-45-16"></a>    %async_token_53, %results_54 = air.execute -&gt; (memref&lt;32x1024xi32, 1&gt;) {
-<a id="__codelineno-45-17" name="__codelineno-45-17" href="#__codelineno-45-17"></a>      %alloc = memref.alloc() : memref&lt;32x1024xi32, 1&gt;
-<a id="__codelineno-45-18" name="__codelineno-45-18" href="#__codelineno-45-18"></a>      air.execute_terminator %alloc : memref&lt;32x1024xi32, 1&gt;
-<a id="__codelineno-45-19" name="__codelineno-45-19" href="#__codelineno-45-19"></a>    }
-<a id="__codelineno-45-20" name="__codelineno-45-20" href="#__codelineno-45-20"></a>    %async_token_55, %results_56 = air.execute -&gt; (memref&lt;32x1024xi32, 1&gt;) {
-<a id="__codelineno-45-21" name="__codelineno-45-21" href="#__codelineno-45-21"></a>      %alloc = memref.alloc() : memref&lt;32x1024xi32, 1&gt;
-<a id="__codelineno-45-22" name="__codelineno-45-22" href="#__codelineno-45-22"></a>      air.execute_terminator %alloc : memref&lt;32x1024xi32, 1&gt;
-<a id="__codelineno-45-23" name="__codelineno-45-23" href="#__codelineno-45-23"></a>    }
-<a id="__codelineno-45-24" name="__codelineno-45-24" href="#__codelineno-45-24"></a>    %async_token_57, %results_58 = air.execute -&gt; (memref&lt;32x1024xi32, 1&gt;) {
-<a id="__codelineno-45-25" name="__codelineno-45-25" href="#__codelineno-45-25"></a>      %alloc = memref.alloc() : memref&lt;32x1024xi32, 1&gt;
-<a id="__codelineno-45-26" name="__codelineno-45-26" href="#__codelineno-45-26"></a>      air.execute_terminator %alloc : memref&lt;32x1024xi32, 1&gt;
-<a id="__codelineno-45-27" name="__codelineno-45-27" href="#__codelineno-45-27"></a>    }
-<a id="__codelineno-45-28" name="__codelineno-45-28" href="#__codelineno-45-28"></a>    %async_token_59, %results_60 = air.execute -&gt; (memref&lt;32x1024xi32, 1&gt;) {
-<a id="__codelineno-45-29" name="__codelineno-45-29" href="#__codelineno-45-29"></a>      %alloc = memref.alloc() : memref&lt;32x1024xi32, 1&gt;
-<a id="__codelineno-45-30" name="__codelineno-45-30" href="#__codelineno-45-30"></a>      air.execute_terminator %alloc : memref&lt;32x1024xi32, 1&gt;
-<a id="__codelineno-45-31" name="__codelineno-45-31" href="#__codelineno-45-31"></a>    }
-<a id="__codelineno-45-32" name="__codelineno-45-32" href="#__codelineno-45-32"></a>    ...
-<a id="__codelineno-45-33" name="__codelineno-45-33" href="#__codelineno-45-33"></a>    %25 = scf.for %arg7 = %c0_22 to %c1024_23 step %c256_24 iter_args(%arg8 = %24) -&gt; (!air.async.token) {
-<a id="__codelineno-45-34" name="__codelineno-45-34" href="#__codelineno-45-34"></a>      %68 = air.channel.get async [%arg8]  @channel_12[%c0_22, %c0_22] (%results_54[%c0_50, %arg7] [%c32_18, %c256_24] [%c1024_51, %c1_52]) {id = 13 : i32} : (memref&lt;32x1024xi32, 1&gt;)
-<a id="__codelineno-45-35" name="__codelineno-45-35" href="#__codelineno-45-35"></a>      %69 = air.channel.get async [%arg8]  @channel_12[%c1_19, %c0_22] (%results_56[%c0_43, %arg7] [%c32_18, %c256_24] [%c1024_44, %c1_45]) {id = 14 : i32} : (memref&lt;32x1024xi32, 1&gt;)
-<a id="__codelineno-45-36" name="__codelineno-45-36" href="#__codelineno-45-36"></a>      %70 = air.channel.get async [%arg8]  @channel_12[%c2_17, %c0_22] (%results_58[%c0_36, %arg7] [%c32_18, %c256_24] [%c1024_37, %c1_38]) {id = 15 : i32} : (memref&lt;32x1024xi32, 1&gt;)
-<a id="__codelineno-45-37" name="__codelineno-45-37" href="#__codelineno-45-37"></a>      %71 = air.channel.get async [%arg8]  @channel_12[%c3_16, %c0_22] (%results_60[%c0_29, %arg7] [%c32_18, %c256_24] [%c1024_30, %c1_31]) {id = 16 : i32} : (memref&lt;32x1024xi32, 1&gt;)
-<a id="__codelineno-45-38" name="__codelineno-45-38" href="#__codelineno-45-38"></a>      %72 = air.wait_all async [%68, %69, %70, %71] 
-<a id="__codelineno-45-39" name="__codelineno-45-39" href="#__codelineno-45-39"></a>      scf.yield %72 : !air.async.token
-<a id="__codelineno-45-40" name="__codelineno-45-40" href="#__codelineno-45-40"></a>    }
-<a id="__codelineno-45-41" name="__codelineno-45-41" href="#__codelineno-45-41"></a>    ...
-<a id="__codelineno-45-42" name="__codelineno-45-42" href="#__codelineno-45-42"></a>    %31 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %30) -&gt; (!air.async.token) {
-<a id="__codelineno-45-43" name="__codelineno-45-43" href="#__codelineno-45-43"></a>      %async_token_177, %results_178 = air.execute [%arg8] -&gt; (index) {
-<a id="__codelineno-45-44" name="__codelineno-45-44" href="#__codelineno-45-44"></a>        %69 = affine.apply affine_map&lt;()[s0] -&gt; (s0 * 8)&gt;()[%arg7]
-<a id="__codelineno-45-45" name="__codelineno-45-45" href="#__codelineno-45-45"></a>        air.execute_terminator %69 : index
-<a id="__codelineno-45-46" name="__codelineno-45-46" href="#__codelineno-45-46"></a>      }
-<a id="__codelineno-45-47" name="__codelineno-45-47" href="#__codelineno-45-47"></a>      %68 = air.channel.put async [%async_token_177]  @channel_0[] (%results_54[%c0_22, %c0_46, %results_178] [%c4_21, %c32_18, %c8] [%c8_47, %c1024_48, %c1_49]) {id = 21 : i32} : (memref&lt;32x1024xi32, 1&gt;)
-<a id="__codelineno-45-48" name="__codelineno-45-48" href="#__codelineno-45-48"></a>      scf.yield %68 : !air.async.token
-<a id="__codelineno-45-49" name="__codelineno-45-49" href="#__codelineno-45-49"></a>    }
-<a id="__codelineno-45-50" name="__codelineno-45-50" href="#__codelineno-45-50"></a>    %32 = air.wait_all async [%async_token_55] 
-<a id="__codelineno-45-51" name="__codelineno-45-51" href="#__codelineno-45-51"></a>    %33 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %32) -&gt; (!air.async.token) {
-<a id="__codelineno-45-52" name="__codelineno-45-52" href="#__codelineno-45-52"></a>      %async_token_177, %results_178 = air.execute [%arg8] -&gt; (index) {
-<a id="__codelineno-45-53" name="__codelineno-45-53" href="#__codelineno-45-53"></a>        %69 = affine.apply affine_map&lt;()[s0] -&gt; (s0 * 8)&gt;()[%arg7]
-<a id="__codelineno-45-54" name="__codelineno-45-54" href="#__codelineno-45-54"></a>        air.execute_terminator %69 : index
-<a id="__codelineno-45-55" name="__codelineno-45-55" href="#__codelineno-45-55"></a>      }
-<a id="__codelineno-45-56" name="__codelineno-45-56" href="#__codelineno-45-56"></a>      %68 = air.channel.put async [%async_token_177]  @channel_1[] (%results_56[%c0_22, %c0_39, %results_178] [%c4_21, %c32_18, %c8] [%c8_40, %c1024_41, %c1_42]) {id = 22 : i32} : (memref&lt;32x1024xi32, 1&gt;)
-<a id="__codelineno-45-57" name="__codelineno-45-57" href="#__codelineno-45-57"></a>      scf.yield %68 : !air.async.token
-<a id="__codelineno-45-58" name="__codelineno-45-58" href="#__codelineno-45-58"></a>    }
-<a id="__codelineno-45-59" name="__codelineno-45-59" href="#__codelineno-45-59"></a>    %34 = air.wait_all async [%async_token_57] 
-<a id="__codelineno-45-60" name="__codelineno-45-60" href="#__codelineno-45-60"></a>    %35 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %34) -&gt; (!air.async.token) {
-<a id="__codelineno-45-61" name="__codelineno-45-61" href="#__codelineno-45-61"></a>      %async_token_177, %results_178 = air.execute [%arg8] -&gt; (index) {
-<a id="__codelineno-45-62" name="__codelineno-45-62" href="#__codelineno-45-62"></a>        %69 = affine.apply affine_map&lt;()[s0] -&gt; (s0 * 8)&gt;()[%arg7]
-<a id="__codelineno-45-63" name="__codelineno-45-63" href="#__codelineno-45-63"></a>        air.execute_terminator %69 : index
-<a id="__codelineno-45-64" name="__codelineno-45-64" href="#__codelineno-45-64"></a>      }
-<a id="__codelineno-45-65" name="__codelineno-45-65" href="#__codelineno-45-65"></a>      %68 = air.channel.put async [%async_token_177]  @channel_2[] (%results_58[%c0_22, %c0_32, %results_178] [%c4_21, %c32_18, %c8] [%c8_33, %c1024_34, %c1_35]) {id = 23 : i32} : (memref&lt;32x1024xi32, 1&gt;)
-<a id="__codelineno-45-66" name="__codelineno-45-66" href="#__codelineno-45-66"></a>      scf.yield %68 : !air.async.token
-<a id="__codelineno-45-67" name="__codelineno-45-67" href="#__codelineno-45-67"></a>    }
-<a id="__codelineno-45-68" name="__codelineno-45-68" href="#__codelineno-45-68"></a>    %36 = air.wait_all async [%async_token_59] 
-<a id="__codelineno-45-69" name="__codelineno-45-69" href="#__codelineno-45-69"></a>    %37 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %36) -&gt; (!air.async.token) {
-<a id="__codelineno-45-70" name="__codelineno-45-70" href="#__codelineno-45-70"></a>      %async_token_177, %results_178 = air.execute [%arg8] -&gt; (index) {
-<a id="__codelineno-45-71" name="__codelineno-45-71" href="#__codelineno-45-71"></a>        %69 = affine.apply affine_map&lt;()[s0] -&gt; (s0 * 8)&gt;()[%arg7]
-<a id="__codelineno-45-72" name="__codelineno-45-72" href="#__codelineno-45-72"></a>        air.execute_terminator %69 : index
-<a id="__codelineno-45-73" name="__codelineno-45-73" href="#__codelineno-45-73"></a>      }
-<a id="__codelineno-45-74" name="__codelineno-45-74" href="#__codelineno-45-74"></a>      %68 = air.channel.put async [%async_token_177]  @channel_3[] (%results_60[%c0_22, %c0_25, %results_178] [%c4_21, %c32_18, %c8] [%c8_26, %c1024_27, %c1_28]) {id = 24 : i32} : (memref&lt;32x1024xi32, 1&gt;)
-<a id="__codelineno-45-75" name="__codelineno-45-75" href="#__codelineno-45-75"></a>      scf.yield %68 : !air.async.token
-<a id="__codelineno-45-76" name="__codelineno-45-76" href="#__codelineno-45-76"></a>    }
-<a id="__codelineno-45-77" name="__codelineno-45-77" href="#__codelineno-45-77"></a>    ...
-<a id="__codelineno-45-78" name="__codelineno-45-78" href="#__codelineno-45-78"></a>    air.segment_terminator
-<a id="__codelineno-45-79" name="__codelineno-45-79" href="#__codelineno-45-79"></a>  }
-<a id="__codelineno-45-80" name="__codelineno-45-80" href="#__codelineno-45-80"></a>  air.launch_terminator
-<a id="__codelineno-45-81" name="__codelineno-45-81" href="#__codelineno-45-81"></a>}
+  <div class="highlight"><pre><span></span><code><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a>Output:
+<a id="__codelineno-43-2" name="__codelineno-43-2" href="#__codelineno-43-2"></a>```mlir
+<a id="__codelineno-43-3" name="__codelineno-43-3" href="#__codelineno-43-3"></a>%0 = air.launch async [%async_token_0, %async_token_3, %async_token_6] (%arg0, %arg1) in (%arg2=%c4, %arg3=%c4) args(%arg4=%results_5, %arg5=%results, %arg6=%results_2) : memref&lt;512x512xi32&gt;, memref&lt;512x1024xi32&gt;, memref&lt;1024x512xi32&gt; attributes {id = 1 : i32} {
+<a id="__codelineno-43-4" name="__codelineno-43-4" href="#__codelineno-43-4"></a>  ...
+<a id="__codelineno-43-5" name="__codelineno-43-5" href="#__codelineno-43-5"></a>  %5 = scf.for %arg7 = %c0_7 to %c1024 step %c256 iter_args(%arg8 = %async_token_8) -&gt; (!air.async.token) {
+<a id="__codelineno-43-6" name="__codelineno-43-6" href="#__codelineno-43-6"></a>    %21 = air.channel.put async [%arg8]  @channel_12[%c0_7, %c0_7] (%arg5[%1, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 1 : i32} : (memref&lt;512x1024xi32&gt;)
+<a id="__codelineno-43-7" name="__codelineno-43-7" href="#__codelineno-43-7"></a>    %22 = air.channel.put async [%arg8]  @channel_12[%c1, %c0_7] (%arg5[%2, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 2 : i32} : (memref&lt;512x1024xi32&gt;)
+<a id="__codelineno-43-8" name="__codelineno-43-8" href="#__codelineno-43-8"></a>    %23 = air.channel.put async [%arg8]  @channel_12[%c2, %c0_7] (%arg5[%3, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 3 : i32} : (memref&lt;512x1024xi32&gt;)
+<a id="__codelineno-43-9" name="__codelineno-43-9" href="#__codelineno-43-9"></a>    %24 = air.channel.put async [%arg8]  @channel_12[%c3, %c0_7] (%arg5[%4, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 4 : i32} : (memref&lt;512x1024xi32&gt;)
+<a id="__codelineno-43-10" name="__codelineno-43-10" href="#__codelineno-43-10"></a>    %25 = air.wait_all async [%21, %22, %23, %24] 
+<a id="__codelineno-43-11" name="__codelineno-43-11" href="#__codelineno-43-11"></a>    scf.yield %25 : !air.async.token
+<a id="__codelineno-43-12" name="__codelineno-43-12" href="#__codelineno-43-12"></a>  }
+<a id="__codelineno-43-13" name="__codelineno-43-13" href="#__codelineno-43-13"></a>  ...
+<a id="__codelineno-43-14" name="__codelineno-43-14" href="#__codelineno-43-14"></a>  %20 = air.segment @segment_0 async  attributes {id = 2 : i32} {
+<a id="__codelineno-43-15" name="__codelineno-43-15" href="#__codelineno-43-15"></a>    ...
+<a id="__codelineno-43-16" name="__codelineno-43-16" href="#__codelineno-43-16"></a>    %async_token_53, %results_54 = air.execute -&gt; (memref&lt;32x1024xi32, 1&gt;) {
+<a id="__codelineno-43-17" name="__codelineno-43-17" href="#__codelineno-43-17"></a>      %alloc = memref.alloc() : memref&lt;32x1024xi32, 1&gt;
+<a id="__codelineno-43-18" name="__codelineno-43-18" href="#__codelineno-43-18"></a>      air.execute_terminator %alloc : memref&lt;32x1024xi32, 1&gt;
+<a id="__codelineno-43-19" name="__codelineno-43-19" href="#__codelineno-43-19"></a>    }
+<a id="__codelineno-43-20" name="__codelineno-43-20" href="#__codelineno-43-20"></a>    %async_token_55, %results_56 = air.execute -&gt; (memref&lt;32x1024xi32, 1&gt;) {
+<a id="__codelineno-43-21" name="__codelineno-43-21" href="#__codelineno-43-21"></a>      %alloc = memref.alloc() : memref&lt;32x1024xi32, 1&gt;
+<a id="__codelineno-43-22" name="__codelineno-43-22" href="#__codelineno-43-22"></a>      air.execute_terminator %alloc : memref&lt;32x1024xi32, 1&gt;
+<a id="__codelineno-43-23" name="__codelineno-43-23" href="#__codelineno-43-23"></a>    }
+<a id="__codelineno-43-24" name="__codelineno-43-24" href="#__codelineno-43-24"></a>    %async_token_57, %results_58 = air.execute -&gt; (memref&lt;32x1024xi32, 1&gt;) {
+<a id="__codelineno-43-25" name="__codelineno-43-25" href="#__codelineno-43-25"></a>      %alloc = memref.alloc() : memref&lt;32x1024xi32, 1&gt;
+<a id="__codelineno-43-26" name="__codelineno-43-26" href="#__codelineno-43-26"></a>      air.execute_terminator %alloc : memref&lt;32x1024xi32, 1&gt;
+<a id="__codelineno-43-27" name="__codelineno-43-27" href="#__codelineno-43-27"></a>    }
+<a id="__codelineno-43-28" name="__codelineno-43-28" href="#__codelineno-43-28"></a>    %async_token_59, %results_60 = air.execute -&gt; (memref&lt;32x1024xi32, 1&gt;) {
+<a id="__codelineno-43-29" name="__codelineno-43-29" href="#__codelineno-43-29"></a>      %alloc = memref.alloc() : memref&lt;32x1024xi32, 1&gt;
+<a id="__codelineno-43-30" name="__codelineno-43-30" href="#__codelineno-43-30"></a>      air.execute_terminator %alloc : memref&lt;32x1024xi32, 1&gt;
+<a id="__codelineno-43-31" name="__codelineno-43-31" href="#__codelineno-43-31"></a>    }
+<a id="__codelineno-43-32" name="__codelineno-43-32" href="#__codelineno-43-32"></a>    ...
+<a id="__codelineno-43-33" name="__codelineno-43-33" href="#__codelineno-43-33"></a>    %25 = scf.for %arg7 = %c0_22 to %c1024_23 step %c256_24 iter_args(%arg8 = %24) -&gt; (!air.async.token) {
+<a id="__codelineno-43-34" name="__codelineno-43-34" href="#__codelineno-43-34"></a>      %68 = air.channel.get async [%arg8]  @channel_12[%c0_22, %c0_22] (%results_54[%c0_50, %arg7] [%c32_18, %c256_24] [%c1024_51, %c1_52]) {id = 13 : i32} : (memref&lt;32x1024xi32, 1&gt;)
+<a id="__codelineno-43-35" name="__codelineno-43-35" href="#__codelineno-43-35"></a>      %69 = air.channel.get async [%arg8]  @channel_12[%c1_19, %c0_22] (%results_56[%c0_43, %arg7] [%c32_18, %c256_24] [%c1024_44, %c1_45]) {id = 14 : i32} : (memref&lt;32x1024xi32, 1&gt;)
+<a id="__codelineno-43-36" name="__codelineno-43-36" href="#__codelineno-43-36"></a>      %70 = air.channel.get async [%arg8]  @channel_12[%c2_17, %c0_22] (%results_58[%c0_36, %arg7] [%c32_18, %c256_24] [%c1024_37, %c1_38]) {id = 15 : i32} : (memref&lt;32x1024xi32, 1&gt;)
+<a id="__codelineno-43-37" name="__codelineno-43-37" href="#__codelineno-43-37"></a>      %71 = air.channel.get async [%arg8]  @channel_12[%c3_16, %c0_22] (%results_60[%c0_29, %arg7] [%c32_18, %c256_24] [%c1024_30, %c1_31]) {id = 16 : i32} : (memref&lt;32x1024xi32, 1&gt;)
+<a id="__codelineno-43-38" name="__codelineno-43-38" href="#__codelineno-43-38"></a>      %72 = air.wait_all async [%68, %69, %70, %71] 
+<a id="__codelineno-43-39" name="__codelineno-43-39" href="#__codelineno-43-39"></a>      scf.yield %72 : !air.async.token
+<a id="__codelineno-43-40" name="__codelineno-43-40" href="#__codelineno-43-40"></a>    }
+<a id="__codelineno-43-41" name="__codelineno-43-41" href="#__codelineno-43-41"></a>    ...
+<a id="__codelineno-43-42" name="__codelineno-43-42" href="#__codelineno-43-42"></a>    %31 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %30) -&gt; (!air.async.token) {
+<a id="__codelineno-43-43" name="__codelineno-43-43" href="#__codelineno-43-43"></a>      %async_token_177, %results_178 = air.execute [%arg8] -&gt; (index) {
+<a id="__codelineno-43-44" name="__codelineno-43-44" href="#__codelineno-43-44"></a>        %69 = affine.apply affine_map&lt;()[s0] -&gt; (s0 * 8)&gt;()[%arg7]
+<a id="__codelineno-43-45" name="__codelineno-43-45" href="#__codelineno-43-45"></a>        air.execute_terminator %69 : index
+<a id="__codelineno-43-46" name="__codelineno-43-46" href="#__codelineno-43-46"></a>      }
+<a id="__codelineno-43-47" name="__codelineno-43-47" href="#__codelineno-43-47"></a>      %68 = air.channel.put async [%async_token_177]  @channel_0[] (%results_54[%c0_22, %c0_46, %results_178] [%c4_21, %c32_18, %c8] [%c8_47, %c1024_48, %c1_49]) {id = 21 : i32} : (memref&lt;32x1024xi32, 1&gt;)
+<a id="__codelineno-43-48" name="__codelineno-43-48" href="#__codelineno-43-48"></a>      scf.yield %68 : !air.async.token
+<a id="__codelineno-43-49" name="__codelineno-43-49" href="#__codelineno-43-49"></a>    }
+<a id="__codelineno-43-50" name="__codelineno-43-50" href="#__codelineno-43-50"></a>    %32 = air.wait_all async [%async_token_55] 
+<a id="__codelineno-43-51" name="__codelineno-43-51" href="#__codelineno-43-51"></a>    %33 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %32) -&gt; (!air.async.token) {
+<a id="__codelineno-43-52" name="__codelineno-43-52" href="#__codelineno-43-52"></a>      %async_token_177, %results_178 = air.execute [%arg8] -&gt; (index) {
+<a id="__codelineno-43-53" name="__codelineno-43-53" href="#__codelineno-43-53"></a>        %69 = affine.apply affine_map&lt;()[s0] -&gt; (s0 * 8)&gt;()[%arg7]
+<a id="__codelineno-43-54" name="__codelineno-43-54" href="#__codelineno-43-54"></a>        air.execute_terminator %69 : index
+<a id="__codelineno-43-55" name="__codelineno-43-55" href="#__codelineno-43-55"></a>      }
+<a id="__codelineno-43-56" name="__codelineno-43-56" href="#__codelineno-43-56"></a>      %68 = air.channel.put async [%async_token_177]  @channel_1[] (%results_56[%c0_22, %c0_39, %results_178] [%c4_21, %c32_18, %c8] [%c8_40, %c1024_41, %c1_42]) {id = 22 : i32} : (memref&lt;32x1024xi32, 1&gt;)
+<a id="__codelineno-43-57" name="__codelineno-43-57" href="#__codelineno-43-57"></a>      scf.yield %68 : !air.async.token
+<a id="__codelineno-43-58" name="__codelineno-43-58" href="#__codelineno-43-58"></a>    }
+<a id="__codelineno-43-59" name="__codelineno-43-59" href="#__codelineno-43-59"></a>    %34 = air.wait_all async [%async_token_57] 
+<a id="__codelineno-43-60" name="__codelineno-43-60" href="#__codelineno-43-60"></a>    %35 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %34) -&gt; (!air.async.token) {
+<a id="__codelineno-43-61" name="__codelineno-43-61" href="#__codelineno-43-61"></a>      %async_token_177, %results_178 = air.execute [%arg8] -&gt; (index) {
+<a id="__codelineno-43-62" name="__codelineno-43-62" href="#__codelineno-43-62"></a>        %69 = affine.apply affine_map&lt;()[s0] -&gt; (s0 * 8)&gt;()[%arg7]
+<a id="__codelineno-43-63" name="__codelineno-43-63" href="#__codelineno-43-63"></a>        air.execute_terminator %69 : index
+<a id="__codelineno-43-64" name="__codelineno-43-64" href="#__codelineno-43-64"></a>      }
+<a id="__codelineno-43-65" name="__codelineno-43-65" href="#__codelineno-43-65"></a>      %68 = air.channel.put async [%async_token_177]  @channel_2[] (%results_58[%c0_22, %c0_32, %results_178] [%c4_21, %c32_18, %c8] [%c8_33, %c1024_34, %c1_35]) {id = 23 : i32} : (memref&lt;32x1024xi32, 1&gt;)
+<a id="__codelineno-43-66" name="__codelineno-43-66" href="#__codelineno-43-66"></a>      scf.yield %68 : !air.async.token
+<a id="__codelineno-43-67" name="__codelineno-43-67" href="#__codelineno-43-67"></a>    }
+<a id="__codelineno-43-68" name="__codelineno-43-68" href="#__codelineno-43-68"></a>    %36 = air.wait_all async [%async_token_59] 
+<a id="__codelineno-43-69" name="__codelineno-43-69" href="#__codelineno-43-69"></a>    %37 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %36) -&gt; (!air.async.token) {
+<a id="__codelineno-43-70" name="__codelineno-43-70" href="#__codelineno-43-70"></a>      %async_token_177, %results_178 = air.execute [%arg8] -&gt; (index) {
+<a id="__codelineno-43-71" name="__codelineno-43-71" href="#__codelineno-43-71"></a>        %69 = affine.apply affine_map&lt;()[s0] -&gt; (s0 * 8)&gt;()[%arg7]
+<a id="__codelineno-43-72" name="__codelineno-43-72" href="#__codelineno-43-72"></a>        air.execute_terminator %69 : index
+<a id="__codelineno-43-73" name="__codelineno-43-73" href="#__codelineno-43-73"></a>      }
+<a id="__codelineno-43-74" name="__codelineno-43-74" href="#__codelineno-43-74"></a>      %68 = air.channel.put async [%async_token_177]  @channel_3[] (%results_60[%c0_22, %c0_25, %results_178] [%c4_21, %c32_18, %c8] [%c8_26, %c1024_27, %c1_28]) {id = 24 : i32} : (memref&lt;32x1024xi32, 1&gt;)
+<a id="__codelineno-43-75" name="__codelineno-43-75" href="#__codelineno-43-75"></a>      scf.yield %68 : !air.async.token
+<a id="__codelineno-43-76" name="__codelineno-43-76" href="#__codelineno-43-76"></a>    }
+<a id="__codelineno-43-77" name="__codelineno-43-77" href="#__codelineno-43-77"></a>    ...
+<a id="__codelineno-43-78" name="__codelineno-43-78" href="#__codelineno-43-78"></a>    air.segment_terminator
+<a id="__codelineno-43-79" name="__codelineno-43-79" href="#__codelineno-43-79"></a>  }
+<a id="__codelineno-43-80" name="__codelineno-43-80" href="#__codelineno-43-80"></a>  air.launch_terminator
+<a id="__codelineno-43-81" name="__codelineno-43-81" href="#__codelineno-43-81"></a>}
 </code></pre></div></p>
 <p><strong>Options</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>-tiles-per-l2-tile        : Number of compute tiles per L2 memory tile. Used to estimate if an air.segment shall allocate to multiple L2 memory tiles, and therefore requires L2 memref splitting.
-<a id="__codelineno-46-2" name="__codelineno-46-2" href="#__codelineno-46-2"></a>-max-launch-channels-mm2s : Per-launch cap on the number of distinct launch-scope channel endpoints in the MM2S direction (air.channel.put ops directly under air.launch, i.e. not nested in any air.segment). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).
-<a id="__codelineno-46-3" name="__codelineno-46-3" href="#__codelineno-46-3"></a>-max-launch-channels-s2mm : Per-launch cap on the number of distinct launch-scope channel endpoints in the S2MM direction (air.channel.get ops directly under air.launch, i.e. not nested in any air.segment). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).
+<div class="highlight"><pre><span></span><code><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>-tiles-per-l2-tile        : Number of compute tiles per L2 memory tile. Used to estimate if an air.segment shall allocate to multiple L2 memory tiles, and therefore requires L2 memref splitting.
+<a id="__codelineno-44-2" name="__codelineno-44-2" href="#__codelineno-44-2"></a>-max-launch-channels-mm2s : Per-launch cap on the number of distinct launch-scope channel endpoints in the MM2S direction (air.channel.put ops directly under air.launch, i.e. not nested in any air.segment). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).
+<a id="__codelineno-44-3" name="__codelineno-44-3" href="#__codelineno-44-3"></a>-max-launch-channels-s2mm : Per-launch cap on the number of distinct launch-scope channel endpoints in the S2MM direction (air.channel.get ops directly under air.launch, i.e. not nested in any air.segment). Splits are skipped when they would push the count past this cap. 0 = no cap (legacy behavior).
 </code></pre></div>
 <h3 id="-air-split-launch-for-padding"><code>-air-split-launch-for-padding</code><a class="headerlink" href="#-air-split-launch-for-padding" title="Permanent link">&para;</a></h3>
 <p><em>Split air.launch into partitions for device-side DMA padding</em></p>
@@ -3887,14 +3796,14 @@ Single-launch mode currently only supports air.dma_memcpy_nd; using
 it with channel-based IR will produce an error.</p>
 <p>Must run AFTER air-fuse-channels/air-place-herds and BEFORE air-to-aie.</p>
 <p><strong>Options</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a>-split-mode     : How to partition the launch grid: 'multi-launch' (separate launches per partition) or 'single-launch' (single launch with scf.if on block indices).
-<a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a>-pad-location   : Where to apply DMA padding: 'memtile' (L2 MM2S, 3-level hierarchy) or 'source' (pad at L3 read, direct source-level padding).
-<a id="__codelineno-47-3" name="__codelineno-47-3" href="#__codelineno-47-3"></a>-use-dma-memcpy : DEPRECATED: Use pad-location='source' instead.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-45-1" name="__codelineno-45-1" href="#__codelineno-45-1"></a>-split-mode     : How to partition the launch grid: 'multi-launch' (separate launches per partition) or 'single-launch' (single launch with scf.if on block indices).
+<a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a>-pad-location   : Where to apply DMA padding: 'memtile' (L2 MM2S, 3-level hierarchy) or 'source' (pad at L3 read, direct source-level padding).
+<a id="__codelineno-45-3" name="__codelineno-45-3" href="#__codelineno-45-3"></a>-use-dma-memcpy : DEPRECATED: Use pad-location='source' instead.
 </code></pre></div>
 <h3 id="-air-transform"><code>-air-transform</code><a class="headerlink" href="#-air-transform" title="Permanent link">&para;</a></h3>
 <p><em>Transform IR with transform dialect</em></p>
 <p><strong>Options</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>-filename : Transform Dialect filename
+<div class="highlight"><pre><span></span><code><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>-filename : Transform Dialect filename
 </code></pre></div>
 <h3 id="-air-unroll-channel-by-factor"><code>-air-unroll-channel-by-factor</code><a class="headerlink" href="#-air-unroll-channel-by-factor" title="Permanent link">&para;</a></h3>
 <p><em>Unroll channel puts and gets by an integer factor</em></p>
@@ -3902,9 +3811,9 @@ it with channel-based IR will produce an error.</p>
 represent the usage of multiple physical DMA channels in parallel for improved
 available bandwidth for this data movement.</p>
 <p><strong>Options</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a>-channel-name  : Target channel to unroll.
-<a id="__codelineno-49-2" name="__codelineno-49-2" href="#__codelineno-49-2"></a>-unroll-dim    : Dimension id to unroll.
-<a id="__codelineno-49-3" name="__codelineno-49-3" href="#__codelineno-49-3"></a>-unroll-factor : Integer unroll factor.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a>-channel-name  : Target channel to unroll.
+<a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a>-unroll-dim    : Dimension id to unroll.
+<a id="__codelineno-47-3" name="__codelineno-47-3" href="#__codelineno-47-3"></a>-unroll-factor : Integer unroll factor.
 </code></pre></div>
 <h3 id="-air-unroll-loop-for-pipelining-pattern"><code>-air-unroll-loop-for-pipelining-pattern</code><a class="headerlink" href="#-air-unroll-loop-for-pipelining-pattern" title="Permanent link">&para;</a></h3>
 <p><em>Unroll loop by an integer factor</em></p>
@@ -3916,45 +3825,45 @@ representation of ping and pong processes, respectively.</p>
 <p>The pass attempts to unroll the outermost dimensions in affine loop nests.</p>
 <p>Example:</p>
 <p>Input:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-50-1" name="__codelineno-50-1" href="#__codelineno-50-1"></a>func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
-<a id="__codelineno-50-2" name="__codelineno-50-2" href="#__codelineno-50-2"></a>  ...
-<a id="__codelineno-50-3" name="__codelineno-50-3" href="#__codelineno-50-3"></a>  affine.for %arg0 = 0 to 4 step 4 {
-<a id="__codelineno-50-4" name="__codelineno-50-4" href="#__codelineno-50-4"></a>    affine.for %arg1 = 0 to 4 step 4 {
-<a id="__codelineno-50-5" name="__codelineno-50-5" href="#__codelineno-50-5"></a>      affine.for %arg2 = affine_map&lt;(d0) -&gt; (d0)&gt;(%arg0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%arg0) {
-<a id="__codelineno-50-6" name="__codelineno-50-6" href="#__codelineno-50-6"></a>        affine.for %arg3 = affine_map&lt;(d0) -&gt; (d0)&gt;(%arg1) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%arg1) {
-<a id="__codelineno-50-7" name="__codelineno-50-7" href="#__codelineno-50-7"></a>          ...
-<a id="__codelineno-50-8" name="__codelineno-50-8" href="#__codelineno-50-8"></a>          %25 = airrt.dma_memcpy_nd(%c17_i32, %15, %16, %0[%c0_i64, %17, %18, %19], [%c1_i64, %22, %23, %24], [%c0_i64, %20, %21]) {metadata = @airMemcpyId19} : (i32, i64, i64, memref&lt;512x1024xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-50-9" name="__codelineno-50-9" href="#__codelineno-50-9"></a>          ...
-<a id="__codelineno-50-10" name="__codelineno-50-10" href="#__codelineno-50-10"></a>          %74 = airrt.dma_memcpy_nd(%c13_i32, %67, %68, %3[%c0_i64_13, %c0_i64_13, %69, %70], [%c1_i64_14, %c1_i64_14, %72, %73], [%c0_i64_13, %c0_i64_13, %71]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref&lt;1024x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-50-11" name="__codelineno-50-11" href="#__codelineno-50-11"></a>          ...
-<a id="__codelineno-50-12" name="__codelineno-50-12" href="#__codelineno-50-12"></a>          %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_24, %c0_i64_24, %106, %107], [%c1_i64_25, %c1_i64_25, %109, %110], [%c0_i64_24, %c0_i64_24, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref&lt;512x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-50-13" name="__codelineno-50-13" href="#__codelineno-50-13"></a>          ...
-<a id="__codelineno-50-14" name="__codelineno-50-14" href="#__codelineno-50-14"></a>        }
-<a id="__codelineno-50-15" name="__codelineno-50-15" href="#__codelineno-50-15"></a>      }
-<a id="__codelineno-50-16" name="__codelineno-50-16" href="#__codelineno-50-16"></a>    }
-<a id="__codelineno-50-17" name="__codelineno-50-17" href="#__codelineno-50-17"></a>  } {affine_opt_label = ""}
-<a id="__codelineno-50-18" name="__codelineno-50-18" href="#__codelineno-50-18"></a>  return
-<a id="__codelineno-50-19" name="__codelineno-50-19" href="#__codelineno-50-19"></a>}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+<a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a>  ...
+<a id="__codelineno-48-3" name="__codelineno-48-3" href="#__codelineno-48-3"></a>  affine.for %arg0 = 0 to 4 step 4 {
+<a id="__codelineno-48-4" name="__codelineno-48-4" href="#__codelineno-48-4"></a>    affine.for %arg1 = 0 to 4 step 4 {
+<a id="__codelineno-48-5" name="__codelineno-48-5" href="#__codelineno-48-5"></a>      affine.for %arg2 = affine_map&lt;(d0) -&gt; (d0)&gt;(%arg0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%arg0) {
+<a id="__codelineno-48-6" name="__codelineno-48-6" href="#__codelineno-48-6"></a>        affine.for %arg3 = affine_map&lt;(d0) -&gt; (d0)&gt;(%arg1) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%arg1) {
+<a id="__codelineno-48-7" name="__codelineno-48-7" href="#__codelineno-48-7"></a>          ...
+<a id="__codelineno-48-8" name="__codelineno-48-8" href="#__codelineno-48-8"></a>          %25 = airrt.dma_memcpy_nd(%c17_i32, %15, %16, %0[%c0_i64, %17, %18, %19], [%c1_i64, %22, %23, %24], [%c0_i64, %20, %21]) {metadata = @airMemcpyId19} : (i32, i64, i64, memref&lt;512x1024xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-48-9" name="__codelineno-48-9" href="#__codelineno-48-9"></a>          ...
+<a id="__codelineno-48-10" name="__codelineno-48-10" href="#__codelineno-48-10"></a>          %74 = airrt.dma_memcpy_nd(%c13_i32, %67, %68, %3[%c0_i64_13, %c0_i64_13, %69, %70], [%c1_i64_14, %c1_i64_14, %72, %73], [%c0_i64_13, %c0_i64_13, %71]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref&lt;1024x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-48-11" name="__codelineno-48-11" href="#__codelineno-48-11"></a>          ...
+<a id="__codelineno-48-12" name="__codelineno-48-12" href="#__codelineno-48-12"></a>          %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_24, %c0_i64_24, %106, %107], [%c1_i64_25, %c1_i64_25, %109, %110], [%c0_i64_24, %c0_i64_24, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref&lt;512x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-48-13" name="__codelineno-48-13" href="#__codelineno-48-13"></a>          ...
+<a id="__codelineno-48-14" name="__codelineno-48-14" href="#__codelineno-48-14"></a>        }
+<a id="__codelineno-48-15" name="__codelineno-48-15" href="#__codelineno-48-15"></a>      }
+<a id="__codelineno-48-16" name="__codelineno-48-16" href="#__codelineno-48-16"></a>    }
+<a id="__codelineno-48-17" name="__codelineno-48-17" href="#__codelineno-48-17"></a>  } {affine_opt_label = ""}
+<a id="__codelineno-48-18" name="__codelineno-48-18" href="#__codelineno-48-18"></a>  return
+<a id="__codelineno-48-19" name="__codelineno-48-19" href="#__codelineno-48-19"></a>}
 </code></pre></div>
 Output:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a>func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
-<a id="__codelineno-51-2" name="__codelineno-51-2" href="#__codelineno-51-2"></a>  ...
-<a id="__codelineno-51-3" name="__codelineno-51-3" href="#__codelineno-51-3"></a>  affine.for %arg0 = affine_map&lt;(d0) -&gt; (d0)&gt;(%c0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%c0) {
-<a id="__codelineno-51-4" name="__codelineno-51-4" href="#__codelineno-51-4"></a>    affine.for %arg1 = affine_map&lt;(d0) -&gt; (d0)&gt;(%c0_0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%c0_0) {
-<a id="__codelineno-51-5" name="__codelineno-51-5" href="#__codelineno-51-5"></a>      ...
-<a id="__codelineno-51-6" name="__codelineno-51-6" href="#__codelineno-51-6"></a>      %25 = airrt.dma_memcpy_nd(%c17_i32, %15, %16, %0[%c0_i64, %17, %18, %19], [%c1_i64, %22, %23, %24], [%c0_i64, %20, %21]) {metadata = @airMemcpyId19} : (i32, i64, i64, memref&lt;512x1024xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-51-7" name="__codelineno-51-7" href="#__codelineno-51-7"></a>      ...
-<a id="__codelineno-51-8" name="__codelineno-51-8" href="#__codelineno-51-8"></a>      %74 = airrt.dma_memcpy_nd(%c13_i32, %67, %68, %3[%c0_i64_15, %c0_i64_15, %69, %70], [%c1_i64_16, %c1_i64_16, %72, %73], [%c0_i64_15, %c0_i64_15, %71]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref&lt;1024x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-51-9" name="__codelineno-51-9" href="#__codelineno-51-9"></a>      ...
-<a id="__codelineno-51-10" name="__codelineno-51-10" href="#__codelineno-51-10"></a>      %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_26, %c0_i64_26, %106, %107], [%c1_i64_27, %c1_i64_27, %109, %110], [%c0_i64_26, %c0_i64_26, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref&lt;512x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-51-11" name="__codelineno-51-11" href="#__codelineno-51-11"></a>      ...
-<a id="__codelineno-51-12" name="__codelineno-51-12" href="#__codelineno-51-12"></a>    }
-<a id="__codelineno-51-13" name="__codelineno-51-13" href="#__codelineno-51-13"></a>  }
-<a id="__codelineno-51-14" name="__codelineno-51-14" href="#__codelineno-51-14"></a>  return
-<a id="__codelineno-51-15" name="__codelineno-51-15" href="#__codelineno-51-15"></a>}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a>func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+<a id="__codelineno-49-2" name="__codelineno-49-2" href="#__codelineno-49-2"></a>  ...
+<a id="__codelineno-49-3" name="__codelineno-49-3" href="#__codelineno-49-3"></a>  affine.for %arg0 = affine_map&lt;(d0) -&gt; (d0)&gt;(%c0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%c0) {
+<a id="__codelineno-49-4" name="__codelineno-49-4" href="#__codelineno-49-4"></a>    affine.for %arg1 = affine_map&lt;(d0) -&gt; (d0)&gt;(%c0_0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%c0_0) {
+<a id="__codelineno-49-5" name="__codelineno-49-5" href="#__codelineno-49-5"></a>      ...
+<a id="__codelineno-49-6" name="__codelineno-49-6" href="#__codelineno-49-6"></a>      %25 = airrt.dma_memcpy_nd(%c17_i32, %15, %16, %0[%c0_i64, %17, %18, %19], [%c1_i64, %22, %23, %24], [%c0_i64, %20, %21]) {metadata = @airMemcpyId19} : (i32, i64, i64, memref&lt;512x1024xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-49-7" name="__codelineno-49-7" href="#__codelineno-49-7"></a>      ...
+<a id="__codelineno-49-8" name="__codelineno-49-8" href="#__codelineno-49-8"></a>      %74 = airrt.dma_memcpy_nd(%c13_i32, %67, %68, %3[%c0_i64_15, %c0_i64_15, %69, %70], [%c1_i64_16, %c1_i64_16, %72, %73], [%c0_i64_15, %c0_i64_15, %71]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref&lt;1024x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-49-9" name="__codelineno-49-9" href="#__codelineno-49-9"></a>      ...
+<a id="__codelineno-49-10" name="__codelineno-49-10" href="#__codelineno-49-10"></a>      %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_26, %c0_i64_26, %106, %107], [%c1_i64_27, %c1_i64_27, %109, %110], [%c0_i64_26, %c0_i64_26, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref&lt;512x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-49-11" name="__codelineno-49-11" href="#__codelineno-49-11"></a>      ...
+<a id="__codelineno-49-12" name="__codelineno-49-12" href="#__codelineno-49-12"></a>    }
+<a id="__codelineno-49-13" name="__codelineno-49-13" href="#__codelineno-49-13"></a>  }
+<a id="__codelineno-49-14" name="__codelineno-49-14" href="#__codelineno-49-14"></a>  return
+<a id="__codelineno-49-15" name="__codelineno-49-15" href="#__codelineno-49-15"></a>}
 </code></pre></div></p>
 <p><strong>Options</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-52-1" name="__codelineno-52-1" href="#__codelineno-52-1"></a>-depth : The number of outermost loops in the loop nest to unroll
+<div class="highlight"><pre><span></span><code><a id="__codelineno-50-1" name="__codelineno-50-1" href="#__codelineno-50-1"></a>-depth : The number of outermost loops in the loop nest to unroll
 </code></pre></div>
 <h3 id="-air-verify-channel-fifo-order"><code>-air-verify-channel-fifo-order</code><a class="headerlink" href="#-air-verify-channel-fifo-order" title="Permanent link">&para;</a></h3>
 <p><em>Verify that same-slot channel ops are totally ordered</em></p>
@@ -3996,7 +3905,7 @@ diagnostic and signals pass failure; it never mutates IR.</p>
 false reports a warning and continues. Definitive races are always
 reported as errors regardless of <code>strict</code>.</p>
 <p><strong>Options</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-53-1" name="__codelineno-53-1" href="#__codelineno-53-1"></a>-strict : When access analysis is inconclusive, fail (true) or warn-and-continue (false).
+<div class="highlight"><pre><span></span><code><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a>-strict : When access analysis is inconclusive, fail (true) or warn-and-continue (false).
 </code></pre></div>
 
 
