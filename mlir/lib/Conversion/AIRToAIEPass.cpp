@@ -2429,20 +2429,104 @@ LogicalResult createAIEModulesAndOutlineCores(
         }
       }
 
-      // If no tile has legal memory affinity with all cores, the cores are
-      // not adjacent and cannot share L1 memory. Fall back to the local path
-      // where each core gets its own copy of the buffer.
+      // No tile has legal memory affinity with all cores (a herd taller than
+      // a tile's neighbourhood, say), so the buffer cannot be one shared L1
+      // buffer.
+      //
+      // Giving each core its own copy is the right lowering for a buffer every
+      // core uses as private scratch, and a silent miscompile for one that
+      // hands data between cores: the producer writes its copy, the consumer
+      // reads its own, never-written one. Which case this is is not settled
+      // by reaching here -- `sharedAcrossHerds` only means several herds name
+      // the same alloc, which a design reusing one scratch buffer across
+      // phases does with no hand-off at all -- so ask per core.
+      //
+      // A core that READS the buffer without WRITING it consumes a write that
+      // landed on another core; a copy severs exactly that. A core that writes
+      // the buffer itself is using its own data, and a copy is correct.
       if (!ownerTile) {
+        llvm::SmallDenseSet<Operation *> readerCores, writerCores;
         for (auto coreOp : coreOps) {
-          OpBuilder builder(coreOp);
-          builder.setInsertionPointToStart(&coreOp.getBody().front());
-          auto outlinedL1Alloc = builder.clone(*memref.getDefiningOp());
-          for (unsigned i = 0; i < memref.getDefiningOp()->getNumResults(); i++)
-            replaceAllUsesInRegionWith(memref.getDefiningOp()->getResult(i),
-                                       outlinedL1Alloc->getResult(i),
-                                       coreOp.getBody());
+          coreOp.walk([&](Operation *op) {
+            if (!accessReachableInCore(op))
+              return;
+            // An opaque external kernel hides its effects behind the call, so
+            // classify its buffer operands by the convention the lock
+            // allocator uses: the last memref operand is written, an earlier
+            // one is read.
+            int lastMemrefIdx = -1;
+            bool opaqueCall = isa<mlir::CallOpInterface>(op) &&
+                              !isa<mlir::MemoryEffectOpInterface>(op);
+            if (opaqueCall)
+              for (int i = (int)op->getNumOperands() - 1; i >= 0; --i)
+                if (isa<MemRefType>(op->getOperand(i).getType())) {
+                  lastMemrefIdx = i;
+                  break;
+                }
+            for (unsigned i = 0; i < op->getNumOperands(); i++) {
+              Value operand = op->getOperand(i);
+              if (!ownerBufferAliases.contains(operand))
+                continue;
+              if (mlir::hasEffect<mlir::MemoryEffects::Write>(op, operand))
+                writerCores.insert(coreOp.getOperation());
+              if (mlir::hasEffect<mlir::MemoryEffects::Read>(op, operand))
+                readerCores.insert(coreOp.getOperation());
+              if (auto chan = dyn_cast<air::ChannelInterface>(op)) {
+                if (chan.getMemref() == operand) {
+                  if (isa<air::ChannelGetOp>(op))
+                    writerCores.insert(coreOp.getOperation());
+                  else
+                    readerCores.insert(coreOp.getOperation());
+                }
+              }
+              if (opaqueCall)
+                ((int)i == lastMemrefIdx ? writerCores : readerCores)
+                    .insert(coreOp.getOperation());
+            }
+          });
         }
-        continue;
+        bool crossCoreHandoff = false;
+        if (!writerCores.empty())
+          for (Operation *r : readerCores)
+            if (!writerCores.contains(r)) {
+              crossCoreHandoff = true;
+              break;
+            }
+
+        // Private scratch: one copy per core, as before.
+        if (!crossCoreHandoff) {
+          for (auto coreOp : coreOps) {
+            OpBuilder builder(coreOp);
+            builder.setInsertionPointToStart(&coreOp.getBody().front());
+            auto outlinedL1Alloc = builder.clone(*memref.getDefiningOp());
+            for (unsigned i = 0; i < memref.getDefiningOp()->getNumResults();
+                 i++)
+              replaceAllUsesInRegionWith(memref.getDefiningOp()->getResult(i),
+                                         outlinedL1Alloc->getResult(i),
+                                         coreOp.getBody());
+          }
+          continue;
+        }
+
+        // A real hand-off that cannot be placed: a design that cannot be
+        // lowered correctly must fail to compile rather than return wrong
+        // data.
+        auto diag = memref.getDefiningOp()->emitOpError()
+                    << "L1 buffer is shared by " << coreOps.size()
+                    << " cores, but no tile has legal memory affinity with "
+                       "all of them, so it cannot be lowered to a shared L1 "
+                       "buffer. Route the data through a channel (tile DMA + "
+                       "stream switch) instead of a shared L1 allocation.";
+        diag.attachNote() << "cores at: " << [&] {
+          std::string s;
+          llvm::raw_string_ostream os(s);
+          llvm::interleaveComma(coreOps, os, [&](AIE::CoreOp c) {
+            AIE::TileOp t = c.getTileOp();
+            os << "(" << t.getCol() << ", " << t.getRow() << ")";
+          });
+          return s;
+        }();
+        return failure();
       }
 
       // Get the memref type for buffer allocation
