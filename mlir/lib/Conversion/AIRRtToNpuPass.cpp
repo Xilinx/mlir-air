@@ -4711,8 +4711,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                   // producer boundaries below must never be weakened by it.
                   target = 2 * (j * rounds / leading);
                   if (j >= burstLimit) {
-                    unsigned afterProducer =
-                        ((j - burstLimit + 1) * rounds + leading - 1) / leading;
+                    unsigned afterProducer = llvm::divideCeil(
+                        (j - burstLimit + 1) * rounds, leading);
                     spread = 2 * afterProducer;
                   }
                 }
