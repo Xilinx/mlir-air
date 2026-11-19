@@ -789,27 +789,46 @@ class XRTBackend(AirBackend):
 
         # For ELF mode, the kernel identifier is "main:instance_name"
         # This is used when loading the ELF via xrt.ext.kernel()
-        if self.output_format == "elf" and self.instance_name != "":
-            # Validate that instance_name matches a function in the module.
+        elf_kernel = kernel
+        if self.output_format == "elf":
             # For ELF output, instance_name must match the
-            # @FuncOp.from_py_func function name.
+            # @FuncOp.from_py_func function name: the ELF exposes a
+            # kernel named "main" with one instance per runtime
+            # sequence, and airrt-to-npu names that sequence after the
+            # top-level function.
             import re
 
             func_names = re.findall(r"func\.func @(\w+)\(", module_str)
-            if func_names and self.instance_name not in func_names:
-                import warnings
+            instance_name = self.instance_name
+            if not instance_name and len(func_names) == 1:
+                # Derive it rather than falling through to the default
+                # kernel name, which is not a valid ELF kernel id and
+                # fails to load.
+                instance_name = func_names[0]
+                if self.verbose:
+                    print(
+                        f"Deriving ELF instance_name='{instance_name}' from the "
+                        "module's only func.func."
+                    )
+            if instance_name:
+                if func_names and instance_name not in func_names:
+                    import warnings
 
-                warnings.warn(
-                    f"instance_name='{self.instance_name}' does not match any "
-                    f"function in the module (available: {func_names}). "
-                    f"For ELF output, instance_name must match the "
-                    f"@FuncOp.from_py_func function name. "
-                    f"Using the wrong name may cause ERT_CMD_STATE_TIMEOUT or a runtime deadlock.",
-                    stacklevel=2,
+                    warnings.warn(
+                        f"instance_name='{instance_name}' does not match any "
+                        f"function in the module (available: {func_names}). "
+                        f"For ELF output, instance_name must match the "
+                        f"@FuncOp.from_py_func function name. "
+                        f"Using the wrong name may cause ERT_CMD_STATE_TIMEOUT or a runtime deadlock.",
+                        stacklevel=2,
+                    )
+                elf_kernel = f"main:{instance_name}"
+            elif self.verbose:
+                print(
+                    "output_format='elf' but instance_name is unset and the "
+                    f"module has {len(func_names)} functions; falling back to "
+                    f"kernel='{kernel}'. Set instance_name explicitly."
                 )
-            elf_kernel = f"main:{self.instance_name}"
-        else:
-            elf_kernel = kernel
 
         txn_header = None
         if self.emit_txn_cpp:
