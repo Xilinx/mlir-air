@@ -2433,12 +2433,11 @@ LogicalResult createAIEModulesAndOutlineCores(
       // shared buffer. A per-core copy is correct only if no core reads data
       // another core wrote; otherwise the design cannot be lowered here.
       if (!ownerTile) {
-        // Within one herd the dependence is already known. Across herds,
-        // look for a core that reads the buffer without writing it.
+        // Look for a core that reads the buffer without writing it. A core
+        // that writes the buffer before passing it on (e.g. an accumulator
+        // that is zero-filled on every core) keeps its own copy.
         llvm::SmallDenseSet<Operation *> readerCores, writerCores;
         for (auto coreOp : coreOps) {
-          if (sharedAcrossCores)
-            break;
           coreOp.walk([&](Operation *op) {
             if (!accessReachableInCore(op))
               return;
@@ -2475,8 +2474,8 @@ LogicalResult createAIEModulesAndOutlineCores(
             }
           });
         }
-        bool crossCoreHandoff = sharedAcrossCores;
-        if (!crossCoreHandoff && !writerCores.empty())
+        bool crossCoreHandoff = false;
+        if (!writerCores.empty())
           for (Operation *r : readerCores)
             if (!writerCores.contains(r)) {
               crossCoreHandoff = true;
