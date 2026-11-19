@@ -949,10 +949,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#air-dependency-schedule-opt" class="md-nav__link">
+  <a href="#air-broadcast-detection" class="md-nav__link">
     <span class="md-ellipsis">
       
-        air-dependency-schedule-opt
+        air-broadcast-detection
       
     </span>
   </a>
@@ -1733,10 +1733,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#air-dependency-schedule-opt" class="md-nav__link">
+  <a href="#air-broadcast-detection" class="md-nav__link">
     <span class="md-ellipsis">
       
-        air-dependency-schedule-opt
+        air-broadcast-detection
       
     </span>
   </a>
@@ -1993,7 +1993,7 @@
 <a href="#air-copy-to-dma">"air-copy-to-dma"</a> <br />
 "canonicalize", "cse"<br />
 <a href="#air-dependency">"air-dependency"</a><br />
-<a href="#air-dependency-schedule-opt">"air-dependency-schedule-opt"</a><br />
+<a href="#air-broadcast-detection">"air-broadcast-detection"</a><br />
 <a href="#air-specialize-dma-broadcast">"air-specialize-dma-broadcast"</a><br />
 <a href="#air-dma-to-channel">"air-dma-to-channel"</a><br />
 "canonicalize", "cse"<br />
@@ -2044,7 +2044,7 @@
 </tr>
 <tr>
 <td style="text-align: left;">Broadcast</td>
-<td style="text-align: left;"><ul><li><code>air-dependency-schedule-opt</code></li><li><code>air-specialize-dma-broadcast</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>air-broadcast-detection</code></li><li><code>air-specialize-dma-broadcast</code></li></ul></td>
 <td style="text-align: left;">Detection and lowering of broadcasting data movement to map to circuit-routed streaming interconnects.</td>
 </tr>
 <tr>
@@ -2224,8 +2224,8 @@ The pass introduces asynchronous air.execute operations that encapsulate both da
 <p>If the input code was organized as nests and segments of <code>air.herd</code>, <code>air.segment</code> and <code>air.launch</code>, the transformed code shall also explicitly manage how they can be executed asynchronously (<code>air.launch async</code>). This segmentation, along with the assignment of unique identifiers to operations ({id = X : i32}), suggests a fine-grained control over the execution flow, enabling optimizations like concurrent execution of independent code segments.</p>
 <p>The pass separates data preparation (e.g., memory allocations and data transfers) from the computational workload. By doing so, it allows for data transfers to be overlapped with computations, minimizing the overall execution latency. This is particularly beneficial to AIEs featuring discrete hardware DMA, which is faster and more efficient than host-driven memory transfers, as they can move data directly between memory locations without host intervention.</p>
 <p>Please check out this <a href="https://github.com/Xilinx/mlir-air/blob/main/docs/AIRAsyncConcurrency.md">link</a> for a detailed description of this pass.</p>
-<h3 id="air-dependency-schedule-opt">air-dependency-schedule-opt<a class="headerlink" href="#air-dependency-schedule-opt" title="Permanent link">&para;</a></h3>
-<p>Optimizes the scheduling of dependencies in the MLIR module, specifically focusing on improving the parallelism and efficiency of execution through the asynchronous execution model. One key optimization introduced is the detection of broadcasting data movement opportunities, and the subsequent inferring of broadcasting pattern.</p>
+<h3 id="air-broadcast-detection">air-broadcast-detection<a class="headerlink" href="#air-broadcast-detection" title="Permanent link">&para;</a></h3>
+<p>For each DMA inside an <code>air.herd</code> that reads or writes L1, traces which loop induction variables its source and destination offsets, sizes and strides, and any enclosing <code>scf.if</code> or <code>affine.if</code> conditions, depend on. A DMA that does not vary along some dimensions of the herd moves the same data to every core along them, and is annotated with a <code>broadcast_pattern</code> affine set describing its recipients.</p>
 <p><em>Input IR:</em>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>%6 = air.herd @herd_0 async [%async_token_13, %async_token_15, %async_token_17]  tile (%arg12, %arg13) in (%arg14=%c4_7, %arg15=%c4_7) args(%arg16=%results_14, %arg17=%results_16, %arg18=%results_18) : memref&lt;128x1024xi32, 1 : i32&gt;, memref&lt;1024x128xi32, 1 : i32&gt;, memref&lt;128x128xi32, 1 : i32&gt; attributes {id = 1 : i32} {
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>  ..
@@ -2327,7 +2327,7 @@ The input IR has the L1 memory management and computation encapsulated within <c
 <a id="__codelineno-11-30" name="__codelineno-11-30" href="#__codelineno-11-30"></a>...
 </code></pre></div>
 The output IR uses <code>affine.if</code> operations alongside the <code>air.dma_memcpy_nd</code> operations. This conditional execution is based on evaluating specific broadcast conditions, represented by affine sets, that determine which AIE tiles are subject to data broadcasting, and how data should be broadcasted.</p>
-<p>The broadcast set annotations specify the conditions under which a particular broadcasting behavior should be applied, which is derived from the analysis of the <code>broadcast_pattern</code> attribute generated by a prior pass (<code>air-dependency-schedule-opt</code>). </p>
+<p>The broadcast set annotations specify the conditions under which a particular broadcasting behavior should be applied, which is derived from the analysis of the <code>broadcast_pattern</code> attribute generated by a prior pass (<code>air-broadcast-detection</code>). </p>
 <p>By specializing the <code>air.dma_memcpy_nd</code> operations for broadcast patterns, this pass reduces the onchip bandwidth usage associated with generic data movement. For instance, if certain data needs to be broadcasted across multiple destination AIE tiles in a specific pattern, the specialized code can reduce the number of DMA channels on the source tile, while maintaining the same data movement speed.</p>
 <h3 id="air-dma-to-channel">air-dma-to-channel<a class="headerlink" href="#air-dma-to-channel" title="Permanent link">&para;</a></h3>
 <p>Transforms direct memory access (DMA) operations into channel-based communications, consisting of a series of channel put and get operations via shared channel constructs.</p>

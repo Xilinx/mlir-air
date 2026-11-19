@@ -1298,10 +1298,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#27-airsymmetric-memref-attribute-multi-gpu" class="md-nav__link">
+  <a href="#27-symmetric-heap-memory-multi-gpu" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2.7 air.symmetric memref attribute (multi-GPU)
+        2.7 Symmetric heap memory (multi-GPU)
       
     </span>
   </a>
@@ -2478,10 +2478,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#27-airsymmetric-memref-attribute-multi-gpu" class="md-nav__link">
+  <a href="#27-symmetric-heap-memory-multi-gpu" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2.7 air.symmetric memref attribute (multi-GPU)
+        2.7 Symmetric heap memory (multi-GPU)
       
     </span>
   </a>
@@ -2674,8 +2674,9 @@ to either backend without changing the source IR.</p>
 <p>A detailed description of the dialect and its use for mapping AI workloads onto AMD NPUs
 can be found in:</p>
 <blockquote>
-<p>E. Wang et al. "<a href="https://arxiv.org/abs/2510.14871">From Loop Nests to Silicon: Mapping AI Workloads onto AMD NPUs with
-MLIR-AIR</a>". arXiv:2510.14871, October 2025.</p>
+<p>E. Wang et al. "<a href="https://doi.org/10.1145/3785670">From Loop Nests to Silicon: Mapping AI Workloads onto AMD NPUs with
+MLIR-AIR</a>". ACM Transactions on Reconfigurable
+Technology and Systems (TRETS), 19(2), Article 28, June 2026.</p>
 </blockquote>
 <hr />
 <h2 id="1-abstract-compute-model">1. Abstract Compute Model<a class="headerlink" href="#1-abstract-compute-model" title="Permanent link">&para;</a></h2>
@@ -3613,21 +3614,24 @@ arithmetic on scalars) in an asynchronous region. The region produces an
 token that becomes ready only when all of its inputs are ready. It acts as a join node
 in the async dependency graph.</p>
 <hr />
-<h3 id="27-airsymmetric-memref-attribute-multi-gpu">2.7 <code>air.symmetric</code> memref attribute (multi-GPU)<a class="headerlink" href="#27-airsymmetric-memref-attribute-multi-gpu" title="Permanent link">&para;</a></h3>
-<p>A <code>memref.alloc</code> op may carry the unit attribute <code>air.symmetric</code> to indicate
-that the allocation should be backed by the <strong>symmetric heap</strong> runtime. Every
+<h3 id="27-symmetric-heap-memory-multi-gpu">2.7 Symmetric heap memory (multi-GPU)<a class="headerlink" href="#27-symmetric-heap-memory-multi-gpu" title="Permanent link">&para;</a></h3>
+<p>A <code>memref.alloc</code> in the <code>#air.symmetric_heap</code> memory space is backed by the
+<strong>symmetric heap</strong> runtime. Every
 rank in the enclosing <code>air.rank</code> scope performs the same allocation in lockstep,
 so each rank has a memref of the same size at the same offset within the heap.
 Cross-rank addressing (via <code>air.dma_memcpy_nd</code> <code>src_rank</code>/<code>dst_rank</code> attributes
 or <code>air.channel</code> with <code>channel_type = "gpu_symmetric_heap"</code>) refers to peer
 ranks' symmetric memrefs at the same logical offset.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>%buf = memref.alloc() {air.symmetric} : memref&lt;1024xf32&gt;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>%buf = memref.alloc() : memref&lt;1024xf32, #air.symmetric_heap&gt;
 </code></pre></div>
-<p>The GPU lowering (planned: <code>air-symmetric-alloc-to-mgpu</code>) will route such
-allocations through <code>mgpuSymmetricAlloc</code> (<code>runtime_lib/airgpu/gpu_runtime.cpp</code>)
-instead of plain <code>mgpuMemAlloc</code>. Peer ranks' base pointers are obtained at
-runtime via <code>mgpuGetHeapBases()</code>. The NPU backend does not interpret this
-attribute.</p>
+<p><code>air-symmetric-alloc-to-mgpu</code> lowers each such allocation to
+<code>mgpuSymmetricAlloc</code> (<code>runtime_lib/airgpu/gpu_runtime.cpp</code>) instead of plain
+<code>mgpuMemAlloc</code>, and the matching <code>memref.dealloc</code> to <code>mgpuSymmetricFree</code>. Peer
+ranks' base pointers are obtained at runtime via <code>mgpuGetHeapBases()</code>. The NPU
+backend does not interpret this memory space.</p>
+<p>The verifier of a cross-rank <code>air.dma_memcpy_nd</code> checks a different marker: a
+<code>memref.alloc</code> referenced through <code>src_rank</code> or <code>dst_rank</code> must carry the unit
+attribute <code>air.symmetric</code>.</p>
 <hr />
 <h2 id="3-npu-aie-backend-mapping">3. NPU (AIE) Backend Mapping<a class="headerlink" href="#3-npu-aie-backend-mapping" title="Permanent link">&para;</a></h2>
 <p>On AMD Versal AI Engine (AIE) and Ryzen AI NPU targets the three-level hierarchy maps
@@ -3654,7 +3658,7 @@ directly to physical hardware structures:</p>
 </tr>
 <tr>
 <td>L1 memory (space 2)</td>
-<td>Per-tile local data memory (32 KB on AIE2)</td>
+<td>Per-tile local data memory (64 KB on AIE2/AIE2P)</td>
 </tr>
 <tr>
 <td>L2 memory (space 1)</td>
@@ -3684,15 +3688,15 @@ directly to physical hardware structures:</p>
 <td>Tile DMA + local AXI-S stream</td>
 </tr>
 <tr>
-<td><code>air.channel</code> (<code>dma_stream</code>)</td>
+<td><code>air.channel</code> (<code>npu_dma_stream</code>)</td>
 <td>DMA + circuit-switched streaming interconnect</td>
 </tr>
 <tr>
-<td><code>air.channel</code> (<code>dma_packet</code>)</td>
+<td><code>air.channel</code> (<code>npu_dma_packet</code>)</td>
 <td>DMA + packet-switched overlay network</td>
 </tr>
 <tr>
-<td><code>air.channel</code> (<code>cascade</code>)</td>
+<td><code>air.channel</code> (<code>npu_cascade</code>)</td>
 <td>Core cascade interface (direct register-to-register)</td>
 </tr>
 </tbody>
@@ -3952,7 +3956,7 @@ loads into shared memory and subsequent compute.</p>
 </tr>
 <tr>
 <td>L1 (space 2)</td>
-<td>32 KB tile-local data memory</td>
+<td>64 KB tile-local data memory (AIE2/AIE2P)</td>
 <td>Thread-private VGPRs / scratch</td>
 </tr>
 <tr>
@@ -3998,12 +4002,12 @@ loads into shared memory and subsequent compute.</p>
 <tr>
 <td><code>channel</code> (<code>gpu_symmetric_heap</code>)</td>
 <td>n/a</td>
-<td>Symmetric heap peer addressing (planned)</td>
+<td>Symmetric heap peer addressing (<code>air-gpu-channel-to-cacheline</code>)</td>
 </tr>
 <tr>
-<td><code>air.symmetric</code> memref alloc</td>
+<td><code>#air.symmetric_heap</code> memref alloc</td>
 <td>n/a</td>
-<td><code>mgpuSymmetricAlloc</code> (planned)</td>
+<td><code>mgpuSymmetricAlloc</code> (<code>air-symmetric-alloc-to-mgpu</code>)</td>
 </tr>
 <tr>
 <td>Synchronization</td>

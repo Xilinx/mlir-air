@@ -916,10 +916,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#step-three-cdfg-optimization-using-air-dependency-schedule-opt" class="md-nav__link">
+  <a href="#step-three-broadcast-detection-using-air-broadcast-detection" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Step three: CDFG optimization using -air-dependency-schedule-opt
+        Step three: broadcast detection using -air-broadcast-detection
       
     </span>
   </a>
@@ -1508,10 +1508,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#step-three-cdfg-optimization-using-air-dependency-schedule-opt" class="md-nav__link">
+  <a href="#step-three-broadcast-detection-using-air-broadcast-detection" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Step three: CDFG optimization using -air-dependency-schedule-opt
+        Step three: broadcast detection using -air-broadcast-detection
       
     </span>
   </a>
@@ -1671,9 +1671,8 @@ MLIR-AIR provides a graph canonicalization pass <code>-air-dependency-canonicali
 </table>
 <p>The rendered CDFG below is generated from the matrix multiplication example in the previous section.</p>
 <p><img alt="CDFG of the matrix multiplication example" src="../assets/images/air_cdfg_example.svg" /></p>
-<h3 id="step-three-cdfg-optimization-using-air-dependency-schedule-opt">Step three: CDFG optimization using <code>-air-dependency-schedule-opt</code><a class="headerlink" href="#step-three-cdfg-optimization-using-air-dependency-schedule-opt" title="Permanent link">&para;</a></h3>
-<p>Having extracted a CDFG from the MLIR-AIR code, the <code>-air-dependency-schedule-opt</code> pass performs scheduling optimization by detecting and transforming inefficient code patterns in CDFG.
-Data broadcasting opportunities across spatially mapped AIE cores are automatically detected and labelled.
+<h3 id="step-three-broadcast-detection-using-air-broadcast-detection">Step three: broadcast detection using <code>-air-broadcast-detection</code><a class="headerlink" href="#step-three-broadcast-detection-using-air-broadcast-detection" title="Permanent link">&para;</a></h3>
+<p>For each DMA inside an <code>air.herd</code> that reads or writes L1, the <code>-air-broadcast-detection</code> pass traces which loop induction variables its source and destination offsets, sizes and strides, and any enclosing <code>scf.if</code> or <code>affine.if</code> conditions, depend on. A DMA that does not vary along some dimensions of the herd moves the same data to every core along them, and is annotated with a <code>broadcast_pattern</code> affine set describing its recipients.
 Below is the output code snippet lowered from the tiled matrix multiplication example above.
 Here, data broadcasting opportunities are labelled with keyword <code>broadcast_pattern</code>, followed by an affine set representing the address pattern of broadcast copy recepients.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>#set = affine_set&lt;(d0, d1)[s0] : (d0 - s0 == 0, d1 &gt;= 0, -d1 + 1 &gt;= 0, s0 &gt;= 0, -s0 + 1 &gt;= 0)&gt;
