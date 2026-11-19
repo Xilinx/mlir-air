@@ -10,13 +10,17 @@ TILE_K_L2 ?= 64
 TILE_K_L1 ?= 32
 TILE_N ?= 64
 
-# Recommended tile configuration for run3x3 (576x576x576): TILE_M=64 TILE_K_L2=288 TILE_K_L1=48
+# The tiles run3x3's problem size needs. As target-specific variables they
+# also reach compile-kernel, so the kernel is built for the same K tile.
+run3x3: TILE_M = 64
+run3x3: TILE_K_L2 = 288
+run3x3: TILE_K_L1 = 48
 
 # M and N tile sizes divided by 4 and 8
-TILE_M_DIV_4 := $(shell echo $$(( $(TILE_M) / 4 )))
-TILE_N_DIV_4 := $(shell echo $$(( $(TILE_N) / 4 )))
-TILE_M_DIV_8 := $(shell echo $$(( $(TILE_M) / 8 )))
-TILE_N_DIV_8 := $(shell echo $$(( $(TILE_N) / 8 )))
+TILE_M_DIV_4 = $(shell echo $$(( $(TILE_M) / 4 )))
+TILE_N_DIV_4 = $(shell echo $$(( $(TILE_N) / 4 )))
+TILE_M_DIV_8 = $(shell echo $$(( $(TILE_M) / 8 )))
+TILE_N_DIV_8 = $(shell echo $$(( $(TILE_N) / 8 )))
 
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR

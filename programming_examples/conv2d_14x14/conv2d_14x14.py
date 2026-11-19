@@ -33,7 +33,6 @@ All compute is in ``conv2dk14.o``; this file moves data and calls it.
 
 import argparse
 import numpy as np
-import torch
 
 from air import api as air
 from air.api import ops
@@ -149,21 +148,25 @@ def build_inputs_and_golden(n_cols, num_g):
     WOUT)) is [nt, nt8, oc, oc8]; we permute the golden's bytes here so
     XRTRunner's bit-exact compare succeeds end-to-end.
     """
-    torch.use_deterministic_algorithms(True)
-    torch.manual_seed(0)
+    rng = np.random.default_rng(0)
+    int_inp = rng.integers(0, 255, size=(CI, HEIGHT, WIDTH), dtype=np.int32)
+    int_weight = rng.integers(2, 20, size=(CO, CI, KSZ, KSZ), dtype=np.int32)
 
-    int_inp = torch.randint(0, 255, (1, CI, HEIGHT, WIDTH)).type(torch.FloatTensor)
-    int_weight = torch.randint(2, 20, (CO, CI, KSZ, KSZ)).type(torch.FloatTensor)
-
-    # Golden via pure integer arithmetic so it matches the kernel's
-    # `(sum + sign*8192) >> 14` rounding (round half away from zero). Using
-    # torch.round() introduces banker's rounding mismatches on ties.
-    inp_t = int_inp.to(torch.int32).float()
-    wt_t = int_weight.float()
+    # stride == KSZ and no padding: each output pixel reads its own KSZ x KSZ
+    # patch, so the convolution is a matmul of patches by flattened weights.
+    # The integer sums are formed in float32 (exact below 2**24, so it can use
+    # BLAS) and rounded as the kernel's `(sum + sign*8192) >> 14` does, half
+    # away from zero.
+    assert 255 * 20 * CI * KSZ * KSZ < 2**24
+    patches = (
+        int_inp.reshape(CI, HEIGHT_OUT, KSZ, WIDTH_OUT, KSZ)
+        .transpose(1, 3, 0, 2, 4)
+        .reshape(HEIGHT_OUT * WIDTH_OUT, CI * KSZ * KSZ)
+    )
+    wt_flat = int_weight.reshape(CO, CI * KSZ * KSZ)
     sum_int = (
-        torch.nn.functional.conv2d(inp_t, wt_t, stride=KSZ, padding=0)
-        .squeeze(0)
-        .numpy()
+        (patches.astype(np.float32) @ wt_flat.astype(np.float32).T)
+        .T.reshape(CO, HEIGHT_OUT, WIDTH_OUT)
         .astype(np.int32)
     )
     bias = np.where(sum_int >= 0, 8192, -8192).astype(np.int32)
@@ -173,9 +176,9 @@ def build_inputs_and_golden(n_cols, num_g):
 
     # Host act buffer must be YXC-packed per col so the per-pixel (CI=4)
     # bytes are contiguous - which is what the L3->L2 scatter wrap and the
-    # kernel's gather wrap both assume. The raw torch tensor is (CI, H, W);
+    # kernel's gather wrap both assume. The raw array is (CI, H, W);
     # transpose to (H, W, CI) then flatten gives the YXC stream.
-    int_inp_np = int_inp.squeeze().data.numpy().astype(np.uint8)  # (CI, H, W)
+    int_inp_np = int_inp.astype(np.uint8)  # (CI, H, W)
     in1 = (
         np.transpose(int_inp_np, (1, 2, 0)).reshape(CI, HEIGHT * WIDTH).astype(np.uint8)
     )
@@ -188,7 +191,7 @@ def build_inputs_and_golden(n_cols, num_g):
     # 8-OC blocks packed contiguously and then split across n_cols columns;
     # the kernel consumes them in pairs (one "oc-group" / kernel call =
     # 16 OC = two CO//8 blocks = 12544 bytes).
-    wts_np = int_weight.data.numpy().astype(np.int8)  # (CO, CI, KSZ, KSZ)
+    wts_np = int_weight.astype(np.int8)  # (CO, CI, KSZ, KSZ)
     # OYXIO8 layout: split CO into (CO//8, 8). Source label "OIYX" means
     # axes (CO, CI, Y, X) which is what we have. Target label "OYXIO8"
     # means (CO//8, Y, X, CI, 8 (= oc inner)). Reorder:

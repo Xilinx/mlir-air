@@ -184,11 +184,10 @@ class Q3CPrefill(Engine):
         return x
 
     def kv_rows(self):
-        """Per layer (K, V) [n, NKV * DH]: K normed and roped, V raw."""
-        return [
-            (np.concatenate(self.kv[j][0]), np.concatenate(self.kv[j][1]))
-            for j in range(len(self.layers))
-        ]
+        """Per layer (K, V) [n, NKV * DH]: K normed and roped, V raw; one
+        layer's rows joined at a time."""
+        for j in range(len(self.layers)):
+            yield np.concatenate(self.kv[j][0]), np.concatenate(self.kv[j][1])
 
     def _attn_all(self, j, x, chunks):
         kvb = self.kvb[j]

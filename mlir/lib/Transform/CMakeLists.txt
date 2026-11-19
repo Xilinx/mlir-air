@@ -28,9 +28,6 @@ if(AIR_ENABLE_AIE)
   )
 endif()
 list(APPEND TRANSFORM_SOURCES
-  AIRLoopPermutationPass.cpp
-)
-list(APPEND TRANSFORM_SOURCES
   AIRMiscPasses.cpp
   AIRSplitLaunchForPadding.cpp
   AIRTilingUtils.cpp

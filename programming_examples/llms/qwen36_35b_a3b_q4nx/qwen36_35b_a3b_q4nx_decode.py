@@ -530,19 +530,20 @@ def build_module(waves, maxl):
     return launch.build(target="npu2")
 
 
-def layer_inputs(w, layers, waves):
-    """Host arrays for `layers`, `waves` of them from layer 0."""
+def layer_inputs(w, layers, waves, we):
+    """Host arrays for `layers`, `waves` of them from layer 0: (WD, M, each
+    attention layer's (q_norm, k_norm), each GDN layer's conv weights). Each
+    layer's experts go into `we` [len(layers) * E, G_EXP, R, BB] as they are
+    read, without a host copy of the whole."""
     nl = len(layers)
     pw = nl // waves
-    WE, WD, M = [], [], np.zeros((nl, MISC_LEN), bfloat16)
+    WD, M = [], np.zeros((nl, MISC_LEN), bfloat16)
     qkn = []
     conv_w = []
-    for l in layers:
+    for i, l in enumerate(layers):
         wgu, wdn, sgu, sdn, wr, sg = moe_block.weights(w, l)
-        WE.append(
-            np.concatenate(
-                [wgu.reshape(E, -1, R, BB), wdn.reshape(E, -1, R, BB)], axis=1
-            )
+        we[i * E : (i + 1) * E] = np.concatenate(
+            [wgu.reshape(E, -1, R, BB), wdn.reshape(E, -1, R, BB)], axis=1
         )
         if W.is_attention(l):
             wd, misc, *_, qn, kn = A.weights(w, l)
@@ -567,7 +568,7 @@ def layer_inputs(w, layers, waves):
             M[l, MISC["wsg"][0] : MISC["wsg"][1]] = sg
             M[l, MISC["router"][0] : MISC["router"][1]] = wr.ravel()
             conv_w.append(cw)
-    return np.ascontiguousarray(np.concatenate(WE)), np.stack(WD), M, qkn, conv_w
+    return np.stack(WD), M, qkn, conv_w
 
 
 class Q36Decoder(DL.Decoder):
@@ -575,9 +576,11 @@ class Q36Decoder(DL.Decoder):
     Per token the host writes x, the attention layers' RoPE rows and L, and
     swaps the conv caches' and the GDN states' in and out buffers."""
 
-    def __init__(self, arts, args, lm_args, waves, pw, qkn, params, we_slack=0):
-        """we_slack: bytes past the experts (args[0]) that a reader of WE
-        other than this decode may touch."""
+    def __init__(self, arts, w, layers, lm_args, waves, pw, maxl, we_slack=0):
+        """arts: compile_all's (layers' ELF, LM head's, params.txt). The
+        weights of `layers` go into their buffers layer by layer; the KV cache
+        holds maxl positions. we_slack: bytes past the experts that a reader of
+        WE other than this decode may touch."""
         import lm_head as LM
         from decode_elf import param_writers
         from aie.utils.hostruntime.xrtruntime.parameter_scratchpad import (
@@ -585,14 +588,31 @@ class Q36Decoder(DL.Decoder):
         )
 
         super().__init__(waves, pw, D, LM.unpack_logits)
-        self.qkn = qkn
-        self.bos = [self.bo(t, we_slack if i == 0 else 0) for i, t in enumerate(args)]
+        xrt, nl = self.xrt, len(layers)
+        nbytes = nl * E * G_EXP * R * BB
+        we_bo = xrt.ext.bo(self.dev, nbytes + we_slack)
+        m = np.frombuffer(we_bo.map(), np.uint8)
+        m[nbytes:] = 0
+        wd, M, self.qkn, self.conv_w = layer_inputs(
+            w, layers, waves, m[:nbytes].reshape(nl * E, G_EXP, R, BB)
+        )
+        we_bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+        cw = np.stack(
+            [G.conv_cache(np.zeros((3, QKV_G), np.float32), c) for c in self.conv_w]
+        )
+        s = np.zeros((len(self.conv_w), NV, R, HD * 32), np.float32)
+        kv = np.zeros((waves, 2, maxl, DK), bfloat16)
+        xs = np.zeros((waves + 1, pw, D), bfloat16)
+        rw = np.zeros((waves, 3 * DH), bfloat16)
+        args = [xs, wd, M, cw, s, kv, rw, cw.copy(), s.copy()]
+        self.bos = [we_bo] + [self.bo(t) for t in args]
         self.ctx, kern = self.kernel(arts[0])
         self.run = self.xrt.run(kern)
         for i, b in enumerate(self.bos):
             self.run.set_arg(i, b)
+        params = arts[2]
         self.params = ParameterScratchpad(self.run, str(params))
-        self.writers = param_writers(params, {"L": len(args)})
+        self.writers = param_writers(params, {"L": len(self.bos)})
         self.rwmap = np.frombuffer(self.bos[7].map(), bfloat16).reshape(waves, 3 * DH)
         self.attach_lm(arts[1], lm_args)
 
@@ -621,11 +641,11 @@ class Q36Decoder(DL.Decoder):
         self._swap()
         return logits
 
-    def seed(self, pf, conv_w):
+    def seed(self, pf):
         """A prefill's state as the next token's inputs: each attention
-        layer's K and V rows, each Gated DeltaNet layer's conv cache (its
-        weights conv_w) and state."""
-        xrt, n = self.xrt, pf.n
+        layer's K and V rows, each Gated DeltaNet layer's conv cache and
+        state."""
+        xrt, n, conv_w = self.xrt, pf.n, self.conv_w
         kv = np.frombuffer(self.bos[6].map(), bfloat16).reshape(self.waves, 2, -1, DK)
         cw = np.frombuffer(self.bos[4].map(), bfloat16).reshape(len(conv_w), NCH, -1)
         s = np.frombuffer(self.bos[5].map(), np.float32)

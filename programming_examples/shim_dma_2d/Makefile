@@ -35,13 +35,13 @@ MLIR_AIE_INSTALL_DIR := $(if $(MLIR_AIE_INSTALL_DIR),$(subst \,/,$(MLIR_AIE_INST
 XRT_DIR := $(subst \,/,$(if $(XILINX_XRT),$(XILINX_XRT),$(XRT_ROOT)))
 TEST_LIB_DIR := $(MLIR_AIE_INSTALL_DIR)/runtime_lib/x86_64/test_lib
 
-# Determine build dir based on whether PEANO_INSTALL_DIR is set
-ifdef PEANO_INSTALL_DIR
-  BUILD_DIR := build_peano
-
 # Output format: xclbin (default) or elf
 OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
+
+# Determine build dir based on whether PEANO_INSTALL_DIR is set
+ifdef PEANO_INSTALL_DIR
+  BUILD_DIR := build_peano
   AIRCC_FLAGS := --no-xbridge --no-xchesscc
 else
   BUILD_DIR := build_chess
@@ -134,7 +134,7 @@ run_py: $(BUILD_DIR)/final.xclbin $(BUILD_DIR)/final.insts.bin
 
 pyworkflow:
 	mkdir -p pybuild
-	cd pybuild && ${powershell} $(PYTHON) ${srcdir}/run.py
+	cd pybuild && ${powershell} $(PYTHON) ${srcdir}/run.py $(OUTPUT_FORMAT_FLAG)
 
 clean:
 	rm -rf build_peano build_chess pybuild tmp __pycache__

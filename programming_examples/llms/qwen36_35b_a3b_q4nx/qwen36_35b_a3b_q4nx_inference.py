@@ -18,20 +18,7 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 # first: importing the decode module sets up sys.path
-from qwen36_35b_a3b_q4nx_decode import (
-    D,
-    DH,
-    DK,
-    HD,
-    NV,
-    PER_WAVE,
-    Q36Decoder,
-    QKV_G,
-    R,
-    build_module,
-    compile_all,
-    layer_inputs,
-)
+from qwen36_35b_a3b_q4nx_decode import PER_WAVE, Q36Decoder, build_module, compile_all
 import gdn_layer as G
 import qwen36_35b_a3b_q4nx_weights as W
 
@@ -91,13 +78,6 @@ def main():
         fused = len(ids) <= json.loads(manifest.read_text())["max_len"]
     arts = compile_all(a.waves, a.maxl)
     t0 = time.time()
-    we, wd, M, qkn, conv_w = layer_inputs(w, layers, a.waves)
-    CW = np.stack([G.conv_cache(np.zeros((3, QKV_G), np.float32), cw) for cw in conv_w])
-    S = np.zeros((len(conv_w), NV, R, HD * 32), np.float32)
-    KV = np.zeros((a.waves, 2, a.maxl, DK), bfloat16)
-    xs = np.zeros((a.waves + 1, pw, D), bfloat16)
-    rw = np.zeros((a.waves, 3 * DH), bfloat16)
-    args = [we, xs, wd, M, CW, S, KV, rw, CW.copy(), S.copy()]
     nw = np.asarray(w.final_norm()).astype(bfloat16)
     y = np.zeros((LM.NCOL, LM.ROUNDS, LM.NROW * LM.RB), bfloat16)
     lm_args = [nw, LM.pack_weights(w), y]
@@ -105,9 +85,9 @@ def main():
     lock = filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock"))
     with lock:
         npu = Q36Decoder(
-            arts, args, lm_args, a.waves, pw, qkn, arts[2], P.WE_SLACK if fused else 0
+            arts, w, layers, lm_args, a.waves, pw, a.maxl, P.WE_SLACK if fused else 0
         )
-        del we, wd, args, lm_args
+        del lm_args
         print(f"weights loaded in {time.time() - t0:.0f}s")
 
         def embed(t):
@@ -135,7 +115,7 @@ def main():
                 pf.prefill(ids)
             t0 = time.perf_counter()
             x = pf.prefill(ids)
-            npu.seed(pf, conv_w)
+            npu.seed(pf)
             got = npu.head(x[-1].astype(bfloat16), len(ids))
             t_prefill = time.perf_counter() - t0
             # its hw contexts slow the decode's dispatches; prefill() resumes

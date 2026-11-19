@@ -147,3 +147,58 @@ def an_l2_fill_still_lowers_as_linalg():
                             ops.store(b, out[col : col + tn])
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: f32_max_takes_the_scalar_loop_by_default
+# No vector f32 maximumf / minimumf in the AIEVec conversion: a derived width
+# takes the scalar loop.
+# CHECK-NOT: vector<{{.*}}xf32>
+# CHECK: arith.maximumf {{.*}} : f32
+@run
+def f32_max_takes_the_scalar_loop_by_default():
+    print(build(lambda a, o: o.__setitem__(slice(None), ops.maximum(a[:], a[:])), f32))
+
+
+# CHECK-LABEL: TEST: f32_max_keeps_a_named_width
+# A named width is kept (a --bf16-emulation build compiles it vectorized).
+# CHECK: arith.maximumf {{.*}} : vector<16xf32>
+@run
+def f32_max_keeps_a_named_width():
+    print(
+        build(
+            lambda a, o: o.__setitem__(slice(None), ops.maximum(a[:], a[:])),
+            f32,
+            vector=16,
+        )
+    )
+
+
+# CHECK-LABEL: TEST: bf16_max_stays_vectorized
+# CHECK: arith.maximumf {{.*}} : vector<32xbf16>
+@run
+def bf16_max_stays_vectorized():
+    print(build(lambda a, o: o.__setitem__(slice(None), ops.maximum(a[:], a[:]))))
+
+
+# CHECK-LABEL: TEST: f32_max_under_a_bf16_destination_is_scalar
+# The refusal follows the arithmetic's element type, not the destination's.
+# CHECK-NOT: vector<{{.*}}xf32>
+# CHECK: arith.maximumf {{.*}} : f32
+@run
+def f32_max_under_a_bf16_destination_is_scalar():
+    def body(a, o):
+        x = ops.cast(a[:], f32)
+        o[:] = ops.cast(ops.maximum(x, x), bf16)
+
+    print(build(body))
+
+
+# CHECK-LABEL: TEST: bf16_max_under_an_f32_destination_stays_vectorized
+# CHECK: arith.maximumf {{.*}} : vector<{{[0-9]+}}xbf16>
+@run
+def bf16_max_under_an_f32_destination_stays_vectorized():
+    def body(a, o):
+        x = ops.cast(a[:], bf16)
+        o[:] = ops.cast(ops.maximum(x, x), f32)
+
+    print(build(body, f32))
