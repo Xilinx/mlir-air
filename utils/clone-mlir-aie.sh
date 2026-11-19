@@ -38,6 +38,6 @@ fi
 pushd $target_dir
 git fetch --depth=1 origin $HASH
 git checkout $HASH
-git submodule update --init
+git submodule update --init --recursive
 
 popd
