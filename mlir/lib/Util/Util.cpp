@@ -2343,8 +2343,8 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     // re-splits, so the fold is admitted when that split comes out legal.
     if (!limits.strideFits(limits.bytesToGranules(
             new_stride_value *
-            cast<BaseMemRefType>(memref.getType()).getElementTypeBitWidth() /
-            8))) {
+            (cast<BaseMemRefType>(memref.getType()).getElementTypeBitWidth() /
+             8)))) {
       auto outerWrap =
           wraps.empty() ? std::nullopt : getConstantIntValue(wraps[0]);
       auto outerStride =
