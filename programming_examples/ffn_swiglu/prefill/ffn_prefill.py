@@ -240,7 +240,7 @@ def build_module(seq_len, dim, num_cols, np_dtype):
                     dma_memcpy_nd(
                         ho,
                         l1_out,
-                        dst_offsets=[out_col_off, 0],
+                        dst_offsets=[0, out_col_off],
                         dst_sizes=[seq_len, dim_n],
                         dst_strides=[dim, 1],
                     )
@@ -291,13 +291,12 @@ if __name__ == "__main__":
     # Kernel indexes B as B[kk * N + j], i.e., B is [K, N] row-major.
     # B = W^T has shape [dim, dim]. Partition column c gets N=dim_n columns:
     #   B_part = W^T[:, c*dim_n : (c+1)*dim_n] = W[c*dim_n:(c+1)*dim_n, :]^T
-    # Stored as [dim, dim_n] row-major = W[:, c*dim_n:(c+1)*dim_n].
+    # Stored as [dim, dim_n] row-major.
     def pack_weights(W, dim, dim_n, num_cols):
         parts = []
         for col in range(num_cols):
-            # W columns [col*dim_n : (col+1)*dim_n] → [dim, dim_n] row-major
-            W_part = W[:, col * dim_n : (col + 1) * dim_n]
-            parts.append(W_part.reshape(-1))
+            W_part = W[col * dim_n : (col + 1) * dim_n, :].T
+            parts.append(np.ascontiguousarray(W_part).reshape(-1))
         return np.concatenate(parts)
 
     W_gate_packed = pack_weights(W_gate, dim, dim_n, num_cols)
@@ -342,5 +341,6 @@ if __name__ == "__main__":
             expected_outputs=[ref_out.reshape(-1)],
             rtol=1e0,
             atol=0.5,
+            min_correlation=0.999,
         )
     )
