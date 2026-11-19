@@ -130,3 +130,27 @@ func.func @no_convert_multiple_uses(%arg0: f32) -> (f32, f32) {
   
   return %inv_sqrt, %sqrt_times_2 : f32, f32
 }
+
+// A splat of 1.0 over several lanes is converted.
+// CHECK-LABEL: @convert_splat_vector
+// CHECK: %[[RSQRT:.*]] = math.rsqrt %{{.*}} : vector<4xf32>
+// CHECK-NOT: arith.divf
+// CHECK: return %[[RSQRT]]
+func.func @convert_splat_vector(%arg0: vector<4xf32>) -> vector<4xf32> {
+  %cst_1 = arith.constant dense<1.000000e+00> : vector<4xf32>
+  %sqrt_val = math.sqrt %arg0 : vector<4xf32>
+  %inv = arith.divf %cst_1, %sqrt_val : vector<4xf32>
+  return %inv : vector<4xf32>
+}
+
+// Negative test: a numerator that is 1.0 in only some lanes is kept.
+// CHECK-LABEL: @no_convert_non_splat
+// CHECK: math.sqrt
+// CHECK: arith.divf
+// CHECK-NOT: math.rsqrt
+func.func @no_convert_non_splat(%arg0: vector<2xf32>) -> vector<2xf32> {
+  %cst = arith.constant dense<[1.000000e+00, 2.000000e+00]> : vector<2xf32>
+  %sqrt_val = math.sqrt %arg0 : vector<2xf32>
+  %res = arith.divf %cst, %sqrt_val : vector<2xf32>
+  return %res : vector<2xf32>
+}

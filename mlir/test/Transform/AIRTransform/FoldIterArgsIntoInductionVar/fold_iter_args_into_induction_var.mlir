@@ -142,3 +142,77 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// An i64 offset advanced in a loop over an i32 induction variable: the
+// iteration count is sign-extended to i64.
+
+// CHECK-LABEL: func.func @widen
+// CHECK-SAME: (%[[X:.*]]: i64, %[[N:.*]]: i32)
+// CHECK: scf.for %[[IV:.*]] = %{{.*}} to %[[N]] step %{{.*}} : i32 {
+// CHECK: %[[E:.*]] = arith.extsi %[[IV]] : i32 to i64
+// CHECK: %[[D:.*]] = arith.muli %[[E]], %c8_i64
+// CHECK: %[[V:.*]] = arith.addi %[[X]], %[[D]]
+// CHECK: "test.use"(%[[V]])
+// CHECK: }
+// CHECK: %[[T:.*]] = arith.extsi %{{.*}} : i32 to i64
+// CHECK: %[[TD:.*]] = arith.muli %[[T]], %c8_i64
+// CHECK: %[[R:.*]] = arith.addi %[[X]], %[[TD]]
+// CHECK: return %[[R]]
+func.func @widen(%x: i64, %n: i32) -> i64 {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  %c8 = arith.constant 8 : i64
+  %r = scf.for %k = %c0 to %n step %c1 iter_args(%v = %x) -> (i64) : i32 {
+    "test.use"(%v) : (i64) -> ()
+    %next = arith.addi %v, %c8 : i64
+    scf.yield %next : i64
+  }
+  return %r : i64
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %loop = transform.structured.match ops{["scf.for"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %new = transform.air.fold_iter_args_into_induction_var %loop : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// An i32 offset advanced in a loop over an i64 induction variable: the
+// iteration count is truncated to i32.
+
+// CHECK-LABEL: func.func @narrow
+// CHECK-SAME: (%[[X:.*]]: i32, %[[N:.*]]: i64)
+// CHECK: scf.for %[[IV:.*]] = %{{.*}} to %[[N]] step %{{.*}} : i64 {
+// CHECK: %[[E:.*]] = arith.trunci %[[IV]] : i64 to i32
+// CHECK: %[[D:.*]] = arith.muli %[[E]], %c8_i32
+// CHECK: %[[V:.*]] = arith.addi %[[X]], %[[D]]
+// CHECK: "test.use"(%[[V]])
+// CHECK: }
+// CHECK: %[[T:.*]] = arith.trunci %{{.*}} : i64 to i32
+// CHECK: %[[TD:.*]] = arith.muli %[[T]], %c8_i32
+// CHECK: %[[R:.*]] = arith.addi %[[X]], %[[TD]]
+// CHECK: return %[[R]]
+func.func @narrow(%x: i32, %n: i64) -> i32 {
+  %c0 = arith.constant 0 : i64
+  %c1 = arith.constant 1 : i64
+  %c8 = arith.constant 8 : i32
+  %r = scf.for %k = %c0 to %n step %c1 iter_args(%v = %x) -> (i32) : i64 {
+    "test.use"(%v) : (i32) -> ()
+    %next = arith.addi %v, %c8 : i32
+    scf.yield %next : i32
+  }
+  return %r : i32
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %loop = transform.structured.match ops{["scf.for"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %new = transform.air.fold_iter_args_into_induction_var %loop : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
