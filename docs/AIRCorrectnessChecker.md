@@ -547,9 +547,8 @@ Deliverables:
   a segment that exceeds tile count, a double-buffered loop with D=2 correctly
   multiplied
 
-Acceptance: the existing `AIRHerdPlacementPass` and `AIRHerdAssignPass` can be
-informed by the `ResourceFootprint` computed here rather than recomputing
-heuristically.
+Acceptance: the existing `AIRHerdPlacementPass` can be informed by the
+`ResourceFootprint` computed here rather than recomputing heuristically.
 
 ### Phase 4 — P4 (token constraint consistency)
 
