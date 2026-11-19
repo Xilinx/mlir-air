@@ -416,6 +416,14 @@ public:
                   yielded_tokens_per_region,
                   [](SmallVector<Value, 1> toks) { return toks.empty(); }))
             return; // No async op in branch successors, continue.
+          // The branch's token goes after its results, where dependency
+          // users would not look for it past one already there.
+          if (llvm::any_of(op->getResultTypes(),
+                           llvm::IsaPred<air::AsyncTokenType>)) {
+            op->emitOpError("already yields an async token");
+            signalPassFailure();
+            return;
+          }
           auto new_branch_op = createAsyncRegionBranchOp(rewriter, branch_op);
           // Every region also yields the token collecting the branch op's
           // incoming deps: the transitive reduction may have dropped an
