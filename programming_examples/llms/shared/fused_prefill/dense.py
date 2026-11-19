@@ -62,7 +62,8 @@ def meta_dir(desc, path):
         return Path(path).parent
     from huggingface_hub import snapshot_download
 
-    return Path(snapshot_download(repo, allow_patterns=["*.json", "*.txt"]))
+    # chat_template.jinja: a tokenizer may keep its template there
+    return Path(snapshot_download(repo, allow_patterns=["*.json", "*.txt", "*.jinja"]))
 
 
 def config(desc, path, context=None):
