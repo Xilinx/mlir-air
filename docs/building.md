@@ -1,9 +1,9 @@
 # Building AIR Tools and Runtime
 
 There are currently several documented ways to build, run, and test AIR:
-* [Getting Started and Running on Linux Ryzen™ AI](buildingRyzenLin.md)
-* [Getting Started and Running on Windows Ryzen™ AI](buildingRyzenWin.md)
-* [Getting Started and Running on AMD GPU](buildingGPU.md)
+* [Getting Started on Ryzen AI (Linux)](buildingRyzenLin.md)
+* [Getting Started on Ryzen AI (Windows)](buildingRyzenWin.md)
+* [Getting Started on AMD GPUs (Linux)](buildingGPU.md)
 
 -----
 
