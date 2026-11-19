@@ -32,11 +32,6 @@ endif()
 list(APPEND TRANSFORM_SOURCES
   AIRLoopPermutationPass.cpp
 )
-if(AIR_ENABLE_AIE)
-  list(APPEND TRANSFORM_SOURCES
-    AIRLowerLinalgTensors.cpp
-  )
-endif()
 list(APPEND TRANSFORM_SOURCES
   AIRMiscPasses.cpp
   AIRRegularizeLoopPass.cpp
