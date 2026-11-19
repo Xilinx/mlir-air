@@ -4,7 +4,6 @@
 
 # Source order matches origin/main for consistent archive ordering.
 set(TRANSFORM_SOURCES
-  AIRAutomaticTilingPass.cpp
   AIRDependency.cpp
   AIRDependencyCanonicalize.cpp
   AIRDependencyParseGraph.cpp
@@ -21,7 +20,6 @@ list(APPEND TRANSFORM_SOURCES
   AIRLinalgBufferize.cpp
   AIRLinalgCodegen.cpp
   AIRLinalgOpStats.cpp
-  AIRLoopMergingPass.cpp
 )
 if(AIR_ENABLE_AIE)
   list(APPEND TRANSFORM_SOURCES
@@ -38,7 +36,6 @@ if(AIR_ENABLE_AIE)
 endif()
 list(APPEND TRANSFORM_SOURCES
   AIRMiscPasses.cpp
-  AIRRegularizeLoopPass.cpp
   AIRSplitLaunchForPadding.cpp
   AIRTilingUtils.cpp
   AIRTransformInterpreter.cpp
