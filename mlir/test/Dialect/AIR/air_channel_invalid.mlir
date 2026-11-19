@@ -7,6 +7,11 @@
 
 // RUN: air-opt --split-input-file --verify-diagnostics %s
 
+// expected-error @+1 {{visibility expected to be one of}}
+air.channel @bad_visibility [] {sym_visibility = "invalid"}
+
+// -----
+
 // -----
 
 // Test: rank mismatch between size and broadcast_shape.

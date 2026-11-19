@@ -6,12 +6,16 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s | FileCheck %s
+// RUN: sed 's/arith.addi/arith.muli/g' %s | air-opt -air-transform='filename=%S/air_transform.mlir' | FileCheck %s --check-prefix=MUL
 
 // CHECK: %[[init_buf:.*]] = bufferization.to_buffer
 // CHECK: scf.parallel (%{{.*}}) = (%c0{{.*}}) to (%c4{{.*}}) step (%c1{{.*}}) init (%[[init_buf]]) -> memref<32xi32, 2>
 // CHECK: scf.reduce
 // CHECK: linalg.elementwise <add>
 // CHECK: scf.reduce.return
+// MUL: scf.reduce
+// MUL: linalg.elementwise <mul>
+// MUL: scf.reduce.return
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {
   func.func @forward(%arg0: memref<512x64xi32>, %arg1: index) -> memref<32xi32> {
