@@ -22,7 +22,6 @@ list(APPEND TRANSFORM_SOURCES
   AIRLinalgBufferize.cpp
   AIRLinalgCodegen.cpp
   AIRLinalgOpStats.cpp
-  AIRLoopMergingPass.cpp
 )
 if(AIR_ENABLE_AIE)
   list(APPEND TRANSFORM_SOURCES
