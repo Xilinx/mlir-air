@@ -68,15 +68,22 @@ def verify(name, argv):
     ap.add_argument("--ids-count", type=int, default=0)
     a = ap.parse_args(argv)
 
+    if a.ids_file:
+        ids = json.loads(Path(a.ids_file).read_text())
+        ids = [int(t) for t in (ids[a.ids_key] if a.ids_key else ids)]
+        ids = ids[: a.ids_count or None]
+        # the embedding rows are read by offset, unchecked: an id from another
+        # tokenizer would read some other tensor
+        bad = [t for t in ids if not 0 <= t < desc.vocab]
+        if bad:
+            sys.exit(f"{a.ids_file}: ids outside [0, {desc.vocab}): {bad[:8]}")
     if desc.family == "lfm2":
         from air_examples.llms.shared.fused_prefill import lfm2 as fam
     else:
         fam = dense
     path = fam.resolve(desc, a.model)
     if a.ids_file:
-        ids = json.loads(Path(a.ids_file).read_text())
-        ids = [int(t) for t in (ids[a.ids_key] if a.ids_key else ids)]
-        _gate(name, a, fam, desc, path, ids[: a.ids_count or None], str)
+        _gate(name, a, fam, desc, path, ids, str)
         return
 
     from transformers import AutoTokenizer
