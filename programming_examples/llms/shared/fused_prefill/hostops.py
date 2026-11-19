@@ -267,14 +267,14 @@ def round_bf16(x):
 
 
 def rms(x, w, eps):
-    x = _c(x)
+    x, w = _c(x), None if w is None else _c(w)
     n = x.shape[-1]
     y = np.empty_like(x)
     _lib.rms(
         x.ctypes.data,
         x.size // n,
         n,
-        None if w is None else _c(w).ctypes.data,
+        _ptr(w),
         eps,
         y.ctypes.data,
     )
@@ -282,7 +282,7 @@ def rms(x, w, eps):
 
 
 def add_rms(res, x, w, eps):
-    res, x = _c(res), _c(x)
+    res, x, w = _c(res), _c(x), _c(w)
     n = x.shape[-1]
     y = np.empty_like(x)
     _lib.add_rms(
@@ -290,7 +290,7 @@ def add_rms(res, x, w, eps):
         x.ctypes.data,
         x.size // n,
         n,
-        _c(w).ctypes.data,
+        w.ctypes.data,
         eps,
         y.ctypes.data,
     )
@@ -300,7 +300,8 @@ def add_rms(res, x, w, eps):
 def rope(x, cs, sn, rot):
     """x [T, H, dh] float32 C-order, in place; cs / sn [T, rot/2]."""
     t, h, dh = x.shape
-    _lib.rope(x.ctypes.data, t, h, dh, rot, _c(cs).ctypes.data, _c(sn).ctypes.data)
+    cs, sn = _c(cs), _c(sn)
+    _lib.rope(x.ctypes.data, t, h, dh, rot, cs.ctypes.data, sn.ctypes.data)
     return x
 
 
@@ -325,11 +326,12 @@ def oss_glu_tile(gu, gb, ub, t, n, dst, tm, tk):
     """dst (A of K = n) = gpt-oss's clamped SwiGLU of gu bf16 [R, ld], gate
     and up in turns of 128 columns, with their biases gb, ub [n]."""
     a = _bf16_tiles(dst, tm, tk)
+    gb, ub = _c(gb), _c(ub)
     _lib.oss_glu_tile(
         gu.ctypes.data,
         gu.shape[1],
-        _c(gb).ctypes.data,
-        _c(ub).ctypes.data,
+        gb.ctypes.data,
+        ub.ctypes.data,
         t,
         n,
         tm,
@@ -389,7 +391,8 @@ def rms_tile(x, w, eps, dst, tm, tk):
     """dst (A) = bf16(rms(x) * w); x [t, n] float32."""
     t, n = x.shape
     a = _bf16_tiles(dst, tm, tk)
-    _lib.rms_tile(_c(x).ctypes.data, t, n, _ptr(w), eps, tm, tk, a.ctypes.data)
+    x = _c(x)
+    _lib.rms_tile(x.ctypes.data, t, n, _ptr(w), eps, tm, tk, a.ctypes.data)
     _to_bfp(a, t, dst)
 
 
@@ -431,7 +434,8 @@ def ln_tile(x, w, b, eps, dst, tm, tk):
     """dst (A) = bf16(layernorm(x) * w + b); x [t, n] float32."""
     t, n = x.shape
     a = _bf16_tiles(dst, tm, tk)
-    _lib.ln_tile(_c(x).ctypes.data, t, n, _ptr(w), _ptr(b), eps, tm, tk, a.ctypes.data)
+    x = _c(x)
+    _lib.ln_tile(x.ctypes.data, t, n, _ptr(w), _ptr(b), eps, tm, tk, a.ctypes.data)
     _to_bfp(a, t, dst)
 
 
