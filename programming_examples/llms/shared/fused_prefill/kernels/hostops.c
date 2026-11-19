@@ -3,13 +3,25 @@
 //
 // Host side of the fused prefill: conversions between float32 activations and
 // the device's bf16 layouts, and the elementwise ops between GEMMs. Row loops
-// run on NT threads; rows are independent, so results do not depend on NT.
+// run on up to NT threads, no more than the CPUs the process may use (more
+// would only take turns on them); rows are independent, so results do not
+// depend on the count.
+#include <omp.h>
 #include <stdint.h>
 #include <string.h>
 
 #ifndef NT
 #define NT 4
 #endif
+
+static int row_threads(void) {
+  static int n;
+  if (!n) {
+    int p = omp_get_num_procs();
+    n = p < NT ? (p > 0 ? p : 1) : NT;
+  }
+  return n;
+}
 
 // round to nearest even; NaN not handled
 static inline uint16_t f2bf(float f) {
@@ -22,7 +34,7 @@ static inline uint16_t f2bf(float f) {
 // that is not a whole number of steps is zero-padded to one
 void tile_a(const float *x, int t, int K, int TM, int TK, uint16_t *dst) {
   int ks = (K + TK - 1) / TK;
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     int ty = r / TM, i = r % TM;
     const float *src = x + (long)r * K;
@@ -37,7 +49,7 @@ void tile_a(const float *x, int t, int K, int TM, int TK, uint16_t *dst) {
 
 // src [rows, ld] bf16 -> dst [rows, n] f32
 void bf16_to_f32(const uint16_t *src, int rows, int ld, int n, float *dst) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < rows; r++) {
     const uint16_t *s = src + (long)r * ld;
     float *d = dst + (long)r * n;
@@ -68,7 +80,7 @@ static inline float sumsq(const float *a, int n) {
 
 // y[r] = x[r] / sqrt(mean(x[r]^2) + eps) * (w ? w : 1); rows of n
 void rms(const float *x, int rows, int n, const float *w, float eps, float *y) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < rows; r++) {
     const float *a = x + (long)r * n;
     float *o = y + (long)r * n;
@@ -84,7 +96,7 @@ void rms(const float *x, int rows, int n, const float *w, float eps, float *y) {
 
 // x rounded to bf16 in place, kept as f32
 void round_bf16(float *x, long n) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (long i = 0; i < n; i++) {
     uint32_t u = (uint32_t)f2bf(x[i]) << 16;
     memcpy(x + i, &u, 4);
@@ -94,7 +106,7 @@ void round_bf16(float *x, long n) {
 // y = res + rms(x) * w
 void add_rms(const float *res, const float *x, int rows, int n, const float *w,
              float eps, float *y) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < rows; r++) {
     const float *a = x + (long)r * n, *b = res + (long)r * n;
     float *o = y + (long)r * n;
@@ -109,7 +121,7 @@ void add_rms(const float *res, const float *x, int rows, int n, const float *w,
 void rope(float *x, int T, int H, int dh, int rot, const float *cs,
           const float *sn) {
   int h = rot / 2;
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int t = 0; t < T; t++)
     for (int k = 0; k < H; k++) {
       float *v = x + ((long)t * H + k) * dh;
@@ -134,7 +146,7 @@ static inline float bf2f(uint16_t b) {
 void glu_tile(const uint16_t *g, int ldg, const uint16_t *u, int ldu, int t,
               int n, int TM, int TK, uint16_t *dst) {
   int ks = n / TK;
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     int ty = r / TM, i = r % TM;
     for (int s = 0; s < ks; s++) {
@@ -151,7 +163,7 @@ void glu_tile(const uint16_t *g, int ldg, const uint16_t *u, int ldu, int t,
 void mul_tile(const uint16_t *g, int ldg, const float *p, int t, int n, int TM,
               int TK, uint16_t *dst) {
   int ks = n / TK;
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     int ty = r / TM, i = r % TM;
     for (int s = 0; s < ks; s++) {
@@ -167,7 +179,7 @@ void mul_tile(const uint16_t *g, int ldg, const float *p, int t, int n, int TM,
 // q [T, H, dh] f32 -> dst [H, M, dh] bf16 = bf16(q * scale), rows T..M zeroed
 void q_pack(const float *q, int T, int H, int dh, int M, float scale,
             uint16_t *dst) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int k = 0; k < H; k++) {
     uint16_t *d = dst + (long)k * M * dh;
     for (int t = 0; t < T; t++) {
@@ -241,7 +253,7 @@ static void oss_glu_run(const uint16_t *restrict gs,
 // bf16(g sigmoid(1.702 g) (u + 1))
 void oss_glu_tile(const uint16_t *gu, int ldg, const float *gb, const float *ub,
                   int t, int n, int TM, int TK, uint16_t *dst) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     float row[n];
     const uint16_t *src = gu + (long)r * ldg;
@@ -257,7 +269,7 @@ void oss_glu_tile(const uint16_t *gu, int ldg, const float *gb, const float *ub,
 void scatter_add_rows(float *out, int ldo, const uint16_t *y, int ldy,
                       const int64_t *rows, const float *w, const float *b,
                       int t, int n) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int i = 0; i < t; i++) {
     float *o = out + rows[i] * ldo;
     const uint16_t *yi = y + (long)i * ldy;
@@ -274,7 +286,7 @@ void scatter_add_rows(float *out, int ldo, const uint16_t *y, int ldy,
 void scatter_add_rows_n(float *out, int ldo, int ldy, const float *b, int n,
                         int nj, const int64_t *y, const int64_t *rows,
                         const float *w, const int64_t *r0, const int32_t *t) {
-#pragma omp parallel num_threads(NT)
+#pragma omp parallel num_threads(row_threads())
   for (int j = 0; j < nj; j++) {
     const uint16_t *yj = (const uint16_t *)(intptr_t)y[j];
 #pragma omp for schedule(static)
@@ -291,7 +303,7 @@ void scatter_add_rows_n(float *out, int ldo, int ldy, const float *b, int n,
 // dst (tiled A, K = n) = bf16(rms(x) * w)
 void rms_tile(const float *x, int t, int n, const float *w, float eps, int TM,
               int TK, uint16_t *dst) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     const float *a = x + (long)r * n;
     float row[n];
@@ -307,7 +319,7 @@ void rms_tile(const float *x, int t, int n, const float *w, float eps, int TM,
 void add_rms_tile_s(float *x, const uint16_t *c, int ldc, const float *post,
                     float eps, int t, int n, const float *w, int TM, int TK,
                     uint16_t *dst, float scale) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     float *a = x + (long)r * n;
     float row[n];
@@ -343,7 +355,7 @@ void add_rms_tile(float *x, const uint16_t *c, int ldc, const float *post,
 // dst [t, n] bf16 = bf16(src - row), src bf16 [t, n], row f32 [n]
 void sub_row_bf16(const uint16_t *src, int t, int n, const float *row,
                   uint16_t *dst) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     const uint16_t *s = src + (long)r * n;
     uint16_t *d = dst + (long)r * n;
@@ -355,7 +367,7 @@ void sub_row_bf16(const uint16_t *src, int t, int n, const float *row,
 // dst (tiled A, K = n) = bf16(layernorm(x) * w + b)
 void ln_tile(const float *x, int t, int n, const float *w, const float *b,
              float eps, int TM, int TK, uint16_t *dst) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     const float *a = x + (long)r * n;
     float row[n];
@@ -406,7 +418,7 @@ void bias_gelu_tile(const uint16_t *g, int ldg, const float *bias, int t, int n,
                     int TM, int TK, uint16_t *dst) {
   int ks = n / TK;
   const float c = 0.7978845608f; // sqrt(2 / pi)
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     int ty = r / TM, i = r % TM;
     for (int s = 0; s < ks; s++) {
@@ -443,7 +455,7 @@ void bias_gelu_erf_tile(const uint16_t *g, int ldg, const float *bias, int t,
                         int n, int TM, int TK, uint16_t *dst) {
   int ks = n / TK;
   const float c = 0.7071067812f; // 1 / sqrt(2)
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     int ty = r / TM, i = r % TM;
     for (int s = 0; s < ks; s++) {
@@ -466,7 +478,7 @@ void bias_gelu_erf_tile(const uint16_t *g, int ldg, const float *bias, int t,
 void bias_gelu_erf_rows(const uint16_t *g, int ldg, const float *bias, int t,
                         int n, uint16_t *dst, int ldd) {
   const float c = 0.7071067812f; // 1 / sqrt(2)
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     const uint16_t *gs = g + (long)r * ldg;
     uint16_t *d = dst + (long)r * ldd;
@@ -485,7 +497,7 @@ void head_post(const uint16_t *src, int ld, int t, int col0, int nh, int dh,
                const float *sn, int rot, float scale, uint16_t *dst, long hs,
                long rs) {
   int hr = rot / 2;
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     float v[dh];
     for (int h = 0; h < nh; h++) {
@@ -523,7 +535,7 @@ static inline long t8(int i, int j, int rows) {
 void o_tile(const uint16_t *o, int t, int nh, int dh, int M, int tq, int h0,
             int K, int TM, int TK, uint16_t *dst) {
   int ks = K / TK;
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++)
     for (int h = 0; h < nh; h++) {
       const uint16_t *b = o + (long)h * M * dh + (long)(r / tq) * tq * dh;
@@ -541,7 +553,7 @@ void o_tile(const uint16_t *o, int t, int nh, int dh, int M, int tq, int h0,
 void o_tiles(const uint16_t *o, int t, int nh, int dh, int M, int h0, int K,
              int TM, int TK, uint16_t *dst) {
   int ks = K / TK;
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++)
     for (int h = 0; h < nh; h++) {
       const uint16_t *b = o + ((long)h * M + (r & ~7)) * dh + (r & 7) * 8;
@@ -634,7 +646,7 @@ void kv_rec_bfp(const uint16_t *k, const uint16_t *v, int ld, int c0, int t,
                 int dh, int lkp, uint8_t *dst) {
   int nb = (t + lkp - 1) / lkp;
   long half = 72L * (dh / 8) * (lkp / 8);
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int b = 0; b < nb; b++) {
     uint16_t kt[lkp * dh], vt[lkp * dh];
     for (int i = 0; i < lkp; i++) {
@@ -664,7 +676,7 @@ void kv_rec_bfp(const uint16_t *k, const uint16_t *v, int ld, int c0, int t,
 void kv_rec_bf16(const uint16_t *k, const uint16_t *v, int ld, int c0, int t,
                  int dh, int lkp, int dvt, uint16_t *dst) {
   int nb = (t + lkp - 1) / lkp;
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int b = 0; b < nb; b++) {
     uint16_t *kd = dst + (long)b * 2 * lkp * dh, *vd = kd + (long)lkp * dh;
     for (int i = 0; i < lkp; i++) {
@@ -687,7 +699,7 @@ void kv_rec_bf16(const uint16_t *k, const uint16_t *v, int ld, int c0, int t,
 
 // q bf16 [nh][M][dh] in 8x8 blocks, per head [M/8][dh/8] each row-major
 void q_tiles(const uint16_t *q, int nh, int M, int dh, uint16_t *dst) {
-#pragma omp parallel for collapse(2) num_threads(NT) schedule(static)
+#pragma omp parallel for collapse(2) num_threads(row_threads()) schedule(static)
   for (int h = 0; h < nh; h++)
     for (int r = 0; r < M; r++) {
       const uint16_t *src = q + ((long)h * M + r) * dh;
@@ -700,7 +712,7 @@ void q_tiles(const uint16_t *q, int nh, int M, int dh, uint16_t *dst) {
 // q bf16 [nh][M][dh] -> bfp16, per head per tq-row tile the blocks [tq/8][dh/8]
 void q_bfp(const uint16_t *q, int nh, int M, int dh, int tq, uint8_t *dst) {
   int nt = M / tq, nblk = (tq / 8) * (dh / 8);
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int ht = 0; ht < nh * nt; ht++) {
     const uint16_t *src = q + (long)ht * tq * dh;
     uint8_t *d = dst + 72L * nblk * ht;
@@ -713,7 +725,7 @@ void q_bfp(const uint16_t *q, int nh, int M, int dh, int tq, uint8_t *dst) {
 
 // n groups of 8 bf16 -> n bfp16 groups
 void bfp_rows(const uint16_t *src, long n, uint8_t *dst) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (long i = 0; i < n; i++)
     bfp_group(src + 8 * i, 1, dst + 9 * i);
 }
@@ -726,7 +738,7 @@ void tiles_bfp(const uint16_t *src, int t, int K, int TM, int TK, int k0,
                int k1, uint8_t *dst, long dr, long dk) {
   int ks = K / TK, nb = TM / 8, s0 = k0 / TK, ns = (k1 + TK - 1) / TK - s0;
   long tile = 72L * (TM / 8) * (TK / 8);
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int rs = 0; rs < (t + 7) / 8 * ns; rs++) {
     int rb = rs / ns, s = s0 + rs % ns;
     int ty = rb / nb, b = rb % nb;
@@ -764,7 +776,7 @@ static inline void tile_a_rows_rs(const float *x, int ldx, const int64_t *rows,
 
 void tile_a_rows(const float *x, int ldx, const int64_t *rows, int t, int K,
                  int TM, int TK, uint8_t *dst, long dr, long dk) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int rs = 0; rs < (t + 7) / 8 * (K / TK); rs++)
     tile_a_rows_rs(x, ldx, rows, t, K, TM, TK, dst, dr, dk, rs);
 }
@@ -774,7 +786,7 @@ void tile_a_rows(const float *x, int ldx, const int64_t *rows, int t, int K,
 void tile_a_rows_n(const float *x, int ldx, int K, int TM, int TK, int nj,
                    const int64_t *rows, const int64_t *r0, const int32_t *t,
                    const int64_t *dst, const int64_t *dr, const int64_t *dk) {
-#pragma omp parallel num_threads(NT)
+#pragma omp parallel num_threads(row_threads())
   for (int j = 0; j < nj; j++) {
 #pragma omp for schedule(static) nowait
     for (int rs = 0; rs < (t[j] + 7) / 8 * (K / TK); rs++)
@@ -810,7 +822,7 @@ static inline void glu_tile_a_rs(const uint16_t *c, int ldc, int t, int n,
 
 void glu_tile_a(const uint16_t *c, int ldc, int t, int n, int TM, int TK,
                 uint8_t *dst, long dr, long dk) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int rs = 0; rs < (t + 7) / 8 * (n / TK); rs++)
     glu_tile_a_rs(c, ldc, t, n, TM, TK, dst, dr, dk, rs);
 }
@@ -820,7 +832,7 @@ void glu_tile_a(const uint16_t *c, int ldc, int t, int n, int TM, int TK,
 void glu_tile_a_n(int ldc, int n, int TM, int TK, int nj, const int64_t *c,
                   const int32_t *t, const int64_t *dst, const int64_t *dr,
                   const int64_t *dk) {
-#pragma omp parallel num_threads(NT)
+#pragma omp parallel num_threads(row_threads())
   for (int j = 0; j < nj; j++) {
 #pragma omp for schedule(static) nowait
     for (int rs = 0; rs < (t[j] + 7) / 8 * (n / TK); rs++)
@@ -843,7 +855,7 @@ void glu_tile_a_n(int ldc, int n, int TM, int TK, int nj, const int64_t *c,
 // the pair][packet]: a GEMM panel reads a pair, whose K steps are then one
 // run of bytes.
 void q4k_prefill(const uint8_t *src, long n, uint8_t *dst) {
-#pragma omp parallel for num_threads(NT) schedule(static)
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (long b = 0; b < n; b++) {
     const uint8_t *s = src + b * 4736;
     // block b % 4 of its row group; + h * 2 * 2560 for its k half h
