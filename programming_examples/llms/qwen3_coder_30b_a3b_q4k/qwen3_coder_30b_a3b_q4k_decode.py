@@ -42,8 +42,9 @@ import qwen3_coder_30b_a3b_q4k_weights as W  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
+from air_examples.llms.shared.decode import layer as DL  # noqa: E402
 from air_examples.llms.shared.moe import decode as MD  # noqa: E402
-from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
+from air_examples.llms.shared.decode.array import MvmArray, Phase  # noqa: E402
 from kv_bos import kv_groups  # noqa: E402
 
 R, RB, CB, BB, D, I, E = A.R, A.RB, A.CB, A.BB, A.D, A.I, A.E
@@ -186,9 +187,9 @@ def build_module(waves, maxl, cap=None):
                 @seg.body
                 def _():
                     def l2(shape, col, dt=bf16):
-                        return MD.l2(seg, shape, col, dt)
+                        return DL.l2(seg, shape, col, dt)
 
-                    wave_loop, herd = MD.wave_loop, MD.herd
+                    wave_loop, herd = DL.wave_loop, DL.herd
                     l1 = MD.moe_l1(seg, E)
                     logits = l1[0]
 
@@ -377,7 +378,7 @@ def build_module(waves, maxl, cap=None):
 
                     # ---- host side. Per wave: x in, then the layers'
                     # outputs; then each layer's transfers
-                    MD.wave_x(m_in, out_ch, X, w, pw)
+                    DL.wave_x(m_in, out_ch, X, w, pw)
                     for j in range(pw):
                         lay = w * pw + j
                         MD.layer_misc(m_in, ab_w, M, MISC, lay, j, "w2", "router")
@@ -406,7 +407,7 @@ def layer_inputs(w, layers):
     return np.ascontiguousarray(np.concatenate(WE)), np.stack(WD), M, qkn
 
 
-class Q3CDecoder(MD.MoeDecoder):
+class Q3CDecoder(DL.Decoder):
     """The layers' ELFs and the LM head's, their buffers, and a run of each.
     Per token the host writes x, the layers' RoPE rows and L, and runs the
     layers' ELF with the shortest cache read that covers L."""

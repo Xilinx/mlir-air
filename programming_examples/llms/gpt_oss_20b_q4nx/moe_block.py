@@ -39,7 +39,7 @@ import gpt_oss_20b_q4nx_weights as g  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
-from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
+from air_examples.llms.shared.decode.array import MvmArray, Phase  # noqa: E402
 from air_examples.llms.shared.moe.ffn import Moe, MoeShape, router_kernels  # noqa: E402
 
 R = 4

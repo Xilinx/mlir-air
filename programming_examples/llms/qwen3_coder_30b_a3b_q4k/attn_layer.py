@@ -45,7 +45,7 @@ import qwen3_coder_30b_a3b_q4k_weights as W  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
-from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
+from air_examples.llms.shared.decode.array import MvmArray, Phase  # noqa: E402
 
 # a check's bound on the relative L2 error
 TOL = 0.06

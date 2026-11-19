@@ -58,7 +58,7 @@ from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.api._index import coerce_index  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
-from air_examples.llms.shared.moe.array import MvmArray  # noqa: E402
+from air_examples.llms.shared.decode.array import MvmArray  # noqa: E402
 
 W = M.W
 R, BB, D, E = M.R, M.BB, M.D, M.E
