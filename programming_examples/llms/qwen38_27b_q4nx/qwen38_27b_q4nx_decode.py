@@ -33,7 +33,6 @@
 # Each token runs the ELF with the fewest that covers L.
 import os
 import sys
-import time
 import types
 from pathlib import Path
 
@@ -57,11 +56,13 @@ import qwen38_27b_q4nx_weights as W  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
+from air_examples.llms.shared.decode import layer as DL  # noqa: E402
 from air_examples.llms.shared.decode.array import MvmArray, Phase  # noqa: E402
+from air_examples.llms.shared.gdn import decode as GD  # noqa: E402
 from kv_bos import kv_groups  # noqa: E402
 from rope import rope_weights  # noqa: E402
 
-R, RB, CB, BB, D, I = G.R, G.RB, G.CB, G.BB, G.D, G.I
+R, RB, BB, D, I = G.R, G.RB, G.BB, G.D, G.I
 NCOL, HD, NV, NCH, SLOT = G.NCOL, G.HD, G.NV, G.NCH, G.SLOT
 DH, DQ, DK, NCU, KPU = A.DH, A.DQ, A.DK, A.NCU, A.KPU
 QR, QHP, DQP = A.QR, A.QHP, A.DQP
@@ -122,6 +123,18 @@ def build_module(waves, maxl, cap=None):
     kv = k_("attn_kv_q36", "attn_kv_blk_z", [i32, i32])
     fin = k_("attn_kv_q36", "attn_kv_fin")
     o_nat = k_("attn_kv_q36", "o_natural")
+    K = types.SimpleNamespace(
+        ab_zero=ab_zero,
+        ab_mvm=ab_mvm,
+        ab_act=ab_act,
+        conv_k=conv_k,
+        l2n=l2n,
+        pack=pack,
+        z_rd=z_rd,
+        dn=dn,
+        gsilu=gsilu,
+        gsig=gsig,
+    )
 
     arr = MvmArray(
         row_block=RB,
@@ -264,18 +277,7 @@ def build_module(waves, maxl, cap=None):
                                 v_cu.put(vh.transpose(0, 2, 1, 3), indices=[u])
 
                     # ---- memtile 4: the GDN state, head by head
-                    for _j in wave_loop(ngw):
-                        for _h in wave_loop(NV):
-                            sb = l2([R, HD * 32], 4, f32)
-                            s_l3.get(sb)
-                            for r in range(R):
-                                s_in.put(sb[r, :], indices=[r])
-                            air.dealloc(sb)
-                            ob = l2([R, HD * 32], 4, f32)
-                            for r in range(R):
-                                s_out.get(ob[r, :], indices=[r])
-                            s_l3o.put(ob)
-                            air.dealloc(ob)
+                    GD.state_memtile(seg, ngw, G, (s_l3, s_in, s_out, s_l3o))
 
                     # ---- the assemble memtile: one buffer for both normed x
                     # of a layer, each broadcast before the next fills it
@@ -338,61 +340,11 @@ def build_module(waves, maxl, cap=None):
                                     res_rd(x, u, jj)
                                 xs_ch.put(x)
 
-                    # ---- alpha / beta (GDN layers; an attention layer's
-                    # weights are zero and its result unused)
-                    with herd("ab", G.AB_AT) as h:
-
-                        @h.body
-                        def _(tx):
-                            p = h.private()
-                            x = air.alloc([D], bf16, scope=p)
-                            adt = air.alloc([4 * NV], bf16, scope=p)
-                            blk = air.alloc([CB * RB], bf16, scope=p)
-                            ab = air.alloc([2 * NV], f32, scope=p)
-                            for j in wave_loop(pw):
-                                to_ab.get(x)
-                                ab_w.get(blk)
-                                adt[:] = blk[0 : 4 * NV]
-                                ab_zero(ab)
-                                for rb in air.sequential(0, G.NRB_AB):
-                                    for cb in air.sequential(0, NCB_X):
-                                        ab_w.get(blk)
-                                        ab_mvm(blk, x, ab, rb, cb)
-                                ab_act(ab, adt)
-                                with air.ops.branch(j < ngw):
-                                    ab_sh[:] = ab[:]
+                    # ---- alpha / beta (GDN layers)
+                    GD.ab_core(pw, ngw, G, ab_sh, (to_ab, ab_w), K)
 
                     # ---- conv (GDN layers)
-                    with herd("conv", G.CONV_AT) as h:
-
-                        @h.body
-                        def _(tx):
-                            p = h.private()
-                            u = air.alloc([arr.round], bf16, scope=p)
-                            hx_ = air.alloc([7 * HD], bf16, scope=p)
-                            ho = air.alloc([3 * HD], bf16, scope=p)
-                            cv = air.alloc([QKV_G], bf16, scope=p)
-                            ab = air.alloc([2 * NV], f32, scope=p)
-                            kvq = air.alloc([3 * SLOT], bf16, scope=p)
-                            for _j in wave_loop(ngw):
-                                for lo, hi, norm in (
-                                    (0, G.CONV_Q, 1),
-                                    (G.CONV_Q, G.CONV_K, 0),
-                                    (G.CONV_K, G.RG_QKV, None),
-                                ):
-                                    for rd in air.sequential(lo, hi):
-                                        arr.out_y.get(u, indices=[0, CONV])
-                                        for k in range(4):
-                                            c = rd * 4 + k
-                                            cw_in.get(hx_)
-                                            conv_k(hx_, u, cv, ho, c)
-                                            cw_out.put(ho)
-                                            if norm is not None:
-                                                l2n(cv, c, norm)
-                                ab[:] = ab_sh[:]
-                                for hh in air.sequential(0, NV):
-                                    pack(cv, ab, kvq, hh)
-                                    kvq_ch.put(kvq, indices=[0])
+                    GD.conv_core(arr, ngw, G, ab_sh, (cw_in, cw_out, kvq_ch), K, CONV)
 
                     # ---- the recurrence column (GDN layers); outputs passed
                     # down the column through shared L1
@@ -434,28 +386,7 @@ def build_module(waves, maxl, cap=None):
                         step_core(r)
 
                     # ---- gate: DeltaNet norm and SiLU gate, or sigmoid gate
-                    with herd("gate", G.GATE_AT) as h:
-
-                        @h.body
-                        def _(tx):
-                            p = h.private()
-                            u = air.alloc([arr.round], bf16, scope=p)
-                            z = air.alloc([DQ], bf16, scope=p)
-                            wn = air.alloc([HD], bf16, scope=p)
-                            o = air.alloc([DQ], bf16, scope=p)
-                            on = air.alloc([DQ], bf16, scope=p)
-                            for j in wave_loop(pw):
-                                for jj in air.sequential(0, G.RG_Z):
-                                    arr.out_y.get(u, indices=[0, GATE])
-                                    z_rd(z, u, jj)
-                                o_in.get(wn)
-                                o_in.get(o)
-                                with air.ops.branch(j < ngw):
-                                    dn(on, o, wn)
-                                    gsilu(on, z, on, DQ)
-                                with air.ops.branch(j >= ngw):
-                                    gsig(on, z, o, DQ)
-                                to_asm.put(on)
+                    GD.gate_core(arr, pw, ngw, G, DQ, (o_in, to_asm), K, GATE)
 
                     # ---- RoPE (attention layers)
                     with herd("rope", A.ROPE_AT) as h:
@@ -679,7 +610,7 @@ def layer_weights(w, l):
     return np.ascontiguousarray(wd), misc, extra
 
 
-class Q38Decoder:
+class Q38Decoder(DL.Decoder):
     """The layers' ELF and the LM head's, their buffers, and a run of each.
     Per token the host writes x, the attention layers' RoPE rows and L, and
     swaps the conv caches' and the GDN states' in and out buffers.
@@ -693,32 +624,24 @@ class Q38Decoder:
     def __init__(self, arts, w, layers, waves, maxl, lm_args):
         """arts: compile_all's ([(positions read, ELF artifact, params.txt)]
         per layers' ELF, all on the same buffers, the LM head's artifact)."""
-        import pyxrt as xrt
-
+        import lm_head as LM
         from decode_elf import param_writers
         from kv_bos import KVBuffers
         from aie.utils.hostruntime.xrtruntime.parameter_scratchpad import (
             ParameterScratchpad,
         )
 
-        self.xrt, self.waves, self.pw = xrt, waves, PER_WAVE
+        super().__init__(waves, PER_WAVE, D, LM.unpack_logits)
+        xrt = self.xrt
         pw, nl, ng = self.pw, len(layers), NG_WAVE * waves
         assert nl == pw * waves
-        dev = xrt.device(0)
         to_dev = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
 
         def bo_of(nbytes):
-            o = xrt.ext.bo(dev, nbytes)
+            o = xrt.ext.bo(self.dev, nbytes)
             m = np.frombuffer(o.map(), np.uint8)
             m[:] = 0
             return o, m
-
-        def bo(t):
-            b = np.ascontiguousarray(t).view(np.uint8).ravel()
-            o, m = bo_of(b.nbytes)
-            m[:] = b
-            o.sync(to_dev)
-            return o
 
         sizes = {
             self.X: (waves + 1) * pw * D * 2,
@@ -760,17 +683,10 @@ class Q38Decoder:
         for o in self.bos:
             o.sync(to_dev)
 
-        def kernel(art):
-            ctx = xrt.hw_context(dev, xrt.elf(art.output_binary))
-            try:
-                return ctx, xrt.ext.kernel(ctx, art.kernel)
-            except RuntimeError:  # a repeated launch's kernel sits in the segment
-                return ctx, xrt.ext.kernel(ctx, art.kernel.replace("main:", "seg:"))
-
         decs, lart = arts
         self.decs = []
         for read, art, params in sorted(decs, key=lambda d: d[0]):
-            ctx, kern = kernel(art)
+            ctx, kern = self.kernel(art)
             run = xrt.run(kern)
             for i, b in enumerate(self.bos):
                 run.set_arg(i, b)
@@ -784,14 +700,8 @@ class Q38Decoder:
                 )
             )
         self.run = self.decs[-1]["run"]
-        self.xmap = maps[self.X].view(bfloat16).reshape(waves + 1, pw, D)
         self.rwmap = maps[self.RW].view(bfloat16).reshape(waves, 3 * DH)
-        xsub = xrt.bo(self.bos[self.X], D * 2, (waves * pw + pw - 1) * D * 2)
-        self.lbos = [xsub] + [bo(t) for t in lm_args]
-        self.lctx, lkern = kernel(lart)
-        self.lrun = xrt.run(lkern)
-        for i, b in enumerate(self.lbos):
-            self.lrun.set_arg(i, b)
+        self.attach_lm(lart, lm_args)
 
     def _set(self, x, L):
         xrt = self.xrt
@@ -815,19 +725,6 @@ class Q38Decoder:
             for d in self.decs:
                 d["run"].set_arg(a, self.bos[a])
                 d["run"].set_arg(b, self.bos[b])
-
-    def _go(self, runs, L):
-        import lm_head as LM
-
-        xrt = self.xrt
-        for r in runs:
-            r.start()
-            st = r.wait(120000)
-            if st != xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED:
-                raise RuntimeError(f"dispatch at L={L} ended in {st}")
-        yb = self.lbos[-1]
-        yb.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-        return LM.unpack_logits(np.frombuffer(yb.map(), bfloat16)).astype(np.float32)
 
     def seed(self, pf):
         """A prefill's state as the next token's inputs: each attention
@@ -869,48 +766,12 @@ class Q38Decoder:
             np.frombuffer(self.bos[i].map(), np.float32)[:] = 0
             self.bos[i].sync(to)
 
-    def head(self, x, L):
-        """The LM head alone on the last layer's output x, at position L - 1."""
-        self.xmap[self.waves, self.pw - 1] = x
-        self.bos[self.X].sync(self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-        return self._go((self.lrun,), L)
-
     def step(self, x, L):
         """Decode x at position L - 1; returns the logits."""
         self._set(x, L)
         logits = self._go((self.run, self.lrun), L)
         self._swap()
         return logits
-
-    def bench(self, x, L, n):
-        """n tokens at context length L, the layers' run then the LM head's;
-        the state is not carried (the same inputs every time)."""
-        self._set(x, L)
-        t = []
-        done = self.xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED
-        for _ in range(n + 1):
-            t0 = time.perf_counter()
-            self.run.start()
-            st = self.run.wait(120000)
-            t1 = time.perf_counter()
-            if st != done:
-                raise RuntimeError(f"layers' dispatch at L={L} ended in {st}")
-            self.lrun.start()
-            st = self.lrun.wait(120000)
-            t.append((t1 - t0, time.perf_counter() - t1))
-            if st != done:
-                raise RuntimeError(f"LM head's dispatch at L={L} ended in {st}")
-        t = np.array(t[1:]) * 1e3
-        tot = t.sum(1)
-        med = float(np.median(tot))
-        print(
-            f"L={L}, {n} tokens: layers {np.median(t[:, 0]):.3f} ms + LM head"
-            f" {np.median(t[:, 1]):.3f} ms = {med:.3f} ms median"
-        )
-        print(
-            f"[bench] decode ctx={L} median {med:.2f} ms min {tot.min():.2f} ms "
-            f"({1e3 / med:.2f} tok/s)"
-        )
 
 
 def compile_all(waves, maxl, reads=()):
