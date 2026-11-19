@@ -27,9 +27,6 @@ if(AIR_ENABLE_AIE)
     AIRMergeUnrolledDevicesPass.cpp
   )
 endif()
-list(APPEND TRANSFORM_SOURCES
-  AIRLoopPermutationPass.cpp
-)
 if(AIR_ENABLE_AIE)
   list(APPEND TRANSFORM_SOURCES
     AIRLowerLinalgTensors.cpp
