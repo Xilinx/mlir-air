@@ -56,11 +56,12 @@ from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
 from air_examples.llms.shared.decode import layer as DL  # noqa: E402
+from air_examples.llms.shared.gdn import decode as GD  # noqa: E402
 from air_examples.llms.shared.moe import decode as MD  # noqa: E402
 from air_examples.llms.shared.decode.array import MvmArray, Phase  # noqa: E402
 from rope import rope_weights  # noqa: E402
 
-R, RB, CB, BB, D, I, E = G.R, G.RB, G.CB, G.BB, G.D, G.I, G.E
+R, RB, BB, D, I, E = G.R, G.RB, G.BB, G.D, G.I, G.E
 NCOL, TURNS, HD, NV, NCH, SLOT = G.NCOL, G.TURNS, G.HD, G.NV, G.NCH, G.SLOT
 DH, DQ, DK, QKV, NCU, QH = A.DH, A.DQ, A.DK, A.QKV, A.NCU, A.QH
 NCB_X, NCB_H, NCB_O = G.NCB_X, G.NCB_H, G.NCB_O
@@ -137,6 +138,16 @@ def build_module(waves, maxl):
         r_mvm=r_mvm,
         r_topk=r_topk,
         r_slot=r_slot,
+        ab_zero=ab_zero,
+        ab_mvm=ab_mvm,
+        ab_act=ab_act,
+        conv_k=conv_k,
+        l2n=l2n,
+        pack=pack,
+        z_rd=z_rd,
+        dn=dn,
+        gsilu=gsilu,
+        gsig=gsig,
     )
 
     arr = MvmArray(
@@ -246,18 +257,7 @@ def build_module(waves, maxl):
                             v_cu.put(vh.transpose(0, 2, 1, 3), indices=[u])
 
                     # ---- memtile 4: the GDN state, head by head
-                    for _j in wave_loop(ngw):
-                        for _h in wave_loop(NV):
-                            sb = l2([R, HD * 32], 4, f32)
-                            s_l3.get(sb)
-                            for r in range(R):
-                                s_in.put(sb[r, :], indices=[r])
-                            air.dealloc(sb)
-                            ob = l2([R, HD * 32], 4, f32)
-                            for r in range(R):
-                                s_out.get(ob[r, :], indices=[r])
-                            s_l3o.put(ob)
-                            air.dealloc(ob)
+                    GD.state_memtile(seg, ngw, G, (s_l3, s_in, s_out, s_l3o))
 
                     # ---- the assemble memtile: both normed x, the mixer's
                     # output, the shared expert's and each turn's GLU outputs
@@ -295,63 +295,16 @@ def build_module(waves, maxl):
                     )
 
                     # ---- alpha / beta (GDN layers) and the router GEMV
-                    with herd("ab", G.AB_AT) as h:
+                    def router(p):
+                        lg = air.alloc([E], f32, scope=p)
+                        return lambda j, x, blk: MD.router_gemv(
+                            x, blk, lg, logits, to_ab, ab_w, K, G.NRB_R, NCB_X
+                        )
 
-                        @h.body
-                        def _(tx):
-                            p = h.private()
-                            x = air.alloc([D], bf16, scope=p)
-                            adt = air.alloc([4 * NV], bf16, scope=p)
-                            blk = air.alloc([CB * RB], bf16, scope=p)
-                            ab = air.alloc([2 * NV], f32, scope=p)
-                            lg = air.alloc([E], f32, scope=p)
-                            for j in wave_loop(pw):
-                                to_ab.get(x)
-                                ab_w.get(blk)
-                                adt[:] = blk[0 : 4 * NV]
-                                ab_zero(ab)
-                                for rb in air.sequential(0, 2):
-                                    for cb in air.sequential(0, NCB_X):
-                                        ab_w.get(blk)
-                                        ab_mvm(blk, x, ab, rb, cb)
-                                ab_act(ab, adt)
-                                with air.ops.branch(j < ngw):
-                                    ab_sh[:] = ab[:]
-                                MD.router_gemv(
-                                    x, blk, lg, logits, to_ab, ab_w, K, G.NRB_R, NCB_X
-                                )
+                    GD.ab_core(pw, ngw, G, ab_sh, (to_ab, ab_w), K, router)
 
                     # ---- conv (GDN layers)
-                    with herd("conv", G.CONV_AT) as h:
-
-                        @h.body
-                        def _(tx):
-                            p = h.private()
-                            u = air.alloc([arr.round], bf16, scope=p)
-                            hx_ = air.alloc([7 * HD], bf16, scope=p)
-                            ho = air.alloc([3 * HD], bf16, scope=p)
-                            cv = air.alloc([QKV_G], bf16, scope=p)
-                            ab = air.alloc([2 * NV], f32, scope=p)
-                            kvq = air.alloc([3 * SLOT], bf16, scope=p)
-                            for _j in wave_loop(ngw):
-                                for lo, hi, norm in (
-                                    (0, 4, 1),
-                                    (4, 8, 0),
-                                    (8, 16, None),
-                                ):
-                                    for rd in air.sequential(lo, hi):
-                                        arr.out_y.get(u, indices=[0, CONV])
-                                        for k in range(4):
-                                            c = rd * 4 + k
-                                            cw_in.get(hx_)
-                                            conv_k(hx_, u, cv, ho, c)
-                                            cw_out.put(ho)
-                                            if norm is not None:
-                                                l2n(cv, c, norm)
-                                ab[:] = ab_sh[:]
-                                for hh in air.sequential(0, NV):
-                                    pack(cv, ab, kvq, hh)
-                                    kvq_ch.put(kvq, indices=[0])
+                    GD.conv_core(arr, ngw, G, ab_sh, (cw_in, cw_out, kvq_ch), K, CONV)
 
                     # ---- the recurrence column (GDN layers); outputs passed
                     # down the column through shared L1
@@ -396,28 +349,7 @@ def build_module(waves, maxl):
                         step_core(r)
 
                     # ---- gate: DeltaNet norm and SiLU gate, or sigmoid gate
-                    with herd("gate", G.GATE_AT) as h:
-
-                        @h.body
-                        def _(tx):
-                            p = h.private()
-                            u = air.alloc([arr.round], bf16, scope=p)
-                            z = air.alloc([DQ], bf16, scope=p)
-                            wn = air.alloc([HD], bf16, scope=p)
-                            o = air.alloc([DQ], bf16, scope=p)
-                            on = air.alloc([DQ], bf16, scope=p)
-                            for j in wave_loop(pw):
-                                for jj in air.sequential(0, G.RG_Z):
-                                    arr.out_y.get(u, indices=[0, GATE])
-                                    z_rd(z, u, jj)
-                                o_in.get(wn)
-                                o_in.get(o)
-                                with air.ops.branch(j < ngw):
-                                    dn(on, o, wn)
-                                    gsilu(on, z, on, DQ)
-                                with air.ops.branch(j >= ngw):
-                                    gsig(on, z, o, DQ)
-                                to_asm.put(on)
+                    GD.gate_core(arr, pw, ngw, G, DQ, (o_in, to_asm), K, GATE)
 
                     # ---- RoPE (attention layers)
                     with herd("rope", ROPE_AT) as h:
