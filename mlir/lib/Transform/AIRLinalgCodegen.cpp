@@ -6377,166 +6377,75 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
   }
 
   Location loc = loopOp.getLoc();
-
-  // Step 1: Hoist extension before the loop (don't hoist shape_cast yet)
-  rewriter.setInsertionPoint(loopOp);
-  Value initValue = loopOp.getInitArgs()[iterArgIndex];
-
-  // Get the wide element type from the extension output
   Type wideElemType =
       cast<VectorType>(extensionOutput.getType()).getElementType();
-  Type wideInitType = VectorType::get(
-      cast<VectorType>(initValue.getType()).getShape(), wideElemType);
-
-  // Extend the init value directly (in narrow flat form)
-  Value extendedInit;
-  if (isFloatingPoint) {
-    extendedInit =
-        arith::ExtFOp::create(rewriter, loc, wideInitType, initValue);
-  } else if (isa<arith::ExtSIOp>(extensionOp)) {
-    extendedInit =
-        arith::ExtSIOp::create(rewriter, loc, wideInitType, initValue);
-  } else {
-    extendedInit =
-        arith::ExtUIOp::create(rewriter, loc, wideInitType, initValue);
-  }
-
-  // Step 2: Create new loop with wide type for this iter_arg
-  SmallVector<Value> newInitArgs(loopOp.getInitArgs().begin(),
-                                 loopOp.getInitArgs().end());
-  newInitArgs[iterArgIndex] = extendedInit;
-
-  auto newLoopOp =
-      scf::ForOp::create(rewriter, loc, loopOp.getLowerBound(),
-                         loopOp.getUpperBound(), loopOp.getStep(), newInitArgs);
-
-  // Step 3: Clone the loop body with proper type adjustments
-  Block *oldBody = loopOp.getBody();
-  Block *newBody = newLoopOp.getBody();
-
-  rewriter.setInsertionPointToStart(newBody);
-  IRMapping mapping;
-
-  // Map the induction variable
-  mapping.map(oldBody->getArgument(0), newBody->getArgument(0));
-
-  // Map iter_args
-  for (auto [idx, oldArg] :
-       llvm::enumerate(oldBody->getArguments().drop_front(1))) {
-    mapping.map(oldArg, newBody->getArgument(idx + 1));
-  }
-
-  // Clone operations from old body, adjusting types as needed
-  for (Operation &op : oldBody->without_terminator()) {
-    // Skip extension - its result will be mapped to the wide iter_arg or wide
-    // shape_cast
-    if (&op == extensionOp) {
-      if (shapeCastBeforeExtension) {
-        // Map extension result to the shape_cast result (which we'll create
-        // below) Don't map yet - we'll map it when we encounter the shape_cast
-      } else {
-        // No shape_cast: map extension result directly to the wide iter_arg
-        mapping.map(extensionOutput, newBody->getArgument(iterArgIndex + 1));
-      }
-      continue;
+  auto castFn = [&](OpBuilder &b, Location l, Type type, Value v) -> Value {
+    if (getElementTypeOrSelf(type).getIntOrFloatBitWidth() <
+        getElementTypeOrSelf(v.getType()).getIntOrFloatBitWidth()) {
+      if (isFloatingPoint)
+        return arith::TruncFOp::create(b, l, type, v);
+      return arith::TruncIOp::create(b, l, type, v);
     }
+    if (isFloatingPoint)
+      return arith::ExtFOp::create(b, l, type, v);
+    if (isa<arith::ExtSIOp>(extensionOp))
+      return arith::ExtSIOp::create(b, l, type, v);
+    return arith::ExtUIOp::create(b, l, type, v);
+  };
 
-    // Skip truncation - we'll handle the yielded value specially
-    if (&op == truncationOp) {
-      continue;
-    }
+  // Carry the wide value through the loop; the helper casts it back to the
+  // narrow type at the start of the body, before the yield and after the loop.
+  rewriter.setInsertionPoint(loopOp);
+  OpOperand &initOperand = loopOp.getInitArgsMutable()[iterArgIndex];
+  Value initValue = initOperand.get();
+  Value extendedInit =
+      castFn(rewriter, loc,
+             VectorType::get(cast<VectorType>(initValue.getType()).getShape(),
+                             wideElemType),
+             initValue);
+  SmallVector<Value> newResults = scf::replaceAndCastForOpIterArg(
+      rewriter, loopOp, initOperand, extendedInit, castFn);
+  auto newLoopOp = cast<scf::ForOp>(
+      newResults[iterArgIndex].getDefiningOp()->getOperand(0).getDefiningOp());
+  Block *body = newLoopOp.getBody();
+  Operation *castIn = &body->front();
+  Operation *castOut =
+      body->getTerminator()->getOperand(iterArgIndex).getDefiningOp();
+  Value wideIterArg = newLoopOp.getRegionIterArgs()[iterArgIndex];
 
-    // Handle shape_cast before extension - clone it with wide element type
-    if (shapeCastBeforeExtension &&
-        &op == shapeCastBeforeExtension.getOperation()) {
-      auto narrowVecType =
-          cast<VectorType>(shapeCastBeforeExtension.getResult().getType());
-      auto wideVecType =
-          VectorType::get(narrowVecType.getShape(), wideElemType);
-
-      Value mappedSource = mapping.lookup(shapeCastBeforeExtension.getSource());
-      auto newShapeCast =
-          vector::ShapeCastOp::create(rewriter, loc, wideVecType, mappedSource);
-      mapping.map(shapeCastBeforeExtension.getResult(),
-                  newShapeCast.getResult());
-      mapping.map(extensionOutput, newShapeCast.getResult());
-      continue;
-    }
-
-    // Handle shape_cast after truncation - clone it with wide element type for
-    // the yield
-    if (shapeCastAfterTruncation &&
-        &op == shapeCastAfterTruncation.getOperation()) {
-      // We'll handle this in the yield processing
-      continue;
-    }
-
-    // Clone all other operations normally
-    rewriter.clone(op, mapping);
+  // Drop the narrow round trips the helper leaves in the body: the extension
+  // reads the wide iter_arg, and the yield takes the value before truncation.
+  // A cast is kept while something else in the body still uses it.
+  Value wideIn = wideIterArg;
+  if (shapeCastBeforeExtension) {
+    rewriter.setInsertionPoint(shapeCastBeforeExtension);
+    wideIn = vector::ShapeCastOp::create(
+        rewriter, loc,
+        VectorType::get(shapeCastBeforeExtension.getType().getShape(),
+                        wideElemType),
+        wideIterArg);
   }
+  rewriter.replaceOp(extensionOp, wideIn);
+  if (shapeCastBeforeExtension && shapeCastBeforeExtension->use_empty())
+    rewriter.eraseOp(shapeCastBeforeExtension);
+  if (castIn->use_empty())
+    rewriter.eraseOp(castIn);
 
-  // Step 4: Update the yield to yield the wide value
-  auto oldYield = cast<scf::YieldOp>(oldBody->getTerminator());
-  SmallVector<Value> newYieldOperands;
+  Value wideOut = truncationInput;
+  rewriter.setInsertionPoint(castOut);
+  if (shapeCastAfterTruncation)
+    wideOut = vector::ShapeCastOp::create(
+        rewriter, loc,
+        VectorType::get(shapeCastAfterTruncation.getType().getShape(),
+                        wideElemType),
+        wideOut);
+  rewriter.replaceOp(castOut, wideOut);
+  if (shapeCastAfterTruncation && shapeCastAfterTruncation->use_empty())
+    rewriter.eraseOp(shapeCastAfterTruncation);
+  if (truncationOp->use_empty())
+    rewriter.eraseOp(truncationOp);
 
-  for (auto [idx, yieldValue] : llvm::enumerate(oldYield.getOperands())) {
-    if ((int64_t)idx == iterArgIndex) {
-      // Get the wide value (truncation input)
-      Value wideValue = mapping.lookup(truncationInput);
-
-      // If there was a shape_cast after truncation, we need to create a wide
-      // version of it
-      if (shapeCastAfterTruncation) {
-        auto narrowVecType =
-            cast<VectorType>(shapeCastAfterTruncation.getResult().getType());
-        auto wideVecType =
-            VectorType::get(narrowVecType.getShape(), wideElemType);
-
-        auto newShapeCast =
-            vector::ShapeCastOp::create(rewriter, loc, wideVecType, wideValue);
-        newYieldOperands.push_back(newShapeCast.getResult());
-      } else {
-        newYieldOperands.push_back(wideValue);
-      }
-    } else {
-      newYieldOperands.push_back(mapping.lookup(yieldValue));
-    }
-  }
-
-  scf::YieldOp::create(rewriter, loc, newYieldOperands);
-
-  // Step 5: Hoist truncation after the loop
-  rewriter.setInsertionPointAfter(newLoopOp);
-  Value wideResult = newLoopOp.getResults()[iterArgIndex];
-
-  // Get the narrow element type from the original init value
-  auto narrowElemType =
-      cast<VectorType>(loopOp.getInitArgs()[iterArgIndex].getType())
-          .getElementType();
-  auto narrowResultType = VectorType::get(
-      cast<VectorType>(wideResult.getType()).getShape(), narrowElemType);
-
-  // Create the appropriate truncation operation based on type
-  Value narrowResult;
-  if (isFloatingPoint) {
-    narrowResult =
-        arith::TruncFOp::create(rewriter, loc, narrowResultType, wideResult);
-  } else {
-    narrowResult =
-        arith::TruncIOp::create(rewriter, loc, narrowResultType, wideResult);
-  }
-
-  // Step 6: Replace uses of the old loop
-  SmallVector<Value> finalResults;
-  for (auto [idx, result] : llvm::enumerate(newLoopOp.getResults())) {
-    if ((int64_t)idx == iterArgIndex) {
-      finalResults.push_back(narrowResult);
-    } else {
-      finalResults.push_back(result);
-    }
-  }
-
-  rewriter.replaceOp(loopOp, finalResults);
+  rewriter.replaceOp(loopOp, newResults);
 
   SmallVector<Operation *> resultOps = {newLoopOp.getOperation()};
   results.set(llvm::cast<OpResult>(getResult()), resultOps);
