@@ -462,7 +462,15 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
            "transfer, reducing the number of host-issued DMA task "
            "configure/start/await triplets. Opt-in: this reorders a channel's "
            "paced feeds ahead of the sibling-channel interleave, so enable it "
-           "only for feeds verified numerically equivalent when coalesced.">];
+           "only for feeds verified numerically equivalent when coalesced.">,
+       Option<"clRearmTileDma", "rearm-tile-dma", "bool",
+              /*default=*/"false",
+              "Re-push the finite core and memtile DMA tasks at the head of "
+              "every runtime sequence (channel reset, acquired locks back to "
+              "their initial values, one queue push per task), so a design can "
+              "be dispatched again on the same hardware context without "
+              "reloading its configuration. Needs assigned BD ids "
+              "(aie-assign-bd-ids).">];
   let dependentDialects = ["xilinx::AIEX::AIEXDialect",
                            "mlir::affine::AffineDialect"];
 }

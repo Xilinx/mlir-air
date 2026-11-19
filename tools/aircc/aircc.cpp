@@ -364,6 +364,14 @@ static cl::opt<bool>
                   cl::desc("Emulate f32 vector arithmetic using bf16"),
                   cl::init(false), cl::cat(airCompilerOptions));
 
+static cl::opt<bool> rearmTileDma(
+    "rearm-tile-dma",
+    cl::desc("Re-push finite core/memtile DMA tasks at the start of every run "
+             "(airrt-to-npu rearm-tile-dma), so a design can be dispatched "
+             "again on the same hardware context without reloading its "
+             "configuration"),
+    cl::init(false), cl::cat(airCompilerOptions));
+
 static cl::opt<unsigned> stackSize(
     "stack-size",
     cl::desc("Stack size in bytes per AIE core (default: 2048). Increase when "
@@ -1357,6 +1365,7 @@ static LogicalResult runAieCompilation() {
     os << " unroll-feed-loops=" << (unrollFeedLoops ? "true" : "false");
     os << " merge-contiguous-feeds="
        << (mergeContiguousFeeds ? "true" : "false");
+    os << " rearm-tile-dma=" << (rearmTileDma ? "true" : "false");
     os << "}";
   }
 
@@ -1378,6 +1387,9 @@ static LogicalResult runAieCompilation() {
     os << ",symbol-dce";
     os << ",affine-expand-index-ops";
     os << ",canonicalize,cse";
+    // The re-armed tasks are pushed by BD id.
+    if (rearmTileDma)
+      os << ",aie.device(aie-assign-bd-ids)";
     os << "," << airrtToNpuPass;
     os << ",canonicalize,cse";
     os << ")";

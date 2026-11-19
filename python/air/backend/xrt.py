@@ -382,6 +382,7 @@ class XRTBackend(AirBackend):
         emit_txn_cpp: bool = False,
         bf16_emulation: bool = False,
         stack_size: int = 2048,
+        rearm_tile_dma: bool = False,
         n_perf_iters: int = 0,
         n_warmup_iters: int = 10,
         device=None,
@@ -422,6 +423,9 @@ class XRTBackend(AirBackend):
                 frozen insts.bin cannot represent. The path lands on the returned
                 artifact's txn_header.
             bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
+            rearm_tile_dma: re-push finite core/memtile DMA tasks at the start of
+                every run (aircc --rearm-tile-dma), so the same hw_context can be
+                dispatched again without reloading its configuration.
             stack_size: stack size in bytes per AIE core (default: 2048). Increase when
                 kernels have deep call chains (e.g., scalar fdiv needs ~1152 bytes).
             n_perf_iters: when > 0, the loaded invoker times the kernel over this many
@@ -492,6 +496,7 @@ class XRTBackend(AirBackend):
         if not isinstance(stack_size, int) or stack_size <= 0:
             raise ValueError("`stack_size` must be a positive integer")
         self.stack_size = stack_size
+        self.rearm_tile_dma = rearm_tile_dma
 
     def __del__(self):
         self.unload()
@@ -733,6 +738,9 @@ class XRTBackend(AirBackend):
 
             if self.stack_size != 2048:
                 aircc_options += ["--stack-size", str(self.stack_size)]
+
+            if self.rearm_tile_dma:
+                aircc_options += ["--rearm-tile-dma"]
 
             if self.verbose:
                 print("Running aircc with options:", " ".join(aircc_options))

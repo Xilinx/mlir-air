@@ -32,6 +32,7 @@
 
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Debug.h"
@@ -979,6 +980,149 @@ void removeDeadDeviceComputeOps(func::FuncOp funcOp) {
       }
     }
   }
+}
+
+// Re-arming finite tile DMA tasks (rearm-tile-dma).
+//
+// air-to-aie gives a core or memtile DMA channel a circular BD chain when every
+// transfer on it repeats equally per run, and otherwise one finite task per
+// repeat bucket (aie.dma_start ... repeat_count). The device configuration
+// pushes those tasks once, when it is loaded, so a second dispatch on the same
+// hardware context finds the channel without a task and hangs unless the host
+// switches contexts, which reloads the whole configuration.
+// For every channel with a finite task, the head of each runtime sequence
+// resets the channel, sets the locks its BDs acquire back to their initial
+// values (after a configuration load its tasks may already hold them), and
+// pushes its tasks again in order. BD ids must already be assigned.
+
+struct RearmTask {
+  int32_t headBd;
+  int32_t repeat;
+};
+
+struct RearmChannel {
+  xilinx::AIE::TileOp tile;
+  xilinx::AIE::DMAChannelDir dir;
+  int32_t index;
+  bool finite = false;
+  SmallVector<RearmTask> tasks;
+  llvm::SetVector<xilinx::AIE::LockOp> acquired;
+};
+
+// Walk the BD chain from `head`; true if it ends at an aie.end block rather
+// than returning to a block it has visited (a circular chain).
+static bool chainIsFinite(Block *head) {
+  llvm::SmallPtrSet<Block *, 8> seen;
+  for (Block *b = head; b;) {
+    if (!seen.insert(b).second)
+      return false;
+    if (isa<xilinx::AIE::EndOp>(b->getTerminator()))
+      return true;
+    auto next = dyn_cast<xilinx::AIE::NextBDOp>(b->getTerminator());
+    if (!next)
+      return true;
+    b = next.getDest();
+  }
+  return true;
+}
+
+static void collectChain(Block *head, RearmChannel &ch) {
+  llvm::SmallPtrSet<Block *, 8> seen;
+  for (Block *b = head; b && seen.insert(b).second;) {
+    for (auto useLock : b->getOps<xilinx::AIE::UseLockOp>())
+      if (useLock.getAction() != xilinx::AIE::LockAction::Release)
+        if (auto lock = useLock.getLock().getDefiningOp<xilinx::AIE::LockOp>())
+          ch.acquired.insert(lock);
+    auto next = dyn_cast<xilinx::AIE::NextBDOp>(b->getTerminator());
+    if (!next)
+      break;
+    b = next.getDest();
+  }
+}
+
+LogicalResult rearmTileDmaTasks(xilinx::AIE::DeviceOp device) {
+  SmallVector<xilinx::AIE::RuntimeSequenceOp> seqs(
+      device.getOps<xilinx::AIE::RuntimeSequenceOp>());
+  if (seqs.empty())
+    return success();
+
+  // One entry per (tile, direction, channel), in IR order.
+  llvm::MapVector<std::tuple<Operation *, int, int32_t>, RearmChannel> channels;
+  auto visit = [&](xilinx::AIE::TileOp tile, Region &region) -> LogicalResult {
+    for (auto start : region.getOps<xilinx::AIE::DMAStartOp>()) {
+      auto key = std::make_tuple(tile.getOperation(),
+                                 static_cast<int>(start.getChannelDir()),
+                                 start.getChannelIndex());
+      RearmChannel &ch = channels[key];
+      ch.tile = tile;
+      ch.dir = start.getChannelDir();
+      ch.index = start.getChannelIndex();
+      Block *head = start.getDest();
+      auto bd = head->getOps<xilinx::AIE::DMABDOp>();
+      if (bd.empty())
+        continue;
+      std::optional<int32_t> id = (*bd.begin()).getBdId();
+      if (!id)
+        return start.emitOpError("has no bd_id; run aie-assign-bd-ids first");
+      ch.tasks.push_back({*id, start.getRepeatCount()});
+      if (chainIsFinite(head))
+        ch.finite = true;
+      collectChain(head, ch);
+    }
+    return success();
+  };
+  for (auto mem : device.getOps<xilinx::AIE::MemOp>())
+    if (failed(visit(cast<xilinx::AIE::TileOp>(mem.getTile().getDefiningOp()),
+                     mem.getBody())))
+      return failure();
+  for (auto mem : device.getOps<xilinx::AIE::MemTileDMAOp>())
+    if (failed(visit(cast<xilinx::AIE::TileOp>(mem.getTile().getDefiningOp()),
+                     mem.getBody())))
+      return failure();
+
+  SmallVector<RearmChannel *> finite;
+  for (auto &[key, ch] : channels)
+    if (ch.finite)
+      finite.push_back(&ch);
+  if (finite.empty())
+    return success();
+
+  for (auto seq : seqs) {
+    Block &body = seq.getBody().front();
+    OpBuilder b = OpBuilder::atBlockBegin(&body);
+    Location loc = seq.getLoc();
+    auto i32 = b.getI32Type();
+    auto dirAttr = [&](xilinx::AIE::DMAChannelDir d) {
+      return xilinx::AIE::DMAChannelDirAttr::get(b.getContext(), d);
+    };
+    // Every channel is reset before any lock is set, and every lock is
+    // set before any task is pushed: a pushed task acquires at once.
+    for (RearmChannel *ch : finite)
+      xilinx::AIEX::DmaChannelResetOp::create(b, loc, ch->tile.getResult(),
+                                              dirAttr(ch->dir),
+                                              b.getI32IntegerAttr(ch->index));
+    llvm::SetVector<xilinx::AIE::LockOp> locks;
+    for (RearmChannel *ch : finite)
+      locks.insert(ch->acquired.begin(), ch->acquired.end());
+    for (xilinx::AIE::LockOp lock : locks) {
+      Value init = arith::ConstantOp::create(
+          b, loc, i32, b.getI32IntegerAttr(lock.getInit().value_or(0)));
+      xilinx::AIEX::SetLockOp::create(b, loc, lock.getResult(), init);
+    }
+    for (RearmChannel *ch : finite)
+      for (const RearmTask &t : ch->tasks) {
+        Value bd = arith::ConstantOp::create(b, loc, i32,
+                                             b.getI32IntegerAttr(t.headBd));
+        Value rep = arith::ConstantOp::create(b, loc, i32,
+                                              b.getI32IntegerAttr(t.repeat));
+        xilinx::AIEX::NpuPushQueueOp::create(
+            b, loc, b.getI32IntegerAttr(ch->tile.getCol()),
+            b.getI32IntegerAttr(ch->tile.getRow()), dirAttr(ch->dir),
+            b.getI32IntegerAttr(ch->index), b.getBoolAttr(false), rep, bd,
+            /*repeat_state_table_idx=*/nullptr);
+      }
+  }
+  return success();
 }
 
 } // namespace
@@ -4069,6 +4213,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       device->removeAttr(kMultiIterLaunchAttr);
       device->removeAttr(kNumLaunchItersAttr);
     });
+
+    if (clRearmTileDma) {
+      SmallVector<xilinx::AIE::DeviceOp> devices;
+      module.walk([&](xilinx::AIE::DeviceOp d) { devices.push_back(d); });
+      for (auto device : devices)
+        if (failed(rearmTileDmaTasks(device))) {
+          signalPassFailure();
+          return;
+        }
+    }
   }
 
   // Whether two buffer descriptors touch a common element of their buffer;
