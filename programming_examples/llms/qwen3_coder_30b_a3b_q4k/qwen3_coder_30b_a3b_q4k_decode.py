@@ -391,20 +391,20 @@ def build_module(waves, maxl, cap=None):
     return launch.build(target="npu2")
 
 
-def layer_inputs(w, layers):
-    """Host arrays for `layers`: (WE, WD, M, each layer's (q_norm, k_norm))."""
-    WE, WD, M, qkn = [], [], np.zeros((len(layers), MISC_LEN), bfloat16), []
+def layer_inputs(w, layers, we):
+    """Host arrays for `layers`: (WD, M, each layer's (q_norm, k_norm)). Each
+    layer's experts go into `we` [len(layers) * E, G_EXP, R, BB] as they are
+    read, without a host copy of the whole."""
+    WD, M, qkn = [], np.zeros((len(layers), MISC_LEN), bfloat16), []
     for i, l in enumerate(layers):
         wd, misc, wgu, wdn, qn, kn = A.weights(w, l)
-        WE.append(
-            np.concatenate(
-                [wgu.reshape(E, -1, R, BB), wdn.reshape(E, -1, R, BB)], axis=1
-            )
+        we[i * E : (i + 1) * E] = np.concatenate(
+            [wgu.reshape(E, -1, R, BB), wdn.reshape(E, -1, R, BB)], axis=1
         )
         WD.append(wd)
         M[i, D:] = misc
         qkn.append((qn, kn))
-    return np.ascontiguousarray(np.concatenate(WE)), np.stack(WD), M, qkn
+    return np.stack(WD), M, qkn
 
 
 class Q3CDecoder(DL.Decoder):
@@ -412,11 +412,12 @@ class Q3CDecoder(DL.Decoder):
     Per token the host writes x, the layers' RoPE rows and L, and runs the
     layers' ELF with the shortest cache read that covers L."""
 
-    def __init__(self, decs, lart, args, lm_args, waves, pw, qkn, cap, we_slack=0):
+    def __init__(self, decs, lart, w, layers, lm_args, waves, pw, cap, we_slack=0):
         """decs: (positions read, ELF artifact, params.txt) per layers' ELF,
-        all on the same buffers. args: the buffer args but the KV cache, which
-        is allocated here for `cap` positions. we_slack: bytes past the experts
-        (args[0]) that a reader of WE other than this decode may touch."""
+        all on the same buffers. The weights of `layers` go into their buffers
+        layer by layer; the KV cache is allocated here for `cap` positions.
+        we_slack: bytes past the experts that a reader of WE other than this
+        decode may touch."""
         import lm_head as LM
         from decode_elf import param_writers
         from kv_bos import KVBuffers
@@ -425,7 +426,7 @@ class Q3CDecoder(DL.Decoder):
         )
 
         super().__init__(waves, pw, D, LM.unpack_logits)
-        xrt, self.qkn = self.xrt, qkn
+        xrt = self.xrt
 
         def zeros(n, _arg):
             o = xrt.ext.bo(self.dev, n)
@@ -433,7 +434,18 @@ class Q3CDecoder(DL.Decoder):
             o.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
             return o
 
-        bos = [self.bo(t, we_slack if i == 0 else 0) for i, t in enumerate(args)]
+        nl = len(layers)
+        nbytes = nl * E * G_EXP * R * BB
+        we_bo = xrt.ext.bo(self.dev, nbytes + we_slack)
+        m = np.frombuffer(we_bo.map(), np.uint8)
+        m[nbytes:] = 0
+        wd, M, self.qkn = layer_inputs(
+            w, layers, m[:nbytes].reshape(nl * E, G_EXP, R, BB)
+        )
+        we_bo.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+        xs = np.zeros((waves + 1, pw, D), bfloat16)
+        rw = np.zeros((nl, 3 * DH), bfloat16)
+        bos = [we_bo] + [self.bo(t) for t in (xs, wd, M, rw)]
         layout = types.SimpleNamespace(kv_layout=lambda c: kv_layout(c, waves * pw))
         self.cap, self.kv = cap, KVBuffers(layout, cap, zeros)
         self.bos = bos[:4] + [self.kv.kvc] + bos[4:] + list(self.kv.extra)
@@ -527,19 +539,16 @@ def load(w, maxl, waves=W.N_LAYERS // PER_WAVE, we_slack=0, reads=()):
 
     decs, lart = compile_all(waves, maxl, reads)
     layers = list(range(PER_WAVE * waves))
-    we, wd, M, qkn = layer_inputs(w, layers)
-    xs = np.zeros((waves + 1, PER_WAVE, D), bfloat16)
-    rw = np.zeros((len(layers), 3 * DH), bfloat16)
     nw = np.asarray(w.final_norm()).astype(bfloat16)
     y = np.zeros((LM.NCOL, LM.ROUNDS, LM.NROW * LM.RB), bfloat16)
     return Q3CDecoder(
         decs,
         lart,
-        [we, xs, wd, M, rw],
+        w,
+        layers,
         [nw, LM.pack_weights(w), y],
         waves,
         PER_WAVE,
-        qkn,
         maxl,
         we_slack,
     )
