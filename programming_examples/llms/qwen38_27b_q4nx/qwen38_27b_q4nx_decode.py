@@ -58,6 +58,7 @@ from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
 from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
+from kv_bos import kv_groups  # noqa: E402
 from rope import rope_weights  # noqa: E402
 
 R, RB, CB, BB, D, I = G.R, G.RB, G.CB, G.BB, G.D, G.I
@@ -76,6 +77,15 @@ ISSUE_AT = (5, 4)
 STEP_COL = 4
 QKV_G = G.QKV
 UO = KPU * QR * DH  # an attention unit's output: its two KV heads' query heads
+
+
+def kv_layout(cap, waves):
+    """KV buffers for a cache of `cap` positions: (elements per attention
+    layer, attention layers per buffer, elements per buffer, buffer-arg index
+    per buffer). Buffers past the first follow SO."""
+    layer = 2 * cap * DK
+    group, sizes = kv_groups(waves, layer)
+    return layer, group, sizes, [5] + [9 + i for i in range(len(sizes) - 1)]
 
 
 def build_module(waves, maxl, cap=None):
@@ -135,10 +145,13 @@ def build_module(waves, maxl, cap=None):
     # need no ordering between them
     CWI = air.tensor([ng, NCH, 7 * HD], bf16)
     SI = air.tensor([ng, NV, R, HD * 32], f32)
-    KV = air.tensor([waves, 2, cap, DK], bf16, inout=True)
+    _, kv_group, kv_sizes, _ = kv_layout(cap, waves)
+    kv_rows = [n // (2 * cap * DK) for n in kv_sizes]
+    KV = air.tensor([kv_rows[0], 2, cap, DK], bf16, inout=True)
     RW = air.tensor([waves, 3 * DH], bf16)
     CWO = air.tensor([ng, NCH, 7 * HD], bf16)
     SO = air.tensor([ng, NV, R, HD * 32], f32)
+    KVS = [KV] + [air.tensor([n, 2, cap, DK], bf16, inout=True) for n in kv_rows[1:]]
     # the context length, this token's position + 1
     SEQ = air.tensor([], i32, name="L")
 
@@ -170,6 +183,25 @@ def build_module(waves, maxl, cap=None):
             # the wave's first layer
             lbase = air.rtp(w * pw)
             Lp = air.rtp(SEQ.value)
+
+            def kv_traffic(i, pos):
+                kv, a = KVS[i], (w - i * kv_group if i else w)
+                k_out.get(kv[a, 0, pos, :])
+                v_out.get(kv[a, 1, pos, :])
+                k_rd.put(kv[a, 0, 0:maxl, :])
+                v_rd.put(kv[a, 1, 0:maxl, :])
+
+            def kv_split_traffic(pos):
+                # one case per KV buffer, keyed by the wave's
+                if len(KVS) == 1:
+                    return kv_traffic(0, pos)
+                last = len(KVS) - 1
+                with air.ops.switch(w // kv_group, cases=list(range(last))) as arm:
+                    kv_traffic(last, pos)
+                for i in range(last):
+                    with arm.case(i):
+                        kv_traffic(i, pos)
+
             with air.segment(name="seg", params=[lbase, Lp]) as seg:
 
                 @seg.body
@@ -612,11 +644,7 @@ def build_module(waves, maxl, cap=None):
                         m_dn.put(M[lay, MISC["dnw"][0] : MISC["dnw"][1]])
                         if is_att:
                             rw_in.put(RW[w, :])
-                            pos = Lp.as_index() - 1
-                            k_out.get(KV[w, 0, pos, :])
-                            v_out.get(KV[w, 1, pos, :])
-                            k_rd.put(KV[w, 0, 0:maxl, :])
-                            v_rd.put(KV[w, 1, 0:maxl, :])
+                            kv_split_traffic(Lp.as_index() - 1)
 
         launch.body(body)
 
@@ -668,6 +696,7 @@ class Q38Decoder:
         import pyxrt as xrt
 
         from decode_elf import param_writers
+        from kv_bos import KVBuffers
         from aie.utils.hostruntime.xrtruntime.parameter_scratchpad import (
             ParameterScratchpad,
         )
@@ -697,16 +726,23 @@ class Q38Decoder:
             self.M: nl * MISC_LEN * 2,
             self.CWI: ng * NCH * 7 * HD * 2,
             self.SI: ng * NV * R * HD * 32 * 4,
-            self.KV: waves * 2 * maxl * DK * 2,
             self.RW: waves * 3 * DH * 2,
             self.CWO: ng * NCH * 7 * HD * 2,
             self.SO: ng * NV * R * HD * 32 * 4,
         }
-        self.bos, maps = [], []
-        for i in range(9):
-            o, m = bo_of(sizes[i])
+        self.bos, maps = [], {}
+        for i in sorted(sizes):
+            o, maps[i] = bo_of(sizes[i])
             self.bos.append(o)
-            maps.append(m)
+        layout = types.SimpleNamespace(kv_layout=lambda c: kv_layout(c, waves))
+        self.cap = maxl
+        self.kv = KVBuffers(layout, maxl, lambda n, _arg: bo_of(n)[0])
+        self.bos = (
+            self.bos[: self.KV]
+            + [self.kv.kvc]
+            + self.bos[self.KV :]
+            + list(self.kv.extra)
+        )
         wd = maps[self.WD].reshape(nl, NCOL, 2, G.G_DENSE, 2, BB)
         misc = maps[self.M].view(bfloat16).reshape(nl, MISC_LEN)
         cwi = maps[self.CWI].view(bfloat16).reshape(ng, NCH, 7 * HD)
@@ -799,20 +835,26 @@ class Q38Decoder:
         state."""
         xrt, n, nv = self.xrt, pf.n, len(self.conv_w)
         mp = lambda i, dt: np.frombuffer(self.bos[i].map(), dt)  # noqa: E731
-        kv = mp(self.KV, bfloat16).reshape(self.waves, 2, -1, DK)
+        to_dev = xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE
         cw = mp(self.CWI, bfloat16).reshape(nv, NCH, 7 * HD)
         s = mp(self.SI, np.float32).reshape(nv, NV, R, HD * 32)
         g = 0
         for j in range(len(pf.layers)):
             if j in pf.kv:
+                bo, off = self.kv.locate(j // self.pw)
                 for h in range(2):
-                    kv[j // self.pw, h, :n] = np.concatenate(pf.kv[j][h])
+                    rows = np.concatenate(pf.kv[j][h]).reshape(n, DK)
+                    rows = np.ascontiguousarray(rows.astype(bfloat16)).view(np.uint8)
+                    rows = rows.ravel()
+                    at = off + h * self.cap * DK * 2
+                    bo.write(rows, at)
+                    bo.sync(to_dev, rows.nbytes, at)
             else:
                 cw[g] = G.conv_cache(pf.conv[j], self.conv_w[g])
                 s[g] = G.state_chunks(pf.state[j])
                 g += 1
-        for i in (self.KV, self.CWI, self.SI):
-            self.bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+        for i in (self.CWI, self.SI):
+            self.bos[i].sync(to_dev)
 
     def reset(self):
         """A new sequence: every Gated DeltaNet layer's state and conv history

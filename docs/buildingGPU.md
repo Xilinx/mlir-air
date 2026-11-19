@@ -1,4 +1,4 @@
-# Build MLIR-AIR for GPU Target
+# Getting Started on AMD GPUs (Linux)
 
 This guide provides instructions for building MLIR-AIR for GPU targets without AIE dependencies. Tested on MI300X.
 
@@ -8,16 +8,6 @@ This guide provides instructions for building MLIR-AIR for GPU targets without A
 - CMake 3.20+
 - Ninja build system
 - Python 3.8+
-
-### Cluster Access (Optional)
-
-If using the OCI MI300X cluster:
-
-```bash
-salloc -p amd-arad -N 1 --gres=gpu:2 -t 0-1
-srun --pty $SHELL
-bash
-```
 
 ## Quick Build (Recommended)
 
@@ -45,6 +35,7 @@ source utils/env_setup_gpu.sh install
 ## Build Script Details
 
 The `build-mlir-air-gpu.sh` script builds MLIR-AIR with:
+
 - `-DAIR_ENABLE_AIE=OFF` - Disables AIE backend dependency
 - `-DAIR_ENABLE_GPU=ON` - Enables GPU/ROCDL passes
 - AIR core dialect and transformations
@@ -87,9 +78,9 @@ With GPU-only build, the following passes are available:
 | `air-to-rocdl` | Lower AIR dialect to GPU/ROCDL dialect |
 | `air-gpu-outlining` | Outline GPU kernels into gpu.module |
 | `air-to-async` | Lower AIR dialect to async dialect |
-| `convert-to-air` | Convert operations to AIR dialect |
+| `air-par-to-herd`, `air-par-to-launch`, `air-par-to-segment`, `air-copy-to-dma` | Convert `scf.parallel` loops and memory copies to AIR operations |
 
-AIE-specific passes (e.g., `air-to-aie`) are not available in this configuration; attempts to invoke them will fail because AIE support is disabled (`AIR_ENABLE_AIE=OFF`).
+A subset of the AIR transformation passes is also registered; see the `AIR_ENABLE_AIE=OFF` branch of `registerTransformPasses()` in [`mlir/lib/Transform/Passes.cpp`](https://github.com/Xilinx/mlir-air/blob/main/mlir/lib/Transform/Passes.cpp). AIE-specific passes, such as `air-to-aie`, are not registered.
 
 ## GPU Compilation with aircc
 
@@ -107,7 +98,7 @@ aircc --target gpu --gpu-arch gfx942 -o output.mlir test/gpu/4k_4k_mul/air_sync.
 # With verbose output to see compilation steps
 aircc --target gpu --gpu-arch gfx942 -v -o output.mlir test/gpu/4k_4k_mul/air_sync.mlir
 
-# Keep intermediate files for debugging
+# Write intermediate files to a chosen directory
 aircc --target gpu --gpu-arch gfx942 -v --tmpdir /tmp/mytest -o output.mlir test/gpu/4k_4k_mul/air_sync.mlir
 ```
 
@@ -118,8 +109,8 @@ aircc --target gpu --gpu-arch gfx942 -v --tmpdir /tmp/mytest -o output.mlir test
 | `--target` | `aie` | Target backend: `aie` or `gpu` |
 | `--gpu-arch` | `gfx942` | GPU architecture |
 | `--gpu-runtime` | `HIP` | GPU runtime: `HIP` or `OpenCL` |
-| `-o <file>` | stdout | Output file |
-| `--tmpdir <dir>` | auto | Directory for intermediate files |
+| `-o <file>` | none | Output file. Without `-o`, the final IR is written to `<tmpdir>/<stem>_final.mlir`, where `<stem>` is the input file name without its extension, and also printed to stdout. |
+| `--tmpdir <dir>` | `air_project` | Directory for intermediate files |
 | `-v` | off | Show compilation steps |
 
 ### Supported GPU Architectures
@@ -179,6 +170,7 @@ ls /tmp/matmul/
 ### Output Structure
 
 After compilation, the output MLIR contains:
+
 - `gpu.binary` with embedded AMDGPU ELF binary
 - `gpu.launch_func` calls to invoke the kernel
 - Host-side LLVM code for memory management and kernel launch
@@ -292,7 +284,7 @@ export PYTHONPATH=/path/to/mlir-air/python:$PYTHONPATH
 ### Missing Python Bindings
 
 If you see:
-```
+```text
 ModuleNotFoundError: No module named 'air'
 ```
 
@@ -308,12 +300,7 @@ export PYTHONPATH=/path/to/mlir-air/python:$PYTHONPATH
 
 ### AIE Pass Errors
 
-If you see errors like:
-```
-error: AIRToAIE pass requires AIE support. Rebuild with -DAIR_ENABLE_AIE=ON
-```
-
-This is expected behavior. The GPU-only build does not include AIE backend support. Use `--target gpu` with aircc for GPU targets.
+A GPU-only build does not register AIE passes, so `air-opt` rejects options such as `--air-to-aie` as unknown command-line options. Use `aircc --target gpu` for GPU targets.
 
 ### Missing air-opt or mlir-opt
 
@@ -337,7 +324,7 @@ export LD_LIBRARY_PATH=/opt/rocm/lib:$LD_LIBRARY_PATH
 ### Named Barrier Error
 
 If you see:
-```
+```text
 error: cannot evaluate equated symbol 'air_kernel_0.num_named_barrier'
 ```
 
@@ -366,6 +353,7 @@ cmake .. \
 | `AIR_ENABLE_GPU` | OFF | Enable GPU backend (ROCDL/HIP) |
 
 Build configurations:
+
 - **GPU-only**: `-DAIR_ENABLE_AIE=OFF -DAIR_ENABLE_GPU=ON`
 - **AIE-only**: `-DAIR_ENABLE_AIE=ON -DAIR_ENABLE_GPU=OFF`
 - **Both**: `-DAIR_ENABLE_AIE=ON -DAIR_ENABLE_GPU=ON` (requires mlir-aie)

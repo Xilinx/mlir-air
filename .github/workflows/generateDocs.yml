@@ -116,6 +116,14 @@ jobs:
             echo "ERROR: tblgen reference docs not generated:$missing" >&2
             exit 1
           fi
+          # mlir-tblgen emits a Hugo "[TOC]" marker in dialect docs and no
+          # top-level heading in pass and op docs.
+          sed -i '/^\[TOC\]$/d' docs/AIRDialect.md docs/AIRRtDialect.md
+          for page in "AIRConversionPasses:AIR Conversion Passes" \
+                      "AIRTransformPasses:AIR Transformation Passes" \
+                      "AIRTransformOps:AIR Transform Ops"; do
+            sed -i "1a # ${page#*:}" "docs/${page%%:*}.md"
+          done
 
       # Pull perf.json from the most recent nightly LLM benchmark that produced
       # an artifact so generate_readme.py can render the LLM benchmark table. We

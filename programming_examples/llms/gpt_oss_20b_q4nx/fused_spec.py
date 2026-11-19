@@ -38,24 +38,30 @@ SHAPES = {
     "down": (D_PAD, D_MODEL, 2),
 }
 
-_attn = D.Attn(
-    col=0,
-    dh=DH,
-    lkp=32,
-    kv_heads=KV_HEADS // 2,
-    # the cores read an even number of blocks, so one past the last
-    max_blocks=-(-max_len // 32) + 1,
-    # the q / k biases
-    split_scores=True,
-    sinks=True,
-)
-CFG = D.Config(
-    attn={"a0": _attn, "a1": _attn._replace(col=7)},
-    act="silu",
-    ops={"f": ("a0", "a1"), "s": ("a0", "a1")},
-    windows={"s": WINDOW},
-    mxfp4=True,
-)
+
+def config(max_len):
+    """The device for prompts of up to max_len tokens."""
+    attn = D.Attn(
+        col=0,
+        dh=DH,
+        lkp=32,
+        kv_heads=KV_HEADS // 2,
+        # the cores read an even number of blocks, so one past the last
+        max_blocks=-(-max_len // 32) + 1,
+        # the q / k biases
+        split_scores=True,
+        sinks=True,
+    )
+    return D.Config(
+        attn={"a0": attn, "a1": attn._replace(col=7)},
+        act="silu",
+        ops={"f": ("a0", "a1"), "s": ("a0", "a1")},
+        windows={"s": WINDOW},
+        mxfp4=True,
+    )
+
+
+CFG = config(max_len)
 ATTN_POINTS = attn_points(HEADS)
 
 
