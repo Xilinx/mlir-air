@@ -1474,8 +1474,8 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
     auto module = getOperation();
     auto context = module.getContext();
 
-    LLVM_DEBUG(llvm::outs() << "input\n");
-    LLVM_DEBUG(module.print(llvm::outs()));
+    LLVM_DEBUG(llvm::dbgs() << "input\n");
+    LLVM_DEBUG(module.print(llvm::dbgs()));
 
     ConversionTarget target(*context);
 
@@ -1529,8 +1529,8 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
     for (auto o : waits)
       o->erase();
 
-    LLVM_DEBUG(llvm::outs() << "output\n");
-    LLVM_DEBUG(module.print(llvm::outs()));
+    LLVM_DEBUG(llvm::dbgs() << "output\n");
+    LLVM_DEBUG(module.print(llvm::dbgs()));
 
     RewritePatternSet pattern(context);
     air::DmaMemcpyNdOp::getCanonicalizationPatterns(pattern, context);
@@ -1685,8 +1685,8 @@ struct ParallelToHerdPass
     auto module = getOperation();
     auto context = module.getContext();
 
-    LLVM_DEBUG(llvm::outs() << "input\n");
-    LLVM_DEBUG(module.print(llvm::outs()));
+    LLVM_DEBUG(llvm::dbgs() << "input\n");
+    LLVM_DEBUG(module.print(llvm::dbgs()));
 
     // Ensure that air.dma_memcpy_nd ops between L1 and L2 are within at least
     // two parent scf.parallel loops.
@@ -1798,8 +1798,8 @@ struct ParallelToHerdPass
     }
     getHerdNames(module);
 
-    LLVM_DEBUG(llvm::outs() << "output\n");
-    LLVM_DEBUG(module.print(llvm::outs()));
+    LLVM_DEBUG(llvm::dbgs() << "output\n");
+    LLVM_DEBUG(module.print(llvm::dbgs()));
   }
 };
 
@@ -1820,8 +1820,8 @@ struct ParallelToLaunchPass
     auto module = getOperation();
     auto context = module.getContext();
 
-    LLVM_DEBUG(llvm::outs() << "input\n");
-    LLVM_DEBUG(module.print(llvm::outs()));
+    LLVM_DEBUG(llvm::dbgs() << "input\n");
+    LLVM_DEBUG(module.print(llvm::dbgs()));
 
     llvm::SmallVector<air::LaunchOp> launchOps;
     module.walk([&](air::LaunchOp op) { launchOps.push_back(op); });
@@ -1892,8 +1892,8 @@ struct ParallelToLaunchPass
     }
     getSegmentNames(module);
 
-    LLVM_DEBUG(llvm::outs() << "output\n");
-    LLVM_DEBUG(module.print(llvm::outs()));
+    LLVM_DEBUG(llvm::dbgs() << "output\n");
+    LLVM_DEBUG(module.print(llvm::dbgs()));
   }
 };
 
@@ -1914,8 +1914,8 @@ struct ParallelToSegmentPass
     auto module = getOperation();
     auto context = module.getContext();
 
-    LLVM_DEBUG(llvm::outs() << "input\n");
-    LLVM_DEBUG(module.print(llvm::outs()));
+    LLVM_DEBUG(llvm::dbgs() << "input\n");
+    LLVM_DEBUG(module.print(llvm::dbgs()));
 
     llvm::SmallVector<air::SegmentOp> segmentOps;
     module.walk([&](air::SegmentOp op) { segmentOps.push_back(op); });
@@ -1986,8 +1986,8 @@ struct ParallelToSegmentPass
     }
     getSegmentNames(module);
 
-    LLVM_DEBUG(llvm::outs() << "output\n");
-    LLVM_DEBUG(module.print(llvm::outs()));
+    LLVM_DEBUG(llvm::dbgs() << "output\n");
+    LLVM_DEBUG(module.print(llvm::dbgs()));
   }
 };
 

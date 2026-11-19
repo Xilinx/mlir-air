@@ -1342,7 +1342,7 @@ public:
       if (auto v = llvm::dyn_cast_if_present<Value>(size)) {
         auto c = dyn_cast_if_present<arith::ConstantIndexOp>(v.getDefiningOp());
         if (!c) {
-          LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
+          LLVM_DEBUG(llvm::dbgs() << "Found non-constant dim!\n");
           return {};
         }
         tripCounts.push_back(c.value());
@@ -1350,7 +1350,7 @@ public:
         auto a = llvm::dyn_cast_if_present<Attribute>(size);
         auto c = llvm::dyn_cast_if_present<IntegerAttr>(a);
         if (!c) {
-          LLVM_DEBUG(llvm::outs() << "unhandled addr!\n");
+          LLVM_DEBUG(llvm::dbgs() << "unhandled addr!\n");
           return {};
         }
         tripCounts.push_back(c.getInt());
@@ -1374,13 +1374,13 @@ public:
       // Adjust the tile size to largest factor of the trip count less than
       // tSize.
       auto constTripCount = tripCounts[i];
-      LLVM_DEBUG(llvm::outs() << "adj: " << tFactorAdjusted
+      LLVM_DEBUG(llvm::dbgs() << "adj: " << tFactorAdjusted
                               << " iters: " << constTripCount << "\n");
       if (constTripCount > 1 && tFactorAdjusted > constTripCount / 2)
         tFactorAdjusted = constTripCount / 2;
       while (constTripCount % tFactorAdjusted != 0)
         tFactorAdjusted--;
-      LLVM_DEBUG(llvm::outs() << "final adj: " << tFactorAdjusted << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "final adj: " << tFactorAdjusted << "\n");
     }
   }
 
@@ -1395,8 +1395,8 @@ public:
     tileSizes->resize(nLoops);
 
     uint64_t fp = air::CostModel().getOpCounts(op)["footprint"];
-    LLVM_DEBUG(llvm::outs() << "Footprint: " << fp << "\n");
-    LLVM_DEBUG(llvm::outs() << "Cache size: " << cacheSizeBytes << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "Footprint: " << fp << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "Cache size: " << cacheSizeBytes << "\n");
     uint64_t excessFactor = llvm::divideCeil(fp, cacheSizeBytes);
     if (excessFactor <= 1) {
       *tileSizes = tripCounts;
@@ -1517,8 +1517,8 @@ public:
         scf::populateSCFForLoopCanonicalizationPatterns(stageL2Patterns);
         (void)applyPatternsGreedily(called, std::move(stageL2Patterns));
 
-        LLVM_DEBUG(llvm::outs() << "After L2 Tiling\n");
-        LLVM_DEBUG(called.print(llvm::outs()));
+        LLVM_DEBUG(llvm::dbgs() << "After L2 Tiling\n");
+        LLVM_DEBUG(called.print(llvm::dbgs()));
         for (int i = 0, e = tripCounts.size(); i < e; i++)
           tripCounts[i] = l2_tile_size[i];
         next_match = StringAttr::get(ctx, "L2_promoted");
@@ -1552,9 +1552,9 @@ public:
           herd_tile_size[i] = l1_tile_size[i];
           l1_tile_size[i] = 0;
         }
-        LLVM_DEBUG(llvm::outs() << "herd tile size [" << i
+        LLVM_DEBUG(llvm::dbgs() << "herd tile size [" << i
                                 << "] = " << herd_tile_size[i] << "\n");
-        LLVM_DEBUG(llvm::outs() << "L1 tile size [" << i
+        LLVM_DEBUG(llvm::dbgs() << "L1 tile size [" << i
                                 << "] = " << l1_tile_size[i] << "\n");
       }
 
@@ -1573,8 +1573,8 @@ public:
       (void)applyPatternsGreedily(called, std::move(patterns));
       next_match = StringAttr::get(ctx, "herd_tiling");
 
-      LLVM_DEBUG(llvm::outs() << "After Herd Tiling\n");
-      LLVM_DEBUG(called.print(llvm::outs()));
+      LLVM_DEBUG(llvm::dbgs() << "After Herd Tiling\n");
+      LLVM_DEBUG(called.print(llvm::dbgs()));
 
       bool needL1Tiling = !std::all_of(l1_tile_size.begin(), l1_tile_size.end(),
                                        [](int i) { return i == 0; });
@@ -1610,8 +1610,8 @@ public:
       stage3Patterns.insert<RemoveAllocCopyLinalgOpCopyPattern>(ctx);
       (void)applyPatternsGreedily(called, std::move(stage3Patterns));
 
-      LLVM_DEBUG(llvm::outs() << "After L1 Tiling\n");
-      LLVM_DEBUG(called.print(llvm::outs()));
+      LLVM_DEBUG(llvm::dbgs() << "After L1 Tiling\n");
+      LLVM_DEBUG(called.print(llvm::dbgs()));
 
       called.walk([](linalg::LinalgOp op) {
         op->removeAttr(air::LinalgTransforms::kLinalgTransformMarker);
