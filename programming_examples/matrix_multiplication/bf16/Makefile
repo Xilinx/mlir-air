@@ -10,7 +10,7 @@ TILE_K_L2 ?= 64
 TILE_K_L1 ?= 32
 TILE_N ?= 64
 
-# run3x3's 576x576x576 needs these tiles; as target-specific variables they
+# The tiles run3x3's problem size needs. As target-specific variables they
 # also reach compile-kernel, so the kernel is built for the same K tile.
 run3x3: TILE_M = 64
 run3x3: TILE_K_L2 = 288
