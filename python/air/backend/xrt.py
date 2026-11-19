@@ -382,11 +382,11 @@ class XRTBackend(AirBackend):
         emit_txn_cpp: bool = False,
         bf16_emulation: bool = False,
         stack_size: int = 2048,
-        rearm_tile_dma: bool = False,
         n_perf_iters: int = 0,
         n_warmup_iters: int = 10,
         device=None,
         allow_deadlock_prone_routing: bool = False,
+        rearm_tile_dma: bool = False,
     ):
         """Constructor for XRTBackend
 

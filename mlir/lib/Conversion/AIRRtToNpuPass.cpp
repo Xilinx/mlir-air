@@ -1005,8 +1005,12 @@ struct RearmChannel {
   xilinx::AIE::DMAChannelDir dir;
   int32_t index;
   bool finite = false;
+  bool corePushes = false; // some task is queued by the core itself
+  bool onCoreTile = false;
+  Operation *firstStart = nullptr;
   SmallVector<RearmTask> tasks;
   llvm::SetVector<xilinx::AIE::LockOp> acquired;
+  llvm::SetVector<xilinx::AIE::LockOp> used; // acquired or released
 };
 
 // Walk the BD chain from `head`; true if it ends at an aie.end block rather
@@ -1030,9 +1034,11 @@ static void collectChain(Block *head, RearmChannel &ch) {
   llvm::SmallPtrSet<Block *, 8> seen;
   for (Block *b = head; b && seen.insert(b).second;) {
     for (auto useLock : b->getOps<xilinx::AIE::UseLockOp>())
-      if (useLock.getAction() != xilinx::AIE::LockAction::Release)
-        if (auto lock = useLock.getLock().getDefiningOp<xilinx::AIE::LockOp>())
+      if (auto lock = useLock.getLock().getDefiningOp<xilinx::AIE::LockOp>()) {
+        ch.used.insert(lock);
+        if (useLock.getAction() != xilinx::AIE::LockAction::Release)
           ch.acquired.insert(lock);
+      }
     auto next = dyn_cast<xilinx::AIE::NextBDOp>(b->getTerminator());
     if (!next)
       break;
@@ -1048,8 +1054,22 @@ LogicalResult rearmTileDmaTasks(xilinx::AIE::DeviceOp device) {
 
   // One entry per (tile, direction, channel), in IR order.
   llvm::MapVector<std::tuple<Operation *, int, int32_t>, RearmChannel> channels;
-  auto visit = [&](xilinx::AIE::TileOp tile, Region &region) -> LogicalResult {
-    for (auto start : region.getOps<xilinx::AIE::DMAStartOp>()) {
+  auto visit = [&](xilinx::AIE::TileOp tile, Region &region,
+                   bool coreTile) -> LogicalResult {
+    // The tasks in the order the configuration queues them: each
+    // aie.dma_start's chain successor holds the next one.
+    SmallVector<xilinx::AIE::DMAStartOp> starts;
+    llvm::SmallPtrSet<Block *, 8> seenBlocks;
+    for (Block *blk = region.empty() ? nullptr : &region.front();
+         blk && seenBlocks.insert(blk).second;) {
+      auto it = blk->getOps<xilinx::AIE::DMAStartOp>();
+      if (it.empty())
+        break;
+      auto start = *it.begin();
+      starts.push_back(start);
+      blk = start.getChain();
+    }
+    for (auto start : starts) {
       auto key = std::make_tuple(tile.getOperation(),
                                  static_cast<int>(start.getChannelDir()),
                                  start.getChannelIndex());
@@ -1057,6 +1077,11 @@ LogicalResult rearmTileDmaTasks(xilinx::AIE::DeviceOp device) {
       ch.tile = tile;
       ch.dir = start.getChannelDir();
       ch.index = start.getChannelIndex();
+      ch.onCoreTile = coreTile;
+      if (!ch.firstStart)
+        ch.firstStart = start;
+      if (start.getCorePushes())
+        ch.corePushes = true;
       Block *head = start.getDest();
       auto bd = head->getOps<xilinx::AIE::DMABDOp>();
       if (bd.empty())
@@ -1073,19 +1098,45 @@ LogicalResult rearmTileDmaTasks(xilinx::AIE::DeviceOp device) {
   };
   for (auto mem : device.getOps<xilinx::AIE::MemOp>())
     if (failed(visit(cast<xilinx::AIE::TileOp>(mem.getTile().getDefiningOp()),
-                     mem.getBody())))
+                     mem.getBody(), /*coreTile=*/true)))
       return failure();
   for (auto mem : device.getOps<xilinx::AIE::MemTileDMAOp>())
     if (failed(visit(cast<xilinx::AIE::TileOp>(mem.getTile().getDefiningOp()),
-                     mem.getBody())))
+                     mem.getBody(), /*coreTile=*/false)))
       return failure();
 
+  // A channel the core queues itself is the core's to rearm.
   SmallVector<RearmChannel *> finite;
   for (auto &[key, ch] : channels)
-    if (ch.finite)
+    if (ch.finite && !ch.corePushes)
       finite.push_back(&ch);
   if (finite.empty())
     return success();
+
+  for (RearmChannel *ch : finite) {
+    // A core-tile MM2S task drains data its core produces, and a core that
+    // is not held until the run starts may have produced and signalled it
+    // already: resetting the channel and its locks would drop that output.
+    if (ch->onCoreTile && ch->dir == xilinx::AIE::DMAChannelDir::MM2S)
+      return ch->firstStart->emitOpError(
+          "rearm-tile-dma: a finite MM2S task on a core tile cannot be "
+          "re-armed safely (its core may already have produced data); give "
+          "the channel transfers that repeat equally per run");
+    // Setting a lock back to its initial value is only sound when every
+    // user of the lock is re-armed with it: a circular or core-queued channel
+    // may hold a credit of it at this point.
+    for (auto &[key, other] : channels) {
+      if (&other == ch || (other.finite && !other.corePushes))
+        continue;
+      for (xilinx::AIE::LockOp lock : ch->acquired)
+        if (other.used.contains(lock))
+          return ch->firstStart->emitOpError(
+                     "rearm-tile-dma: a lock this channel acquires is also "
+                     "used by a channel that is not re-armed (")
+                 << (other.finite ? "queued by the core" : "circular")
+                 << "), so it cannot be reset";
+    }
+  }
 
   for (auto seq : seqs) {
     Block &body = seq.getBody().front();
