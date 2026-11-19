@@ -134,7 +134,7 @@ run_py: $(BUILD_DIR)/final.xclbin $(BUILD_DIR)/final.insts.bin
 
 pyworkflow:
 	mkdir -p pybuild
-	cd pybuild && ${powershell} $(PYTHON) ${srcdir}/run.py
+	cd pybuild && ${powershell} $(PYTHON) ${srcdir}/run.py $(OUTPUT_FORMAT_FLAG)
 
 clean:
 	rm -rf build_peano build_chess pybuild tmp __pycache__
