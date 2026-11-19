@@ -152,19 +152,12 @@ def build_inputs_and_golden(n_cols, num_g):
     int_inp = rng.integers(0, 255, size=(CI, HEIGHT, WIDTH), dtype=np.int32)
     int_weight = rng.integers(2, 20, size=(CO, CI, KSZ, KSZ), dtype=np.int32)
 
-    # The reference convolution, in numpy rather than torch. stride == KSZ with
-    # no padding means every output pixel consumes one disjoint KSZ x KSZ patch
-    # and no patch is visited twice, so the convolution IS a matmul: reshape to
-    # (patches, CI*KSZ*KSZ), multiply by the flattened weights. That is exactly
-    # what torch.nn.functional.conv2d computed here, and it drops the example's
-    # only heavyweight dependency.
-    #
-    # Golden via pure integer arithmetic so it matches the kernel's
-    # `(sum + sign*8192) >> 14` rounding (round half away from zero); rounding
-    # the float directly would introduce banker's-rounding mismatches on ties.
-    # float32 carries every value here exactly -- the largest partial sum is
-    # 254*19*4*196 < 4e6, inside float32's 2^24 exact-integer range -- and lets
-    # the product go through BLAS instead of numpy's integer loop.
+    # stride == KSZ and no padding: each output pixel reads its own KSZ x KSZ
+    # patch, so the convolution is a matmul of patches by flattened weights.
+    # The integer sums are formed in float32 (exact below 2**24, so it can use
+    # BLAS) and rounded as the kernel's `(sum + sign*8192) >> 14` does, half
+    # away from zero.
+    assert 255 * 20 * CI * KSZ * KSZ < 2**24
     patches = (
         int_inp.reshape(CI, HEIGHT_OUT, KSZ, WIDTH_OUT, KSZ)
         .transpose(1, 3, 0, 2, 4)
