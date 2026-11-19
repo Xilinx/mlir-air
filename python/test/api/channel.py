@@ -519,3 +519,32 @@ def channel_reused_across_two_builds():
             l.strip() for l in launch.mlir().splitlines() if "air.channel @reused" in l
         ]
         print(f"build {n}: {decl[0] if decl else 'MISSING'}")
+
+
+# CHECK-LABEL: TEST: valued_channel_attr
+# A (name, value) pair gives an integer attribute; a bare name a unit one.
+# CHECK: air.channel @PinIn [] {air.shared_resident_ring, air.shim_dma_channel = 1 : i32}
+@run
+def valued_channel_attr():
+    A = air.tensor([N], i8)
+    cin = air.channel(
+        "PinIn", attrs=["air.shared_resident_ring", ("air.shim_dma_channel", 1)]
+    )
+
+    with air.launch(name="pin") as launch:
+
+        @launch.body
+        def _():
+            with air.segment(name="seg") as seg:
+
+                @seg.body
+                def _():
+                    cin.put(A)
+                    with air.herd([range(1)], name="pinherd", shape=(1,)) as h:
+
+                        @h.body
+                        def _(tx):
+                            t = air.alloc([N], i8, scope=h.private())
+                            cin.get(t)
+
+    print(launch.mlir())

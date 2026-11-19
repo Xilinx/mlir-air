@@ -121,6 +121,10 @@ void air::copyChannelSteeringAttrs(Operation *src, Operation *dst) {
   // The pairing with the air.channel.issue that patches and starts the op.
   if (auto issue = src->getAttr("air.device_issue"))
     dst->setAttr("air.device_issue", issue);
+  // Shim DMA channel pin, read by AIRToAIE's shim allocator. A per-index list
+  // is narrowed to the one entry by SpecializeChannelBundlePattern.
+  if (auto pin = src->getAttr(attrs::ShimDmaChannel))
+    dst->setAttr(attrs::ShimDmaChannel, pin);
 }
 
 void air::addAsyncDependency(Operation *op, Value token) {

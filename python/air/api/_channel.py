@@ -88,6 +88,16 @@ def _reset_declaration_order():
     _DECLARED_SEQ.clear()
 
 
+def _int_attr(value):
+    """An i32 IntegerAttr, or an ArrayAttr of them for a list."""
+    from air.ir import ArrayAttr, IntegerAttr, IntegerType
+
+    i32 = IntegerType.get_signless(32)
+    if isinstance(value, int):
+        return IntegerAttr.get(i32, value)
+    return ArrayAttr.get([IntegerAttr.get(i32, v) for v in value])
+
+
 class Channel:
     """A named channel; ``put`` and ``get`` move data through it."""
 
@@ -174,11 +184,13 @@ class Channel:
                 "-- a packet broadcast is a genuine one-to-many fan-out."
             )
         self.channel_type = channel_type
-        # Unit attributes on the air.channel symbol. air.shared_resident_ring is
-        # the one in use: it tells air-ping-pong-transform that two sibling get
-        # loops re-reading this stream are one resident ring, not two -- without
-        # it air-to-aie fuses them into a single interleaved ring of twice the
-        # depth, which covers the wrong blocks.
+        # Attributes on the air.channel symbol: a name gives a unit attribute,
+        # a (name, int or list of ints) pair an integer or integer list one.
+        # air.shared_resident_ring is a unit one: it tells
+        # air-ping-pong-transform that two sibling get loops re-reading this
+        # stream are one resident ring, not two -- without it air-to-aie fuses
+        # them into a single interleaved ring of twice the depth, which covers
+        # the wrong blocks. air.shim_dma_channel takes a value.
         self.attrs = tuple(attrs or ())
         self._declared_in = None
         self._seq = _NEXT_SEQ[0]
@@ -330,7 +342,11 @@ class Channel:
                     and d.operation.attributes["sym_name"].value == self.name
                 )
                 for attr in self.attrs:
-                    op.operation.attributes[attr] = UnitAttr.get()
+                    if isinstance(attr, str):
+                        op.operation.attributes[attr] = UnitAttr.get()
+                        continue
+                    name, value = attr
+                    op.operation.attributes[name] = _int_attr(value)
         _DECLARED_SEQ[self.name] = self._seq
         self._declared_in = trace.module
 

@@ -2983,6 +2983,36 @@ air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
   shim_dma_channels = 2;
 }
 
+// The air.shim_dma_channel pin of a transfer: its channel's, or for a bundle
+// pinned per index, the entry at the transfer's (constant) bundle index; -1 if
+// unpinned.
+static int shimPinOf(Operation *op) {
+  auto chan = dyn_cast_if_present<air::ChannelInterface>(op);
+  if (!chan)
+    return -1;
+  auto decl = air::getChannelDeclarationThroughSymbol(chan);
+  if (!decl)
+    return -1;
+  Attribute a = decl->getAttr(air::attrs::ShimDmaChannel);
+  if (auto i = dyn_cast_if_present<IntegerAttr>(a))
+    return (int)i.getInt();
+  auto pins = dyn_cast_if_present<ArrayAttr>(a);
+  if (!pins)
+    return -1;
+  auto sizes = extractFromIntegerArrayAttr<int64_t>(decl.getSize());
+  int64_t flat = 0;
+  for (auto [k, v] : llvm::enumerate(chan.getIndices())) {
+    auto c = getConstantIntValue(v);
+    if (!c || k >= sizes.size())
+      return -1;
+    flat = flat * sizes[k] + *c;
+  }
+  if (flat >= (int64_t)pins.size())
+    return -1;
+  auto i = dyn_cast<IntegerAttr>(pins[flat]);
+  return i ? (int)i.getInt() : -1;
+}
+
 FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     air::MemcpyInterface &memcpyOp, AIE::TileLike otherSide, int col, int row,
     std::vector<Operation *> &dma_ops) {
@@ -3008,8 +3038,10 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   // Search for existing dma channel allocation by air.channel symbol.
   auto memcpyDecl = getChannelDeclarationThroughSymbol(
       dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation()));
+  int shimPin = shimPinOf(memcpyOp.getOperation());
   for (auto &t : *allocs) {
-    if (t.foundAlloc(memcpyDecl)) {
+    if (t.foundAlloc(memcpyDecl) &&
+        (shimPin < 0 || (int)t.dma_channel.channel == shimPin)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
@@ -3087,8 +3119,44 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     return used;
   };
 
+  if (shimPin >= shim_dma_channels)
+    return memcpyOp.emitOpError("air.shim_dma_channel = ")
+           << shimPin << " is out of range [0, " << shim_dma_channels << ")";
+  auto pinnedAlloc = [&](const allocation_info_t &t) {
+    return !t.memcpyOps.empty() && shimPinOf(t.memcpyOps.front()) >= 0;
+  };
+
+  // A pinned flow joins the bucket's allocation of its channel if one exists;
+  // both sides have to be pinned packet flows to share it.
+  if (shimPin >= 0) {
+    for (auto &t : *allocs) {
+      if (!sameBucket(t) || (int)t.dma_channel.channel != shimPin)
+        continue;
+      auto lt = dyn_cast<AIE::LogicalTileOp>(t.dma_tile.getOperation());
+      if (!lt || lt.getTileType() != AIE::AIETileType::ShimNOCTile)
+        continue;
+      if (!isPacketFlowOp || !pinnedAlloc(t))
+        return memcpyOp.emitOpError("air.shim_dma_channel = ")
+               << shimPin
+               << " is already used by a flow it cannot share with (both "
+                  "must be pinned packet flows)";
+      AIE::DMAChannel aie_chan = {dir, shimPin};
+      allocs->push_back({lt,
+                         col,
+                         row,
+                         aie_chan,
+                         shimPin,
+                         /*packet_flow_id=*/-1,
+                         /*otherSideLTO=*/otherSideOp,
+                         dma_ops_get_id,
+                         {memcpyOp.getOperation()}});
+      allocs->back().isHostReadback = isHostReadback;
+      return allocs->back();
+    }
+  }
+
   // For packet flows: reuse the bucket's existing packet channel if any.
-  if (isPacketFlowOp) {
+  if (isPacketFlowOp && shimPin < 0) {
     AIE::LogicalTileOp packetLT = nullptr;
     int packetCh = -1;
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
@@ -3096,7 +3164,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
            llvm::concat<allocation_info_t>(mm2s_allocs, s2mm_allocs)) {
         if (t.dma_tile.getOperation() != lt.getOperation())
           continue;
-        if (t.dma_channel.direction != dir)
+        if (t.dma_channel.direction != dir || pinnedAlloc(t))
           continue;
         bool tPacket = false;
         for (auto o : t.memcpyOps) {
@@ -3232,11 +3300,13 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   };
 
   AIE::LogicalTileOp tileLT = nullptr;
-  if (isPacketFlowOp && isHostReadback)
+  if (isPacketFlowOp && isHostReadback && shimPin < 0)
     tileLT = spreadShimLTO(col, /*forPacket=*/true);
   if (!tileLT)
     walkBucketLTOs([&](AIE::LogicalTileOp lt) {
-      if ((int)channelsUsedOn(lt).size() < shim_dma_channels) {
+      auto used = channelsUsedOn(lt);
+      if (shimPin >= 0 ? !used.count(shimPin)
+                       : (int)used.size() < shim_dma_channels) {
         tileLT = lt;
         return true;
       }
@@ -3359,7 +3429,9 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
 
   auto usedChans = channelsUsedOn(tileLT);
   int dma_channel = -1;
-  for (int ch = 0; ch < shim_dma_channels; ch++) {
+  if (shimPin >= 0 && !usedChans.count(shimPin))
+    dma_channel = shimPin;
+  for (int ch = 0; ch < shim_dma_channels && dma_channel < 0; ch++) {
     if (!usedChans.count(ch)) {
       dma_channel = ch;
       break;
@@ -3510,7 +3582,8 @@ void air::ShimDMAAllocator::spreadCollapsedPacketChannels(
   // flow on the chain whose destination differs from the rest, and the column
   // lost the port diversity an unrelated convergent group needed.
   auto isImmovable = [](Operation *decl) {
-    return decl->hasAttr("broadcast_shape");
+    return decl->hasAttr("broadcast_shape") ||
+           decl->hasAttr(air::attrs::ShimDmaChannel);
   };
 
   for (auto *allocs : {&mm2s_allocs, &s2mm_allocs}) {
@@ -4174,6 +4247,10 @@ void air::reorderL3PacketPutsByFlowOrder(
       return;
     auto chan = air::getChannelDeclarationThroughSymbol(put);
     if (!chan || chan.getChannelType().str() != "npu_dma_packet")
+      return;
+    // Flows pinned to a shim channel share it in program order, which is the
+    // order the design relies on; flow order would batch each flow's puts.
+    if (chan->hasAttr(air::attrs::ShimDmaChannel))
       return;
     putsByChan[chan.getSymNameAttr()].push_back(put);
   });

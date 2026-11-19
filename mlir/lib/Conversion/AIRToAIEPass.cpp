@@ -3836,6 +3836,14 @@ struct SpecializeChannelBundlePattern
       // the single-source-of-truth helper so this copy site stays in sync with
       // the marker set.
       air::copyChannelSteeringAttrs(channel, new_chan);
+      if (auto pins =
+              channel->getAttrOfType<ArrayAttr>(air::attrs::ShimDmaChannel)) {
+        if (pins.size() != (size_t)channel.getBundleSize())
+          return channel->emitOpError("air.shim_dma_channel has ")
+                 << pins.size() << " entries for a bundle of "
+                 << channel.getBundleSize();
+        new_chan->setAttr(air::attrs::ShimDmaChannel, pins[iter]);
+      }
       std::vector<unsigned> position =
           air::getMDVectorFromIterator(bundle_size_stdvec, iter);
       // keep_pkt_header is per-flow: only the split whose GET lands at offset 0

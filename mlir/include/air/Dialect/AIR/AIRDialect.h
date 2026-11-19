@@ -48,6 +48,12 @@ constexpr StringLiteral PreserveShimDmaOrder = "air.preserve_shim_dma_order";
 // un-coalesced feed.
 constexpr StringLiteral CoalescedShimFeed = "air.coalesced_shim_feed";
 constexpr StringLiteral TileDmaChannel = "air.tile_dma_channel";
+// On an air.channel whose L3 end is at the shim: the shim DMA channel the flow
+// uses there, as an integer, or as a list with one entry per bundle index.
+// Packet flows pinned to the same channel of the same column share it in
+// program order, which lets two flows that are never busy at the same time take
+// turns on one shim -> memtile link.
+constexpr StringLiteral ShimDmaChannel = "air.shim_dma_channel";
 // Single-buffer count-free re-broadcast: N (>= 1) re-sends of one resident
 // buffer per production. Carried on the air.channel declaration, on a channel
 // put/get, or on the source memref.alloc of a memtile producer; read via
@@ -146,7 +152,7 @@ constexpr StringLiteral DisableAllocSink = "air.disable_alloc_sink";
 constexpr int kMaxPacketID = 31;
 
 // Copy the DMA-steering / runtime-ordering markers
-// (RefeedCount, PacketIDs, KeepPktHeader) that must
+// (RefeedCount, PacketIDs, KeepPktHeader, ShimDmaChannel) that must
 // survive channel-op re-instantiation from src to dst. Single source of truth
 // for the marker set, so copy sites (Util::copyPaddingAttributes,
 // ComposeMemrefOpOnChannelOp, SpecializeChannelBundlePattern) cannot diverge.
