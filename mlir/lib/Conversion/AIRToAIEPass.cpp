@@ -1283,6 +1283,12 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
 
   std::string bufName = sharedBuffer.getSymName().value_or("shared_l1").str();
 
+  // A put or a get in a core's body is its tile's DMA, not the core; the DMA
+  // accessors are collected on their own below.
+  auto isCoreAccess = [](Operation *op) {
+    return !isa<air::ChannelInterface>(op) && accessReachableInCore(op);
+  };
+
   // Helper lambda to find the last memref operand index in a func.call
   auto findLastMemrefOperandIndex = [](func::CallOp callOp) -> int {
     int lastMemrefIdx = -1;
@@ -1310,7 +1316,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   for (auto coreOp : coreOps) {
     coreOp.walk([&](Operation *op) {
       // Ignore accesses in dead per-core branches (not yet folded).
-      if (!accessReachableInCore(op))
+      if (!isCoreAccess(op))
         return;
       // Check memory effects
       for (Value alias : bufferAliases) {
@@ -1341,7 +1347,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   for (auto coreOp : coreOps) {
     bool coreIsProducer = false;
     coreOp.walk([&](Operation *op) {
-      if (!accessReachableInCore(op))
+      if (!isCoreAccess(op))
         return;
       for (Value alias : bufferAliases) {
         if (hasEffect<MemoryEffects::Write>(op, alias))
@@ -1550,7 +1556,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     info.lockScope = nullptr;
 
     coreOp.walk([&](Operation *op) {
-      if (!accessReachableInCore(op))
+      if (!isCoreAccess(op))
         return;
       bool accessesBuffer = false;
       bool isProducer = false;

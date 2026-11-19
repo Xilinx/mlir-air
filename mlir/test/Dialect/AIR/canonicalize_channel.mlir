@@ -64,3 +64,17 @@ module {
     return
   }
 }
+
+// -----
+
+// Neither a put nor a get is dead for having no users.
+
+// CHECK-LABEL: func.func @unused
+// CHECK: air.channel.put @c[]
+// CHECK: air.channel.get @c[]
+air.channel @c [1, 1]
+func.func @unused(%a: memref<16xf32, 2>, %b: memref<16xf32, 2>) {
+  air.channel.put @c[] (%a[] [] []) : (memref<16xf32, 2>)
+  air.channel.get @c[] (%b[] [] []) : (memref<16xf32, 2>)
+  return
+}
