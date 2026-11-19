@@ -844,6 +844,91 @@ createChannelOp(OpBuilder builder, ModuleOp module, std::string cname,
   return channel_op;
 }
 
+// The part of `buf` a copy's offsets, sizes and strides (in elements, as a
+// DMA takes them) select, or `buf` itself when they are empty.
+static FailureOr<Value> copiedView(OpBuilder &b, Location loc, Value buf,
+                                   ArrayRef<OpFoldResult> offsets,
+                                   ArrayRef<OpFoldResult> sizes,
+                                   ArrayRef<OpFoldResult> strides) {
+  if (offsets.empty())
+    return buf;
+  auto type = dyn_cast<MemRefType>(buf.getType());
+  if (!type || !type.getLayout().isIdentity())
+    return failure();
+  Value offset = arith::ConstantIndexOp::create(b, loc, 0);
+  SmallVector<int64_t> shape, steps;
+  for (auto [o, n, st] : llvm::zip_equal(offsets, sizes, strides)) {
+    Value term = arith::MulIOp::create(
+        b, loc, getValueOrCreateConstantIndexOp(b, loc, o),
+        getValueOrCreateConstantIndexOp(b, loc, st));
+    offset = arith::AddIOp::create(b, loc, offset, term);
+    shape.push_back(getConstantIntValue(n).value_or(ShapedType::kDynamic));
+    steps.push_back(getConstantIntValue(st).value_or(ShapedType::kDynamic));
+  }
+  auto viewType = MemRefType::get(
+      shape, type.getElementType(),
+      StridedLayoutAttr::get(b.getContext(), ShapedType::kDynamic, steps),
+      type.getMemorySpace());
+  // Constant sizes and strides as attributes, as the view's type has them.
+  auto folded = [&](ArrayRef<OpFoldResult> values) {
+    return llvm::map_to_vector(values, [&](OpFoldResult v) -> OpFoldResult {
+      if (auto c = getConstantIntValue(v))
+        return b.getIndexAttr(*c);
+      return v;
+    });
+  };
+  return memref::ReinterpretCastOp::create(b, loc, viewType, buf, offset,
+                                           folded(sizes), folded(strides))
+      .getResult();
+}
+
+// A core's DMA cannot copy between two of its L1 buffers: such a copy in a
+// herd becomes the core's own copy, in an air.execute when it is async.
+static LogicalResult lowerL1Copies(ModuleOp module) {
+  SmallVector<air::DmaMemcpyNdOp> copies;
+  module.walk([&](air::DmaMemcpyNdOp op) {
+    auto src = dyn_cast<BaseMemRefType>(op.getSrcMemref().getType());
+    auto dst = dyn_cast<BaseMemRefType>(op.getDstMemref().getType());
+    if (src && dst && air::isL1(src) && air::isL1(dst))
+      copies.push_back(op);
+  });
+  for (air::DmaMemcpyNdOp op : copies) {
+    if (!op->getParentOfType<air::HerdOp>())
+      return op->emitOpError("copies between two L1 buffers outside a herd, "
+                             "where no core can copy them");
+    OpBuilder b(op);
+    Location loc = op.getLoc();
+    auto async = cast<air::AsyncOpInterface>(op.getOperation());
+    air::ExecuteOp exec;
+    if (op.getAsyncToken()) {
+      exec = air::ExecuteOp::create(b, loc,
+                                    air::AsyncTokenType::get(b.getContext()),
+                                    async.getAsyncDependencies());
+      b.setInsertionPointToStart(b.createBlock(&exec.getRegion()));
+    }
+    auto src = copiedView(b, loc, op.getSrcMemref(), op.getMixedSrcOffsets(),
+                          op.getMixedSrcSizes(), op.getMixedSrcStrides());
+    auto dst = copiedView(b, loc, op.getDstMemref(), op.getMixedDstOffsets(),
+                          op.getMixedDstSizes(), op.getMixedDstStrides());
+    auto srcType =
+        succeeded(src) ? dyn_cast<MemRefType>(src->getType()) : MemRefType();
+    auto dstType =
+        succeeded(dst) ? dyn_cast<MemRefType>(dst->getType()) : MemRefType();
+    if (!srcType || !dstType || !srcType.hasStaticShape() ||
+        srcType.getShape() != dstType.getShape())
+      return op->emitOpError(
+          "copies between two L1 buffers parts of different or unknown "
+          "shapes, which a core's copy does not take");
+    linalg::CopyOp::create(b, loc, *src, *dst);
+    if (exec) {
+      air::ExecuteTerminatorOp::create(b, loc);
+      op.getAsyncToken().replaceAllUsesWith(exec.getAsyncToken());
+    }
+    op->erase();
+  }
+  return success();
+}
+
 static void replaceAIRDmaWithAIRChannelPairs(
     OpBuilder &builder, air::MemorySpace innerMemorySpace,
     air::DmaMemcpyNdOp op,
@@ -2472,7 +2557,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<air::airDialect>();
+    registry.insert<arith::ArithDialect>();
     registry.insert<linalg::LinalgDialect>();
+    registry.insert<memref::MemRefDialect>();
     registry.insert<scf::SCFDialect>();
   }
 
@@ -2483,17 +2570,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     SmallVector<func::FuncOp, 4> funcOps;
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
 
-    WalkResult l1ToL1 = module.walk([](air::DmaMemcpyNdOp op) {
-      auto src = dyn_cast<BaseMemRefType>(op.getSrcMemref().getType());
-      auto dst = dyn_cast<BaseMemRefType>(op.getDstMemref().getType());
-      if (src && dst && air::isL1(src) && air::isL1(dst)) {
-        op->emitOpError(
-            "copies between two L1 buffers, which a core's DMA cannot do");
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
-    if (l1ToL1.wasInterrupted()) {
+    if (failed(lowerL1Copies(module))) {
       signalPassFailure();
       return;
     }
