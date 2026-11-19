@@ -149,9 +149,8 @@ public:
       builder.setInsertionPoint(devices[0]);
       auto mergedDevice = AIE::DeviceOp::create(
           builder, devices[0].getLoc(),
-          AIE::AIEDeviceAttr::get(builder.getContext(), mergedType));
-      mergedDevice->setAttr(SymbolTable::getSymbolAttrName(),
-                            builder.getStringAttr(baseName));
+          AIE::AIEDeviceAttr::get(builder.getContext(), mergedType),
+          builder.getStringAttr(baseName), /*overlay=*/FlatSymbolRefAttr());
 
       // Copy DLTI data layout attribute if present
       if (auto dltiAttr = devices[0]->getAttr("dlti.dl_spec"))

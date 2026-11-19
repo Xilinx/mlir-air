@@ -107,7 +107,7 @@ MLIR-AIR publishes **Windows AMD64** wheels. Backend dependencies are exposed as
    ```bat
    pip install "mlir_air[aie]" ^
      -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels ^
-     -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4 ^
+     -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-5 ^
      -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
    ```
 
@@ -214,14 +214,14 @@ call .\iron_env.cmd
 ```bat
 cd C:\dev\mlir-air
 python -c "import re;print(re.search(r'WHEEL_VERSION=(\S+)',open('utils/clone-mlir-aie.sh').read()).group(1))"
-pip install mlir_aie==VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
+pip install mlir_aie==VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-5
 ```
 
 If you would rather not clone MLIR-AIE, install the CMake modules and the pinned `mlir_aie` wheel (the same `VERSION`) separately:
 
 ```bat
 git clone --depth 1 https://github.com/Xilinx/cmakeModules.git C:\dev\cmakeModules
-pip install mlir_aie==VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
+pip install mlir_aie==VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-5
 pip install -r C:\dev\mlir-air\utils\requirements_dev.txt
 ```
 
@@ -412,7 +412,7 @@ python -m venv airenv
 python -m pip install --upgrade pip
 pip install "mlir_air[aie]" `
   -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels `
-  -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4 `
+  -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-5 `
   -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 ```
 

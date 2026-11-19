@@ -793,7 +793,7 @@ module {
 // CHECK-LABEL: aie.device(npu1_1col) @segment0
 // CHECK: aie.runtime_sequence @packet_attr_transfer(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId2 {
-// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<64xi32> offset = 0 len = 64 sizes = [64] strides = [0]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>}
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<64xi32> offset = 0 len = 64 sizes = [64] strides = [0]) {packet = #aie.packet_info<pkt_id = 3>}
 // CHECK:   }
 // CHECK:   aiex.dma_start_task
 // CHECK:   %[[T1:.*]] = aiex.dma_configure_task_for @airMemcpyId7 {
@@ -833,7 +833,7 @@ module {
 // CHECK-LABEL: aie.device(npu1_1col) @segment0
 // CHECK: aie.runtime_sequence @packet_attr_with_dims(%[[VAL_0:.*]]: memref<32x64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
 // CHECK:   aiex.dma_configure_task_for @airMemcpyId2 {
-// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<32x64xi32> offset = 0 len = 128 sizes = [2, 64] strides = [64, 0]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 5>}
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<32x64xi32> offset = 0 len = 128 sizes = [2, 64] strides = [64, 0]) {packet = #aie.packet_info<pkt_id = 5>}
 // CHECK:   }
 // CHECK:   aiex.dma_start_task
 

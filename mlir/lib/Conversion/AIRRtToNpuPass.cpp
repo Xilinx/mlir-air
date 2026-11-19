@@ -1578,7 +1578,8 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
           /*pad_dimensions=*/nullptr, /*bd_id_val=*/nullptr,
           /*bd_id=*/nullptr, pktAttr,
-          /*out_of_order_id=*/nullptr,
+          /*out_of_order_id=*/nullptr, /*bd_tag=*/nullptr,
+          /*out_of_order_tag=*/nullptr,
           /*burst_length=*/nullptr, /*axcache=*/nullptr, iteration,
           offParam ? FlatSymbolRefAttr::get(offParam) : nullptr,
           /*offset_state_table_idx=*/nullptr, FlatSymbolRefAttr::get(lenParam),
@@ -1598,7 +1599,8 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
           /*pad_dimensions=*/nullptr, /*bd_id_val=*/nullptr,
           /*bd_id=*/nullptr, pktAttr,
-          /*out_of_order_id=*/nullptr,
+          /*out_of_order_id=*/nullptr, /*bd_tag=*/nullptr,
+          /*out_of_order_tag=*/nullptr,
           /*burst_length=*/nullptr, /*axcache=*/nullptr, iteration,
           /*offset_parameter=*/nullptr,
           /*offset_state_table_idx=*/nullptr, /*length_parameter=*/nullptr,
@@ -2387,9 +2389,8 @@ AIE::DeviceOp createMainDeviceWrapper(
   builder.setInsertionPointToEnd(module.getBody());
 
   // Create main device with the specified device type
-  auto mainDevice = AIE::DeviceOp::create(builder, loc, deviceType);
-  mainDevice->setAttr(SymbolTable::getSymbolAttrName(),
-                      StringAttr::get(builder.getContext(), "main"));
+  auto mainDevice = AIE::DeviceOp::create(builder, loc, deviceType, "main",
+                                          /*overlay=*/FlatSymbolRefAttr());
 
   // Add a body block to the main device
   Block *mainDeviceBody = new Block;
@@ -6156,7 +6157,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (packet)
         fields = layout->enablePacket.place(1) |
                  layout->packetType.place(packet->getPktType()) |
-                 layout->packetId.place(packet->getPktId());
+                 layout->packetId.place(packet->assignedId());
       // A shim task's completion token is what the host waits on.
       uint32_t queueWord =
           tm.isShimNOCTile(col, row) ? (1u << 31) | bdId : bdId;
@@ -6402,8 +6403,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                             static_cast<int32_t>(v));
       };
       AIEX::NpuMaskWrite32Op::create(b, t.getLoc(), c(ctrl),
-                                     c(id.getPktId() << 8), c(0x1F00), nullptr,
-                                     nullptr, nullptr);
+                                     c(id.assignedId() << 8), c(0x1F00),
+                                     nullptr, nullptr, nullptr);
       return success();
     };
     // The core queued the task with a token, which the DMA-task verifier

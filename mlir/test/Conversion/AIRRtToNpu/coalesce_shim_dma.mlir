@@ -119,8 +119,8 @@ module {
 // stay separate; no merged len-4096 BD is produced.
 
 // CHECK-LABEL: aie.device(npu2)
-// CHECK: aie.dma_bd(%arg0 : memref<4096xbf16> offset = 0 len = 2048 sizes = [2048] strides = [1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>}
-// CHECK: aie.dma_bd(%arg0 : memref<4096xbf16> offset = 2048 len = 2048 sizes = [2048] strides = [1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 2>}
+// CHECK: aie.dma_bd(%arg0 : memref<4096xbf16> offset = 0 len = 2048 sizes = [2048] strides = [1]) {packet = #aie.packet_info<pkt_id = 1>}
+// CHECK: aie.dma_bd(%arg0 : memref<4096xbf16> offset = 2048 len = 2048 sizes = [2048] strides = [1]) {packet = #aie.packet_info<pkt_id = 2>}
 // CHECK-NOT: len = 4096
 
 module {

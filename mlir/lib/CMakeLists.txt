@@ -29,7 +29,7 @@ if(AIR_ENABLE_AIE)
   # AIETransforms exposes registerAIEPasses() — wired into
   # registerAllPasses() so air-opt and aircc can invoke aie-place-tiles
   # on the LogicalTileOps emitted by AIR's lowering.
-  list(APPEND _air_initall_link_libs AIETransforms)
+  list(APPEND _air_initall_link_libs AIETransforms MLIRAIEToConfiguration)
 endif()
 
 add_mlir_library(

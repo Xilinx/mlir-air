@@ -27,8 +27,8 @@
 // CHECK: aie.tile(0, 2)
 // CHECK: aie.mem(%[[tile_0_2:.*]])
 // CHECK: aie.dma_start(S2MM, 0
-// CHECK-DAG: aie.dma_bd({{.*}}) {packet = #aie.packet_info<pkt_type = 0, pkt_id = [[pkt_a:[0-9]+]]>
-// CHECK-DAG: aie.dma_bd({{.*}}) {packet = #aie.packet_info<pkt_type = 0, pkt_id = [[pkt_b:[0-9]+]]>
+// CHECK-DAG: aie.dma_bd({{.*}}) {packet = #aie.packet_info<pkt_id = [[pkt_a:[0-9]+]]>
+// CHECK-DAG: aie.dma_bd({{.*}}) {packet = #aie.packet_info<pkt_id = [[pkt_b:[0-9]+]]>
 
 module {
   air.channel @pkt_a [1, 1] {channel_type = "npu_dma_packet"}
