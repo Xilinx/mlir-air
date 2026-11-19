@@ -147,3 +147,34 @@ def an_l2_fill_still_lowers_as_linalg():
                             ops.store(b, out[col : col + tn])
 
     print(launch.mlir())
+
+
+# CHECK-LABEL: TEST: f32_max_takes_the_scalar_loop_by_default
+# mlir-aie's AIEVec conversion has no vector arith.maximumf / minimumf on f32,
+# so a derived width drops to the scalar loop rather than fail to legalize.
+# CHECK-NOT: vector<{{.*}}xf32>
+# CHECK: arith.maximumf {{.*}} : f32
+@run
+def f32_max_takes_the_scalar_loop_by_default():
+    print(build(lambda a, o: o.__setitem__(slice(None), ops.maximum(a[:], a[:])), f32))
+
+
+# CHECK-LABEL: TEST: f32_max_keeps_a_named_width
+# A named width is kept (a --bf16-emulation build compiles it vectorized).
+# CHECK: arith.maximumf {{.*}} : vector<16xf32>
+@run
+def f32_max_keeps_a_named_width():
+    print(
+        build(
+            lambda a, o: o.__setitem__(slice(None), ops.maximum(a[:], a[:])),
+            f32,
+            vector=16,
+        )
+    )
+
+
+# CHECK-LABEL: TEST: bf16_max_stays_vectorized
+# CHECK: arith.maximumf {{.*}} : vector<32xbf16>
+@run
+def bf16_max_stays_vectorized():
+    print(build(lambda a, o: o.__setitem__(slice(None), ops.maximum(a[:], a[:]))))

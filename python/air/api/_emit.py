@@ -534,6 +534,33 @@ def _cap_by_ops(width, dst, expr):
     return width
 
 
+# Operators with no vector form, keyed (operator, element type name).
+# mlir-aie's convert-vector-to-aievec rejects a vector arith.maximumf /
+# arith.minimumf on f32 at any width -- "aievec.max conversion fails due to
+# unsupported element data type", then "failed to legalize operation
+# 'aievec.max'". bf16 is not affected, which is why this is keyed on the
+# element type and not just the operator.
+_NO_VECTOR_FORM = {("max", "f32"), ("min", "f32")}
+
+
+def _has_refused_op(node, dtype):
+    """Does ``node`` contain an operator with no vector form?
+
+    Walks in element-type regions exactly as ``_regions_in`` does, because the
+    refusal is per (operator, element type) pair and a cast changes which one
+    applies: ``ops.maximum(ops.cast(x[:], f32), 0.0)`` is an f32 max under a
+    bf16 destination.
+    """
+    if node.kind == "cast" or (node.kind == "bitcast" and not _is_repack(node)):
+        source = node.args[0].element_dtype()
+        return _has_refused_op(node.args[0], source or dtype)
+    if node.kind == "bitcast":
+        return False
+    if (node.op, getattr(dtype, "name", None)) in _NO_VECTOR_FORM:
+        return True
+    return any(_has_refused_op(arg, dtype) for arg in node.args)
+
+
 def _nest_width(dst, expr):
     """Lanes for one assignment: the destination's, capped.
 
@@ -544,6 +571,12 @@ def _nest_width(dst, expr):
     ``vector=64`` so its ``ops.bitcast`` assignment covers exactly one vector,
     and narrowing it to 32 makes that two trips.
 
+    A derived width also drops to the scalar loop when the expression uses an
+    operator with no vector form (``_NO_VECTOR_FORM``), so the default does not
+    ask for a vector the backend rejects. A named width is kept: a
+    ``--bf16-emulation`` build lowers the f32 op through bf16 and compiles it
+    vectorized.
+
     The op cap applies either way. It is about accuracy at a width nobody
     measured rather than about legalization, so an explicit request does not
     buy past it.
@@ -552,6 +585,8 @@ def _nest_width(dst, expr):
     if width <= 0:
         return width
     if not getattr(dst, "vector_width_explicit", False):
+        if _has_refused_op(expr, dst.dtype):
+            return 0
         width = _cap_by_regions(width, _regions_in(expr, dst.dtype, []))
     return _cap_by_ops(width, dst, expr)
 
