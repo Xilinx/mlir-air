@@ -2517,12 +2517,16 @@ LogicalResult createAIEModulesAndOutlineCores(
                        "all of them, so it cannot be lowered to a shared L1 "
                        "buffer. Route the data through a channel (tile DMA + "
                        "stream switch) instead of a shared L1 allocation.";
+        // Sorted, so the note does not depend on the set's iteration order.
+        SmallVector<std::pair<int, int>> at;
+        for (AIE::CoreOp c : coreOps)
+          at.push_back({c.getTileOp().getCol(), c.getTileOp().getRow()});
+        llvm::sort(at);
         diag.attachNote() << "cores at: " << [&] {
           std::string s;
           llvm::raw_string_ostream os(s);
-          llvm::interleaveComma(coreOps, os, [&](AIE::CoreOp c) {
-            AIE::TileOp t = c.getTileOp();
-            os << "(" << t.getCol() << ", " << t.getRow() << ")";
+          llvm::interleaveComma(at, os, [&](std::pair<int, int> p) {
+            os << "(" << p.first << ", " << p.second << ")";
           });
           return s;
         }();
