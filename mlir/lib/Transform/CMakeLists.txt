@@ -39,7 +39,6 @@ if(AIR_ENABLE_AIE)
 endif()
 list(APPEND TRANSFORM_SOURCES
   AIRMiscPasses.cpp
-  AIRRegularizeLoopPass.cpp
   AIRSplitLaunchForPadding.cpp
   AIRTilingUtils.cpp
   AIRTransformInterpreter.cpp
