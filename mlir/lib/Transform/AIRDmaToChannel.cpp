@@ -974,6 +974,27 @@ static void replaceAIRDmaWithAIRChannelPairs(
         builder, loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_internal, src, src_offsets, src_sizes, src_strides,
         padBefore, padAfter);
+    if (internalGetPut) {
+      // Both ends are this level's buffers (L2 to L2 in a segment): the put
+      // and the get stay where the copy was, and its users wait for both.
+      auto internalPut =
+          dyn_cast<air::ChannelInterface>(internal.getOperation());
+      if (auto op_token = op.getAsyncToken()) {
+        auto both = air::WaitAllOp::create(
+            builder, loc, air::AsyncTokenType::get(ctx),
+            SmallVector<Value>{
+                cast<air::AsyncOpInterface>(internalGetPut.getOperation())
+                    .getAsyncToken(),
+                internal.getAsyncToken()});
+        op_token.replaceAllUsesWith(both.getAsyncToken());
+      }
+      for (air::ChannelInterface getput : {internalGetPut, internalPut}) {
+        getput->setAttr("loop-carried-dep",
+                        StringAttr::get(ctx, "internalGetPut"));
+        internalGetPutVector.push_back(getput);
+      }
+      return;
+    }
     internalGetPut =
         dyn_cast_if_present<air::ChannelInterface>(internal.getOperation());
   } else {
@@ -2461,6 +2482,21 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
     SmallVector<func::FuncOp, 4> funcOps;
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+
+    WalkResult l1ToL1 = module.walk([](air::DmaMemcpyNdOp op) {
+      auto src = dyn_cast<BaseMemRefType>(op.getSrcMemref().getType());
+      auto dst = dyn_cast<BaseMemRefType>(op.getDstMemref().getType());
+      if (src && dst && air::isL1(src) && air::isL1(dst)) {
+        op->emitOpError(
+            "copies between two L1 buffers, which a core's DMA cannot do");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (l1ToL1.wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
 
     // Demote memref alloc pattern
     std::map<air::HierarchyInterface, std::vector<Operation *>> hier_to_allocs;
