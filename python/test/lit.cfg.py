@@ -135,7 +135,7 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
                 config.available_features.add("ryzen_ai_npu2")
                 print("Running tests on NPU4 with command line: ", run_on_npu2)
             else:
-                print("WARNING: xrt-smi reported unknown NPU model '{model}'.")
+                print(f"WARNING: xrt-smi reported unknown NPU model '{model}'.")
             break
     except:
         print("Failed to run xrt-smi")
