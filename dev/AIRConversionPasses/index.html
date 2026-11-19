@@ -1397,41 +1397,8 @@
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#example-a-1x1-herd-copying-a-1024xi32-vector-from-l3-memory-into-an-l1-buffer" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Example - A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#input" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Input
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Input">
+    <nav class="md-nav" aria-label="-air-to-aie">
       <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output
-      
-    </span>
-  </a>
-  
-</li>
         
           <li class="md-nav__item">
   <a href="#options_6" class="md-nav__link">
@@ -1468,45 +1435,6 @@
       
     </span>
   </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#example-a-1x1-herd-copying-a-1024xi32-vector-from-l3-memory-into-an-l1-buffer_1" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Example - A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#input_1" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Input
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Input">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#output_1" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1890,41 +1818,8 @@
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#example-a-1x1-herd-copying-a-1024xi32-vector-from-l3-memory-into-an-l1-buffer" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Example - A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#input" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Input
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Input">
+    <nav class="md-nav" aria-label="-air-to-aie">
       <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output
-      
-    </span>
-  </a>
-  
-</li>
         
           <li class="md-nav__item">
   <a href="#options_6" class="md-nav__link">
@@ -1961,45 +1856,6 @@
       
     </span>
   </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#example-a-1x1-herd-copying-a-1024xi32-vector-from-l3-memory-into-an-l1-buffer_1" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Example - A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#input_1" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Input
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Input">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#output_1" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -2186,8 +2042,8 @@ transformed into sequential code.</p>
 segments, herds and DMA allocations that were generated in the AIE dialect
 output modules. Runtime code for configuration and control of segments is
 generated from the AIRRt metadata by the <code>air-to-std</code> pass.</p>
-<h3 id="example-a-1x1-herd-copying-a-1024xi32-vector-from-l3-memory-into-an-l1-buffer">Example - A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer<a class="headerlink" href="#example-a-1x1-herd-copying-a-1024xi32-vector-from-l3-memory-into-an-l1-buffer" title="Permanent link">&para;</a></h3>
-<h3 id="input">Input<a class="headerlink" href="#input" title="Permanent link">&para;</a></h3>
+<p><strong>Example: A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer</strong></p>
+<p><strong>Input</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>  func.func @f(%arg0: memref&lt;1024xi32&gt;, %arg1: memref&lt;1024xi32&gt;) {
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    %c1 = arith.constant 1 : index
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    air.herd @herd_0  tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0, %arg7=%arg1) : memref&lt;1024xi32&gt;, memref&lt;1024xi32&gt; {
@@ -2199,7 +2055,7 @@ generated from the AIRRt metadata by the <code>air-to-std</code> pass.</p>
 <a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>    return
 <a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>  }
 </code></pre></div>
-<h4 id="output">Output<a class="headerlink" href="#output" title="Permanent link">&para;</a></h4>
+<p><strong>Output</strong></p>
 <p>The AIE resource allocation,
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>module @aie.segment_0 {
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  %0 = aie.tile(1, 1)
@@ -2262,8 +2118,8 @@ and the AIRRt metadata,
 <p>This pass converts AIR dialect herd launch operations into loop nests
 representing the host-side control program for the herd. It also converts
 AIR dialect memcpy operations into AIRRt memcpy operations.</p>
-<h3 id="example-a-1x1-herd-copying-a-1024xi32-vector-from-l3-memory-into-an-l1-buffer_1">Example - A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer<a class="headerlink" href="#example-a-1x1-herd-copying-a-1024xi32-vector-from-l3-memory-into-an-l1-buffer_1" title="Permanent link">&para;</a></h3>
-<h3 id="input_1">Input<a class="headerlink" href="#input_1" title="Permanent link">&para;</a></h3>
+<p><strong>Example: A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer</strong></p>
+<p><strong>Input</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>  module {
 <a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>    func.func @f(%arg0: memref&lt;1024xi32&gt;, %arg1: memref&lt;1024xi32&gt;) {
 <a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>      %c1 = arith.constant 1 : index
@@ -2277,7 +2133,7 @@ AIR dialect memcpy operations into AIRRt memcpy operations.</p>
 <a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>    }
 <a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>  }
 </code></pre></div>
-<h4 id="output_1">Output<a class="headerlink" href="#output_1" title="Permanent link">&para;</a></h4>
+<p><strong>Output</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>  func.func @f(%arg0: memref&lt;1024xi32&gt;, %arg1: memref&lt;1024xi32&gt;) {
 <a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>    %c1 = arith.constant 1 : index
 <a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>    %h = airrt.herd_load "herd_0" : i64

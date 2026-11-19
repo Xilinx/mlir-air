@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#build-mlir-air-for-gpu-target" class="md-skip">
+        <a href="#getting-started-on-amd-gpus-linux" class="md-skip">
           Skip to content
         </a>
       
@@ -688,23 +688,6 @@
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Prerequisites">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#cluster-access-optional" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cluster Access (Optional)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1692,23 +1675,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Prerequisites">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#cluster-access-optional" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cluster Access (Optional)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
         <li class="md-nav__item">
@@ -2063,7 +2029,7 @@
   
 
 
-<h1 id="build-mlir-air-for-gpu-target">Build MLIR-AIR for GPU Target<a class="headerlink" href="#build-mlir-air-for-gpu-target" title="Permanent link">&para;</a></h1>
+<h1 id="getting-started-on-amd-gpus-linux">Getting Started on AMD GPUs (Linux)<a class="headerlink" href="#getting-started-on-amd-gpus-linux" title="Permanent link">&para;</a></h1>
 <p>This guide provides instructions for building MLIR-AIR for GPU targets without AIE dependencies. Tested on MI300X.</p>
 <h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
 <ul>
@@ -2072,60 +2038,56 @@
 <li>Ninja build system</li>
 <li>Python 3.8+</li>
 </ul>
-<h3 id="cluster-access-optional">Cluster Access (Optional)<a class="headerlink" href="#cluster-access-optional" title="Permanent link">&para;</a></h3>
-<p>If using the OCI MI300X cluster:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>salloc<span class="w"> </span>-p<span class="w"> </span>amd-arad<span class="w"> </span>-N<span class="w"> </span><span class="m">1</span><span class="w"> </span>--gres<span class="o">=</span>gpu:2<span class="w"> </span>-t<span class="w"> </span><span class="m">0</span>-1
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>srun<span class="w"> </span>--pty<span class="w"> </span><span class="nv">$SHELL</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>bash
-</code></pre></div>
 <h2 id="quick-build-recommended">Quick Build (Recommended)<a class="headerlink" href="#quick-build-recommended" title="Permanent link">&para;</a></h2>
 <p>This is the fastest way to build MLIR-AIR for GPU targets.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Clone the repository</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Xilinx/mlir-air.git
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nb">cd</span><span class="w"> </span>mlir-air
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="c1"># Setup Python environment</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="nb">source</span><span class="w"> </span>utils/setup_python_packages.sh
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="c1"># Build LLVM</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>./utils/clone-llvm.sh
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>./utils/build-llvm-local.sh<span class="w"> </span>llvm
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="c1"># Build MLIR-AIR for GPU (without AIE)</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>./utils/build-mlir-air-gpu.sh<span class="w"> </span>llvm
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="c1"># Setup environment</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Clone the repository</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Xilinx/mlir-air.git
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nb">cd</span><span class="w"> </span>mlir-air
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># Setup Python environment</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="nb">source</span><span class="w"> </span>utils/setup_python_packages.sh
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="c1"># Build LLVM</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>./utils/clone-llvm.sh
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>./utils/build-llvm-local.sh<span class="w"> </span>llvm
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="c1"># Build MLIR-AIR for GPU (without AIE)</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>./utils/build-mlir-air-gpu.sh<span class="w"> </span>llvm
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="c1"># Setup environment</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
 </code></pre></div>
 <h2 id="build-script-details">Build Script Details<a class="headerlink" href="#build-script-details" title="Permanent link">&para;</a></h2>
-<p>The <code>build-mlir-air-gpu.sh</code> script builds MLIR-AIR with:
-- <code>-DAIR_ENABLE_AIE=OFF</code> - Disables AIE backend dependency
-- <code>-DAIR_ENABLE_GPU=ON</code> - Enables GPU/ROCDL passes
-- AIR core dialect and transformations</p>
+<p>The <code>build-mlir-air-gpu.sh</code> script builds MLIR-AIR with:</p>
+<ul>
+<li><code>-DAIR_ENABLE_AIE=OFF</code> - Disables AIE backend dependency</li>
+<li><code>-DAIR_ENABLE_GPU=ON</code> - Enables GPU/ROCDL passes</li>
+<li>AIR core dialect and transformations</li>
+</ul>
 <h2 id="manual-build">Manual Build<a class="headerlink" href="#manual-build" title="Permanent link">&para;</a></h2>
 <p>For more control over the build process:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Clone and setup</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Xilinx/mlir-air.git
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nb">cd</span><span class="w"> </span>mlir-air
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="nb">source</span><span class="w"> </span>utils/setup_python_packages.sh
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="c1"># Build LLVM</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>./utils/clone-llvm.sh
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>./utils/build-llvm-local.sh<span class="w"> </span>llvm
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c1"># Configure MLIR-AIR for GPU</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>build_gpu<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>build_gpu
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>cmake<span class="w"> </span>..<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span>-GNinja<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span>-DMLIR_DIR<span class="o">=</span><span class="k">$(</span><span class="nb">pwd</span><span class="k">)</span>/../llvm/install/lib/cmake/mlir<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span>-DLLVM_DIR<span class="o">=</span><span class="k">$(</span><span class="nb">pwd</span><span class="k">)</span>/../llvm/install/lib/cmake/llvm<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">    </span>-DAIR_ENABLE_AIE<span class="o">=</span>OFF<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">    </span>-DAIR_ENABLE_GPU<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="w">    </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="w">    </span>-DCMAKE_INSTALL_PREFIX<span class="o">=</span><span class="k">$(</span><span class="nb">pwd</span><span class="k">)</span>/install
-<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>
-<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="c1"># Build and install</span>
-<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>ninja<span class="w"> </span>install
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Clone and setup</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Xilinx/mlir-air.git
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nb">cd</span><span class="w"> </span>mlir-air
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="nb">source</span><span class="w"> </span>utils/setup_python_packages.sh
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="c1"># Build LLVM</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>./utils/clone-llvm.sh
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>./utils/build-llvm-local.sh<span class="w"> </span>llvm
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="c1"># Configure MLIR-AIR for GPU</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>build_gpu<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>build_gpu
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>cmake<span class="w"> </span>..<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span>-GNinja<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span>-DMLIR_DIR<span class="o">=</span><span class="k">$(</span><span class="nb">pwd</span><span class="k">)</span>/../llvm/install/lib/cmake/mlir<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">    </span>-DLLVM_DIR<span class="o">=</span><span class="k">$(</span><span class="nb">pwd</span><span class="k">)</span>/../llvm/install/lib/cmake/llvm<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">    </span>-DAIR_ENABLE_AIE<span class="o">=</span>OFF<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span>-DAIR_ENABLE_GPU<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">    </span>-DCMAKE_INSTALL_PREFIX<span class="o">=</span><span class="k">$(</span><span class="nb">pwd</span><span class="k">)</span>/install
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="c1"># Build and install</span>
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>ninja<span class="w"> </span>install
 </code></pre></div>
 <h2 id="available-passes">Available Passes<a class="headerlink" href="#available-passes" title="Permanent link">&para;</a></h2>
 <p>With GPU-only build, the following passes are available:</p>
@@ -2150,26 +2112,26 @@
 <td>Lower AIR dialect to async dialect</td>
 </tr>
 <tr>
-<td><code>convert-to-air</code></td>
-<td>Convert operations to AIR dialect</td>
+<td><code>air-par-to-herd</code>, <code>air-par-to-launch</code>, <code>air-par-to-segment</code>, <code>air-copy-to-dma</code></td>
+<td>Convert <code>scf.parallel</code> loops and memory copies to AIR operations</td>
 </tr>
 </tbody>
 </table>
-<p>AIE-specific passes (e.g., <code>air-to-aie</code>) are not available in this configuration; attempts to invoke them will fail because AIE support is disabled (<code>AIR_ENABLE_AIE=OFF</code>).</p>
+<p>A subset of the AIR transformation passes is also registered; see the <code>AIR_ENABLE_AIE=OFF</code> branch of <code>registerTransformPasses()</code> in <a href="https://github.com/Xilinx/mlir-air/blob/main/mlir/lib/Transform/Passes.cpp"><code>mlir/lib/Transform/Passes.cpp</code></a>. AIE-specific passes, such as <code>air-to-aie</code>, are not registered.</p>
 <h2 id="gpu-compilation-with-aircc">GPU Compilation with aircc<a class="headerlink" href="#gpu-compilation-with-aircc" title="Permanent link">&para;</a></h2>
 <p>The <code>aircc</code> compiler supports GPU targets.</p>
 <h3 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Setup environment first</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Compile the 4k x 4k matrix multiplication example for MI300X</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>aircc<span class="w"> </span>--target<span class="w"> </span>gpu<span class="w"> </span>--gpu-arch<span class="w"> </span>gfx942<span class="w"> </span>-o<span class="w"> </span>output.mlir<span class="w"> </span>test/gpu/4k_4k_mul/air_sync.mlir
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1"># With verbose output to see compilation steps</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>aircc<span class="w"> </span>--target<span class="w"> </span>gpu<span class="w"> </span>--gpu-arch<span class="w"> </span>gfx942<span class="w"> </span>-v<span class="w"> </span>-o<span class="w"> </span>output.mlir<span class="w"> </span>test/gpu/4k_4k_mul/air_sync.mlir
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># Keep intermediate files for debugging</span>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>aircc<span class="w"> </span>--target<span class="w"> </span>gpu<span class="w"> </span>--gpu-arch<span class="w"> </span>gfx942<span class="w"> </span>-v<span class="w"> </span>--tmpdir<span class="w"> </span>/tmp/mytest<span class="w"> </span>-o<span class="w"> </span>output.mlir<span class="w"> </span>test/gpu/4k_4k_mul/air_sync.mlir
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Setup environment first</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Compile the 4k x 4k matrix multiplication example for MI300X</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>aircc<span class="w"> </span>--target<span class="w"> </span>gpu<span class="w"> </span>--gpu-arch<span class="w"> </span>gfx942<span class="w"> </span>-o<span class="w"> </span>output.mlir<span class="w"> </span>test/gpu/4k_4k_mul/air_sync.mlir
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># With verbose output to see compilation steps</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>aircc<span class="w"> </span>--target<span class="w"> </span>gpu<span class="w"> </span>--gpu-arch<span class="w"> </span>gfx942<span class="w"> </span>-v<span class="w"> </span>-o<span class="w"> </span>output.mlir<span class="w"> </span>test/gpu/4k_4k_mul/air_sync.mlir
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c1"># Write intermediate files to a chosen directory</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>aircc<span class="w"> </span>--target<span class="w"> </span>gpu<span class="w"> </span>--gpu-arch<span class="w"> </span>gfx942<span class="w"> </span>-v<span class="w"> </span>--tmpdir<span class="w"> </span>/tmp/mytest<span class="w"> </span>-o<span class="w"> </span>output.mlir<span class="w"> </span>test/gpu/4k_4k_mul/air_sync.mlir
 </code></pre></div>
 <h3 id="aircc-options-for-gpu">aircc Options for GPU<a class="headerlink" href="#aircc-options-for-gpu" title="Permanent link">&para;</a></h3>
 <table>
@@ -2198,12 +2160,12 @@
 </tr>
 <tr>
 <td><code>-o &lt;file&gt;</code></td>
-<td>stdout</td>
-<td>Output file</td>
+<td>none</td>
+<td>Output file. Without <code>-o</code>, the final IR is written to <code>&lt;tmpdir&gt;/&lt;stem&gt;_final.mlir</code>, where <code>&lt;stem&gt;</code> is the input file name without its extension, and also printed to stdout.</td>
 </tr>
 <tr>
 <td><code>--tmpdir &lt;dir&gt;</code></td>
-<td>auto</td>
+<td><code>air_project</code></td>
 <td>Directory for intermediate files</td>
 </tr>
 <tr>
@@ -2273,138 +2235,137 @@
 <h2 id="gpu-test-examples">GPU Test Examples<a class="headerlink" href="#gpu-test-examples" title="Permanent link">&para;</a></h2>
 <h3 id="4k-x-4k-matrix-multiplication">4k x 4k Matrix Multiplication<a class="headerlink" href="#4k-x-4k-matrix-multiplication" title="Permanent link">&para;</a></h3>
 <p>The <code>test/gpu/4k_4k_mul/</code> directory contains a matrix multiplication example.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Setup environment</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Compile the example</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>aircc<span class="w"> </span>--target<span class="w"> </span>gpu<span class="w"> </span>--gpu-arch<span class="w"> </span>gfx942<span class="w"> </span>-v<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span>--tmpdir<span class="w"> </span>/tmp/matmul<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">    </span>-o<span class="w"> </span>/tmp/matmul/output.mlir<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span>test/gpu/4k_4k_mul/air_sync.mlir
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># View the generated output (contains gpu.binary)</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>head<span class="w"> </span>-50<span class="w"> </span>/tmp/matmul/output.mlir
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="c1"># View intermediate files</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>ls<span class="w"> </span>/tmp/matmul/
+</code></pre></div>
+<h3 id="output-structure">Output Structure<a class="headerlink" href="#output-structure" title="Permanent link">&para;</a></h3>
+<p>After compilation, the output MLIR contains:</p>
+<ul>
+<li><code>gpu.binary</code> with embedded AMDGPU ELF binary</li>
+<li><code>gpu.launch_func</code> calls to invoke the kernel</li>
+<li>Host-side LLVM code for memory management and kernel launch</li>
+</ul>
+<h3 id="running-the-compiled-output">Running the Compiled Output<a class="headerlink" href="#running-the-compiled-output" title="Permanent link">&para;</a></h3>
+<p>Use <code>mlir-runner</code> with the ROCm runtime library to execute the compiled MLIR:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Setup environment</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Compile the example</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>aircc<span class="w"> </span>--target<span class="w"> </span>gpu<span class="w"> </span>--gpu-arch<span class="w"> </span>gfx942<span class="w"> </span>-v<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span>--tmpdir<span class="w"> </span>/tmp/matmul<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span>-o<span class="w"> </span>/tmp/matmul/output.mlir<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">    </span>test/gpu/4k_4k_mul/air_sync.mlir
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="c1"># View the generated output (contains gpu.binary)</span>
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>head<span class="w"> </span>-50<span class="w"> </span>/tmp/matmul/output.mlir
-<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>
-<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="c1"># View intermediate files</span>
-<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>ls<span class="w"> </span>/tmp/matmul/
-</code></pre></div>
-<h3 id="output-structure">Output Structure<a class="headerlink" href="#output-structure" title="Permanent link">&para;</a></h3>
-<p>After compilation, the output MLIR contains:
-- <code>gpu.binary</code> with embedded AMDGPU ELF binary
-- <code>gpu.launch_func</code> calls to invoke the kernel
-- Host-side LLVM code for memory management and kernel launch</p>
-<h3 id="running-the-compiled-output">Running the Compiled Output<a class="headerlink" href="#running-the-compiled-output" title="Permanent link">&para;</a></h3>
-<p>Use <code>mlir-runner</code> with the ROCm runtime library to execute the compiled MLIR:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Setup environment</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Run the compiled output</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>mlir-runner<span class="w"> </span>--entry-point-result<span class="o">=</span>void<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$LLVM_INSTALL_DIR</span>/lib/libmlir_rocm_runtime.so<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$MLIR_AIR_INSTALL_DIR</span>/lib/libairgpu.so<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">    </span>output.mlir
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Run the compiled output</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>mlir-runner<span class="w"> </span>--entry-point-result<span class="o">=</span>void<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$LLVM_INSTALL_DIR</span>/lib/libmlir_rocm_runtime.so<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$MLIR_AIR_INSTALL_DIR</span>/lib/libairgpu.so<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">    </span>output.mlir
 </code></pre></div>
 <p>For debugging with ISA output:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>mlir-runner<span class="w"> </span>--debug-only<span class="o">=</span>serialize-to-isa<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">    </span>--entry-point-result<span class="o">=</span>void<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$LLVM_INSTALL_DIR</span>/lib/libmlir_rocm_runtime.so<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$MLIR_AIR_INSTALL_DIR</span>/lib/libairgpu.so<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span>output.mlir
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>mlir-runner<span class="w"> </span>--debug-only<span class="o">=</span>serialize-to-isa<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span>--entry-point-result<span class="o">=</span>void<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$LLVM_INSTALL_DIR</span>/lib/libmlir_rocm_runtime.so<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$MLIR_AIR_INSTALL_DIR</span>/lib/libairgpu.so<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span>output.mlir
 </code></pre></div>
 <p>Full example (compile and run):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Setup environment</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Compile</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>aircc<span class="w"> </span>--target<span class="w"> </span>gpu<span class="w"> </span>--gpu-arch<span class="w"> </span>gfx942<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">    </span>-o<span class="w"> </span>/tmp/output.mlir<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span>test/gpu/4k_4k_mul/air_sync.mlir
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="c1"># Run</span>
-<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>mlir-runner<span class="w"> </span>--entry-point-result<span class="o">=</span>void<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$LLVM_INSTALL_DIR</span>/lib/libmlir_rocm_runtime.so<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$MLIR_AIR_INSTALL_DIR</span>/lib/libairgpu.so<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="w">    </span>/tmp/output.mlir
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Setup environment</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Compile</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>aircc<span class="w"> </span>--target<span class="w"> </span>gpu<span class="w"> </span>--gpu-arch<span class="w"> </span>gfx942<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span>-o<span class="w"> </span>/tmp/output.mlir<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">    </span>test/gpu/4k_4k_mul/air_sync.mlir
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1"># Run</span>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>mlir-runner<span class="w"> </span>--entry-point-result<span class="o">=</span>void<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$LLVM_INSTALL_DIR</span>/lib/libmlir_rocm_runtime.so<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$MLIR_AIR_INSTALL_DIR</span>/lib/libairgpu.so<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="w">    </span>/tmp/output.mlir
 </code></pre></div>
 <h2 id="manual-compilation-steps">Manual Compilation Steps<a class="headerlink" href="#manual-compilation-steps" title="Permanent link">&para;</a></h2>
 <p>For debugging or customization, you can run the passes manually:</p>
 <h3 id="step-1-air-to-rocdl">Step 1: AIR to ROCDL<a class="headerlink" href="#step-1-air-to-rocdl" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>air-opt<span class="w"> </span>test/gpu/4k_4k_mul/air_sync.mlir<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">    </span>-air-to-rocdl<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span>-o<span class="w"> </span>step1_rocdl.mlir
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>air-opt<span class="w"> </span>test/gpu/4k_4k_mul/air_sync.mlir<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">    </span>-air-to-rocdl<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span>-o<span class="w"> </span>step1_rocdl.mlir
 </code></pre></div>
 <h3 id="step-2-gpu-kernel-outlining">Step 2: GPU Kernel Outlining<a class="headerlink" href="#step-2-gpu-kernel-outlining" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>air-opt<span class="w"> </span>step1_rocdl.mlir<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">    </span>-air-gpu-outlining<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span>-o<span class="w"> </span>step2_outlined.mlir
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>air-opt<span class="w"> </span>step1_rocdl.mlir<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">    </span>-air-gpu-outlining<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span>-o<span class="w"> </span>step2_outlined.mlir
 </code></pre></div>
 <h3 id="step-3-llvm-lowering">Step 3: LLVM Lowering<a class="headerlink" href="#step-3-llvm-lowering" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>mlir-opt<span class="w"> </span>step2_outlined.mlir<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span>--pass-pipeline<span class="o">=</span><span class="s2">"builtin.module(func.func(lower-affine,convert-linalg-to-loops,convert-scf-to-cf),gpu-kernel-outlining)"</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span>-o<span class="w"> </span>step3_gpu.mlir
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>mlir-opt<span class="w"> </span>step2_outlined.mlir<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">    </span>--pass-pipeline<span class="o">=</span><span class="s2">"builtin.module(func.func(lower-affine,convert-linalg-to-loops,convert-scf-to-cf),gpu-kernel-outlining)"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span>-o<span class="w"> </span>step3_gpu.mlir
 </code></pre></div>
 <h3 id="step-4-rocdl-binary-generation">Step 4: ROCDL Binary Generation<a class="headerlink" href="#step-4-rocdl-binary-generation" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>mlir-opt<span class="w"> </span>step3_gpu.mlir<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">    </span>--pass-pipeline<span class="o">=</span><span class="s2">"builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts),gpu-module-to-binary,func.func(gpu-async-region),gpu-to-llvm,convert-to-llvm,reconcile-unrealized-casts)"</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span>-o<span class="w"> </span>step4_final.mlir
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>mlir-opt<span class="w"> </span>step3_gpu.mlir<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span>--pass-pipeline<span class="o">=</span><span class="s2">"builtin.module(rocdl-attach-target{chip=gfx942 O=3},gpu.module(convert-gpu-to-rocdl{chipset=gfx942 runtime=HIP},reconcile-unrealized-casts),gpu-module-to-binary,func.func(gpu-async-region),gpu-to-llvm,convert-to-llvm,reconcile-unrealized-casts)"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span>-o<span class="w"> </span>step4_final.mlir
 </code></pre></div>
 <h3 id="step-5-run-with-mlir-runner">Step 5: Run with mlir-runner<a class="headerlink" href="#step-5-run-with-mlir-runner" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>mlir-runner<span class="w"> </span>--entry-point-result<span class="o">=</span>void<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$LLVM_INSTALL_DIR</span>/lib/libmlir_rocm_runtime.so<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$MLIR_AIR_INSTALL_DIR</span>/lib/libairgpu.so<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">    </span>step4_final.mlir
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>mlir-runner<span class="w"> </span>--entry-point-result<span class="o">=</span>void<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$LLVM_INSTALL_DIR</span>/lib/libmlir_rocm_runtime.so<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span>--shared-libs<span class="o">=</span><span class="nv">$MLIR_AIR_INSTALL_DIR</span>/lib/libairgpu.so<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">    </span>step4_final.mlir
 </code></pre></div>
 <h2 id="environment-setup">Environment Setup<a class="headerlink" href="#environment-setup" title="Permanent link">&para;</a></h2>
 <p>To reactivate the environment from a new terminal:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nb">cd</span><span class="w"> </span>mlir-air
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nb">cd</span><span class="w"> </span>mlir-air
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
 </code></pre></div>
 <p>Or manually:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span>/path/to/mlir-air/install/bin:/path/to/llvm/install/bin:<span class="nv">$PATH</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">PYTHONPATH</span><span class="o">=</span>/path/to/mlir-air/python:<span class="nv">$PYTHONPATH</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span>/path/to/mlir-air/install/bin:/path/to/llvm/install/bin:<span class="nv">$PATH</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">PYTHONPATH</span><span class="o">=</span>/path/to/mlir-air/python:<span class="nv">$PYTHONPATH</span>
 </code></pre></div>
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <h3 id="missing-python-bindings">Missing Python Bindings<a class="headerlink" href="#missing-python-bindings" title="Permanent link">&para;</a></h3>
 <p>If you see:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>ModuleNotFoundError: No module named 'air'
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>ModuleNotFoundError: No module named 'air'
 </code></pre></div></p>
 <p>Make sure to source the environment setup:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
 </code></pre></div></p>
 <p>Or add the Python path manually:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">PYTHONPATH</span><span class="o">=</span>/path/to/mlir-air/python:<span class="nv">$PYTHONPATH</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">PYTHONPATH</span><span class="o">=</span>/path/to/mlir-air/python:<span class="nv">$PYTHONPATH</span>
 </code></pre></div></p>
 <h3 id="aie-pass-errors">AIE Pass Errors<a class="headerlink" href="#aie-pass-errors" title="Permanent link">&para;</a></h3>
-<p>If you see errors like:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>error: AIRToAIE pass requires AIE support. Rebuild with -DAIR_ENABLE_AIE=ON
-</code></pre></div></p>
-<p>This is expected behavior. The GPU-only build does not include AIE backend support. Use <code>--target gpu</code> with aircc for GPU targets.</p>
+<p>A GPU-only build does not register AIE passes, so <code>air-opt</code> rejects options such as <code>--air-to-aie</code> as unknown command-line options. Use <code>aircc --target gpu</code> for GPU targets.</p>
 <h3 id="missing-air-opt-or-mlir-opt">Missing air-opt or mlir-opt<a class="headerlink" href="#missing-air-opt-or-mlir-opt" title="Permanent link">&para;</a></h3>
 <p>Ensure the tools are in your PATH:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>which<span class="w"> </span>air-opt<span class="w"> </span>mlir-opt
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>which<span class="w"> </span>air-opt<span class="w"> </span>mlir-opt
 </code></pre></div></p>
 <p>If not found, source the environment:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup_gpu.sh<span class="w"> </span>install
 </code></pre></div></p>
 <h3 id="rocm-runtime-not-found">ROCm Runtime Not Found<a class="headerlink" href="#rocm-runtime-not-found" title="Permanent link">&para;</a></h3>
 <p>Ensure ROCm is installed and the runtime library path is correct:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rocm/lib:<span class="nv">$LD_LIBRARY_PATH</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rocm/lib:<span class="nv">$LD_LIBRARY_PATH</span>
 </code></pre></div></p>
 <h3 id="named-barrier-error">Named Barrier Error<a class="headerlink" href="#named-barrier-error" title="Permanent link">&para;</a></h3>
 <p>If you see:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>error: cannot evaluate equated symbol 'air_kernel_0.num_named_barrier'
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>error: cannot evaluate equated symbol 'air_kernel_0.num_named_barrier'
 </code></pre></div></p>
 <p>This can be fixed by configuring the <code>rocdl-attach-target</code> pass with <code>wave64=true</code>. Note that this is not enabled by default in <code>aircc</code>, so you must pass this option explicitly in your GPU pipeline.</p>
 <h2 id="building-with-both-aie-and-gpu-support">Building with Both AIE and GPU Support<a class="headerlink" href="#building-with-both-aie-and-gpu-support" title="Permanent link">&para;</a></h2>
 <p>If you need both GPU and AIE backends:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>cmake<span class="w"> </span>..<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="w">    </span>-GNinja<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="w">    </span>-DMLIR_DIR<span class="o">=</span>/path/to/llvm/install/lib/cmake/mlir<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="w">    </span>-DLLVM_DIR<span class="o">=</span>/path/to/llvm/install/lib/cmake/llvm<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="w">    </span>-DAIE_DIR<span class="o">=</span>/path/to/mlir-aie/install/lib/cmake/aie<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a><span class="w">    </span>-DAIR_ENABLE_AIE<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a><span class="w">    </span>-DAIR_ENABLE_GPU<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a><span class="w">    </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>cmake<span class="w"> </span>..<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="w">    </span>-GNinja<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">    </span>-DMLIR_DIR<span class="o">=</span>/path/to/llvm/install/lib/cmake/mlir<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="w">    </span>-DLLVM_DIR<span class="o">=</span>/path/to/llvm/install/lib/cmake/llvm<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="w">    </span>-DAIE_DIR<span class="o">=</span>/path/to/mlir-aie/install/lib/cmake/aie<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a><span class="w">    </span>-DAIR_ENABLE_AIE<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a><span class="w">    </span>-DAIR_ENABLE_GPU<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a><span class="w">    </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release
 </code></pre></div>
 <h2 id="backend-options-summary">Backend Options Summary<a class="headerlink" href="#backend-options-summary" title="Permanent link">&para;</a></h2>
 <table>
@@ -2428,10 +2389,12 @@
 </tr>
 </tbody>
 </table>
-<p>Build configurations:
-- <strong>GPU-only</strong>: <code>-DAIR_ENABLE_AIE=OFF -DAIR_ENABLE_GPU=ON</code>
-- <strong>AIE-only</strong>: <code>-DAIR_ENABLE_AIE=ON -DAIR_ENABLE_GPU=OFF</code>
-- <strong>Both</strong>: <code>-DAIR_ENABLE_AIE=ON -DAIR_ENABLE_GPU=ON</code> (requires mlir-aie)</p>
+<p>Build configurations:</p>
+<ul>
+<li><strong>GPU-only</strong>: <code>-DAIR_ENABLE_AIE=OFF -DAIR_ENABLE_GPU=ON</code></li>
+<li><strong>AIE-only</strong>: <code>-DAIR_ENABLE_AIE=ON -DAIR_ENABLE_GPU=OFF</code></li>
+<li><strong>Both</strong>: <code>-DAIR_ENABLE_AIE=ON -DAIR_ENABLE_GPU=ON</code> (requires mlir-aie)</li>
+</ul>
 
 
 

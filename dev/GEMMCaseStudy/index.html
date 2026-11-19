@@ -2007,13 +2007,13 @@
 <a href="#air-ping-pong-transform">"air-ping-pong-transform{keep-memref-dealloc=true}"</a><br />
 "canonicalize", "cse"<br />
 <a href="#air-specialize-channel-wrap-and-stride">"air-specialize-channel-wrap-and-stride"</a><br />
-"canonicalize", "cse"
+"canonicalize", "cse"<br />
 <a href="#air-place-herds">"air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}"</a><br />
 'canonicalize', 'cse'<br />
-'func.func(air-renumber-dma)'
+'func.func(air-renumber-dma)'<br />
 'canonicalize', 'cse'<br />
 <a href="#air-to-aie">'air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}'</a><br />
-'canonicalize'
+'canonicalize'<br />
 <a href="#air-to-std">'air-to-std'</a><br />
 'canonicalize'<br />
 'symbol-dce'<br />
@@ -2021,7 +2021,7 @@
 <a href="#air-unroll-outer-affine-loops">'func.func(air-unroll-outer-affine-loops{depth=2})'</a><br />
 'affine-expand-index-ops'<br />
 <a href="#airrt-to-npu">'airrt-to-npu'</a><br />
-'canonicalize'</p>
+'canonicalize'  </p>
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -2034,58 +2034,53 @@
 <tbody>
 <tr>
 <td style="text-align: left;">Convert to MLIR-AIR</td>
-<td style="text-align: left;"><br> <ul><li><code>air-linalg-to-func{link-with=mm.o}</code></li><li><code>air-par-to-herd{depth=1}</code></li><li><code>air-par-to-launch{has-air-segment=true}</code></li><li><code>air-copy-to-dma</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>air-linalg-to-func{link-with=mm.o}</code></li><li><code>air-par-to-herd{depth=1}</code></li><li><code>air-par-to-launch{has-air-segment=true}</code></li><li><code>air-copy-to-dma</code></li></ul></td>
 <td style="text-align: left;">Binding parallelizable loops to <code>air</code> hierarchies; binding data movement operations to <code>air.dma_memcpy_nd</code> operations; binding linear algebra compute operations with link to AIE core kernel.</td>
 </tr>
 <tr>
 <td style="text-align: left;">Asynchronous dependency analysis</td>
-<td style="text-align: left;"><br> <ul><li><code>air-dependency</code></li><li><code>air-dependency-canonicalize</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>air-dependency</code></li><li><code>air-dependency-canonicalize</code></li></ul></td>
 <td style="text-align: left;">Construction of asynchronous task graph, as an explicit representation of the asynchronous concurrency in the hardware schedule.</td>
 </tr>
 <tr>
 <td style="text-align: left;">Broadcast</td>
-<td style="text-align: left;"><br> <ul><li><code>air-dependency-schedule-opt</code></li><li><code>air-specialize-dma-broadcast</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>air-dependency-schedule-opt</code></li><li><code>air-specialize-dma-broadcast</code></li></ul></td>
 <td style="text-align: left;">Detection and lowering of broadcasting data movement to map to circuit-routed streaming interconnects.</td>
 </tr>
 <tr>
 <td style="text-align: left;">Generate half-dma operations</td>
-<td style="text-align: left;"><br> <ul><li><code>air-dma-to-channel</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>air-dma-to-channel</code></li></ul></td>
 <td style="text-align: left;">Lowering synchronous or asynchronous <code>air.dma_memcpy_nd</code> operations to <code>air.channel.put</code> or <code>air.channel.get</code> operations representing half-dma data sends and receives.</td>
 </tr>
 <tr>
 <td style="text-align: left;">Outline L2 memrefs to memtile buffers</td>
-<td style="text-align: left;"><br> <ul><li><code>func.func(air-split-l2-memref)</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>func.func(air-split-l2-memref)</code></li></ul></td>
 <td style="text-align: left;">Tiling L2 memrefs based on parallelizable data movements, explicitly represented via <code>scf.parallel</code> or <code>air.channel.put/get</code> operations, in order to maximize memtile bandwidth utilization.</td>
 </tr>
 <tr>
 <td style="text-align: left;">Memtile DMA BD Optimization</td>
-<td style="text-align: left;"><br> <ul><li><code>air-isolate-async-dma-loop-nests</code></li><li><code>func.func(air-loop-fusion)</code></li><li><code>air-specialize-channel-wrap-and-stride</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>air-isolate-async-dma-loop-nests</code></li><li><code>func.func(air-loop-fusion)</code></li><li><code>air-specialize-channel-wrap-and-stride</code></li></ul></td>
 <td style="text-align: left;">Lowering L2 control flow program into finite-state machines made of Block Descriptors as states.</td>
 </tr>
 <tr>
 <td style="text-align: left;">Double buffering</td>
-<td style="text-align: left;"><br> <ul><li><code>air-label-scf-for-to-ping-pong</code></li><li><code>air-ping-pong-transform{keep-memref-dealloc=true}</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>air-label-scf-for-to-ping-pong</code></li><li><code>air-ping-pong-transform{keep-memref-dealloc=true}</code></li></ul></td>
 <td style="text-align: left;">Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a <code>memref</code> within an <code>scf.for</code> loop; explicitly represent the multiple asynchronous threads traversing through the loop.</td>
 </tr>
 <tr>
 <td style="text-align: left;">Outline air.herd to aie.tiles</td>
-<td style="text-align: left;"><br> <ul><li><code>air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}</code></li><li><code>func.func(air-renumber-dma)</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}</code></li><li><code>func.func(air-renumber-dma)</code></li></ul></td>
 <td style="text-align: left;">Placing <code>air.herd</code> onto <code>air.segment</code>; inferring <code>air.segment</code> shape and size.</td>
 </tr>
 <tr>
 <td style="text-align: left;">Convert MLIR-AIR to MLIR-AIE</td>
-<td style="text-align: left;"><br> <ul><li><code>func.func(air-renumber-dma)</code></li><li><code>air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>func.func(air-renumber-dma)</code></li><li><code>air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}</code></li></ul></td>
 <td style="text-align: left;">Converting to MLIR-AIE dialect. Clone the <code>func.func</code> op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline <code>air.herd</code> body into <code>aie.core</code> kernel; materialize asynchronous <code>air.channel.put/get</code> into dma block descriptors and <code>aie.lock</code>.</td>
 </tr>
 <tr>
 <td style="text-align: left;">SHIM DMA BD Optimization</td>
-<td style="text-align: left;"><br> <ul><li><code>air-to-std</code></li><li><code>func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})</code></li><li><code>func.func(air-unroll-outer-affine-loops{depth=2})</code></li><li><code>airrt-to-npu</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>air-to-std</code></li><li><code>func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})</code></li><li><code>func.func(air-unroll-outer-affine-loops{depth=2})</code></li><li><code>airrt-to-npu</code></li></ul></td>
 <td style="text-align: left;">Converting the control code via AIRRt and AIEX.NPU dialect to NPU SHIM DMA instruction sequence.</td>
-</tr>
-<tr>
-<td style="text-align: left;"></td>
-<td style="text-align: left;"></td>
-<td style="text-align: left;"></td>
 </tr>
 </tbody>
 </table>

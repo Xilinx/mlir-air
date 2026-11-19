@@ -1670,7 +1670,7 @@ MLIR-AIR provides a graph canonicalization pass <code>-air-dependency-canonicali
 </tbody>
 </table>
 <p>The rendered CDFG below is generated from the matrix multiplication example in the previous section.</p>
-<p><img src="assets/images/air_cdfg_example.svg"></p>
+<p><img alt="CDFG of the matrix multiplication example" src="../assets/images/air_cdfg_example.svg" /></p>
 <h3 id="step-three-cdfg-optimization-using-air-dependency-schedule-opt">Step three: CDFG optimization using <code>-air-dependency-schedule-opt</code><a class="headerlink" href="#step-three-cdfg-optimization-using-air-dependency-schedule-opt" title="Permanent link">&para;</a></h3>
 <p>Having extracted a CDFG from the MLIR-AIR code, the <code>-air-dependency-schedule-opt</code> pass performs scheduling optimization by detecting and transforming inefficient code patterns in CDFG.
 Data broadcasting opportunities across spatially mapped AIE cores are automatically detected and labelled.

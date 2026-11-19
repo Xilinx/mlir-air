@@ -3432,43 +3432,51 @@ by the <code>channel_type</code> attribute.</p>
 <p>The <code>channel_type</code> attribute is a string that determines the mechanism used for data movement.
 Values are namespaced by backend: NPU (AIE) channels use the <code>npu_</code> prefix; GPU channels use
 the <code>gpu_</code> prefix.</p>
-<p>NPU (AIE) channel types:
-- <strong>"npu_dma_stream"</strong> (default):
-  Use DMA engines to send and receive data, with routing performed over a streaming interconnect.
-- <strong>"npu_dma_packet"</strong>:
-  Use DMA engines to send and receive data, with routing performed over a packet-switched network.
-- <strong>"npu_cascade"</strong>:
-  Use processor cores to send and receive data via cascade connections between adjacent tiles.
-- <strong>"npu_mmio"</strong>:
+<p>NPU (AIE) channel types:</p>
+<ul>
+<li><strong>"npu_dma_stream"</strong> (default):
+  Use DMA engines to send and receive data, with routing performed over a streaming interconnect.</li>
+<li><strong>"npu_dma_packet"</strong>:
+  Use DMA engines to send and receive data, with routing performed over a packet-switched network.</li>
+<li><strong>"npu_cascade"</strong>:
+  Use processor cores to send and receive data via cascade connections between adjacent tiles.</li>
+<li><strong>"npu_mmio"</strong>:
   Use host-side MMIO writes (e.g. <code>aiex.npu.blockwrite</code>) issued from the runtime
   sequence to deliver a constant payload directly into a tile-local L1 buffer.
   No DMA channel, no shim allocation, no flow is reserved.
-  Verifier-enforced constraints on the put/get sites:
-    * the <code>put</code> source memref must live in L3 (<code>memory_space=0</code>);
-    * the <code>get</code> destination memref must live in L1 (<code>memory_space=2</code>).
+  Verifier-enforced constraints on the put/get sites:<ul>
+<li>the <code>put</code> source memref must live in L3 (<code>memory_space=0</code>);</li>
+<li>the <code>get</code> destination memref must live in L1 (<code>memory_space=2</code>).
   The lowering further requires the put source to be a constant
   <code>memref.get_global</code>. The consumer-side <code>get</code> lowers to a no-op
-  because the L1 buffer is already populated when the core begins executing.</p>
-<p>GPU channel types:
-- <strong>"gpu_symmetric_heap"</strong>:
+  because the L1 buffer is already populated when the core begins executing.</li>
+</ul>
+</li>
+</ul>
+<p>GPU channel types:</p>
+<ul>
+<li><strong>"gpu_symmetric_heap"</strong>:
   Cross-GPU messaging through the symmetric heap runtime
   (<code>runtime_lib/airgpu/symmetric_heap.{h,cpp}</code>). The channel must be enclosed
   by an <code>air.rank</code> op; the put/get sites use rank indices to address peer
   heaps. Lowering will be added by a future GPU pass (planned:
   <code>air-gpu-channel-to-mgpu</code>) which expands put/get to peer-mapped
   <code>mgpuMemcpy</code> calls plus a barrier; this PR introduces only the IR
-  surface and verifier rules.</p>
+  surface and verifier rules.</li>
+</ul>
 <h3 id="broadcasting">Broadcasting<a class="headerlink" href="#broadcasting" title="Permanent link">&para;</a></h3>
 <p>If a channel broadcasts to multiple destinations, the optional <code>broadcast_shape</code> attribute
 annotates the output sizes after broadcasting. Broadcasting follows NumPy's broadcasting rules.</p>
 <h3 id="packet-ids">Packet ids<a class="headerlink" href="#packet-ids" title="Permanent link">&para;</a></h3>
 <p>A packet-switched channel (<code>channel_type = "npu_dma_packet"</code>) may pin explicit routing ids
 via the optional <code>packet_ids</code> array attribute (each id in <code>[0, 31]</code>, unique). One
-<code>aie.packet_flow</code> is emitted per id:
-- <strong>N ids to one destination:</strong> all ids route to the same buffer; a later demux hop keys off
-  the header carried by the payload.
-- <strong>N ids to N destinations:</strong> destination <code>i</code> is routed with <code>packet_ids[i]</code>, an indexed
-  fan-out landing each slice on a distinct, statically-known id.</p>
+<code>aie.packet_flow</code> is emitted per id:</p>
+<ul>
+<li><strong>N ids to one destination:</strong> all ids route to the same buffer; a later demux hop keys off
+  the header carried by the payload.</li>
+<li><strong>N ids to N destinations:</strong> destination <code>i</code> is routed with <code>packet_ids[i]</code>, an indexed
+  fan-out landing each slice on a distinct, statically-known id.</li>
+</ul>
 <p>The compute core writes the routing id into the packet header word of the payload, so the DMA
 engine does not stamp/filter these ids; the flows only install switchbox routing entries.
 Without <code>packet_ids</code> a packet channel gets a single auto-assigned id.</p>

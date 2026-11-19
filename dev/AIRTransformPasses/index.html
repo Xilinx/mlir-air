@@ -4427,11 +4427,13 @@ the input mapping.</p>
 <h3 id="-air-lower-linalg-tensors"><code>-air-lower-linalg-tensors</code><a class="headerlink" href="#-air-lower-linalg-tensors" title="Permanent link">&para;</a></h3>
 <p><em>Lowering from linalg on tensors to loops</em></p>
 <p>This pass implements a lowering pipeline from linalg on tensors to affine
-loops. There are three stages:
-1. Bufferize with <code>linalg::populateLinalgBufferizePatterns</code>
-2. Run some peephole optimizations to cleanup after bufferization.
-3. Named ops are transformed to linalg GenericOps then all GenericOps
-are lowered to loops using <code>linalg::LinalgLoweringPattern</code>.</p>
+loops. There are three stages:</p>
+<ol>
+<li>Bufferize with <code>linalg::populateLinalgBufferizePatterns</code></li>
+<li>Run some peephole optimizations to cleanup after bufferization.</li>
+<li>Named ops are transformed to linalg GenericOps then all GenericOps
+are lowered to loops using <code>linalg::LinalgLoweringPattern</code>.</li>
+</ol>
 <p>The transforms are biased toward aie.core regions and are intended
 to be run after the air-to-aie pass.</p>
 <h3 id="-air-merge-unrolled-devices"><code>-air-merge-unrolled-devices</code><a class="headerlink" href="#-air-merge-unrolled-devices" title="Permanent link">&para;</a></h3>
@@ -4867,20 +4869,24 @@ actual data dimensions. If absent, the launch is left unchanged.
 Tile sizes are inferred from arith.muli offset computations in the
 launch body.</p>
 <p>Three orthogonal axes control behavior:</p>
-<p><strong>Split mode</strong> (<code>split-mode</code> option):
-- <code>multi-launch</code> (default): Create up to 4 separate launches (interior,
+<p><strong>Split mode</strong> (<code>split-mode</code> option):</p>
+<ul>
+<li><code>multi-launch</code> (default): Create up to 4 separate launches (interior,
   M-boundary, N-boundary, corner), each with a specialized grid size.
-  Each partition gets unique channel/segment names.
-- <code>single-launch</code>: Keep a single launch with the original grid size and
+  Each partition gets unique channel/segment names.</li>
+<li><code>single-launch</code>: Keep a single launch with the original grid size and
   use scf.if on block indices to dispatch between interior and boundary
   partition bodies. Suitable for GPU targets where multiple launches
-  don't map to a single kernel dispatch.</p>
-<p><strong>Padding location</strong> (<code>pad-location</code> option):
-- <code>memtile</code> (default): Apply padding at L2 MM2S DMAs in a 3-level
+  don't map to a single kernel dispatch.</li>
+</ul>
+<p><strong>Padding location</strong> (<code>pad-location</code> option):</p>
+<ul>
+<li><code>memtile</code> (default): Apply padding at L2 MM2S DMAs in a 3-level
   memory hierarchy (L3-&gt;L2-&gt;L1). Only available with
-  split-mode=multi-launch.
-- <code>source</code>: Apply padding directly on the op reading from L3.
-  Source sizes reduced, pad_after set on the source-level op.</p>
+  split-mode=multi-launch.</li>
+<li><code>source</code>: Apply padding directly on the op reading from L3.
+  Source sizes reduced, pad_after set on the source-level op.</li>
+</ul>
 <p><strong>IR representation</strong> (auto-detected):
 The pass detects whether the launch contains air.channel.put/get or
 air.dma_memcpy_nd ops and handles each correctly in multi-launch mode.

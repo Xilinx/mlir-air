@@ -2687,8 +2687,8 @@ MLIR-AIR</a>". arXiv:2510.14871, October 2025.</p>
 </code></pre></div>
 <p>Each level defines an <strong>iteration space</strong> (a multi-dimensional index range) and a <strong>body
 region</strong> that executes across that iteration space. The bodies of <code>launch</code> and <code>segment</code>
-execute at the <em>host/controller</em> level, while the body of <code>herd</code> executes in <em>data-
-parallel</em> fashion across each point of its iteration space.</p>
+execute at the <em>host/controller</em> level, while the body of <code>herd</code> executes in
+<em>data-parallel</em> fashion across each point of its iteration space.</p>
 <p>Execution at each level is <strong>spatially parallel</strong>: points in the iteration space may
 execute concurrently on distinct hardware resources.</p>
 <p>Operands from the enclosing scope are passed explicitly as <strong>kernel operands</strong> into each
@@ -2891,13 +2891,15 @@ the runtime should schedule as hardware becomes available. It does not guarantee
 simultaneous execution of all instances; it expresses that instances are
 independent and may be run in any order or concurrently at the runtime's
 discretion.</p>
-<p>Use the launch iteration space when:
-- Each instance is fully self-contained and produces no result that another
-  instance depends on.
-- The workload naturally decomposes into a variable number of tiles determined
-  at runtime or by a host-side loop.
-- Runtime flexibility in scheduling is acceptable or desirable (e.g. when
-  multiple launch streams share device resources).</p>
+<p>Use the launch iteration space when:</p>
+<ul>
+<li>Each instance is fully self-contained and produces no result that another
+  instance depends on.</li>
+<li>The workload naturally decomposes into a variable number of tiles determined
+  at runtime or by a host-side loop.</li>
+<li>Runtime flexibility in scheduling is acceptable or desirable (e.g. when
+  multiple launch streams share device resources).</li>
+</ul>
 <p><strong>Do not</strong> use the launch iteration space when you need a <strong>guarantee</strong> that all
 instances execute simultaneously — for that, use the <code>air.segment</code> iteration
 space (§2.2), which provides always-concurrent semantics (all instances are
@@ -3212,13 +3214,15 @@ fact that all instances at every level are simultaneously live.</p>
 <p>The total footprint describes the <em>sum</em> of per-instance blocks, not a single
 contiguous region: the compiler allocates a contiguous block per instance and
 may place those blocks anywhere in the device array that fits.</p>
-<p>These statically computed totals are used to:
-1. Verify that the segment hierarchy (across all iterations at all levels) fits
-   within the target hardware partition before lowering begins.
-2. Assign physical resources (tile columns/rows, memory banks, DMA engines) to
-   each iteration at each level without runtime negotiation.
-3. Guarantee that all segment instances — and any other segments declared within
-   the same <code>air.launch</code> — can be <strong>co-resident</strong> without resource conflicts.</p>
+<p>These statically computed totals are used to:</p>
+<ol>
+<li>Verify that the segment hierarchy (across all iterations at all levels) fits
+   within the target hardware partition before lowering begins.</li>
+<li>Assign physical resources (tile columns/rows, memory banks, DMA engines) to
+   each iteration at each level without runtime negotiation.</li>
+<li>Guarantee that all segment instances — and any other segments declared within
+   the same <code>air.launch</code> — can be <strong>co-resident</strong> without resource conflicts.</li>
+</ol>
 <p>Optional physical placement attributes (<code>x_loc</code>, <code>y_loc</code>, <code>x_size</code>, <code>y_size</code>)
 annotate the column/row offset and extent of <strong>one</strong> instance on devices with
 2D tile arrays. For a segment with an iteration space, the compiler assigns a
@@ -3246,14 +3250,16 @@ Currently defined values:</p>
 </table>
 <p>When <code>backend-granularity</code> is absent the backend applies its default mapping
 (e.g., one workgroup / thread block on GPU).</p>
-<p><strong>Nesting constraints</strong>:
-- <code>air.segment</code> must be nested inside <code>air.launch</code> or inside another
+<p><strong>Nesting constraints</strong>:</p>
+<ul>
+<li><code>air.segment</code> must be nested inside <code>air.launch</code> or inside another
   <code>air.segment</code> (directly or indirectly — the outermost segment must be inside
-  a launch).
-- <code>air.herd</code> must be nested inside <code>air.segment</code>. It is the innermost hierarchy
-  level and must not contain <code>air.segment</code> or another <code>air.herd</code>.
-- The nesting depth of <code>air.segment</code> is unbounded by the model; backends may
-  impose device-specific limits (e.g. two levels on MI3xx — XCD and CU).</p>
+  a launch).</li>
+<li><code>air.herd</code> must be nested inside <code>air.segment</code>. It is the innermost hierarchy
+  level and must not contain <code>air.segment</code> or another <code>air.herd</code>.</li>
+<li>The nesting depth of <code>air.segment</code> is unbounded by the model; backends may
+  impose device-specific limits (e.g. two levels on MI3xx — XCD and CU).</li>
+</ul>
 <hr />
 <h3 id="23-airherd">2.3 <code>air.herd</code><a class="headerlink" href="#23-airherd" title="Permanent link">&para;</a></h3>
 <h4 id="syntax_2">Syntax<a class="headerlink" href="#syntax_2" title="Permanent link">&para;</a></h4>
@@ -3894,12 +3900,14 @@ loads into shared memory and subsequent compute.</p>
 <a id="__codelineno-14-28" name="__codelineno-14-28" href="#__codelineno-14-28"></a>  }
 <a id="__codelineno-14-29" name="__codelineno-14-29" href="#__codelineno-14-29"></a>}
 </code></pre></div>
-<p>The mapping:
-- <code>air.launch</code> → <code>gpu.launch</code> with <code>gridDim = (32, 32, 1)</code>
-- <code>air.segment</code> → workgroup body (executed once per thread block)
-- <code>air.herd tile (%tx, .) in (%c4, %c1)</code> → <code>blockDim = (4 * wave_size, 1, 1)</code>; <code>%tx</code> is the warp-id within the block; lane index inside the PE comes from <code>gpu.lane_id</code>
-- L2 memrefs (space 1) → LDS (shared memory)
-- L1 memrefs (space 2) → VGPRs / private scratch</p>
+<p>The mapping:</p>
+<ul>
+<li><code>air.launch</code> → <code>gpu.launch</code> with <code>gridDim = (32, 32, 1)</code></li>
+<li><code>air.segment</code> → workgroup body (executed once per thread block)</li>
+<li><code>air.herd tile (%tx, .) in (%c4, %c1)</code> → <code>blockDim = (4 * wave_size, 1, 1)</code>; <code>%tx</code> is the warp-id within the block; lane index inside the PE comes from <code>gpu.lane_id</code></li>
+<li>L2 memrefs (space 1) → LDS (shared memory)</li>
+<li>L1 memrefs (space 2) → VGPRs / private scratch</li>
+</ul>
 <h3 id="46-compilation-pipeline">4.6 Compilation pipeline<a class="headerlink" href="#46-compilation-pipeline" title="Permanent link">&para;</a></h3>
 <p>The full GPU lowering pipeline is:</p>
 <ol>
@@ -3910,8 +3918,8 @@ loads into shared memory and subsequent compute.</p>
    a <code>gpu.module</code>, injects <code>gpu.BlockIdOp</code>, <code>gpu.ThreadIdOp</code>, etc., and converts
    the launch site to <code>gpu.launch_func</code>.</li>
 <li><strong>LLVM lowering</strong> — Lowers affine, SCF, and CF dialects.</li>
-<li><strong>ROCDL binary generation</strong> — Attaches a ROCDL target descriptor (<code>rocdl-attach-
-   target</code>), converts <code>gpu.module</code> to ROCDL IR (<code>convert-gpu-to-rocdl</code>), and
+<li><strong>ROCDL binary generation</strong> — Attaches a ROCDL target descriptor
+   (<code>rocdl-attach-target</code>), converts <code>gpu.module</code> to ROCDL IR (<code>convert-gpu-to-rocdl</code>), and
    serialises the GPU binary with <code>gpu-module-to-binary</code>.</li>
 </ol>
 <p>See <a href="../buildingGPU/">buildingGPU.md</a> for build instructions and the complete

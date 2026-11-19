@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#getting-started-and-running-on-linux-ryzentm-ai" class="md-skip">
+        <a href="#getting-started-on-ryzen-ai-linux" class="md-skip">
           Skip to content
         </a>
       
@@ -1853,7 +1853,7 @@
   
 
 
-<h1 id="getting-started-and-running-on-linux-ryzentm-ai">Getting Started and Running on Linux Ryzen™ AI<a class="headerlink" href="#getting-started-and-running-on-linux-ryzentm-ai" title="Permanent link">&para;</a></h1>
+<h1 id="getting-started-on-ryzen-ai-linux">Getting Started on Ryzen AI (Linux)<a class="headerlink" href="#getting-started-on-ryzen-ai-linux" title="Permanent link">&para;</a></h1>
 <h2 id="install-prebuilt-wheels-recommended">Install Prebuilt Wheels (Recommended)<a class="headerlink" href="#install-prebuilt-wheels-recommended" title="Permanent link">&para;</a></h2>
 <p>The fastest way to get MLIR-AIR is to install the prebuilt wheel — no source build, no CMake, no LLVM clone. Use this path unless you need to modify MLIR-AIR itself or run on an unsupported Python/platform.</p>
 <h3 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h3>
@@ -1978,24 +1978,30 @@
 <p><strong>With XRT (for hardware execution):</strong>
    <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>./utils/build-mlir-air-using-wheels.sh<span class="w"> </span>--xrt-dir<span class="w"> </span>&lt;xrt_path&gt;<span class="w"> </span><span class="o">[</span>build_dir<span class="o">]</span><span class="w"> </span><span class="o">[</span>install_dir<span class="o">]</span>
 </code></pre></div></p>
-<p>Parameters:
-   - <code>--xrt-dir &lt;xrt_path&gt;</code>: Path to your XRT installation (optional, only needed for hardware execution)
-   - <code>[build_dir]</code>: Build directory (optional, default: <code>build</code>)
-   - <code>[install_dir]</code>: Install directory (optional, default: <code>install</code>)</p>
-<p>The script will:
-   - Download and unpack a prebuilt LLVM wheel (which includes MLIR)
-   - pip install <a href="https://github.com/Xilinx/llvm-aie"><code>llvm-aie</code></a>, which is used as a backend to generate AIE binaries
-   - Install <code>mlir-aie</code> dependencies from wheels
-   - Clone required CMake modules
-   - Configure and build MLIR-AIR using CMake and Ninja
-   - Optionally configure XRT support if <code>--xrt-dir</code> is provided</p>
-<ol>
-<li><strong>Environment Setup:</strong>
+<p>Parameters:</p>
+<ul>
+<li><code>--xrt-dir &lt;xrt_path&gt;</code>: Path to your XRT installation (optional, only needed for hardware execution)</li>
+<li><code>[build_dir]</code>: Build directory (optional, default: <code>build</code>)</li>
+<li><code>[install_dir]</code>: Install directory (optional, default: <code>install</code>)</li>
+</ul>
+<p>The script will:</p>
+<ul>
+<li>Download and unpack a prebuilt LLVM wheel (which includes MLIR)</li>
+<li>pip install <a href="https://github.com/Xilinx/llvm-aie"><code>llvm-aie</code></a>, which is used as a backend to generate AIE binaries</li>
+<li>Install <code>mlir-aie</code> dependencies from wheels</li>
+<li>Clone required CMake modules</li>
+<li>Configure and build MLIR-AIR using CMake and Ninja</li>
+<li>
+<p>Optionally configure XRT support if <code>--xrt-dir</code> is provided</p>
+</li>
+<li>
+<p><strong>Environment Setup:</strong>
    To setup your environment after building:
    <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nb">source</span><span class="w"> </span>utils/env_setup.sh<span class="w"> </span><span class="o">[</span>install_dir<span class="o">]</span><span class="w"> </span><span class="k">$(</span>python3<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>show<span class="w"> </span>mlir_aie<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>Location<span class="w"> </span><span class="p">|</span><span class="w"> </span>awk<span class="w"> </span><span class="s1">'{print $2}'</span><span class="k">)</span>/mlir_aie<span class="w"> </span><span class="k">$(</span>python3<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>show<span class="w"> </span>llvm-aie<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>Location<span class="w"> </span><span class="p">|</span><span class="w"> </span>awk<span class="w"> </span><span class="s1">'{print $2}'</span><span class="k">)</span>/llvm-aie<span class="w"> </span>my_install/mlir
 </code></pre></div>
-   This command automatically detects the installation directories of the <code>mlir-aie</code> and <code>llvm-aie</code> Python packages, and sets up environment variables for MLIR-AIR, MLIR-AIE, PEANO (llvm-aie compiler), Python, and MLIR libraries.</li>
-</ol>
+   This command automatically detects the installation directories of the <code>mlir-aie</code> and <code>llvm-aie</code> Python packages, and sets up environment variables for MLIR-AIR, MLIR-AIE, PEANO (llvm-aie compiler), Python, and MLIR libraries.</p>
+</li>
+</ul>
 <p><strong>If you built with XRT support</strong>, also run:
    <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nb">source</span><span class="w"> </span><span class="o">[</span>xrt_dir<span class="o">]</span>/setup.sh
 </code></pre></div>
@@ -2037,36 +2043,44 @@
 <a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>make<span class="w"> </span>run4x4<span class="w"> </span><span class="nv">COMPILE_MODE</span><span class="o">=</span>compile-only
 </code></pre></div>
 <p><strong>Expected output:</strong> <code>Compilation completed successfully!</code></p>
-<p><strong>What this does:</strong>
-- Compiles AIR dialect code through the full compilation pipeline
-- Generates intermediate MLIR files and NPU instructions
-- Does <strong>not</strong> generate xclbin (no <code>xclbinutil</code> needed)
-- Does <strong>not</strong> require XRT or hardware</p>
-<p><strong>When to use:</strong>
-- Building on a system without XRT installed
-- Cross-compiling for deployment on another system
-- CI/CD pipelines
-- Early development and testing</p>
+<p><strong>What this does:</strong></p>
+<ul>
+<li>Compiles AIR dialect code through the full compilation pipeline</li>
+<li>Generates intermediate MLIR files and NPU instructions</li>
+<li>Does <strong>not</strong> generate xclbin (no <code>xclbinutil</code> needed)</li>
+<li>Does <strong>not</strong> require XRT or hardware</li>
+</ul>
+<p><strong>When to use:</strong></p>
+<ul>
+<li>Building on a system without XRT installed</li>
+<li>Cross-compiling for deployment on another system</li>
+<li>CI/CD pipelines</li>
+<li>Early development and testing</li>
+</ul>
 <h3 id="example-2-full-workflow-with-hardware-default">Example 2: Full Workflow with Hardware (Default)<a class="headerlink" href="#example-2-full-workflow-with-hardware-default" title="Permanent link">&para;</a></h3>
 <p>If you have XRT and Ryzen AI hardware available, run the complete workflow:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nb">cd</span><span class="w"> </span>programming_examples/matrix_multiplication/i8
 <a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>make<span class="w"> </span>run4x4
 </code></pre></div>
 <p><strong>Expected output:</strong> <code>PASS!</code></p>
-<p><strong>What this does:</strong>
-- Compiles the AIR code
-- Generates xclbin and instruction files
-- Loads and executes on NPU hardware
-- Validates results against expected outputs</p>
+<p><strong>What this does:</strong></p>
+<ul>
+<li>Compiles the AIR code</li>
+<li>Generates xclbin and instruction files</li>
+<li>Loads and executes on NPU hardware</li>
+<li>Validates results against expected outputs</li>
+</ul>
 <p>This is the default mode (<code>COMPILE_MODE=compile-and-run</code>) for users with hardware.</p>
 <h3 id="example-3-advanced-profiling-with-custom-host-code">Example 3: Advanced - Profiling with Custom Host Code<a class="headerlink" href="#example-3-advanced-profiling-with-custom-host-code" title="Permanent link">&para;</a></h3>
 <p>For specialized workflows like profiling with custom test executables:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>make<span class="w"> </span>profile
 </code></pre></div>
-<p><strong>What this does:</strong>
-- Uses <code>compile-and-xclbin</code> mode to generate xclbin and instructions
-- Runs a custom C++ test executable (not xrt_runner) for detailed profiling
-- Useful for performance measurement and custom host integration</p>
+<p><strong>What this does:</strong></p>
+<ul>
+<li>Uses <code>compile-and-xclbin</code> mode to generate xclbin and instructions</li>
+<li>Runs a custom C++ test executable (not xrt_runner) for detailed profiling</li>
+<li>Useful for performance measurement and custom host integration</li>
+</ul>
 <p>The <code>sweep4x4</code> target similarly uses <code>compile-and-xclbin</code> to benchmark across multiple problem sizes with a custom test harness.</p>
 <h3 id="additional-examples">Additional Examples<a class="headerlink" href="#additional-examples" title="Permanent link">&para;</a></h3>
 <p><strong>Different herd configurations:</strong>
@@ -2084,18 +2098,22 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>make<span class="w"> </span>clean
 </code></pre></div></p>
 <h3 id="other-data-types">Other Data Types<a class="headerlink" href="#other-data-types" title="Permanent link">&para;</a></h3>
-<p>The same patterns work for other matrix multiplication examples:
-- <code>programming_examples/matrix_multiplication/bf16/</code> - bfloat16 matrix multiply
-- <code>programming_examples/matrix_multiplication/i16/</code> - int16 matrix multiply</p>
+<p>The same patterns work for other matrix multiplication examples:</p>
+<ul>
+<li><code>programming_examples/matrix_multiplication/bf16/</code> - bfloat16 matrix multiply</li>
+<li><code>programming_examples/matrix_multiplication/i16/</code> - int16 matrix multiply</li>
+</ul>
 <h3 id="exploring-more-examples">Exploring More Examples<a class="headerlink" href="#exploring-more-examples" title="Permanent link">&para;</a></h3>
-<p>Explore <code>programming_examples/</code> for many more examples including:
-- Element-wise operations
-- Softmax
-- Sine/cosine
-- Llama 2-style multi-head attention
-- Flash attention
-- Vector instruction micro-benchmark
-- And more</p>
+<p>Explore <code>programming_examples/</code> for many more examples including:</p>
+<ul>
+<li>Element-wise operations</li>
+<li>Softmax</li>
+<li>Sine/cosine</li>
+<li>Llama 2-style multi-head attention</li>
+<li>Flash attention</li>
+<li>Vector instruction micro-benchmark</li>
+<li>And more</li>
+</ul>
 <p>Most examples follow similar Makefile patterns with <code>COMPILE_MODE</code> and <code>AIE_TARGET</code> support.</p>
 <hr />
 <h2 id="manual-build-advancedlegacy">Manual Build (Advanced/Legacy)<a class="headerlink" href="#manual-build-advancedlegacy" title="Permanent link">&para;</a></h2>
@@ -2103,11 +2121,13 @@
 <h3 id="environment">Environment<a class="headerlink" href="#environment" title="Permanent link">&para;</a></h3>
 <p>The <a href="https://github.com/Xilinx/mlir-aie">MLIR-AIE</a> repo maintains instructions on how to install dependencies and configure your environment. Follow the instructions <a href="https://github.com/Xilinx/mlir-aie/blob/main/docs/buildHostLin.md">here</a>. It is not necessary to follow the final steps for cloning/building/running MLIR-AIE itself.</p>
 <h3 id="prerequisites_2">Prerequisites<a class="headerlink" href="#prerequisites_2" title="Permanent link">&para;</a></h3>
-<p>Building MLIR-AIR requires several other open source packages:
-  - <a href="https://github.com/llvm/llvm-project/tree/main/mlir">mlir</a>
-  - <a href="https://github.com/Xilinx/mlir-aie">mlir-aie</a>
-  - <a href="https://github.com/Xilinx/cmakeModules">Xilinx cmakeModules</a>. Note that this is installed as a submodule of MLIR-AIE
-  - <a href="https://github.com/jnider/aie-rt.git">libXAIE</a></p>
+<p>Building MLIR-AIR requires several other open source packages:</p>
+<ul>
+<li><a href="https://github.com/llvm/llvm-project/tree/main/mlir">mlir</a></li>
+<li><a href="https://github.com/Xilinx/mlir-aie">mlir-aie</a></li>
+<li><a href="https://github.com/Xilinx/cmakeModules">Xilinx cmakeModules</a>. Note that this is installed as a submodule of MLIR-AIE</li>
+<li><a href="https://github.com/jnider/aie-rt.git">libXAIE</a></li>
+</ul>
 <p>These prerequisites can be installed with some helpful scripts found in the <code>utils</code> directory in the process described below.</p>
 <p>First, clone the MLIR-AIR repo:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Xilinx/mlir-air.git
