@@ -1442,9 +1442,9 @@ private:
   }
 
   scf::IfOp convertScfIfToAsync(RewriterBase &rewriter, scf::IfOp branch_op) {
-    // Create new if op with a yielded async token.
-    SmallVector<Type> yielded_tys = {
-        air::AsyncTokenType::get(rewriter.getContext())};
+    // Create new if op with its results and a yielded async token.
+    SmallVector<Type> yielded_tys(branch_op.getResultTypes());
+    yielded_tys.push_back(air::AsyncTokenType::get(rewriter.getContext()));
     scf::IfOp new_branch_op = scf::IfOp::create(
         rewriter, branch_op.getLoc(), yielded_tys, branch_op.getCondition(),
         /*withElseRegion*/ true);
@@ -1453,25 +1453,39 @@ private:
             SymbolTable::getSymbolAttrName()))
       new_branch_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
 
-    // Splice the operations inside then and else regions
-    auto old_regions = branch_op->getRegions();
-    auto new_regions = new_branch_op->getRegions();
-    for (auto [o_r, n_r] : llvm::zip_equal(old_regions, new_regions)) {
+    spliceBranchRegions<scf::YieldOp>(rewriter, branch_op, new_branch_op);
+    return new_branch_op;
+  }
+
+  // Splice old_op's regions (without their terminators) into new_op's, yield
+  // what each yielded, and replace old_op's results with new_op's leading ones;
+  // insertLoopCarriedDepsInRegion appends the async token to the yields.
+  template <typename YieldT>
+  void spliceBranchRegions(RewriterBase &rewriter, Operation *old_op,
+                           Operation *new_op) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    for (auto [o_r, n_r] :
+         llvm::zip_equal(old_op->getRegions(), new_op->getRegions())) {
       if (o_r.empty() || n_r.empty())
         continue;
       auto &bb = n_r.front().getOperations();
       auto &body = o_r.front().getOperations();
       bb.splice(bb.begin(), body, body.begin(), --body.end());
+      if (old_op->getNumResults()) {
+        rewriter.setInsertionPointToEnd(&n_r.front());
+        YieldT::create(rewriter, old_op->getLoc(),
+                       o_r.front().getTerminator()->getOperands());
+      }
     }
-
-    return new_branch_op;
+    for (auto [o, n] : llvm::zip(old_op->getResults(), new_op->getResults()))
+      rewriter.replaceAllUsesWith(o, n);
   }
 
   affine::AffineIfOp convertAffineIfToAsync(RewriterBase &rewriter,
                                             affine::AffineIfOp branch_op) {
-    // Create new if op with a yielded async token.
-    SmallVector<Type> yielded_tys = {
-        air::AsyncTokenType::get(rewriter.getContext())};
+    // Create new if op with its results and a yielded async token.
+    SmallVector<Type> yielded_tys(branch_op.getResultTypes());
+    yielded_tys.push_back(air::AsyncTokenType::get(rewriter.getContext()));
     affine::AffineIfOp new_branch_op = affine::AffineIfOp::create(
         rewriter, branch_op.getLoc(), yielded_tys, branch_op.getIntegerSet(),
         branch_op.getOperands(),
@@ -1481,17 +1495,8 @@ private:
             SymbolTable::getSymbolAttrName()))
       new_branch_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
 
-    // Splice the operations inside then and else regions
-    auto old_regions = branch_op->getRegions();
-    auto new_regions = new_branch_op->getRegions();
-    for (auto [o_r, n_r] : llvm::zip_equal(old_regions, new_regions)) {
-      if (o_r.empty() || n_r.empty())
-        continue;
-      auto &bb = n_r.front().getOperations();
-      auto &body = o_r.front().getOperations();
-      bb.splice(bb.begin(), body, body.begin(), --body.end());
-    }
-
+    spliceBranchRegions<affine::AffineYieldOp>(rewriter, branch_op,
+                                               new_branch_op);
     return new_branch_op;
   }
 
@@ -1500,8 +1505,25 @@ private:
                                scf::IndexSwitchOp branch_op) {
     // Append the async token result, splice regions (excluding terminators) and
     // RAUW; insertLoopCarriedDepsInRegion appends the async yields afterwards
-    // and the caller erases branch_op.
-    return air::rebuildIndexSwitchWithTrailingAsyncToken(rewriter, branch_op);
+    // and the caller erases branch_op. The rebuild leaves each region's old
+    // yield behind: keep what it yielded.
+    SmallVector<SmallVector<Value>> old_yields;
+    for (Region &r : branch_op->getRegions())
+      old_yields.emplace_back(
+          r.empty()
+              ? SmallVector<Value>{}
+              : SmallVector<Value>(r.front().getTerminator()->getOperands()));
+    auto new_branch_op =
+        air::rebuildIndexSwitchWithTrailingAsyncToken(rewriter, branch_op);
+    OpBuilder::InsertionGuard guard(rewriter);
+    for (auto [n_r, vals] :
+         llvm::zip_equal(new_branch_op->getRegions(), old_yields)) {
+      if (n_r.empty() || vals.empty())
+        continue;
+      rewriter.setInsertionPointToEnd(&n_r.front());
+      scf::YieldOp::create(rewriter, branch_op.getLoc(), vals);
+    }
+    return new_branch_op;
   }
 
   // Elevating tokens from inside loop body to the yielded token, to maintain
@@ -1865,12 +1887,20 @@ private:
     }
 
     else if (isa<affine::AffineIfOp>(region.getParentOp())) {
-      // Yield an async token
-      SmallVector<Value, 4> yield_token;
-      yield_token.push_back(wait_all_op_yielded.getResult(0));
+      // Preserve existing yield values and append the async token.
+      SmallVector<Value, 4> yield_values;
+      if (region.front().mightHaveTerminator()) {
+        if (auto old_yield = dyn_cast_if_present<affine::AffineYieldOp>(
+                region.front().getTerminator())) {
+          yield_values.append(old_yield.getOperands().begin(),
+                              old_yield.getOperands().end());
+          rewriter.eraseOp(old_yield);
+        }
+      }
+      yield_values.push_back(wait_all_op_yielded.getResult(0));
       rewriter.setInsertionPointToEnd(&region.front());
       affine::AffineYieldOp::create(rewriter, rewriter.getUnknownLoc(),
-                                    yield_token);
+                                    yield_values);
     }
 
     // Elevating tokens from inside forOp body to the yielded token, to maintain
