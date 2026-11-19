@@ -99,3 +99,34 @@ module {
   }
 }
 
+
+// -----
+
+// Half a row of a 2-d buffer. The outer stride (16) is not the view's row
+// length (8), but that dimension has size 1, so the view is one contiguous run.
+// CHECK-LABEL: aie.mem(%{{.*}}tile_0_2)
+// CHECK: aie.dma_bd(%[[BUF:.*]] : memref<4x16xi32, 2> offset = 16 len = 8)
+// CHECK: aie.dma_bd(%[[BUF]] : memref<4x16xi32, 2> offset = 0 len = 64)
+
+module {
+  air.channel @chan_in [1, 1]
+  air.channel @chan_out [1, 1]
+  func.func @row(%arg0: memref<64xi32>, %arg1: memref<8xi32>) {
+    %c1 = arith.constant 1 : index
+    air.launch (%lx, %ly) in (%lsx=%c1, %lsy=%c1) args(%a=%arg0, %b=%arg1) : memref<64xi32>, memref<8xi32> {
+      air.channel.put @chan_in[] (%a[] [] []) : (memref<64xi32>)
+      air.channel.get @chan_out[] (%b[] [] []) : (memref<8xi32>)
+      air.segment @seg {
+        %c1_s = arith.constant 1 : index
+        air.herd @herd tile (%tx, %ty) in (%sx=%c1_s, %sy=%c1_s) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+          %buf = memref.alloc() : memref<4x16xi32, 2>
+          air.channel.get @chan_in[%tx, %ty] (%buf[] [] []) : (memref<4x16xi32, 2>)
+          %row = memref.subview %buf[1, 0] [1, 8] [1, 1] : memref<4x16xi32, 2> to memref<1x8xi32, strided<[16, 1], offset: 16>, 2>
+          air.channel.put @chan_out[%tx, %ty] (%row[] [] []) : (memref<1x8xi32, strided<[16, 1], offset: 16>, 2>)
+          memref.dealloc %buf : memref<4x16xi32, 2>
+        }
+      }
+    }
+    return
+  }
+}
