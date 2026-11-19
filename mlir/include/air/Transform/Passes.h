@@ -22,7 +22,6 @@
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Transform/AIRLinalgOpStats.h"
 #include "air/Transform/AIRLoopMergingPass.h"
-#include "air/Transform/AIRLoopPermutationPass.h"
 #include "air/Transform/AIRLowerLinalgTensors.h"
 #include "air/Transform/AIRMiscPasses.h"
 #include "air/Transform/AIRRegularizeLoopPass.h"
