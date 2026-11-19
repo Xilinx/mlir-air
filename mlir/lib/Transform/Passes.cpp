@@ -47,7 +47,6 @@ void xilinx::air::registerTransformPasses() {
   registerAIRLowerHerdParallelPass();
   registerAIROverrideMemRefMemorySpace();
   registerAIRPipelineReducePass();
-  registerAIRRegularizeLoop();
   registerAIRRemoveLinalgNamePass();
   registerAIRRenumberDmaIdPass();
   registerAIRReturnElimination();
