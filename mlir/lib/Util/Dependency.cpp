@@ -9,6 +9,7 @@
 #include "air/Util/Dependency.h"
 
 #include "air/Util/Util.h"
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
@@ -1227,28 +1228,17 @@ void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
 // Returns the set of ops in herdBody that must be kept when performing a
 // lightweight herd clone: channel ops, allocs, deallocations, wait_alls, the
 // terminator, and any ops that transitively define operands consumed by those.
-static SmallPtrSet<Operation *, 16> collectHerdBodyOpsToKeep(Block &herdBody) {
-  SmallPtrSet<Operation *, 16> toKeep;
-  // Always keep the block terminator.
-  if (!herdBody.empty())
-    toKeep.insert(herdBody.getTerminator());
-  // Seed: channel ops, allocs, deallocations, and wait_alls.
-  for (Operation &op : herdBody.without_terminator()) {
+static SetVector<Operation *> collectHerdBodyOpsToKeep(Block &herdBody) {
+  BackwardSliceOptions options;
+  options.inclusive = true;
+  options.omitBlockArguments = true;
+  options.filter = [&](Operation *op) { return op->getBlock() == &herdBody; };
+  SetVector<Operation *> toKeep;
+  for (Operation &op : herdBody) {
     if (isa<air::ChannelInterface, memref::AllocOp, memref::DeallocOp,
-            air::WaitAllOp>(op))
-      toKeep.insert(&op);
-  }
-  // Expand: add ops whose results are consumed by any kept op (within block).
-  // Use a worklist to avoid redundant re-processing of already-kept ops.
-  SmallVector<Operation *> worklist(toKeep.begin(), toKeep.end());
-  while (!worklist.empty()) {
-    Operation *op = worklist.pop_back_val();
-    for (Value operand : op->getOperands()) {
-      if (Operation *defOp = operand.getDefiningOp()) {
-        if (defOp->getBlock() == &herdBody && toKeep.insert(defOp).second)
-          worklist.push_back(defOp);
-      }
-    }
+            air::WaitAllOp>(op) ||
+        op.hasTrait<OpTrait::IsTerminator>())
+      (void)getBackwardSlice(&op, &toKeep, options);
   }
   return toKeep;
 }
@@ -1262,7 +1252,7 @@ static SmallPtrSet<Operation *, 16> collectHerdBodyOpsToKeep(Block &herdBody) {
 static void cloneHerdOpLightweight(OpBuilder &builder, air::HerdOp herdOp,
                                    IRMapping &mapper) {
   Block &origBody = herdOp.getBody().front();
-  SmallPtrSet<Operation *, 16> toKeep = collectHerdBodyOpsToKeep(origBody);
+  SetVector<Operation *> toKeep = collectHerdBodyOpsToKeep(origBody);
 
   // Map operands through the outer mapper.
   SmallVector<Value> mappedOperands;
