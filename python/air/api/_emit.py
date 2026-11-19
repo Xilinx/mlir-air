@@ -534,12 +534,8 @@ def _cap_by_ops(width, dst, expr):
     return width
 
 
-# Operators with no vector form, keyed (operator, element type name).
-# mlir-aie's convert-vector-to-aievec rejects a vector arith.maximumf /
-# arith.minimumf on f32 at any width -- "aievec.max conversion fails due to
-# unsupported element data type", then "failed to legalize operation
-# 'aievec.max'". bf16 is not affected, which is why this is keyed on the
-# element type and not just the operator.
+# Operators with no vector form, keyed (operator, element type name): the
+# AIEVec conversion lowers vector maximumf / minimumf on bf16 but not on f32.
 _NO_VECTOR_FORM = {("max", "f32"), ("min", "f32")}
 
 

@@ -150,8 +150,8 @@ def an_l2_fill_still_lowers_as_linalg():
 
 
 # CHECK-LABEL: TEST: f32_max_takes_the_scalar_loop_by_default
-# mlir-aie's AIEVec conversion has no vector arith.maximumf / minimumf on f32,
-# so a derived width drops to the scalar loop rather than fail to legalize.
+# No vector f32 maximumf / minimumf in the AIEVec conversion: a derived width
+# takes the scalar loop.
 # CHECK-NOT: vector<{{.*}}xf32>
 # CHECK: arith.maximumf {{.*}} : f32
 @run
