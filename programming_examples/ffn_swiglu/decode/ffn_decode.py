@@ -327,8 +327,7 @@ if __name__ == "__main__":
             expected_outputs=[ref_out],
             rtol=1e0,
             atol=0.5,
-            # npu2 measures 0.99897 (bf16 accumulation); zeros or garbage
-            # are far below
+            # room for bf16 rounding; a zero or garbage output is far below
             min_correlation=0.995,
         )
     )
