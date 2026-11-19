@@ -3006,13 +3006,10 @@ static void coalesceShimDmaOrder(ModuleOp module) {
     int64_t len;
   };
   auto describe = [](airrt::DmaMemcpyNdOp d) -> std::optional<Desc> {
-    // Never merge packet-switched transfers: consecutive BDs on one channel may
-    // carry different packet ids (different routing destinations). Merging them
-    // into one BD would send all data with the first id, starving the other
-    // destinations and deadlocking. Only circuit-switched feeds (no packet) are
-    // safe to coalesce.
-    if (d->hasAttr("packet"))
-      return std::nullopt;
+    // Packet-switched transfers merge only with transfers of the same packet
+    // id (the packet attribute is part of the group key below): consecutive
+    // BDs on one channel may carry different ids, i.e. go to different
+    // destinations, and one merged BD would send all of it with the first id.
     auto lengths = getConstantIntValues(d.getMixedLengths());
     auto strides = getConstantIntValues(d.getMixedStrides());
     if (!lengths || !strides)
@@ -3069,9 +3066,9 @@ static void coalesceShimDmaOrder(ModuleOp module) {
     // So does the block: the walk visits an scf.index_switch's arms back to
     // back, and a merge across them would erase one arm's feed and lengthen
     // the other's.
-    llvm::MapVector<
-        std::tuple<int64_t, StringRef, void *, void *, const void *, Block *>,
-        SmallVector<Entry>>
+    llvm::MapVector<std::tuple<int64_t, StringRef, void *, void *, const void *,
+                               Block *, const void *>,
+                    SmallVector<Entry>>
         groups;
     for (auto d : paced) {
       auto desc = describe(d);
@@ -3084,7 +3081,8 @@ static void coalesceShimDmaOrder(ModuleOp module) {
       if (auto w = d->getAttrOfType<IntegerAttr>(air::attrs::LaunchWave))
         wave = w.getInt();
       groups[{wave, md.getValue(), d.getMemref().getAsOpaquePointer(),
-              desc->base.getAsOpaquePointer(), desc->shape, d->getBlock()}]
+              desc->base.getAsOpaquePointer(), desc->shape, d->getBlock(),
+              d->getAttr("packet").getAsOpaquePointer()}]
           .push_back({d, desc->offset, desc->len});
     }
 

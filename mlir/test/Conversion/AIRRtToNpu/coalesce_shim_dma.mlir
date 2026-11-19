@@ -113,10 +113,10 @@ module {
 
 // -----
 
-// Packet-switched feeds are NOT coalesced even when contiguous on the same
-// channel: consecutive BDs may carry different packet ids (routing
-// destinations), so merging them would misroute. The two BDs (pkt_id 1 and 2)
-// stay separate; no merged len-4096 BD is produced.
+// Packet-switched feeds with different packet ids are NOT coalesced even when
+// contiguous on the same channel: they go to different destinations, so
+// merging them would misroute. The two BDs (pkt_id 1 and 2) stay separate; no
+// merged len-4096 BD is produced.
 
 // CHECK-LABEL: aie.device(npu2)
 // CHECK: aie.dma_bd(%arg0 : memref<4096xbf16> offset = 0 len = 2048 sizes = [2048] strides = [1]) {packet = #aie.packet_info<pkt_id = 1>}
@@ -140,6 +140,37 @@ module {
     %c4 = arith.constant 4 : i32
     %0 = airrt.dma_memcpy_nd(%c4, %c0, %c0, %arg0[%c0, %c0, %c0, %c0], [%c1, %c1, %c1, %c2048], [%c0, %c0, %c0, %c1]) {metadata = @chA, air.preserve_shim_dma_order, packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>} : (i32, i64, i64, memref<4096xbf16>) : !airrt.event
     %1 = airrt.dma_memcpy_nd(%c4, %c0, %c0, %arg0[%c0, %c0, %c0, %c2048], [%c1, %c1, %c1, %c2048], [%c0, %c0, %c0, %c1]) {metadata = @chA, air.preserve_shim_dma_order, packet = #aie.packet_info<pkt_type = 0, pkt_id = 2>} : (i32, i64, i64, memref<4096xbf16>) : !airrt.event
+    %p = airrt.segment_load "forward_0" : i64
+    return
+  }
+}
+
+// -----
+
+// Contiguous packet feeds with the SAME packet id share a destination and do
+// coalesce, into one BD that keeps the id.
+
+// CHECK-LABEL: aie.device(npu2)
+// CHECK: aie.dma_bd(%arg0 : memref<4096xbf16> offset = 0 len = 4096 sizes = [4096] strides = [1]) {packet = #aie.packet_info<{{(pkt_type = 0, )?}}pkt_id = 3>}
+// CHECK-NOT: offset = 2048 len = 2048
+
+module {
+  aie.device(npu2) {
+    %t = aie.tile(0, 0)
+    aie.shim_dma_allocation @chA(%t, MM2S, 0)
+  } {sym_name = "forward_0"}
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
+  func.func @forward(%arg0: memref<4096xbf16>) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c2048 = arith.constant 2048 : i64
+    %c4 = arith.constant 4 : i32
+    %0 = airrt.dma_memcpy_nd(%c4, %c0, %c0, %arg0[%c0, %c0, %c0, %c0], [%c1, %c1, %c1, %c2048], [%c0, %c0, %c0, %c1]) {metadata = @chA, air.preserve_shim_dma_order, packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>} : (i32, i64, i64, memref<4096xbf16>) : !airrt.event
+    %1 = airrt.dma_memcpy_nd(%c4, %c0, %c0, %arg0[%c0, %c0, %c0, %c2048], [%c1, %c1, %c1, %c2048], [%c0, %c0, %c0, %c1]) {metadata = @chA, air.preserve_shim_dma_order, packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>} : (i32, i64, i64, memref<4096xbf16>) : !airrt.event
     %p = airrt.segment_load "forward_0" : i64
     return
   }
