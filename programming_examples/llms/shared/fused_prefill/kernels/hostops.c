@@ -7,6 +7,9 @@
 // would only take turns on them); rows are independent, so results do not
 // depend on the count.
 #include <omp.h>
+#ifdef __AVX512F__
+#include <immintrin.h>
+#endif
 #include <stdint.h>
 #include <string.h>
 
@@ -489,6 +492,33 @@ void bias_gelu_erf_rows(const uint16_t *g, int ldg, const float *bias, int t,
   }
 }
 
+#ifdef __AVX512F__
+// 16 bf16 -> f32, and f32 -> 16 bf16 rounded as f2bf
+static inline __m512 ld_bf16x16(const uint16_t *p) {
+  __m512i u = _mm512_cvtepu16_epi32(_mm256_loadu_si256((const __m256i *)p));
+  return _mm512_castsi512_ps(_mm512_slli_epi32(u, 16));
+}
+
+static inline void st_bf16x16(uint16_t *p, __m512 v) {
+  __m512i u = _mm512_castps_si512(v);
+  __m512i odd =
+      _mm512_and_si512(_mm512_srli_epi32(u, 16), _mm512_set1_epi32(1));
+  u = _mm512_add_epi32(u, _mm512_add_epi32(odd, _mm512_set1_epi32(0x7FFF)));
+  _mm256_storeu_si256((__m256i *)p,
+                      _mm512_cvtepi32_epi16(_mm512_srli_epi32(u, 16)));
+}
+
+// one head of src + bias into v, dh / 16 vectors
+static inline void head_in(const uint16_t *s, int dh, const float *bias,
+                           __m512 *v) {
+  for (int j = 0; j < dh / 16; j++) {
+    v[j] = ld_bf16x16(s + 16 * j);
+    if (bias)
+      v[j] = _mm512_add_ps(v[j], _mm512_loadu_ps(bias + 16 * j));
+  }
+}
+#endif
+
 // nh heads of dh at column col0 of src bf16 [t, ld]: + bias, rms with norm
 // (if given), half-split rotary on the first rot dims, * scale, to bf16
 // dst[h * hs + r * rs + i]
@@ -497,6 +527,57 @@ void head_post(const uint16_t *src, int ld, int t, int col0, int nh, int dh,
                const float *sn, int rot, float scale, uint16_t *dst, long hs,
                long rs) {
   int hr = rot / 2;
+#ifdef __AVX512F__
+  if (dh % 16 == 0 && dh <= 512 && hr % 16 == 0) {
+#pragma omp parallel for num_threads(row_threads()) schedule(static)
+    for (int r = 0; r < t; r++) {
+      const uint16_t *row = src + (long)r * ld + col0;
+      const float *c = hr ? cs + (long)r * hr : 0;
+      const float *sv = hr ? sn + (long)r * hr : 0;
+      float inv[nh + 16];
+      __m512 v[32];
+      if (norm) {
+        // every head's sum of squares, then the factors 16 heads at a time:
+        // one head's reduction, square root and division in a row would
+        // stall on each other
+        for (int h = 0; h < nh; h++) {
+          head_in(row + h * dh, dh, bias ? bias + col0 + h * dh : 0, v);
+          __m512 acc = _mm512_setzero_ps();
+          for (int j = 0; j < dh / 16; j++)
+            acc = _mm512_add_ps(acc, _mm512_mul_ps(v[j], v[j]));
+          inv[h] = _mm512_reduce_add_ps(acc);
+        }
+        for (int h = 0; h < nh; h += 16) {
+          __m512 x = _mm512_div_ps(_mm512_loadu_ps(inv + h),
+                                   _mm512_set1_ps((float)dh));
+          x = _mm512_sqrt_ps(_mm512_add_ps(x, _mm512_set1_ps(eps)));
+          _mm512_storeu_ps(inv + h, _mm512_div_ps(_mm512_set1_ps(1.f), x));
+        }
+      }
+      for (int h = 0; h < nh; h++) {
+        int n = dh / 16, n2 = hr / 16;
+        head_in(row + h * dh, dh, bias ? bias + col0 + h * dh : 0, v);
+        if (norm) {
+          __m512 iv = _mm512_set1_ps(inv[h]);
+          for (int j = 0; j < n; j++)
+            v[j] = _mm512_mul_ps(_mm512_mul_ps(v[j], iv),
+                                 _mm512_loadu_ps(norm + 16 * j));
+        }
+        for (int j = 0; j < n2; j++) {
+          __m512 a = v[j], b = v[j + n2];
+          __m512 cj = _mm512_loadu_ps(c + 16 * j);
+          __m512 sj = _mm512_loadu_ps(sv + 16 * j);
+          v[j] = _mm512_sub_ps(_mm512_mul_ps(a, cj), _mm512_mul_ps(b, sj));
+          v[j + n2] = _mm512_add_ps(_mm512_mul_ps(b, cj), _mm512_mul_ps(a, sj));
+        }
+        uint16_t *d = dst + h * hs + r * rs;
+        for (int j = 0; j < n; j++)
+          st_bf16x16(d + 16 * j, _mm512_mul_ps(v[j], _mm512_set1_ps(scale)));
+      }
+    }
+    return;
+  }
+#endif
 #pragma omp parallel for num_threads(row_threads()) schedule(static)
   for (int r = 0; r < t; r++) {
     float v[dh];
