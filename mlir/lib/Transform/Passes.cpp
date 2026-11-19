@@ -27,7 +27,6 @@ namespace {
 
 void xilinx::air::registerTransformPasses() {
   registerAffineLoopOptPass();
-  registerAIRAutomaticTiling();
   registerAIRDependency();
   registerAIRDependencyCanonicalize();
   registerAIRDependencyParseGraph();
@@ -42,12 +41,10 @@ void xilinx::air::registerTransformPasses() {
   registerAIRLinalgNamePass();
   registerAIRLinalgOpStats();
   registerAIRLabelBroadcastChannelWithTilePass();
-  registerAIRLoopMergingPass();
   registerAIRLoopPermutation();
   registerAIRLowerHerdParallelPass();
   registerAIROverrideMemRefMemorySpace();
   registerAIRPipelineReducePass();
-  registerAIRRegularizeLoop();
   registerAIRRemoveLinalgNamePass();
   registerAIRRenumberDmaIdPass();
   registerAIRresolveTensorOpOperandConflictsWithNewTensors();
