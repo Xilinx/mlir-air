@@ -455,11 +455,6 @@ def AIRRegularizeLoop: Pass<"air-regularize-loop", "func::FuncOp"> {
   }];
 }
 
-def AIRReturnElimination : Pass<"air-return-elimination", "ModuleOp"> {
-  let summary = "Convert functions to return their values with out parameters";
-  let constructor = "xilinx::air::createReturnEliminationPass()";
-}
-
 def AIRLoopPermutation: Pass<"air-loop-permutation", "func::FuncOp"> {
   let summary = "Change the loop ordering according to the input mapping";
   let constructor = "xilinx::air::createAIRLoopPermutationPass()";

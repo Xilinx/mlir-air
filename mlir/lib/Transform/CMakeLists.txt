@@ -46,7 +46,6 @@ list(APPEND TRANSFORM_SOURCES
   AIRVerifyHierarchyLocality.cpp
   AffineLoopOptPass.cpp
   Passes.cpp
-  ReturnEliminationPass.cpp
 )
 
 set(TRANSFORM_LINK_LIBS

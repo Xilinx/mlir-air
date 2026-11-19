@@ -35,7 +35,7 @@ def pipeline(module):
                     "air-linalg-codegen",
                     "air-par-to-herd{depth=-1}",
                     "air-copy-to-dma",
-                    "air-return-elimination",
+                    "buffer-results-to-out-params{modify-public-functions=true hoist-static-allocs=true}",
                     "canonicalize",
                     "cse",
                 ]
