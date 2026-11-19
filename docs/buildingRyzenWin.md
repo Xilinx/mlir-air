@@ -151,9 +151,12 @@ When mixing wheels, all three (`mlir`, `mlir_aie`, `mlir_air`) must agree on RTT
 
 The element-wise add example stages data L3 → L2 → L1 across a two-core herd and checks the result against a NumPy reference. It exercises the whole toolchain: the Python builder, `aircc`, Peano, xclbin packaging, and XRT dispatch.
 
+The examples are in the MLIR-AIR repository, which the wheel does not include. If you installed the wheel, clone the repository next to `air_env.cmd`; if you built from source, run from your existing checkout instead.
+
 ```bat
 call air_env.cmd
-cd programming_examples\eltwise_add_with_l2
+git clone https://github.com/Xilinx/mlir-air.git
+cd mlir-air\programming_examples\eltwise_add_with_l2
 mkdir build_peano
 cd build_peano
 python ..\eltwise_add.py --output-format xclbin
@@ -167,7 +170,7 @@ Both NPU generations are supported. What differs between them:
 |---|---|---|
 | Core architecture | `aie2` (default) | `aie2p` |
 | `num_device_cols` | 0 (whole device) or 1–3 | 0 (whole device) or 1–7 |
-| `--output-format xclbin` / `pdi` | yes | yes |
+| `--output-format xclbin` | yes | yes |
 | `--output-format elf` (full ELF) | no | yes |
 
 Full ELF needs an `aiebu-asm` configuration that targets AIE2P. Asking for it on npu1 is rejected at compile time rather than failing on the device:
@@ -180,7 +183,7 @@ only supported on npu2 and later devices.
 On npu2 parts you can exercise that path:
 
 ```bat
-cd programming_examples\matrix_scalar_add\single_core_dma
+cd ..\..\matrix_scalar_add\single_core_dma
 mkdir build_peano
 cd build_peano
 python ..\single_core_dma.py --output-format elf
@@ -215,14 +218,6 @@ call .\iron_env.cmd
 cd C:\dev\mlir-air
 python -c "import re;print(re.search(r'WHEEL_VERSION=(\S+)',open('utils/clone-mlir-aie.sh').read()).group(1))"
 pip install mlir_aie==VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-5
-```
-
-If you would rather not clone MLIR-AIE, install the CMake modules and the pinned `mlir_aie` wheel (the same `VERSION`) separately:
-
-```bat
-git clone --depth 1 https://github.com/Xilinx/cmakeModules.git C:\dev\cmakeModules
-pip install mlir_aie==VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-5
-pip install -r C:\dev\mlir-air\utils\requirements_dev.txt
 ```
 
 ### Stage LLVM/MLIR
@@ -445,6 +440,7 @@ cmake C:/dev/mlir-air `
   -DXRT_ROOT=C:/Xilinx/XRT `
   -DLLVM_EXTERNAL_LIT=C:/dev/mlir-aie/ironenv/Scripts/lit.exe `
   -DPython3_EXECUTABLE=C:/dev/mlir-aie/ironenv/Scripts/python.exe `
+  -DENABLE_RUN_XRT_TESTS=ON `
   -DCMAKE_INSTALL_PREFIX=C:/dev/mlir-air/install
 ```
 
