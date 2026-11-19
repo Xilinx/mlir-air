@@ -30,7 +30,6 @@
 #include "air/Transform/AIRTransformInterpreter.h"
 #include "air/Transform/AIRVerifyHierarchyLocality.h"
 #include "air/Transform/AffineLoopOptPass.h"
-#include "air/Transform/ReturnEliminationPass.h"
 
 namespace xilinx {
 namespace air {

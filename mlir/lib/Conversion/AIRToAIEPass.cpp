@@ -1146,7 +1146,7 @@ LogicalResult outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
   if (succeeded(unrollFactors)) {
     auto [unrollX, unrollY] = *unrollFactors;
     if (unrollX > 1) {
-      seg_size_x = (seg_size_x + unrollX - 1) / unrollX; // ceiling division
+      seg_size_x = llvm::divideCeilSigned(seg_size_x, unrollX);
     }
   }
 

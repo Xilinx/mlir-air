@@ -37,8 +37,10 @@ def wave_x(m_in, out_ch, x, w, pw):
 
 class Decoder:
     """The LM head's ELF on the last layer's output, and the timing loop.
-    Subclasses build self.bos (bos[1] = X) and self.run, then call
-    attach_lm."""
+    Subclasses build self.bos (bos[X] the layers' x and outputs) and
+    self.run, then call attach_lm."""
+
+    X = 1
 
     def __init__(self, waves, pw, d, unpack_logits):
         import pyxrt as xrt
@@ -67,8 +69,9 @@ class Decoder:
 
     def attach_lm(self, lart, lm_args):
         waves, pw, d = self.waves, self.pw, self.d
-        self.xmap = np.frombuffer(self.bos[1].map(), bfloat16).reshape(waves + 1, pw, d)
-        xsub = self.xrt.bo(self.bos[1], d * 2, (waves * pw + pw - 1) * d * 2)
+        xb = self.bos[self.X]
+        self.xmap = np.frombuffer(xb.map(), bfloat16).reshape(waves + 1, pw, d)
+        xsub = self.xrt.bo(xb, d * 2, (waves * pw + pw - 1) * d * 2)
         self.lbos = [xsub] + [self.bo(t) for t in lm_args]
         self.lctx, lkern = self.kernel(lart)
         self.lrun = self.xrt.run(lkern)
@@ -89,7 +92,7 @@ class Decoder:
     def head(self, x, L):
         """The LM head alone on the last layer's output x, at position L - 1."""
         self.xmap[self.waves, self.pw - 1] = x
-        self.bos[1].sync(self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+        self.bos[self.X].sync(self.xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
         return self._go((self.lrun,), L)
 
     def bench(self, x, L, n):
@@ -97,14 +100,19 @@ class Decoder:
         the state is not carried (the same inputs every time)."""
         self._set(x, L)
         t = []
+        done = self.xrt.ert_cmd_state.ERT_CMD_STATE_COMPLETED
         for _ in range(n + 1):
             t0 = time.perf_counter()
             self.run.start()
-            self.run.wait(120000)
+            st = self.run.wait(120000)
             t1 = time.perf_counter()
+            if st != done:
+                raise RuntimeError(f"layers' dispatch at L={L} ended in {st}")
             self.lrun.start()
-            self.lrun.wait(120000)
+            st = self.lrun.wait(120000)
             t.append((t1 - t0, time.perf_counter() - t1))
+            if st != done:
+                raise RuntimeError(f"LM head's dispatch at L={L} ended in {st}")
         t = np.array(t[1:]) * 1e3
         tot = t.sum(1)
         med = float(np.median(tot))

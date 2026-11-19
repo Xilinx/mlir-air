@@ -1162,7 +1162,7 @@ public:
         return;
 
       int64_t actualBlocks =
-          (actualForShim + innerBlockSize - 1) / innerBlockSize;
+          llvm::divideCeilSigned(actualForShim, innerBlockSize);
       int64_t padBlocks = fullBlocks - actualBlocks;
       if (padBlocks <= 0)
         return;

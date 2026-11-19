@@ -10,7 +10,7 @@ The fastest way to get MLIR-AIR is to install the prebuilt wheel — no source b
 - **pip**
 - **XRT** (optional, required only for running on hardware) — see [mlir-aie's XRT install instructions](https://github.com/Xilinx/mlir-aie#install-the-xdna-driver-and-xrt)
 
-> This guide covers Linux only. Windows wheels are also published — see [Getting Started and Running on Windows Ryzen™ AI](buildingRyzenWin.md) for the native Windows setup, including `cmd.exe` and PowerShell equivalents of the `source`/`export` commands below.
+> This guide covers Linux only. Windows wheels are also published — see [Getting Started on Ryzen AI (Windows)](buildingRyzenWin.md) for the native Windows setup, including `cmd.exe` and PowerShell equivalents of the `source`/`export` commands below.
 
 ### Steps
 
@@ -185,7 +185,14 @@ This path builds MLIR-AIR from source but installs LLVM, MLIR-AIE, and Peano fro
 
 ## Running a Quick Example
 
-After building MLIR-AIR, you can try the i8 matrix multiplication example to verify your setup and understand the different compilation workflows. Matmul shapes are configurable in the Makefile.
+After installing or building MLIR-AIR, you can try the i8 matrix multiplication example to verify your setup and understand the different compilation workflows. Matmul shapes are configurable in the Makefile.
+
+The examples are in the MLIR-AIR repository, which the wheel does not include. If you installed the wheel, clone the repository and run the examples from it:
+
+```bash
+git clone https://github.com/Xilinx/mlir-air.git
+cd mlir-air
+```
 
 ### Example 1: Hardware-Free Compilation (No XRT Required)
 
