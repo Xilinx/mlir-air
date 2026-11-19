@@ -46,7 +46,7 @@ import qwen38_27b_q4nx_weights as W  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
-from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
+from air_examples.llms.shared.decode.array import MvmArray, Phase  # noqa: E402
 
 R, BB, D, I, NCOL = G.R, G.BB, G.D, G.I, G.NCOL
 DH, DQ, DK, NKV = A.DH, A.DQ, A.DK, A.NKV

@@ -38,11 +38,12 @@ SHARED = (
     "qwen3_coder_30b_a3b_q4k/attn_layer.py",
     "qwen3_coder_30b_a3b_q4k/moe_block.py",
     "qwen3_coder_30b_a3b_q4k/lm_head.py",
-    "shared/moe/lm_head.py",
+    "shared/decode/lm_head.py",
 )
 BASELINE = (
     "qwen3_coder_30b_a3b_q4k/qwen3_coder_30b_a3b_q4k_decode.py",
     "shared/moe/decode.py",
+    "shared/decode/layer.py",
 )
 
 

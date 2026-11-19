@@ -90,7 +90,7 @@ def _weights_stamp(w):
         HERE / "q4k_layout.py",
         HERE / "model_b8.py",
         M.CODER / "lm_head.py",
-        M.LLMS / "shared" / "moe" / "lm_head.py",
+        M.LLMS / "shared" / "decode" / "lm_head.py",
         M.CODER / "moe_block.py",
         M.CODER / "attn_layer.py",
     ):

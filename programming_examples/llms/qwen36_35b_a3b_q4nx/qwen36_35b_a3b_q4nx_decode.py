@@ -55,8 +55,9 @@ import qwen36_35b_a3b_q4nx_weights as W  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, f32, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
+from air_examples.llms.shared.decode import layer as DL  # noqa: E402
 from air_examples.llms.shared.moe import decode as MD  # noqa: E402
-from air_examples.llms.shared.moe.array import MvmArray, Phase  # noqa: E402
+from air_examples.llms.shared.decode.array import MvmArray, Phase  # noqa: E402
 from rope import rope_weights  # noqa: E402
 
 R, RB, CB, BB, D, I, E = G.R, G.RB, G.CB, G.BB, G.D, G.I, G.E
@@ -200,9 +201,9 @@ def build_module(waves, maxl):
                 @seg.body
                 def _():
                     def l2(shape, col, dt=bf16):
-                        return MD.l2(seg, shape, col, dt)
+                        return DL.l2(seg, shape, col, dt)
 
-                    wave_loop, herd = MD.wave_loop, MD.herd
+                    wave_loop, herd = DL.wave_loop, DL.herd
 
                     # ---- shared L1
                     ab_sh = air.alloc([2 * NV], f32, scope=seg.shared())
@@ -574,7 +575,7 @@ def build_module(waves, maxl):
                     # mixer
                     g0 = w * ngw
                     cw_out.get(CWO[g0 : g0 + ngw, :, 0 : 3 * HD])
-                    MD.wave_x(m_in, out_ch, X, w, pw)
+                    DL.wave_x(m_in, out_ch, X, w, pw)
                     s_l3.put(SI[g0 : g0 + ngw, :, :, :])
                     s_l3o.get(SO[g0 : g0 + ngw, :, :, :])
                     for j in range(pw):
@@ -637,7 +638,7 @@ def layer_inputs(w, layers, waves):
     return np.ascontiguousarray(np.concatenate(WE)), np.stack(WD), M, qkn, conv_w
 
 
-class Q36Decoder(MD.MoeDecoder):
+class Q36Decoder(DL.Decoder):
     """The layers' ELF and the LM head's, their buffers, and a run of each.
     Per token the host writes x, the attention layers' RoPE rows and L, and
     swaps the conv caches' and the GDN states' in and out buffers."""

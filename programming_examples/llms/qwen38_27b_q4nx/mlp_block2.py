@@ -41,7 +41,7 @@ import qwen38_27b_q4nx_weights as W  # noqa: E402
 from air import api as air  # noqa: E402
 from air.api import bf16, i32, ui8  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
-from air_examples.llms.shared.moe.array import HDR, MvmArray  # noqa: E402
+from air_examples.llms.shared.decode.array import HDR, MvmArray  # noqa: E402
 
 R, RB, CB, BB = M1.R, M1.RB, M1.CB, M1.BB
 D, I = W.D, W.I

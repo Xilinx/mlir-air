@@ -24,7 +24,7 @@ sys.modules.setdefault("air_examples", types.ModuleType("air_examples")).__path_
 import common  # noqa: E402
 import qwen3_coder_30b_a3b_q4k_weights as W  # noqa: E402
 from air.backend.xrt import XRTBackend  # noqa: E402
-from air_examples.llms.shared.moe import lm_head as LH  # noqa: E402
+from air_examples.llms.shared.decode import lm_head as LH  # noqa: E402
 
 # a check's bound on the relative L2 error
 TOL = 0.015
