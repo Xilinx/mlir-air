@@ -35,11 +35,6 @@ def AffineLoopOptPass : Pass<"affine-loop-opt", "func::FuncOp"> {
   ];
 }
 
-def AIRHerdAssign : Pass<"air-herd-assign", "ModuleOp"> {
-  let summary = "Transfor affine.for to affine.parallel";
-  let constructor = "xilinx::air::createAIRHerdAssignPass()";
-}
-
 def AIRHerdPlacementPass : Pass<"air-place-herds", "ModuleOp"> {
   let summary = "Places herds onto a segment.";
   let constructor = "xilinx::air::createAIRHerdPlacementPass()";
