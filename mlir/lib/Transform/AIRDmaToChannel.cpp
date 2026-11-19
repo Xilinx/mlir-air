@@ -2880,7 +2880,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         // per-column pressure ceil(K / C).
         int64_t broadcastPressure = 0;
         for (auto &[span, count] : broadcastCountBySpan)
-          broadcastPressure += (count + span - 1) / span;
+          broadcastPressure += llvm::divideCeilSigned(count, span);
         llvm::SmallDenseMap<Operation *, int64_t> pinnedPressure;
         for (auto &[herdColumn, count] : pinnedCount) {
           int64_t &herdMax = pinnedPressure[herdColumn.first];
