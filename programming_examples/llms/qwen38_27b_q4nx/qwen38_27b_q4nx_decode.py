@@ -441,7 +441,11 @@ def build_module(waves, maxl, cap=None):
                                     air.alloc([QHP * DH], bf16, scope=p)
                                     for _ in range(KPU)
                                 ]
-                                kb = air.alloc([A.BLK], bf16, scope=p)
+                                # one per KV head: the next lands during this one's math
+                                kb = [
+                                    air.alloc([A.BLK], bf16, scope=p)
+                                    for _ in range(KPU)
+                                ]
                                 mm = [
                                     air.alloc([16], bf16, scope=p) for _ in range(KPU)
                                 ]
@@ -454,10 +458,10 @@ def build_module(waves, maxl, cap=None):
                                     q[kk][:] = qf[hd * QHP * DH : (hd + 1) * QHP * DH]
                                 for b in air.sequential(0, nb):
                                     for kk in range(KPU):
-                                        k_cu.get(kb, indices=[c])
+                                        k_cu.get(kb[kk], indices=[c])
                                         qk(
                                             q[kk],
-                                            kb,
+                                            kb[kk],
                                             mm[kk],
                                             cc[kk],
                                             s_blk[c][kk],
@@ -470,7 +474,10 @@ def build_module(waves, maxl, cap=None):
                             @hk.body
                             def _(tx):
                                 p = hk.private()
-                                vb = air.alloc([A.BLK], bf16, scope=p)
+                                vb = [
+                                    air.alloc([A.BLK], bf16, scope=p)
+                                    for _ in range(KPU)
+                                ]
                                 yy = [
                                     air.alloc([QHP * DH], f32, scope=p)
                                     for _ in range(KPU)
@@ -481,8 +488,8 @@ def build_module(waves, maxl, cap=None):
                                 ou = air.alloc([UO], bf16, scope=p)
                                 for b in air.sequential(0, nb):
                                     for kk in range(KPU):
-                                        v_cu.get(vb, indices=[c])
-                                        kv(s_blk[c][kk], vb, yy[kk], ll[kk], b, Lp)
+                                        v_cu.get(vb[kk], indices=[c])
+                                        kv(s_blk[c][kk], vb[kk], yy[kk], ll[kk], b, Lp)
                                 for kk in range(KPU):
                                     fin(yy[kk], ll[kk], o)
                                     o_nat(on, o)
