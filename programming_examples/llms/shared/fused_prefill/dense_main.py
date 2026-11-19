@@ -22,6 +22,8 @@ It has no reference, so it is as cheap at a long prompt as the prefill itself.
 """
 
 import argparse
+import gc
+import json
 import sys
 import time
 import types
@@ -60,15 +62,25 @@ def verify(name, argv):
     ap.add_argument("--repeat", type=int, default=3)
     ap.add_argument("--tol", type=float, default=desc.tol)
     ap.add_argument("--model", default=None, help="bundle file or directory")
+    # token ids instead of a prompt, for a model whose tokenizer is not at hand
+    ap.add_argument("--ids-file", default=None, help="JSON list, or dict of lists")
+    ap.add_argument("--ids-key", default=None)
+    ap.add_argument("--ids-count", type=int, default=0)
     a = ap.parse_args(argv)
-
-    from transformers import AutoTokenizer
 
     if desc.family == "lfm2":
         from air_examples.llms.shared.fused_prefill import lfm2 as fam
     else:
         fam = dense
     path = fam.resolve(desc, a.model)
+    if a.ids_file:
+        ids = json.loads(Path(a.ids_file).read_text())
+        ids = [int(t) for t in (ids[a.ids_key] if a.ids_key else ids)]
+        _gate(name, a, fam, desc, path, ids[: a.ids_count or None], str)
+        return
+
+    from transformers import AutoTokenizer
+
     meta = path.parent if desc.family == "lfm2" else dense.meta_dir(desc, path)
     tok = AutoTokenizer.from_pretrained(meta)
     prompt = a.prompt
@@ -86,6 +98,13 @@ def verify(name, argv):
         date_string="26 Jul 2024",
     )
     ids = list(ids if isinstance(ids, list) else ids["input_ids"])
+    _gate(name, a, fam, desc, path, ids, lambda t: repr(tok.decode([t])))
+
+
+def _gate(name, a, fam, desc, path, ids, show):
+    """Prefill ids, then gate the logits against the CPU reference."""
+    from air_examples.llms.shared.fused_prefill import dense
+
     n = len(ids)
     print(f"prompt {n} tokens ({-(-n // 128)} chunk(s))", flush=True)
 
@@ -102,13 +121,18 @@ def verify(name, argv):
         if int(lg.argmax()) != int(logits.argmax()):
             fails.append(f"run {r} first token differs from the first run")
 
+    # the reference's working set next to a large model's weight buffers can
+    # outgrow the host's memory, so the device side goes first
+    logits = np.array(logits)
+    pf = lg = None
+    gc.collect()
     ref = fam.reference(desc, path, ids)
     c = cos(logits, ref)
     print(f"logit cosine vs CPU reference = {c:.5f}")
     first, rfirst = int(logits.argmax()), int(ref.argmax())
     print(
-        f"first token: device {first} {tok.decode([first])!r}  "
-        f"reference {rfirst} {tok.decode([rfirst])!r}"
+        f"first token: device {first} {show(first)}  "
+        f"reference {rfirst} {show(rfirst)}"
     )
     if not c >= a.tol:  # also catches NaN
         fails.append(f"logit cosine {c:.5f} < {a.tol}")
