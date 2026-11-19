@@ -1654,16 +1654,19 @@ if __name__ == "__main__":
         output_vm = output_vm.astype(OUTPUT_DATATYPE).astype(np.float32)
 
         # RoPE on Q rows (0..GROUP_SIZE-1) and K row (GROUP_SIZE); V not rotated.
+        # Half-split pairs (i, i + n/2) and rope_theta 500000, as the kernel's
+        # shuffle_apply_rope and freq_pos.
+        half = args.n // 2
         for row in list(range(GROUP_SIZE)) + [GROUP_SIZE]:
-            for s in range(0, args.n, 2):
-                freq = 1.0 / pow(10000.0, float(s) / float(args.n))
+            for i in range(half):
+                freq = 1.0 / pow(500000.0, float(2 * i) / float(args.n))
                 val = args.pos * freq
                 fcr = cos(val)
                 fci = sin(val)
-                v0 = output_vm[row][s]
-                v1 = output_vm[row][s + 1]
-                output_vm[row][s] = v0 * fcr - v1 * fci
-                output_vm[row][s + 1] = v0 * fci + v1 * fcr
+                v0 = output_vm[row][i]
+                v1 = output_vm[row][i + half]
+                output_vm[row][i] = v0 * fcr - v1 * fci
+                output_vm[row][i + half] = v0 * fci + v1 * fcr
         output_vm = output_vm.astype(OUTPUT_DATATYPE).astype(np.float32)
 
         # KV cache slot pos populated by GEMV outputs.
