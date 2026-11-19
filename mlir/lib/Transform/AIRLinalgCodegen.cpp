@@ -3121,6 +3121,90 @@ DiagnosedSilenceableFailure transform::RaiseLoadBufferToTensorOp::apply(
 }
 
 //===----------------------------------------------------------------------===//
+// ForwardCopyIntoDestinationOp
+//===----------------------------------------------------------------------===//
+
+// Whether an op strictly between `from` and `to`, in their block, may write
+// memory.
+static bool mayWriteBetween(Operation *from, Operation *to) {
+  for (Operation *op = from->getNextNode(); op != to; op = op->getNextNode()) {
+    if (isMemoryEffectFree(op))
+      continue;
+    auto effects = dyn_cast<MemoryEffectOpInterface>(op);
+    if (!effects || effects.hasEffect<MemoryEffects::Write>() ||
+        effects.hasEffect<MemoryEffects::Free>())
+      return true;
+  }
+  return false;
+}
+
+// Rewrites `memref.copy %src, %buf`, `%t = bufferization.to_tensor %buf` and
+// `bufferization.materialize_in_destination %t in %dest` as
+// `memref.copy %src, %dest`; see ForwardCopyIntoDestinationOp.
+static bool
+forwardCopyIntoDestination(RewriterBase &rewriter,
+                           bufferization::MaterializeInDestinationOp store) {
+  Value dest = store.getDest();
+  if (!isa<MemRefType>(dest.getType()))
+    return false;
+  auto read = store.getSource().getDefiningOp<bufferization::ToTensorOp>();
+  if (!read || !read->hasOneUse())
+    return false;
+  auto alloc = read.getBuffer().getDefiningOp<memref::AllocOp>();
+  if (!alloc)
+    return false;
+  memref::CopyOp fill;
+  SmallVector<Operation *> deallocs;
+  for (Operation *user : alloc->getUsers()) {
+    if (user == read.getOperation())
+      continue;
+    if (isa<memref::DeallocOp>(user)) {
+      deallocs.push_back(user);
+      continue;
+    }
+    auto copy = dyn_cast<memref::CopyOp>(user);
+    if (!copy || copy.getTarget() != alloc.getResult() || fill)
+      return false;
+    fill = copy;
+  }
+  if (!fill)
+    return false;
+  Block *block = store->getBlock();
+  if (fill->getBlock() != block || read->getBlock() != block ||
+      !fill->isBeforeInBlock(read) || !read->isBeforeInBlock(store))
+    return false;
+  if (mayWriteBetween(fill, store))
+    return false;
+
+  rewriter.setInsertionPoint(store);
+  memref::CopyOp::create(rewriter, store.getLoc(), fill.getSource(), dest);
+  rewriter.eraseOp(store);
+  rewriter.eraseOp(read);
+  rewriter.eraseOp(fill);
+  for (Operation *dealloc : deallocs)
+    rewriter.eraseOp(dealloc);
+  rewriter.eraseOp(alloc);
+  return true;
+}
+
+DiagnosedSilenceableFailure transform::ForwardCopyIntoDestinationOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+  SmallVector<Operation *> targets;
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    SmallVector<bufferization::MaterializeInDestinationOp> stores;
+    target->walk([&](bufferization::MaterializeInDestinationOp store) {
+      stores.push_back(store);
+    });
+    for (auto store : stores)
+      forwardCopyIntoDestination(rewriter, store);
+    targets.push_back(target);
+  }
+  results.set(llvm::cast<OpResult>(getResult()), targets);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
 // FoldExtractSliceOfInsertSliceOp
 //===----------------------------------------------------------------------===//
 

@@ -1,0 +1,175 @@
+//===- forward_copy_into_destination.mlir ----------------------*- MLIR -*-===//
+//
+// Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
+// RUN: air-opt -transform-interpreter -split-input-file %s | FileCheck %s
+
+// A load stored unchanged, as triton-shared lowers it: one copy from the
+// source into the destination, and no buffer.
+
+// CHECK-LABEL: func.func @forward
+// CHECK-NOT: memref.alloc
+// CHECK: %[[D:.*]] = memref.subview %{{.*}}[0] [256] [1]
+// CHECK-NEXT: memref.copy %{{.*}}, %[[D]] : memref<256xbf16, strided<[1], offset: ?>> to memref<256xbf16, strided<[1]>>
+// CHECK-NOT: bufferization
+// CHECK: return
+func.func @forward(%src: memref<256xbf16, strided<[1], offset: ?>>, %home: memref<1024xbf16>) {
+  %buf = memref.alloc() : memref<256xbf16>
+  memref.copy %src, %buf : memref<256xbf16, strided<[1], offset: ?>> to memref<256xbf16>
+  %t = bufferization.to_tensor %buf restrict writable : memref<256xbf16> to tensor<256xbf16>
+  %d = memref.subview %home[0] [256] [1] : memref<1024xbf16> to memref<256xbf16, strided<[1]>>
+  bufferization.materialize_in_destination %t in writable %d : (tensor<256xbf16>, memref<256xbf16, strided<[1]>>) -> ()
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.forward_copy_into_destination %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// The buffer's dealloc goes with it.
+
+// CHECK-LABEL: func.func @dealloc
+// CHECK-NOT: memref.alloc
+// CHECK: memref.copy %{{.*}}, %{{.*}} : memref<64xf32> to memref<64xf32>
+// CHECK-NOT: memref.dealloc
+func.func @dealloc(%src: memref<64xf32>, %dst: memref<64xf32>) {
+  %buf = memref.alloc() : memref<64xf32>
+  memref.copy %src, %buf : memref<64xf32> to memref<64xf32>
+  %t = bufferization.to_tensor %buf restrict writable : memref<64xf32> to tensor<64xf32>
+  bufferization.materialize_in_destination %t in writable %dst : (tensor<64xf32>, memref<64xf32>) -> ()
+  memref.dealloc %buf : memref<64xf32>
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.forward_copy_into_destination %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// The source written between the copy and the store: the buffer holds the
+// old data, so it stays.
+
+// CHECK-LABEL: func.func @written_between
+// CHECK: %[[BUF:.*]] = memref.alloc()
+// CHECK: memref.copy %{{.*}}, %[[BUF]]
+// CHECK: memref.store
+// CHECK: bufferization.materialize_in_destination
+func.func @written_between(%src: memref<64xf32>, %dst: memref<64xf32>, %v: f32) {
+  %c0 = arith.constant 0 : index
+  %buf = memref.alloc() : memref<64xf32>
+  memref.copy %src, %buf : memref<64xf32> to memref<64xf32>
+  %t = bufferization.to_tensor %buf restrict writable : memref<64xf32> to tensor<64xf32>
+  memref.store %v, %src[%c0] : memref<64xf32>
+  bufferization.materialize_in_destination %t in writable %dst : (tensor<64xf32>, memref<64xf32>) -> ()
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.forward_copy_into_destination %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// The loaded tensor is also computed with: the buffer stays.
+
+// CHECK-LABEL: func.func @also_read
+// CHECK: %[[BUF:.*]] = memref.alloc()
+// CHECK: memref.copy %{{.*}}, %[[BUF]]
+// CHECK: bufferization.materialize_in_destination
+func.func @also_read(%src: memref<64xf32>, %dst: memref<64xf32>) -> tensor<64xf32> {
+  %buf = memref.alloc() : memref<64xf32>
+  memref.copy %src, %buf : memref<64xf32> to memref<64xf32>
+  %t = bufferization.to_tensor %buf restrict writable : memref<64xf32> to tensor<64xf32>
+  bufferization.materialize_in_destination %t in writable %dst : (tensor<64xf32>, memref<64xf32>) -> ()
+  return %t : tensor<64xf32>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.forward_copy_into_destination %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// A buffer two copies fill: not one source to forward, so it stays.
+
+// CHECK-LABEL: func.func @two_copies
+// CHECK: %[[BUF:.*]] = memref.alloc()
+// CHECK-COUNT-2: memref.copy
+// CHECK: bufferization.materialize_in_destination
+func.func @two_copies(%a: memref<32xf32>, %b: memref<32xf32>, %dst: memref<64xf32>) {
+  %buf = memref.alloc() : memref<64xf32>
+  %lo = memref.subview %buf[0] [32] [1] : memref<64xf32> to memref<32xf32, strided<[1]>>
+  %hi = memref.subview %buf[32] [32] [1] : memref<64xf32> to memref<32xf32, strided<[1], offset: 32>>
+  memref.copy %a, %lo : memref<32xf32> to memref<32xf32, strided<[1]>>
+  memref.copy %b, %hi : memref<32xf32> to memref<32xf32, strided<[1], offset: 32>>
+  %t = bufferization.to_tensor %buf restrict writable : memref<64xf32> to tensor<64xf32>
+  bufferization.materialize_in_destination %t in writable %dst : (tensor<64xf32>, memref<64xf32>) -> ()
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.forward_copy_into_destination %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// A masked load stored unchanged under the same mask, as triton-shared
+// lowers it: raised, its box read back out, then forwarded to one copy of
+// the box.
+
+// CHECK-LABEL: func.func @masked
+// CHECK-NOT: memref.alloc
+// CHECK-NOT: linalg.fill
+// CHECK: %[[S:.*]] = memref.subview %{{.*}}[0] [40] [1]
+// CHECK: %[[D:.*]] = memref.subview %{{.*}}[0] [40] [1]
+// CHECK: memref.copy %[[S]], %[[D]]
+// CHECK-NOT: bufferization
+func.func @masked(%src: memref<64xf32, strided<[1], offset: ?>>, %home: memref<64xf32>) {
+  %cst = arith.constant 0.000000e+00 : f32
+  %buf = memref.alloc() : memref<64xf32>
+  linalg.fill ins(%cst : f32) outs(%buf : memref<64xf32>)
+  %s = memref.subview %src[0] [40] [1] : memref<64xf32, strided<[1], offset: ?>> to memref<40xf32, strided<[1], offset: ?>>
+  %b = memref.subview %buf[0] [40] [1] : memref<64xf32> to memref<40xf32, strided<[1]>>
+  memref.copy %s, %b : memref<40xf32, strided<[1], offset: ?>> to memref<40xf32, strided<[1]>>
+  %t = bufferization.to_tensor %buf restrict writable : memref<64xf32> to tensor<64xf32>
+  %e = tensor.extract_slice %t[0] [40] [1] : tensor<64xf32> to tensor<40xf32>
+  %d = memref.subview %home[0] [40] [1] : memref<64xf32> to memref<40xf32, strided<[1]>>
+  bufferization.materialize_in_destination %e in writable %d : (tensor<40xf32>, memref<40xf32, strided<[1]>>) -> ()
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.raise_load_buffer_to_tensor %f : (!transform.any_op) -> !transform.any_op
+    %s = transform.air.fold_extract_slice_of_insert_slice %r : (!transform.any_op) -> !transform.any_op
+    %c = transform.air.forward_copy_into_destination %s : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
