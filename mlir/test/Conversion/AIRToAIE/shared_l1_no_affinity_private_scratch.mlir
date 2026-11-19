@@ -5,10 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Two herds (rows 2-3 and rows 4-5) name the same L1 allocation, so it is a
-// shared-L1 candidate, but no tile has memory affinity with all four rows.
-// Every core writes the buffer before it reads it: it is private scratch
-// reused by both herds, not a hand-off, so each core gets its own copy.
+// Two herds (rows 2-3 and 4-5) name the same L1 allocation and no tile has
+// memory affinity with all four rows. Every core writes the buffer before
+// reading it, so each core gets its own copy.
 
 // RUN: air-opt %s -air-to-aie='device=npu2 row-offset=2' | FileCheck %s
 

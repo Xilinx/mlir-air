@@ -5,11 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-// A shared L1 buffer that cannot be placed and hands data between cores must
-// be a compile error, not a silent miscompile. In a 1x4 herd no tile has
-// memory affinity with all four rows, so there is no owner for one shared
-// buffer. Core 0 writes the buffer and cores 1..3 read it: giving each core
-// its own copy would leave the readers with never-written data.
+// In a 1x4 herd no tile has memory affinity with all four rows. Core 0 writes
+// the shared buffer and cores 1..3 read it, so per-core copies would be wrong:
+// this is an error.
 
 // RUN: not air-opt %s -air-to-aie='device=npu2 row-offset=2' 2>&1 | FileCheck %s
 

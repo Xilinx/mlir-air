@@ -2429,25 +2429,12 @@ LogicalResult createAIEModulesAndOutlineCores(
         }
       }
 
-      // No tile has legal memory affinity with all cores (a herd taller than
-      // a tile's neighbourhood, say), so the buffer cannot be one shared L1
-      // buffer.
-      //
-      // Giving each core its own copy is the right lowering for a buffer every
-      // core uses as private scratch, and a silent miscompile for one that
-      // hands data between cores: the producer writes its copy, the consumer
-      // reads its own, never-written one. Which case this is is not settled
-      // by reaching here -- `sharedAcrossHerds` only means several herds name
-      // the same alloc, which a design reusing one scratch buffer across
-      // phases does with no hand-off at all -- so ask per core.
-      //
-      // A core that READS the buffer without WRITING it consumes a write that
-      // landed on another core; a copy severs exactly that. A core that writes
-      // the buffer itself is using its own data, and a copy is correct.
+      // No tile has memory affinity with all the cores, so there is no single
+      // shared buffer. A per-core copy is correct only if no core reads data
+      // another core wrote; otherwise the design cannot be lowered here.
       if (!ownerTile) {
-        // A dependence herdBufferHasCrossCoreDependence already proved within
-        // one herd stands; only a buffer shared by naming it in several herds
-        // needs the per-core look below.
+        // Within one herd the dependence is already known. Across herds,
+        // look for a core that reads the buffer without writing it.
         llvm::SmallDenseSet<Operation *> readerCores, writerCores;
         for (auto coreOp : coreOps) {
           if (sharedAcrossCores)
@@ -2455,10 +2442,8 @@ LogicalResult createAIEModulesAndOutlineCores(
           coreOp.walk([&](Operation *op) {
             if (!accessReachableInCore(op))
               return;
-            // An opaque external kernel hides its effects behind the call, so
-            // classify its buffer operands by the convention the lock
-            // allocator uses: the last memref operand is written, an earlier
-            // one is read.
+            // For an external call, follow the lock allocator's convention:
+            // the last memref operand is written, earlier ones are read.
             int lastMemrefIdx = -1;
             bool opaqueCall = isa<mlir::CallOpInterface>(op) &&
                               !isa<mlir::MemoryEffectOpInterface>(op);
@@ -2498,7 +2483,7 @@ LogicalResult createAIEModulesAndOutlineCores(
               break;
             }
 
-        // Private scratch: one copy per core, as before.
+        // Private scratch: one copy per core.
         if (!crossCoreHandoff) {
           for (auto coreOp : coreOps) {
             OpBuilder builder(coreOp);
@@ -2513,16 +2498,13 @@ LogicalResult createAIEModulesAndOutlineCores(
           continue;
         }
 
-        // A real hand-off that cannot be placed: a design that cannot be
-        // lowered correctly must fail to compile rather than return wrong
-        // data.
         auto diag = memref.getDefiningOp()->emitOpError()
                     << "L1 buffer is shared by " << coreOps.size()
                     << " cores, but no tile has legal memory affinity with "
                        "all of them, so it cannot be lowered to a shared L1 "
                        "buffer. Route the data through a channel (tile DMA + "
                        "stream switch) instead of a shared L1 allocation.";
-        // Sorted, so the note does not depend on the set's iteration order.
+        // Sorted for a deterministic note.
         SmallVector<std::pair<int, int>> at;
         for (AIE::CoreOp c : coreOps)
           at.push_back({c.getTileOp().getCol(), c.getTileOp().getRow()});

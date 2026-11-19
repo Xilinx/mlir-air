@@ -5,11 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Every core of a 1x4 herd writes its part of a shared L1 buffer through a
-// kernel call, and core 0 sends the assembled buffer out. Each reader also
-// writes, but the herd's cross-core dependence is already established, so
-// with no tile that neighbours all four rows this is diagnosed rather than
-// split into per-core copies (which would lose the other cores' parts).
+// Every core of a 1x4 herd writes its part of a shared buffer through a kernel
+// call and core 0 sends the whole buffer out. No tile neighbours all four rows
+// and per-core copies would lose the other cores' parts: this is an error.
 
 // RUN: not air-opt %s -air-to-aie='device=npu2 row-offset=2' 2>&1 | FileCheck %s
 
