@@ -172,7 +172,9 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
-            instance_name="rope",
+            # Must match the launch name in build_module (the module's only
+            # function): an ELF is loaded by that name.
+            instance_name="rope_lut",
             runtime_loop_tiling_sizes=[4, 4],
             target_device=launch.target,
         )
