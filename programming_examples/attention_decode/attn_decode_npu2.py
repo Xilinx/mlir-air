@@ -1654,8 +1654,7 @@ if __name__ == "__main__":
         output_vm = output_vm.astype(OUTPUT_DATATYPE).astype(np.float32)
 
         # RoPE on Q rows (0..GROUP_SIZE-1) and K row (GROUP_SIZE); V not rotated.
-        # Half-split pairs (i, i + n/2) and rope_theta 500000, as the kernel's
-        # shuffle_apply_rope and freq_pos.
+        # Half-split pairs (i, i + n/2) and theta 500000, as in the kernel.
         half = args.n // 2
         for row in list(range(GROUP_SIZE)) + [GROUP_SIZE]:
             for i in range(half):
