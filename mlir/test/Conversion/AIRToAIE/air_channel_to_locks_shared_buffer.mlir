@@ -88,13 +88,23 @@ func.func @shared_buffer_sequential_puts() {
 // CHECK-DAG:         %[[TILE:.*]] = aie.tile(2, 3)
 // CHECK-DAG:         %[[WLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 1 : i32}
 // CHECK-DAG:         %[[RLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 0 : i32}
+// CHECK-DAG:         %[[BUF:.*]] = aie.buffer(%[[TILE]]) {{.*}} : memref<32x32xbf16, 2>
+// The DMA sends the buffer once the core has released it, and gives it back.
+// CHECK:    aie.mem(%[[TILE]])
+// CHECK:           %[[C1M:.*]] = arith.constant 1 : i32
+// CHECK:           aie.dma_start(MM2S
+// CHECK:           aie.use_lock(%[[RLOCK]], AcquireGreaterEqual, %[[C1M]])
+// CHECK-NEXT:      aie.dma_bd(%[[BUF]] :
+// CHECK-NEXT:      aie.use_lock(%[[WLOCK]], Release, %[[C1M]])
+// The core takes the buffer before each kernel write, one credit at a time.
 // CHECK:    aie.core(%[[TILE]])  {
-// CHECK:           aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, %{{.*}})
-// CHECK-NEXT:      func.call @fill(
-// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, %{{.*}})
-// CHECK-NEXT:      aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, %{{.*}})
-// CHECK-NEXT:      func.call @fill(
-// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, %{{.*}})
+// CHECK:           %[[C1:.*]] = arith.constant 1 : i32
+// CHECK:           aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, %[[C1]])
+// CHECK-NEXT:      func.call @fill(%[[BUF]])
+// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, %[[C1]])
+// CHECK-NEXT:      aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, %[[C1]])
+// CHECK-NEXT:      func.call @fill(%[[BUF]])
+// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, %[[C1]])
 // CHECK:           aie.end
 
 air.channel @channel_0 [1, 1]
