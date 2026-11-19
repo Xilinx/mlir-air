@@ -4,7 +4,6 @@
 
 # Source order matches origin/main for consistent archive ordering.
 set(TRANSFORM_SOURCES
-  AIRAutomaticTilingPass.cpp
   AIRDependency.cpp
   AIRDependencyCanonicalize.cpp
   AIRDependencyParseGraph.cpp

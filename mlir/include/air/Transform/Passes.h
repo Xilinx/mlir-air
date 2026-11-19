@@ -9,7 +9,6 @@
 #ifndef AIR_TRANSFORM_PASSES_H
 #define AIR_TRANSFORM_PASSES_H
 
-#include "air/Transform/AIRAutomaticTilingPass.h"
 #include "air/Transform/AIRDependency.h"
 #include "air/Transform/AIRDependencyCanonicalize.h"
 #include "air/Transform/AIRDependencyParseGraph.h"
