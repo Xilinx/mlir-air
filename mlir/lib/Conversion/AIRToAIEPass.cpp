@@ -115,14 +115,9 @@ static FailureOr<int64_t> getViewStartInBuffer(Value view, Operation *buffer) {
   int64_t offset = 0;
   if (!layoutKept || !ty || !ty.hasStaticShape() ||
       failed(ty.getStridesAndOffset(strides, offset)) ||
-      ShapedType::isDynamic(offset))
+      ShapedType::isDynamic(offset) ||
+      !ty.areTrailingDimsContiguous(ty.getRank()))
     return failure();
-  int64_t expected = 1;
-  for (int i = ty.getRank() - 1; i >= 0; i--) {
-    if (ty.getDimSize(i) != 1 && strides[i] != expected)
-      return failure();
-    expected *= ty.getDimSize(i);
-  }
   return offset;
 }
 
