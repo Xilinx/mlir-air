@@ -629,7 +629,8 @@ def AIRDependency : Pass<"air-dependency", "ModuleOp"> {
   let summary = "AIR dependency analysis";
   let constructor = "xilinx::air::createAIRDependencyPass()";
   let description = [{
-    This pass analyzes dependencies among air.async_region ops, and constructs
+    This pass analyzes dependencies among `air.execute` regions and asynchronous
+    AIR ops, and constructs
     the dependency relationship between asynchronous events for scheduling. 
     The pass also generates a dot file which visualizes the dependency graph.
 
@@ -872,10 +873,12 @@ def AIRBroadcastDetection: Pass<"air-broadcast-detection", "ModuleOp"> {
   let summary = "Detect DMA broadcast opportunities";
   let constructor = "xilinx::air::createAIRBroadcastDetection()";
   let description = [{
-    This pass detects DMA broadcast opportunities by tracing the source indices'
-    dependence to the induction variables of any parent spatial loop space. Upon
-    successful detection, the DMA shall be annotated by an affine set attribute 
-    named 'broadcast_pattern'. 
+    For each DMA inside an `air.herd` that reads or writes L1, traces which
+    loop induction variables its source and destination offsets, sizes and
+    strides, and any enclosing `scf.if` or `affine.if` conditions, depend on.
+    A DMA that does not vary along some dimensions of the herd moves the same
+    data to every core along them, and is annotated with a `broadcast_pattern`
+    affine set describing its recipients.
   }];
 }
 

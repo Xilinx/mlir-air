@@ -30,6 +30,12 @@ include "mlir/IR/AttrTypeBase.td"
 def AIRRt_EventType : TypeDef<AIRRt_Dialect, "Event"> {
   let mnemonic = "event";
   let summary = "Completion event of an AIR runtime operation";
+  let description = [{
+    The `airrt` counterpart of `!air.async.token`, to which `air-to-std`
+    converts it. Returned by the asynchronous forms of `airrt.herd_load`,
+    `airrt.segment_load`, `airrt.dma_memcpy_nd` and `airrt.memcpy_nd`, and
+    joined by `airrt.wait_all`.
+  }];
 }
 
 def AIRRt_Event : DialectType<

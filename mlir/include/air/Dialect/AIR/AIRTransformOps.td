@@ -169,7 +169,17 @@ def ForallWithReduceToParallelOp : Op<Transform_Dialect, "air.forall_with_reduce
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
   let summary = "Converts a pattern of scf.forall and linalg.reduce to scf.parallel";
   let description = [{
-    .
+    Converts an `scf.forall` whose results feed a `linalg.reduce` into an
+    `scf.parallel` with an `scf.reduce`. The init tensors of the
+    `linalg.reduce` become the loop's init values, as L1 memrefs, and the
+    `scf.reduce` region combines partial results with an element-wise
+    `linalg` add or multiply, matching the reduction's combiner; other
+    combiners are rejected. Uses of the `linalg.reduce` result are replaced
+    by the loop result, and the `mapping` attribute of the `scf.forall` is
+    preserved.
+
+    The target handle must map to exactly one `scf.forall`. Returns a handle
+    to the new `scf.parallel`.
   }];
   let arguments = (ins TransformHandleTypeInterface:$target);
   let results = (outs Variadic<TransformHandleTypeInterface>:$transformed);
@@ -183,8 +193,15 @@ def ForallWithReduceToParallelOp : Op<Transform_Dialect, "air.forall_with_reduce
 def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
     TransformOpInterface, TransformEachOpTrait]> {
+  let summary = "Turn a reduction dimension into a herd pipeline";
   let description = [{
-    Experimental
+    Transform-dialect form of `air-pipeline-reduce`. Tiles the target linalg
+    op by `tile_size` and distributes the reduction over a herd of
+    `pipeline_depth` stages, laid out along x (`direction = "horiz"`) or y
+    (`direction = "vert"`). Each stage forwards its partial result to the
+    next through an `air.channel`. With `promote`, subviews are promoted to
+    local buffers with explicit copies. Replaces the target and returns a
+    handle to the result.
   }];
   let arguments =
     (ins TransformHandleTypeInterface:$target,
