@@ -77,3 +77,66 @@ func.func @shared_buffer_sequential_puts() {
   }
   return
 }
+
+// -----
+
+// The same, with each put's data written by a kernel just before it: the
+// core takes the buffer before the kernel writes it, not only before the
+// put, so the write waits for the DMA to finish sending the previous data.
+
+// CHECK:     aie.device
+// CHECK-DAG:         %[[TILE:.*]] = aie.tile(2, 3)
+// CHECK-DAG:         %[[WLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 1 : i32}
+// CHECK-DAG:         %[[RLOCK:.*]] = aie.lock(%[[TILE]], {{[0-9]+}}) {init = 0 : i32}
+// CHECK-DAG:         %[[BUF:.*]] = aie.buffer(%[[TILE]]) {{.*}} : memref<32x32xbf16, 2>
+// The DMA sends the buffer once the core has released it, and gives it back.
+// CHECK:    aie.mem(%[[TILE]])
+// CHECK:           %[[C1M:.*]] = arith.constant 1 : i32
+// CHECK:           aie.dma_start(MM2S
+// CHECK:           aie.use_lock(%[[RLOCK]], AcquireGreaterEqual, %[[C1M]])
+// CHECK-NEXT:      aie.dma_bd(%[[BUF]] :
+// CHECK-NEXT:      aie.use_lock(%[[WLOCK]], Release, %[[C1M]])
+// The core takes the buffer before each kernel write, one credit at a time.
+// CHECK:    aie.core(%[[TILE]])  {
+// CHECK:           %[[C1:.*]] = arith.constant 1 : i32
+// CHECK:           aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, %[[C1]])
+// CHECK-NEXT:      func.call @fill(%[[BUF]])
+// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, %[[C1]])
+// CHECK-NEXT:      aie.use_lock(%[[WLOCK]], AcquireGreaterEqual, %[[C1]])
+// CHECK-NEXT:      func.call @fill(%[[BUF]])
+// CHECK-NEXT:      aie.use_lock(%[[RLOCK]], Release, %[[C1]])
+// CHECK:           aie.end
+
+air.channel @channel_0 [1, 1]
+func.func private @fill(memref<32x32xbf16, 2>)
+func.func @shared_buffer_written_before_each_put() {
+  %c1 = arith.constant 1 : index
+  %0 = air.launch async (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) {
+    %1 = air.segment async {
+      %c1_0 = arith.constant 1 : index
+      %async_token_0, %l2_buf = air.execute -> (memref<32x32xbf16, 1>) {
+        %alloc = memref.alloc() : memref<32x32xbf16, 1>
+        air.execute_terminator %alloc : memref<32x32xbf16, 1>
+      }
+      %3 = air.channel.get async @channel_0[] (%l2_buf[] [] []) : (memref<32x32xbf16, 1>)
+      %2 = air.herd @herd_0 async tile (%arg8, %arg9) in (%arg10=%c1_0, %arg11=%c1_0) {
+        %async_token_2, %buf = air.execute -> (memref<32x32xbf16, 2>) {
+          %alloc = memref.alloc() : memref<32x32xbf16, 2>
+          air.execute_terminator %alloc : memref<32x32xbf16, 2>
+        }
+        %w_1 = air.execute [%async_token_2] {
+          func.call @fill(%buf) : (memref<32x32xbf16, 2>) -> ()
+        }
+        %tok_1 = air.channel.put async [%w_1] @channel_0[] (%buf[] [] []) : (memref<32x32xbf16, 2>)
+        %w_2 = air.execute [%tok_1] {
+          func.call @fill(%buf) : (memref<32x32xbf16, 2>) -> ()
+        }
+        %tok_2 = air.channel.put async [%w_2] @channel_0[] (%buf[] [] []) : (memref<32x32xbf16, 2>)
+        %async_token_3 = air.execute [%tok_2] {
+          memref.dealloc %buf : memref<32x32xbf16, 2>
+        }
+      }
+    }
+  }
+  return
+}
