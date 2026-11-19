@@ -2214,10 +2214,10 @@ LogicalResult createAIEModulesAndOutlineCores(
           builder.setInsertionPointToStart(module.getBody());
         auto aie_dev = AIE::DeviceOp::create(
             builder, module.getLoc(),
-            AIE::AIEDeviceAttr::get(builder.getContext(), subDevice));
+            AIE::AIEDeviceAttr::get(builder.getContext(), subDevice),
+            builder.getStringAttr(segment_name),
+            /*overlay=*/FlatSymbolRefAttr());
         lastDeviceOp = aie_dev;
-        aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
-                         StringAttr::get(builder.getContext(), segment_name));
         if (totalUnroll == 1) {
           devicesByName[segment_name] = aie_dev;
           bodiesByName[segment_name].push_back(seg);
@@ -2264,9 +2264,8 @@ LogicalResult createAIEModulesAndOutlineCores(
     auto builder = OpBuilder::atBlockBegin(module.getBody());
     auto aie_dev = AIE::DeviceOp::create(
         builder, module.getLoc(),
-        AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
-    aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
-                     StringAttr::get(builder.getContext(), segment_name));
+        AIE::AIEDeviceAttr::get(builder.getContext(), options.device),
+        builder.getStringAttr(segment_name), /*overlay=*/FlatSymbolRefAttr());
     setAIEDeviceDataLayout(builder, aie_dev);
     AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
                                     aie_dev.getLoc());
@@ -3941,27 +3940,14 @@ struct SpecializeChannelBundlePattern
 private:
   std::map<std::string, std::string> &chan_to_chan_map;
   air::DmaBdLimits limits;
-  bool areIdenticalVectors(std::vector<unsigned> a,
-                           std::vector<unsigned> b) const {
-    if (a.empty())
-      return false;
-    if (b.empty())
-      return false;
-    if (a.size() != b.size())
-      return false;
-    for (unsigned i = 0; i < a.size(); i++) {
-      if (a[i] != b[i])
-        return false;
-    }
-    return true;
+  // Two bundle positions match only if neither is empty.
+  bool areIdenticalVectors(const std::vector<unsigned> &a,
+                           const std::vector<unsigned> &b) const {
+    return !a.empty() && a == b;
   }
 
-  std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec) const {
-    std::vector<unsigned> output;
-    for (auto v : vec) {
-      output.push_back((unsigned)v);
-    }
-    return output;
+  std::vector<unsigned> convertToStdVec(ArrayRef<int64_t> vec) const {
+    return {vec.begin(), vec.end()};
   }
 
   // Canonicalize a padded access pattern. Padding is counted per dimension,
@@ -5867,22 +5853,6 @@ public:
     builder.setInsertionPoint(aie_device.getBody()->getTerminator());
     return AIE::CascadeFlowOp::create(builder, builder.getUnknownLoc(), source,
                                       dest);
-  }
-
-  template <typename T>
-  void getAIRMemcpyOpInBlock(Block &b, std::vector<Operation *> &output) {
-    for (Operation &o : b.getOperations()) {
-      if (isa<T>(&o))
-        output.push_back(&o);
-      for (Region &r : o.getRegions())
-        getAIRMemcpyOpInRegion<T>(r, output);
-    }
-  }
-
-  template <typename T>
-  void getAIRMemcpyOpInRegion(Region &r, std::vector<Operation *> &output) {
-    for (Block &b : r.getBlocks())
-      getAIRMemcpyOpInBlock<T>(b, output);
   }
 
   /// Insert dummy air.channel.put or air.channel.get operations for L2 memrefs
@@ -10116,7 +10086,8 @@ public:
 
     // erase the memcpy operations in aie.device
     std::vector<Operation *> memcpy_ops;
-    getAIRMemcpyOpInRegion<T>(device.getRegion(), memcpy_ops);
+    device.getRegion().walk<WalkOrder::PreOrder>(
+        [&](T op) { memcpy_ops.push_back(op); });
     for (auto o : memcpy_ops) {
       auto a = dyn_cast_if_present<air::AsyncOpInterface>(o);
       if (a && a.getAsyncToken()) {
@@ -11419,7 +11390,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     rewriter.setInsertionPointToStart(aie_module.getBody());
     auto devOp = AIE::DeviceOp::create(
         rewriter, aie_module.getLoc(),
-        AIE::AIEDeviceAttr::get(rewriter.getContext(), options.device));
+        AIE::AIEDeviceAttr::get(rewriter.getContext(), options.device),
+        /*sym_name=*/StringAttr(), /*overlay=*/FlatSymbolRefAttr());
     setAIEDeviceDataLayout(rewriter, devOp);
     AIE::DeviceOp::ensureTerminator(devOp.getRegion(), rewriter,
                                     devOp.getLoc());

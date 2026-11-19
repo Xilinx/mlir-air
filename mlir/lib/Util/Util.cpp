@@ -227,39 +227,11 @@ std::string air::getElementTypeAsString(const mlir::Type ty) {
   }
 }
 
-// An incomplete lookup table of common data types
-uint64_t air::getElementSizeInBytes(const mlir::Type ty) {
-  if (auto memrefTy = llvm::cast<BaseMemRefType>(ty)) {
-    return memrefTy.getElementTypeBitWidth() / 8;
-  }
-  auto typeAsString = getElementTypeAsString(ty);
-  if (typeAsString == "i32")
-    return 4;
-  else if (typeAsString == "i16")
-    return 2;
-  else if (typeAsString == "i8")
-    return 1;
-  else if (typeAsString == "f32")
-    return 4;
-  else if (typeAsString == "f16")
-    return 2;
-  else if (typeAsString == "bf16")
-    return 2;
-  else
-    return 0;
-}
-
 // Get the parent scf.for op of an iter_arg
 scf::ForOp air::getForRegionIterArgsOwner(Value val) {
-  auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
-  if (!ivArg)
+  if (!val)
     return scf::ForOp();
-  if (!ivArg.getOwner()) {
-    val.getDefiningOp()->emitOpError("unlinked block argument");
-    return scf::ForOp();
-  }
-  auto *containingOp = ivArg.getOwner()->getParentOp();
-  return dyn_cast_if_present<scf::ForOp>(containingOp);
+  return scf::getForInductionVarOwner(val);
 }
 
 // Get the parent scf.parallel op of an init_val
@@ -2364,7 +2336,9 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     // two are one contiguous walk, which canonicalizeWrapAndStrideList
     // re-splits, so the fold is admitted when that split comes out legal.
     if (!limits.strideFits(limits.bytesToGranules(
-            new_stride_value * getElementSizeInBytes(memref.getType())))) {
+            new_stride_value *
+            (cast<BaseMemRefType>(memref.getType()).getElementTypeBitWidth() /
+             8)))) {
       auto outerWrap =
           wraps.empty() ? std::nullopt : getConstantIntValue(wraps[0]);
       auto outerStride =
@@ -3133,32 +3107,20 @@ air::evaluateConstantsInMap(AffineMap map,
 std::optional<int64_t> air::evaluateConstantsInMap(
     AffineMap map, SmallVector<std::optional<int64_t>> symbolInputs,
     SmallVector<std::optional<int64_t>> dimInputs, MLIRContext *ctx) {
-  std::optional<int64_t> output = std::nullopt;
   if (map.getNumSymbols() != symbolInputs.size())
-    return output;
+    return std::nullopt;
   if (map.getNumDims() != dimInputs.size())
-    return output;
-  auto newmap = map;
-  for (unsigned i = 0; i < map.getNumSymbols(); i++) {
-    if (!symbolInputs[i])
-      continue;
-    auto c = getAffineConstantExpr(*symbolInputs[i], ctx);
-    // Both counts, not one: `AffineMap::replace` builds the result with
-    // exactly the dim/symbol counts given, and substituting a symbol leaves
-    // every `dN` in the expression alive. Declaring 0 dims here asserts in
-    // `willBeValidAffineMap` as soon as the map has both kinds.
-    newmap = newmap.replace(getAffineSymbolExpr(i, ctx), c, map.getNumDims(),
-                            map.getNumSymbols());
-  }
-  for (unsigned i = 0; i < map.getNumDims(); i++) {
-    if (!dimInputs[i])
-      continue;
-    auto c = getAffineConstantExpr(*dimInputs[i], ctx);
-    newmap = newmap.replace(getAffineDimExpr(i, ctx), c, map.getNumDims(),
-                            map.getNumSymbols());
-  }
-  output = simplifyAffineMap(newmap).getSingleConstantResult();
-  return output;
+    return std::nullopt;
+  Builder b(ctx);
+  SmallVector<Attribute> operands;
+  for (std::optional<int64_t> v :
+       llvm::concat<std::optional<int64_t>>(dimInputs, symbolInputs))
+    operands.push_back(v ? b.getIndexAttr(*v) : Attribute());
+  SmallVector<int64_t> results;
+  map.partialConstantFold(operands, &results);
+  if (results.size() != 1)
+    return std::nullopt;
+  return results.front();
 }
 
 // Extend the lookupOrDefault method to operate on a vector of values.

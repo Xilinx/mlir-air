@@ -370,7 +370,7 @@ module {
 // which the host waits on before freeing it.
 
 // CHECK: module attributes {air.ctrl_bounds = array<i64: 2, 1, 0, 8>, air.ctrl_table = array<i32: 1, 16896480, 256, 1, -2130587116, -2147483633,
-// CHECK: aie.tile(0, 0) {controller_id = #aie.packet_info<pkt_type = 0, pkt_id = 15>}
+// CHECK: aie.tile(0, 0) {controller_id = #aie.packet_info<pkt_id = 15>}
 // CHECK-LABEL: aie.runtime_sequence @host_issue_l3
 // CHECK: %[[T:.*]] = aiex.dma_configure_task_for @air_XIn
 // CHECK: {bd_id = 15 : i32}

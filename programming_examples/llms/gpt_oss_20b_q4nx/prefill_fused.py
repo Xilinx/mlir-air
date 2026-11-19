@@ -38,6 +38,7 @@ from air_examples.llms.shared.fused_prefill.engine import (  # noqa: E402
     FROM,
     TO,
     Engine,
+    built_max_len,
     view,
 )
 from air_examples.llms.shared.fused_prefill.models import Desc  # noqa: E402
@@ -107,8 +108,9 @@ class GptOssFused(DensePrefill):
     before the layer's MoE (slower; for a check without the decode)."""
 
     def __init__(self, build_dir, w, layers=None, we=None):
-        Engine.__init__(self, build_dir, S.CFG, S.max_len)
-        self.desc, self.context = DESC, None
+        max_len = built_max_len(build_dir, S.max_len)
+        Engine.__init__(self, build_dir, S.config(max_len), max_len)
+        self.desc, self.context = DESC._replace(max_len=max_len), None
         self.current_context_length = 0
         self.rope_cache, self.kv = {}, []
         self.w = w

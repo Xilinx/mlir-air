@@ -13,7 +13,8 @@ A detailed description of the dialect and its use for mapping AI workloads onto 
 can be found in:
 
 > E. Wang et al. "[From Loop Nests to Silicon: Mapping AI Workloads onto AMD NPUs with
-> MLIR-AIR](https://arxiv.org/abs/2510.14871)". arXiv:2510.14871, October 2025.
+> MLIR-AIR](https://doi.org/10.1145/3785670)". ACM Transactions on Reconfigurable
+> Technology and Systems (TRETS), 19(2), Article 28, June 2026.
 
 ---
 
@@ -23,7 +24,7 @@ can be found in:
 
 The AIR model defines a three-level execution hierarchy:
 
-```
+```text
 air.launch          — outermost level; groups co-resident work
   air.segment       — intermediate level; groups cores with shared on-device memory
     air.herd        — innermost level; an array of processing elements (PEs)
@@ -31,8 +32,8 @@ air.launch          — outermost level; groups co-resident work
 
 Each level defines an **iteration space** (a multi-dimensional index range) and a **body
 region** that executes across that iteration space. The bodies of `launch` and `segment`
-execute at the _host/controller_ level, while the body of `herd` executes in _data-
-parallel_ fashion across each point of its iteration space.
+execute at the _host/controller_ level, while the body of `herd` executes in
+_data-parallel_ fashion across each point of its iteration space.
 
 Execution at each level is **spatially parallel**: points in the iteration space may
 execute concurrently on distinct hardware resources.
@@ -101,14 +102,14 @@ existing uses of `air.async.token` are dependency tokens.
 A token is created in one of two ways:
 
 **1. Explicit allocation:**
-```
+```text
 %t = air.token.alloc : !air.token
 ```
 Used to introduce a token that groups a set of ops under a shared affinity or
 concurrency constraint without one op "owning" the token.
 
 **2. Op result:**
-```
+```text
 %t = air.segment @foo { … }
 %t = air.herd tile (%x,%y) in (%sx=%Nx,%sy=%Ny) [dependency = [%dep]] { … }
 ```
@@ -121,7 +122,7 @@ form of the op.
 Tokens are consumed by including them in named attribute lists on hierarchy and
 data-movement ops. An op may carry any combination of the three lists:
 
-```
+```text
 air.segment @bar [dependency = [%t0, %t1]]
                  [affinity   = [%ta]]
                  [concurrency = [%tc]]
@@ -169,7 +170,7 @@ launch would contradict its execution model.
 
 #### Syntax
 
-```
+```text
 // Asynchronous form — produces !air.token, non-blocking
 [%token =] air.launch (%x₀, …, %xₙ) in (%sx₀=%N₀, …, %sxₙ=%Nₙ)
            args(%a₀=%v₀, …) : <types>
@@ -218,6 +219,7 @@ independent and may be run in any order or concurrently at the runtime's
 discretion.
 
 Use the launch iteration space when:
+
 - Each instance is fully self-contained and produces no result that another
   instance depends on.
 - The workload naturally decomposes into a variable number of tiles determined
@@ -302,7 +304,7 @@ reverse.
 
 #### Syntax
 
-```
+```text
 // Asynchronous form — produces !air.token, non-blocking
 [%token =] air.segment [@name]
            (%x₀, …, %xₙ) in (%sx₀=%N₀, …)
@@ -518,6 +520,7 @@ contiguous region: the compiler allocates a contiguous block per instance and
 may place those blocks anywhere in the device array that fits.
 
 These statically computed totals are used to:
+
 1. Verify that the segment hierarchy (across all iterations at all levels) fits
    within the target hardware partition before lowering begins.
 2. Assign physical resources (tile columns/rows, memory banks, DMA engines) to
@@ -546,6 +549,7 @@ When `backend-granularity` is absent the backend applies its default mapping
 (e.g., one workgroup / thread block on GPU).
 
 **Nesting constraints**:
+
 - `air.segment` must be nested inside `air.launch` or inside another
   `air.segment` (directly or indirectly — the outermost segment must be inside
   a launch).
@@ -560,7 +564,7 @@ When `backend-granularity` is absent the backend applies its default mapping
 
 #### Syntax
 
-```
+```text
 // Synchronous form — acquires resources immediately, blocks until all PEs complete
 air.herd [@name] tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
          args(%a₀=%v₀, …) : <types>
@@ -649,7 +653,7 @@ object to link into the herd at compile time.
 
 ### 2.4 `air.dma_memcpy_nd`
 
-```
+```text
 air.dma_memcpy_nd (dst[dst_offsets][dst_sizes][dst_strides],
                    src[src_offsets][src_sizes][src_strides]) : (type_dst, type_src)
 ```
@@ -677,7 +681,7 @@ GPU backend (planned: `air-cross-rank-dma-to-mgpu`) will expand these into
 `mgpuGetHeapBases()`-based peer-VA arithmetic + `mgpuMemcpy`; the NPU
 backend does not support these attributes.
 
-```
+```text
 // Read 1024 floats from rank 0's symmetric buffer into local L1.
 air.dma_memcpy_nd (%local[][][], %sym[][][]) {src_rank = 0 : i64}
     : (memref<1024xf32, 2>, memref<1024xf32, 0>)
@@ -687,7 +691,7 @@ air.dma_memcpy_nd (%local[][][], %sym[][][]) {src_rank = 0 : i64}
 
 ### 2.5 `air.channel`, `air.channel.put`, `air.channel.get`
 
-```
+```text
 // Channel declaration — at module scope
 air.channel @name [dim₀, dim₁, …] {channel_type = "npu_dma_stream", depth = <N>}
 
@@ -898,25 +902,29 @@ in the async dependency graph.
 
 ---
 
-### 2.7 `air.symmetric` memref attribute (multi-GPU)
+### 2.7 Symmetric heap memory (multi-GPU)
 
-A `memref.alloc` op may carry the unit attribute `air.symmetric` to indicate
-that the allocation should be backed by the **symmetric heap** runtime. Every
+A `memref.alloc` in the `#air.symmetric_heap` memory space is backed by the
+**symmetric heap** runtime. Every
 rank in the enclosing `air.rank` scope performs the same allocation in lockstep,
 so each rank has a memref of the same size at the same offset within the heap.
 Cross-rank addressing (via `air.dma_memcpy_nd` `src_rank`/`dst_rank` attributes
 or `air.channel` with `channel_type = "gpu_symmetric_heap"`) refers to peer
 ranks' symmetric memrefs at the same logical offset.
 
-```
-%buf = memref.alloc() {air.symmetric} : memref<1024xf32>
+```mlir
+%buf = memref.alloc() : memref<1024xf32, #air.symmetric_heap>
 ```
 
-The GPU lowering (planned: `air-symmetric-alloc-to-mgpu`) will route such
-allocations through `mgpuSymmetricAlloc` (`runtime_lib/airgpu/gpu_runtime.cpp`)
-instead of plain `mgpuMemAlloc`. Peer ranks' base pointers are obtained at
-runtime via `mgpuGetHeapBases()`. The NPU backend does not interpret this
-attribute.
+`air-symmetric-alloc-to-mgpu` lowers each such allocation to
+`mgpuSymmetricAlloc` (`runtime_lib/airgpu/gpu_runtime.cpp`) instead of plain
+`mgpuMemAlloc`, and the matching `memref.dealloc` to `mgpuSymmetricFree`. Peer
+ranks' base pointers are obtained at runtime via `mgpuGetHeapBases()`. The NPU
+backend does not interpret this memory space.
+
+The verifier of a cross-rank `air.dma_memcpy_nd` checks a different marker: a
+`memref.alloc` referenced through `src_rank` or `dst_rank` must carry the unit
+attribute `air.symmetric`.
 
 ---
 
@@ -930,7 +938,7 @@ directly to physical hardware structures:
 | `air.launch` | Device-level kernel dispatch; L3 = DDR via NOC |
 | `air.segment` | A contiguous rectangle of AIE tiles + associated memory tiles or URAMs (L2) |
 | `air.herd tile (x, y)` | A single AIE compute tile at physical column/row offset `(x_loc+x, y_loc+y)` |
-| L1 memory (space 2) | Per-tile local data memory (32 KB on AIE2) |
+| L1 memory (space 2) | Per-tile local data memory (64 KB on AIE2/AIE2P) |
 | L2 memory (space 1) | Shared memory tiles or URAMs accessible via the tile interconnect |
 | L3 memory (space 0) | DDR accessible via AXI4-MM NOC |
 
@@ -940,9 +948,9 @@ directly to physical hardware structures:
 |---------------|--------------|
 | `air.dma_memcpy_nd` (L3→L2) | Shim DMA + AXI-S routing + memory tile DMA |
 | `air.dma_memcpy_nd` (L2→L1) | Tile DMA + local AXI-S stream |
-| `air.channel` (`dma_stream`) | DMA + circuit-switched streaming interconnect |
-| `air.channel` (`dma_packet`) | DMA + packet-switched overlay network |
-| `air.channel` (`cascade`) | Core cascade interface (direct register-to-register) |
+| `air.channel` (`npu_dma_stream`) | DMA + circuit-switched streaming interconnect |
+| `air.channel` (`npu_dma_packet`) | DMA + packet-switched overlay network |
+| `air.channel` (`npu_cascade`) | Core cascade interface (direct register-to-register) |
 
 The `air-to-aie` pass translates each `air.herd` into AIE tile operations (`aie.core`,
 `aie.buffer`, `aie.lock`), routes channels through the switch boxes, and generates the
@@ -1106,6 +1114,7 @@ air.launch (%bx, %by) in (%nbx=%c32, %nby=%c32)
 ```
 
 The mapping:
+
 - `air.launch` → `gpu.launch` with `gridDim = (32, 32, 1)`
 - `air.segment` → workgroup body (executed once per thread block)
 - `air.herd tile (%tx, .) in (%c4, %c1)` → `blockDim = (4 * wave_size, 1, 1)`; `%tx` is the warp-id within the block; lane index inside the PE comes from `gpu.lane_id`
@@ -1123,8 +1132,8 @@ The full GPU lowering pipeline is:
    a `gpu.module`, injects `gpu.BlockIdOp`, `gpu.ThreadIdOp`, etc., and converts
    the launch site to `gpu.launch_func`.
 3. **LLVM lowering** — Lowers affine, SCF, and CF dialects.
-4. **ROCDL binary generation** — Attaches a ROCDL target descriptor (`rocdl-attach-
-   target`), converts `gpu.module` to ROCDL IR (`convert-gpu-to-rocdl`), and
+4. **ROCDL binary generation** — Attaches a ROCDL target descriptor
+   (`rocdl-attach-target`), converts `gpu.module` to ROCDL IR (`convert-gpu-to-rocdl`), and
    serialises the GPU binary with `gpu-module-to-binary`.
 
 See [buildingGPU.md](buildingGPU.md) for build instructions and the complete
@@ -1139,7 +1148,7 @@ See [buildingGPU.md](buildingGPU.md) for build instructions and the complete
 | `air.launch` iteration point | Device-level work unit | One GPU thread block |
 | `air.segment` | Rectangle of AIE tiles + memory tiles | Thread block workgroup body |
 | `air.herd` tile | Single AIE compute tile | Single GPU wavefront |
-| L1 (space 2) | 32 KB tile-local data memory | Thread-private VGPRs / scratch |
+| L1 (space 2) | 64 KB tile-local data memory (AIE2/AIE2P) | Thread-private VGPRs / scratch |
 | L2 (space 1) | Memory tiles / URAMs | LDS (shared memory, ~64 KB / CU) |
 | L3 (space 0) | DDR via NOC | HBM via global memory |
 | `dma_memcpy_nd` (intra-rank) | AIE Shim/Tile DMA engines | SCF load/store loops |
@@ -1148,7 +1157,7 @@ See [buildingGPU.md](buildingGPU.md) for build instructions and the complete
 | `channel` (`npu_dma_packet`) | Packet-switched AXI-S overlay | n/a |
 | `channel` (`npu_cascade`) | Core cascade interface | n/a |
 | `channel` (`npu_mmio`) | Host MMIO blockwrite | n/a |
-| `channel` (`gpu_symmetric_heap`) | n/a | Symmetric heap peer addressing (planned) |
-| `air.symmetric` memref alloc | n/a | `mgpuSymmetricAlloc` (planned) |
+| `channel` (`gpu_symmetric_heap`) | n/a | Symmetric heap peer addressing (`air-gpu-channel-to-cacheline`) |
+| `#air.symmetric_heap` memref alloc | n/a | `mgpuSymmetricAlloc` (`air-symmetric-alloc-to-mgpu`) |
 | Synchronization | AIE locks | `gpu.barrier` (intra-rank), `mgpuBarrier` (cross-rank) |
 | `!air.token` (dependency) | AIE runtime completion signals | GPU stream/event dependencies |

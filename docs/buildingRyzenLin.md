@@ -1,4 +1,4 @@
-# Getting Started and Running on Linux Ryzen™ AI
+# Getting Started on Ryzen AI (Linux)
 
 ## Install Prebuilt Wheels (Recommended)
 
@@ -27,7 +27,7 @@ AIR supports multiple backends — AIE (NPU) and [GPU](buildingGPU.md). Backend 
    ```bash
    pip install 'mlir_air[aie]' \
      -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels \
-     -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4 \
+     -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-5 \
      -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
    ```
 
@@ -71,7 +71,7 @@ For the no-RTTI variant, point both find-links at the no-RTTI pages so pip resol
 ```bash
 pip install 'mlir_air[aie]' \
   -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-air-wheels-no-rtti \
-  -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-2 \
+  -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti-3 \
   -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 ```
 
@@ -123,11 +123,13 @@ This path builds MLIR-AIR from source but installs LLVM, MLIR-AIE, and Peano fro
    ```
    
    Parameters:
+
    - `--xrt-dir <xrt_path>`: Path to your XRT installation (optional, only needed for hardware execution)
    - `[build_dir]`: Build directory (optional, default: `build`)
    - `[install_dir]`: Install directory (optional, default: `install`)
 
    The script will:
+
    - Download and unpack a prebuilt LLVM wheel (which includes MLIR)
    - pip install [`llvm-aie`](https://github.com/Xilinx/llvm-aie), which is used as a backend to generate AIE binaries
    - Install `mlir-aie` dependencies from wheels
@@ -197,12 +199,14 @@ make run4x4 COMPILE_MODE=compile-only
 **Expected output:** `Compilation completed successfully!`
 
 **What this does:**
+
 - Compiles AIR dialect code through the full compilation pipeline
 - Generates intermediate MLIR files and NPU instructions
 - Does **not** generate xclbin (no `xclbinutil` needed)
 - Does **not** require XRT or hardware
 
 **When to use:**
+
 - Building on a system without XRT installed
 - Cross-compiling for deployment on another system
 - CI/CD pipelines
@@ -220,6 +224,7 @@ make run4x4
 **Expected output:** `PASS!`
 
 **What this does:**
+
 - Compiles the AIR code
 - Generates xclbin and instruction files
 - Loads and executes on NPU hardware
@@ -236,6 +241,7 @@ make profile
 ```
 
 **What this does:**
+
 - Uses `compile-and-xclbin` mode to generate xclbin and instructions
 - Runs a custom C++ test executable (not xrt_runner) for detailed profiling
 - Useful for performance measurement and custom host integration
@@ -269,12 +275,14 @@ make clean
 ### Other Data Types
 
 The same patterns work for other matrix multiplication examples:
+
 - `programming_examples/matrix_multiplication/bf16/` - bfloat16 matrix multiply
 - `programming_examples/matrix_multiplication/i16/` - int16 matrix multiply
 
 ### Exploring More Examples
 
 Explore `programming_examples/` for many more examples including:
+
 - Element-wise operations
 - Softmax
 - Sine/cosine
@@ -298,6 +306,7 @@ The [MLIR-AIE](https://github.com/Xilinx/mlir-aie) repo maintains instructions o
 ### Prerequisites
 
 Building MLIR-AIR requires several other open source packages:
+
   - [mlir](https://github.com/llvm/llvm-project/tree/main/mlir)
   - [mlir-aie](https://github.com/Xilinx/mlir-aie)
   - [Xilinx cmakeModules](https://github.com/Xilinx/cmakeModules). Note that this is installed as a submodule of MLIR-AIE

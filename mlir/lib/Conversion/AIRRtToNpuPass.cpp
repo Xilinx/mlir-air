@@ -1578,7 +1578,8 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
           /*pad_dimensions=*/nullptr, /*bd_id_val=*/nullptr,
           /*bd_id=*/nullptr, pktAttr,
-          /*out_of_order_id=*/nullptr,
+          /*out_of_order_id=*/nullptr, /*bd_tag=*/nullptr,
+          /*out_of_order_tag=*/nullptr,
           /*burst_length=*/nullptr, /*axcache=*/nullptr, iteration,
           offParam ? FlatSymbolRefAttr::get(offParam) : nullptr,
           /*offset_state_table_idx=*/nullptr, FlatSymbolRefAttr::get(lenParam),
@@ -1598,7 +1599,8 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
           /*static_sizes=*/nullptr, /*static_strides=*/nullptr,
           /*pad_dimensions=*/nullptr, /*bd_id_val=*/nullptr,
           /*bd_id=*/nullptr, pktAttr,
-          /*out_of_order_id=*/nullptr,
+          /*out_of_order_id=*/nullptr, /*bd_tag=*/nullptr,
+          /*out_of_order_tag=*/nullptr,
           /*burst_length=*/nullptr, /*axcache=*/nullptr, iteration,
           /*offset_parameter=*/nullptr,
           /*offset_state_table_idx=*/nullptr, /*length_parameter=*/nullptr,
@@ -2387,9 +2389,8 @@ AIE::DeviceOp createMainDeviceWrapper(
   builder.setInsertionPointToEnd(module.getBody());
 
   // Create main device with the specified device type
-  auto mainDevice = AIE::DeviceOp::create(builder, loc, deviceType);
-  mainDevice->setAttr(SymbolTable::getSymbolAttrName(),
-                      StringAttr::get(builder.getContext(), "main"));
+  auto mainDevice = AIE::DeviceOp::create(builder, loc, deviceType, "main",
+                                          /*overlay=*/FlatSymbolRefAttr());
 
   // Add a body block to the main device
   Block *mainDeviceBody = new Block;
@@ -6156,7 +6157,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (packet)
         fields = layout->enablePacket.place(1) |
                  layout->packetType.place(packet->getPktType()) |
-                 layout->packetId.place(packet->getPktId());
+                 layout->packetId.place(packet->assignedId());
       // A shim task's completion token is what the host waits on.
       uint32_t queueWord =
           tm.isShimNOCTile(col, row) ? (1u << 31) | bdId : bdId;
@@ -6402,8 +6403,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                             static_cast<int32_t>(v));
       };
       AIEX::NpuMaskWrite32Op::create(b, t.getLoc(), c(ctrl),
-                                     c(id.getPktId() << 8), c(0x1F00), nullptr,
-                                     nullptr, nullptr);
+                                     c(id.assignedId() << 8), c(0x1F00),
+                                     nullptr, nullptr, nullptr);
       return success();
     };
     // The core queued the task with a token, which the DMA-task verifier
@@ -7203,24 +7204,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
   }
 
-  std::optional<AIE::ShimDMAAllocationOp>
-  getAllocOpForSymbol(SmallVector<AIE::ShimDMAAllocationOp> shimDmaAllocOps,
-                      StringRef sym_name) {
-    for (auto shimDmaAllocOp : shimDmaAllocOps)
-      if (shimDmaAllocOp.getSymName() == sym_name)
-        return shimDmaAllocOp;
-    return std::nullopt;
-  }
-
-  std::optional<AIE::ObjectFifoCreateOp> getObjectFifoCreateOpForSymbol(
-      SmallVector<AIE::ObjectFifoCreateOp> objectFifoCreateOps,
-      StringRef sym_name) {
-    for (auto objectFifoCreateOp : objectFifoCreateOps)
-      if (objectFifoCreateOp.getSymName().str() == sym_name.str())
-        return objectFifoCreateOp;
-    return std::nullopt;
-  }
-
   // Remove npu wait op on inbound dma data movements.
   // TODO: this is an aggressive optimization which might prove problematic
   // for some applications. To be revised.
@@ -7231,15 +7214,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       SmallVector<AIEX::NpuDmaWaitOp> waits;
       f.walk([&](AIEX::NpuDmaWaitOp wait) { waits.push_back(wait); });
       auto d = f->getParentOfType<AIE::DeviceOp>();
-
-      SmallVector<AIE::ShimDMAAllocationOp> shimDmaAllocOps;
-      if (d)
-        d.walk([&](AIE::ShimDMAAllocationOp shimDmaAllocOp) {
-          shimDmaAllocOps.push_back(shimDmaAllocOp);
-        });
-      llvm::DenseMap<StringRef, std::optional<AIE::ShimDMAAllocationOp>>
-          allocationCache;
-
       if (!d)
         continue;
       OpBuilder builder(f);
@@ -7529,18 +7503,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     std::map<int, int> chanToIdMap;
     AIE::DeviceOp d = nullptr;
     blk->walk([&](AIE::DeviceOp op) { d = op; });
-    SmallVector<AIE::ShimDMAAllocationOp> shimDmaAllocOps;
-    if (d)
-      d.walk([&](AIE::ShimDMAAllocationOp shimDmaAllocOp) {
-        shimDmaAllocOps.push_back(shimDmaAllocOp);
-      });
-    llvm::DenseMap<StringRef, std::optional<AIE::ShimDMAAllocationOp>>
-        allocationCache;
-    SmallVector<AIE::ObjectFifoCreateOp> objectFifoCreateOps;
-    if (d)
-      d.walk([&](AIE::ObjectFifoCreateOp objectFifoCreateOp) {
-        objectFifoCreateOps.push_back(objectFifoCreateOp);
-      });
     OpBuilder builder(blk->getParentOp());
     blk->walk([&](Operation *op) {
       auto dma = dyn_cast_if_present<AIEX::NpuDmaMemcpyNdOp>(op);
@@ -7558,12 +7520,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (auto infoOp = AIE::ShimDMAAllocationOp::getForSymbol(
                 d, dma.getMetadata().getRootReference())) {
           col = getColFromTileValue(infoOp.getTile());
-        } else if (auto objFifoCreateOp = getObjectFifoCreateOpForSymbol(
-                       objectFifoCreateOps,
-                       dma.getMetadata().getLeafReference().getValue())) {
-          if (isShimTileValue(objFifoCreateOp->getProducerTile()))
-            col = getColFromTileValue(objFifoCreateOp->getProducerTile());
-          for (auto consumerTileOp : objFifoCreateOp->getConsumerTiles()) {
+        } else if (auto objFifoCreateOp =
+                       d.lookupSymbol<AIE::ObjectFifoCreateOp>(
+                           dma.getMetadata().getLeafReference())) {
+          if (isShimTileValue(objFifoCreateOp.getProducerTile()))
+            col = getColFromTileValue(objFifoCreateOp.getProducerTile());
+          for (auto consumerTileOp : objFifoCreateOp.getConsumerTiles()) {
             if (isShimTileValue(consumerTileOp))
               col = getColFromTileValue(consumerTileOp);
           }

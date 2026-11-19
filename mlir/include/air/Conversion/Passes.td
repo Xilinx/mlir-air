@@ -103,9 +103,9 @@ def AIRLowering : Pass<"air-to-std", "ModuleOp"> {
     representing the host-side control program for the herd. It also converts
     AIR dialect memcpy operations into AIRRt memcpy operations.
 
-    ### Example - A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer
+    **Example: A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer**
 
-    ### Input
+    **Input**
 
     ```mlir
       module {
@@ -122,7 +122,7 @@ def AIRLowering : Pass<"air-to-std", "ModuleOp"> {
       }
     ```
 
-    #### Output
+    **Output**
 
     ```mlir
       func.func @f(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
@@ -172,7 +172,7 @@ def AIRLinalgToFunc : Pass<"air-linalg-to-func", "ModuleOp"> {
 }
 
 def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
-  let summary = "Lower air.launch_herd to AIE dialect";
+  let summary = "Lower air.segment and air.herd to the AIE dialect";
   let constructor = "xilinx::air::createAIRToAIEPass()";
   let options = [
     Option<"clRowOffset", "row-offset", "unsigned", /*default=*/"1",
@@ -286,9 +286,9 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
     output modules. Runtime code for configuration and control of segments is
     generated from the AIRRt metadata by the `air-to-std` pass.
 
-    ### Example - A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer
+    **Example: A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer**
 
-    ### Input
+    **Input**
 
     ```mlir
       func.func @f(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
@@ -303,7 +303,7 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
       }
     ```
 
-    #### Output
+    **Output**
 
     The AIE resource allocation,
     ```mlir

@@ -4098,30 +4098,6 @@ DiagnosedSilenceableFailure transform::ConvertMemrefCopyToLinalgCopyOp::apply(
 // ConvertDivfSqrtToRsqrtOp
 //===----------------------------------------------------------------------===//
 
-/// Check if a value is a constant 1.0 (scalar or vector splat)
-static bool isConstantOne(Value val) {
-  auto constOp = val.getDefiningOp<arith::ConstantOp>();
-  if (!constOp)
-    return false;
-
-  auto attr = constOp.getValue();
-
-  // Check for scalar float constant
-  if (auto floatAttr = dyn_cast_if_present<FloatAttr>(attr)) {
-    return floatAttr.getValue().isExactlyValue(1.0);
-  }
-
-  // Check for dense vector constant (splat)
-  if (auto denseAttr = dyn_cast_if_present<DenseFPElementsAttr>(attr)) {
-    if (denseAttr.isSplat()) {
-      return denseAttr.getSplatValue<FloatAttr>().getValue().isExactlyValue(
-          1.0);
-    }
-  }
-
-  return false;
-}
-
 DiagnosedSilenceableFailure transform::ConvertDivfSqrtToRsqrtOp::apply(
     transform::TransformRewriter &rewriter,
     transform::TransformResults &results, transform::TransformState &state) {
@@ -4149,7 +4125,7 @@ DiagnosedSilenceableFailure transform::ConvertDivfSqrtToRsqrtOp::apply(
 
     target->walk([&](arith::DivFOp divfOp) {
       // Check if LHS is constant 1.0
-      if (!isConstantOne(divfOp.getLhs()))
+      if (!matchPattern(divfOp.getLhs(), m_OneFloat()))
         return;
 
       // Check if RHS is a math.sqrt operation
@@ -5188,15 +5164,6 @@ DiagnosedSilenceableFailure transform::ReuseInputAsInitOp::applyToOne(
 // VectorTypeCastOp
 //===----------------------------------------------------------------------===//
 
-/// Calculate the total number of elements in a vector type
-static int64_t getVectorNumElements(VectorType vecType) {
-  int64_t numElements = 1;
-  for (int64_t dim : vecType.getShape()) {
-    numElements *= dim;
-  }
-  return numElements;
-}
-
 /// Helper function to create cast operations for both scalar and vector types
 static Value createTypeCast(OpBuilder &builder, Location loc, Value input,
                             Type targetElementType, bool isExtension) {
@@ -5280,7 +5247,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
     if (auto vectorType = dyn_cast_if_present<VectorType>(operand.getType())) {
       hasAnyVectors = true;
-      if (getVectorNumElements(vectorType) != 1) {
+      if (vectorType.getNumElements() != 1) {
         allVectorsAreSingleElement = false;
       }
     }
@@ -5289,7 +5256,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   for (auto [idx, result] : llvm::enumerate(op->getResults())) {
     if (auto vectorType = dyn_cast_if_present<VectorType>(result.getType())) {
       hasAnyVectors = true;
-      if (getVectorNumElements(vectorType) != 1) {
+      if (vectorType.getNumElements() != 1) {
         allVectorsAreSingleElement = false;
       }
     }
@@ -5712,8 +5679,8 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
         flatInits.push_back(nullptr);
         continue;
       }
-      auto flatType = VectorType::get({getVectorNumElements(vecType)},
-                                      vecType.getElementType());
+      auto flatType =
+          VectorType::get({vecType.getNumElements()}, vecType.getElementType());
       flatInits.push_back(shapeCast(rewriter, forOp.getLoc(), flatType, init));
     }
     // Last to first, so the casts each call adds inside the loop and after it
@@ -6148,7 +6115,7 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
         rewriter.setInsertionPoint(info.op);
 
         // Flatten vector type
-        int64_t numElements = getVectorNumElements(info.vectorType);
+        int64_t numElements = info.vectorType.getNumElements();
         VectorType flatVectorType =
             VectorType::get({numElements}, info.vectorType.getElementType());
 
@@ -6220,7 +6187,7 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
         }
 
         // Flatten vector type
-        int64_t numElements = getVectorNumElements(info.vectorType);
+        int64_t numElements = info.vectorType.getNumElements();
         VectorType flatVectorType =
             VectorType::get({numElements}, info.vectorType.getElementType());
 
@@ -7722,17 +7689,6 @@ void transform::SinkOperandProducersOp::getEffects(
 // FoldIterArgsIntoInductionVarOp
 //===----------------------------------------------------------------------===//
 
-// `v` converted to `type` (both integer or index).
-static Value castIntOrIndex(OpBuilder &b, Location loc, Value v, Type type) {
-  if (v.getType() == type)
-    return v;
-  if (isa<IndexType>(type) || isa<IndexType>(v.getType()))
-    return arith::IndexCastOp::create(b, loc, type, v);
-  if (type.getIntOrFloatBitWidth() > v.getType().getIntOrFloatBitWidth())
-    return arith::ExtSIOp::create(b, loc, type, v);
-  return arith::TruncIOp::create(b, loc, type, v);
-}
-
 static bool foldIterArgsIntoInductionVar(RewriterBase &rewriter,
                                          scf::ForOp forOp) {
   OpBuilder::InsertionGuard guard(rewriter);
@@ -7764,7 +7720,9 @@ static bool foldIterArgsIntoInductionVar(RewriterBase &rewriter,
     Value inBody = arith::AddIOp::create(
         rewriter, loc, init,
         arith::MulIOp::create(
-            rewriter, loc, castIntOrIndex(rewriter, loc, iters, type), delta));
+            rewriter, loc,
+            getValueOrCreateCastToIndexLike(rewriter, loc, type, iters),
+            delta));
     // The add's use too, so the advanced value is right where the body reads
     // it.
     rewriter.replaceAllUsesWith(arg, inBody);
@@ -7781,7 +7739,9 @@ static bool foldIterArgsIntoInductionVar(RewriterBase &rewriter,
     Value after = arith::AddIOp::create(
         rewriter, loc, init,
         arith::MulIOp::create(
-            rewriter, loc, castIntOrIndex(rewriter, loc, trips, type), delta));
+            rewriter, loc,
+            getValueOrCreateCastToIndexLike(rewriter, loc, type, trips),
+            delta));
     rewriter.replaceAllUsesWith(forOp.getResult(i), after);
 
     // Pass the argument through; canonicalization drops it.

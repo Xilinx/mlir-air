@@ -169,7 +169,17 @@ def ForallWithReduceToParallelOp : Op<Transform_Dialect, "air.forall_with_reduce
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
   let summary = "Converts a pattern of scf.forall and linalg.reduce to scf.parallel";
   let description = [{
-    .
+    Converts an `scf.forall` whose results feed a `linalg.reduce` into an
+    `scf.parallel` with an `scf.reduce`. The init tensors of the
+    `linalg.reduce` become the loop's init values, as L1 memrefs, and the
+    `scf.reduce` region combines partial results with an element-wise
+    `linalg` add or multiply, matching the reduction's combiner; other
+    combiners are rejected. Uses of the `linalg.reduce` result are replaced
+    by the loop result, and the `mapping` attribute of the `scf.forall` is
+    preserved.
+
+    The target handle must map to exactly one `scf.forall`. Returns a handle
+    to the new `scf.parallel`.
   }];
   let arguments = (ins TransformHandleTypeInterface:$target);
   let results = (outs Variadic<TransformHandleTypeInterface>:$transformed);
@@ -183,8 +193,15 @@ def ForallWithReduceToParallelOp : Op<Transform_Dialect, "air.forall_with_reduce
 def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
     TransformOpInterface, TransformEachOpTrait]> {
+  let summary = "Turn a reduction dimension into a herd pipeline";
   let description = [{
-    Experimental
+    Transform-dialect form of `air-pipeline-reduce`. Tiles the target linalg
+    op by `tile_size` and distributes the reduction over a herd of
+    `pipeline_depth` stages, laid out along x (`direction = "horiz"`) or y
+    (`direction = "vert"`). Each stage forwards its partial result to the
+    next through an `air.channel`. With `promote`, subviews are promoted to
+    local buffers with explicit copies. Replaces the target and returns a
+    handle to the result.
   }];
   let arguments =
     (ins TransformHandleTypeInterface:$target,
@@ -343,6 +360,7 @@ def RemoveUninitializedCopyOp : Op<Transform_Dialect, "air.remove_uninitialized_
     undefined data.
     
     The transform detects the pattern where:
+
     1. A memref is allocated with memref.alloc
     2. A subview of that memref is created (optional)
     3. The memref/subview is used as source in memref.copy or linalg.copy before any write operations
@@ -628,6 +646,7 @@ def TransposeReduceOp : Op<Transform_Dialect, "air.transpose_reduce",
     efficient reductions when the reduction dimensions are contiguous and innermost.
     
     The transformation:
+
     1. Analyzes each linalg.reduce operation's reduction dimensions
     2. Determines if any reduction dimension has non-reduction dimensions to its right
     3. If so, creates a transpose operation to move reduction dimensions to the end
@@ -648,6 +667,7 @@ def FuseMultiOpLinalgOp : Op<Transform_Dialect, "air.fuse_multi_op_linalg",
   let summary = "Fuse a linalg operation containing multiple element-wise ops with its consumer";
   let description = [{
     This transform fuses two linalg operations where:
+
     1. The first operation contains one or more element-wise pure operations in its body
     2. The first operation has only parallel iterator types (no reduction dimensions)
     3. The second operation directly consumes the result of the first operation
@@ -656,6 +676,7 @@ def FuseMultiOpLinalgOp : Op<Transform_Dialect, "air.fuse_multi_op_linalg",
     
     This is a generalization of FuseExtfLinalgOp that supports multiple operations.
     The fusion is performed by:
+
     1. Validating that the first op contains only element-wise pure operations
     2. Validating that the first op has no reduction dimensions
     3. Cloning the entire body of the first op into the second op at the consumption point
@@ -663,6 +684,7 @@ def FuseMultiOpLinalgOp : Op<Transform_Dialect, "air.fuse_multi_op_linalg",
     5. Erasing the first operation
     
     All operations in the first op's body must be:
+
     - Pure (no side effects)
     - Element-wise (operate independently on each element)
     
@@ -716,10 +738,12 @@ def FuseTruncfLinalgOp : Op<Transform_Dialect, "air.fuse_truncf_linalg",
   let summary = "Fuse a linalg operation containing only arith.truncf into its producer";
   let description = [{
     This transform fuses two linalg operations where:
+
     1. The truncf operation contains only an arith.truncf operation in its body (apart from terminator)
     2. The producer operation produces a result that is consumed by the truncf operation
     
     The fusion is performed by:
+
     1. Taking the producer operation's body
     2. Adding arith.truncf operation before the terminator
     3. Updating the output type to use the truncated (narrower) type
@@ -830,6 +854,7 @@ def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
     input_indices or output_indices are specified, all vector operands and results are cast.
 
     The transformation works by:
+
     1. Finding vector dialect operations within the target
     2. For each vector operation, examining its operands and results
     3. Skipping the operation entirely if ALL vector operands and results contain exactly one element (e.g., vector<1xf32>, vector<1x1xf16>)
@@ -883,6 +908,7 @@ def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
     ```
 
     Attributes:
+
     - target_element_type: The element type to cast to (required). Supported types 
       include f16, bf16, f32, f64, i8, i16, i32, i64.
     - input_indices: Optional array of input operand indices to cast. If empty, all 
@@ -913,6 +939,7 @@ def AIRHerdVectorizeOp : Op<Transform_Dialect, "air.herd_vectorize",
     and other vectorizable operations.
     
     The transform supports the same options as the AIRHerdVectorizePass:
+
     - vectorize_nd_extract: Controls whether to vectorize tensor.extract when the input tensor is rank >= 2
     - flatten_1d_depthwise_conv: Controls whether to "flatten" the channel dimension when vectorizing 1D depthwise convolutions
     - disable_transfer_permutation_map_lowering_patterns: Disables vector transfer permutation map lowering patterns
@@ -961,6 +988,7 @@ def FuseElementwiseLinalgOp : Op<Transform_Dialect, "air.fuse_elementwise_linalg
   let description = [{
     This transform walks the body of a func.func operation and applies the 
     linalg elementwise fusion patterns, which include:
+
     - FuseElementwiseOps: Fuses producer elementwise operations into consumer operations
     - FoldFillWithGenericOp: Folds fill operations into generic operations
     - FoldScalarOrSplatConstant: Folds scalar or splat constants
@@ -1042,7 +1070,7 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
     to the entry block of the target function. This shortens and unifies buffer
     lifetimes, which can unlock reuse and downstream optimizations.
 
-    ### Notes / limitations
+    **Notes / limitations**
 
     * Currently targets `memref.alloc` buffers with static shapes.
     * Uses that require exact type equality across region boundaries (e.g.,
@@ -1051,7 +1079,7 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
     * With `memory_space`, only allocations in that memory space are hoisted;
       allocations of other spaces, or of none yet, stay where they are.
 
-    ### Example
+    **Example**
 
     Before:
     ```mlir
@@ -1077,7 +1105,7 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
     }
     ```
 
-    ### Usage (Transform dialect)
+    **Usage (Transform dialect)**
 
     ```mlir
     transform.sequence %arg0 : !transform.any_op failures(propagate) {
@@ -1112,6 +1140,7 @@ def EliminateRedundantVectorTransfersOp : Op<Transform_Dialect, "air.eliminate_r
     This transform identifies and eliminates redundant vector.transfer_read operations
     within the target operation. Two vector.transfer_read operations are considered
     redundant when:
+
     1. They read from the same memref source
     2. They use identical indices for the read
     3. They have the same result type
@@ -1155,6 +1184,7 @@ def HoistLoopInvariantTransfersOp : Op<Transform_Dialect, "air.hoist_loop_invari
   let description = [{
     This transform takes handles to a scope operation and an scf.for loop inside it.
     It automatically discovers all vector.transfer_read/write pairs in the loop that:
+
     1. Have loop-invariant indices (don't depend on the loop induction variable)
     2. Access the same memref with equivalent indices (forming a load-modify-store pair)
 
@@ -1184,6 +1214,7 @@ def HoistLoopInvariantTransfersOp : Op<Transform_Dialect, "air.hoist_loop_invari
     ```
 
     Requirements:
+
     - The loop must be inside the scope operation
     - Transfer operations to be hoisted must have loop-invariant indices
 
@@ -1203,6 +1234,7 @@ def FlattenForIterArgsOp : Op<Transform_Dialect, "air.flatten_for_iter_args",
   let description = [{
     This transform takes a handle to an scf.for loop and flattens all vector-typed
     iter_args by inserting vector.shape_cast operations. The transformation:
+
     1. Identifies all iter_args with multi-dimensional vector types
     2. For each vector iter_arg, inserts a vector.shape_cast before the loop to flatten it
     3. Updates the iter_arg type to the flattened vector type
@@ -1260,6 +1292,7 @@ def HoistCastPairOp : Op<Transform_Dialect, "air.hoist_cast_pair",
     This transform takes handles to an extension operation (arith.extsi, arith.extui, or arith.extf),
     a truncation operation (arith.trunci or arith.truncf), and their parent scf.for loop.
     It hoists the extension/truncation pair out of the loop by:
+
     1. Moving the extension operation before the loop to extend the initial iter_arg value
     2. Changing the loop's iter_arg type from the narrow type to the wide type
     3. Removing the extension from inside the loop (now using the iter_arg directly)
@@ -1267,6 +1300,7 @@ def HoistCastPairOp : Op<Transform_Dialect, "air.hoist_cast_pair",
     5. Adding a truncation after the loop to convert the result back to the narrow type
     
     Supports the following extension/truncation pairs:
+
     - Integer signed extension: arith.extsi + arith.trunci
     - Integer unsigned extension: arith.extui + arith.trunci
     - Floating-point extension: arith.extf + arith.truncf
@@ -1331,6 +1365,7 @@ def HoistCastPairOp : Op<Transform_Dialect, "air.hoist_cast_pair",
     ```
     
     Requirements:
+
     - Extension and truncation operations must be in the same scf.for loop
     - Extension must extend an iter_arg (or value derived from iter_arg via shape_cast)
     - Truncation result must be yielded (directly or indirectly via shape_cast)
@@ -1353,6 +1388,7 @@ def HoistVectorTransferPointersOp : Op<Transform_Dialect, "air.hoist_vector_tran
   let description = [{
     This transform takes a handle to an scf.for loop and optimizes vector transfer operations
     (vector.transfer_read and vector.transfer_write) inside the loop by:
+
     1. Flattening the vector types to 1D using vector.shape_cast before and after the transfer
     2. Flattening multi-dimensional memrefs to 1D using memref.collapse_shape
     3. Computing a linearized base pointer from the operation's indices using affine.apply
@@ -1394,6 +1430,7 @@ def HoistVectorTransferPointersOp : Op<Transform_Dialect, "air.hoist_vector_tran
     ```
     
     Requirements:
+
     - Target must be an scf.for operation
     - Vector transfer operations must have concrete vector types (no dynamic dimensions)
     - The memref must have static shapes for proper stride calculation
@@ -1428,6 +1465,7 @@ def ConvertDivfSqrtToRsqrtOp : Op<Transform_Dialect, "air.convert_divf_sqrt_to_r
     ```
     
     Safety conditions checked:
+
     1. The numerator must be exactly 1.0 (constant or constant splat for vectors)
     2. The sqrt result should have exactly one use (the divf)
     3. Both operations must work on the same floating-point type
@@ -1489,6 +1527,7 @@ def BroadcastBeforeUnaryOp : Op<Transform_Dialect, "air.broadcast_before_unary",
     are transformed.
 
     Safety conditions checked:
+
     1. The unary op must operate on a single-element vector (e.g., vector<1xf32>) or a scalar (e.g., f32)
     2. The unary op result must have exactly one use (the broadcast)
     3. The unary op must have exactly one operand and one result
@@ -1539,6 +1578,7 @@ def NormalizeForBoundsOp : Op<Transform_Dialect, "air.normalize_for_bounds",
     For example, if a loop iterates with bounds (0, 64, step=8) and has an affine.apply
     that scales the induction variable by 8 (i.e., affine_map<(d0) -> (d0 * 8)>), 
     the transformation will:
+
     1. Scale the loop bounds to (0, 512, step=64)
     2. Replace all uses of the affine.apply result with the induction variable directly
     3. Erase the affine.apply operation
@@ -1558,6 +1598,7 @@ def NormalizeForBoundsOp : Op<Transform_Dialect, "air.normalize_for_bounds",
     ```
     
     The transform supports:
+
     - Affine maps of the form `(d0) -> (d0 * constant)`
     - Both positive and negative scaling constants
     - Multiple affine.apply operations on the same induction variable (applies the first found)
@@ -1954,6 +1995,7 @@ def ConvertSize1VectorToScalarOp : Op<Transform_Dialect, "air.convert_size1_vect
     rewrite patterns (NOT a TypeConverter) and inserts extract/broadcast operations at boundaries.
     
     **Key transformations:**
+
     1. **vector.transfer_read** with vector<1xT> → **memref.load** (scalar) + **vector.broadcast**
     2. **vector.transfer_write** with vector<1xT> → **vector.extract** + **memref.store** (scalar)
     3. **vector.load** with vector<1xT> → **memref.load** (scalar) + **vector.broadcast**
@@ -2075,6 +2117,7 @@ def OverrideMemRefMemorySpaceOp : Op<Transform_Dialect, "air.override_memref_mem
     hierarchy levels by invoking the op multiple times with different targets.
 
     After overriding alloc types, the op also:
+
     1. Propagates updated types through AIR hierarchy block arguments
     2. Corrects memory spaces of view-like operations (subview, reinterpret_cast, etc.)
 

@@ -10,6 +10,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/DependencyDot.h"
+#include "llvm/Support/Path.h"
 
 using namespace mlir;
 
@@ -55,10 +56,9 @@ public:
       if (clDumpGraph) {
         std::string dumpDir = clDumpDir;
         dumpDotGraphFiles(trHostGraph, dumpDir);
-        std::string combinedDir = dumpDir;
-        if (!combinedDir.empty() && combinedDir.back() != '/')
-          combinedDir += '/';
-        dumpCombinedDotGraph(trHostGraph, combinedDir + "combined.dot");
+        SmallString<128> combinedPath(dumpDir);
+        llvm::sys::path::append(combinedPath, "combined.dot");
+        dumpCombinedDotGraph(trHostGraph, std::string(combinedPath));
       }
 
       // Post processing

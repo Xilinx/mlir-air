@@ -1443,7 +1443,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:      ^bb1:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_id = 0>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      ^bb2:
@@ -1452,7 +1452,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
 // CHECK:      ^bb4:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 4>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_id = 4>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      }
@@ -1460,7 +1460,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:      ^bb1:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_id = 1>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      ^bb2:
@@ -1469,7 +1469,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
 // CHECK:      ^bb4:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 5>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_id = 5>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      }
@@ -1477,7 +1477,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:      ^bb1:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 2>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_id = 2>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      ^bb2:
@@ -1486,7 +1486,7 @@ module {
 // CHECK:        %{{.*}} = aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
 // CHECK:      ^bb4:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 6>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_id = 6>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      }
@@ -1494,7 +1494,7 @@ module {
 // CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:      ^bb1:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32> offset = 0 len = 2048 sizes = [8, 32, 8] strides = [8, 64, 1]) {packet = #aie.packet_info<pkt_id = 3>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      ^bb2:
@@ -1503,7 +1503,7 @@ module {
 // CHECK:        %{{.*}} = aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
 // CHECK:      ^bb4:
 // CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
-// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 7>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32> offset = 0 len = 6144 sizes = [24, 64, 4] strides = [4, 96, 1]) {packet = #aie.packet_info<pkt_id = 7>
 // CHECK:        aie.use_lock(%{{.*}}, Release, %{{.*}})
 // CHECK:        aie.next_bd ^bb2
 // CHECK:      }
@@ -1695,7 +1695,7 @@ module {
 
 // CHECK:      aie.mem(%[[TILE:.*]]) {
 // CHECK:        aie.dma_start(MM2S, 0
-// CHECK:        aie.dma_bd(%{{.*}} : memref<64xbf16, 2>{{.*}}) {{{.*}}packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64xbf16, 2>{{.*}}) {{{.*}}packet = #aie.packet_info<pkt_id = 0>
 // CHECK:      aie.packet_flow(0) {
 // CHECK:        aie.packet_source<%[[TILE]], DMA : 0>
 // CHECK:        aie.packet_dest<%{{.*}}, DMA :

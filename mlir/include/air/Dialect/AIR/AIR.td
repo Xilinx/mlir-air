@@ -638,6 +638,7 @@ def air_ChannelOp : air_Op<"channel",
     the `gpu_` prefix.
 
     NPU (AIE) channel types:
+
     - **"npu_dma_stream"** (default):
       Use DMA engines to send and receive data, with routing performed over a streaming interconnect.
     - **"npu_dma_packet"**:
@@ -656,6 +657,7 @@ def air_ChannelOp : air_Op<"channel",
       because the L1 buffer is already populated when the core begins executing.
 
     GPU channel types:
+
     - **"gpu_symmetric_heap"**:
       Cross-GPU messaging through the symmetric heap runtime
       (`runtime_lib/airgpu/symmetric_heap.{h,cpp}`). The channel must be enclosed
@@ -673,6 +675,7 @@ def air_ChannelOp : air_Op<"channel",
     A packet-switched channel (`channel_type = "npu_dma_packet"`) may pin explicit routing ids
     via the optional `packet_ids` array attribute (each id in `[0, 31]`, unique). One
     `aie.packet_flow` is emitted per id:
+
     - **N ids to one destination:** all ids route to the same buffer; a later demux hop keys off
       the header carried by the payload.
     - **N ids to N destinations:** destination `i` is routed with `packet_ids[i]`, an indexed

@@ -9,6 +9,7 @@
 #include "air/Util/Dependency.h"
 
 #include "air/Util/Util.h"
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
@@ -29,44 +30,13 @@ namespace air {
 
 using Graph = dependencyGraph::Graph;
 
+// A missing index covers the whole memref, so it matches any index.
 bool areEqualIndices(mlir::OpFoldResult index_0, mlir::OpFoldResult index_1) {
-  if (!index_0 || !index_1)
-    return true;
-  auto const_0 = getConstantIntValue(index_0);
-  auto const_1 = getConstantIntValue(index_1);
-  if (const_0 && const_1)
-    return *const_0 == *const_1;
-  auto val_0 = dyn_cast_if_present<Value>(index_0);
-  auto val_1 = dyn_cast_if_present<Value>(index_1);
-  if (!val_0 || !val_1)
-    return false;
-  return areEqualIndices(val_0, val_1);
+  return !index_0 || !index_1 || isEqualConstantIntOrValue(index_0, index_1);
 }
 
 bool areEqualIndices(mlir::Value index_0, mlir::Value index_1) {
-  if (index_0 == nullptr || index_1 == nullptr) {
-    // Note: memref with index is subset to memref without index (i.e. the
-    // entire memref)
-    return true;
-  } else {
-    if (index_0 == index_1)
-      return true;
-    else if (!index_0.getDefiningOp())
-      return false;
-    else if (!index_1.getDefiningOp())
-      return false;
-    else {
-      if (auto index_0_const_op =
-              dyn_cast_if_present<arith::ConstantOp>(index_0.getDefiningOp())) {
-        if (auto index_1_const_op = dyn_cast_if_present<arith::ConstantOp>(
-                index_1.getDefiningOp())) {
-          if (index_0_const_op.getValue() == index_1_const_op.getValue())
-            return true;
-        }
-      }
-      return false;
-    }
-  }
+  return areEqualIndices(OpFoldResult(index_0), OpFoldResult(index_1));
 }
 
 void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
@@ -1258,28 +1228,17 @@ void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
 // Returns the set of ops in herdBody that must be kept when performing a
 // lightweight herd clone: channel ops, allocs, deallocations, wait_alls, the
 // terminator, and any ops that transitively define operands consumed by those.
-static SmallPtrSet<Operation *, 16> collectHerdBodyOpsToKeep(Block &herdBody) {
-  SmallPtrSet<Operation *, 16> toKeep;
-  // Always keep the block terminator.
-  if (!herdBody.empty())
-    toKeep.insert(herdBody.getTerminator());
-  // Seed: channel ops, allocs, deallocations, and wait_alls.
-  for (Operation &op : herdBody.without_terminator()) {
+static SetVector<Operation *> collectHerdBodyOpsToKeep(Block &herdBody) {
+  BackwardSliceOptions options;
+  options.inclusive = true;
+  options.omitBlockArguments = true;
+  options.filter = [&](Operation *op) { return op->getBlock() == &herdBody; };
+  SetVector<Operation *> toKeep;
+  for (Operation &op : herdBody) {
     if (isa<air::ChannelInterface, memref::AllocOp, memref::DeallocOp,
-            air::WaitAllOp>(op))
-      toKeep.insert(&op);
-  }
-  // Expand: add ops whose results are consumed by any kept op (within block).
-  // Use a worklist to avoid redundant re-processing of already-kept ops.
-  SmallVector<Operation *> worklist(toKeep.begin(), toKeep.end());
-  while (!worklist.empty()) {
-    Operation *op = worklist.pop_back_val();
-    for (Value operand : op->getOperands()) {
-      if (Operation *defOp = operand.getDefiningOp()) {
-        if (defOp->getBlock() == &herdBody && toKeep.insert(defOp).second)
-          worklist.push_back(defOp);
-      }
-    }
+            air::WaitAllOp>(op) ||
+        op.hasTrait<OpTrait::IsTerminator>())
+      (void)getBackwardSlice(&op, &toKeep, options);
   }
   return toKeep;
 }
@@ -1293,7 +1252,7 @@ static SmallPtrSet<Operation *, 16> collectHerdBodyOpsToKeep(Block &herdBody) {
 static void cloneHerdOpLightweight(OpBuilder &builder, air::HerdOp herdOp,
                                    IRMapping &mapper) {
   Block &origBody = herdOp.getBody().front();
-  SmallPtrSet<Operation *, 16> toKeep = collectHerdBodyOpsToKeep(origBody);
+  SetVector<Operation *> toKeep = collectHerdBodyOpsToKeep(origBody);
 
   // Map operands through the outer mapper.
   SmallVector<Value> mappedOperands;

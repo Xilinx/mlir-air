@@ -117,7 +117,6 @@ uint64_t getTensorVolume(const Type ty);
 SmallVector<int> getTensorShape(const ShapedType ty);
 SmallVector<int> getTensorShape(const Type ty);
 std::string getElementTypeAsString(const mlir::Type ty);
-uint64_t getElementSizeInBytes(const mlir::Type ty);
 
 // Get the parent scf.for op of an iter_arg
 scf::ForOp getForRegionIterArgsOwner(Value val);
@@ -569,8 +568,8 @@ std::optional<int> getOffsetDimFromMemrefDim(int dimOnMemref,
                                              SmallVector<Value> strides,
                                              SmallVector<int> memrefShape);
 
-// Evaluate the affine expression of affine map on a sparse vector of constant
-// ints.
+// Evaluate a single-result affine map at the given inputs; a missing input is
+// unknown. Returns nullopt unless the result folds to a constant.
 std::optional<int64_t>
 evaluateConstantsInMap(AffineMap map,
                        SmallVector<std::optional<int64_t>> symAndDimInputs,

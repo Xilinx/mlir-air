@@ -39,6 +39,7 @@ from air_examples.llms.shared.fused_prefill.engine import (  # noqa: E402
     FROM,
     TO,
     Engine,
+    built_max_len,
 )
 
 HOST_THREADS = 16
@@ -79,11 +80,12 @@ class Q3CPrefill(Engine):
 
     def __init__(self, build_dir, w, layers=None, we=None):
         H.build(build_dir, HOST_THREADS)
-        super().__init__(build_dir, S.CFG, S.max_len)
+        max_len = built_max_len(build_dir, S.max_len)
+        super().__init__(build_dir, S.config(max_len), max_len)
         self.w = w
         self.layers = list(range(W.N_LAYERS)) if layers is None else list(layers)
         inv = 1.0 / W.THETA ** (np.arange(0, W.DH, 2) / W.DH)
-        ang = np.arange(S.max_len)[:, None] * inv[None]
+        ang = np.arange(self.max_len)[:, None] * inv[None]
         self.cs = np.ascontiguousarray(np.cos(ang), np.float32)
         self.sn = np.ascontiguousarray(np.sin(ang), np.float32)
         self.times = {}
@@ -323,7 +325,7 @@ class Q3CPrefill(Engine):
             return
         import pyxrt as xrt
 
-        cap = S.CFG.experts.cap
+        cap = self.cfg.experts.cap
         assert all(v <= cap for v in nb), (nb, cap)
         g["cap"] = [max(nb[q], g["cap"][q]) for q in (0, 1)]
         pa, pc = g["cap"][1] * g["abytes"][1], g["cap"][1] * g["cbytes"][1]
@@ -385,7 +387,7 @@ class Q3CPrefill(Engine):
         each kind's indices consecutive, in dispatch slot s; returns what
         _collect needs."""
         g = self._part(part)
-        kmax = S.CFG.experts.kmax
+        kmax = self.cfg.experts.kmax
         assert len(blocks) <= kmax, (len(blocks), kmax)
         pairs = [b for b in blocks if b[1] == 1]
         singles = [b for b in blocks if b[1] == 0]
@@ -463,7 +465,7 @@ class Q3CPrefill(Engine):
         ng = max(1, min(MOE_GROUPS, len(blocks)))
         edges = np.searchsorted(cut, cut[-1] * np.arange(1, ng) / ng, "right")
         # no group larger than one x op takes
-        kmax = S.CFG.experts.kmax
+        kmax = self.cfg.experts.kmax
         groups = [
             blocks[c : min(b, c + kmax)]
             for a, b in zip([0, *edges], [*edges, len(blocks)])

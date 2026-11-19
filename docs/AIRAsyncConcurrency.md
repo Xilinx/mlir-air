@@ -8,7 +8,7 @@ This abstraction contains compiler passes which progressively extracts, analyses
 ### Step one: extract CDFG from the MLIR-AIR program using `-air-dependency`
 
 Below is a code snippet showing the memory allocation, data movement and computation of a tiled matrix multiplication program in MLIR-AIR, in _synchronous_ execution order.
-```
+```mlir
 scf.for %arg11 = %c0 to %c128 step %c32 {
   %5 = memref.alloc() : memref<16x32xf32, 2>
   %6 = memref.alloc() : memref<32x64xf32, 2>
@@ -27,7 +27,7 @@ scf.for %arg11 = %c0 to %c128 step %c32 {
 `-air-dependency` pass automatically analyzes the data dependency and loop-carried dependency in code, generates a CDFG object in the compiler backend, and updates the MLIR-AIR program with AIR Async operation interface.
 The post-analysis _asynchronous_ MLIR-AIR program is shown below.
 
-```      
+```mlir
 %2 = air.wait_all async [%async_token_8, %async_token_10]  {id = 2 : i32}
 %3 = scf.for %arg11 = %c0 to %c128 step %c32 iter_args(%arg12 = %2) -> (!air.async.token) {
   %async_token_12, %results_13 = air.execute -> (memref<16x32xf32, 2>) {
@@ -85,7 +85,7 @@ air-opt input.mlir -air-dependency \
 
 This generates one DOT file per hierarchy level, plus a `combined.dot` that nests all levels using GraphViz subgraph clusters:
 
-```
+```text
 /tmp/my_graphs/
 ├── host.dot                                          # Top-level function graph
 ├── host_air_launch_1.dot                             # air.launch level
@@ -134,16 +134,15 @@ xdot /tmp/my_graphs/combined.dot
 
 The rendered CDFG below is generated from the matrix multiplication example in the previous section.
 
-<img src="assets/images/air_cdfg_example.svg">
+![CDFG of the matrix multiplication example](assets/images/air_cdfg_example.svg)
 
-### Step three: CDFG optimization using `-air-dependency-schedule-opt`
+### Step three: broadcast detection using `-air-broadcast-detection`
 
-Having extracted a CDFG from the MLIR-AIR code, the `-air-dependency-schedule-opt` pass performs scheduling optimization by detecting and transforming inefficient code patterns in CDFG.
-Data broadcasting opportunities across spatially mapped AIE cores are automatically detected and labelled.
+For each DMA inside an `air.herd` that reads or writes L1, the `-air-broadcast-detection` pass traces which loop induction variables its source and destination offsets, sizes and strides, and any enclosing `scf.if` or `affine.if` conditions, depend on. A DMA that does not vary along some dimensions of the herd moves the same data to every core along them, and is annotated with a `broadcast_pattern` affine set describing its recipients.
 Below is the output code snippet lowered from the tiled matrix multiplication example above.
 Here, data broadcasting opportunities are labelled with keyword `broadcast_pattern`, followed by an affine set representing the address pattern of broadcast copy recepients.
 
-```
+```mlir
 #set = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, -d1 + 1 >= 0, s0 >= 0, -s0 + 1 >= 0)>
 #set1 = affine_set<(d0, d1)[s0] : (d0 >= 0, -d0 + 7 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 7 >= 0)>
 %2 = air.wait_all async [%async_token_10, %async_token_8] 

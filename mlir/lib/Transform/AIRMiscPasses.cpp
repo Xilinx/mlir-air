@@ -27,6 +27,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/IRMapping.h"
@@ -1039,21 +1040,8 @@ public:
     if (!op->getParentOfType<air::HerdOp>())
       return failure();
 
-    IRMapping remap;
-    scf::ForOp forOp = nullptr;
-    for (unsigned int i = 0; i < op.getNumLoops(); i++) {
-      auto lb = op.getLowerBound()[i];
-      auto ub = op.getUpperBound()[i];
-      auto step = op.getStep()[i];
-      forOp = scf::ForOp::create(rewriter, op->getLoc(), lb, ub, step);
-      rewriter.setInsertionPointToStart(forOp.getBody());
-      remap.map(op.getInductionVars()[i], forOp.getInductionVar());
-    }
-    for (Operation &o : op.getBody()->getOperations())
-      if (!isa<scf::ReduceOp>(o))
-        rewriter.clone(o, remap);
-
-    rewriter.eraseOp(op);
+    if (failed(scf::parallelForToNestedFors(rewriter, op)))
+      return failure();
     return success();
   }
 };
