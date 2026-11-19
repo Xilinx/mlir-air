@@ -2061,20 +2061,7 @@ transform::LinalgTileOp::apply(transform::TransformRewriter &rewriter,
 }
 
 SmallVector<OpFoldResult> transform::LinalgTileOp::getMixedSizes() {
-  ValueRange dynamic = getDynamicSizes();
-  ArrayRef<int64_t> tileSizes = getStaticSizes();
-  SmallVector<OpFoldResult> results;
-  results.reserve(tileSizes.size());
-  unsigned dynamicPos = 0;
-  Builder builder(getContext());
-  for (int64_t size : tileSizes) {
-    if (size == ShapedType::kDynamic) {
-      results.push_back(dynamic[dynamicPos++]);
-    } else {
-      results.push_back(builder.getIndexAttr(size));
-    }
-  }
-  return results;
+  return getMixedValues(getStaticSizes(), getDynamicSizes(), getContext());
 }
 
 ParseResult transform::LinalgTileOp::parse(OpAsmParser &parser,
