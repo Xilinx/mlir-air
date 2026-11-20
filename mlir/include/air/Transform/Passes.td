@@ -1055,11 +1055,6 @@ def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp">
   ];
 }
 
-def AIRLinalgNamePass : Pass<"air-linalg-name", "ModuleOp"> {
-  let summary = "Give linalg ops a LinalgTransformMarker string attribute if they don't already have one";
-  let constructor = "xilinx::air::createAIRLinalgNamePass()";
-}
-
 def AIRPipelineReducePass : Pass<"air-pipeline-reduce", "func::FuncOp"> {
   let summary = "Turn a reduction dimension into a herd pipeline";
   let constructor = "xilinx::air::createAIRPipelineReducePass()";
