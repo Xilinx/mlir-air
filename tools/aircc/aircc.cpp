@@ -370,6 +370,17 @@ static cl::opt<unsigned> stackSize(
              "kernels have deep call chains (e.g., scalar fdiv)."),
     cl::init(2048u), cl::cat(airCompilerOptions));
 
+// Arguments for the Peano `opt` and `llc` that compile the cores, handed to
+// aiecc's -Xopt and -Xllc: one argument per occurrence, never split at commas.
+static cl::list<std::string>
+    xoptArgs("Xopt", cl::value_desc("arg"),
+             cl::desc("Pass <arg> to aiecc's -Xopt (Peano opt)"),
+             cl::cat(airCompilerOptions));
+static cl::list<std::string>
+    xllcArgs("Xllc", cl::value_desc("arg"),
+             cl::desc("Pass <arg> to aiecc's -Xllc (Peano llc)"),
+             cl::cat(airCompilerOptions));
+
 //===----------------------------------------------------------------------===//
 // Debug IR Support
 //===----------------------------------------------------------------------===//
@@ -1530,6 +1541,11 @@ static LogicalResult runAieCompilation() {
   // bf16 emulation
   if (bf16Emulation)
     aieccCmd.push_back("--bf16-emulation");
+
+  for (const std::string &a : xoptArgs)
+    aieccCmd.push_back("-Xopt=" + a);
+  for (const std::string &a : xllcArgs)
+    aieccCmd.push_back("-Xllc=" + a);
 
   // Input file
   aieccCmd.push_back(npuFile.str().str());
