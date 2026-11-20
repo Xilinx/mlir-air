@@ -8,10 +8,10 @@
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
 // The pointers into the buffer the core makes from the stream's: a GEP's,
-// a call's result, the one a pop advances to, a loop's result, which is its
-// init when the loop runs no trip though this body yields a null pointer,
-// and a loop's result yielded from a pop in its body. Loads and stores
-// through them are uses of it too. The buffer is in use until the last loop.
+// the one a pop advances to, a loop's result, which is its init when the
+// loop runs no trip though this body yields a null pointer, and a loop's
+// result yielded from a pop in its body. Loads and stores through them are
+// uses of it too. The buffer is in use until the last loop.
 // CHECK: aie.core(%{{.*}})  {
 // CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK-NOT: aie.use_lock
@@ -31,7 +31,6 @@ air.channel @channel_0 [1, 1]
 func.func private @use(vector<64xi8>, vector<8xi8>)
 func.func private @other()
 func.func private @take(i8)
-func.func private @adv(!llvm.ptr) -> !llvm.ptr
 func.func @release_after_derived() {
   %c1 = arith.constant 1 : index
   %0 = air.launch async (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) {
@@ -66,8 +65,7 @@ func.func @release_after_derived() {
             %x = llvm.load %g : !llvm.ptr -> i8
             func.call @take(%x) : (i8) -> ()
             llvm.store %x, %g : i8, !llvm.ptr
-            %h = func.call @adv(%g) : (!llvm.ptr) -> !llvm.ptr
-            %n1, %s1, %k1, %m0, %e0 = aievec.fifo_ld_pop_bfp16 %h, %s, %k : vector<32xi32> -> vector<32xi32>, vector<64xi8>, vector<8xi8>
+            %n1, %s1, %k1, %m0, %e0 = aievec.fifo_ld_pop_bfp16 %g, %s, %k : vector<32xi32> -> vector<32xi32>, vector<64xi8>, vector<8xi8>
             func.call @use(%m0, %e0) : (vector<64xi8>, vector<8xi8>) -> ()
             func.call @other() : () -> ()
             %z = llvm.mlir.zero : !llvm.ptr

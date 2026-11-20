@@ -7,9 +7,10 @@
 
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" | FileCheck %s
 
-// A call takes the stream's pointer and returns a struct, from which a later
-// loop's pointer is taken. Loads through it cannot be told from others, so
-// the buffer is kept to the end of the block.
+// The core reads the buffer through a load stream, and also through the
+// pointer in a struct made from the buffer, which a call hands back and a
+// later loop pops from. Loads through it cannot be told from others, so the
+// buffer is kept to the end of the block.
 // CHECK-LABEL: aie.core(%tile_2_4)
 // CHECK: aie.use_lock(%{{.*}}, AcquireGreaterEqual, %{{.*}})
 // CHECK-NOT: aie.use_lock
@@ -23,10 +24,9 @@
 air.channel @channel_0 [1, 1]
 func.func private @use(vector<64xi8>, vector<8xi8>)
 func.func private @other()
-func.func private @wrap(!llvm.ptr) -> !llvm.struct<(ptr)>
 func.func private @id(!llvm.struct<(ptr)>) -> !llvm.struct<(ptr)>
 func.func private @cond() -> i1
-func.func @stream_pointer_returned_in_struct() {
+func.func @buffer_in_struct() {
   %c1 = arith.constant 1 : index
   %0 = air.launch async (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) {
     %1 = air.segment async {
@@ -58,7 +58,7 @@ func.func @stream_pointer_returned_in_struct() {
             %cs = arith.constant 1 : index
             %one = arith.constant 1 : i64
             %n, %s, %k = aievec.fifo_start %buf[%c0] : memref<576xi8, 2> -> vector<32xi32>
-            %sv = func.call @wrap(%n) : (!llvm.ptr) -> !llvm.struct<(ptr)>
+            %sv = builtin.unrealized_conversion_cast %buf : memref<576xi8, 2> to !llvm.struct<(ptr)>
             %p0, %s0, %k0, %m0, %e0 = aievec.fifo_ld_pop_bfp16 %n, %s, %k : vector<32xi32> -> vector<32xi32>, vector<64xi8>, vector<8xi8>
             func.call @use(%m0, %e0) : (vector<64xi8>, vector<8xi8>) -> ()
             %sw = func.call @id(%sv) : (!llvm.struct<(ptr)>) -> !llvm.struct<(ptr)>

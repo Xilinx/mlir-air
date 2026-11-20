@@ -7758,11 +7758,12 @@ public:
   }
 
   /// The pointers into a buffer, given its views: those an op makes from a
-  /// view (a load stream's start), those an aievec op, llvm.getelementptr or
-  /// func.call makes from such a pointer, and the iter_args and results of
-  /// the scf.for and scf.if that carry one. `escapes` is set when an address
-  /// of the buffer goes anywhere else: stored, made an integer, returned in
-  /// an aggregate, or passed to any other op, where it cannot be followed.
+  /// view (a load stream's start), those an aievec op or llvm.getelementptr
+  /// makes from such a pointer, and the iter_args and results of the scf.for
+  /// and scf.if that carry one. `escapes` is set when an address of the
+  /// buffer goes anywhere else: stored, made an integer, returned in an
+  /// aggregate, or passed to any other op, a call included, where it cannot
+  /// be followed.
   struct BufferPointers {
     SetVector<Value> pointers;
     bool escapes = false;
@@ -7806,8 +7807,8 @@ public:
         } else if (isa<scf::YieldOp>(user) &&
                    isa<scf::IfOp>(user->getParentOp())) {
           add(user->getParentOp()->getResult(n));
-        } else if (user->getDialect()->getNamespace() == "aievec" ||
-                   isa<LLVM::GEPOp, func::CallOp>(user)) {
+        } else if (user->getName().getDialectNamespace() == "aievec" ||
+                   isa<LLVM::GEPOp>(user)) {
           fromOp(user);
         } else if ((isa<LLVM::LoadOp>(user) &&
                     cast<LLVM::LoadOp>(user).getAddr() == p) ||
