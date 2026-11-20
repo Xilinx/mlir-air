@@ -4075,102 +4075,6 @@ private:
   SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep_history;
 };
 
-struct PruneLinalgGenericInputDma {
-
-public:
-  void runLinalgGenericPattern(func::FuncOp funcOp) {
-    // Detect linalg.GenericOps with redundant input ports
-    std::vector<OpOperand *> non_input_generic_operands;
-    funcOp.walk([&](linalg::GenericOp generic_op) {
-      getNonInputOperands(generic_op, non_input_generic_operands);
-      // DMAs copying into these linalg.GenericOp input ports are redundant
-      for (auto opoperand : non_input_generic_operands) {
-        findAndPruneRedundantDma(opoperand);
-      }
-    });
-  }
-
-  void getNonInputOperands(linalg::GenericOp generic_op,
-                           std::vector<OpOperand *> &operands_history) {
-    for (auto &g_opoperand : generic_op->getOpOperands()) {
-      if (!generic_op.payloadUsesValueFromOperand(&g_opoperand))
-        operands_history.push_back(&g_opoperand);
-    }
-  }
-
-  void findAndPruneRedundantDma(mlir::OpOperand *opoperand) {
-    // Elevate to operand of herd launch
-    unsigned operand_id = opoperand->getOperandNumber();
-    auto op = opoperand->getOwner();
-    auto v = op->getOperand(operand_id);
-
-    air::AsyncOpInterface async_op;
-    if (air::ExecuteOp exec_op = op->getParentOfType<air::ExecuteOp>()) {
-      async_op =
-          dyn_cast_if_present<air::AsyncOpInterface>(exec_op.getOperation());
-    } else if (auto hl_op = dyn_cast_if_present<air::HerdOp>(op)) {
-      async_op =
-          dyn_cast_if_present<air::AsyncOpInterface>(hl_op.getOperation());
-    } else if (auto hier_op =
-                   dyn_cast_if_present<air::HierarchyInterface>(op)) {
-      async_op =
-          dyn_cast_if_present<air::AsyncOpInterface>(hier_op.getOperation());
-    } else {
-      return;
-    }
-    auto dep_list = async_op.getAsyncDependencies();
-    for (int i = dep_list.size() - 1; i >= 0; i--) {
-      auto upstream_op = dep_list[i].getDefiningOp();
-      if (auto upstream_dma =
-              dyn_cast_if_present<air::DmaMemcpyNdOp>(upstream_op)) {
-        if (v == upstream_dma.getDstMemref()) {
-          // Disconnect dependency between async op and upstream dma
-          async_op.eraseAsyncDependency(i);
-          // Reconnect upstream dma's dep list to async op
-          auto upstream_dma_async = dyn_cast_if_present<air::AsyncOpInterface>(
-              upstream_dma.getOperation());
-          for (auto token : upstream_dma_async.getAsyncDependencies()) {
-            async_op.addAsyncDependency(token);
-          }
-          Value srcMemref = upstream_dma.getSrcMemref();
-          // Recursively trace upstream dma
-          for (unsigned j = 0; j < upstream_op->getNumOperands(); j++) {
-            if (srcMemref == upstream_op->getOperand(j)) {
-              findAndPruneRedundantDma(&upstream_op->getOpOperand(j));
-            }
-          }
-          // Elevate from argument to operand of herd launch
-          if (auto hl_op = getHerdArgOwner(srcMemref)) {
-            for (unsigned i = 0; i < hl_op.getNumKernelOperands(); i++) {
-              if (hl_op.getKernelArgument(i) == srcMemref) {
-                auto &hl_opoperand = hl_op->getOpOperand(
-                    i + hl_op.getAsyncDependencies().size() + 2);
-                findAndPruneRedundantDma(&hl_opoperand);
-              }
-            }
-          }
-          // Elevate from argument to operand of hierarchy op
-          if (auto hier_op = getHierarchyArgOwner(srcMemref)) {
-            auto dep_list = dyn_cast_if_present<air::AsyncOpInterface>(
-                                hier_op.getOperation())
-                                .getAsyncDependencies();
-            for (unsigned i = 0; i < hier_op.getNumKernelOperands(); i++) {
-              if (hier_op.getKernelArgument(i) == srcMemref) {
-                auto &hier_opoperand = hier_op->getOpOperand(
-                    i + dep_list.size() + hier_op.getNumDims());
-                findAndPruneRedundantDma(&hier_opoperand);
-              }
-            }
-          }
-          upstream_dma->erase();
-        }
-      }
-    }
-  }
-
-private:
-};
-
 class AIRHoistDmaInAccumPattern
     : public xilinx::air::impl::AIRHoistDmaInAccumPatternBase<
           AIRHoistDmaInAccumPattern> {
@@ -4212,26 +4116,6 @@ public:
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
     for (auto f : funcOps)
       proc.runBroadcastPattern(f);
-  }
-
-private:
-};
-
-class AIRPruneLinalgGenericInputDma
-    : public xilinx::air::impl::AIRPruneLinalgGenericInputDmaBase<
-          AIRPruneLinalgGenericInputDma> {
-
-public:
-  AIRPruneLinalgGenericInputDma() = default;
-  AIRPruneLinalgGenericInputDma(const AIRPruneLinalgGenericInputDma &pass){};
-
-  void runOnOperation() override {
-    PruneLinalgGenericInputDma proc;
-    auto module = getOperation();
-    SmallVector<func::FuncOp, 4> funcOps;
-    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
-    for (auto f : funcOps)
-      proc.runLinalgGenericPattern(f);
   }
 
 private:
@@ -11462,10 +11346,6 @@ std::unique_ptr<Pass> createAIRHoistOpsNotUsingPingPongPattern() {
 
 std::unique_ptr<Pass> createAIRBroadcastDetection() {
   return std::make_unique<AIRBroadcastDetection>();
-}
-
-std::unique_ptr<Pass> createAIRPruneLinalgGenericInputDma() {
-  return std::make_unique<AIRPruneLinalgGenericInputDma>();
 }
 
 std::unique_ptr<Pass> createAIRPingPongTransformationPattern() {
