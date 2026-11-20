@@ -6552,6 +6552,10 @@ struct ConvertSize1TransferReadToLoad
     VectorType vecType = readOp.getVectorType();
     if (!isSize1VectorType(vecType))
       return failure();
+    // A masked-off or out-of-bounds element reads as the padding value, which
+    // a load would not.
+    if (readOp.getMask() || readOp.hasOutOfBoundsDim())
+      return failure();
 
     // Create memref.load returning scalar
     Value scalarLoad = memref::LoadOp::create(
@@ -6576,6 +6580,10 @@ struct ConvertSize1TransferWriteToStore
                                 PatternRewriter &rewriter) const override {
     VectorType vecType = writeOp.getVectorType();
     if (!isSize1VectorType(vecType))
+      return failure();
+    // A masked-off or out-of-bounds element is not written, which a store
+    // would do.
+    if (writeOp.getMask() || writeOp.hasOutOfBoundsDim())
       return failure();
 
     // Extract scalar from vector<1xT>
