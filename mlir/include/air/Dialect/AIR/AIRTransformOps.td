@@ -1998,6 +1998,10 @@ def ConvertSize1VectorToScalarOp : Op<Transform_Dialect, "air.convert_size1_vect
 
     1. **vector.transfer_read** with vector<1xT> → **memref.load** (scalar) + **vector.broadcast**
     2. **vector.transfer_write** with vector<1xT> → **vector.extract** + **memref.store** (scalar)
+
+    Transfers 1 and 2 are converted only when unmasked and in bounds: a masked-off
+    or out-of-bounds element reads as the padding value and is not written, which
+    a load and a store would not respect. Other transfers are left as they are.
     3. **vector.load** with vector<1xT> → **memref.load** (scalar) + **vector.broadcast**
     4. **vector.store** with vector<1xT> → **vector.extract** + **memref.store** (scalar)
     5. **Elementwise operations** on vector<1xT> → **vector.extract** + scalar op + **vector.broadcast**
@@ -2009,9 +2013,9 @@ def ConvertSize1VectorToScalarOp : Op<Transform_Dialect, "air.convert_size1_vect
     Example with memory operations:
     ```mlir
     // Before:
-    %v = vector.transfer_read %mem[%i, %j], %pad : memref<8x8xf32>, vector<1xf32>
+    %v = vector.transfer_read %mem[%i, %j], %pad {in_bounds = [true]} : memref<8x8xf32>, vector<1xf32>
     %result = arith.mulf %v, %v : vector<1xf32>
-    vector.transfer_write %result, %mem[%i, %j] : vector<1xf32>, memref<8x8xf32>
+    vector.transfer_write %result, %mem[%i, %j] {in_bounds = [true]} : vector<1xf32>, memref<8x8xf32>
     
     // After:
     %scalar = memref.load %mem[%i, %j] : memref<8x8xf32>
