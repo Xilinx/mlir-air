@@ -7757,6 +7757,72 @@ public:
     return nullptr; // memcpyOp end-of-lifetime not found
   }
 
+  /// The pointers into a buffer, given its views: those an op makes from a
+  /// view (a load stream's start), those an aievec op, llvm.getelementptr or
+  /// func.call makes from such a pointer, and the iter_args and results of
+  /// the scf.for and scf.if that carry one. `escapes` is set when an address
+  /// of the buffer goes anywhere else: stored, made an integer, returned in
+  /// an aggregate, or passed to any other op, where it cannot be followed.
+  struct BufferPointers {
+    SetVector<Value> pointers;
+    bool escapes = false;
+  };
+  static BufferPointers collectBufferPointers(ArrayRef<Value> views) {
+    BufferPointers out;
+    auto add = [&](Value v) {
+      if (v && isa<LLVM::LLVMPointerType>(v.getType()))
+        out.pointers.insert(v);
+    };
+    // (an aggregate it returns may hold the address)
+    auto fromOp = [&](Operation *user) {
+      for (Value r : user->getResults()) {
+        if (isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(r.getType()))
+          out.escapes = true;
+        add(r);
+      }
+    };
+    for (Value v : views)
+      for (Operation *user : v.getUsers()) {
+        if (isa<memref::ExtractAlignedPointerAsIndexOp>(user))
+          out.escapes = true;
+        else if (!isa<ViewLikeOpInterface>(user))
+          fromOp(user);
+      }
+    for (unsigned i = 0; i < out.pointers.size(); i++) {
+      Value p = out.pointers[i];
+      for (OpOperand &use : p.getUses()) {
+        Operation *user = use.getOwner();
+        unsigned n = use.getOperandNumber();
+        if (auto loop = dyn_cast<scf::ForOp>(user)) {
+          // (a loop that runs no trip returns its inits)
+          BlockArgument iterArg = loop.getTiedLoopRegionIterArg(&use);
+          add(iterArg);
+          add(loop.getTiedLoopResult(iterArg));
+        } else if (isa<scf::YieldOp>(user) &&
+                   isa<scf::ForOp>(user->getParentOp())) {
+          auto loop = cast<scf::ForOp>(user->getParentOp());
+          add(loop.getRegionIterArgs()[n]);
+          add(loop.getResult(n));
+        } else if (isa<scf::YieldOp>(user) &&
+                   isa<scf::IfOp>(user->getParentOp())) {
+          add(user->getParentOp()->getResult(n));
+        } else if (user->getDialect()->getNamespace() == "aievec" ||
+                   isa<LLVM::GEPOp, func::CallOp>(user)) {
+          fromOp(user);
+        } else if ((isa<LLVM::LoadOp>(user) &&
+                    cast<LLVM::LoadOp>(user).getAddr() == p) ||
+                   (isa<LLVM::StoreOp>(user) &&
+                    cast<LLVM::StoreOp>(user).getAddr() == p &&
+                    cast<LLVM::StoreOp>(user).getValue() != p)) {
+          // an access through the pointer
+        } else {
+          out.escapes = true;
+        }
+      }
+    }
+    return out;
+  }
+
   /// Checks if an operation reads from or writes to the given buffer.
   bool isReadOrWriteToBuffer(Operation *op, SetVector<Value> bufferViews) {
     if (!op)
@@ -7764,7 +7830,8 @@ public:
     if (air::isPure(op))
       return false;
 
-    // Check if the op reads from or writes to the buffer
+    // Check if the op reads from or writes to the buffer, through one of its
+    // views or a pointer into it
     for (OpOperand &operand : op->getOpOperands())
       if (llvm::is_contained(bufferViews, operand.get()))
         return true;
@@ -7889,6 +7956,16 @@ public:
         if (auto view = dyn_cast<ViewLikeOpInterface>(user))
           if (view.getViewSource() == bufferViews[i])
             bufferViews.insert(view->getResult(0));
+    // and every pointer into it. If an address of a filled buffer escapes
+    // (see collectBufferPointers), keep the buffer to the end of the block; a
+    // sent buffer's release stays where its views put it.
+    BufferPointers pointers = collectBufferPointers(bufferViews.getArrayRef());
+    if (!pointers.escapes)
+      bufferViews.insert_range(pointers.pointers);
+    else if (!ignoreFree) {
+      Operation *last = memcpyOpIf->getBlock()->getTerminator()->getPrevNode();
+      return last ? last : memcpyOp;
+    }
     auto visit = [&](Operation *o, Operation *top) {
       if (!isReadOrWriteToBuffer(o, bufferViews))
         return;
@@ -8010,10 +8087,33 @@ public:
         if (root(i) == root(j))
           return unsafe();
 
+    // the pointers the core computes into each buffer of the ring; if an
+    // address of one escapes (see collectBufferPointers), leave the release
+    // to the usual search
+    DenseMap<Value, SetVector<Value>> pointersInto;
+    for (int64_t i = 0; i < n; i++) {
+      Value buf = root(i);
+      if (pointersInto.count(buf))
+        continue;
+      SmallVector<Value> views;
+      core.walk([&](Operation *o) {
+        for (Value r : o->getResults())
+          if (isa<BaseMemRefType>(r.getType()) &&
+              air::resolveBufferRoot(r) == buf)
+            views.push_back(r);
+      });
+      views.push_back(buf);
+      BufferPointers pointers = collectBufferPointers(views);
+      if (pointers.escapes)
+        return nullptr;
+      pointersInto[buf] = std::move(pointers.pointers);
+    }
+
     // last op after `from` and before `to` (or the block end) touching any
-    // view of `buf`; deallocs do not count
+    // view of `buf` or pointer into it; deallocs do not count
     auto lastUse = [&](Operation *from, Operation *to,
                        Value buf) -> Operation * {
+      const SetVector<Value> &pointers = pointersInto[buf];
       Operation *last = nullptr;
       for (Operation *op = from->getNextNode(); op && op != to;
            op = op->getNextNode())
@@ -8021,8 +8121,9 @@ public:
           if (isa<memref::DeallocOp>(o) || air::isPure(o))
             return;
           if (llvm::any_of(o->getOperands(), [&](Value v) {
-                return isa<BaseMemRefType>(v.getType()) &&
-                       air::resolveBufferRoot(v) == buf;
+                return (isa<BaseMemRefType>(v.getType()) &&
+                        air::resolveBufferRoot(v) == buf) ||
+                       pointers.contains(v);
               }))
             last = op;
         });
