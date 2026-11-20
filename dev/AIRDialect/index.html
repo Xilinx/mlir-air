@@ -2456,7 +2456,8 @@ asynchronous communication where data previously sent by a corresponding
 <a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>%t2 = air.channel.get async [%t1] @chan_1(%dst[%c8, %c0][%c4, %c4][%c1, %c1]) : (memref&lt;16x16xf32&gt;)
 </code></pre></div>
 <p>Traits: <code>AttrSizedOperandSegments</code></p>
-<p>Interfaces: <code>TilingInterface</code>, <code>air_AsyncOpInterface</code>, <code>air_ChannelInterface</code>, <code>air_MemcpyInterface</code></p>
+<p>Interfaces: <code>MemoryEffectOpInterface (MemoryEffectOpInterface)</code>, <code>TilingInterface</code>, <code>air_AsyncOpInterface</code>, <code>air_ChannelInterface</code>, <code>air_MemcpyInterface</code></p>
+<p>Effects: <code>MemoryEffects::Effect{MemoryEffects::Read on ::mlir::SideEffects::DefaultResource, MemoryEffects::Write on ::mlir::SideEffects::DefaultResource}</code></p>
 <p><strong>Attributes:</strong></p>
 <table>
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
@@ -2642,7 +2643,8 @@ communication between producer and consumer operations. It is typically paired w
 <a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>    {pad_before = array&lt;i32: 2&gt;, pad_after = array&lt;i32: 1&gt;} : (memref&lt;16xi32&gt;)
 </code></pre></div>
 <p>Traits: <code>AttrSizedOperandSegments</code></p>
-<p>Interfaces: <code>TilingInterface</code>, <code>air_AsyncOpInterface</code>, <code>air_ChannelInterface</code>, <code>air_MemcpyInterface</code></p>
+<p>Interfaces: <code>MemoryEffectOpInterface (MemoryEffectOpInterface)</code>, <code>TilingInterface</code>, <code>air_AsyncOpInterface</code>, <code>air_ChannelInterface</code>, <code>air_MemcpyInterface</code></p>
+<p>Effects: <code>MemoryEffects::Effect{MemoryEffects::Read on ::mlir::SideEffects::DefaultResource, MemoryEffects::Write on ::mlir::SideEffects::DefaultResource}</code></p>
 <p><strong>Attributes:</strong></p>
 <table>
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
