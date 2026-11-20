@@ -52,19 +52,6 @@ using namespace mlir;
 
 namespace xilinx {
 
-class AIRExamplePass : public air::impl::AIRExamplePassBase<AIRExamplePass> {
-
-public:
-  AIRExamplePass() = default;
-  AIRExamplePass(const AIRExamplePass &pass){};
-
-  void runOnOperation() override;
-
-private:
-};
-
-void AIRExamplePass::runOnOperation() {}
-
 class AIRLinalgNamePass
     : public air::impl::AIRLinalgNamePassBase<AIRLinalgNamePass> {
 
@@ -3333,10 +3320,6 @@ DiagnosedSilenceableFailure transform::OverrideMemRefMemorySpaceOp::apply(
 
 namespace xilinx {
 namespace air {
-
-std::unique_ptr<Pass> createAIRExamplePass() {
-  return std::make_unique<AIRExamplePass>();
-}
 
 std::unique_ptr<Pass> createAIRSpecializeDmaBroadcast() {
   return std::make_unique<AIRSpecializeDmaBroadcast>();

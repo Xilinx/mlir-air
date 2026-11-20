@@ -1068,11 +1068,6 @@ def AIRDependencyParseGraph: Pass<"air-dependency-parse-graph", "ModuleOp"> {
   ];
 }
 
-def AIRExamplePass : Pass<"air-example-pass", "ModuleOp"> {
-  let summary = "Skeleton module op pass";
-  let constructor = "xilinx::air::createAIRExamplePass()";
-}
-
 def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp"> {
   let summary = "Specialize dma operations for broadcast pattern";
   let constructor = "xilinx::air::createAIRSpecializeDmaBroadcast()";

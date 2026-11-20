@@ -17,7 +17,6 @@
 namespace xilinx {
 namespace air {
 
-std::unique_ptr<mlir::Pass> createAIRExamplePass();
 std::unique_ptr<mlir::Pass> createAIRSpecializeDmaBroadcast();
 std::unique_ptr<mlir::Pass> createAIRLinalgNamePass();
 std::unique_ptr<mlir::Pass> createAIRRemoveLinalgNamePass();
