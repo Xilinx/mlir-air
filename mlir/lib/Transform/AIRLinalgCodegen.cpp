@@ -4385,170 +4385,90 @@ static bool directlyConsumesResultMultiOp(linalg::LinalgOp firstOp,
   return llvm::is_contained(secondOp.getDpsInputs(), firstOpResult);
 }
 
-/// Fuse multi-op linalg operations by cloning first op's body into second op
+/// Fuse the first op into the second with linalg::fuseElementwiseOps. The
+/// first op is left in place for its other users and never becomes an extra
+/// result of the fused op.
 static FailureOr<linalg::GenericOp>
 fuseMultiOpLinalgOps(RewriterBase &rewriter, linalg::LinalgOp firstOp,
                      linalg::LinalgOp secondOp) {
-
-  // Get the result of the first op
-  Value firstOpResult = firstOp.getTiedOpResult(firstOp.getDpsInitOperand(0));
-
-  // Find which input of the second op corresponds to the first op's result
-  int64_t targetInputIndex = -1;
-  for (auto [index, input] : llvm::enumerate(secondOp.getDpsInputs())) {
-    if (input == firstOpResult) {
-      targetInputIndex = static_cast<int64_t>(index);
+  auto firstOpResult =
+      cast<OpResult>(firstOp.getTiedOpResult(firstOp.getDpsInitOperand(0)));
+  OpOperand *fusedOperand = nullptr;
+  for (OpOperand *operand : secondOp.getDpsInputOperands()) {
+    if (operand->get() == firstOpResult) {
+      fusedOperand = operand;
       break;
     }
   }
-
-  if (targetInputIndex == -1)
+  if (!fusedOperand)
+    return failure();
+  // The first op's body is inlined as is, so the second op must read its
+  // result the way the first op writes it, and the first op must not read
+  // its output.
+  if (secondOp.getMatchingIndexingMap(fusedOperand) !=
+          firstOp.getIndexingMapMatchingResult(firstOpResult) ||
+      !firstOp.getMatchingBlockArgument(firstOp.getDpsInitOperand(0))
+           .use_empty())
     return failure();
 
-  // Get all original inputs from the first op
-  SmallVector<Value> firstOpInputs;
-  for (Value input : firstOp.getDpsInputs()) {
-    firstOpInputs.push_back(input);
+  auto consumer = dyn_cast<linalg::GenericOp>(secondOp.getOperation());
+  if (!consumer) {
+    // Generalizing erases the named op, and the operand with it.
+    unsigned operandNumber = fusedOperand->getOperandNumber();
+    rewriter.setInsertionPoint(secondOp);
+    FailureOr<linalg::GenericOp> generic =
+        linalg::generalizeNamedOp(rewriter, secondOp);
+    if (failed(generic))
+      return failure();
+    consumer = *generic;
+    fusedOperand = &consumer->getOpOperand(operandNumber);
   }
 
-  // Create new input list for the fused operation
-  // Replace the first op's result in second op's inputs with first op's inputs
-  SmallVector<Value> newInputs;
-  for (auto [index, input] : llvm::enumerate(secondOp.getDpsInputs())) {
-    if (static_cast<int64_t>(index) == targetInputIndex) {
-      // Insert all inputs from the first op at this position
-      newInputs.append(firstOpInputs.begin(), firstOpInputs.end());
-    } else {
-      newInputs.push_back(input);
+  // Fuse a private generic copy of the first op when it is a named op or has
+  // other users, so that fuseElementwiseOps neither keeps its result alive
+  // nor changes the original.
+  Operation *privateProducer = nullptr;
+  if (!isa<linalg::GenericOp>(firstOp) ||
+      llvm::any_of(firstOpResult.getUses(),
+                   [&](OpOperand &use) { return &use != fusedOperand; })) {
+    rewriter.setInsertionPoint(firstOp);
+    privateProducer = rewriter.clone(*firstOp);
+    if (auto named = dyn_cast<linalg::LinalgOp>(privateProducer);
+        !isa<linalg::GenericOp>(privateProducer)) {
+      FailureOr<linalg::GenericOp> generic =
+          linalg::generalizeNamedOp(rewriter, named);
+      if (failed(generic))
+        return failure();
+      privateProducer = *generic;
     }
+    rewriter.modifyOpInPlace(consumer, [&] {
+      fusedOperand->set(
+          privateProducer->getResult(firstOpResult.getResultNumber()));
+    });
   }
 
-  // Create new indexing maps for the fused operation
-  SmallVector<AffineMap> newIndexingMaps;
-  auto secondOpIndexingMaps = secondOp.getIndexingMapsArray();
-  auto firstOpIndexingMaps = firstOp.getIndexingMapsArray();
+  if (!linalg::areElementwiseOpsFusable(fusedOperand))
+    return failure();
+  rewriter.setInsertionPoint(consumer);
+  FailureOr<linalg::ElementwiseOpFusionResult> fused =
+      linalg::fuseElementwiseOps(rewriter, fusedOperand);
+  if (failed(fused))
+    return failure();
+  auto fusedOp = cast<linalg::GenericOp>(fused->fusedOp);
 
-  // Build the new indexing maps: replace the target input's map with maps from
-  // first op's inputs
-  for (auto [index, map] : llvm::enumerate(secondOpIndexingMaps)) {
-    if (static_cast<int64_t>(index) == targetInputIndex) {
-      // Insert indexing maps from the first op's inputs
-      for (size_t i = 0; i < firstOpInputs.size(); ++i) {
-        newIndexingMaps.push_back(firstOpIndexingMaps[i]);
-      }
-    } else if (static_cast<int64_t>(index) < secondOp.getNumDpsInputs()) {
-      // This is another input - keep its map
-      newIndexingMaps.push_back(map);
-    } else {
-      // This is an output map - keep it
-      newIndexingMaps.push_back(map);
-    }
-  }
+  // Keep the locations the hand-written fusion gave: block arguments at the
+  // fused op, the yield at the second op's yield.
+  for (BlockArgument arg : fusedOp.getBlock()->getArguments())
+    arg.setLoc(fusedOp.getLoc());
+  fusedOp.getBlock()->getTerminator()->setLoc(
+      consumer.getBlock()->getTerminator()->getLoc());
 
-  // Create the new fused operation
-  rewriter.setInsertionPoint(secondOp);
-  auto fusedOp = linalg::GenericOp::create(
-      rewriter, secondOp.getLoc(), secondOp->getResultTypes(), newInputs,
-      secondOp.getDpsInits(), newIndexingMaps,
-      secondOp.getIteratorTypesArray());
-
-  // Clone the body from the second operation and modify it
-  Block *newBody = &fusedOp.getRegion().emplaceBlock();
-
-  // Create block arguments with updated types
-  SmallVector<Type> blockArgTypes;
-
-  // Get the input types from the first op (before any transformations)
-  SmallVector<Type> firstOpInputElementTypes;
-  for (Value input : firstOpInputs) {
-    firstOpInputElementTypes.push_back(
-        cast<ShapedType>(input.getType()).getElementType());
-  }
-
-  // Build block argument types for the fused operation
-  size_t firstOpInputIdx = 0;
-  for (auto [index, input] : llvm::enumerate(newInputs)) {
-    Type elementType;
-    // Check if this index corresponds to one of the first op's inputs
-    if (static_cast<int64_t>(index) >= targetInputIndex &&
-        static_cast<int64_t>(index) <
-            targetInputIndex + static_cast<int64_t>(firstOpInputs.size())) {
-      elementType = firstOpInputElementTypes[firstOpInputIdx++];
-    } else {
-      elementType = cast<ShapedType>(input.getType()).getElementType();
-    }
-    blockArgTypes.push_back(elementType);
-  }
-
-  // Add output argument types
-  for (Value output : secondOp.getDpsInits()) {
-    blockArgTypes.push_back(
-        cast<ShapedType>(output.getType()).getElementType());
-  }
-
-  for (Type argType : blockArgTypes) {
-    newBody->addArgument(argType, fusedOp.getLoc());
-  }
-
-  // Clone operations from the first op's body (except terminator)
-  IRMapping firstOpMapping;
-  Block *firstOpBody = firstOp.getBlock();
-
-  // Map all of the first op's input block arguments to the new fused inputs
-  for (auto [idx, inputArg] : llvm::enumerate(firstOpBody->getArguments())) {
-    // Skip output arguments (only map inputs)
-    if (static_cast<int64_t>(idx) >= firstOp.getNumDpsInputs())
-      break;
-    firstOpMapping.map(inputArg, newBody->getArgument(targetInputIndex + idx));
-  }
-
-  rewriter.setInsertionPointToStart(newBody);
-
-  // Clone all operations from first op (except yield)
-  for (Operation &op : firstOpBody->without_terminator()) {
-    rewriter.clone(op, firstOpMapping);
-  }
-
-  // Determine the yield value from the actual yield operation
-  Value firstOpYieldValue;
-  if (auto firstYield =
-          dyn_cast_if_present<linalg::YieldOp>(firstOpBody->getTerminator())) {
-    if (firstYield.getNumOperands() > 0) {
-      firstOpYieldValue = firstOpMapping.lookup(firstYield.getOperand(0));
-    }
-  }
-
-  // Clone operations from the second op's body
-  IRMapping secondOpMapping;
-  Block *secondOpBody = secondOp.getBlock();
-
-  // Map block arguments from second op
-  // Account for the fact that we inserted (firstOpInputs.size() - 1) extra
-  // arguments
-  int64_t indexShift = firstOpInputs.size() - 1;
-
-  for (auto [index, oldArg] : llvm::enumerate(secondOpBody->getArguments())) {
-    if (static_cast<int64_t>(index) == targetInputIndex) {
-      // Map to the result of the first op's computation
-      secondOpMapping.map(oldArg, firstOpYieldValue);
-    } else {
-      // Calculate the new index accounting for inserted inputs
-      int64_t newIndex = index;
-      if (static_cast<int64_t>(index) > targetInputIndex) {
-        newIndex += indexShift;
-      }
-      secondOpMapping.map(oldArg, newBody->getArgument(newIndex));
-    }
-  }
-
-  // Clone operations from the second op's body
-  for (Operation &op : secondOpBody->getOperations()) {
-    rewriter.clone(op, secondOpMapping);
-  }
-
-  // Replace the second operation with the fused operation
-  rewriter.replaceOp(secondOp, fusedOp);
-
+  SmallVector<Value> replacements;
+  for (OpResult result : consumer->getResults())
+    replacements.push_back(fused->replacements.lookup(result));
+  rewriter.replaceOp(consumer, replacements);
+  if (privateProducer)
+    rewriter.eraseOp(privateProducer);
   return fusedOp;
 }
 
