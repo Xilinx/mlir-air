@@ -2750,18 +2750,21 @@ rewrite patterns (NOT a TypeConverter) and inserts extract/broadcast operations 
 <ol>
 <li><strong>vector.transfer_read</strong> with vector&lt;1xT&gt; → <strong>memref.load</strong> (scalar) + <strong>vector.broadcast</strong></li>
 <li><strong>vector.transfer_write</strong> with vector&lt;1xT&gt; → <strong>vector.extract</strong> + <strong>memref.store</strong> (scalar)</li>
-<li><strong>vector.load</strong> with vector&lt;1xT&gt; → <strong>memref.load</strong> (scalar) + <strong>vector.broadcast</strong></li>
-<li><strong>vector.store</strong> with vector&lt;1xT&gt; → <strong>vector.extract</strong> + <strong>memref.store</strong> (scalar)</li>
-<li><strong>Elementwise operations</strong> on vector&lt;1xT&gt; → <strong>vector.extract</strong> + scalar op + <strong>vector.broadcast</strong></li>
 </ol>
+<p>Transfers 1 and 2 are converted only when unmasked and in bounds: a masked-off
+or out-of-bounds element reads as the padding value and is not written, which
+a load and a store would not respect. Other transfers are left as they are.
+3. <strong>vector.load</strong> with vector&lt;1xT&gt; → <strong>memref.load</strong> (scalar) + <strong>vector.broadcast</strong>
+4. <strong>vector.store</strong> with vector&lt;1xT&gt; → <strong>vector.extract</strong> + <strong>memref.store</strong> (scalar)
+5. <strong>Elementwise operations</strong> on vector&lt;1xT&gt; → <strong>vector.extract</strong> + scalar op + <strong>vector.broadcast</strong></p>
 <p><strong>Important:</strong> Function signatures and block argument types remain as vector&lt;1xT&gt;. 
 Only the operations inside are converted to scalars, with extract/broadcast at boundaries.
 Canonicalization then folds redundant extract(broadcast(x)) → x pairs.</p>
 <p>Example with memory operations:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>// Before:
-<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>%v = vector.transfer_read %mem[%i, %j], %pad : memref&lt;8x8xf32&gt;, vector&lt;1xf32&gt;
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>%v = vector.transfer_read %mem[%i, %j], %pad {in_bounds = [true]} : memref&lt;8x8xf32&gt;, vector&lt;1xf32&gt;
 <a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>%result = arith.mulf %v, %v : vector&lt;1xf32&gt;
-<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>vector.transfer_write %result, %mem[%i, %j] : vector&lt;1xf32&gt;, memref&lt;8x8xf32&gt;
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>vector.transfer_write %result, %mem[%i, %j] {in_bounds = [true]} : vector&lt;1xf32&gt;, memref&lt;8x8xf32&gt;
 <a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>
 <a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>// After:
 <a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>%scalar = memref.load %mem[%i, %j] : memref&lt;8x8xf32&gt;
