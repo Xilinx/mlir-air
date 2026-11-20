@@ -1323,13 +1323,8 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     SmallVector<int64_t> staticStrides =
         constify(mixedStrides, /*defaultValue=*/0, nullptr);
 
-    // Calculate total offset in elements
-    // For npu.dma_memcpy_nd, the offset is computed as:
-    //   offset = sum(offsets[i] * strides[i]) for each dimension
-    int64_t totalOffset = 0;
-    for (int i = 0; i < 4; i++) {
-      totalOffset += staticOffsets[i] * staticStrides[i];
-    }
+    // The offset in elements.
+    int64_t totalOffset = air::getLinearOffset(staticOffsets, staticStrides);
 
     // Transfer length is ALWAYS the product of lowest 3 dimensions only
     int64_t transferLen = staticSizes[1] * staticSizes[2] * staticSizes[3];
@@ -2770,6 +2765,22 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
           "with a runtime offset needs an innermost stride of 1 to be split "
           "into several BDs");
   }
+  // The unrolling below adds the start of each new transfer to its innermost
+  // offset, which is in units of the innermost stride. So the loops step in
+  // those units too, and each unrolled stride must be a multiple of it.
+  int64_t innerStride = 1;
+  if (wraps.size() > (size_t)limits.listDims()) {
+    auto inner = getConstantIntValue(strides.back());
+    if (!inner || *inner <= 0)
+      return memcpy_op.emitOpError(
+          "needs a constant innermost stride to be split into several BDs");
+    innerStride = *inner;
+    for (unsigned j = 0; j + limits.listDims() < wraps.size(); j++)
+      if (*getConstantIntValue(strides[j]) % innerStride)
+        return memcpy_op.emitOpError(
+            "needs each outer stride to be a multiple of the innermost stride "
+            "to be split into several BDs");
+  }
 
   // Unroll highest dimensions of wrap and stride, if the new dimension count
   // goes beyond what one BD holds.
@@ -2780,7 +2791,8 @@ LogicalResult tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
     auto const_offset = *getConstantIntValue(offsets[0]);
     auto const_lowest_offset = *getConstantIntValue(offsets.back());
     auto const_wrap = *getConstantIntValue(wraps[0]);
-    auto const_stride = *getConstantIntValue(strides[0]);
+    // In units of the innermost stride.
+    auto const_stride = *getConstantIntValue(strides[0]) / innerStride;
 
     // Convert the outer dimension into an affine.for loop.
     int const_lower_bound =

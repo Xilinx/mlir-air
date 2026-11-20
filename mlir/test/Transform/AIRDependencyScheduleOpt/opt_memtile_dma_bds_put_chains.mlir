@@ -525,11 +525,11 @@ module {
 
 // -----
 
-// A non-unit innermost stride: the innermost offset counts elements, so the
-// puts at 0 and 8 are 8 elements apart, not 16, and together they read every
-// other element of the first 16.
+// A non-unit innermost stride: the innermost offset counts in its stride, as
+// every offset does, so the puts at 0 and 8 start 16 elements apart (elements
+// 0, 2, 4, 6 and 16, 18, 20, 22): one put whose outer dim steps by 16.
 // CHECK-LABEL: func.func @inner_stride
-// CHECK: air.channel.put async {{.*}}@chan[{{.*}}] (%{{.*}}[%c0{{.*}}] [%c8{{.*}}] [%c2{{.*}}])
+// CHECK: air.channel.put async {{.*}}@chan[{{.*}}] (%{{.*}}[0, 0] [2, 4] [16, 2])
 // CHECK-NOT: air.channel.put async
 module {
   air.channel @chan [1, 4]
@@ -544,6 +544,33 @@ module {
         }
         %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[0] [4] [2]) : (memref<32xbf16, 1 : i32>)
         %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[8] [4] [2]) : (memref<32xbf16, 1 : i32>)
+        %w = air.wait_all async [%p0, %p1]
+      }
+    }
+    return
+  }
+}
+
+// -----
+// A unit dim of stride 3 in front of an innermost stride of 2: its offset, 3
+// elements, is not a whole number of innermost strides, so the folded put
+// keeps the dim. The puts start at elements 3 and 19.
+// CHECK-LABEL: func.func @unit_dim_inner_stride
+// CHECK: air.channel.put async {{.*}}@chan[{{.*}}] (%{{.*}}[0, 1, 0] [2, 1, 4] [16, 3, 2])
+// CHECK-NOT: air.channel.put async
+module {
+  air.channel @chan [1, 4]
+  func.func @unit_dim_inner_stride() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @seg async {
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %t0, %buf = air.execute -> (memref<32xbf16, 1 : i32>) {
+          %a = memref.alloc() : memref<32xbf16, 1 : i32>
+          air.execute_terminator %a : memref<32xbf16, 1 : i32>
+        }
+        %p0 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[1, 0] [1, 4] [3, 2]) : (memref<32xbf16, 1 : i32>)
+        %p1 = air.channel.put async [%t0] @chan[%c0, %c1] (%buf[1, 8] [1, 4] [3, 2]) : (memref<32xbf16, 1 : i32>)
         %w = air.wait_all async [%p0, %p1]
       }
     }

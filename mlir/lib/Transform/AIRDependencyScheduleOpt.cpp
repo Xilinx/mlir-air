@@ -10611,24 +10611,21 @@ static bool foldLatticeChain(ArrayRef<air::ChannelPutOp> chain,
   for (auto p : chain) {
     SmallVector<int64_t> o, sz, st;
     getStaticPattern(p, o, sz, st);
-    // As the lowering reads it: the innermost offset counts elements, the
-    // others count strides.
-    int64_t l = o.back();
-    for (size_t d = 0; d + 1 < o.size(); d++)
-      l += o[d] * st[d];
-    lin.push_back(l);
+    lin.push_back(air::getLinearOffset(o, st));
   }
   SmallVector<int64_t> dims, steps;
   if (!findLattice(lin, dims, steps))
     return false;
-  // Drop unit dims, adding their offsets to the innermost offset, which
-  // counts elements.
+  // Drop unit dims, moving their offset into the innermost offset when it is a
+  // whole number of innermost strides.
   {
     SmallVector<int64_t> o, sz, st;
     int64_t extra = 0;
+    int64_t inner = strides.back();
     for (size_t i = 0; i + 1 < sizes.size(); i++) {
-      if (sizes[i] == 1) {
-        extra += offsets[i] * strides[i];
+      if (sizes[i] == 1 && inner != 0 &&
+          (offsets[i] * strides[i]) % inner == 0) {
+        extra += offsets[i] * strides[i] / inner;
         continue;
       }
       o.push_back(offsets[i]);

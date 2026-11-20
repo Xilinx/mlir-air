@@ -230,6 +230,10 @@ int64_t getRefeedCount(ChannelInterface op);
 // Same, for a value already resolved to its buffer/alloc carrier (memtile L2
 // rendezvous buffer): reads air.refeed_count directly off `op`.
 int64_t getRefeedCount(Operation *op);
+// The element an access pattern starts at: the sum of offsets[i] * strides[i].
+// Each offset is in units of its own dimension's stride, the innermost one
+// included, as with memrefs with a strided layout.
+int64_t getLinearOffset(ArrayRef<int64_t> offsets, ArrayRef<int64_t> strides);
 // One-shot index of a scope's channel puts/gets, keyed by channel symbol.
 //
 // getChannel{Put,Get}OpThroughSymbol walks the entire scope on EVERY call, so a
