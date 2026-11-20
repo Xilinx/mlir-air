@@ -1088,11 +1088,6 @@ def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp">
   ];
 }
 
-def AIRLinalgNamePass : Pass<"air-linalg-name", "ModuleOp"> {
-  let summary = "Give linalg ops a LinalgTransformMarker string attribute if they don't already have one";
-  let constructor = "xilinx::air::createAIRLinalgNamePass()";
-}
-
 def AIRRemoveLinalgNamePass : Pass<"air-rm-linalg-name", "ModuleOp"> {
   let summary = "Remove LinalgTransformMarker string attributes from linalg ops";
   let constructor = "xilinx::air::createAIRRemoveLinalgNamePass()";
