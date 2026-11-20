@@ -1601,17 +1601,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#-air-prune-linalg-generic-input-dma" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -air-prune-linalg-generic-input-dma
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#-air-renumber-dma" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1693,17 +1682,6 @@
     <span class="md-ellipsis">
       
         -air-transform
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#-air-unroll-channel-by-factor" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -air-unroll-channel-by-factor
       
     </span>
   </a>
@@ -2226,17 +2204,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#-air-prune-linalg-generic-input-dma" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -air-prune-linalg-generic-input-dma
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#-air-renumber-dma" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2318,17 +2285,6 @@
     <span class="md-ellipsis">
       
         -air-transform
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#-air-unroll-channel-by-factor" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -air-unroll-channel-by-factor
       
     </span>
   </a>
@@ -3138,10 +3094,6 @@ output:
 <a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>-row-anchor : Anchoring row number of segments
 <a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a>-col-anchor : Anchoring column number of segments
 </code></pre></div>
-<h3 id="-air-prune-linalg-generic-input-dma"><code>-air-prune-linalg-generic-input-dma</code><a class="headerlink" href="#-air-prune-linalg-generic-input-dma" title="Permanent link">&para;</a></h3>
-<p><em>Detect and prune redundant DMA into linalg generic</em></p>
-<p>This pass detects and prunes redundant DMA which copies into linalg generic
-input operands. </p>
 <h3 id="-air-renumber-dma"><code>-air-renumber-dma</code><a class="headerlink" href="#-air-renumber-dma" title="Permanent link">&para;</a></h3>
 <p><em>Renumber air dma op ids</em></p>
 <p><strong>Options</strong></p>
@@ -3364,16 +3316,6 @@ it with channel-based IR will produce an error.</p>
 <p><strong>Options</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>-filename : Transform Dialect filename
 </code></pre></div>
-<h3 id="-air-unroll-channel-by-factor"><code>-air-unroll-channel-by-factor</code><a class="headerlink" href="#-air-unroll-channel-by-factor" title="Permanent link">&para;</a></h3>
-<p><em>Unroll channel puts and gets by an integer factor</em></p>
-<p>This pass unrolls all puts and gets to an air.channel by an integer factor, so as to
-represent the usage of multiple physical DMA channels in parallel for improved
-available bandwidth for this data movement.</p>
-<p><strong>Options</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>-channel-name  : Target channel to unroll.
-<a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>-unroll-dim    : Dimension id to unroll.
-<a id="__codelineno-37-3" name="__codelineno-37-3" href="#__codelineno-37-3"></a>-unroll-factor : Integer unroll factor.
-</code></pre></div>
 <h3 id="-air-unroll-loop-for-pipelining-pattern"><code>-air-unroll-loop-for-pipelining-pattern</code><a class="headerlink" href="#-air-unroll-loop-for-pipelining-pattern" title="Permanent link">&para;</a></h3>
 <p><em>Unroll loop by an integer factor</em></p>
 <p>This pass unrolls a loop by an integer factor. This pass is used in the ping-pong
@@ -3384,45 +3326,45 @@ representation of ping and pong processes, respectively.</p>
 <p>The pass attempts to unroll the outermost dimensions in affine loop nests.</p>
 <p>Example:</p>
 <p>Input:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
-<a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a>  ...
-<a id="__codelineno-38-3" name="__codelineno-38-3" href="#__codelineno-38-3"></a>  affine.for %arg0 = 0 to 4 step 4 {
-<a id="__codelineno-38-4" name="__codelineno-38-4" href="#__codelineno-38-4"></a>    affine.for %arg1 = 0 to 4 step 4 {
-<a id="__codelineno-38-5" name="__codelineno-38-5" href="#__codelineno-38-5"></a>      affine.for %arg2 = affine_map&lt;(d0) -&gt; (d0)&gt;(%arg0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%arg0) {
-<a id="__codelineno-38-6" name="__codelineno-38-6" href="#__codelineno-38-6"></a>        affine.for %arg3 = affine_map&lt;(d0) -&gt; (d0)&gt;(%arg1) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%arg1) {
-<a id="__codelineno-38-7" name="__codelineno-38-7" href="#__codelineno-38-7"></a>          ...
-<a id="__codelineno-38-8" name="__codelineno-38-8" href="#__codelineno-38-8"></a>          %25 = airrt.dma_memcpy_nd(%c17_i32, %15, %16, %0[%c0_i64, %17, %18, %19], [%c1_i64, %22, %23, %24], [%c0_i64, %20, %21]) {metadata = @airMemcpyId19} : (i32, i64, i64, memref&lt;512x1024xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-38-9" name="__codelineno-38-9" href="#__codelineno-38-9"></a>          ...
-<a id="__codelineno-38-10" name="__codelineno-38-10" href="#__codelineno-38-10"></a>          %74 = airrt.dma_memcpy_nd(%c13_i32, %67, %68, %3[%c0_i64_13, %c0_i64_13, %69, %70], [%c1_i64_14, %c1_i64_14, %72, %73], [%c0_i64_13, %c0_i64_13, %71]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref&lt;1024x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-38-11" name="__codelineno-38-11" href="#__codelineno-38-11"></a>          ...
-<a id="__codelineno-38-12" name="__codelineno-38-12" href="#__codelineno-38-12"></a>          %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_24, %c0_i64_24, %106, %107], [%c1_i64_25, %c1_i64_25, %109, %110], [%c0_i64_24, %c0_i64_24, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref&lt;512x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-38-13" name="__codelineno-38-13" href="#__codelineno-38-13"></a>          ...
-<a id="__codelineno-38-14" name="__codelineno-38-14" href="#__codelineno-38-14"></a>        }
-<a id="__codelineno-38-15" name="__codelineno-38-15" href="#__codelineno-38-15"></a>      }
-<a id="__codelineno-38-16" name="__codelineno-38-16" href="#__codelineno-38-16"></a>    }
-<a id="__codelineno-38-17" name="__codelineno-38-17" href="#__codelineno-38-17"></a>  } {affine_opt_label = ""}
-<a id="__codelineno-38-18" name="__codelineno-38-18" href="#__codelineno-38-18"></a>  return
-<a id="__codelineno-38-19" name="__codelineno-38-19" href="#__codelineno-38-19"></a>}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+<a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>  ...
+<a id="__codelineno-37-3" name="__codelineno-37-3" href="#__codelineno-37-3"></a>  affine.for %arg0 = 0 to 4 step 4 {
+<a id="__codelineno-37-4" name="__codelineno-37-4" href="#__codelineno-37-4"></a>    affine.for %arg1 = 0 to 4 step 4 {
+<a id="__codelineno-37-5" name="__codelineno-37-5" href="#__codelineno-37-5"></a>      affine.for %arg2 = affine_map&lt;(d0) -&gt; (d0)&gt;(%arg0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%arg0) {
+<a id="__codelineno-37-6" name="__codelineno-37-6" href="#__codelineno-37-6"></a>        affine.for %arg3 = affine_map&lt;(d0) -&gt; (d0)&gt;(%arg1) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%arg1) {
+<a id="__codelineno-37-7" name="__codelineno-37-7" href="#__codelineno-37-7"></a>          ...
+<a id="__codelineno-37-8" name="__codelineno-37-8" href="#__codelineno-37-8"></a>          %25 = airrt.dma_memcpy_nd(%c17_i32, %15, %16, %0[%c0_i64, %17, %18, %19], [%c1_i64, %22, %23, %24], [%c0_i64, %20, %21]) {metadata = @airMemcpyId19} : (i32, i64, i64, memref&lt;512x1024xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-37-9" name="__codelineno-37-9" href="#__codelineno-37-9"></a>          ...
+<a id="__codelineno-37-10" name="__codelineno-37-10" href="#__codelineno-37-10"></a>          %74 = airrt.dma_memcpy_nd(%c13_i32, %67, %68, %3[%c0_i64_13, %c0_i64_13, %69, %70], [%c1_i64_14, %c1_i64_14, %72, %73], [%c0_i64_13, %c0_i64_13, %71]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref&lt;1024x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-37-11" name="__codelineno-37-11" href="#__codelineno-37-11"></a>          ...
+<a id="__codelineno-37-12" name="__codelineno-37-12" href="#__codelineno-37-12"></a>          %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_24, %c0_i64_24, %106, %107], [%c1_i64_25, %c1_i64_25, %109, %110], [%c0_i64_24, %c0_i64_24, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref&lt;512x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-37-13" name="__codelineno-37-13" href="#__codelineno-37-13"></a>          ...
+<a id="__codelineno-37-14" name="__codelineno-37-14" href="#__codelineno-37-14"></a>        }
+<a id="__codelineno-37-15" name="__codelineno-37-15" href="#__codelineno-37-15"></a>      }
+<a id="__codelineno-37-16" name="__codelineno-37-16" href="#__codelineno-37-16"></a>    }
+<a id="__codelineno-37-17" name="__codelineno-37-17" href="#__codelineno-37-17"></a>  } {affine_opt_label = ""}
+<a id="__codelineno-37-18" name="__codelineno-37-18" href="#__codelineno-37-18"></a>  return
+<a id="__codelineno-37-19" name="__codelineno-37-19" href="#__codelineno-37-19"></a>}
 </code></pre></div>
 Output:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
-<a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a>  ...
-<a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a>  affine.for %arg0 = affine_map&lt;(d0) -&gt; (d0)&gt;(%c0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%c0) {
-<a id="__codelineno-39-4" name="__codelineno-39-4" href="#__codelineno-39-4"></a>    affine.for %arg1 = affine_map&lt;(d0) -&gt; (d0)&gt;(%c0_0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%c0_0) {
-<a id="__codelineno-39-5" name="__codelineno-39-5" href="#__codelineno-39-5"></a>      ...
-<a id="__codelineno-39-6" name="__codelineno-39-6" href="#__codelineno-39-6"></a>      %25 = airrt.dma_memcpy_nd(%c17_i32, %15, %16, %0[%c0_i64, %17, %18, %19], [%c1_i64, %22, %23, %24], [%c0_i64, %20, %21]) {metadata = @airMemcpyId19} : (i32, i64, i64, memref&lt;512x1024xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-39-7" name="__codelineno-39-7" href="#__codelineno-39-7"></a>      ...
-<a id="__codelineno-39-8" name="__codelineno-39-8" href="#__codelineno-39-8"></a>      %74 = airrt.dma_memcpy_nd(%c13_i32, %67, %68, %3[%c0_i64_15, %c0_i64_15, %69, %70], [%c1_i64_16, %c1_i64_16, %72, %73], [%c0_i64_15, %c0_i64_15, %71]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref&lt;1024x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-39-9" name="__codelineno-39-9" href="#__codelineno-39-9"></a>      ...
-<a id="__codelineno-39-10" name="__codelineno-39-10" href="#__codelineno-39-10"></a>      %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_26, %c0_i64_26, %106, %107], [%c1_i64_27, %c1_i64_27, %109, %110], [%c0_i64_26, %c0_i64_26, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref&lt;512x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-<a id="__codelineno-39-11" name="__codelineno-39-11" href="#__codelineno-39-11"></a>      ...
-<a id="__codelineno-39-12" name="__codelineno-39-12" href="#__codelineno-39-12"></a>    }
-<a id="__codelineno-39-13" name="__codelineno-39-13" href="#__codelineno-39-13"></a>  }
-<a id="__codelineno-39-14" name="__codelineno-39-14" href="#__codelineno-39-14"></a>  return
-<a id="__codelineno-39-15" name="__codelineno-39-15" href="#__codelineno-39-15"></a>}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+<a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a>  ...
+<a id="__codelineno-38-3" name="__codelineno-38-3" href="#__codelineno-38-3"></a>  affine.for %arg0 = affine_map&lt;(d0) -&gt; (d0)&gt;(%c0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%c0) {
+<a id="__codelineno-38-4" name="__codelineno-38-4" href="#__codelineno-38-4"></a>    affine.for %arg1 = affine_map&lt;(d0) -&gt; (d0)&gt;(%c0_0) to affine_map&lt;(d0) -&gt; (d0 + 4)&gt;(%c0_0) {
+<a id="__codelineno-38-5" name="__codelineno-38-5" href="#__codelineno-38-5"></a>      ...
+<a id="__codelineno-38-6" name="__codelineno-38-6" href="#__codelineno-38-6"></a>      %25 = airrt.dma_memcpy_nd(%c17_i32, %15, %16, %0[%c0_i64, %17, %18, %19], [%c1_i64, %22, %23, %24], [%c0_i64, %20, %21]) {metadata = @airMemcpyId19} : (i32, i64, i64, memref&lt;512x1024xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-38-7" name="__codelineno-38-7" href="#__codelineno-38-7"></a>      ...
+<a id="__codelineno-38-8" name="__codelineno-38-8" href="#__codelineno-38-8"></a>      %74 = airrt.dma_memcpy_nd(%c13_i32, %67, %68, %3[%c0_i64_15, %c0_i64_15, %69, %70], [%c1_i64_16, %c1_i64_16, %72, %73], [%c0_i64_15, %c0_i64_15, %71]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref&lt;1024x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-38-9" name="__codelineno-38-9" href="#__codelineno-38-9"></a>      ...
+<a id="__codelineno-38-10" name="__codelineno-38-10" href="#__codelineno-38-10"></a>      %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_26, %c0_i64_26, %106, %107], [%c1_i64_27, %c1_i64_27, %109, %110], [%c0_i64_26, %c0_i64_26, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref&lt;512x512xi32&gt;, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+<a id="__codelineno-38-11" name="__codelineno-38-11" href="#__codelineno-38-11"></a>      ...
+<a id="__codelineno-38-12" name="__codelineno-38-12" href="#__codelineno-38-12"></a>    }
+<a id="__codelineno-38-13" name="__codelineno-38-13" href="#__codelineno-38-13"></a>  }
+<a id="__codelineno-38-14" name="__codelineno-38-14" href="#__codelineno-38-14"></a>  return
+<a id="__codelineno-38-15" name="__codelineno-38-15" href="#__codelineno-38-15"></a>}
 </code></pre></div></p>
 <p><strong>Options</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>-depth : The number of outermost loops in the loop nest to unroll
+<div class="highlight"><pre><span></span><code><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>-depth : The number of outermost loops in the loop nest to unroll
 </code></pre></div>
 <h3 id="-air-verify-channel-fifo-order"><code>-air-verify-channel-fifo-order</code><a class="headerlink" href="#-air-verify-channel-fifo-order" title="Permanent link">&para;</a></h3>
 <p><em>Verify that same-slot channel ops are totally ordered</em></p>
@@ -3464,7 +3406,7 @@ diagnostic and signals pass failure; it never mutates IR.</p>
 false reports a warning and continues. Definitive races are always
 reported as errors regardless of <code>strict</code>.</p>
 <p><strong>Options</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>-strict : When access analysis is inconclusive, fail (true) or warn-and-continue (false).
+<div class="highlight"><pre><span></span><code><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>-strict : When access analysis is inconclusive, fail (true) or warn-and-continue (false).
 </code></pre></div>
 
 
