@@ -228,6 +228,44 @@ func.func @puts_from_shared_l1_herd_arg(%shared: memref<32xbf16, 2>) {
 
 // -----
 
+// A get writes the shared herd argument, a second time within one handshake
+// once the body runs twice per handshake. Not labeled, though the loop's own
+// buffer would be.
+
+// CHECK-LABEL: @gets_into_shared_herd_arg
+// CHECK-NOT: hoist_alloc
+// CHECK-NOT: unroll
+air.channel @c9 [1, 1]
+air.channel @c10 [1, 1]
+func.func private @local4(memref<64xbf16, 2>)
+func.func @gets_into_shared_herd_arg(%shared: memref<32xbf16, 2>) {
+  %c1 = arith.constant 1 : index
+  air.herd @h tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%s=%shared) : memref<32xbf16, 2> {
+    %h0 = arith.constant 0 : index
+    %h1 = arith.constant 1 : index
+    %h8 = arith.constant 8 : index
+    %t = air.wait_all async
+    %r = scf.for %i = %h0 to %h8 step %h1 iter_args(%tok = %t) -> (!air.async.token) {
+      %tok0, %buf = air.execute [%tok] -> (memref<64xbf16, 2>) {
+        %alloc = memref.alloc() : memref<64xbf16, 2>
+        air.execute_terminator %alloc : memref<64xbf16, 2>
+      }
+      %gs = air.channel.get async [%tok] @c10[] (%s[] [] []) : (memref<32xbf16, 2>)
+      %g = air.channel.get async [%tok0, %gs] @c9[] (%buf[] [] []) : (memref<64xbf16, 2>)
+      %tok1 = air.execute [%g] {
+        func.call @local4(%buf) : (memref<64xbf16, 2>) -> ()
+      }
+      %tok2 = air.execute [%tok1] {
+        memref.dealloc %buf : memref<64xbf16, 2>
+      }
+      scf.yield %tok2 : !air.async.token
+    }
+  }
+  return
+}
+
+// -----
+
 // Labeling a loop unrolls its body by 2, which duplicates a nested loop and
 // whatever that loop allocates per trip. So an unsafe inner loop disqualifies
 // the outer candidate as well. Rejecting only the inner one would instead

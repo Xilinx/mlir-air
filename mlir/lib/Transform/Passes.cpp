@@ -31,18 +31,15 @@ void xilinx::air::registerTransformPasses() {
   registerAIRDependencyCanonicalize();
   registerAIRDependencyParseGraph();
   registerDmaToChannel();
-  registerAIRExamplePass();
   registerAIRFuseNestedHerdPass();
   registerAIRFuseParallelHerdPass();
   registerAIRHerdPlacementPass();
   registerAIRHerdVectorizePass();
   registerAIRLinalgCodegen();
   registerAIRLinalgOpStats();
-  registerAIRLabelBroadcastChannelWithTilePass();
   registerAIRLowerHerdParallelPass();
   registerAIROverrideMemRefMemorySpace();
   registerAIRPipelineReducePass();
-  registerAIRRemoveLinalgNamePass();
   registerAIRRenumberDmaIdPass();
   registerAIRresolveTensorOpOperandConflictsWithNewTensors();
   registerAIRSpecializeDmaBroadcast();
