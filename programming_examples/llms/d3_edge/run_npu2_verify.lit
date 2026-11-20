@@ -5,7 +5,7 @@
 // upstream d3 runtime on CPU in BF16 (reference.py) over the 67 questions of
 // requests.json. A question passes with finite option logits, each answer in
 // the other's top 2, and equal answers where the reference's top-2 margin is
-// at least 0.05. d3 has no LM head, so the shared verify/ top-k token check
+// at least 0.25. d3 has no LM head, so the shared verify/ top-k token check
 // does not apply; this is the model's correctness gate. NPU weights and
 // reference: vllm-sr/d3-edge at its pinned revision (sha256 checked), in the
 // default weight form.

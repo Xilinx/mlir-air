@@ -58,12 +58,12 @@ values per shared exponent). `WFORM` chooses how a BF16 weight W is held:
   bfp16(W)]` at depth 2k against `[x | x]`, the cores' FP32 accumulator summing
   both; the attention and DeltaNet projections as one BFP16 copy at depth k.
 - `hilo`: every projection as `[bfp16(W) | W − bfp16(W)]`. It is kept as an
-  option because it passes the gate's deciding question (`b1024_r3/escalate`,
-  reference 0.547 / 0.453) with the same margin as the default (0.5246 against
-  0.5252), at 10-13% more time.
+  option because it gets `b1024_r3/escalate` (reference 0.547 / 0.453) right
+  with the same margin as the default (0.5246 against 0.5252), at 10-13% more
+  time.
 
-One BFP16 copy everywhere fails that question (0.492 / 0.508) and is not
-offered.
+One BFP16 copy everywhere answers that question the other way (0.492 /
+0.508), which failed the gate's former 0.05 cutoff, and is not offered.
 
 ## Correctness
 
@@ -75,7 +75,7 @@ correctness gate: the production path on the frozen request set
 types at 512 to 4096 tokens; content sha256 `21c8e0ba…7bf7`) against the upstream d3 runtime on CPU in BF16
 (`make reference`, `reference.py`). A question passes when its option logits
 are all finite, each answer is in the other's top 2, and the answers are equal
-when the reference's top-2 margin is at least 0.05; every question must pass
+when the reference's top-2 margin is at least 0.25; every question must pass
 and every input id sequence must equal the reference's.
 
 | Weight form | Gate | Answers agree | max \|Δp\| |

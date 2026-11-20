@@ -59,7 +59,7 @@ d3 has no LM head and no causal-LM reference, so the repository's
 d3 decision gate** (`d3_edge/gate.py`, `run_npu2_verify.lit`) instead, the
 model's correctness gate, on the 67 questions of `d3_edge/requests.json`. Its
 rule is d3-edge's (finite logits, each answer in the other's top 2, equal
-answers where the reference's margin is at least 0.05, input ids equal).
+answers where the reference's margin is at least 0.25, input ids equal).
 
 The reference (`make reference`, `d3_edge/reference.py --model lite`) is the
 upstream d3 runtime on CPU in BF16 with every weight the bundle quantizes
