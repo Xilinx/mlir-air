@@ -421,6 +421,37 @@ def RaiseLoadBufferToTensorOp : Op<Transform_Dialect, "air.raise_load_buffer_to_
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
+def ForwardCopyIntoDestinationOp : Op<Transform_Dialect, "air.forward_copy_into_destination",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Copy a buffer's source straight into the destination its tensor is materialized in";
+  let description = [{
+    Looks in the target for a buffer that only carries data from one place
+    to another: a `memref.alloc` filled by one `memref.copy` and read once,
+    by a `bufferization.to_tensor` whose only use is a
+    `bufferization.materialize_in_destination` into a memref. The copy, the
+    read and the materialization are rewritten as one `memref.copy` from the
+    first copy's source to the destination, at the materialization, and the
+    buffer goes.
+
+    A Triton load whose block is stored unchanged lowers to such a buffer
+    (after `air.raise_load_buffer_to_tensor` for a masked one). Lowered as
+    written, it takes two copies, the second through a core; forwarded, one
+    DMA writes the destination.
+
+    The copy, the read and the materialization must be in one block, in that
+    order, with nothing between the copy and the materialization that may
+    write memory, so that the source still holds the copied data. Anything
+    else is left unchanged.
+
+    Returns the target.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
 def FoldExtractSliceOfInsertSliceOp : Op<Transform_Dialect, "air.fold_extract_slice_of_insert_slice",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {

@@ -52,35 +52,6 @@ using namespace mlir;
 
 namespace xilinx {
 
-class AIRLinalgNamePass
-    : public air::impl::AIRLinalgNamePassBase<AIRLinalgNamePass> {
-
-public:
-  AIRLinalgNamePass() = default;
-  AIRLinalgNamePass(const AIRLinalgNamePass &pass){};
-
-  void runOnOperation() override;
-
-private:
-};
-
-void AIRLinalgNamePass::runOnOperation() {
-  auto module = getOperation();
-  auto ctx = module.getContext();
-
-  unsigned id = 0;
-  module.walk([&](linalg::LinalgOp op) {
-    auto attr = op->getAttrOfType<StringAttr>(
-        air::LinalgTransforms::kLinalgTransformMarker);
-    if (!attr) {
-      std::string name =
-          op->getName().getStringRef().str() + std::to_string(id++);
-      op->setAttr(air::LinalgTransforms::kLinalgTransformMarker,
-                  StringAttr::get(ctx, name));
-    }
-  });
-}
-
 // AIRSpecializeDmaBroadcast
 namespace {
 
@@ -3131,10 +3102,6 @@ namespace air {
 
 std::unique_ptr<Pass> createAIRSpecializeDmaBroadcast() {
   return std::make_unique<AIRSpecializeDmaBroadcast>();
-}
-
-std::unique_ptr<Pass> createAIRLinalgNamePass() {
-  return std::make_unique<AIRLinalgNamePass>();
 }
 
 std::unique_ptr<Pass> createAIRRenumberDmaIdPass() {
