@@ -11216,86 +11216,6 @@ private:
   }
 };
 
-class SplitAIEDevicesPass
-    : public air::impl::AIRSplitDevicesBase<SplitAIEDevicesPass> {
-
-public:
-  SplitAIEDevicesPass() = default;
-  SplitAIEDevicesPass(const SplitAIEDevicesPass &pass) {}
-  void runOnOperation() override {
-    ModuleOp m = getOperation();
-    auto ctx = &getContext();
-
-    SmallVector<AIE::DeviceOp> deviceOps;
-    m.walk([&](AIE::DeviceOp d) { deviceOps.push_back(d); });
-
-    unsigned segment_number = 0;
-    OpBuilder builder(ctx);
-    for (auto device : deviceOps) {
-
-      std::string segment_name;
-      if (auto attr = device->getAttrOfType<StringAttr>(
-              SymbolTable::getSymbolAttrName())) {
-        segment_name = attr.getValue().str();
-      } else {
-        segment_name = "segment_" + std::to_string(segment_number++);
-      }
-      std::string aie_module_name = "aie." + segment_name;
-
-      ModuleOp aie_module =
-          ModuleOp::create(builder.getUnknownLoc(), StringRef(aie_module_name));
-      builder.setInsertionPointToStart(aie_module.getBody());
-      IRMapping remap;
-      for (auto &o : m.getBody()->getOperations()) {
-
-        // if it's not the current device op, don't clone it
-        if (isa<AIE::DeviceOp>(o) && &o != device.getOperation())
-          continue;
-
-        // if it's a function without a use in the device op, don't clone it
-        if (isa<func::FuncOp>(o)) {
-          bool has_use = false;
-          for (auto u : o.getUsers()) {
-            has_use |= (u->getParentOfType<AIE::DeviceOp>() == device);
-          }
-          if (!has_use)
-            continue;
-        }
-
-        // clone op into the new module
-        builder.clone(o, remap);
-      }
-
-      // run lowering patterns
-      //
-      RewritePatternSet removepatterns(ctx);
-      removepatterns.add<OpRemovalPattern<airrt::ModuleMetadataOp>>(ctx);
-
-      ConversionTarget target(*ctx);
-      target.addIllegalDialect<airrt::AIRRtDialect>();
-      if (failed(applyPartialConversion(aie_module, target,
-                                        std::move(removepatterns))))
-        signalPassFailure();
-
-      // write module to stdout or file
-      //
-      if (clOutputPrefix != "-") {
-        if (clOutputPrefix != "/dev/null") {
-          std::error_code EC;
-          std::string fname = clOutputPrefix + aie_module_name + ".mlir";
-          llvm::raw_fd_ostream aie_ostream(fname, EC);
-          aie_module.print(aie_ostream);
-        }
-      } else {
-        aie_module.print(llvm::outs());
-      }
-    }
-
-    for (auto device : deviceOps)
-      device.erase();
-  }
-};
-
 // Custom version of LinalgOpToLibraryCallRewrite
 class AIRLinalgOpToLibraryCallRewrite
     : public OpInterfaceRewritePattern<linalg::LinalgOp> {
@@ -11489,10 +11409,6 @@ std::unique_ptr<mlir::Pass> createAIRToAIEPass() {
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createAIRToAIEPass(const AIRToAIEOptions &options) {
   return std::make_unique<AIRToAIEPass>(options);
-}
-
-std::unique_ptr<mlir::Pass> createAIRSplitDevicesPass() {
-  return std::make_unique<SplitAIEDevicesPass>();
 }
 
 std::unique_ptr<OperationPass<ModuleOp>> createAIRLinalgToFuncPass() {
