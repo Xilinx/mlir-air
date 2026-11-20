@@ -22,7 +22,6 @@ std::unique_ptr<mlir::Pass> createAIRSpecializeDmaBroadcast();
 std::unique_ptr<mlir::Pass> createAIRLinalgNamePass();
 std::unique_ptr<mlir::Pass> createAIRRemoveLinalgNamePass();
 std::unique_ptr<mlir::Pass> createAIRPipelineReducePass();
-std::unique_ptr<mlir::Pass> createAIRFuseParallelHerdPass();
 std::unique_ptr<mlir::Pass> createAIRRenumberDmaIdPass();
 std::unique_ptr<mlir::Pass> createAIRLowerHerdParallelPass();
 std::unique_ptr<mlir::Pass> createAIRLabelBroadcastChannelWithTilePass();
