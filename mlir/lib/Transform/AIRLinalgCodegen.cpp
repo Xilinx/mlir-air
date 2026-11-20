@@ -6431,7 +6431,9 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
   if (castIn->use_empty())
     rewriter.eraseOp(castIn);
 
-  Value wideOut = truncationInput;
+  // Read the operand again: when the truncation consumes the extension
+  // directly, it now reads the wide iter_arg.
+  Value wideOut = truncationOp->getOperand(0);
   rewriter.setInsertionPoint(castOut);
   if (shapeCastAfterTruncation)
     wideOut = vector::ShapeCastOp::create(

@@ -107,3 +107,37 @@ module attributes {transform.with_named_sequence} {
     transform.yield
   }
 }
+
+// -----
+
+// The truncation consumes the extension directly: the loop just carries the
+// wide value.
+
+// CHECK-LABEL: func.func @truncation_of_extension
+// CHECK: %[[INIT:.*]] = arith.extsi %arg0 : vector<64xi16> to vector<64xi32>
+// CHECK: %[[LOOP:.*]] = scf.for {{.*}} iter_args(%[[ACC:.*]] = %[[INIT]]) -> (vector<64xi32>) {
+// CHECK-NEXT: scf.yield %[[ACC]] : vector<64xi32>
+// CHECK-NEXT: }
+// CHECK-NEXT: arith.trunci %[[LOOP]] : vector<64xi32> to vector<64xi16>
+func.func @truncation_of_extension(%arg0: vector<64xi16>) -> vector<64xi16> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %r = scf.for %i = %c0 to %c4 step %c1 iter_args(%acc = %arg0) -> (vector<64xi16>) {
+    %w = arith.extsi %acc : vector<64xi16> to vector<64xi32>
+    %n = arith.trunci %w : vector<64xi32> to vector<64xi16>
+    scf.yield %n : vector<64xi16>
+  }
+  return %r : vector<64xi16>
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} attributes{sym_name = "truncation_of_extension"} in %arg0 : (!transform.any_op) -> !transform.any_op
+    %loop = transform.structured.match ops{["scf.for"]} in %f : (!transform.any_op) -> !transform.any_op
+    %ext = transform.structured.match ops{["arith.extsi"]} in %loop : (!transform.any_op) -> !transform.any_op
+    %trunc = transform.structured.match ops{["arith.trunci"]} in %loop : (!transform.any_op) -> !transform.any_op
+    %new = transform.air.hoist_cast_pair %ext, %trunc, %loop : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
