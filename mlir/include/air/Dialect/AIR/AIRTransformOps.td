@@ -190,38 +190,6 @@ def ForallWithReduceToParallelOp : Op<Transform_Dialect, "air.forall_with_reduce
 // Ops implemented in mlir/lib/Transform/AIRLinalgCodegen.cpp
 //
 
-def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
-    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
-    TransformOpInterface, TransformEachOpTrait]> {
-  let summary = "Turn a reduction dimension into a herd pipeline";
-  let description = [{
-    Transform-dialect form of `air-pipeline-reduce`. Tiles the target linalg
-    op by `tile_size` and distributes the reduction over a herd of
-    `pipeline_depth` stages, laid out along x (`direction = "horiz"`) or y
-    (`direction = "vert"`). Each stage forwards its partial result to the
-    next through an `air.channel`. With `promote`, subviews are promoted to
-    local buffers with explicit copies. Replaces the target and returns a
-    handle to the result.
-  }];
-  let arguments =
-    (ins TransformHandleTypeInterface:$target,
-         DefaultValuedAttr<I64ArrayAttr, "{}">:$tile_size,
-         DefaultValuedAttr<I64Attr, "1">:$pipeline_depth,
-         DefaultValuedAttr<StrAttr, "\"horiz\"">:$direction,
-         UnitAttr:$promote);
-  let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat =
-      "$target prop-dict attr-dict `:` functional-type(operands, results)";
-
-  let extraClassDeclaration = [{
-    ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::mlir::transform::TransformRewriter &rewriter,
-        ::mlir::linalg::LinalgOp target,
-        ::mlir::transform::ApplyToEachResultList &results,
-        ::mlir::transform::TransformState &state);
-  }];
-}
-
 def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
         [DeclareOpInterfaceMethods<TransformOpInterface>,
          DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {

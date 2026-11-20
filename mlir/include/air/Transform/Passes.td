@@ -1055,23 +1055,6 @@ def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp">
   ];
 }
 
-def AIRPipelineReducePass : Pass<"air-pipeline-reduce", "func::FuncOp"> {
-  let summary = "Turn a reduction dimension into a herd pipeline";
-  let constructor = "xilinx::air::createAIRPipelineReducePass()";
-  let options = [
-    ListOption<"clTileSize", "tile-size", "unsigned",
-               "Tile factors to pass to L1 tiling",
-               "llvm::cl::ZeroOrMore">,
-    Option<"clPipelineDepth", "pipeline-depth", "int", /*default=*/"4",
-           "Pipeline depth to generate">,
-    Option<"clPipelineDirection", "pipeline-direction", "std::string", 
-            /*default=*/"\"horiz\"",
-            "Pipeline direction attribute to use. Can be 'vert' or 'horiz'">,
-    Option<"clPromoteSubViews", "promote", "bool", /*default=*/"false",
-            "Promote subviews to memory buffers and insert copies.">
-  ];
-}
-
 def AIRFuseParallelHerdPass : Pass<"air-fuse-parallel-launch", "ModuleOp"> {
   let summary = "fuse parallel launch pass";
   let constructor = "xilinx::air::createAIRFuseParallelHerdPass()";
