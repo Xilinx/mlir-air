@@ -193,6 +193,7 @@ public:
     }
 
     auto module = getOperation();
+    unplacedAny = false;
 
     // Place herds in segments
     module.walk([&](air::SegmentOp part) {
@@ -283,10 +284,14 @@ public:
         placeHerdsInSegment(unplacedHerds, segment, emptyCascadeConnections);
       });
     });
-    return;
+    if (unplacedAny)
+      signalPassFailure();
   }
 
 private:
+  // Set when a herd finds no place; the pass then fails.
+  bool unplacedAny = false;
+
   // Get herd name from a herd op
   std::string getHerdName(air::HerdOp herd) {
     if (auto attr =
@@ -588,6 +593,7 @@ private:
     }
 
     if (unplacedHerds.size() != 0) {
+      unplacedAny = true;
       getOperation().emitError("No valid placement found.");
       for (uint32_t i = 0; i < unplacedHerds.size(); i++) {
         for (uint32_t j = 0; j < unplacedHerds[i]->getHerdOps().size(); j++)
