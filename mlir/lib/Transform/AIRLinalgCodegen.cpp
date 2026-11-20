@@ -4413,13 +4413,15 @@ fuseMultiOpLinalgOps(RewriterBase &rewriter, linalg::LinalgOp firstOp,
 
   auto consumer = dyn_cast<linalg::GenericOp>(secondOp.getOperation());
   if (!consumer) {
+    // Generalizing erases the named op, and the operand with it.
+    unsigned operandNumber = fusedOperand->getOperandNumber();
     rewriter.setInsertionPoint(secondOp);
     FailureOr<linalg::GenericOp> generic =
         linalg::generalizeNamedOp(rewriter, secondOp);
     if (failed(generic))
       return failure();
     consumer = *generic;
-    fusedOperand = &consumer->getOpOperand(fusedOperand->getOperandNumber());
+    fusedOperand = &consumer->getOpOperand(operandNumber);
   }
 
   // Fuse a private generic copy of the first op when it is a named op or has
