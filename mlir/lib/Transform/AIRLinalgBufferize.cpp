@@ -110,7 +110,7 @@ public:
             signalPassFailure();
           }
       // Resolve conflicts for op's operands and results.
-      LLVM_DEBUG(llvm::outs()
+      LLVM_DEBUG(llvm::dbgs()
                  << "//===-------------------------------------------===//\n"
                  << "IR after resolving conflicts: " << nextOp->getName()
                  << "\n");
@@ -118,7 +118,7 @@ public:
       if (failed(resolveTensorOpOperandConflictsWithNewTensors(
               nextOp, rewriter, analysisState, bufferizationState))) {
         LLVM_DEBUG(
-            llvm::outs()
+            llvm::dbgs()
             << "failed to resolve conflicts\n"
             << "//===-------------------------------------------===//\n");
         nextOp->emitError("failed to resolve operand conflicts for op");

@@ -69,7 +69,7 @@ void CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
     if (auto v = llvm::dyn_cast_if_present<Value>(size)) {
       auto c = dyn_cast_if_present<arith::ConstantIndexOp>(v.getDefiningOp());
       if (!c) {
-        LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
+        LLVM_DEBUG(llvm::dbgs() << "Found non-constant dim!\n");
         return;
       }
       iters *= c.value();
@@ -77,7 +77,7 @@ void CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
       auto a = llvm::dyn_cast_if_present<Attribute>(size);
       auto c = llvm::dyn_cast_if_present<IntegerAttr>(a);
       if (!c) {
-        LLVM_DEBUG(llvm::outs() << "unhandled addr!\n");
+        LLVM_DEBUG(llvm::dbgs() << "unhandled addr!\n");
         return;
       }
       iters *= c.getInt();

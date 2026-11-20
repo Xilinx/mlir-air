@@ -50,7 +50,7 @@ public:
     if (clTileSizes.size() > 0) {
       for (unsigned i = 0; i < clTileSizes.size(); ++i) {
         optTileSizes.push_back(clTileSizes[i]);
-        LLVM_DEBUG(llvm::outs()
+        LLVM_DEBUG(llvm::dbgs()
                    << "clTileSizes[" << i << "] = " << clTileSizes[i] << "\n");
       }
     }
@@ -59,7 +59,7 @@ public:
     if (clCopyDepths.size() > 0) {
       for (unsigned i = 0; i < clCopyDepths.size(); ++i) {
         optCopyDepths.push_back(clCopyDepths[i]);
-        LLVM_DEBUG(llvm::outs() << "clCopyDepths[" << i
+        LLVM_DEBUG(llvm::dbgs() << "clCopyDepths[" << i
                                 << "] = " << clCopyDepths[i] << "\n");
       }
     }

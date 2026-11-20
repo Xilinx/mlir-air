@@ -5718,7 +5718,7 @@ public:
       auto ms = air::symbolizeMemorySpace(clAggressiveMode[i]);
       if (ms)
         targetMemorySpaces.push_back(*ms);
-      LLVM_DEBUG(llvm::outs() << "clAggressiveMode[" << i
+      LLVM_DEBUG(llvm::dbgs() << "clAggressiveMode[" << i
                               << "] = " << clAggressiveMode[i] << "\n");
     }
   }
