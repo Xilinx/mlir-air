@@ -42,7 +42,6 @@ void xilinx::air::registerTransformPasses() {
   registerAIRLowerHerdParallelPass();
   registerAIROverrideMemRefMemorySpace();
   registerAIRPipelineReducePass();
-  registerAIRRemoveLinalgNamePass();
   registerAIRRenumberDmaIdPass();
   registerAIRresolveTensorOpOperandConflictsWithNewTensors();
   registerAIRSpecializeDmaBroadcast();

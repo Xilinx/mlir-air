@@ -81,30 +81,6 @@ void AIRLinalgNamePass::runOnOperation() {
   });
 }
 
-class AIRRemoveLinalgNamePass
-    : public air::impl::AIRRemoveLinalgNamePassBase<AIRRemoveLinalgNamePass> {
-
-public:
-  AIRRemoveLinalgNamePass() = default;
-  AIRRemoveLinalgNamePass(const AIRRemoveLinalgNamePass &pass){};
-
-  void runOnOperation() override;
-
-private:
-};
-
-void AIRRemoveLinalgNamePass::runOnOperation() {
-  auto module = getOperation();
-
-  module.walk([&](linalg::LinalgOp op) {
-    auto attr = op->getAttrOfType<StringAttr>(
-        air::LinalgTransforms::kLinalgTransformMarker);
-    if (attr) {
-      op->removeAttr(air::LinalgTransforms::kLinalgTransformMarker);
-    }
-  });
-}
-
 // AIRSpecializeDmaBroadcast
 namespace {
 
@@ -3327,10 +3303,6 @@ std::unique_ptr<Pass> createAIRSpecializeDmaBroadcast() {
 
 std::unique_ptr<Pass> createAIRLinalgNamePass() {
   return std::make_unique<AIRLinalgNamePass>();
-}
-
-std::unique_ptr<Pass> createAIRRemoveLinalgNamePass() {
-  return std::make_unique<AIRRemoveLinalgNamePass>();
 }
 
 std::unique_ptr<Pass> createAIRFuseParallelHerdPass() {
