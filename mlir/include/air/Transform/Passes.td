@@ -1136,11 +1136,6 @@ def AIRLowerHerdParallelPass : Pass<"air-lower-herd-parallel", "func::FuncOp"> {
   let constructor = "xilinx::air::createAIRLowerHerdParallelPass()";
 }
 
-def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-with-tile", "func::FuncOp"> {
-  let summary = "Label broadcasted channel ops with tile coordinates.";
-  let constructor = "xilinx::air::createAIRLabelBroadcastChannelWithTilePass()";
-}
-
 def AIRFuseNestedHerdPass : Pass<"air-fuse-nested-herd", "func::FuncOp"> {
   let summary = "Fuse a perfectly nested pair of air.herd loops into a single air.herd.";
   let constructor = "xilinx::air::createAIRFuseNestedHerdPass()";

@@ -39,7 +39,6 @@ void xilinx::air::registerTransformPasses() {
   registerAIRLinalgCodegen();
   registerAIRLinalgNamePass();
   registerAIRLinalgOpStats();
-  registerAIRLabelBroadcastChannelWithTilePass();
   registerAIRLowerHerdParallelPass();
   registerAIROverrideMemRefMemorySpace();
   registerAIRPipelineReducePass();
