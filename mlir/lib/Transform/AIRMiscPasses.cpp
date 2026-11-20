@@ -52,19 +52,6 @@ using namespace mlir;
 
 namespace xilinx {
 
-class AIRExamplePass : public air::impl::AIRExamplePassBase<AIRExamplePass> {
-
-public:
-  AIRExamplePass() = default;
-  AIRExamplePass(const AIRExamplePass &pass){};
-
-  void runOnOperation() override;
-
-private:
-};
-
-void AIRExamplePass::runOnOperation() {}
-
 class AIRLinalgNamePass
     : public air::impl::AIRLinalgNamePassBase<AIRLinalgNamePass> {
 
@@ -90,30 +77,6 @@ void AIRLinalgNamePass::runOnOperation() {
           op->getName().getStringRef().str() + std::to_string(id++);
       op->setAttr(air::LinalgTransforms::kLinalgTransformMarker,
                   StringAttr::get(ctx, name));
-    }
-  });
-}
-
-class AIRRemoveLinalgNamePass
-    : public air::impl::AIRRemoveLinalgNamePassBase<AIRRemoveLinalgNamePass> {
-
-public:
-  AIRRemoveLinalgNamePass() = default;
-  AIRRemoveLinalgNamePass(const AIRRemoveLinalgNamePass &pass){};
-
-  void runOnOperation() override;
-
-private:
-};
-
-void AIRRemoveLinalgNamePass::runOnOperation() {
-  auto module = getOperation();
-
-  module.walk([&](linalg::LinalgOp op) {
-    auto attr = op->getAttrOfType<StringAttr>(
-        air::LinalgTransforms::kLinalgTransformMarker);
-    if (attr) {
-      op->removeAttr(air::LinalgTransforms::kLinalgTransformMarker);
     }
   });
 }
@@ -1064,56 +1027,6 @@ void AIRLowerHerdParallelPass::runOnOperation() {
   RewritePatternSet patterns(context);
   patterns.add<ParallelToForConversion>(context);
   (void)applyPatternsGreedily(op, std::move(patterns));
-}
-
-class AIRLabelBroadcastChannelWithTilePass
-    : public air::impl::AIRLabelBroadcastChannelWithTilePassBase<
-          AIRLabelBroadcastChannelWithTilePass> {
-
-public:
-  AIRLabelBroadcastChannelWithTilePass() = default;
-  AIRLabelBroadcastChannelWithTilePass(
-      const AIRLabelBroadcastChannelWithTilePass &pass){};
-
-  void runOnOperation() override;
-
-private:
-};
-
-void AIRLabelBroadcastChannelWithTilePass::runOnOperation() {
-  // Util. functions for air dependency
-  xilinx::air::dependencyCanonicalizer canonicalizer;
-  auto func = getOperation();
-  auto ctx = func.getContext();
-  func.walk([&](air::ChannelInterface op) {
-    auto aif = op->getParentOfType<affine::AffineIfOp>();
-    auto herd = op->getParentOfType<air::HerdOp>();
-    if (aif && herd) {
-      // Fast forward through affine.if nest
-      std::vector<Operation *> affine_if_nest;
-      Operation *spatial_loop = nullptr;
-      getAffineIfNestAndSpatialLoopFromOp(op, affine_if_nest, spatial_loop);
-      std::vector<int> position;
-      std::vector<Attribute> tiles;
-      OpBuilder builder(op);
-      for (unsigned i = 0; i < canonicalizer.getTripCountInHierarchyOp(herd);
-           i++) {
-        SmallVector<NamedAttribute, 5> attrs;
-        auto current_position = canonicalizer.getPositionFromIterator(i, herd);
-        if (positionHitsAffineIfCondition(op, spatial_loop, affine_if_nest,
-                                          current_position)) {
-          attrs.push_back(
-              NamedAttribute(StringAttr::get(ctx, "col"),
-                             builder.getI64IntegerAttr(current_position[0])));
-          attrs.push_back(
-              NamedAttribute(StringAttr::get(ctx, "row"),
-                             builder.getI64IntegerAttr(current_position[1])));
-          tiles.push_back(DictionaryAttr::get(ctx, attrs));
-        }
-      }
-      op->setAttr("tile", ArrayAttr::get(ctx, tiles));
-    }
-  });
 }
 
 // Controls the dimension ordering for the fused herd:
@@ -3334,20 +3247,12 @@ DiagnosedSilenceableFailure transform::OverrideMemRefMemorySpaceOp::apply(
 namespace xilinx {
 namespace air {
 
-std::unique_ptr<Pass> createAIRExamplePass() {
-  return std::make_unique<AIRExamplePass>();
-}
-
 std::unique_ptr<Pass> createAIRSpecializeDmaBroadcast() {
   return std::make_unique<AIRSpecializeDmaBroadcast>();
 }
 
 std::unique_ptr<Pass> createAIRLinalgNamePass() {
   return std::make_unique<AIRLinalgNamePass>();
-}
-
-std::unique_ptr<Pass> createAIRRemoveLinalgNamePass() {
-  return std::make_unique<AIRRemoveLinalgNamePass>();
 }
 
 std::unique_ptr<Pass> createAIRFuseParallelHerdPass() {
@@ -3360,10 +3265,6 @@ std::unique_ptr<Pass> createAIRRenumberDmaIdPass() {
 
 std::unique_ptr<Pass> createAIRLowerHerdParallelPass() {
   return std::make_unique<AIRLowerHerdParallelPass>();
-}
-
-std::unique_ptr<Pass> createAIRLabelBroadcastChannelWithTilePass() {
-  return std::make_unique<AIRLabelBroadcastChannelWithTilePass>();
 }
 
 std::unique_ptr<Pass> createAIRFuseNestedHerdPass() {

@@ -34,8 +34,6 @@ std::unique_ptr<mlir::Pass> createAIRHoistOpsNotUsingPingPongPattern();
 
 std::unique_ptr<mlir::Pass> createAIRBroadcastDetection();
 
-std::unique_ptr<mlir::Pass> createAIRPruneLinalgGenericInputDma();
-
 std::unique_ptr<mlir::Pass> createAIRPingPongTransformationPattern();
 std::unique_ptr<OperationPass<ModuleOp>> createAIRPingPongTransformationPattern(
     const AIRPingPongTransformationPatternOptions &);
@@ -45,8 +43,6 @@ std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopForPingPongPattern();
 std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopInAIRSegmentPattern();
 
 std::unique_ptr<mlir::Pass> createAIRSpecializeChannelWrapAndStridePattern();
-
-std::unique_ptr<mlir::Pass> createAIRUnrollChannelByFactorPattern();
 
 std::unique_ptr<mlir::Pass> createAIRFuseChannels();
 std::unique_ptr<OperationPass<ModuleOp>>

@@ -31,7 +31,6 @@ void xilinx::air::registerTransformPasses() {
   registerAIRDependencyCanonicalize();
   registerAIRDependencyParseGraph();
   registerDmaToChannel();
-  registerAIRExamplePass();
   registerAIRFuseNestedHerdPass();
   registerAIRFuseParallelHerdPass();
   registerAIRHerdPlacementPass();
@@ -39,11 +38,9 @@ void xilinx::air::registerTransformPasses() {
   registerAIRLinalgCodegen();
   registerAIRLinalgNamePass();
   registerAIRLinalgOpStats();
-  registerAIRLabelBroadcastChannelWithTilePass();
   registerAIRLowerHerdParallelPass();
   registerAIROverrideMemRefMemorySpace();
   registerAIRPipelineReducePass();
-  registerAIRRemoveLinalgNamePass();
   registerAIRRenumberDmaIdPass();
   registerAIRresolveTensorOpOperandConflictsWithNewTensors();
   registerAIRSpecializeDmaBroadcast();
