@@ -34,7 +34,6 @@ std::unique_ptr<mlir::Pass> createAIRHoistOpsNotUsingPingPongPattern();
 
 std::unique_ptr<mlir::Pass> createAIRBroadcastDetection();
 
-
 std::unique_ptr<mlir::Pass> createAIRPingPongTransformationPattern();
 std::unique_ptr<OperationPass<ModuleOp>> createAIRPingPongTransformationPattern(
     const AIRPingPongTransformationPatternOptions &);
