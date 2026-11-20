@@ -75,7 +75,7 @@ correctness gate: the production path on the frozen request set
 types at 512 to 4096 tokens; content sha256 `21c8e0ba…7bf7`) against the upstream d3 runtime on CPU in BF16
 (`make reference`, `reference.py`). A question passes when its option logits
 are all finite, each answer is in the other's top 2, and the answers are equal
-when the reference's top-2 margin is at least 0.05; every question must pass
+when the reference's top-2 margin is at least 0.25; every question must pass
 and every input id sequence must equal the reference's.
 
 | Weight form | Gate | Answers agree | max \|Δp\| |

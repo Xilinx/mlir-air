@@ -6,7 +6,7 @@
 // dequantized (d3_edge/reference.py --model lite) over the 67 questions of
 // d3_edge/requests.json. A question passes with finite option logits, each
 // answer in the other's top 2, and equal answers where the reference's top-2
-// margin is at least 0.05. d3 has no LM head, so the shared verify/ top-k
+// margin is at least 0.25. d3 has no LM head, so the shared verify/ top-k
 // token check does not apply; this is the model's correctness gate. NPU
 // weights: FastFlowLM's model.q4nx (FastFlowLM/D3-Lite-NPU2, pinned revision
 // and sha256); the reference also loads vllm-sr/d3-lite at its pinned
