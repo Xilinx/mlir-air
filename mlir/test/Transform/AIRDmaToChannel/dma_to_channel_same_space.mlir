@@ -142,6 +142,62 @@ module {
 
 // -----
 
+// Sizes and strides without offsets: the offsets are 0, and only that part is
+// copied.
+
+// CHECK-LABEL: func.func @l1_no_offsets
+// CHECK: %[[SRC:.*]] = memref.alloc() : memref<64xbf16, 2>
+// CHECK: %[[DST:.*]] = memref.alloc() : memref<64xbf16, 2>
+// CHECK: %[[S:.*]] = memref.reinterpret_cast %[[SRC]] to offset: [%{{.*}}], sizes: [32], strides: [1]
+// CHECK: %[[D:.*]] = memref.reinterpret_cast %[[DST]] to offset: [%{{.*}}], sizes: [32], strides: [1]
+// CHECK: linalg.copy ins(%[[S]] : {{.*}}) outs(%[[D]] : {{.*}})
+module {
+  func.func @l1_no_offsets() {
+    %c1 = arith.constant 1 : index
+    air.launch (%x) in (%sx=%c1) {
+      air.segment @seg {
+        %c1_0 = arith.constant 1 : index
+        air.herd @h tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) {
+          %c1_1 = arith.constant 1 : index
+          %c32 = arith.constant 32 : index
+          %src = memref.alloc() : memref<64xbf16, 2>
+          %dst = memref.alloc() : memref<64xbf16, 2>
+          air.dma_memcpy_nd (%dst[] [%c32] [%c1_1], %src[] [%c32] [%c1_1]) {id = 1 : i32} : (memref<64xbf16, 2>, memref<64xbf16, 2>)
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// A synchronous copy with dependencies waits for them before the core copies.
+
+// CHECK-LABEL: func.func @l1_sync_with_deps
+// CHECK: %[[T:.*]] = air.wait_all async
+// CHECK: air.wait_all [%[[T]]]
+// CHECK-NEXT: linalg.copy
+module {
+  func.func @l1_sync_with_deps() {
+    %c1 = arith.constant 1 : index
+    air.launch (%x) in (%sx=%c1) {
+      air.segment @seg {
+        %c1_0 = arith.constant 1 : index
+        air.herd @h tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) {
+          %src = memref.alloc() : memref<64xbf16, 2>
+          %dst = memref.alloc() : memref<64xbf16, 2>
+          %t = air.wait_all async
+          air.dma_memcpy_nd [%t] (%dst[] [] [], %src[] [] []) {id = 1 : i32} : (memref<64xbf16, 2>, memref<64xbf16, 2>)
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
 // Outside a herd no core can copy them.
 
 module {

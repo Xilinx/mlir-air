@@ -845,19 +845,24 @@ createChannelOp(OpBuilder builder, ModuleOp module, std::string cname,
 }
 
 // The part of `buf` a copy's offsets, sizes and strides (in elements, as a
-// DMA takes them) select, or `buf` itself when they are empty.
+// DMA takes them) select, or `buf` itself when all three are empty. Omitted
+// leading offsets are 0.
 static FailureOr<Value> copiedView(OpBuilder &b, Location loc, Value buf,
                                    ArrayRef<OpFoldResult> offsets,
                                    ArrayRef<OpFoldResult> sizes,
                                    ArrayRef<OpFoldResult> strides) {
-  if (offsets.empty())
+  if (offsets.empty() && sizes.empty() && strides.empty())
     return buf;
   auto type = dyn_cast<MemRefType>(buf.getType());
-  if (!type || !type.getLayout().isIdentity())
+  if (!type || !type.getLayout().isIdentity() ||
+      sizes.size() != strides.size() || offsets.size() > sizes.size())
     return failure();
+  SmallVector<OpFoldResult> allOffsets(sizes.size() - offsets.size(),
+                                       b.getIndexAttr(0));
+  llvm::append_range(allOffsets, offsets);
   Value offset = arith::ConstantIndexOp::create(b, loc, 0);
   SmallVector<int64_t> shape, steps;
-  for (auto [o, n, st] : llvm::zip_equal(offsets, sizes, strides)) {
+  for (auto [o, n, st] : llvm::zip_equal(allOffsets, sizes, strides)) {
     Value term = arith::MulIOp::create(
         b, loc, getValueOrCreateConstantIndexOp(b, loc, o),
         getValueOrCreateConstantIndexOp(b, loc, st));
@@ -905,6 +910,9 @@ static LogicalResult lowerL1Copies(ModuleOp module) {
                                     air::AsyncTokenType::get(b.getContext()),
                                     async.getAsyncDependencies());
       b.setInsertionPointToStart(b.createBlock(&exec.getRegion()));
+    } else if (!async.getAsyncDependencies().empty()) {
+      // A synchronous copy still waits for its dependencies.
+      air::WaitAllOp::create(b, loc, Type(), async.getAsyncDependencies());
     }
     auto src = copiedView(b, loc, op.getSrcMemref(), op.getMixedSrcOffsets(),
                           op.getMixedSrcSizes(), op.getMixedSrcStrides());

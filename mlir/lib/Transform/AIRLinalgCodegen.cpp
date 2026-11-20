@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
@@ -3124,18 +3125,49 @@ DiagnosedSilenceableFailure transform::RaiseLoadBufferToTensorOp::apply(
 // ForwardCopyIntoDestinationOp
 //===----------------------------------------------------------------------===//
 
-// Whether an op strictly between `from` and `to`, in their block, may write
-// memory.
+// Whether an op strictly between `from` and `to`, in their block, or an op
+// nested in one, may write memory. Nested ops count even when their parent
+// declares no write: a tensor-form linalg.generic can hold a memref.store.
 static bool mayWriteBetween(Operation *from, Operation *to) {
   for (Operation *op = from->getNextNode(); op != to; op = op->getNextNode()) {
-    if (isMemoryEffectFree(op))
-      continue;
-    auto effects = dyn_cast<MemoryEffectOpInterface>(op);
-    if (!effects || effects.hasEffect<MemoryEffects::Write>() ||
-        effects.hasEffect<MemoryEffects::Free>())
+    bool may = false;
+    op->walk([&](Operation *o) {
+      if (may)
+        return WalkResult::interrupt();
+      auto effects = dyn_cast<MemoryEffectOpInterface>(o);
+      if (!effects) {
+        may = !o->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
+        return WalkResult::advance();
+      }
+      may = effects.hasEffect<MemoryEffects::Write>() ||
+            effects.hasEffect<MemoryEffects::Free>();
+      return WalkResult::advance();
+    });
+    if (may)
       return true;
   }
   return false;
+}
+
+// Whether `a` and `b` provably do not overlap: one of them is a fresh
+// allocation, or a function argument marked `llvm.noalias`, reached through
+// views.
+static bool provablyDisjoint(Value a, Value b) {
+  auto distinct = [](Value v) {
+    Value root = xilinx::air::resolveBufferRoot(v);
+    if (isa_and_present<memref::AllocOp, memref::AllocaOp>(
+            root.getDefiningOp()))
+      return true;
+    auto arg = dyn_cast<BlockArgument>(root);
+    if (!arg)
+      return false;
+    auto fn = dyn_cast<FunctionOpInterface>(arg.getOwner()->getParentOp());
+    return fn && fn.getArgAttr(arg.getArgNumber(),
+                               LLVM::LLVMDialect::getNoAliasAttrName());
+  };
+  return xilinx::air::resolveBufferRoot(a) !=
+             xilinx::air::resolveBufferRoot(b) &&
+         (distinct(a) || distinct(b));
 }
 
 // Rewrites `memref.copy %src, %buf`, `%t = bufferization.to_tensor %buf` and
@@ -3175,6 +3207,10 @@ forwardCopyIntoDestination(RewriterBase &rewriter,
     return false;
   if (mayWriteBetween(fill, store))
     return false;
+  // The buffer kept the source as it was; a copy between overlapping memory
+  // is undefined.
+  if (!provablyDisjoint(fill.getSource(), dest))
+    return false;
 
   rewriter.setInsertionPoint(store);
   memref::CopyOp::create(rewriter, store.getLoc(), fill.getSource(), dest);
@@ -3192,9 +3228,11 @@ DiagnosedSilenceableFailure transform::ForwardCopyIntoDestinationOp::apply(
     transform::TransformResults &results, transform::TransformState &state) {
   SmallVector<Operation *> targets;
   for (Operation *target : state.getPayloadOps(getTarget())) {
+    // The target itself stays: the result handle holds it.
     SmallVector<bufferization::MaterializeInDestinationOp> stores;
     target->walk([&](bufferization::MaterializeInDestinationOp store) {
-      stores.push_back(store);
+      if (store.getOperation() != target)
+        stores.push_back(store);
     });
     for (auto store : stores)
       forwardCopyIntoDestination(rewriter, store);
