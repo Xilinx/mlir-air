@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
@@ -3114,6 +3115,164 @@ DiagnosedSilenceableFailure transform::RaiseLoadBufferToTensorOp::apply(
     });
     for (memref::AllocOp alloc : allocs)
       raiseLoadBuffer(rewriter, alloc);
+    targets.push_back(target);
+  }
+  results.set(llvm::cast<OpResult>(getResult()), targets);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// ForwardCopyIntoDestinationOp
+//===----------------------------------------------------------------------===//
+
+// Whether an op strictly between `from` and `to`, in their block, or an op
+// nested in one, may write memory. Nested ops count even when their parent
+// declares no write: a tensor-form linalg.generic can hold a memref.store.
+static bool mayWriteBetween(Operation *from, Operation *to) {
+  for (Operation *op = from->getNextNode(); op != to; op = op->getNextNode()) {
+    bool may = false;
+    op->walk([&](Operation *o) {
+      if (may)
+        return WalkResult::interrupt();
+      auto effects = dyn_cast<MemoryEffectOpInterface>(o);
+      if (!effects) {
+        may = !o->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
+        return WalkResult::advance();
+      }
+      may = effects.hasEffect<MemoryEffects::Write>() ||
+            effects.hasEffect<MemoryEffects::Free>();
+      return WalkResult::advance();
+    });
+    if (may)
+      return true;
+  }
+  return false;
+}
+
+// The elements [begin, end) of its buffer that `v` covers, when its type, or
+// the type of what a memref.cast made it from, gives them statically.
+static std::optional<std::pair<int64_t, int64_t>> staticExtent(Value v) {
+  while (auto cast = v.getDefiningOp<memref::CastOp>())
+    v = cast.getSource();
+  auto type = dyn_cast<MemRefType>(v.getType());
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  if (!type || !type.hasStaticShape() ||
+      failed(type.getStridesAndOffset(strides, offset)) ||
+      ShapedType::isDynamic(offset))
+    return std::nullopt;
+  int64_t last = offset;
+  for (auto [size, stride] : llvm::zip_equal(type.getShape(), strides)) {
+    if (ShapedType::isDynamic(stride) || stride < 0 || size == 0)
+      return std::nullopt;
+    last += (size - 1) * stride;
+  }
+  return std::make_pair(offset, last + 1);
+}
+
+// The buffer `v` is a view of, through views whose type keeps the offset
+// from that buffer's start.
+static Value viewedBuffer(Value v) {
+  while (Operation *op = v.getDefiningOp()) {
+    if (!isa<memref::SubViewOp, memref::ReinterpretCastOp, memref::CastOp,
+             memref::ExpandShapeOp, memref::CollapseShapeOp>(op))
+      break;
+    v = op->getOperand(0);
+  }
+  return v;
+}
+
+// Whether `a` and `b` provably do not overlap: different buffers, one of them
+// a fresh allocation or a function argument marked `llvm.noalias`; or views
+// of one buffer whose elements, as their types give them, do not meet.
+static bool provablyDisjoint(Value a, Value b) {
+  if (viewedBuffer(a) == viewedBuffer(b)) {
+    auto ea = staticExtent(a), eb = staticExtent(b);
+    return ea && eb && (ea->second <= eb->first || eb->second <= ea->first);
+  }
+  auto distinct = [](Value v) {
+    Value root = xilinx::air::resolveBufferRoot(v);
+    if (isa_and_present<memref::AllocOp, memref::AllocaOp>(
+            root.getDefiningOp()))
+      return true;
+    auto arg = dyn_cast<BlockArgument>(root);
+    if (!arg)
+      return false;
+    auto fn = dyn_cast<FunctionOpInterface>(arg.getOwner()->getParentOp());
+    return fn && fn.getArgAttr(arg.getArgNumber(),
+                               LLVM::LLVMDialect::getNoAliasAttrName());
+  };
+  return xilinx::air::resolveBufferRoot(a) !=
+             xilinx::air::resolveBufferRoot(b) &&
+         (distinct(a) || distinct(b));
+}
+
+// Rewrites `memref.copy %src, %buf`, `%t = bufferization.to_tensor %buf` and
+// `bufferization.materialize_in_destination %t in %dest` as
+// `memref.copy %src, %dest`; see ForwardCopyIntoDestinationOp.
+static bool
+forwardCopyIntoDestination(RewriterBase &rewriter,
+                           bufferization::MaterializeInDestinationOp store) {
+  Value dest = store.getDest();
+  if (!isa<MemRefType>(dest.getType()))
+    return false;
+  auto read = store.getSource().getDefiningOp<bufferization::ToTensorOp>();
+  if (!read || !read->hasOneUse())
+    return false;
+  auto alloc = read.getBuffer().getDefiningOp<memref::AllocOp>();
+  if (!alloc)
+    return false;
+  memref::CopyOp fill;
+  SmallVector<Operation *> deallocs;
+  for (Operation *user : alloc->getUsers()) {
+    if (user == read.getOperation())
+      continue;
+    if (isa<memref::DeallocOp>(user)) {
+      deallocs.push_back(user);
+      continue;
+    }
+    auto copy = dyn_cast<memref::CopyOp>(user);
+    if (!copy || copy.getTarget() != alloc.getResult() || fill)
+      return false;
+    fill = copy;
+  }
+  if (!fill)
+    return false;
+  Block *block = store->getBlock();
+  if (fill->getBlock() != block || read->getBlock() != block ||
+      !fill->isBeforeInBlock(read) || !read->isBeforeInBlock(store))
+    return false;
+  if (mayWriteBetween(fill, store))
+    return false;
+  // The buffer kept the source as it was; a copy between overlapping memory
+  // is undefined.
+  if (!provablyDisjoint(fill.getSource(), dest))
+    return false;
+
+  rewriter.setInsertionPoint(store);
+  memref::CopyOp::create(rewriter, store.getLoc(), fill.getSource(), dest);
+  rewriter.eraseOp(store);
+  rewriter.eraseOp(read);
+  rewriter.eraseOp(fill);
+  for (Operation *dealloc : deallocs)
+    rewriter.eraseOp(dealloc);
+  rewriter.eraseOp(alloc);
+  return true;
+}
+
+DiagnosedSilenceableFailure transform::ForwardCopyIntoDestinationOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+  SmallVector<Operation *> targets;
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    // The target itself stays: the result handle holds it.
+    SmallVector<bufferization::MaterializeInDestinationOp> stores;
+    target->walk([&](bufferization::MaterializeInDestinationOp store) {
+      if (store.getOperation() != target)
+        stores.push_back(store);
+    });
+    for (auto store : stores)
+      forwardCopyIntoDestination(rewriter, store);
     targets.push_back(target);
   }
   results.set(llvm::cast<OpResult>(getResult()), targets);
