@@ -2080,10 +2080,10 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
             unsafe = true;
           continue;
         }
-        // A channel put only reads its source.
+        // A channel put only reads its source; a get writes its destination.
         auto blockArg = dyn_cast<BlockArgument>(operand);
         if (blockArg && isa<air::HerdOp>(blockArg.getOwner()->getParentOp()) &&
-            !isa<MemoryEffectOpInterface, air::ChannelPutOp>(op))
+            (!isa<MemoryEffectOpInterface>(op) || isa<air::ChannelGetOp>(op)))
           unsafe = true;
       }
       return unsafe ? WalkResult::interrupt() : WalkResult::advance();
