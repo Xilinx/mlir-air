@@ -1055,12 +1055,6 @@ def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp">
   ];
 }
 
-def AIRFuseParallelHerdPass : Pass<"air-fuse-parallel-launch", "ModuleOp"> {
-  let summary = "fuse parallel launch pass";
-  let constructor = "xilinx::air::createAIRFuseParallelHerdPass()";
-}
-
-
 def AIRRenumberDmaIdPass : Pass<"air-renumber-dma", "func::FuncOp"> {
   let summary = "Renumber air dma op ids";
   let constructor = "xilinx::air::createAIRRenumberDmaIdPass()";

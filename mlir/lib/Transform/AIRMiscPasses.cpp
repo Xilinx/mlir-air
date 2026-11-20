@@ -811,124 +811,6 @@ public:
 private:
 };
 
-class AIRFuseParallelHerdPass
-    : public air::impl::AIRFuseParallelHerdPassBase<AIRFuseParallelHerdPass> {
-
-public:
-  AIRFuseParallelHerdPass() = default;
-  AIRFuseParallelHerdPass(const AIRFuseParallelHerdPass &pass){};
-
-  void runOnOperation() override;
-
-private:
-};
-
-void AIRFuseParallelHerdPass::runOnOperation() {
-
-  auto module = getOperation();
-  // auto ctx = module.getContext();
-
-  air::HerdOp launchOp = nullptr;
-  scf::ParallelOp parOp = nullptr;
-
-  module.walk([&](air::HerdOp launch) {
-    // launch must be enclosed by scf.parallel
-    parOp = launch->getParentOfType<scf::ParallelOp>();
-    if (!parOp)
-      return;
-
-    // launch must be at the top level of the scf.parallel
-    if (parOp.getBody() != launch->getBlock())
-      return;
-
-    launchOp = launch;
-  });
-
-  if (!launchOp || !parOp)
-    return;
-
-  // if the herd launch is size 1 in one dimension
-  // and the herd launch is enclosed by a 1-d scf.parallel
-  // then we try to fuse the scf.parallel onto the herd launch
-  auto herd_size = launchOp.getSizeOperands();
-  int64_t herd_size_x = launchOp.getNumCols();
-  int64_t herd_size_y = launchOp.getNumRows();
-  if (herd_size_x != 1 && herd_size_y != 1)
-    return;
-
-  OpBuilder b(parOp);
-  SmallVector<Value, 2> dims;
-  if (herd_size_x == 1)
-    dims = {parOp.getUpperBound()[0], herd_size[1]};
-  else
-    dims = {herd_size[0], parOp.getUpperBound()[0]};
-
-  SmallVector<Value, 8> args;
-  SmallVector<Value, 4> constants;
-  llvm::SetVector<Value> region_args;
-
-  getUsedValuesDefinedAbove(parOp.getRegion(), region_args);
-  for (Value v : region_args) {
-    if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
-      constants.push_back(v);
-    else
-      args.push_back(v);
-  }
-
-  auto newLaunchOp = air::HerdOp::create(
-      b, parOp.getLoc(), launchOp.getAsyncDependencies(), dims, args,
-      launchOp->getNumResults() > 0, launchOp->getAttrs());
-
-  IRMapping remap;
-  remap.map(parOp.getInductionVars()[0], (herd_size_x == 1)
-                                             ? newLaunchOp.getIds()[0]
-                                             : newLaunchOp.getIds()[1]);
-
-  b.setInsertionPointToStart(&newLaunchOp.getBody().front());
-
-  for (auto &o : *parOp.getBody()) {
-    if (isa<air::HerdOp>(o)) {
-      int idx = 0;
-      remap.map(launchOp.getSize()[0], launchOp.getSizeOperands()[0]);
-      remap.map(launchOp.getSize()[1], launchOp.getSizeOperands()[1]);
-      if (herd_size_x == 1)
-        remap.map(launchOp.getIds()[0], launchOp.getSizeOperands()[0]);
-      else
-        remap.map(launchOp.getIds()[0], newLaunchOp.getIds()[0]);
-      if (herd_size_x == 1)
-        remap.map(launchOp.getIds()[1], newLaunchOp.getIds()[1]);
-      else
-        remap.map(launchOp.getIds()[1], launchOp.getSizeOperands()[1]);
-      for (auto &a : launchOp.getKernelArguments()) {
-        auto v = launchOp.getKernelOperand(idx++);
-        remap.map(a, remap.lookupOrDefault(v));
-      }
-      for (auto &ho : launchOp.getBody().front()) {
-        if (isa<air::HerdTerminatorOp>(ho))
-          continue;
-        b.clone(ho, remap);
-      }
-    } else if (isa<scf::YieldOp>(o)) {
-      continue;
-    } else {
-      b.clone(o, remap);
-    }
-  }
-
-  b.setInsertionPointToStart(&newLaunchOp.getBody().front());
-  for (auto c : constants) {
-    replaceAllUsesInRegionWith(c, b.clone(*c.getDefiningOp())->getResult(0),
-                               newLaunchOp.getRegion());
-  }
-
-  int idx = 0;
-  auto kernel_args = newLaunchOp.getKernelArguments();
-  for (Value v : args)
-    replaceAllUsesInRegionWith(v, kernel_args[idx++], newLaunchOp.getRegion());
-
-  parOp.erase();
-}
-
 class AIRRenumberDmaIdPass
     : public air::impl::AIRRenumberDmaIdPassBase<AIRRenumberDmaIdPass> {
 
@@ -3220,10 +3102,6 @@ namespace air {
 
 std::unique_ptr<Pass> createAIRSpecializeDmaBroadcast() {
   return std::make_unique<AIRSpecializeDmaBroadcast>();
-}
-
-std::unique_ptr<Pass> createAIRFuseParallelHerdPass() {
-  return std::make_unique<AIRFuseParallelHerdPass>();
 }
 
 std::unique_ptr<Pass> createAIRRenumberDmaIdPass() {
