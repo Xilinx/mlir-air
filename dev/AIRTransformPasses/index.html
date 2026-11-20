@@ -1436,17 +1436,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#-air-label-scf-for-in-segment" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -air-label-scf-for-in-segment
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#-air-label-scf-for-to-ping-pong" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2010,17 +1999,6 @@
     <span class="md-ellipsis">
       
         -air-isolate-async-dma-loop-nests
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#-air-label-scf-for-in-segment" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -air-label-scf-for-in-segment
       
     </span>
   </a>
@@ -2830,12 +2808,6 @@ that read back L3 memory they write are not split.</p>
 <p><strong>Options</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>-scope : AIR hierarchy scope to perform loop splitting under. Must be one of [func, segment, launch].
 </code></pre></div>
-<h3 id="-air-label-scf-for-in-segment"><code>-air-label-scf-for-in-segment</code><a class="headerlink" href="#-air-label-scf-for-in-segment" title="Permanent link">&para;</a></h3>
-<p><em>Label all candidate scf.for loops within air.segment for unrolling</em></p>
-<p>This pass labels all scf.for loops contained in air.segment ops, except for those
-which are also contained in air.herd ops, with an 'unroll' integer attribute. Scf.for
-loops labelled with this attribute shall be unrolled, with the provided factor, by
-any subsequent 'air-unroll-loop-for-pipelining-pattern' pass.</p>
 <h3 id="-air-label-scf-for-to-ping-pong"><code>-air-label-scf-for-to-ping-pong</code><a class="headerlink" href="#-air-label-scf-for-to-ping-pong" title="Permanent link">&para;</a></h3>
 <p><em>Label all candidate scf.for loops for ping-pong transformation</em></p>
 <p>This pass labels all scf.for loops which contain air.execute event of memref.alloc,
