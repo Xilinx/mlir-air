@@ -2350,35 +2350,6 @@ private:
   uint64_t l1Budget = 0;
 };
 
-struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
-  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(scf::ForOp for_op,
-                                PatternRewriter &rewriter) const override {
-
-    // Check if the loop has been labelled
-    if (for_op->hasAttr("unroll"))
-      return failure();
-
-    // Avoid unrolling for loop which contains air.herd
-    bool hasHerdInBody = false;
-    for_op.getBody()->walk([&](air::HerdOp herd) { hasHerdInBody = true; });
-    if (hasHerdInBody)
-      return failure();
-
-    if (for_op->getParentOfType<air::SegmentOp>() &&
-        !for_op->getParentOfType<air::HerdOp>()) {
-      // Get for loop trip count
-      if (auto tripCount = getStaticScfForTripCountAsInt(for_op))
-        for_op->setAttr("unroll", rewriter.getI32IntegerAttr(*tripCount));
-    }
-
-    return success();
-  }
-
-private:
-};
-
 struct UnrollScfParallel : public OpRewritePattern<scf::ParallelOp> {
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
@@ -4590,33 +4561,6 @@ public:
     }
     patterns.insert<LabelScfForLoopForPingPongPattern>(ctx, clOmitMemorySpace,
                                                        l1Budget);
-    (void)applyPatternsGreedily(funcOp, std::move(patterns));
-  }
-
-  void runOnOperation() override {
-    auto module = getOperation();
-    SmallVector<func::FuncOp, 4> funcOps;
-    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
-    for (auto f : funcOps)
-      runOptPatterns(f);
-  }
-
-private:
-};
-
-class AIRLabelScfForLoopInAIRSegmentPattern
-    : public xilinx::air::impl::AIRLabelScfForLoopInAIRSegmentPatternBase<
-          AIRLabelScfForLoopInAIRSegmentPattern> {
-
-public:
-  AIRLabelScfForLoopInAIRSegmentPattern() = default;
-  AIRLabelScfForLoopInAIRSegmentPattern(
-      const AIRLabelScfForLoopInAIRSegmentPattern &pass){};
-
-  void runOptPatterns(func::FuncOp funcOp) {
-    MLIRContext *ctx = funcOp.getContext();
-    RewritePatternSet patterns(&getContext());
-    patterns.insert<LabelScfForLoopInAIRSegment>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
@@ -11358,10 +11302,6 @@ std::unique_ptr<OperationPass<ModuleOp>> createAIRPingPongTransformationPattern(
 
 std::unique_ptr<Pass> createAIRLabelScfForLoopForPingPongPattern() {
   return std::make_unique<AIRLabelScfForLoopForPingPongPattern>();
-}
-
-std::unique_ptr<Pass> createAIRLabelScfForLoopInAIRSegmentPattern() {
-  return std::make_unique<AIRLabelScfForLoopInAIRSegmentPattern>();
 }
 
 std::unique_ptr<Pass> createAIRSpecializeChannelWrapAndStridePattern() {
