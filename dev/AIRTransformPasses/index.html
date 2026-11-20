@@ -1546,17 +1546,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#-air-lower-linalg-tensors" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -air-lower-linalg-tensors
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#-air-merge-unrolled-devices" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2208,17 +2197,6 @@
     <span class="md-ellipsis">
       
         -air-lower-herd-parallel
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#-air-lower-linalg-tensors" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        -air-lower-linalg-tensors
       
     </span>
   </a>
@@ -3062,18 +3040,6 @@ complex finite-state machine consisting of a multiple of AIE DMA Block Descripto
 </code></pre></div>
 <h3 id="-air-lower-herd-parallel"><code>-air-lower-herd-parallel</code><a class="headerlink" href="#-air-lower-herd-parallel" title="Permanent link">&para;</a></h3>
 <p><em>Remove scf.parallel from inside herds by transforming them to scf.for.</em></p>
-<h3 id="-air-lower-linalg-tensors"><code>-air-lower-linalg-tensors</code><a class="headerlink" href="#-air-lower-linalg-tensors" title="Permanent link">&para;</a></h3>
-<p><em>Lowering from linalg on tensors to loops</em></p>
-<p>This pass implements a lowering pipeline from linalg on tensors to affine
-loops. There are three stages:</p>
-<ol>
-<li>Bufferize with <code>linalg::populateLinalgBufferizePatterns</code></li>
-<li>Run some peephole optimizations to cleanup after bufferization.</li>
-<li>Named ops are transformed to linalg GenericOps then all GenericOps
-are lowered to loops using <code>linalg::LinalgLoweringPattern</code>.</li>
-</ol>
-<p>The transforms are biased toward aie.core regions and are intended
-to be run after the air-to-aie pass.</p>
 <h3 id="-air-merge-unrolled-devices"><code>-air-merge-unrolled-devices</code><a class="headerlink" href="#-air-merge-unrolled-devices" title="Permanent link">&para;</a></h3>
 <p><em>Merge unrolled segment devices back into a single device</em></p>
 <p>This pass merges multiple aie.device operations that were created from
