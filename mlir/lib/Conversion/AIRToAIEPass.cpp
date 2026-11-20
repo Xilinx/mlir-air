@@ -953,7 +953,9 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         }
       }
 
-      if (options.emit_while) {
+      // A core that reruns its herd's body has to loop even without
+      // emit_while: ended, it would sit out every run after the first.
+      if (options.emit_while || core->hasAttr("air.reruns")) {
         auto entry_bb_br =
             dyn_cast_if_present<cf::BranchOp>(entry_bb->getTerminator());
         cf::BranchOp::create(core_builder, hloc, entry_bb_br.getDest());
