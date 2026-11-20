@@ -471,15 +471,6 @@ def AIRBroadcastDetection: Pass<"air-broadcast-detection", "ModuleOp"> {
   }];
 }
 
-def AIRPruneLinalgGenericInputDma: Pass<"air-prune-linalg-generic-input-dma", "ModuleOp"> {
-  let summary = "Detect and prune redundant DMA into linalg generic";
-  let constructor = "xilinx::air::createAIRPruneLinalgGenericInputDma()";
-  let description = [{
-    This pass detects and prunes redundant DMA which copies into linalg generic
-    input operands. 
-  }];
-}
-
 def AIRAnnotateFrontAndBackOpsInForPattern: Pass<"air-annotate-front-and-back-ops-in-for-pattern", "ModuleOp"> {
   let summary = "Annotates ops in for loop body which are at the front and back of the body's dependency graph";
   let constructor = "xilinx::air::createAIRAnnotateFrontAndBackOpsInForPattern()";
