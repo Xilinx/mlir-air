@@ -229,6 +229,34 @@ module attributes {transform.with_named_sequence} {
 
 // -----
 
+// Two views of one buffer whose elements do not meet, [16, 32) into [32, 48),
+// the second through a memref.cast that drops its static offset: forwarded.
+
+// CHECK-LABEL: func.func @same_buffer_apart
+// CHECK-NOT: memref.alloc
+// CHECK: memref.copy %{{.*}}, %{{.*}} : memref<16xf32, strided<[1], offset: 16>> to memref<16xf32, strided<[1], offset: ?>>
+// CHECK-NOT: bufferization
+func.func @same_buffer_apart(%m: memref<64xf32>) {
+  %src = memref.subview %m[16] [16] [1] : memref<64xf32> to memref<16xf32, strided<[1], offset: 16>>
+  %view = memref.subview %m[32] [16] [1] : memref<64xf32> to memref<16xf32, strided<[1], offset: 32>>
+  %dst = memref.cast %view : memref<16xf32, strided<[1], offset: 32>> to memref<16xf32, strided<[1], offset: ?>>
+  %buf = memref.alloc() : memref<16xf32>
+  memref.copy %src, %buf : memref<16xf32, strided<[1], offset: 16>> to memref<16xf32>
+  %t = bufferization.to_tensor %buf restrict writable : memref<16xf32> to tensor<16xf32>
+  bufferization.materialize_in_destination %t in writable %dst : (tensor<16xf32>, memref<16xf32, strided<[1], offset: ?>>) -> ()
+  return
+}
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %r = transform.air.forward_copy_into_destination %f : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
 // The source written in between by a store nested in an op that declares no
 // write itself (a tensor-form linalg.generic): the buffer stays.
 

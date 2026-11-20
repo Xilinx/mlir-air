@@ -3149,10 +3149,47 @@ static bool mayWriteBetween(Operation *from, Operation *to) {
   return false;
 }
 
-// Whether `a` and `b` provably do not overlap: one of them is a fresh
-// allocation, or a function argument marked `llvm.noalias`, reached through
-// views.
+// The elements [begin, end) of its buffer that `v` covers, when its type, or
+// the type of what a memref.cast made it from, gives them statically.
+static std::optional<std::pair<int64_t, int64_t>> staticExtent(Value v) {
+  while (auto cast = v.getDefiningOp<memref::CastOp>())
+    v = cast.getSource();
+  auto type = dyn_cast<MemRefType>(v.getType());
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  if (!type || !type.hasStaticShape() ||
+      failed(type.getStridesAndOffset(strides, offset)) ||
+      ShapedType::isDynamic(offset))
+    return std::nullopt;
+  int64_t last = offset;
+  for (auto [size, stride] : llvm::zip_equal(type.getShape(), strides)) {
+    if (ShapedType::isDynamic(stride) || stride < 0 || size == 0)
+      return std::nullopt;
+    last += (size - 1) * stride;
+  }
+  return std::make_pair(offset, last + 1);
+}
+
+// The buffer `v` is a view of, through views whose type keeps the offset
+// from that buffer's start.
+static Value viewedBuffer(Value v) {
+  while (Operation *op = v.getDefiningOp()) {
+    if (!isa<memref::SubViewOp, memref::ReinterpretCastOp, memref::CastOp,
+             memref::ExpandShapeOp, memref::CollapseShapeOp>(op))
+      break;
+    v = op->getOperand(0);
+  }
+  return v;
+}
+
+// Whether `a` and `b` provably do not overlap: different buffers, one of them
+// a fresh allocation or a function argument marked `llvm.noalias`; or views
+// of one buffer whose elements, as their types give them, do not meet.
 static bool provablyDisjoint(Value a, Value b) {
+  if (viewedBuffer(a) == viewedBuffer(b)) {
+    auto ea = staticExtent(a), eb = staticExtent(b);
+    return ea && eb && (ea->second <= eb->first || eb->second <= ea->first);
+  }
   auto distinct = [](Value v) {
     Value root = xilinx::air::resolveBufferRoot(v);
     if (isa_and_present<memref::AllocOp, memref::AllocaOp>(
