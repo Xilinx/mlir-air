@@ -564,17 +564,6 @@ def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong",
   ];
 }
 
-def AIRLabelScfForLoopInAIRSegmentPattern: Pass<"air-label-scf-for-in-segment", "ModuleOp"> {
-  let summary = "Label all candidate scf.for loops within air.segment for unrolling";
-  let constructor = "xilinx::air::createAIRLabelScfForLoopInAIRSegmentPattern()";
-  let description = [{
-    This pass labels all scf.for loops contained in air.segment ops, except for those
-    which are also contained in air.herd ops, with an 'unroll' integer attribute. Scf.for
-    loops labelled with this attribute shall be unrolled, with the provided factor, by
-    any subsequent 'air-unroll-loop-for-pipelining-pattern' pass.
-  }];
-}
-
 def AIRSpecializeChannelWrapAndStridePattern: Pass<"air-specialize-channel-wrap-and-stride", "ModuleOp"> {
   let summary = "Specialize air.channel op in perfect loop nest with wraps and strides";
   let constructor = "xilinx::air::createAIRSpecializeChannelWrapAndStridePattern()";

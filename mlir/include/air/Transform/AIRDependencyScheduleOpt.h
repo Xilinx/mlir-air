@@ -40,8 +40,6 @@ std::unique_ptr<OperationPass<ModuleOp>> createAIRPingPongTransformationPattern(
 
 std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopForPingPongPattern();
 
-std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopInAIRSegmentPattern();
-
 std::unique_ptr<mlir::Pass> createAIRSpecializeChannelWrapAndStridePattern();
 
 std::unique_ptr<mlir::Pass> createAIRFuseChannels();
