@@ -214,23 +214,6 @@ def AIRLinalgOpStats : Pass<"air-linalg-op-stats", "ModuleOp"> {
   }];
 }
 
-def AIRLowerLinalgTensors : Pass<"air-lower-linalg-tensors", "ModuleOp"> {
-  let summary = "Lowering from linalg on tensors to loops";
-  let constructor = "xilinx::air::createAIRLowerLinalgTensorsPass()";
-  let description = [{
-    This pass implements a lowering pipeline from linalg on tensors to affine
-    loops. There are three stages:
-
-    1. Bufferize with `linalg::populateLinalgBufferizePatterns`
-    2. Run some peephole optimizations to cleanup after bufferization.
-    3. Named ops are transformed to linalg GenericOps then all GenericOps
-    are lowered to loops using `linalg::LinalgLoweringPattern`.
-
-    The transforms are biased toward aie.core regions and are intended
-    to be run after the air-to-aie pass.
-  }];
-}
-
 def AIRDependency : Pass<"air-dependency", "ModuleOp"> {
   let summary = "AIR dependency analysis";
   let constructor = "xilinx::air::createAIRDependencyPass()";

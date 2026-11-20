@@ -26,11 +26,6 @@ if(AIR_ENABLE_AIE)
     AIRMergeUnrolledDevicesPass.cpp
   )
 endif()
-if(AIR_ENABLE_AIE)
-  list(APPEND TRANSFORM_SOURCES
-    AIRLowerLinalgTensors.cpp
-  )
-endif()
 list(APPEND TRANSFORM_SOURCES
   AIRMiscPasses.cpp
   AIRSplitLaunchForPadding.cpp

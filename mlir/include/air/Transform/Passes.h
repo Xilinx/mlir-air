@@ -19,7 +19,6 @@
 #include "air/Transform/AIRLinalgBufferize.h"
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Transform/AIRLinalgOpStats.h"
-#include "air/Transform/AIRLowerLinalgTensors.h"
 #include "air/Transform/AIRMiscPasses.h"
 #include "air/Transform/AIRSplitLaunchForPadding.h"
 #include "air/Transform/AIRTilingUtils.h"
