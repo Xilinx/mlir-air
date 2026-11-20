@@ -46,7 +46,6 @@ std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopInAIRSegmentPattern();
 
 std::unique_ptr<mlir::Pass> createAIRSpecializeChannelWrapAndStridePattern();
 
-
 std::unique_ptr<mlir::Pass> createAIRFuseChannels();
 std::unique_ptr<OperationPass<ModuleOp>>
 createAIRFuseChannels(const AIRFuseChannelsOptions &);
