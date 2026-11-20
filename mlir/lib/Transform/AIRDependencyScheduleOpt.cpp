@@ -2080,10 +2080,10 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
             unsafe = true;
           continue;
         }
-        // A channel put only reads its source.
+        // A channel put only reads its source; a get writes its destination.
         auto blockArg = dyn_cast<BlockArgument>(operand);
         if (blockArg && isa<air::HerdOp>(blockArg.getOwner()->getParentOp()) &&
-            !isa<MemoryEffectOpInterface, air::ChannelPutOp>(op))
+            (!isa<MemoryEffectOpInterface>(op) || isa<air::ChannelGetOp>(op)))
           unsafe = true;
       }
       return unsafe ? WalkResult::interrupt() : WalkResult::advance();
@@ -3901,178 +3901,6 @@ private:
   bool &enableRepeatAtHighestDim;
 };
 
-struct UnrollChannelByFactorPattern {
-
-public:
-  void runUnrollChannelByFactorPattern(func::FuncOp funcOp, Operation *op,
-                                       int chanDim, int factor) {
-    air::ChannelOp chan_op = dyn_cast_if_present<air::ChannelOp>(op);
-    OpBuilder builder(op);
-    SmallVector<int64_t, 2> sizes =
-        extractFromIntegerArrayAttr<int64_t>(chan_op.getSize());
-    if ((unsigned)chanDim >= sizes.size())
-      return;
-    if (sizes[chanDim] != 1) {
-      op->emitOpError("unrolling channel in a dimension with a size not equal "
-                      "to one. Currently unsupported");
-      return;
-    }
-
-    dim = chanDim;
-
-    // Update channel declaration
-    sizes[chanDim] *= factor;
-    air::ChannelOp::create(builder, op->getLoc(), chan_op.getSymName().str(),
-                           builder.getI64ArrayAttr(sizes),
-                           chan_op.getChannelType());
-
-    // Add scf.parallel to unroll channel puts and gets
-    auto puts = air::getChannelPutOpThroughSymbol(chan_op);
-    auto gets = air::getChannelGetOpThroughSymbol(chan_op);
-    for (auto put : puts) {
-      builder.setInsertionPoint(put);
-      auto init_val =
-          createWaitAllToCollectIncomingTokens(builder, put.getOperation());
-      if (init_val)
-        createSCFParallelToUnroll<air::ChannelPutOp>(builder, put, init_val);
-    }
-    for (auto get : gets) {
-      builder.setInsertionPoint(get);
-      auto init_val =
-          createWaitAllToCollectIncomingTokens(builder, get.getOperation());
-      if (init_val)
-        createSCFParallelToUnroll<air::ChannelGetOp>(builder, get, init_val);
-    }
-
-    for (auto put : puts) {
-      put->erase();
-    }
-    for (auto get : gets) {
-      get->erase();
-    }
-    op->erase();
-  }
-
-private:
-  int dim = 0;
-  int factor = 1;
-
-  Value createWaitAllToCollectIncomingTokens(OpBuilder builder, Operation *op) {
-    auto async_op = dyn_cast_if_present<air::AsyncOpInterface>(op);
-    if (!async_op) {
-      op->emitOpError("is air.channel_put but not async");
-      return nullptr;
-    } else if (async_op.getAsyncDependencies().empty()) {
-      SmallVector<Value> dep_list = {};
-      return air::WaitAllOp::create(
-                 builder, op->getLoc(),
-                 air::AsyncTokenType::get(builder.getContext()), dep_list)
-          .getAsyncToken();
-    } else if (async_op.getAsyncDependencies().size() == 1)
-      return async_op.getAsyncDependencies().front();
-    return air::WaitAllOp::create(
-               builder, op->getLoc(),
-               air::AsyncTokenType::get(builder.getContext()),
-               async_op.getAsyncDependencies())
-        .getAsyncToken();
-  }
-
-  template <typename T>
-  scf::ParallelOp createSCFParallelToUnroll(OpBuilder builder, T op,
-                                            Value init_val) {
-    if (!isa<air::AsyncOpInterface>(op.getOperation())) {
-      op->emitOpError("is air.channel op but not async");
-      return nullptr;
-    }
-
-    auto loc = op->getLoc();
-    SmallVector<Value, 1> merged_incoming_token = {init_val};
-    SmallVector<Value, 1> LBs, UBs, Steps;
-
-    LBs.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
-    UBs.push_back(arith::ConstantIndexOp::create(builder, loc, factor));
-    Steps.push_back(arith::ConstantIndexOp::create(builder, loc, 1));
-
-    auto par = scf::ParallelOp::create(builder, loc, LBs, UBs, Steps,
-                                       merged_incoming_token);
-
-    builder.setInsertionPointToStart(par.getBody());
-
-    // Update channel indices
-    SmallVector<Value, 1> new_channel_idx = {};
-    if (op.getIndices().empty()) {
-      auto const_0 = arith::ConstantIndexOp::create(builder, par->getLoc(), 0);
-      new_channel_idx = {const_0, const_0};
-      new_channel_idx[dim] = par.getInductionVars()[0];
-    } else
-      op->emitOpError(
-          "unrolling a sub-channel in a channel bundle currently unsupported");
-    // Update memref size (divide by factor)
-    SmallVector<Value, 1> new_sizes = air::getSizesAsValues(op);
-    if (new_sizes.empty()) {
-      auto memTy = llvm::cast<BaseMemRefType>(op.getMemref().getType());
-      for (auto d : getTensorShape(memTy)) {
-        new_sizes.push_back(
-            arith::ConstantIndexOp::create(builder, par->getLoc(), d));
-      }
-    }
-    auto size_op = new_sizes[dim].getDefiningOp();
-    if (auto cIOp = dyn_cast_if_present<arith::ConstantIndexOp>(size_op)) {
-      auto val = cIOp.value();
-      val = llvm::divideCeilSigned(val, factor);
-      new_sizes[dim] =
-          arith::ConstantIndexOp::create(builder, par->getLoc(), val);
-    } else {
-      new_sizes[dim] = arith::FloorDivSIOp::create(
-          builder, par->getLoc(), new_sizes[dim],
-          arith::ConstantIndexOp::create(builder, par->getLoc(), factor));
-    }
-    // Update offset (+ induction var. x size)
-    SmallVector<Value, 1> new_offsets = air::getOffsetsAsValues(op);
-    if (new_offsets.empty()) {
-      auto const_0 = arith::ConstantIndexOp::create(builder, par->getLoc(), 0);
-      new_offsets = {const_0, const_0};
-    }
-    auto prod = arith::MulIOp::create(builder, par->getLoc(),
-                                      new_channel_idx[dim], new_sizes[dim]);
-    new_offsets[dim] =
-        arith::AddIOp::create(builder, par->getLoc(), new_offsets[dim], prod);
-    // Update strides
-    SmallVector<Value, 1> new_strides = air::getStridesAsValues(op);
-    if (new_strides.empty()) {
-      auto const_1 = arith::ConstantIndexOp::create(builder, par->getLoc(), 1);
-      new_strides = {const_1, const_1};
-    }
-
-    // Create new channel op
-    SmallVector<Type, 1> tys = {air::AsyncTokenType::get(builder.getContext())};
-    auto padBefore =
-        op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
-    auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
-    auto new_op = T::create(builder, par.getLoc(), tys, merged_incoming_token,
-                            op.getChanName(), new_channel_idx, op.getMemref(),
-                            new_offsets, new_sizes, new_strides,
-                            /*pad_before=*/padBefore, /*pad_after=*/padAfter);
-
-    // Create scf::ReduceOp
-    air::createSCFReduceForAsyncSCFParallel(
-        builder, par.getLoc(), new_op.getAsyncToken(), op->getContext());
-
-    // Create air.wait_all as a barrier to protect the non-blocking scf.yield
-    // event
-    builder.setInsertionPointAfter(par);
-    SmallVector<Value, 1> barrier_deps = {par.getResults().front()};
-    auto barrier = air::WaitAllOp::create(
-        builder, builder.getUnknownLoc(),
-        air::AsyncTokenType::get(builder.getContext()), barrier_deps);
-
-    // Reconnect dependencies
-    op.getAsyncToken().replaceAllUsesWith(barrier.getAsyncToken());
-
-    return par;
-  }
-};
-
 struct BroadcastDetection {
 
 public:
@@ -4247,102 +4075,6 @@ private:
   SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep_history;
 };
 
-struct PruneLinalgGenericInputDma {
-
-public:
-  void runLinalgGenericPattern(func::FuncOp funcOp) {
-    // Detect linalg.GenericOps with redundant input ports
-    std::vector<OpOperand *> non_input_generic_operands;
-    funcOp.walk([&](linalg::GenericOp generic_op) {
-      getNonInputOperands(generic_op, non_input_generic_operands);
-      // DMAs copying into these linalg.GenericOp input ports are redundant
-      for (auto opoperand : non_input_generic_operands) {
-        findAndPruneRedundantDma(opoperand);
-      }
-    });
-  }
-
-  void getNonInputOperands(linalg::GenericOp generic_op,
-                           std::vector<OpOperand *> &operands_history) {
-    for (auto &g_opoperand : generic_op->getOpOperands()) {
-      if (!generic_op.payloadUsesValueFromOperand(&g_opoperand))
-        operands_history.push_back(&g_opoperand);
-    }
-  }
-
-  void findAndPruneRedundantDma(mlir::OpOperand *opoperand) {
-    // Elevate to operand of herd launch
-    unsigned operand_id = opoperand->getOperandNumber();
-    auto op = opoperand->getOwner();
-    auto v = op->getOperand(operand_id);
-
-    air::AsyncOpInterface async_op;
-    if (air::ExecuteOp exec_op = op->getParentOfType<air::ExecuteOp>()) {
-      async_op =
-          dyn_cast_if_present<air::AsyncOpInterface>(exec_op.getOperation());
-    } else if (auto hl_op = dyn_cast_if_present<air::HerdOp>(op)) {
-      async_op =
-          dyn_cast_if_present<air::AsyncOpInterface>(hl_op.getOperation());
-    } else if (auto hier_op =
-                   dyn_cast_if_present<air::HierarchyInterface>(op)) {
-      async_op =
-          dyn_cast_if_present<air::AsyncOpInterface>(hier_op.getOperation());
-    } else {
-      return;
-    }
-    auto dep_list = async_op.getAsyncDependencies();
-    for (int i = dep_list.size() - 1; i >= 0; i--) {
-      auto upstream_op = dep_list[i].getDefiningOp();
-      if (auto upstream_dma =
-              dyn_cast_if_present<air::DmaMemcpyNdOp>(upstream_op)) {
-        if (v == upstream_dma.getDstMemref()) {
-          // Disconnect dependency between async op and upstream dma
-          async_op.eraseAsyncDependency(i);
-          // Reconnect upstream dma's dep list to async op
-          auto upstream_dma_async = dyn_cast_if_present<air::AsyncOpInterface>(
-              upstream_dma.getOperation());
-          for (auto token : upstream_dma_async.getAsyncDependencies()) {
-            async_op.addAsyncDependency(token);
-          }
-          Value srcMemref = upstream_dma.getSrcMemref();
-          // Recursively trace upstream dma
-          for (unsigned j = 0; j < upstream_op->getNumOperands(); j++) {
-            if (srcMemref == upstream_op->getOperand(j)) {
-              findAndPruneRedundantDma(&upstream_op->getOpOperand(j));
-            }
-          }
-          // Elevate from argument to operand of herd launch
-          if (auto hl_op = getHerdArgOwner(srcMemref)) {
-            for (unsigned i = 0; i < hl_op.getNumKernelOperands(); i++) {
-              if (hl_op.getKernelArgument(i) == srcMemref) {
-                auto &hl_opoperand = hl_op->getOpOperand(
-                    i + hl_op.getAsyncDependencies().size() + 2);
-                findAndPruneRedundantDma(&hl_opoperand);
-              }
-            }
-          }
-          // Elevate from argument to operand of hierarchy op
-          if (auto hier_op = getHierarchyArgOwner(srcMemref)) {
-            auto dep_list = dyn_cast_if_present<air::AsyncOpInterface>(
-                                hier_op.getOperation())
-                                .getAsyncDependencies();
-            for (unsigned i = 0; i < hier_op.getNumKernelOperands(); i++) {
-              if (hier_op.getKernelArgument(i) == srcMemref) {
-                auto &hier_opoperand = hier_op->getOpOperand(
-                    i + dep_list.size() + hier_op.getNumDims());
-                findAndPruneRedundantDma(&hier_opoperand);
-              }
-            }
-          }
-          upstream_dma->erase();
-        }
-      }
-    }
-  }
-
-private:
-};
-
 class AIRHoistDmaInAccumPattern
     : public xilinx::air::impl::AIRHoistDmaInAccumPatternBase<
           AIRHoistDmaInAccumPattern> {
@@ -4384,26 +4116,6 @@ public:
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
     for (auto f : funcOps)
       proc.runBroadcastPattern(f);
-  }
-
-private:
-};
-
-class AIRPruneLinalgGenericInputDma
-    : public xilinx::air::impl::AIRPruneLinalgGenericInputDmaBase<
-          AIRPruneLinalgGenericInputDma> {
-
-public:
-  AIRPruneLinalgGenericInputDma() = default;
-  AIRPruneLinalgGenericInputDma(const AIRPruneLinalgGenericInputDma &pass){};
-
-  void runOnOperation() override {
-    PruneLinalgGenericInputDma proc;
-    auto module = getOperation();
-    SmallVector<func::FuncOp, 4> funcOps;
-    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
-    for (auto f : funcOps)
-      proc.runLinalgGenericPattern(f);
   }
 
 private:
@@ -5054,40 +4766,6 @@ public:
     for (auto region : regions)
       if (AIRSpecializeChannelWrapAndStrideImpl(region, limits).failed())
         signalPassFailure();
-  }
-
-private:
-};
-
-class AIRUnrollChannelByFactorPattern
-    : public xilinx::air::impl::AIRUnrollChannelByFactorPatternBase<
-          AIRUnrollChannelByFactorPattern> {
-
-public:
-  AIRUnrollChannelByFactorPattern() = default;
-  AIRUnrollChannelByFactorPattern(
-      const AIRUnrollChannelByFactorPattern &pass){};
-
-  void runOnOperation() override {
-    auto module = getOperation();
-    UnrollChannelByFactorPattern proc;
-    SmallVector<air::ChannelOp> chanOps;
-    module.walk([&](air::ChannelOp op) {
-      if (op.getSymName().str() == clChanName)
-        chanOps.push_back(op);
-    });
-    if (chanOps.empty())
-      return;
-    if (chanOps.size() > 1) {
-      chanOps.back()->emitOpError(
-          "found multiple channel declarations with channel name ")
-          << clChanName;
-    }
-    SmallVector<func::FuncOp, 4> funcOps;
-    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
-    for (auto f : funcOps)
-      proc.runUnrollChannelByFactorPattern(f, chanOps.front(), clUnrollDim,
-                                           clUnrollFactor);
   }
 
 private:
@@ -11670,10 +11348,6 @@ std::unique_ptr<Pass> createAIRBroadcastDetection() {
   return std::make_unique<AIRBroadcastDetection>();
 }
 
-std::unique_ptr<Pass> createAIRPruneLinalgGenericInputDma() {
-  return std::make_unique<AIRPruneLinalgGenericInputDma>();
-}
-
 std::unique_ptr<Pass> createAIRPingPongTransformationPattern() {
   return std::make_unique<AIRPingPongTransformationPattern>();
 }
@@ -11697,10 +11371,6 @@ std::unique_ptr<Pass> createAIRSpecializeChannelWrapAndStridePattern() {
 // std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {
 //   return std::make_unique<AIRDependencyScheduleOpt>();
 // }
-
-std::unique_ptr<Pass> createAIRUnrollChannelByFactorPattern() {
-  return std::make_unique<AIRUnrollChannelByFactorPattern>();
-}
 
 std::unique_ptr<Pass> createAIREnforceChannelFifoOrder() {
   return std::make_unique<AIREnforceChannelFifoOrder>();

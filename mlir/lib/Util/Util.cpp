@@ -419,14 +419,6 @@ bool air::herdBufferHasCrossCoreDependence(air::HerdOp herd,
           writerCores.insert(lin);
         if (mlir::hasEffect<mlir::MemoryEffects::Read>(user, alias))
           readerCores.insert(lin);
-        if (auto chan = dyn_cast<air::ChannelInterface>(user)) {
-          if (chan.getMemref() == alias) {
-            if (isa<air::ChannelGetOp>(user))
-              writerCores.insert(lin);
-            else
-              readerCores.insert(lin);
-          }
-        }
       }
     }
   }
@@ -1354,35 +1346,14 @@ char air::checkOpOperandReadOrWrite(Value v, Operation *owner) {
 }
 char air::checkOpOperandReadOrWrite(mlir::OpOperand &op_operand) {
   auto owner = op_operand.getOwner();
-  // Generic side-effect query first. air.dma_memcpy_nd declares
-  // MemReadAt<src> + MemWriteAt<dst>, so it answers here without an
-  // explicit dialect branch. air.channel.put/get do not yet declare
-  // effects (channel-resource modeling is a separate followup) and
-  // continue to use the dialect-specific branches below.
+  // Ops that declare their memory effects, such as air.dma_memcpy_nd and
+  // air.channel.put/get, answer here.
   if (mlir::hasEffect<mlir::MemoryEffects::Write>(owner, op_operand.get()))
     return 'w';
   if (mlir::hasEffect<mlir::MemoryEffects::Read>(owner, op_operand.get()))
     return 'r';
-  // If used in Channel Put Op
-  if (auto channel_put =
-          dyn_cast_if_present<xilinx::air::ChannelPutOp>(owner)) {
-    if (op_operand.is(channel_put.getSrc())) {
-      return 'r';
-    } else {
-      return 'u';
-    }
-  }
-  // If used in Channel Get Op
-  else if (auto channel_get =
-               dyn_cast_if_present<xilinx::air::ChannelGetOp>(owner)) {
-    if (op_operand.is(channel_get.getDst())) {
-      return 'w';
-    } else {
-      return 'u';
-    }
-  }
   // If used in a linalg op
-  else if (auto linalgop = mlir::dyn_cast_if_present<linalg::LinalgOp>(owner)) {
+  if (auto linalgop = mlir::dyn_cast_if_present<linalg::LinalgOp>(owner)) {
     if (op_operand.getOperandNumber() <
         linalgop.getNumDpsInputs() + linalgop.getNumDpsInits()) {
       return 'r';

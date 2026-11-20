@@ -1283,6 +1283,12 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
 
   std::string bufName = sharedBuffer.getSymName().value_or("shared_l1").str();
 
+  // A put or a get in a core's body is its tile's DMA, not the core; the DMA
+  // accessors are collected on their own below.
+  auto isCoreAccess = [](Operation *op) {
+    return !isa<air::ChannelInterface>(op) && accessReachableInCore(op);
+  };
+
   // Helper lambda to find the last memref operand index in a func.call
   auto findLastMemrefOperandIndex = [](func::CallOp callOp) -> int {
     int lastMemrefIdx = -1;
@@ -1310,7 +1316,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   for (auto coreOp : coreOps) {
     coreOp.walk([&](Operation *op) {
       // Ignore accesses in dead per-core branches (not yet folded).
-      if (!accessReachableInCore(op))
+      if (!isCoreAccess(op))
         return;
       // Check memory effects
       for (Value alias : bufferAliases) {
@@ -1341,7 +1347,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   for (auto coreOp : coreOps) {
     bool coreIsProducer = false;
     coreOp.walk([&](Operation *op) {
-      if (!accessReachableInCore(op))
+      if (!isCoreAccess(op))
         return;
       for (Value alias : bufferAliases) {
         if (hasEffect<MemoryEffects::Write>(op, alias))
@@ -1550,7 +1556,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     info.lockScope = nullptr;
 
     coreOp.walk([&](Operation *op) {
-      if (!accessReachableInCore(op))
+      if (!isCoreAccess(op))
         return;
       bool accessesBuffer = false;
       bool isProducer = false;
@@ -11216,86 +11222,6 @@ private:
   }
 };
 
-class SplitAIEDevicesPass
-    : public air::impl::AIRSplitDevicesBase<SplitAIEDevicesPass> {
-
-public:
-  SplitAIEDevicesPass() = default;
-  SplitAIEDevicesPass(const SplitAIEDevicesPass &pass) {}
-  void runOnOperation() override {
-    ModuleOp m = getOperation();
-    auto ctx = &getContext();
-
-    SmallVector<AIE::DeviceOp> deviceOps;
-    m.walk([&](AIE::DeviceOp d) { deviceOps.push_back(d); });
-
-    unsigned segment_number = 0;
-    OpBuilder builder(ctx);
-    for (auto device : deviceOps) {
-
-      std::string segment_name;
-      if (auto attr = device->getAttrOfType<StringAttr>(
-              SymbolTable::getSymbolAttrName())) {
-        segment_name = attr.getValue().str();
-      } else {
-        segment_name = "segment_" + std::to_string(segment_number++);
-      }
-      std::string aie_module_name = "aie." + segment_name;
-
-      ModuleOp aie_module =
-          ModuleOp::create(builder.getUnknownLoc(), StringRef(aie_module_name));
-      builder.setInsertionPointToStart(aie_module.getBody());
-      IRMapping remap;
-      for (auto &o : m.getBody()->getOperations()) {
-
-        // if it's not the current device op, don't clone it
-        if (isa<AIE::DeviceOp>(o) && &o != device.getOperation())
-          continue;
-
-        // if it's a function without a use in the device op, don't clone it
-        if (isa<func::FuncOp>(o)) {
-          bool has_use = false;
-          for (auto u : o.getUsers()) {
-            has_use |= (u->getParentOfType<AIE::DeviceOp>() == device);
-          }
-          if (!has_use)
-            continue;
-        }
-
-        // clone op into the new module
-        builder.clone(o, remap);
-      }
-
-      // run lowering patterns
-      //
-      RewritePatternSet removepatterns(ctx);
-      removepatterns.add<OpRemovalPattern<airrt::ModuleMetadataOp>>(ctx);
-
-      ConversionTarget target(*ctx);
-      target.addIllegalDialect<airrt::AIRRtDialect>();
-      if (failed(applyPartialConversion(aie_module, target,
-                                        std::move(removepatterns))))
-        signalPassFailure();
-
-      // write module to stdout or file
-      //
-      if (clOutputPrefix != "-") {
-        if (clOutputPrefix != "/dev/null") {
-          std::error_code EC;
-          std::string fname = clOutputPrefix + aie_module_name + ".mlir";
-          llvm::raw_fd_ostream aie_ostream(fname, EC);
-          aie_module.print(aie_ostream);
-        }
-      } else {
-        aie_module.print(llvm::outs());
-      }
-    }
-
-    for (auto device : deviceOps)
-      device.erase();
-  }
-};
-
 // Custom version of LinalgOpToLibraryCallRewrite
 class AIRLinalgOpToLibraryCallRewrite
     : public OpInterfaceRewritePattern<linalg::LinalgOp> {
@@ -11489,10 +11415,6 @@ std::unique_ptr<mlir::Pass> createAIRToAIEPass() {
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createAIRToAIEPass(const AIRToAIEOptions &options) {
   return std::make_unique<AIRToAIEPass>(options);
-}
-
-std::unique_ptr<mlir::Pass> createAIRSplitDevicesPass() {
-  return std::make_unique<SplitAIEDevicesPass>();
 }
 
 std::unique_ptr<OperationPass<ModuleOp>> createAIRLinalgToFuncPass() {

@@ -467,17 +467,6 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
                            "mlir::affine::AffineDialect"];
 }
 
-def AIRSplitDevices : Pass<"air-split-devices", "ModuleOp"> {
-  let summary = "Split the input into one output per aie.device op";
-  let constructor = "xilinx::air::createAIRSplitDevicesPass()";
-  let options = [
-    Option<"clOutputPrefix", "output-prefix", "std::string",
-          /*default=*/"\"-\"",
-           "File name prefix for split AIE modules. "
-           "Set to \'-\' for stdout (default).">,
-  ];
-}
-
 def InsertEmptyLaunchOverHerd : Pass<"air-insert-launch-around-herd", "ModuleOp"> {
   let summary = "Insert launch op (and optionally segment op) around herd op";
   let constructor = "xilinx::air::createInsertEmptyLaunchOverHerdPass()";

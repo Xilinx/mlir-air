@@ -471,15 +471,6 @@ def AIRBroadcastDetection: Pass<"air-broadcast-detection", "ModuleOp"> {
   }];
 }
 
-def AIRPruneLinalgGenericInputDma: Pass<"air-prune-linalg-generic-input-dma", "ModuleOp"> {
-  let summary = "Detect and prune redundant DMA into linalg generic";
-  let constructor = "xilinx::air::createAIRPruneLinalgGenericInputDma()";
-  let description = [{
-    This pass detects and prunes redundant DMA which copies into linalg generic
-    input operands. 
-  }];
-}
-
 def AIRAnnotateFrontAndBackOpsInForPattern: Pass<"air-annotate-front-and-back-ops-in-for-pattern", "ModuleOp"> {
   let summary = "Annotates ops in for loop body which are at the front and back of the body's dependency graph";
   let constructor = "xilinx::air::createAIRAnnotateFrontAndBackOpsInForPattern()";
@@ -595,25 +586,6 @@ def AIRSpecializeChannelWrapAndStridePattern: Pass<"air-specialize-channel-wrap-
     Option<"clScope", "scope", "std::string",
             /*default=*/"\"segment\"",
             "AIR hierarchy scope to perform loop specialization under. Must be one of [all, segment, func].">
-  ];
-}
-
-def AIRUnrollChannelByFactorPattern: Pass<"air-unroll-channel-by-factor", "ModuleOp"> {
-  let summary = "Unroll channel puts and gets by an integer factor";
-  let constructor = "xilinx::air::createAIRUnrollChannelByFactorPattern()";
-  let description = [{
-    This pass unrolls all puts and gets to an air.channel by an integer factor, so as to
-    represent the usage of multiple physical DMA channels in parallel for improved
-    available bandwidth for this data movement.
-  }];
-  let options = [
-    Option<"clChanName", "channel-name", "std::string", 
-            /*default=*/"\"\"",
-            "Target channel to unroll.">,
-    Option<"clUnrollDim", "unroll-dim", "int", /*default=*/"0",
-           "Dimension id to unroll.">,
-    Option<"clUnrollFactor", "unroll-factor", "int", /*default=*/"1",
-           "Integer unroll factor.">
   ];
 }
 
@@ -1068,11 +1040,6 @@ def AIRDependencyParseGraph: Pass<"air-dependency-parse-graph", "ModuleOp"> {
   ];
 }
 
-def AIRExamplePass : Pass<"air-example-pass", "ModuleOp"> {
-  let summary = "Skeleton module op pass";
-  let constructor = "xilinx::air::createAIRExamplePass()";
-}
-
 def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp"> {
   let summary = "Specialize dma operations for broadcast pattern";
   let constructor = "xilinx::air::createAIRSpecializeDmaBroadcast()";
@@ -1091,11 +1058,6 @@ def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp">
 def AIRLinalgNamePass : Pass<"air-linalg-name", "ModuleOp"> {
   let summary = "Give linalg ops a LinalgTransformMarker string attribute if they don't already have one";
   let constructor = "xilinx::air::createAIRLinalgNamePass()";
-}
-
-def AIRRemoveLinalgNamePass : Pass<"air-rm-linalg-name", "ModuleOp"> {
-  let summary = "Remove LinalgTransformMarker string attributes from linalg ops";
-  let constructor = "xilinx::air::createAIRRemoveLinalgNamePass()";
 }
 
 def AIRPipelineReducePass : Pass<"air-pipeline-reduce", "func::FuncOp"> {
@@ -1128,11 +1090,6 @@ def AIRLowerHerdParallelPass : Pass<"air-lower-herd-parallel", "func::FuncOp"> {
   let summary = "Remove scf.parallel from inside herds by transforming them to "
                 "scf.for.";
   let constructor = "xilinx::air::createAIRLowerHerdParallelPass()";
-}
-
-def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-with-tile", "func::FuncOp"> {
-  let summary = "Label broadcasted channel ops with tile coordinates.";
-  let constructor = "xilinx::air::createAIRLabelBroadcastChannelWithTilePass()";
 }
 
 def AIRFuseNestedHerdPass : Pass<"air-fuse-nested-herd", "func::FuncOp"> {
