@@ -11453,63 +11453,6 @@ void AIRLinalgToFuncPass::runOnOperation() {
 namespace xilinx {
 namespace air {
 
-FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
-                                    air::SegmentOp p) {
-  uint64_t BufferId{0};
-  std::string segment_name = "segment_0";
-  if (auto attr =
-          p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-    segment_name = attr.getValue().str();
-
-  std::string aie_module_name = "aie." + segment_name;
-  ModuleOp aie_module =
-      ModuleOp::create(rewriter.getUnknownLoc(), StringRef(aie_module_name));
-
-  auto device = AIE::symbolizeAIEDevice("xcvc1902");
-  if (!device) {
-    p->emitOpError("Invalid aie.device option");
-    return failure();
-  }
-  AIRToAIEConversionOptions options = {
-      /* .col_offset = */ 7,
-      /* .row_offset = */ 2,
-      /* .emit_while = */ false,
-      /* .emit_herd_lock = */ false,
-      /* .generate_shim_dma = */ false,
-      /* .insert_trace_packet_flow = */ false,
-      /* .use_lock_race_condition_fix = */ true,
-      /* .use_lock_race_condition_fix_v2 = */ false,
-      /* .output_elf = */ false,
-      /* .device = */ *device};
-  std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
-  p.walk([&](air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
-  for (auto &p : aie_modules) {
-    ModuleOp aie_module = std::get<0>(p);
-    air::HerdOp h = std::get<1>(p);
-    rewriter.setInsertionPointToStart(aie_module.getBody());
-    auto devOp = AIE::DeviceOp::create(
-        rewriter, aie_module.getLoc(),
-        AIE::AIEDeviceAttr::get(rewriter.getContext(), options.device),
-        /*sym_name=*/StringAttr(), /*overlay=*/FlatSymbolRefAttr());
-    setAIEDeviceDataLayout(rewriter, devOp);
-    AIE::DeviceOp::ensureTerminator(devOp.getRegion(), rewriter,
-                                    devOp.getLoc());
-    if (failed(outlineAIECores(rewriter, devOp, h, options)))
-      return failure();
-
-    auto ctx = aie_module->getContext();
-    RewritePatternSet patterns(ctx);
-    patterns.insert<SpecializeAffineIfPattern>(ctx);
-    addScfBranchSpecialization(patterns, scf::IfOp::getOperationName());
-    patterns.insert<LowerAIRExecutePattern>(ctx);
-    patterns.insert<AllocL1BuffersPattern>(ctx, BufferId);
-    air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
-    (void)applyPatternsGreedily(aie_module, std::move(patterns));
-  }
-
-  return aie_module;
-}
-
 std::unique_ptr<mlir::Pass> createAIRToAIEPass() {
   return std::make_unique<AIRToAIEPass>();
 }

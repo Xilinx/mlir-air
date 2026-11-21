@@ -9,38 +9,14 @@
 #if AIR_ENABLE_AIE
 #include "aie/Dialect/AIEVec/IR/AIEVecDialect.h"
 #endif
-#include "air/Dialect/AIR/AIRTransformOps.h"
-#if AIR_ENABLE_AIE
-#include "air/Conversion/AIRToAIEPass.h"
-#endif
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIR/AIRTransformOps.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 
 using namespace mlir;
-
-//===----------------------------------------------------------------------===//
-// SegmentToAIEOp
-//===----------------------------------------------------------------------===//
-
-DiagnosedSilenceableFailure
-transform::SegmentToAIEOp::applyToOne(transform::TransformRewriter &rewriter,
-                                      xilinx::air::SegmentOp target,
-                                      transform::ApplyToEachResultList &results,
-                                      transform::TransformState &state) {
-#if AIR_ENABLE_AIE
-  FailureOr<ModuleOp> res = convertAIRToAIE(rewriter, target);
-  if (failed(res))
-    return DiagnosedSilenceableFailure::definiteFailure();
-  results.push_back(res->getOperation());
-  return DiagnosedSilenceableFailure::success();
-#else
-  return emitSilenceableError() << "SegmentToAIEOp requires AIE support which "
-                                   "is not enabled in this build";
-#endif
-}
 
 //===----------------------------------------------------------------------===//
 // Transform op registration
