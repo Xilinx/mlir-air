@@ -7663,64 +7663,6 @@ void transform::HoistLoopCarriedPackOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
-// FoldPackIntoGenericOp
-//===----------------------------------------------------------------------===//
-
-DiagnosedSilenceableFailure
-transform::FoldPackIntoGenericOp::apply(transform::TransformRewriter &rewriter,
-                                        transform::TransformResults &results,
-                                        transform::TransformState &state) {
-  if (!llvm::all_of(state.getPayloadOps(getTarget()),
-                    llvm::IsaPred<linalg::GenericOp>))
-    return emitSilenceableError() << "expects linalg.generic targets";
-  SmallVector<Operation *> updated;
-  for (Operation *target : state.getPayloadOps(getTarget())) {
-    auto generic = cast<linalg::GenericOp>(target);
-    SmallVector<AffineMap> maps = generic.getIndexingMapsArray();
-    // A pack feeding several inputs is folded into each, and erased once.
-    llvm::SetVector<Operation *> folded;
-    for (OpOperand *operand : generic.getDpsInputOperands()) {
-      auto pack = operand->get().getDefiningOp<linalg::PackOp>();
-      if (!pack)
-        continue;
-      ArrayRef<int64_t> srcShape = pack.getSourceType().getShape();
-      ArrayRef<int64_t> innerPos = pack.getInnerDimsPos();
-      SmallVector<int64_t> tiles(pack.getStaticInnerTiles());
-      // Without padding: every tiled dimension divides into whole tiles.
-      bool exact = true;
-      for (auto [d, t] : llvm::zip_equal(innerPos, tiles))
-        exact &= !ShapedType::isDynamic(t) &&
-                 !ShapedType::isDynamic(srcShape[d]) && srcShape[d] % t == 0;
-      if (!exact)
-        continue;
-      int64_t srcRank = srcShape.size();
-      AffineMap packed = maps[operand->getOperandNumber()];
-      ArrayRef<int64_t> outerPerm = pack.getOuterDimsPerm();
-      SmallVector<AffineExpr> exprs(srcRank);
-      for (int64_t j = 0; j < srcRank; ++j)
-        exprs[outerPerm.empty() ? j : outerPerm[j]] = packed.getResult(j);
-      for (auto [i, d] : llvm::enumerate(innerPos))
-        exprs[d] = exprs[d] * tiles[i] + packed.getResult(srcRank + i);
-      maps[operand->getOperandNumber()] =
-          AffineMap::get(packed.getNumDims(), packed.getNumSymbols(), exprs,
-                         rewriter.getContext());
-      rewriter.modifyOpInPlace(generic,
-                               [&] { operand->set(pack.getSource()); });
-      folded.insert(pack);
-    }
-    rewriter.modifyOpInPlace(generic, [&] {
-      generic.setIndexingMapsAttr(rewriter.getAffineMapArrayAttr(maps));
-    });
-    for (Operation *pack : folded)
-      if (pack->use_empty())
-        rewriter.eraseOp(pack);
-    updated.push_back(generic);
-  }
-  results.set(llvm::cast<OpResult>(getResult()), updated);
-  return DiagnosedSilenceableFailure::success();
-}
-
-//===----------------------------------------------------------------------===//
 // PushUnpackThroughSlicesOp
 //===----------------------------------------------------------------------===//
 
