@@ -128,6 +128,8 @@ public:
         }
         if (op->getParentOfType<linalg::LinalgOp>())
           return; // Skip if is inside a linalg.generic.
+        if (op->getParentOfType<air::ExecuteOp>())
+          return; // Already inside an async region.
 
         if (isa<air::DmaMemcpyNdOp>(op))
           createAsyncDMA(rewriter, op);
@@ -389,6 +391,16 @@ public:
               getYieldedTokens(region);
           if (yielded_tokens_in_for_op.empty())
             return; // No async op in loop successors, continue.
+          if (air::getAsyncTokenFromOp(op)) {
+            // Already async: done if its own token covers the work inside.
+            if (reachesYield(region, yielded_tokens_in_for_op)) {
+              elevateTokensToOp(op);
+              return;
+            }
+            op->emitOpError("already carries an async token");
+            signalPassFailure();
+            return;
+          }
           auto new_loop_op = createAsyncLoopLikeOp(rewriter, loop_op);
           if (failed(new_loop_op)) {
             signalPassFailure();
@@ -417,9 +429,17 @@ public:
                   [](SmallVector<Value, 1> toks) { return toks.empty(); }))
             return; // No async op in branch successors, continue.
           // The branch's token goes after its results, where dependency
-          // users would not look for it past one already there.
+          // users would not look for it past one already there. A branch that
+          // already yields a token covering the work inside is already async.
           if (llvm::any_of(op->getResultTypes(),
                            llvm::IsaPred<air::AsyncTokenType>)) {
+            bool covered = true;
+            for (unsigned i = 0; i < regions.size(); i++)
+              covered &= reachesYield(regions[i], yielded_tokens_per_region[i]);
+            if (covered) {
+              elevateTokensToOp(op);
+              return;
+            }
             op->emitOpError("already yields an async token");
             signalPassFailure();
             return;
@@ -2369,6 +2389,74 @@ private:
       return isNotLoopCarriedOp(&child_op);
     } else
       return false;
+  }
+
+  // An op that was already async: uses outside it of tokens defined inside it
+  // (dependencies the 3rd traversal found) wait for its own token instead,
+  // which its yields cover. elevateAsyncTokens does this for the ops this pass
+  // makes async.
+  void elevateTokensToOp(Operation *op) {
+    Value opToken = air::getAsyncTokenFromOp(op);
+    if (!opToken)
+      return;
+    llvm::SetVector<Operation *> users;
+    op->walk([&](Operation *inner) {
+      if (inner == op)
+        return;
+      for (Value r : inner->getResults())
+        if (isa<air::AsyncTokenType>(r.getType()))
+          r.replaceUsesWithIf(opToken, [&](OpOperand &use) {
+            if (op->isAncestor(use.getOwner()))
+              return false;
+            users.insert(use.getOwner());
+            return true;
+          });
+    });
+    // Two elevated tokens leave the same dependency twice.
+    for (Operation *user : users) {
+      auto async = dyn_cast<air::AsyncOpInterface>(user);
+      if (!async)
+        continue;
+      llvm::SmallPtrSet<Value, 4> seen;
+      for (int i = async.getAsyncDependencies().size() - 1; i >= 0; --i)
+        if (!seen.insert(async.getAsyncDependencies()[i]).second)
+          async.eraseAsyncDependency(i);
+    }
+  }
+
+  // Whether every token in `tokens` reaches what `region` yields: through the
+  // dependencies of async ops, the tokens nested regions yield, and a loop's
+  // initial values.
+  bool reachesYield(Region &region, ArrayRef<Value> tokens) {
+    if (region.empty())
+      return tokens.empty();
+    llvm::SmallPtrSet<Value, 16> seen;
+    SmallVector<Value> worklist;
+    auto pushTokens = [&](ValueRange vs) {
+      for (Value v : vs)
+        if (isa<air::AsyncTokenType>(v.getType()))
+          worklist.push_back(v);
+    };
+    for (Block &b : region)
+      if (b.mightHaveTerminator())
+        pushTokens(b.getTerminator()->getOperands());
+    while (!worklist.empty()) {
+      Value v = worklist.pop_back_val();
+      if (!seen.insert(v).second)
+        continue;
+      Operation *def = v.getDefiningOp();
+      if (!def)
+        continue;
+      if (auto async = dyn_cast<air::AsyncOpInterface>(def))
+        pushTokens(async.getAsyncDependencies());
+      if (auto forOp = dyn_cast<scf::ForOp>(def))
+        pushTokens(forOp.getInitArgs());
+      for (Region &r : def->getRegions())
+        for (Block &b : r)
+          if (b.mightHaveTerminator())
+            pushTokens(b.getTerminator()->getOperands());
+    }
+    return llvm::all_of(tokens, [&](Value t) { return seen.contains(t); });
   }
 
   // Check if a value is not used inside a given block, or is only used by ops
