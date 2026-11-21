@@ -2733,7 +2733,9 @@ formed from the chosen ordering of the outer and inner herd dimensions
 <div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>-order : The order of tile sizes, must be one of outer-inner (default) or inner-outer.
 </code></pre></div>
 <h3 id="-air-herd-vectorize"><code>-air-herd-vectorize</code><a class="headerlink" href="#-air-herd-vectorize" title="Permanent link">&para;</a></h3>
-<p><em>Vectorize operations inside air.herd operations</em></p>
+<p><em>Vectorize operations inside air.herd operations (deprecated)</em></p>
+<p>Deprecated: apply <code>transform.structured.vectorize_children_and_apply_patterns</code>
+to the air.herd ops instead.</p>
 <p>This pass vectorizes operations inside air.herd operations using pattern matching.
 It applies vectorization patterns similar to VectorizeChildrenAndApplyPatternsOp
 but specifically targets operations within air.herd regions.</p>

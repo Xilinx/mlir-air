@@ -3717,10 +3717,14 @@ intermediate memory storage requirements.</p>
 </tbody>
 </table>
 <h3 id="transformairherd_vectorize-transformairherdvectorizeop"><code>transform.air.herd_vectorize</code> (transform::AIRHerdVectorizeOp)<a class="headerlink" href="#transformairherd_vectorize-transformairherdvectorizeop" title="Permanent link">&para;</a></h3>
-<p><em>Vectorize operations inside air.herd operations</em></p>
+<p><em>Vectorize operations inside air.herd operations (deprecated)</em></p>
 <p>Syntax:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>operation ::= `transform.air.herd_vectorize` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
+<p>Deprecated: use <code>transform.structured.vectorize_children_and_apply_patterns</code>,
+which applies the same patterns to any isolated-from-above target, air.herd
+included. Its options are unit attributes, e.g. <code>{vectorize_padding}</code>
+instead of <code>{vectorize_padding = true}</code>.</p>
 <p>This transform takes a handle to air.herd operations and vectorizes the operations
 inside their bodies using the same logic as the AIRHerdVectorizePass. It walks the
 body of each herd operation and applies vectorization patterns to linalg operations
