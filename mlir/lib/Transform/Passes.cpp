@@ -33,7 +33,6 @@ void xilinx::air::registerTransformPasses() {
   registerDmaToChannel();
   registerAIRFuseNestedHerdPass();
   registerAIRHerdPlacementPass();
-  registerAIRHerdVectorizePass();
   registerAIRLinalgCodegen();
   registerAIRLinalgOpStats();
   registerAIRLowerHerdParallelPass();

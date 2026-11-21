@@ -16,7 +16,6 @@ endif()
 list(APPEND TRANSFORM_SOURCES
   AIRDmaToChannel.cpp
   AIRHerdPlacementPass.cpp
-  AIRHerdVectorize.cpp
   AIRLinalgBufferize.cpp
   AIRLinalgCodegen.cpp
   AIRLinalgOpStats.cpp
