@@ -1947,6 +1947,27 @@ LogicalResult air::HerdOp::verify() {
 // can prove distinct execute-yielded memrefs NoAlias. Inner ops with no
 // declared effects fall back to conservative R+W+Free unless upstream
 // can prove them effect-free.
+// The values an air.execute returns after its token are those its terminator
+// yields.
+LogicalResult air::ExecuteOp::verify() {
+  Block &body = getBody();
+  if (!body.mightHaveTerminator())
+    return emitOpError("body has no terminator");
+  TypeRange yielded = body.getTerminator()->getOperandTypes();
+  TypeRange returned = TypeRange(getOperation()->getResultTypes()).drop_front();
+  if (yielded.size() != returned.size())
+    return emitOpError("returns ")
+           << returned.size()
+           << " value(s) after its token, but its terminator "
+           << "yields " << yielded.size();
+  for (auto [i, pair] : llvm::enumerate(llvm::zip(returned, yielded)))
+    if (std::get<0>(pair) != std::get<1>(pair))
+      return emitOpError("result #")
+             << i + 1 << " has type " << std::get<0>(pair)
+             << ", but its terminator yields " << std::get<1>(pair);
+  return success();
+}
+
 void air::ExecuteOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   if (getBody().empty())
