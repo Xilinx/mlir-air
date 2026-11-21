@@ -38,7 +38,6 @@ void xilinx::air::registerConversionPasses() {
   // so that registerPasses() can remain the single source of truth.
   air_conv_passes::registerParallelToHerd();
   air_conv_passes::registerParallelToLaunch();
-  air_conv_passes::registerParallelToSegment();
   air_conv_passes::registerCopyToDma();
   air_conv_passes::registerAIRToAsync();
   air_conv_passes::registerInsertEmptyLaunchOverHerd();

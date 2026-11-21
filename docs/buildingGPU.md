@@ -78,7 +78,7 @@ With GPU-only build, the following passes are available:
 | `air-to-rocdl` | Lower AIR dialect to GPU/ROCDL dialect |
 | `air-gpu-outlining` | Outline GPU kernels into gpu.module |
 | `air-to-async` | Lower AIR dialect to async dialect |
-| `air-par-to-herd`, `air-par-to-launch`, `air-par-to-segment`, `air-copy-to-dma` | Convert `scf.parallel` loops and memory copies to AIR operations |
+| `air-par-to-herd`, `air-par-to-launch`, `air-copy-to-dma` | Convert `scf.parallel` loops and memory copies to AIR operations |
 
 A subset of the AIR transformation passes is also registered; see the `AIR_ENABLE_AIE=OFF` branch of `registerTransformPasses()` in [`mlir/lib/Transform/Passes.cpp`](https://github.com/Xilinx/mlir-air/blob/main/mlir/lib/Transform/Passes.cpp). AIE-specific passes, such as `air-to-aie`, are not registered.
 

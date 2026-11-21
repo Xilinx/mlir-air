@@ -1897,100 +1897,6 @@ struct ParallelToLaunchPass
   }
 };
 
-struct ParallelToSegmentPass
-    : public air::impl::ParallelToSegmentBase<ParallelToSegmentPass> {
-
-  ParallelToSegmentPass() = default;
-  ParallelToSegmentPass(const ParallelToSegmentPass &pass) {}
-  ParallelToSegmentPass(const xilinx::air::ParallelToSegmentOptions &options)
-      : ParallelToSegmentBase(options) {}
-
-  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<air::airDialect>();
-    registry.insert<linalg::LinalgDialect>();
-  }
-
-  void runOnOperation() override {
-    auto module = getOperation();
-    auto context = module.getContext();
-
-    LLVM_DEBUG(llvm::dbgs() << "input\n");
-    LLVM_DEBUG(module.print(llvm::dbgs()));
-
-    llvm::SmallVector<air::SegmentOp> segmentOps;
-    module.walk([&](air::SegmentOp op) { segmentOps.push_back(op); });
-
-    llvm::SmallSet<Operation *, 8> filteredOps;
-    llvm::SmallSet<air::SegmentOp, 2> replacementOps;
-    module.walk([&](Operation *op) {
-      if (!isa<scf::ForallOp, scf::ParallelOp>(op))
-        return;
-      if (op->getParentOfType<air::HerdOp>())
-        return;
-      if (op->getParentOfType<air::SegmentOp>())
-        return;
-      if (llvm::any_of(segmentOps, [op](air::SegmentOp s) {
-            return op->isProperAncestor(s);
-          }))
-        return;
-      // Depth = -1 means converting the innermost parallel ops
-      if (clAssignDepth == -1) {
-        SmallVector<Operation *> parOpsInOp;
-        op->walk([&parOpsInOp](Operation *o) {
-          if (isa<scf::ParallelOp>(o))
-            parOpsInOp.push_back(o);
-        });
-        if (parOpsInOp.size() > 1)
-          return;
-        filteredOps.insert(op);
-        return;
-      }
-      // Assigning depth to other negative values means converting all
-      // parallel ops
-      if (clAssignDepth < 0) {
-        filteredOps.insert(op);
-        return;
-      }
-      // the number of nested parallel above this one
-      int parallel_depth = 0;
-      Operation *par = op;
-      while ((par = par->getParentOp()))
-        if (isa<scf::ForallOp, scf::ParallelOp>(par))
-          parallel_depth++;
-      if (parallel_depth != clAssignDepth)
-        return;
-      filteredOps.insert(op);
-    });
-
-    // Convert forall to parallel in filtered ops
-    if (failed(ConvertForallToParallelInFilteredOps(filteredOps, context)))
-      signalPassFailure();
-
-    RewritePatternSet patterns(context);
-    patterns.add<ScfParToSegmentConversion>(context, filteredOps,
-                                            replacementOps);
-
-    ConversionTarget target(*context);
-
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           air::airDialect, arith::ArithDialect, ub::UBDialect,
-                           affine::AffineDialect, memref::MemRefDialect,
-                           scf::SCFDialect, linalg::LinalgDialect>();
-
-    target.addDynamicallyLegalOp<scf::ParallelOp>(
-        [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
-
-    if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
-      emitError(UnknownLoc::get(context), "error\n");
-      signalPassFailure();
-    }
-    getSegmentNames(module);
-
-    LLVM_DEBUG(llvm::dbgs() << "output\n");
-    LLVM_DEBUG(module.print(llvm::dbgs()));
-  }
-};
-
 // Inserts an empty launch over air.herd, where an air.launch is always
 // inserted, and an air.segment is inserted only if insertSegment is set to
 // true.
@@ -2781,14 +2687,6 @@ std::unique_ptr<mlir::Pass> createParallelToLaunchPass() {
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createParallelToLaunchPass(const ParallelToLaunchOptions &options) {
   return std::make_unique<ParallelToLaunchPass>(options);
-}
-
-std::unique_ptr<mlir::Pass> createParallelToSegmentPass() {
-  return std::make_unique<ParallelToSegmentPass>();
-}
-std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
-createParallelToSegmentPass(const ParallelToSegmentOptions &options) {
-  return std::make_unique<ParallelToSegmentPass>(options);
 }
 
 std::unique_ptr<mlir::Pass> createCopyToDmaPass() {
