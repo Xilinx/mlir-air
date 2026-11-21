@@ -23,10 +23,7 @@ class RewriterBase;
 
 namespace xilinx {
 namespace air {
-class SegmentOp;
 
-mlir::FailureOr<mlir::ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
-                                                air::SegmentOp segment);
 std::unique_ptr<mlir::Pass> createAIRToAIEPass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createAIRToAIEPass(const AIRToAIEOptions &options);
