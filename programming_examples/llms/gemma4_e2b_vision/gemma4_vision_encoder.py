@@ -73,18 +73,16 @@ class Shape:
     """Row counts of one image: L patches (L_valid real), L_pad GEMM rows,
     kv_rows attention keys, n_soft output tokens."""
 
-    def __init__(self, L, L_valid, kv_block):
+    def __init__(self, L, L_valid):
         self.L, self.L_valid = L, L_valid
         self.L_pad = _round_up(L, _ROW_ALIGN)
-        self.kv_rows = _round_up(L_valid, kv_block)
+        self.kv_rows = _fa_kv_rows(L_valid)
         assert self.kv_rows <= self.L_pad, (self.kv_rows, self.L_pad)
 
 
 class CpuOps:
     """The device ops in numpy, for checking the host pipeline on its own:
     bf16 in, f32 accumulate, bf16 out, as the NPU kernels do."""
-
-    kv_block = _LKP
 
     def build(self, shape, m_soft, out_dim):
         pass
@@ -134,11 +132,22 @@ def _fa_stages(kv_rows):
     return next(s for s in (4, 3, 2, 1) if blocks % s == 0)
 
 
+def _fa_kv_rows(L_valid):
+    """The real keys rounded up to the key block, or to whole 4-stage rounds
+    where that cascade cannot run: the kernel needs 2 stages, and a stage's
+    block count above 63 must split into shim DMA repeats."""
+    kv = _round_up(L_valid, _LKP)
+    per_stage = kv // _LKP // _fa_stages(kv)
+    if per_stage < kv // _LKP and (
+        per_stage <= 63 or any(per_stage % f == 0 for f in range(2, 64))
+    ):
+        return kv
+    return _round_up(L_valid, 4 * _LKP)
+
+
 class NpuOps:
     """The device ops as AIR ELFs, compiled per shape into `cache_dir` and
     reused across runs."""
-
-    kv_block = _LKP
 
     def __init__(self, cache_dir=None, verbose=False):
         from air_examples.llms.shared.infra.cache import KernelCache
@@ -392,7 +401,7 @@ class VisionEncoder:
         L, L_valid = len(pad), int((~pad).sum())
         # The kernel and host ops take padding as a tail of rows.
         assert not pad[:L_valid].any(), "padding patches must trail the image"
-        return Shape(L, L_valid, self.ops.kv_block)
+        return Shape(L, L_valid)
 
     def encode(self, pixel_values, position_ids, taps=None):
         sh = self.shape_of(position_ids)
