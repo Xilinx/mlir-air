@@ -870,12 +870,26 @@ void enforceChannelFifoOrder(Operation *root) {
       return nullptr;
     };
 
-    // Link to the nearest preceding match, innermost scope outward.
-    for (auto &level : chain) {
-      if (level.viaLoop)
-        break;
+    // Link to the nearest preceding match, innermost scope outward. A match
+    // outside a loop the endpoint is in orders the loop's first iteration; the
+    // iteration argument each crossed loop carries this endpoint's token in
+    // orders the iterations after it.
+    SmallVector<Value> carried;
+    for (auto [i, level] : llvm::enumerate(chain)) {
+      if (i > 0)
+        if (auto loop =
+                dyn_cast<scf::ForOp>(chain[i - 1].block->getParentOp())) {
+          auto res = cast<OpResult>(level.token);
+          carried.push_back(loop.getRegionIterArgs()[res.getResultNumber()]);
+        }
       if (Slot *slot = findSlot(level)) {
+        // A loop around this endpoint publishes its own result here for an
+        // endpoint earlier in its body; the iteration argument stands for it.
         for (Value t : slot->tokens)
+          if (Operation *def = t.getDefiningOp();
+              !def || !def->isAncestor(chan.getOperation()))
+            addAsyncDependencyIfNew(chan.getOperation(), t);
+        for (Value t : carried)
           addAsyncDependencyIfNew(chan.getOperation(), t);
         break;
       }
