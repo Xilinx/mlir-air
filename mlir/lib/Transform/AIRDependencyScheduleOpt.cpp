@@ -8131,6 +8131,10 @@ private:
       else if (isa<mlir::vector::TransferWriteOp>(user))
         users.push_back(user);
       else if (auto herdOp = dyn_cast_if_present<air::HerdOp>(user)) {
+        // A buffer the herd's cores share is not per core: sizing it to one
+        // core's accesses would fold the cores' parts onto one.
+        if (air::herdBufferHasCrossCoreDependence(herdOp, memref))
+          return failure();
         auto memrefInHerd = herdOp.getTiedKernelArgument(memref);
         if (memrefInHerd &&
             getAllChanUsers(memrefInHerd, users, dealloc, builder).failed())
