@@ -8082,8 +8082,10 @@ struct ShrinkMemrefSizesByAccessPattern
   }
 
 private:
-  // Whether, in each memref dim, every channel op's nonzero constant offset,
-  // plus the op's size, stays within `bounds`.
+  // Whether, in each memref dim, every channel op's offset, plus the op's
+  // size, stays within `bounds`: a nonzero constant, and an offset computed
+  // from tile ids as the shrink rewrites it. Other offsets are taken per loop
+  // trip, as the bounds are.
   static bool offsetsStayInBounds(ArrayRef<Operation *> users,
                                   ArrayRef<int> shape,
                                   ArrayRef<int64_t> bounds) {
@@ -8098,8 +8100,17 @@ private:
       auto sizes = chanOp.getMixedSizes();
       auto strides = chanOp.getMixedStrides();
       for (auto [o, sz, st] : llvm::zip(offs, sizes, strides)) {
-        auto oc = getConstantIntValue(o);
-        if (!oc || *oc == 0)
+        std::optional<int64_t> hi = getConstantIntValue(o);
+        if (!hi) {
+          auto v = cast<Value>(o);
+          if (!air::dependsOnHerdId(v))
+            continue;
+          auto range = air::getShrunkOffsetRange(v);
+          if (!range || range->first < 0)
+            return false;
+          hi = range->second;
+        }
+        if (*hi == 0)
           continue;
         auto stc = getConstantIntValue(st), szc = getConstantIntValue(sz);
         if (!stc || !szc)
@@ -8108,8 +8119,7 @@ private:
         if (it == natural.end())
           return false;
         int64_t d = it - natural.begin();
-        int64_t hi = *oc;
-        if (hi + *szc > bounds[d])
+        if (*hi + *szc > bounds[d])
           return false;
       }
     }
