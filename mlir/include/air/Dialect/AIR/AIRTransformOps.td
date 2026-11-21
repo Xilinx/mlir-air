@@ -1837,34 +1837,6 @@ def HoistLoopCarriedPackOp : Op<Transform_Dialect, "air.hoist_loop_carried_pack"
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
-def FoldPackIntoGenericOp : Op<Transform_Dialect, "air.fold_pack_into_generic",
-    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
-     DeclareOpInterfaceMethods<TransformOpInterface>]> {
-  let summary = "Read a packed input through the generic's indexing map";
-  let description = [{
-    For each input of the target `linalg.generic` produced by a
-    `linalg.pack` without padding (every tiled dimension divides evenly),
-    replaces the operand by the pack's source and composes the pack's
-    relayout into the operand's indexing map: a packed index
-    `(..., o, ..., i)` reads source element `o * tile + i`. Packs left
-    without uses are erased. The generic then reads the source directly,
-    and no relayout copy (on AIE, a DMA between two L1 buffers) is made.
-
-    The composed maps are not projected permutations: tile the generic so
-    the outer packed dimensions are 1 and fold unit dimensions before
-    vectorizing it. `structured.lower_pack`, generalizing its transpose and
-    fusing it into the generic gives an equivalent read through a
-    `tensor.expand_shape` view with a projected-permutation map; this op is
-    for packs that have already been tiled and fused into a loop.
-
-    Returns the updated generics.
-  }];
-
-  let arguments = (ins TransformHandleTypeInterface:$target);
-  let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
-}
-
 def LinearizeVectorsOp : Op<Transform_Dialect, "air.linearize_vectors",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
