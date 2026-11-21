@@ -1403,9 +1403,12 @@ def AIROverrideMemRefMemorySpace : Pass<"air-override-memref-memory-space", "Mod
 }
 
 def AIRHerdVectorizePass : Pass<"air-herd-vectorize", "func::FuncOp"> {
-  let summary = "Vectorize operations inside air.herd operations";
+  let summary = "Vectorize operations inside air.herd operations (deprecated)";
   let constructor = "xilinx::air::createAIRHerdVectorizePass()";
   let description = [{
+    Deprecated: apply `transform.structured.vectorize_children_and_apply_patterns`
+    to the air.herd ops instead.
+
     This pass vectorizes operations inside air.herd operations using pattern matching.
     It applies vectorization patterns similar to VectorizeChildrenAndApplyPatternsOp
     but specifically targets operations within air.herd regions.

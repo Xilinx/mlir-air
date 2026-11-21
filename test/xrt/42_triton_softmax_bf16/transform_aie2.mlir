@@ -324,7 +324,7 @@ module attributes {transform.with_named_sequence} {
         %dmas_from_copies = transform.air.copy_to_dma %all_copies : (!transform.any_op) -> !transform.any_op
         
         // Apply vectorization to optimize for AIE vector units
-        %vectorized_herd = transform.air.herd_vectorize %herd : (!transform.any_op) -> !transform.any_op
+        %vectorized_herd = transform.structured.vectorize_children_and_apply_patterns %herd : (!transform.any_op) -> !transform.any_op
 
         // Cast vector reduce (max) to use bf16 (to map to AIE vectorized reduction intrinsic)
         %vector_reductions_in_herd = transform.structured.match ops{["vector.multi_reduction"]} in %vectorized_herd : (!transform.any_op) -> !transform.any_op

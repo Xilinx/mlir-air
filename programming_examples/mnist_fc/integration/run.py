@@ -474,7 +474,7 @@ def build_integration_module(
               : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
             %herds = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-            %vectorized_herds = transform.air.herd_vectorize %herds : (!transform.any_op) -> !transform.any_op
+            %vectorized_herds = transform.structured.vectorize_children_and_apply_patterns %herds : (!transform.any_op) -> !transform.any_op
             %herd1, %herd2, %herd3 = transform.split_handle %vectorized_herds : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
             %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
@@ -491,7 +491,7 @@ def build_integration_module(
             %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func1_rematch : (!transform.any_op) -> !transform.any_op
 
             %herds_1 = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-            %vectorized_herds_1 = transform.air.herd_vectorize %herds_1 : (!transform.any_op) -> !transform.any_op
+            %vectorized_herds_1 = transform.structured.vectorize_children_and_apply_patterns %herds_1 : (!transform.any_op) -> !transform.any_op
             %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %vectorized_herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
             %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op

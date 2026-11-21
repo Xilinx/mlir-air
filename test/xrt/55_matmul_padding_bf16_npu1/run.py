@@ -559,7 +559,7 @@ if __name__ == "__main__":
 
             // Vectorize all herds (3 herds: prologue, compute, epilogue)
             %herds = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-            %vectorized_herds = transform.air.herd_vectorize %herds : (!transform.any_op) -> !transform.any_op
+            %vectorized_herds = transform.structured.vectorize_children_and_apply_patterns %herds : (!transform.any_op) -> !transform.any_op
             %herd1, %herd2, %herd3 = transform.split_handle %vectorized_herds : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
             %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
@@ -577,7 +577,7 @@ if __name__ == "__main__":
 
             // Re-vectorize after cleanup
             %herds_1 = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-            %vectorized_herds_1 = transform.air.herd_vectorize %herds_1 : (!transform.any_op) -> !transform.any_op
+            %vectorized_herds_1 = transform.structured.vectorize_children_and_apply_patterns %herds_1 : (!transform.any_op) -> !transform.any_op
             %h1, %h2, %h3 = transform.split_handle %vectorized_herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
             // No vector_type_cast needed — accumulator is already f32.

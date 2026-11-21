@@ -6,6 +6,15 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s | FileCheck %s
+// RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s 2>&1 >/dev/null | FileCheck %s --check-prefix=DEPRECATED
+
+// transform.structured.vectorize_children_and_apply_patterns on the herd gives
+// the same IR.
+// RUN: air-opt -air-transform='filename=%S/air_transform.mlir' %s -o %t.air
+// RUN: air-opt -air-transform='filename=%S/upstream_transform.mlir' %s -o %t.upstream
+// RUN: diff %t.air %t.upstream
+
+// DEPRECATED: warning: transform.air.herd_vectorize is deprecated
 
 // CHECK: vector.transfer_read
 // CHECK: vector.transfer_read

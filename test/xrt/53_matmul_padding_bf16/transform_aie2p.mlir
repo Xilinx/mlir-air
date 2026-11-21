@@ -220,7 +220,7 @@ module attributes {transform.with_named_sequence} {
         transform.annotate %herd3 "epilogue_herd" : !transform.any_op
 
         %herds = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %vectorized_herds = transform.air.herd_vectorize %herds : (!transform.any_op) -> !transform.any_op
+        %vectorized_herds = transform.structured.vectorize_children_and_apply_patterns %herds : (!transform.any_op) -> !transform.any_op
 
         %func7 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         transform.apply_patterns to %func7 {transform.apply_patterns.linalg.tiling_canonicalization

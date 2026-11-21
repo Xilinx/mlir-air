@@ -244,7 +244,7 @@ module attributes {transform.with_named_sequence} {
         // Transform scalar operations within the herd to vector operations that
         // map to AIE vector instructions. This vectorization is AIE-aware and
         // considers the 16-lane vector width established in PHASE 9.
-        %vectorized_herd = transform.air.herd_vectorize %herd : (!transform.any_op) -> !transform.any_op
+        %vectorized_herd = transform.structured.vectorize_children_and_apply_patterns %herd : (!transform.any_op) -> !transform.any_op
 
         // Step 5: Clean up vector shapes
         // Remove leading dimensions of size 1 from vector types (e.g., vector<1x16xf32>

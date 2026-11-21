@@ -284,7 +284,7 @@ module attributes {transform.with_named_sequence} {
     // Step 25: Apply vectorization to AIE herds.
     // Purpose: Converts scalar operations to vector operations for AIE vector units.
         %herds = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %vectorized_herds = transform.air.herd_vectorize %herds : (!transform.any_op) -> !transform.any_op
+        %vectorized_herds = transform.structured.vectorize_children_and_apply_patterns %herds : (!transform.any_op) -> !transform.any_op
 
     // Step 26: Canonicalization after vectorization.
     // Purpose: Simplifies vector operations and folds unit extent dimensions.

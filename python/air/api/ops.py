@@ -1633,7 +1633,8 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
     What is emitted is a plain ``linalg.matmul``. That is deliberate and is what
     every matmul example in this tree does: none of them hand-writes
     ``vector.contract``. Emitting linalg is the fork point that keeps both
-    lowering strategies available -- ``transform.air.herd_vectorize`` for direct
+    lowering strategies available --
+    ``transform.structured.vectorize_children_and_apply_patterns`` for direct
     codegen, or ``lower_linalg_to_func`` to call an external kernel -- and
     hand-writing the vectorised form would forfeit the second.
 
@@ -1660,8 +1661,8 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
     deprecated ``linalg.matmul_transpose_b``, and not a ``linalg.generic``.
     Nothing downstream needs to know: ``air-to-aie`` matches no named
     contraction, and both ``lower_linalg_to_func`` and
-    ``transform.air.herd_vectorize`` go through the ``LinalgOp`` interface,
-    which is indexing-map agnostic.
+    ``transform.structured.vectorize_children_and_apply_patterns`` go through
+    the ``LinalgOp`` interface, which is indexing-map agnostic.
 
     Two limits worth stating. It is verified through the scalar path -- lowered
     by ``convert-linalg-to-loops`` and run on npu1 -- and *not* through the AIE2
@@ -1774,8 +1775,9 @@ def dot(a, b, acc=None, alpha=1.0, transpose_b=False, dependency=None, *, kernel
         # A named linalg.matmul carrying the transpose in its indexing maps,
         # rather than the deprecated linalg.matmul_transpose_b. Downstream this
         # is the same op: air-to-aie matches no named contraction, and both
-        # `lower_linalg_to_func` and transform.air.herd_vectorize go through the
-        # LinalgOp interface, which is indexing-map agnostic.
+        # `lower_linalg_to_func` and
+        # transform.structured.vectorize_children_and_apply_patterns go through
+        # the LinalgOp interface, which is indexing-map agnostic.
         op = linalg.matmul(
             a.value, b.value, outs=[acc.value], indexing_maps=_transpose_b_maps()
         )
