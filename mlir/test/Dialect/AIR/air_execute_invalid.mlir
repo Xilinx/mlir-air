@@ -15,3 +15,38 @@ func.func @no_block() {
   }) : () -> !air.async.token
   return
 }
+
+// -----
+
+// The values an air.execute returns after its token are those its terminator
+// yields, in number and type.
+
+func.func @wrong_type() {
+  // expected-error @+1 {{result #1 has type 'index', but its terminator yields 'i32'}}
+  %t, %v = air.execute -> (index) {
+    %c = arith.constant 1 : i32
+    air.execute_terminator %c : i32
+  }
+  return
+}
+
+// -----
+
+func.func @too_few() {
+  // expected-error @+1 {{returns 1 value(s) after its token, but its terminator yields 0}}
+  %t, %v = air.execute -> (index) {
+    air.execute_terminator
+  }
+  return
+}
+
+// -----
+
+func.func @too_many() {
+  // expected-error @+1 {{returns 0 value(s) after its token, but its terminator yields 1}}
+  %t = air.execute {
+    %c = arith.constant 1 : index
+    air.execute_terminator %c : index
+  }
+  return
+}
