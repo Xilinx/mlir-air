@@ -124,6 +124,9 @@ _GEMM_OPS = ("qkv", "o", "gate", "up", "down", "proj")
 
 # Attention schedule: q blocks of 256 rows in 4 tiles, 2 heads per unroll.
 _FA_LQP, _FA_Q_TILES, _FA_HEADS_PER_UNROLL = 256, 4, 2
+# From this many keys on, a 4-stage cascade outruns 2 or 3 stages even with up
+# to 3 padding blocks; below it, the padding costs more than the stages save.
+_FA_PAD_TO_4_STAGES = 24 * _LKP
 
 
 def _fa_stages(kv_rows):
@@ -134,13 +137,10 @@ def _fa_stages(kv_rows):
 
 def _fa_kv_rows(L_valid):
     """The real keys rounded up to the key block, or to whole 4-stage rounds
-    where that cascade cannot run: the kernel needs 2 stages, and a stage's
-    block count above 63 must split into shim DMA repeats."""
+    when they are many or would leave a 1-stage cascade, which the kernel does
+    not support."""
     kv = _round_up(L_valid, _LKP)
-    per_stage = kv // _LKP // _fa_stages(kv)
-    if per_stage < kv // _LKP and (
-        per_stage <= 63 or any(per_stage % f == 0 for f in range(2, 64))
-    ):
+    if kv < _FA_PAD_TO_4_STAGES and _fa_stages(kv) > 1:
         return kv
     return _round_up(L_valid, 4 * _LKP)
 
