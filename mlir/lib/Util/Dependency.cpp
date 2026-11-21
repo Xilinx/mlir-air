@@ -2002,6 +2002,8 @@ LogicalResult dependencyCanonicalizer::parseCommandGraphs(
     func::FuncOp &toplevel, dependencyGraph &global_graph,
     dependencyContext &dep_ctx, std::string granularity, bool dump_dot,
     std::string dump_dir) {
+  // Keyed by op: entries from an earlier function may name erased ops.
+  dep_ctx.execute_front.clear();
   // Graph parsing granularity. Tuple format: <expandLaunch, expandSegment,
   // expandHerd, expandCore>
   graphGranularityProperties expandHier = {true, true, true, false};
@@ -2228,6 +2230,19 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
     }
   }
   return success();
+}
+
+// The vertex and graph recorded for an op's type-id pair, or defaults when
+// none is.
+static std::pair<Graph::VertexId, dependencyGraph *>
+lookupVertex(const dependencyContext &dep_ctx,
+             const std::pair<std::string, unsigned> &key) {
+  std::pair<Graph::VertexId, dependencyGraph *> out{};
+  if (auto it = dep_ctx.op_to_v.find(key); it != dep_ctx.op_to_v.end())
+    out.first = it->second;
+  if (auto it = dep_ctx.op_to_g.find(key); it != dep_ctx.op_to_g.end())
+    out.second = it->second;
+  return out;
 }
 
 // Create graph vertex from op
@@ -2467,6 +2482,17 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
   Operation *pointer_op = op;
   int num_non_shape_alt_ops = 0;
   for (auto &child_op : op->getRegions().front().getOps()) {
+    // The graph is built in post-order, so an op the walk gives a vertex of
+    // its own (a loop, a branch, a wait_all) already has one, found by its id.
+    // Adding it to this chain below overwrites that id; it is restored at the
+    // end of the iteration so the op still finds its own vertex.
+    std::optional<IntegerAttr> ownId;
+    if (getOpTypeFromOpImpls(&child_op) != "execute") {
+      auto [existing, existingG] =
+          lookupVertex(dep_ctx, getTypeIdPairFromOp(&child_op));
+      if (existingG == G && G->g[existing].op == &child_op)
+        ownId = child_op.getAttrOfType<IntegerAttr>("id");
+    }
     if (auto linalg_child_op =
             dyn_cast_if_present<linalg::LinalgOp>(child_op)) {
       std::string detailed_description = "";
@@ -2533,6 +2559,10 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
       G->g.addEdge(v_prev, v);
     if (num_non_shape_alt_ops > 0)
       pointer_op = nullptr;
+    if (iter_count == 0)
+      dep_ctx.execute_front[op] = {v, G};
+    if (ownId && *ownId)
+      child_op.setAttr("id", *ownId);
     v_prev = v;
     iter_count++;
     num_non_shape_alt_ops++;
@@ -2600,19 +2630,6 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
   }
 }
 
-// The vertex and graph recorded for an op's type-id pair, or defaults when
-// none is.
-static std::pair<Graph::VertexId, dependencyGraph *>
-lookupVertex(const dependencyContext &dep_ctx,
-             const std::pair<std::string, unsigned> &key) {
-  std::pair<Graph::VertexId, dependencyGraph *> out{};
-  if (auto it = dep_ctx.op_to_v.find(key); it != dep_ctx.op_to_v.end())
-    out.first = it->second;
-  if (auto it = dep_ctx.op_to_g.find(key); it != dep_ctx.op_to_g.end())
-    out.second = it->second;
-  return out;
-}
-
 // Get vertex descriptor from op
 // "front_or_back": if op is an air.execute, then "front" returns the first op
 // in region, while "back" returns the terminator in region.
@@ -2623,6 +2640,9 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
   std::pair<Graph::VertexId, dependencyGraph *> output;
   if (auto execute_op = dyn_cast_if_present<xilinx::air::ExecuteOp>(op)) {
     if (front_or_back == "front") {
+      if (auto it = dep_ctx.execute_front.find(op);
+          it != dep_ctx.execute_front.end())
+        return it->second;
       auto execute_front_op = &execute_op.getChildOps().front();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_front_op);
