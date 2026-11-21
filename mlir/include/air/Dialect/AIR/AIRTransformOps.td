@@ -927,61 +927,6 @@ def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
       "$target prop-dict attr-dict `:` functional-type(operands, results)";
 }
 
-def AIRHerdVectorizeOp : Op<Transform_Dialect, "air.herd_vectorize",
-    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
-     TransformOpInterface, TransformEachOpTrait]> {
-  let summary = "Vectorize operations inside air.herd operations (deprecated)";
-  let description = [{
-    Deprecated: use `transform.structured.vectorize_children_and_apply_patterns`,
-    which applies the same patterns to any isolated-from-above target, air.herd
-    included. Its options are unit attributes, e.g. `{vectorize_padding}`
-    instead of `{vectorize_padding = true}`.
-
-    This transform takes a handle to air.herd operations and vectorizes the operations
-    inside their bodies using the same logic as the AIRHerdVectorizePass. It walks the
-    body of each herd operation and applies vectorization patterns to linalg operations
-    and other vectorizable operations.
-    
-    The transform supports the same options as the AIRHerdVectorizePass:
-
-    - vectorize_nd_extract: Controls whether to vectorize tensor.extract when the input tensor is rank >= 2
-    - flatten_1d_depthwise_conv: Controls whether to "flatten" the channel dimension when vectorizing 1D depthwise convolutions
-    - disable_transfer_permutation_map_lowering_patterns: Disables vector transfer permutation map lowering patterns
-    - disable_multi_reduction_to_contract_patterns: Disables multi-reduction to contract patterns
-    - vectorize_padding: Enables vectorization of padding operations
-    
-    Example:
-    ```mlir
-    %herd = transform.structured.match ops{["air.herd"]} in %f : (!transform.any_op) -> !transform.any_op
-    %vectorized = transform.air.herd_vectorize %herd {
-      vectorize_nd_extract = false,
-      flatten_1d_depthwise_conv = false,
-      vectorize_padding = true
-    } : (!transform.any_op) -> !transform.any_op
-    ```
-    
-    Returns a handle to the transformed air.herd operations.
-  }];
-  
-  let arguments = (ins TransformHandleTypeInterface:$target,
-                   DefaultValuedAttr<BoolAttr, "false">:$vectorize_nd_extract,
-                   DefaultValuedAttr<BoolAttr, "false">:$flatten_1d_depthwise_conv,
-                   DefaultValuedAttr<BoolAttr, "false">:$disable_transfer_permutation_map_lowering_patterns,
-                   DefaultValuedAttr<BoolAttr, "false">:$disable_multi_reduction_to_contract_patterns,
-                   DefaultValuedAttr<BoolAttr, "false">:$vectorize_padding);
-  let results = (outs TransformHandleTypeInterface:$result);
-  let assemblyFormat =
-      "$target prop-dict attr-dict `:` functional-type(operands, results)";
-
-  let extraClassDeclaration = [{
-    ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::mlir::transform::TransformRewriter &rewriter,
-        ::mlir::Operation *target,
-        ::mlir::transform::ApplyToEachResultList &results,
-        ::mlir::transform::TransformState &state);
-  }];
-}
-
 // Ops implemented in mlir/lib/Transform/AIRLinalgBufferize.cpp
 //
 

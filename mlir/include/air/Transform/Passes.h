@@ -15,7 +15,6 @@
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Transform/AIRDmaToChannel.h"
 #include "air/Transform/AIRHerdPlacementPass.h"
-#include "air/Transform/AIRHerdVectorize.h"
 #include "air/Transform/AIRLinalgBufferize.h"
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Transform/AIRLinalgOpStats.h"
