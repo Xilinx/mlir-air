@@ -128,8 +128,15 @@ public:
         }
         if (op->getParentOfType<linalg::LinalgOp>())
           return; // Skip if is inside a linalg.generic.
-        if (op->getParentOfType<air::ExecuteOp>())
-          return; // Already inside an async region.
+        if (op->getParentOfType<air::ExecuteOp>()) {
+          // Already inside an async region. A transfer there would finish
+          // after the execute that holds it.
+          if (isa<air::DmaMemcpyNdOp, air::ChannelInterface>(op)) {
+            op->emitOpError("inside an air.execute is not supported");
+            signalPassFailure();
+          }
+          return;
+        }
 
         if (isa<air::DmaMemcpyNdOp>(op))
           createAsyncDMA(rewriter, op);
@@ -246,9 +253,19 @@ public:
         SmallVector<Value, 1> sink_op_scalar_outs;
 
         dependencyTracer DTObject;
-        DTObject.getPartialMemrefFromOp(
-            sink_op, sink_op_memref_reads, sink_op_memref_writes,
-            sink_op_scalar_ins, sink_op_scalar_outs);
+        // An execute accesses what every op in its body does; one this pass
+        // made holds a single op, one in the input may hold several.
+        SmallVector<Operation *> accessors{sink_op};
+        if (auto async_execute_op = dyn_cast_if_present<air::ExecuteOp>(op)) {
+          accessors.clear();
+          for (auto &child_op : async_execute_op.getChildOps())
+            if (!isa<air::ExecuteTerminatorOp>(child_op))
+              accessors.push_back(&child_op);
+        }
+        for (Operation *accessor : accessors)
+          DTObject.getPartialMemrefFromOp(
+              accessor, sink_op_memref_reads, sink_op_memref_writes,
+              sink_op_scalar_ins, sink_op_scalar_outs);
 
         // Detect dependencies
         if (auto async_execute_op = dyn_cast_if_present<air::ExecuteOp>(op)) {
@@ -387,20 +404,15 @@ public:
         if (LoopLikeOpInterface loop_op =
                 dyn_cast_if_present<LoopLikeOpInterface>(op)) {
           Region &region = *loop_op.getLoopRegions().front();
+          if (air::getAsyncTokenFromOp(op)) {
+            if (failed(adoptAsyncOp(op, "already carries an async token")))
+              signalPassFailure();
+            return;
+          }
           SmallVector<Value, 1> yielded_tokens_in_for_op =
               getYieldedTokens(region);
           if (yielded_tokens_in_for_op.empty())
             return; // No async op in loop successors, continue.
-          if (air::getAsyncTokenFromOp(op)) {
-            // Already async: done if its own token covers the work inside.
-            if (reachesYield(region, yielded_tokens_in_for_op)) {
-              elevateTokensToOp(op);
-              return;
-            }
-            op->emitOpError("already carries an async token");
-            signalPassFailure();
-            return;
-          }
           auto new_loop_op = createAsyncLoopLikeOp(rewriter, loop_op);
           if (failed(new_loop_op)) {
             signalPassFailure();
@@ -418,6 +430,12 @@ public:
           // below.
           if (isa<air::HierarchyInterface>(op))
             return;
+          if (isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp>(op) &&
+              air::getAsyncTokenFromOp(op)) {
+            if (failed(adoptAsyncOp(op, "already yields an async token")))
+              signalPassFailure();
+            return;
+          }
           auto regions = op->getRegions();
           SmallVector<SmallVector<Value, 1>> yielded_tokens_per_region(
               regions.size());
@@ -429,17 +447,9 @@ public:
                   [](SmallVector<Value, 1> toks) { return toks.empty(); }))
             return; // No async op in branch successors, continue.
           // The branch's token goes after its results, where dependency
-          // users would not look for it past one already there. A branch that
-          // already yields a token covering the work inside is already async.
+          // users would not look for it past one already there.
           if (llvm::any_of(op->getResultTypes(),
                            llvm::IsaPred<air::AsyncTokenType>)) {
-            bool covered = true;
-            for (unsigned i = 0; i < regions.size(); i++)
-              covered &= reachesYield(regions[i], yielded_tokens_per_region[i]);
-            if (covered) {
-              elevateTokensToOp(op);
-              return;
-            }
             op->emitOpError("already yields an async token");
             signalPassFailure();
             return;
@@ -2424,39 +2434,80 @@ private:
     }
   }
 
-  // Whether every token in `tokens` reaches what `region` yields: through the
-  // dependencies of async ops, the tokens nested regions yield, and a loop's
-  // initial values.
-  bool reachesYield(Region &region, ArrayRef<Value> tokens) {
-    if (region.empty())
-      return tokens.empty();
-    llvm::SmallPtrSet<Value, 16> seen;
-    SmallVector<Value> worklist;
-    auto pushTokens = [&](ValueRange vs) {
-      for (Value v : vs)
-        if (isa<air::AsyncTokenType>(v.getType()))
-          worklist.push_back(v);
-    };
-    for (Block &b : region)
-      if (b.mightHaveTerminator())
-        pushTokens(b.getTerminator()->getOperands());
-    while (!worklist.empty()) {
-      Value v = worklist.pop_back_val();
-      if (!seen.insert(v).second)
-        continue;
-      Operation *def = v.getDefiningOp();
-      if (!def)
-        continue;
-      if (auto async = dyn_cast<air::AsyncOpInterface>(def))
-        pushTokens(async.getAsyncDependencies());
+  // The tokens certain to have completed once `v` has: `v`, what it depends
+  // on, and for a token a loop or branch returns, what every way through it
+  // yields in that position (a loop may also run zero times).
+  llvm::SmallPtrSet<Value, 8>
+  completedWith(Value v,
+                llvm::DenseMap<Value, llvm::SmallPtrSet<Value, 8>> &memo) {
+    if (auto it = memo.find(v); it != memo.end())
+      return it->second;
+    llvm::SmallPtrSet<Value, 8> out;
+    out.insert(v);
+    Operation *def = v.getDefiningOp();
+    if (auto async = dyn_cast_if_present<air::AsyncOpInterface>(def)) {
+      for (Value dep : async.getAsyncDependencies())
+        for (Value c : completedWith(dep, memo))
+          out.insert(c);
+    } else if (isa_and_present<scf::IfOp, affine::AffineIfOp,
+                               scf::IndexSwitchOp, scf::ForOp, scf::ParallelOp>(
+                   def)) {
+      unsigned k = cast<OpResult>(v).getResultNumber();
+      SmallVector<Value> ways;
+      bool known = true;
+      for (Region &r : def->getRegions()) {
+        if (r.empty() || !r.front().mightHaveTerminator() ||
+            r.front().getTerminator()->getNumOperands() <= k) {
+          known = false;
+          break;
+        }
+        ways.push_back(r.front().getTerminator()->getOperand(k));
+      }
       if (auto forOp = dyn_cast<scf::ForOp>(def))
-        pushTokens(forOp.getInitArgs());
-      for (Region &r : def->getRegions())
-        for (Block &b : r)
-          if (b.mightHaveTerminator())
-            pushTokens(b.getTerminator()->getOperands());
+        ways.push_back(forOp.getInitArgs()[k]);
+      if (auto parOp = dyn_cast<scf::ParallelOp>(def))
+        ways.push_back(parOp.getInitVals()[k]);
+      if (known && !ways.empty()) {
+        llvm::SmallPtrSet<Value, 8> all = completedWith(ways.front(), memo);
+        for (Value w : llvm::drop_begin(ways)) {
+          llvm::SmallPtrSet<Value, 8> these = completedWith(w, memo);
+          llvm::SmallVector<Value> gone;
+          for (Value c : all)
+            if (!these.contains(c))
+              gone.push_back(c);
+          for (Value c : gone)
+            all.erase(c);
+        }
+        for (Value c : all)
+          out.insert(c);
+      }
     }
-    return llvm::all_of(tokens, [&](Value t) { return seen.contains(t); });
+    memo[v] = out;
+    return out;
+  }
+
+  // A loop or branch in the input that already returns a token is left as it
+  // is when that token covers the work inside it: every token made directly
+  // in its regions has completed once what the region yields in the token's
+  // position has. Otherwise it is rejected with `error`.
+  LogicalResult adoptAsyncOp(Operation *op, StringRef error) {
+    Value token = air::getAsyncTokenFromOp(op);
+    unsigned k = cast<OpResult>(token).getResultNumber();
+    llvm::DenseMap<Value, llvm::SmallPtrSet<Value, 8>> memo;
+    for (Region &r : op->getRegions()) {
+      if (r.empty())
+        continue;
+      Block &b = r.front();
+      llvm::SmallPtrSet<Value, 8> done;
+      if (b.mightHaveTerminator() && b.getTerminator()->getNumOperands() > k)
+        done = completedWith(b.getTerminator()->getOperand(k), memo);
+      for (Operation &inner : b)
+        for (Value res : inner.getResults())
+          if (isa<air::AsyncTokenType>(res.getType()) && !done.contains(res))
+            return op->emitOpError(error);
+    }
+    elevateTokensToOp(op);
+    return success();
   }
 
   // Check if a value is not used inside a given block, or is only used by ops
