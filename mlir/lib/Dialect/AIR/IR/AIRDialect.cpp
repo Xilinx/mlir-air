@@ -2503,6 +2503,15 @@ static bool chainHasUnsupportedSteps(ArrayRef<Operation *> chain,
          ShapedType::isDynamicShape(srcStrides);
 }
 
+// Whether ComposeMemrefOp can fold `chain` into an access pattern; explicit
+// when the op lists any offsets, sizes or strides. Does not modify the IR.
+static bool chainComposable(ArrayRef<Operation *> chain, bool explicitPattern) {
+  return !chain.empty() &&
+         !(explicitPattern && chainMayDropOffsetDims(chain)) &&
+         !(explicitPattern && chainLayoutUnknown(chain)) &&
+         !chainHasUnsupportedSteps(chain, explicitPattern);
+}
+
 static bool memcpyAccessPatternNeedsRewrite(Value memref,
                                             ArrayRef<OpFoldResult> offsets,
                                             ArrayRef<OpFoldResult> sizes,
@@ -2511,9 +2520,7 @@ static bool memcpyAccessPatternNeedsRewrite(Value memref,
   // unit dims to an explicit access pattern.
   std::vector<Operation *> chain = getComposableMemrefChain(memref);
   bool explicitPattern = !offsets.empty() || !sizes.empty() || !strides.empty();
-  if (!chain.empty() && !(explicitPattern && chainMayDropOffsetDims(chain)) &&
-      !(explicitPattern && chainLayoutUnknown(chain)) &&
-      !chainHasUnsupportedSteps(chain, explicitPattern))
+  if (chainComposable(chain, explicitPattern))
     return true;
   // Mirrors canonicalizeEmptyLists.
   if (offsets.empty() && sizes.empty() && strides.empty())
@@ -2613,6 +2620,9 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   SmallVector<Value> initialOffsets, initialStrides;
   SmallVector<Value> droppedOffsets;
   SmallVector<int64_t> droppedStrides;
+  // A reinterpret_cast's offset counts elements from its source's base,
+  // whatever the result's strides; it is placed once the pattern is known.
+  Value flatOffset;
   if (isa<ViewLikeOpInterface>(memrefOpVec[0]) &&
       isa<OffsetSizeAndStrideOpInterface>(memrefOpVec[0])) {
     auto viewLikeOp = dyn_cast_if_present<ViewLikeOpInterface>(memrefOpVec[0]);
@@ -2654,6 +2664,12 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
         initialOffsets = keptOffsets;
         initialStrides = keptStrides;
       }
+    }
+    if (auto rcOp = dyn_cast<memref::ReinterpretCastOp>(memrefOpVec[0])) {
+      if (!isConstantIntValue(initialOffsets.front(), 0))
+        flatOffset = initialOffsets.front();
+      initialOffsets.assign(rcOp.getType().getRank(), constZero);
+      initialStrides.assign(rcOp.getType().getRank(), constOne);
     }
   } else if (auto transposeOp =
                  dyn_cast_if_present<memref::TransposeOp>(memrefOpVec[0])) {
@@ -2861,9 +2877,43 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
                                    droppedStrides)))
       return failure();
   offsets = initialOffsets;
-  if (!droppedOffsets.empty())
+  if (!droppedOffsets.empty() || flatOffset) {
+    // Dims are matched from the innermost; extra leading offsets are those of
+    // view dims the pattern does not list, 0 once converted above.
     while (offsets.size() < strides.size())
       offsets.insert(offsets.begin(), constZero);
+    while (offsets.size() > strides.size()) {
+      if (!isConstantIntValue(offsets.front(), 0))
+        return failure();
+      offsets.erase(offsets.begin());
+    }
+  }
+  // Add the flat offset to the innermost dim whose stride divides it (a
+  // dynamic one only to a dim of stride 1), else give it a leading unit dim of
+  // stride 1.
+  if (flatOffset) {
+    auto f = getConstantIntValue(flatOffset);
+    bool placed = false;
+    for (int64_t j = (int64_t)strides.size() - 1; j >= 0 && !placed; --j) {
+      auto st = getConstantIntValue(strides[j]);
+      if (!st || *st <= 0)
+        continue;
+      auto o = getConstantIntValue(offsets[j]);
+      if (f && o && *f % *st == 0) {
+        offsets[j] = getValueOrCreateConstantIndexOp(
+            rewriter, loc, rewriter.getIndexAttr(*o + *f / *st));
+        placed = true;
+      } else if (!f && *st == 1) {
+        offsets[j] =
+            arith::AddIOp::create(rewriter, loc, offsets[j], flatOffset);
+        placed = true;
+      }
+    }
+    if (!placed) {
+      droppedOffsets.push_back(flatOffset);
+      droppedStrides.push_back(1);
+    }
+  }
   for (auto [o, st] :
        llvm::reverse(llvm::zip(droppedOffsets, droppedStrides))) {
     offsets.insert(offsets.begin(), o);
@@ -3530,7 +3580,10 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
       op->template getAttrOfType<DenseI32ArrayAttr>("pad_before") ||
       op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
   std::vector<Operation *> chain = getComposableMemrefChain(memref);
-  if (hasPadding ? chain.empty() || chainHasUnsupportedSteps(chain, true)
+  bool explicitPattern = !op.getMixedOffsets().empty() ||
+                         !op.getMixedSizes().empty() ||
+                         !op.getMixedStrides().empty();
+  if (hasPadding ? !chainComposable(chain, explicitPattern)
                  : !memcpyAccessPatternNeedsRewrite(
                        memref, op.getMixedOffsets(), op.getMixedSizes(),
                        op.getMixedStrides()))

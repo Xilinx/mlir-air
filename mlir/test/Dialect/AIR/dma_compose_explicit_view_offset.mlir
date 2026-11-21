@@ -77,3 +77,74 @@ func.func @dynamic_layout(%a: memref<16xi32, strided<[?], offset: ?>>, %o: memre
   air.dma_memcpy_nd (%o[] [] [], %v[%c0] [%c2] [%c2]) : (memref<2xi32>, memref<8xi32, strided<[?], offset: ?>>)
   return
 }
+
+// A reinterpret_cast's offset counts elements whatever its strides: the view
+// starts at element 4, so [0] [2] [1] reads 4 and 5.
+// CHECK-LABEL: func.func @reinterpret_cast_explicit
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[4] [2] [1])
+func.func @reinterpret_cast_explicit(%a: memref<16xi32>, %o: memref<2xi32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %v = memref.reinterpret_cast %a to offset: [4], sizes: [4], strides: [2] : memref<16xi32> to memref<4xi32, strided<[2], offset: 4>>
+  air.dma_memcpy_nd (%o[] [] [], %v[%c0] [%c2] [%c1]) : (memref<2xi32>, memref<4xi32, strided<[2], offset: 4>>)
+  return
+}
+
+// The same view read whole: elements 4, 6, 8 and 10, offset 4 / 2 = 2.
+// CHECK-LABEL: func.func @reinterpret_cast_implicit
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[2] [4] [2])
+func.func @reinterpret_cast_implicit(%a: memref<16xi32>, %o: memref<4xi32>) {
+  %v = memref.reinterpret_cast %a to offset: [4], sizes: [4], strides: [2] : memref<16xi32> to memref<4xi32, strided<[2], offset: 4>>
+  air.dma_memcpy_nd (%o[] [] [], %v[] [] []) : (memref<4xi32>, memref<4xi32, strided<[2], offset: 4>>)
+  return
+}
+
+// No stride of the pattern divides 3: a leading unit dim of stride 1.
+// CHECK-LABEL: func.func @reinterpret_cast_leading_dim
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[3, 0] [1, 4] [1, 2])
+func.func @reinterpret_cast_leading_dim(%a: memref<16xi32>, %o: memref<4xi32>) {
+  %v = memref.reinterpret_cast %a to offset: [3], sizes: [4], strides: [2] : memref<16xi32> to memref<4xi32, strided<[2], offset: 3>>
+  air.dma_memcpy_nd (%o[] [] [], %v[] [] []) : (memref<4xi32>, memref<4xi32, strided<[2], offset: 3>>)
+  return
+}
+
+// A dynamic offset is added to the dim of stride 1.
+// CHECK-LABEL: func.func @reinterpret_cast_dynamic
+// CHECK-SAME: %[[OFF:[a-zA-Z0-9]+]]: index
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[0, %[[OFF]]] [2, 4] [16, 1])
+func.func @reinterpret_cast_dynamic(%a: memref<64xi32>, %o: memref<8xi32>, %off: index) {
+  %v = memref.reinterpret_cast %a to offset: [%off], sizes: [2, 4], strides: [16, 1] : memref<64xi32> to memref<2x4xi32, strided<[16, 1], offset: ?>>
+  air.dma_memcpy_nd (%o[] [] [], %v[] [] []) : (memref<8xi32>, memref<2x4xi32, strided<[16, 1], offset: ?>>)
+  return
+}
+
+// The pattern lists fewer dims than the view. The view starts at element 3,
+// which 2 does not divide: [0] [2] [2] reads 3 and 5 through a leading unit
+// dim, aligned with the pattern's sizes and strides.
+// CHECK-LABEL: func.func @short_pattern
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[3, 0] [1, 2] [1, 2])
+func.func @short_pattern(%a: memref<2x16xi32>, %o: memref<2xi32>) {
+  %c0 = arith.constant 0 : index
+  %c2 = arith.constant 2 : index
+  %v = memref.subview %a[0, 3] [2, 8] [1, 1] : memref<2x16xi32> to memref<2x8xi32, strided<[16, 1], offset: 3>>
+  air.dma_memcpy_nd (%o[] [] [], %v[%c0] [%c2] [%c2]) : (memref<2xi32>, memref<2x8xi32, strided<[16, 1], offset: 3>>)
+  return
+}
+
+// A padded channel transfer through a view whose layout strides are not
+// static: the view stays, and nothing is left behind for the next sweep (the
+// RUN line tests convergence).
+air.channel @chan [1]
+// CHECK-LABEL: func.func @padded_dynamic_layout
+// CHECK: %[[SV:.*]] = memref.subview
+// CHECK: air.channel.put {{ *}}@chan[] (%[[SV]][0, 0] [4, 4] [8, 1])
+func.func @padded_dynamic_layout(%a: memref<?x?xi32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c8 = arith.constant 8 : index
+  %v = memref.subview %a[1, 2] [4, 4] [1, 1] : memref<?x?xi32> to memref<4x4xi32, strided<[?, 1], offset: ?>>
+  air.channel.put @chan[] (%v[%c0, %c0] [%c4, %c4] [%c8, %c1]) {pad_before = array<i32: 0, 1>, pad_after = array<i32: 0, 0>} : (memref<4x4xi32, strided<[?, 1], offset: ?>>)
+  return
+}
