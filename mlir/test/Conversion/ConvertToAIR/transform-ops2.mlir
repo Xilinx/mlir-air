@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s -air-transform='filename=%s' | FileCheck %s
 
-// CHECK-LABEL @air_par_to_herd_vert
+// CHECK-LABEL: @air_par_to_herd_vert
 // CHECK: %[[C1:.*]] = arith.constant 1 : index
 // CHECK: %[[C4:.*]] = arith.constant 4 : index
 // CHECK: air.herd @herd_0  tile ({{.*}}) in (%{{.*}}=%[[C1]], %{{.*}}=%[[C4]])

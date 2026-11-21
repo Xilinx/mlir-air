@@ -27,7 +27,7 @@ func.func @air_execute_0() {
     air.execute_terminator %c1 : index
   } {id = 1}
 
-  // CHECK %{{.*}}, %{{.*}}:2 = air.execute [{{.*}}] -> (index, i32) {
+  // CHECK: %{{.*}}, %{{.*}}:2 = air.execute [{{.*}}] -> (index, i32) {
   %6, %7, %8 = air.execute[%e, %4] -> (index, i32) {
     %c2 = arith.constant 2 : index
     %i2 = arith.constant 2 : i32

@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s -air-transform='filename=%s' | FileCheck %s
 
-// CHECK-LABEL @air_par_to_segment
+// CHECK-LABEL: @air_par_to_segment
 // CHECK: air.segment
 func.func @air_par_to_segment() {
   %c0 = arith.constant 0 : index

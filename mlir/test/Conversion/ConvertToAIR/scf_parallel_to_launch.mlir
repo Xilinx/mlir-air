@@ -9,7 +9,7 @@
 // RUN: air-opt -air-par-to-launch='has-air-segment=false' -cse -canonicalize %s | FileCheck %s
 // CHECK-LABEL: func.func @f0
 // CHECK: %[[C0:.*]] = arith.constant 2 : index
-// CHECK air.launch ({{.*}}, {{.*}}) in ({{.*}}=[[C0]], {{.*}}=[[C0]])
+// CHECK: air.launch ({{.*}}, {{.*}}) in ({{.*}}=%[[C0]], {{.*}}=%[[C0]])
 func.func @f0()  {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -22,7 +22,7 @@ func.func @f0()  {
 
 // CHECK-LABEL: func.func @f1
 // CHECK: %[[C1:.*]] = arith.constant 4 : index
-// CHECK air.launch ({{.*}}) in ({{.*}}=[[C1]])
+// CHECK: air.launch ({{.*}}) in ({{.*}}=%[[C1]])
 func.func @f1()  {
   %c0 = arith.constant 0 : index
   %c32 = arith.constant 32 : index
