@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s -air-transform='filename=%s' | FileCheck %s
 
-// CHECK-LABEL @air_par_to_launch
+// CHECK-LABEL: @air_par_to_launch
 // CHECK: air.launch
 // CHECK: air.segment
 func.func @air_par_to_launch() {
