@@ -740,6 +740,16 @@ llvm::DenseSet<StringRef> air::getChannelsStartedByCores(Operation *root) {
   return names;
 }
 
+int64_t air::getLinearOffset(ArrayRef<int64_t> offsets,
+                             ArrayRef<int64_t> strides) {
+  assert(offsets.size() == strides.size() &&
+         "offsets and strides must have the same length");
+  int64_t offset = 0;
+  for (auto [o, s] : llvm::zip_equal(offsets, strides))
+    offset += o * s;
+  return offset;
+}
+
 int64_t air::getRefeedCount(Operation *op) {
   if (!op)
     return 1;

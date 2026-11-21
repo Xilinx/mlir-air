@@ -176,18 +176,12 @@ int64_t air::get1DOffset(ArrayRef<OpFoldResult> memcpy_offsets,
                          ArrayRef<OpFoldResult> memcpy_strides) {
   if (memcpy_offsets.empty())
     return 0;
-
-  int64_t one_d_offset = 0;
-  for (int i = memcpy_offsets.size() - 1; i >= 0; i--) {
-    auto offset = mlir::getConstantIntValue(memcpy_offsets[i]);
-    if ((unsigned)i == memcpy_offsets.size() - 1)
-      one_d_offset += *offset;
-    else {
-      auto stride_i = mlir::getConstantIntValue(memcpy_strides[i]);
-      one_d_offset += (*offset) * (*stride_i);
-    }
+  SmallVector<int64_t> offsets, strides;
+  for (auto [o, s] : llvm::zip_equal(memcpy_offsets, memcpy_strides)) {
+    offsets.push_back(*mlir::getConstantIntValue(o));
+    strides.push_back(*mlir::getConstantIntValue(s));
   }
-  return one_d_offset;
+  return air::getLinearOffset(offsets, strides);
 }
 
 // Fast path: if all memcpy_ops map to an equivalent BD (same memref and
