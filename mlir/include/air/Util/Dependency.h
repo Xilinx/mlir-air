@@ -345,6 +345,12 @@ struct dependencyContext {
   uint64_t TerminatorID;
   operation_to_vertex_map op_to_v;
   operation_to_graph_map op_to_g;
+  // The first vertex of each air.execute's chain, where edges into the
+  // execute land. Looking it up through the first op's own id would find that
+  // op's own vertex instead, when it has one (a loop, a branch, a wait_all).
+  llvm::DenseMap<Operation *,
+                 std::pair<dependencyGraph::VertexId, dependencyGraph *>>
+      execute_front;
 
   dependencyContext()
       : ExecuteOpID(0), DmaOpID(0), ChannelOpID(0), HierarchyOpID(0),
