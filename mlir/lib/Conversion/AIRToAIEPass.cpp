@@ -537,11 +537,51 @@ static void matchCallToCallee(func::CallOp call, func::FuncOp fn) {
   call->erase();
 }
 
+// A private constant in `device` with the type, value and alignment of
+// `global`, which `user` in a cloned function refers to: one already there, or
+// a new copy. Each core gets its own copy, so `global` must be a constant with
+// an initial value. The copy is in the default memory space, as the cloned
+// function's memrefs are, and is named apart from every symbol of the device
+// and the module, so that the two can be lowered into one symbol table.
+static FailureOr<memref::GlobalOp> copyConstantGlobal(AIE::DeviceOp device,
+                                                      memref::GlobalOp global,
+                                                      Operation *user) {
+  if (!global.getConstant() ||
+      !isa_and_present<ElementsAttr>(global.getInitialValueAttr()))
+    return user->emitOpError("refers to ")
+           << global.getSymNameAttr()
+           << ", which a core can only have a copy of if it is a constant "
+              "with an initial value";
+  MemRefType t = global.getType();
+  auto type =
+      MemRefType::get(t.getShape(), t.getElementType(), t.getLayout(), nullptr);
+  for (auto g : device.getOps<memref::GlobalOp>())
+    if (g.getConstant() && g.getType() == type &&
+        g.getInitialValueAttr() == global.getInitialValueAttr() &&
+        g.getAlignmentAttr() == global.getAlignmentAttr())
+      return g;
+  auto copy = cast<memref::GlobalOp>(global->clone());
+  copy.setType(type);
+  copy.setSymVisibility("private");
+  auto taken = [](Operation *table, const std::string &name) {
+    return table && createSymbolName(table, name) != name;
+  };
+  ModuleOp module = device->getParentOfType<ModuleOp>();
+  std::string name;
+  for (int i = 0; name.empty() || taken(device, name) || taken(module, name);
+       ++i)
+    name = global.getSymName().str() + "_" + std::to_string(i);
+  copy.setSymName(name);
+  device.insert(device.getBody()->getTerminator(), copy);
+  return copy;
+}
+
 // Clones `orig`, a function the module defines and a core calls, into
-// `device`, with every function it refers to: defined ones cloned the same
-// way, external ones declared as for a direct call from the core. The callee
-// is kept a function of its own rather than inlined into the core, so that
-// it is compiled separately from the code around the call.
+// `device`, with every function and global it refers to: defined functions
+// cloned the same way, external ones declared as for a direct call from the
+// core, globals copied by `copyConstantGlobal`. The callee is kept a function
+// of its own rather than inlined into the core, so that it is compiled
+// separately from the code around the call.
 static FailureOr<func::FuncOp>
 cloneDefinedCallee(AIE::DeviceOp device, AIE::CoreOp core, func::FuncOp orig) {
   ModuleOp parentModule = device->getParentOfType<ModuleOp>();
@@ -570,8 +610,17 @@ cloneDefinedCallee(AIE::DeviceOp device, AIE::CoreOp core, func::FuncOp orig) {
     if (!uses)
       return f.emitOpError("has symbol uses that cannot be resolved");
     SmallVector<func::CallOp> calls;
+    SmallVector<std::pair<StringAttr, StringAttr>> renames;
     for (const SymbolTable::SymbolUse &use : *uses) {
       StringRef name = use.getSymbolRef().getRootReference();
+      if (auto global = parentModule.lookupSymbol<memref::GlobalOp>(name)) {
+        FailureOr<memref::GlobalOp> copy =
+            copyConstantGlobal(device, global, use.getUser());
+        if (failed(copy))
+          return failure();
+        renames.push_back({global.getSymNameAttr(), copy->getSymNameAttr()});
+        continue;
+      }
       if (auto known = device.lookupSymbol<func::FuncOp>(name)) {
         // Its arguments are now `f`'s, which nothing here proves disjoint.
         if (known->hasAttr("air.cloned_callee"))
@@ -593,6 +642,9 @@ cloneDefinedCallee(AIE::DeviceOp device, AIE::CoreOp core, func::FuncOp orig) {
       if (auto call = dyn_cast<func::CallOp>(use.getUser()))
         calls.push_back(call);
     }
+    for (auto [from, to] : renames)
+      if (failed(SymbolTable::replaceAllSymbolUses(from, to, &f.getBody())))
+        return f.emitOpError("cannot rename its uses of ") << from;
     for (func::CallOp call : calls)
       if (auto callee = device.lookupSymbol<func::FuncOp>(call.getCallee()))
         matchCallToCallee(call, callee);
