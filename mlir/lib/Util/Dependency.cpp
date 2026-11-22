@@ -3150,7 +3150,8 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
         }
         if (src_op->isAncestor(async_op))
           continue; // Avoid depending on its ancestor.
-        async_op.addAsyncDependency(src_op->getResult(0));
+        // A branch op yields its async token after its values.
+        async_op.addAsyncDependency(getAsyncTokenFromOp(src_op));
       }
     }
   }
