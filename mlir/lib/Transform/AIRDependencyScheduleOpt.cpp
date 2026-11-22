@@ -1989,6 +1989,75 @@ static bool overwritesArgument(func::FuncOp fn, unsigned i) {
   return coversShape(boxes, type.getShape());
 }
 
+LogicalResult fuseAllocDeallocExecsIntoBlock(
+    Block *block, PatternRewriter &rewriter, IRMapping &remap,
+    std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> &allocDeallocExecs);
+static bool mayAccess(Value memref, bool write);
+static bool writtenWholeFirst(Block &block, Value memref);
+
+// The loop air-fuse-alloc-dealloc would move the buffer `exec` allocates
+// into, as it did before it learnt to keep buffers that may carry data across
+// iterations out: the innermost loop holding every use, unless that loop's
+// body is just another loop, and only if the alloc is outside it.
+static Operation *loopAnAllocWouldSinkInto(air::ExecuteOp exec) {
+  if (exec.getNumResults() < 2 || exec.getChildOps().size() != 2)
+    return nullptr;
+  auto alloc = dyn_cast<memref::AllocOp>(exec.getChildOps().front());
+  if (!alloc || alloc->hasAttr(air::attrs::DisableAllocSink))
+    return nullptr;
+  SmallVector<Operation *> users;
+  for (Operation *user : exec->getResult(1).getUsers()) {
+    if (isa<memref::DeallocOp>(user))
+      continue;
+    users.push_back(user);
+  }
+  if (users.empty())
+    return nullptr;
+  for (Operation *loop = users.front()->getParentOp();
+       loop && exec->getParentRegion()->isProperAncestor(&loop->getRegion(0));
+       loop = loop->getParentOp()) {
+    if (!isa<scf::ForOp, scf::ParallelOp>(loop))
+      continue;
+    if (!llvm::all_of(users, [&](Operation *u) { return loop->isAncestor(u); }))
+      continue;
+    Block *body =
+        &cast<LoopLikeOpInterface>(loop).getLoopRegions().front()->front();
+    if (hasNImpureOps(body, 1) &&
+        llvm::any_of(body->without_terminator(),
+                     [](Operation &o) { return isa<LoopLikeOpInterface>(o); }))
+      continue;
+    // One it can show carries nothing across iterations it moves itself; if
+    // that one is still outside, it was not run or chose not to.
+    Value memref = exec->getResult(1);
+    if (!mayAccess(memref, /*write=*/true) ||
+        !mayAccess(memref, /*write=*/false) || writtenWholeFirst(*body, memref))
+      return nullptr;
+    return loop;
+  }
+  return nullptr;
+}
+
+// The allocs outside `forOp` whose buffers air-fuse-alloc-dealloc would have
+// moved into it, with their deallocs.
+static std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>>
+allocsKeptOutOf(scf::ForOp forOp) {
+  std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> out;
+  Operation *scope = forOp->getParentOfType<air::HierarchyInterface>();
+  if (!scope)
+    scope = forOp->getParentOfType<func::FuncOp>();
+  if (!scope)
+    return out;
+  scope->walk([&](air::ExecuteOp exec) {
+    if (forOp->isAncestor(exec) || loopAnAllocWouldSinkInto(exec) != forOp)
+      return;
+    air::ExecuteOp dealloc;
+    if (auto d = memref::findDealloc(exec->getResult(1)); d && *d)
+      dealloc = (*d)->getParentOfType<air::ExecuteOp>();
+    out.push_back({exec, dealloc});
+  });
+  return out;
+}
+
 struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -2027,6 +2096,11 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     // spelling to the allocation.
     llvm::SmallPtrSet<Value, 8> allocs;
     for (auto exec : forOp.getOps<air::ExecuteOp>())
+      for (auto alloc : exec.getOps<memref::AllocOp>())
+        allocs.insert(alloc.getResult());
+    // Buffers air-fuse-alloc-dealloc kept out of the loop are moved in if it
+    // is labelled; they are judged as the allocs in the body are.
+    for (auto [exec, dealloc] : allocsKeptOutOf(forOp))
       for (auto alloc : exec.getOps<memref::AllocOp>())
         allocs.insert(alloc.getResult());
 
@@ -2117,6 +2191,10 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
       if (!exec || exec->getParentOp() != forOp || !isCoreScratch(a))
         duplicated += l1AllocBytes(a);
     });
+    for (auto [exec, dealloc] : allocsKeptOutOf(forOp))
+      for (auto a : exec.getOps<memref::AllocOp>())
+        if (!isCoreScratch(a))
+          duplicated += l1AllocBytes(a);
     return total + duplicated > budget;
   }
 
@@ -2186,7 +2264,10 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     if (optedOut)
       return false;
     SmallVector<Operation *> allocs;
-    for (auto exec : forOp.getOps<air::ExecuteOp>()) {
+    SmallVector<air::ExecuteOp> execs(forOp.getOps<air::ExecuteOp>());
+    for (auto [exec, dealloc] : allocsKeptOutOf(forOp))
+      execs.push_back(exec);
+    for (auto exec : execs) {
       for (auto alloc : exec.getOps<memref::AllocOp>()) {
         if (isCoreScratch(alloc))
           continue;
@@ -2329,6 +2410,17 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
 
     if (hasLabelableNestedFor(for_op, omitMemorySpace, l1Budget))
       return failure();
+
+    // Each iteration's first access writes the buffers air-fuse-alloc-dealloc
+    // kept out (isUnsafeToDuplicate), so moving them in, a buffer per
+    // iteration, keeps the program's meaning.
+    auto keptOut = allocsKeptOutOf(for_op);
+    if (!keptOut.empty()) {
+      IRMapping remap;
+      if (failed(fuseAllocDeallocExecsIntoBlock(for_op.getBody(), rewriter,
+                                                remap, keptOut)))
+        return failure();
+    }
 
     // Label the scf.for loop and all its child memref.allocs
     int unroll_factor = 2; // Unroll factor hardened as 2. TODO: add support for
