@@ -133,6 +133,13 @@ rebuildIndexSwitchWithTrailingAsyncToken(OpBuilder &b, scf::IndexSwitchOp sw);
 
 // Get the parent air.launch_herd op of a tile id
 HerdOp getHerdArgOwner(Value val);
+
+// Whether `v` is computed from a herd's tile ids.
+bool dependsOnHerdId(Value v);
+
+// The [min, max] an offset takes once air-shrink-memref-sizes-by-access has
+// rewritten it, or nullopt if it is computed by an op not modelled.
+std::optional<std::pair<int64_t, int64_t>> getShrunkOffsetRange(Value offset);
 // Returns true if the L1 buffer passed as kernel operand `memrefOperand` to
 // `herd` carries a cross-core producer/consumer dependence: some core reads the
 // buffer that a *different* core writes. Inferred purely from the per-core

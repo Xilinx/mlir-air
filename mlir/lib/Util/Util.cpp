@@ -2817,6 +2817,34 @@ getOffsetRangeAfterShrinkage(Value v, OffsetDepth depth,
   return std::nullopt;
 }
 
+std::optional<std::pair<int64_t, int64_t>>
+air::getShrunkOffsetRange(Value offset) {
+  return getOffsetRangeAfterShrinkage(offset, OffsetDepth::Offset);
+}
+
+bool air::dependsOnHerdId(Value v) {
+  llvm::SmallPtrSet<Value, 8> seen;
+  SmallVector<Value> work{v};
+  while (!work.empty()) {
+    Value x = work.pop_back_val();
+    if (!seen.insert(x).second)
+      continue;
+    if (auto herd = getHerdArgOwner(x)) {
+      if (llvm::is_contained(herd.getIds(), x))
+        return true;
+      continue;
+    }
+    Operation *def = x.getDefiningOp();
+    if (!def)
+      continue;
+    // The op's operands, and those of the ops in its regions (an air.execute's
+    // body, the arms of a branch yielding the value).
+    def->walk(
+        [&](Operation *op) { llvm::append_range(work, op->getOperands()); });
+  }
+  return false;
+}
+
 // The access pattern of an access starting at `offsets` and covering
 // `accessExtents[d]` elements along each dimension d. Each dimension's size is
 // the highest offset it takes after the shrink rewrites it plus its access
