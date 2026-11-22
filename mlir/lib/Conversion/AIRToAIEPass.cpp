@@ -542,7 +542,7 @@ static void matchCallToCallee(func::CallOp call, func::FuncOp fn) {
 // a new copy. Each core gets its own copy, so `global` must be a constant with
 // an initial value. The copy is in the default memory space, as the cloned
 // function's memrefs are, and is named apart from every symbol of the device
-// and the module, since aiecc moves the device's globals next to the module's.
+// and the module, so that the two can be lowered into one symbol table.
 static FailureOr<memref::GlobalOp> copyConstantGlobal(AIE::DeviceOp device,
                                                       memref::GlobalOp global,
                                                       Operation *user) {
