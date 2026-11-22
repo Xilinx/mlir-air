@@ -405,11 +405,12 @@ static void toDefaultMemorySpace(func::FuncOp f) {
   f.setFunctionType(FunctionType::get(f.getContext(), ins, outs));
 }
 
-// Sets llvm.noalias on the memref arguments of a cloned callee that `call`
-// proves disjoint from its other memref arguments (different buffers, or both
-// only read), and removes it from those it does not. With `firstCall` unset
-// it is only ever removed, so it stays only where every call proves it.
-static void narrowNoAlias(func::CallOp call, func::FuncOp fn, bool firstCall) {
+// Removes llvm.noalias from the memref arguments of a cloned callee that
+// `call` does not prove disjoint from its other memref arguments (different
+// buffers, or both only read). The attribute comes from the frontend, as
+// __restrict does in a C kernel; it is not added here, since it changes how
+// the callee's loops are scheduled. It stays only where every call proves it.
+static void narrowNoAlias(func::CallOp call, func::FuncOp fn) {
   auto writes = [&](unsigned i) {
     llvm::SmallDenseSet<Value> aliases;
     air::collectBufferAliases(fn.getArgument(i), aliases);
@@ -445,9 +446,7 @@ static void narrowNoAlias(func::CallOp call, func::FuncOp fn, bool firstCall) {
       if (!distinct && (writes(i) || writes(j)))
         disjoint = false;
     }
-    if (firstCall && disjoint)
-      fn.setArgAttr(i, noalias, UnitAttr::get(fn.getContext()));
-    else if (!disjoint)
+    if (!disjoint)
       fn.removeArgAttr(i, noalias);
   }
 }
@@ -572,11 +571,15 @@ cloneDefinedCallee(AIE::DeviceOp device, AIE::CoreOp core, func::FuncOp orig) {
     SmallVector<func::CallOp> calls;
     for (const SymbolTable::SymbolUse &use : *uses) {
       StringRef name = use.getSymbolRef().getRootReference();
+      // A function `f` calls takes `f`'s arguments, which nothing here proves
+      // disjoint.
+      auto dropNoAlias = [](func::FuncOp g) {
+        for (unsigned i = 0; i < g.getNumArguments(); ++i)
+          g.removeArgAttr(i, LLVM::LLVMDialect::getNoAliasAttrName());
+      };
       if (auto known = device.lookupSymbol<func::FuncOp>(name)) {
-        // Its arguments are now `f`'s, which nothing here proves disjoint.
         if (known->hasAttr("air.cloned_callee"))
-          for (unsigned i = 0; i < known.getNumArguments(); ++i)
-            known.removeArgAttr(i, LLVM::LLVMDialect::getNoAliasAttrName());
+          dropNoAlias(known);
       } else if (auto callee = parentModule.lookupSymbol<func::FuncOp>(name)) {
         if (callee.isExternal()) {
           auto call = dyn_cast<func::CallOp>(use.getUser());
@@ -587,6 +590,7 @@ cloneDefinedCallee(AIE::DeviceOp device, AIE::CoreOp core, func::FuncOp orig) {
           FailureOr<func::FuncOp> copy = clone(callee);
           if (failed(copy))
             return failure();
+          dropNoAlias(*copy);
           work.push_back(*copy);
         }
       }
@@ -966,7 +970,7 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       core.walk([&](func::CallOp call) {
         auto fn = aie_device.lookupSymbol<func::FuncOp>(call.getCallee());
         if (fn && fn->hasAttr("air.cloned_callee"))
-          narrowNoAlias(call, fn, /*firstCall=*/false);
+          narrowNoAlias(call, fn);
         if (!fn) {
           auto parentModule = aie_device->getParentOfType<ModuleOp>();
           auto origFn =
@@ -981,7 +985,7 @@ LogicalResult outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
               return WalkResult::interrupt();
             }
             fn = *cloned;
-            narrowNoAlias(call, fn, /*firstCall=*/true);
+            narrowNoAlias(call, fn);
           }
         }
         if (!fn)

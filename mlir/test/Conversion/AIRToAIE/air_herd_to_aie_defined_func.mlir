@@ -9,11 +9,10 @@
 // RUN: air-opt %s -air-to-aie='device=npu1_1col row-offset=2' | FileCheck %s
 
 // A herd calling a function the module defines: the function is cloned into
-// the device with
-// its body, in the default memory space, together with what it calls; memref
-// arguments the call site proves disjoint get llvm.noalias (two views of one
-// buffer that are only read keep it too); and the module-level original keeps
-// only its declaration.
+// the device with its body, in the default memory space, together with what it
+// calls; memref arguments the call site proves disjoint keep the frontend's
+// llvm.noalias (two views of one buffer that are only read keep it too); and
+// the module-level original keeps only its declaration.
 
 // CHECK: aie.device
 // CHECK: %[[T:.*]] = aie.tile(0, 2)
@@ -26,7 +25,7 @@
 // CHECK: func.func private @tile_body(%{{.*}}: memref<64xi32> {llvm.noalias}, %{{.*}}: memref<64xi32> {llvm.noalias}, %{{.*}}: memref<64xi32> {llvm.noalias})
 // CHECK: call @helper
 // CHECK: func.func private @helper(vector<16xi32>, vector<16xi32>) -> vector<16xi32> attributes {llvm.emit_c_interface}
-// CHECK: func.func private @tile_body(memref<64xi32, 2>, memref<64xi32, 2>, memref<64xi32, 2>){{$}}
+// CHECK: func.func private @tile_body(memref<64xi32, 2> {llvm.noalias}, memref<64xi32, 2> {llvm.noalias}, memref<64xi32, 2> {llvm.noalias}){{$}}
 // CHECK: func.func private @helper(vector<16xi32>, vector<16xi32>) -> vector<16xi32>{{$}}
 module {
   func.func @foo() {
@@ -43,7 +42,7 @@ module {
     }
     return
   }
-  func.func private @tile_body(%a: memref<64xi32, 2>, %a2: memref<64xi32, 2>, %b: memref<64xi32, 2>) {
+  func.func private @tile_body(%a: memref<64xi32, 2> {llvm.noalias}, %a2: memref<64xi32, 2> {llvm.noalias}, %b: memref<64xi32, 2> {llvm.noalias}) {
     %c0 = arith.constant 0 : index
     %p = arith.constant 0 : i32
     %v = vector.transfer_read %a[%c0], %p {in_bounds = [true]} : memref<64xi32, 2>, vector<16xi32>
