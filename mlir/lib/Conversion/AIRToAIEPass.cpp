@@ -561,6 +561,12 @@ cloneDefinedCallee(AIE::DeviceOp device, AIE::CoreOp core, func::FuncOp orig) {
   FailureOr<func::FuncOp> top = clone(orig);
   if (failed(top))
     return failure();
+  // A function a cloned function calls gets that function's arguments, which
+  // nothing here proves disjoint.
+  auto dropNoAlias = [](func::FuncOp g) {
+    for (unsigned i = 0; i < g.getNumArguments(); ++i)
+      g.removeArgAttr(i, LLVM::LLVMDialect::getNoAliasAttrName());
+  };
   SmallVector<func::FuncOp> work{*top};
   while (!work.empty()) {
     func::FuncOp f = work.pop_back_val();
@@ -571,12 +577,6 @@ cloneDefinedCallee(AIE::DeviceOp device, AIE::CoreOp core, func::FuncOp orig) {
     SmallVector<func::CallOp> calls;
     for (const SymbolTable::SymbolUse &use : *uses) {
       StringRef name = use.getSymbolRef().getRootReference();
-      // A function `f` calls takes `f`'s arguments, which nothing here proves
-      // disjoint.
-      auto dropNoAlias = [](func::FuncOp g) {
-        for (unsigned i = 0; i < g.getNumArguments(); ++i)
-          g.removeArgAttr(i, LLVM::LLVMDialect::getNoAliasAttrName());
-      };
       if (auto known = device.lookupSymbol<func::FuncOp>(name)) {
         if (known->hasAttr("air.cloned_callee"))
           dropNoAlias(known);

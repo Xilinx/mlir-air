@@ -377,3 +377,44 @@ module {
     return
   }
 }
+
+// -----
+
+// A function the core calls directly and that another cloned function calls
+// as well loses the frontend's llvm.noalias: in the nested call its arguments
+// are the caller's, which nothing proves disjoint.
+// CHECK-LABEL: aie.device
+// CHECK: call @store_tile
+// CHECK: call @tile_body
+// CHECK: func.func private @store_tile(%{{.*}}: vector<16xi32>, %{{.*}}: memref<64xi32>) {
+// CHECK: func.func private @tile_body(%{{.*}}: memref<64xi32> {llvm.noalias}, %{{.*}}: memref<64xi32> {llvm.noalias})
+module {
+  func.func @direct_and_nested() {
+    %c1 = arith.constant 1 : index
+    air.launch (%ix, %iy) in (%sx=%c1, %sy=%c1) {
+      air.segment @seg {
+        %c1_0 = arith.constant 1 : index
+        air.herd @h tile (%tx, %ty) in (%hx=%c1_0, %hy=%c1_0) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
+          %in = memref.alloc() : memref<64xi32, 2>
+          %out = memref.alloc() : memref<64xi32, 2>
+          %z = arith.constant dense<0> : vector<16xi32>
+          func.call @store_tile(%z, %out) : (vector<16xi32>, memref<64xi32, 2>) -> ()
+          func.call @tile_body(%in, %out) : (memref<64xi32, 2>, memref<64xi32, 2>) -> ()
+        }
+      }
+    }
+    return
+  }
+  func.func private @tile_body(%a: memref<64xi32, 2> {llvm.noalias}, %b: memref<64xi32, 2> {llvm.noalias}) {
+    %c0 = arith.constant 0 : index
+    %p = arith.constant 0 : i32
+    %v = vector.transfer_read %a[%c0], %p {in_bounds = [true]} : memref<64xi32, 2>, vector<16xi32>
+    func.call @store_tile(%v, %b) : (vector<16xi32>, memref<64xi32, 2>) -> ()
+    return
+  }
+  func.func private @store_tile(%v: vector<16xi32>, %b: memref<64xi32, 2> {llvm.noalias}) {
+    %c0 = arith.constant 0 : index
+    vector.transfer_write %v, %b[%c0] {in_bounds = [true]} : vector<16xi32>, memref<64xi32, 2>
+    return
+  }
+}
