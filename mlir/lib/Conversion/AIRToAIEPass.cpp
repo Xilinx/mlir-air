@@ -405,11 +405,10 @@ static void toDefaultMemorySpace(func::FuncOp f) {
   f.setFunctionType(FunctionType::get(f.getContext(), ins, outs));
 }
 
-// Removes llvm.noalias from the memref arguments of a cloned callee that
-// `call` does not prove disjoint from its other memref arguments (different
-// buffers, or both only read). The attribute comes from the frontend, as
-// __restrict does in a C kernel; it is not added here, since it changes how
-// the callee's loops are scheduled. It stays only where every call proves it.
+// Removes llvm.noalias from each memref argument of a cloned callee that
+// `call` does not prove disjoint from the other memref arguments (different
+// buffers, or both only read). Only the frontend sets it, as __restrict in a C
+// kernel; it stays where every call proves it.
 static void narrowNoAlias(func::CallOp call, func::FuncOp fn) {
   auto writes = [&](unsigned i) {
     llvm::SmallDenseSet<Value> aliases;
