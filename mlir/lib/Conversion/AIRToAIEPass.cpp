@@ -546,7 +546,8 @@ static void matchCallToCallee(func::CallOp call, func::FuncOp fn) {
 static FailureOr<memref::GlobalOp> copyConstantGlobal(AIE::DeviceOp device,
                                                       memref::GlobalOp global,
                                                       Operation *user) {
-  if (!global.getConstant() || !global.getInitialValue())
+  if (!global.getConstant() ||
+      !isa_and_present<ElementsAttr>(global.getInitialValueAttr()))
     return user->emitOpError("refers to ")
            << global.getSymNameAttr()
            << ", which a core can only have a copy of if it is a constant "
