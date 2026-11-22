@@ -2837,16 +2837,10 @@ bool air::dependsOnHerdId(Value v) {
     Operation *def = x.getDefiningOp();
     if (!def)
       continue;
-    if (auto exec = dyn_cast<air::ExecuteOp>(def)) {
-      auto res = cast<OpResult>(x);
-      if (res.getResultNumber() > 0)
-        work.push_back(exec.getBody().getTerminator()->getOperand(
-            res.getResultNumber() - 1));
-      for (Operation &child : exec.getChildOps())
-        llvm::append_range(work, child.getOperands());
-      continue;
-    }
-    llvm::append_range(work, def->getOperands());
+    // The op's operands, and those of the ops in its regions (an air.execute's
+    // body, the arms of a branch yielding the value).
+    def->walk(
+        [&](Operation *op) { llvm::append_range(work, op->getOperands()); });
   }
   return false;
 }

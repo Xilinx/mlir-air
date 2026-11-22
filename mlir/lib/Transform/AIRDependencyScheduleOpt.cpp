@@ -8105,6 +8105,11 @@ private:
           auto v = cast<Value>(o);
           if (!air::dependsOnHerdId(v))
             continue;
+          // The rewrite resets the whole offset in some cases (its defining
+          // op uses a tile id directly); it is then 0.
+          auto rewritten = air::getUpdatedOffsetsAfterShrinkage({1}, {1}, {v});
+          if (!rewritten.empty() && rewritten.front() == 0)
+            continue;
           auto range = air::getShrunkOffsetRange(v);
           if (!range || range->first < 0)
             return false;
