@@ -70,11 +70,25 @@ Data movement between memory levels is expressed with:
 All data-movement and hierarchy operations may execute **asynchronously**. An op that
 produces an `!air.token` result is dispatched immediately and executes concurrently
 with subsequent operations. Token values are used to express data, control, affinity,
-and concurrency constraints (see §1.5). `air.wait_all` merges multiple tokens into a
-single synchronization point. `air.execute` wraps sequential computation in an
-asynchronous region.
+and concurrency constraints (see §1.5; only data and control are implemented today).
+`air.wait_all` merges multiple tokens into a single synchronization point.
+`air.execute` wraps sequential computation in an asynchronous region.
 
 ### 1.5 Token taxonomy and operation lifetimes
+
+> **Implementation status.** This section, and the syntax used throughout this
+> document, describe the planned token design. What the dialect implements today:
+>
+> - one token type, `!air.async.token` (`!air.token` does not parse);
+> - no `air.token.alloc` op;
+> - one token list per op, its `async_dependencies` operands, written
+>   `air.op async [%t0, %t1]`; it has the semantics given below for the
+>   `dependency` list;
+> - no `affinity` or `concurrency` lists.
+>
+> Read `!air.token` as `!air.async.token` and `[dependency = [...]]` as the
+> `async [...]` list; the `affinity` and `concurrency` lists, and the rules about
+> them, are planned.
 
 #### Operation lifetimes
 
@@ -693,7 +707,7 @@ air.dma_memcpy_nd (%local[][][], %sym[][][]) {src_rank = 0 : i64}
 
 ```text
 // Channel declaration — at module scope
-air.channel @name [dim₀, dim₁, …] {channel_type = "npu_dma_stream", depth = <N>}
+air.channel @name [dim₀, dim₁, …] {channel_type = "npu_dma_stream"}
 
 // Synchronous put/get — block until the transfer completes
 air.channel.put @name[indices] (src[offsets][sizes][strides]) : (type_src)
@@ -714,7 +728,8 @@ consumer sites. They decouple the put and get sides, allowing the compiler to sc
 them independently and to introduce double-buffering.
 
 A channel may be an array (e.g., `[4, 4]` for a 4×4 array). The `indices` operand on
-`put`/`get` selects the specific channel within the array.
+`put`/`get` selects the specific channel within the array. The array's shape is the
+shape of a bundle of channels, not a capacity.
 
 The `channel_type` attribute controls the underlying mechanism. Values are
 namespaced by backend: NPU (AIE) channels use the `npu_` prefix; GPU channels
@@ -756,32 +771,29 @@ Runtime destination selection requires an interconnect that can route each trans
 independently. Backends may therefore restrict which `channel_type` values support it;
 see the backend mapping sections.
 
-#### Capacity and depth
+#### Capacity
 
-A channel has a finite buffer capacity set by the `depth` attribute (default **1**).
-The depth specifies how many transfers may be in-flight simultaneously:
+A channel has no buffer of its own, and no attribute sets one. Whether a transfer is
+buffered depends on its two ends:
 
-| Depth | Effect |
-|-------|--------|
-| 1 (default) | Rendezvous: each `put` must be consumed by a `get` before the next `put` can proceed. |
-| 2 | Double-buffering: producer may issue one transfer ahead of the consumer. |
-| N | Producer may have up to N transfers outstanding before it must wait. |
+| Ends | Effect |
+|------|--------|
+| `put` and `get` both asynchronous | Rendezvous: the data moves only while both are in progress. A `put` cannot complete before its `get` has started and been given the data, and vice versa, so a program can deadlock through backpressure. |
+| `put` or `get` synchronous | Buffered without bound: the synchronous end completes without waiting for the other one. A synchronous `put` followed by its `get` on the next line does not block. |
 
-Increasing depth relaxes the coupling between producer and consumer at the cost of
-additional buffer memory (each slot requires storage for one transfer's worth of data).
+Overlapping a producer with its consumer (double-buffering) is expressed with buffers
+and tokens in the program, not with channel capacity.
 
 #### Flow control semantics
 
-`put` and `get` are **blocking** at the channel boundary:
-
-- A `put` issued when the channel already holds `depth` unread transfers stalls until
-  the consumer issues a `get` and frees a slot.
-- A `get` issued when the channel holds no data stalls until the producer issues a `put`.
+- A `get` whose data has not been put yet waits until its `put` provides it.
+- An asynchronous `put` whose `get` is also asynchronous waits until that `get` takes
+  the data.
 
 In the asynchronous form the operation is dispatched immediately and the returned
-`!air.token` does not signal until the blocking condition is resolved and the transfer
-is complete. This allows other work to proceed while the channel handshake is in
-progress, but does not remove the fundamental flow-control constraint.
+`!air.token` does not signal until the transfer is complete. This allows other work to
+proceed while the channel handshake is in progress, but does not remove the
+rendezvous between two asynchronous ends.
 
 #### Balance requirement
 
@@ -840,27 +852,27 @@ A program deadlocks when a `put` is waiting for a `get` that can never execute, 
 `get` is waiting for a `put` that can never execute, and no other operation can break
 the wait.
 
-**Minimal deadlock** — `put` and `get` in the same sequential scope:
+**Minimal deadlock** — an asynchronous `get` that waits for its own asynchronous `put`:
 
 ```mlir
-air.channel @C [] {depth = 1}
+air.channel @C []
 
 air.segment @deadlock {
-  // put blocks: channel is at capacity, waiting for a get to free space
-  air.channel.put @C[] (%src[][][]) : (memref<…, 1>)
-  // never reached — sequential control flow cannot reach get while put blocks
-  air.channel.get @C[] (%dst[][][]) : (memref<…, 1>)
+  // the put cannot complete until a get takes its data
+  %p = air.channel.put async @C[] (%src[][][]) : (memref<…, 1>)
+  // the get does not start until the put has completed
+  %g = air.channel.get async [%p] @C[] (%dst[][][]) : (memref<…, 1>)
   air.segment_terminator
 }
 ```
 
-The necessary condition for deadlock freedom is that for every channel there exists a
+When both ends of a transfer are asynchronous, deadlock freedom requires a
 **concurrent execution context** in which the matching `put` and `get` can both
 make progress simultaneously. In practice:
 
-- `put` and `get` on the same channel must appear in different herds, different async
-  branches, or different segment instances — any context that allows them to execute
-  concurrently.
+- such a `put` and `get` must appear in different herds, different async branches, or
+  different segment instances, or otherwise not wait for each other — any context that
+  allows them to execute concurrently.
 - The communication graph (nodes = ops, edges = channel put→get dependencies) must
   be **acyclic**: a cycle means at least one op in the cycle is waiting on another in
   the same cycle, which can never be resolved.
@@ -885,8 +897,8 @@ A lowering that issues host operations in sequence must therefore:
 - block on the drain's completion before any host access that may touch the memory it
   writes, as the drain's token requires.
 
-How many transfers a channel can have in flight is a property of the backend, not of the
-program.
+Between two asynchronous ends a transfer is a rendezvous (see Capacity), so a lowering
+cannot rely on a channel holding data for an end that has not been reached yet.
 
 ---
 
