@@ -784,7 +784,17 @@ buffered depends on its two ends:
 Overlapping a producer with its consumer (double-buffering) is expressed with buffers
 and tokens in the program, not with channel capacity.
 
+This table, and the flow-control and deadlock rules below, give the program's meaning.
+A backend may buffer differently, and a program that relies on buffering a backend does
+not provide does not run there. For example, the CPU runtime (`runtime_lib/aircpu`)
+holds one transfer per channel index. A `put` there waits until the previous transfer
+has been taken, then completes once its data is in the channel, whether or not its
+`get` has started. Two synchronous `put`s before their `get`s therefore block on that
+runtime.
+
 #### Flow control semantics
+
+In the program's meaning (see Capacity for backends that buffer differently):
 
 - A `get` whose data has not been put yet waits until its `put` provides it.
 - An asynchronous `put` whose `get` is also asynchronous waits until that `get` takes
@@ -865,6 +875,9 @@ air.segment @deadlock {
   air.segment_terminator
 }
 ```
+
+These conditions are those of the program's meaning; a backend with less buffering (see
+Capacity) can deadlock in more programs.
 
 When both ends of a transfer are asynchronous, deadlock freedom requires a
 **concurrent execution context** in which the matching `put` and `get` can both

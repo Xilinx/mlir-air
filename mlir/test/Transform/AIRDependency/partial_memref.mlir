@@ -16,7 +16,7 @@
 // CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT0]]
 
 #map0 = affine_map<()[s0] -> (s0 * 16)>
-#map1 = affine_map<()[s0] -> (s0 * 8)>
+#map1 = affine_map<()[s0] -> (s0 * -16 + 112)>
 module {
   func.func @partial_memref() {
     %c8 = arith.constant 8 : index
