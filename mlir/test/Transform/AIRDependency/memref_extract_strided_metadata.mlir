@@ -7,10 +7,14 @@
 
 // RUN: air-opt %s -air-dependency | FileCheck %s
 
-// No async air.execute op should be created around memref.ex op.
+// No async air.execute op should be created around memref.ex op. It reads the
+// alloc's result, so it waits for the alloc's execute, and so does the
+// execute that uses the metadata.
+//      CHECK: %[[ALLOC:.*]], %{{.*}} = air.execute
 //      CHECK: } {id = 1 : i32}
+// CHECK-NEXT: air.wait_all [%[[ALLOC]]]
 // CHECK-NEXT: memref.extract_strided_metadata
-// CHECK-NEXT: %[[EVENT0:.*]] = air.execute {
+// CHECK-NEXT: %[[EVENT0:.*]] = air.execute [%[[ALLOC]]] {
 // CHECK-NEXT:        func.call @zero_bf16
 // CHECK-NEXT: } {id = 2 : i32}
 module {

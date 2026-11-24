@@ -495,9 +495,43 @@ public:
     // channel and would drop these edges, and after loop-carried deps, which
     // supply the iter_args that in-loop scopes hang off.
     air::enforceChannelFifoOrder(module);
+
+    // 6th traversal: an op other than an air async op (index arithmetic, a
+    // view, a loop's bound, a branch's condition, a yield) reading an
+    // air.execute's result runs when the host reaches it, so it has to wait
+    // for the execute: a blocking wait_all before the first such op in each
+    // block, per execute.
+    for (auto f : module.getOps<func::FuncOp>())
+      waitForExecuteResultsInBareOps(f);
   }
 
 private:
+  void waitForExecuteResultsInBareOps(func::FuncOp f) {
+    llvm::DenseMap<Block *, llvm::SmallPtrSet<Operation *, 4>> waited;
+    SmallVector<std::pair<Operation *, air::ExecuteOp>> toWait;
+    f.walk([&](Operation *op) {
+      // An scf.for or scf.if with a token of its own still reads its bounds
+      // or condition right away, and a yield its operands; only the air ops
+      // wait on their dependencies first.
+      if (isa<air::AsyncOpInterface>(op) ||
+          op->getParentOfType<air::ExecuteOp>())
+        return;
+      for (Value v : op->getOperands()) {
+        auto exec = v.getDefiningOp<air::ExecuteOp>();
+        if (!exec || v == exec.getAsyncToken())
+          continue;
+        if (waited[op->getBlock()].insert(exec).second)
+          toWait.push_back({op, exec});
+      }
+    });
+    IRRewriter rewriter(f.getContext());
+    for (auto [op, exec] : toWait) {
+      rewriter.setInsertionPoint(op);
+      air::WaitAllOp::create(rewriter, op->getLoc(), /*asyncToken=*/Type(),
+                             ValueRange{exec.getAsyncToken()});
+    }
+  }
+
   uint64_t ExecuteOpID;
   uint64_t HierarchyOpID;
   uint64_t WaitAllOpID;
@@ -1172,6 +1206,31 @@ private:
     }
     for (auto scalar : out_scalars) {
       pushTileIndexAsDep<T>(scalar, sink_air_op);
+    }
+    // A value bare ops compute from an air.execute's results (index
+    // arithmetic, views, metadata) is ready only once that execute is done:
+    // the op using it waits for the execute, through the bare ops.
+    llvm::SetVector<Value> used;
+    if (auto exec = dyn_cast<air::ExecuteOp>(sink_air_op.getOperation()))
+      getUsedValuesDefinedAbove(exec.getRegion(), used);
+    else
+      used.insert(sink_air_op->operand_begin(), sink_air_op->operand_end());
+    llvm::SmallPtrSet<Value, 8> seen;
+    SmallVector<Value> work(used.begin(), used.end());
+    while (!work.empty()) {
+      Value v = work.pop_back_val();
+      if (isa<air::AsyncTokenType>(v.getType()) || !seen.insert(v).second)
+        continue;
+      Operation *def = v.getDefiningOp();
+      if (!def)
+        continue;
+      if (isa<air::ExecuteOp>(def)) {
+        pushTileIndexAsDep<T>(v, sink_air_op);
+        continue;
+      }
+      if (air::isAsyncOp(def) || def->getNumRegions())
+        continue;
+      llvm::append_range(work, def->getOperands());
     }
   }
 

@@ -275,14 +275,15 @@ module {
 
 // -----
 
-// A loop is a scope boundary: gets in distinct scf.for bodies stay unordered.
+// Gets in two loops one after the other: the second loop's get waits for the
+// first loop, and for its own previous iteration through the iteration
+// argument.
 
 // CHECK-LABEL: func.func @chan_fifo_distinct_loops
-// CHECK: scf.for
+// CHECK: %[[L0:.*]] = scf.for
 // CHECK: air.channel.get async [%{{[a-z_0-9]+}}] @channel_7
-// CHECK: scf.for
-// CHECK-NOT: air.channel.get async [%{{[a-z_0-9]+}}, %{{[a-z_0-9]+}}] @channel_7
-// CHECK: air.channel.get async [%{{[a-z_0-9]+}}] @channel_7
+// CHECK: scf.for {{.*}} iter_args(%[[A:.*]] = %{{[a-z_0-9]+}})
+// CHECK: air.channel.get async [%[[L0]], %[[A]]] @channel_7
 
 module {
   air.channel @channel_7 [1]

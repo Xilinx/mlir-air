@@ -778,6 +778,37 @@ void getChannelScopeChain(air::ChannelInterface chan, Value directToken,
   chain.push_back({block, token, guards});
   bool viaLoop = false;
   while (Operation *parent = block->getParentOp()) {
+    if (auto par = dyn_cast<scf::ParallelOp>(parent)) {
+      // A parallel loop of one iteration runs its body once, as a branch
+      // taken does: the result its reduction carries this op's token to
+      // stands for it (hoisting puts a transfer into such a nest).
+      bool oneTrip = llvm::all_of(
+          llvm::zip(par.getLowerBound(), par.getUpperBound(), par.getStep()),
+          [](auto lus) {
+            auto [l, u, st] = lus;
+            auto lc = getConstantIntValue(l), uc = getConstantIntValue(u),
+                 sc = getConstantIntValue(st);
+            return lc && uc && sc && *sc > 0 && *uc > *lc && *uc - *lc <= *sc;
+          });
+      auto reduce = dyn_cast<scf::ReduceOp>(block->getTerminator());
+      if (!oneTrip || !reduce)
+        break;
+      Value promoted;
+      for (auto [i, v] : llvm::enumerate(reduce.getOperands())) {
+        llvm::DenseMap<Value, bool> memo;
+        if (isa<air::AsyncTokenType>(v.getType()) &&
+            tokenWaitsOn(v, token, memo)) {
+          promoted = par->getResult(i);
+          break;
+        }
+      }
+      if (!promoted)
+        break;
+      token = promoted;
+      block = par->getBlock();
+      chain.push_back({block, token, guards, viaLoop});
+      continue;
+    }
     if (auto loop = dyn_cast<scf::ForOp>(parent)) {
       // The loop result of a yielded token that waits on this op.
       auto yield = cast<scf::YieldOp>(block->getTerminator());
@@ -870,12 +901,26 @@ void enforceChannelFifoOrder(Operation *root) {
       return nullptr;
     };
 
-    // Link to the nearest preceding match, innermost scope outward.
-    for (auto &level : chain) {
-      if (level.viaLoop)
-        break;
+    // Link to the nearest preceding match, innermost scope outward. A match
+    // outside a loop the endpoint is in orders the loop's first iteration; the
+    // iteration argument each crossed loop carries this endpoint's token in
+    // orders the iterations after it.
+    SmallVector<Value> carried;
+    for (auto [i, level] : llvm::enumerate(chain)) {
+      if (i > 0)
+        if (auto loop =
+                dyn_cast<scf::ForOp>(chain[i - 1].block->getParentOp())) {
+          auto res = cast<OpResult>(level.token);
+          carried.push_back(loop.getRegionIterArgs()[res.getResultNumber()]);
+        }
       if (Slot *slot = findSlot(level)) {
+        // A loop around this endpoint publishes its own result here for an
+        // endpoint earlier in its body; the iteration argument stands for it.
         for (Value t : slot->tokens)
+          if (Operation *def = t.getDefiningOp();
+              !def || !def->isAncestor(chan.getOperation()))
+            addAsyncDependencyIfNew(chan.getOperation(), t);
+        for (Value t : carried)
           addAsyncDependencyIfNew(chan.getOperation(), t);
         break;
       }

@@ -4786,6 +4786,22 @@ static bool asyncValueCarries(Value v, Value target,
                               llvm::SmallPtrSetImpl<Operation *> &visited) {
   if (v == target)
     return true;
+  // A loop's iteration argument is the initial value on the first iteration
+  // and the yielded one after: it carries `target` when the initial value
+  // does and each iteration passes it on, by yielding a token that carries
+  // the argument or `target` itself.
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    auto loop = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp());
+    if (!loop || arg.getArgNumber() < loop.getNumInductionVars() ||
+        !visited.insert(loop).second)
+      return false;
+    Value yielded = loop.getTiedLoopYieldedValue(arg)->get();
+    llvm::SmallPtrSet<Operation *, 16> fromArg, fromTarget;
+    return asyncValueCarries(loop.getTiedLoopInit(arg)->get(), target,
+                             visited) &&
+           (asyncValueCarries(yielded, arg, fromArg) ||
+            asyncValueCarries(yielded, target, fromTarget));
+  }
   Operation *def = v.getDefiningOp();
   if (!def)
     return false;
@@ -4867,27 +4883,45 @@ public:
         return nullptr;
       };
 
-      for (auto &level : chain) {
-        if (level.viaLoop)
-          break;
+      auto check = [&](Value token, Operation *earlier) {
+        llvm::SmallPtrSet<Operation *, 16> visited;
+        if (asyncDependsOnValue(chan.getOperation(), token, visited))
+          return;
+        failed = true;
+        InFlightDiagnostic diag = chan->emitOpError()
+                                  << "addresses the same channel slot as an "
+                                     "earlier op but is not ordered after it";
+        diag.attachNote(earlier->getLoc())
+            << "earlier op addressing the same slot";
+        diag.attachNote()
+            << "ops on one channel share a FIFO and must be totally ordered; "
+               "see 'Endpoint ordering requirement' in "
+               "docs/AIRComputeModel.md";
+      };
+
+      // The nearest match, innermost scope outward. Past a loop the endpoint
+      // is in, it must follow the match, which orders the loop's first
+      // iteration, and the iteration argument the loop carries its token in,
+      // which orders the iterations after it.
+      SmallVector<Value> carried;
+      for (auto [i, level] : llvm::enumerate(chain)) {
+        if (i > 0)
+          if (auto loop =
+                  dyn_cast<scf::ForOp>(chain[i - 1].block->getParentOp())) {
+            auto res = cast<OpResult>(level.token);
+            carried.push_back(loop.getRegionIterArgs()[res.getResultNumber()]);
+          }
         Slot *slot = findSlot(level);
         if (!slot)
           continue;
-        for (auto [token, earlier] : slot->tokens) {
-          llvm::SmallPtrSet<Operation *, 16> visited;
-          if (asyncDependsOnValue(chan.getOperation(), token, visited))
-            continue;
-          failed = true;
-          InFlightDiagnostic diag = chan->emitOpError()
-                                    << "addresses the same channel slot as an "
-                                       "earlier op but is not ordered after it";
-          diag.attachNote(earlier->getLoc())
-              << "earlier op addressing the same slot";
-          diag.attachNote()
-              << "ops on one channel share a FIFO and must be totally ordered; "
-                 "see 'Endpoint ordering requirement' in "
-                 "docs/AIRComputeModel.md";
-        }
+        // A loop around this endpoint publishes its own result here for an
+        // endpoint earlier in its body; the iteration argument stands for it.
+        for (auto [token, earlier] : slot->tokens)
+          if (Operation *def = token.getDefiningOp();
+              !def || !def->isAncestor(chan.getOperation()))
+            check(token, earlier);
+        for (Value t : carried)
+          check(t, slot->tokens.back().second);
         break;
       }
 

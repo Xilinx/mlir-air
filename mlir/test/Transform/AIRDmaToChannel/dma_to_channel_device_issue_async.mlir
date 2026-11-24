@@ -10,16 +10,18 @@
 
 // In async IR the put a core starts leaves its herd like any other L3 put and
 // does not wait on its issue. The issue's offset comes from the load's
-// result, which SSA orders.
+// result: the index arithmetic waits for the load's execute, and so does the
+// issue.
 
 // CHECK-LABEL: func.func @split
 // CHECK: air.launch
 // CHECK: air.channel.put async @cin{{.*}}{air.device_issue = 0 : i64
 // CHECK: air.herd @router
-// CHECK: %{{.*}}, %[[V:.*]] = air.execute [%{{.*}}] -> (i32) {
+// CHECK: %[[L:.*]], %[[V:.*]] = air.execute [%{{.*}}] -> (i32) {
 // CHECK-NEXT: memref.load
-// CHECK: %[[E:.*]] = arith.index_cast %[[V]] : i32 to index
-// CHECK: %[[T:.*]] = air.execute {
+// CHECK: air.wait_all [%[[L]]]
+// CHECK-NEXT: %[[E:.*]] = arith.index_cast %[[V]] : i32 to index
+// CHECK: %[[T:.*]] = air.execute [%[[L]]] {
 // CHECK-NEXT: air.channel.issue @cin{{.*}} offset(%{{.*}} : i64)
 // CHECK-NOT: air.channel.put
 // CHECK: air.herd @mvm
