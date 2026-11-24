@@ -911,6 +911,24 @@ bool isLoopBodyEmpty(LoopLikeOpInterface loopOp) {
   return llvm::hasSingleElement(regions.front()->front().getOperations());
 }
 
+// The functions the cores call, directly or through one another.
+static DenseSet<Operation *> functionsCalledByCores(ModuleOp module) {
+  DenseSet<Operation *> called;
+  SmallVector<Operation *> worklist;
+  auto addCallees = [&](Operation *root) {
+    root->walk([&](func::CallOp call) {
+      auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+          call, call.getCalleeAttr());
+      if (callee && called.insert(callee).second)
+        worklist.push_back(callee);
+    });
+  };
+  module.walk([&](xilinx::AIE::CoreOp core) { addCallees(core); });
+  while (!worklist.empty())
+    addCallees(worklist.pop_back_val());
+  return called;
+}
+
 // Remove dead device compute ops (L1/L2 memory ops, pure compute) that won't
 // be converted to NPU ops. This is a performance optimization to avoid
 // processing thousands of ops that will just be removed.
@@ -3458,12 +3476,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // compute) that won't be converted to NPU ops. This is a performance
     // optimization to avoid processing thousands of ops during loop unrolling
     // and pattern matching.
-    // Only the host's functions: a function in an aie.device is core code,
-    // whose effects (on its buffers, or a call setting a core register) are
-    // not the host's.
+    // Not in core code: the functions the cores call, directly or through
+    // one another, whose effects (on their buffers, or a call setting a core
+    // register) are not the host's.
+    DenseSet<Operation *> coreCode = functionsCalledByCores(module);
     SmallVector<func::FuncOp> funcOps;
     module.walk([&](func::FuncOp f) {
-      if (!f->getParentOfType<xilinx::AIE::DeviceOp>())
+      if (!coreCode.contains(f))
         funcOps.push_back(f);
     });
     for (auto f : funcOps)
