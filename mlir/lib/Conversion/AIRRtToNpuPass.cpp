@@ -929,6 +929,16 @@ static DenseSet<Operation *> functionsCalledByCores(ModuleOp module) {
   return called;
 }
 
+// Core code: in a core, or in one of `coreFuncs`, the functions the cores
+// call. The host-side rewrites below leave it alone.
+static bool isCoreCode(Operation *op, const DenseSet<Operation *> &coreFuncs) {
+  if (op->getParentOfType<xilinx::AIE::CoreOp>())
+    return true;
+  auto f = isa<func::FuncOp>(op) ? cast<func::FuncOp>(op)
+                                 : op->getParentOfType<func::FuncOp>();
+  return f && coreFuncs.contains(f);
+}
+
 // Remove dead device compute ops (L1/L2 memory ops, pure compute) that won't
 // be converted to NPU ops. This is a performance optimization to avoid
 // processing thousands of ops that will just be removed.
@@ -3476,13 +3486,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // compute) that won't be converted to NPU ops. This is a performance
     // optimization to avoid processing thousands of ops during loop unrolling
     // and pattern matching.
-    // Not in core code: the functions the cores call, directly or through
-    // one another, whose effects (on their buffers, or a call setting a core
-    // register) are not the host's.
-    DenseSet<Operation *> coreCode = functionsCalledByCores(module);
+    // Not in core code, whose effects (on its buffers, or a call setting a
+    // core register) are not the host's.
+    DenseSet<Operation *> coreFuncs = functionsCalledByCores(module);
     SmallVector<func::FuncOp> funcOps;
     module.walk([&](func::FuncOp f) {
-      if (!coreCode.contains(f))
+      if (!isCoreCode(f, coreFuncs))
         funcOps.push_back(f);
     });
     for (auto f : funcOps)
@@ -3607,6 +3616,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_3, ctx);
     (void)applyPatternsGreedily(module, std::move(canoPatterns_3));
 
+    // Core code keeps its stores to L1 and its copies.
+    DenseSet<Operation *> coreFuncsAtConversion = functionsCalledByCores(module);
     ConversionTarget target(getContext());
     target.addIllegalDialect<airrt::AIRRtDialect>();
     target.addLegalDialect<arith::ArithDialect, AIE::AIEDialect,
@@ -3614,18 +3625,20 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     target.addLegalOp<UnrealizedConversionCastOp>();
     target.addDynamicallyLegalOp<affine::AffineStoreOp>(
         [&](affine::AffineStoreOp op) {
-          if (op->getParentOfType<AIE::CoreOp>())
+          if (isCoreCode(op, coreFuncsAtConversion))
             return true;
           return !xilinx::air::isL1(
               llvm::cast<BaseMemRefType>(op.getMemref().getType()));
         });
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
-      if (op->getParentOfType<AIE::CoreOp>())
+      if (isCoreCode(op, coreFuncsAtConversion))
         return true;
       return !xilinx::air::isL1(
           llvm::cast<BaseMemRefType>(op.getMemref().getType()));
     });
     target.addDynamicallyLegalOp<memref::CopyOp>([&](memref::CopyOp op) {
+      if (isCoreCode(op, coreFuncsAtConversion))
+        return true;
       // Either container: on the rolled path the control func has already
       // become its runtime_sequence by the time this runs, and a copy against
       // a sequence argument still has to be folded away.
@@ -6924,8 +6937,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   void unrollAffineFors(ModuleOp module) {
-    // Taking into account for loop nests
+    // Taking into account for loop nests, outside core code.
+    DenseSet<Operation *> coreFuncs = functionsCalledByCores(module);
     module.walk([&](mlir::func::FuncOp f) {
+      if (isCoreCode(f, coreFuncs))
+        return;
       // The launch/segment affine scaffolding nested inside the kept scf.for
       // has nothing else to unroll it.
       SmallVector<affine::AffineForOp> afos;
@@ -7335,8 +7351,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                          int64_t trace_offset) {
     // Either container: the rolled path has already turned the control func
     // into its runtime_sequence by the time this runs.
+    DenseSet<Operation *> coreFuncs = functionsCalledByCores(module);
     SmallVector<Operation *> funcOps;
-    module.walk([&](mlir::func::FuncOp f) { funcOps.push_back(f); });
+    module.walk([&](mlir::func::FuncOp f) {
+      if (!isCoreCode(f, coreFuncs))
+        funcOps.push_back(f);
+    });
     module.walk([&](AIE::RuntimeSequenceOp s) { funcOps.push_back(s); });
 
     for (auto f : funcOps) {
