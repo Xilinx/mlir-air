@@ -2503,6 +2503,7 @@ func.func @test_preserve_channel_type(%arg0: memref<512x1024xbf16>, %arg1: memre
 // built from two induction variables produces (e.g. a batched image axis added
 // to the tile row). tileChannelOpByFactor used to wrap the composed expression
 // in a hardcoded one-symbol AffineMap, which asserts on willBeValidAffineMap.
+// The output has 520 rows: launch instance (1, 1) writes rows 264 to 519.
 
 // CHECK: [[$M0:#map[0-9]*]] = affine_map<()[s0, s1] -> (s0 * 256 + s1 * 8)>
 // CHECK: [[$M1:#map[0-9]+]] = affine_map<()[s0, s1] -> (s0 * 256 + s1 * 8 + 64)>
@@ -2520,9 +2521,9 @@ func.func @test_preserve_channel_type(%arg0: memref<512x1024xbf16>, %arg1: memre
 #map1 = affine_map<()[s0] -> (s0 * 64)>
 air.channel @channel_1 [1, 1]
 air.channel @channel_0 [4, 4]
-func.func @test_two_symbol_split_offset(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %arg2: memref<512x512xbf16>) {
+func.func @test_two_symbol_split_offset(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %arg2: memref<520x512xbf16>) {
   %c2 = arith.constant 2 : index
-  %0 = air.launch async (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg2) : memref<512x512xbf16> attributes {id = 1 : i32} {
+  %0 = air.launch async (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg2) : memref<520x512xbf16> attributes {id = 1 : i32} {
     %c512 = arith.constant 512 : index
     %c1 = arith.constant 1 : index
     %c256 = arith.constant 256 : index
@@ -2534,7 +2535,7 @@ func.func @test_two_symbol_split_offset(%arg0: memref<512x1024xbf16>, %arg1: mem
       %3 = affine.apply #mapc()[%arg4]
       air.execute_terminator %3 : index
     }
-    %1 = air.channel.get async [%async_token, %async_token_0]  @channel_1[] (%arg7[%results, %results_1] [%c256, %c256] [%c512, %c1]) {id = 3 : i32} : (memref<512x512xbf16>)
+    %1 = air.channel.get async [%async_token, %async_token_0]  @channel_1[] (%arg7[%results, %results_1] [%c256, %c256] [%c512, %c1]) {id = 3 : i32} : (memref<520x512xbf16>)
     %2 = air.segment @segment_0 async  {
       %c64 = arith.constant 64 : index
       %c1_2 = arith.constant 1 : index

@@ -74,11 +74,12 @@ module {
         // Herd 3: channel.put, depends on herd 2
         %4 = air.herd @herd_0 async [%3] tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%buf=%alloc_L1) : memref<1x1x4x8x4x8xi16, 2 : i32> attributes {id = 7 : i32} {
           %ci1 = arith.constant 1 : index
+          %ci4 = arith.constant 4 : index
           %ci8 = arith.constant 8 : index
           %ci32 = arith.constant 32 : index
           %ci256 = arith.constant 256 : index
           %ci1024 = arith.constant 1024 : index
-          %5 = air.channel.put async @channel_out_a[%tx, %ty] (%buf[%tx, %ty, %tx, %tx, %tx, %tx] [%ci1, %ci1, %ci8, %ci8, %ci8, %ci8] [%ci1024, %ci1024, %ci32, %ci8, %ci256, %ci1]) {id = 8 : i32} : (memref<1x1x4x8x4x8xi16, 2 : i32>)
+          %5 = air.channel.put async @channel_out_a[%tx, %ty] (%buf[%tx, %ty, %tx, %tx, %tx, %tx] [%ci1, %ci1, %ci8, %ci4, %ci4, %ci8] [%ci1024, %ci1024, %ci32, %ci8, %ci256, %ci1]) {id = 8 : i32} : (memref<1x1x4x8x4x8xi16, 2 : i32>)
         }
       }
     }

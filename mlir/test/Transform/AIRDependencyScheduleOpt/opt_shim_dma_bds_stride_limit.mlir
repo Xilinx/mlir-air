@@ -166,6 +166,9 @@ air.channel @channel_0 [1, 1]
 // The loop's span is the outer wrap times its stride, but the stride it would
 // insert is reduced modulo the buffer and no longer continues the rows, so the
 // loop is not folded and each step keeps its transfer.
+// The input is out of bounds on purpose: only a stride of at least the
+// buffer's size is reduced, and the second step then starts past its end. It
+// is a fixture for how the pass treats such a loop, not a valid program.
 
 // CHECK-LABEL: func.func @wrapped_stride
 // CHECK-COUNT-2: air.channel.put {{.*}} [%c128{{.*}}, %c64{{.*}}] [%c37888{{.*}}, %c1{{.*}}]
