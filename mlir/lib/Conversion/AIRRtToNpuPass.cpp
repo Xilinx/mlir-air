@@ -3458,8 +3458,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // compute) that won't be converted to NPU ops. This is a performance
     // optimization to avoid processing thousands of ops during loop unrolling
     // and pattern matching.
+    // Only the host's functions: a function in an aie.device is core code,
+    // whose effects (on its buffers, or a call setting a core register) are
+    // not the host's.
     SmallVector<func::FuncOp> funcOps;
-    module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
+    module.walk([&](func::FuncOp f) {
+      if (!f->getParentOfType<xilinx::AIE::DeviceOp>())
+        funcOps.push_back(f);
+    });
     for (auto f : funcOps)
       removeDeadDeviceComputeOps(f);
 
