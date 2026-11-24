@@ -51,10 +51,12 @@ module {
       %c8192_0 = arith.constant 8192 : index
       %c2048_0 = arith.constant 2048 : index
       %c256_0 = arith.constant 256 : index
+      %c1024_0 = arith.constant 1024 : index
+      %c32768_0 = arith.constant 32768 : index
       air.dma_memcpy_nd
           (%arg[%x, %y, %c0_0, %c0_0, %c0_0, %c0_0]
                 [%c1_0, %c1_0, %c8_0, %c32_0, %c4_0, %c8_0]
-                [%c8192_0, %c2048_0, %c256_0, %c8_0, %c32_0, %c1_0],
+                [%c32768_0, %c8192_0, %c1024_0, %c32_0, %c8_0, %c1_0],
            %s[%c0_0] [%c8192_0] [%c1_0])
           : (memref<4x4x8x32x4x8xi16, 2 : i32>, memref<32768xi16, 1 : i32>)
       air.herd_terminator
@@ -80,12 +82,14 @@ module {
       %c8 = arith.constant 8 : index
       %c16 = arith.constant 16 : index
       %c32 = arith.constant 32 : index
+      %c64 = arith.constant 64 : index
+      %c2048 = arith.constant 2048 : index
       %c8192 = arith.constant 8192 : index
       // Sizes: [8, 1, 32, 1, 16] — IVs are in dims 1 and 3, both size 1.
       air.dma_memcpy_nd
           (%arg[%c0, %x, %c0, %y, %c0]
                 [%c8, %c1, %c32, %c1, %c16]
-                [%c1, %c1, %c1, %c1, %c1],
+                [%c8192, %c2048, %c64, %c16, %c1],
            %s[%c0] [%c8192] [%c1])
           : (memref<8x4x32x4x16xi16, 2 : i32>, memref<8192xi16, 1 : i32>)
       air.herd_terminator
@@ -114,11 +118,12 @@ module {
       %c0_0 = arith.constant 0 : index
       %c1_0 = arith.constant 1 : index
       %c16_0 = arith.constant 16 : index
+      %c64_0 = arith.constant 64 : index
       %c4096_0 = arith.constant 4096 : index
       %ox = affine.apply #map()[%x]
       %oy = affine.apply #map1()[%y]
       air.dma_memcpy_nd
-          (%arg[%ox, %oy] [%c16_0, %c16_0] [%c1_0, %c1_0],
+          (%arg[%ox, %oy] [%c16_0, %c16_0] [%c64_0, %c1_0],
            %s[%c0_0] [%c4096_0] [%c1_0])
           : (memref<64x64xi16, 2 : i32>, memref<4096xi16, 1 : i32>)
       air.herd_terminator
@@ -426,6 +431,26 @@ module {
       // Sibling terminal that would otherwise fail; pass-1 already accepted.
       func.call @opaque3(%arg) : (memref<32x32xbf16, 2 : i32>) -> ()
       air.herd_terminator
+    }
+    return
+  }
+}
+
+// -----
+// (R2) A GEMM output tile per launch instance, received as four column blocks
+// of 64: rows 256 * %x + [0, 32), columns 256 * %y + [0, 256). Neither the
+// dims (the block dim's stride 64 is inside the column dim's reach) nor the
+// spans of addresses (32 rows long) are apart, but the elements are.
+#map = affine_map<()[s0] -> (s0 * 256)>
+module {
+  air.channel @channel_0 [1, 1]
+  func.func @r2_tile_in_column_blocks(%arg0: memref<2560x2304xbf16>) {
+    %c10 = arith.constant 10 : index
+    %c9 = arith.constant 9 : index
+    air.launch (%x, %y) in (%sx = %c10, %sy = %c9) args(%out = %arg0) : memref<2560x2304xbf16> {
+      %row = affine.apply #map()[%x]
+      %col = affine.apply #map()[%y]
+      air.channel.get @channel_0[] (%out[0, %row, 0, %col] [1, 32, 4, 64] [73728, 2304, 64, 1]) : (memref<2560x2304xbf16>)
     }
     return
   }
