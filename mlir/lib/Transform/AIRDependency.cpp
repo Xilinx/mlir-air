@@ -89,6 +89,211 @@ using ExecuteGraph = air::TypedDirectedAdjacencyMap<air::executeNode>;
 typedef std::map<ExecuteGraph::VertexId, ExecuteGraph::VertexId> vertex_map;
 typedef std::map<unsigned, ExecuteGraph::VertexId> operation_id_to_vertex_map;
 
+// A channel put and get that move data to each other share a transfer. When
+// one reads a buffer the other writes, a token edge between them deadlocks
+// once both are async: the get waits for the put to finish, and the put for
+// the get to take its data. Whether they need one is decided by the stream
+// steps at which the buffer's elements are read and written: an element read
+// at step i and written at step j is read before it is written iff i <= j
+// (D36(a)), so the transfer orders the two itself when that is the program's
+// order. If a put must read an element before a get overwrites it but the
+// stream writes it first, no async version is correct: the slot's gets stay
+// synchronous, which buffers its transfers (D30).
+//
+// This holds for a put and get on one slot whether or not they move data to
+// each other: through the slot's FIFO order, an edge between any two of them
+// can close a cycle.
+//
+// The steps are known only when every endpoint of the slot sits in one block,
+// runs once, in program order, with constant patterns on whole buffers. Other
+// slots are left to the memory tracing as before.
+struct ChannelTransfers {
+  // Put and get pairs that need no memory edge.
+  llvm::DenseSet<std::pair<Operation *, Operation *>> unordered;
+  // Gets of slots whose transfers need a buffer.
+  llvm::SmallPtrSet<Operation *, 4> keepSync;
+};
+
+// The buffer elements a channel op moves, in stream order, if its pattern is
+// constant (an empty pattern is the whole static buffer).
+static std::optional<SmallVector<int64_t>>
+streamElements(air::ChannelInterface chan) {
+  auto type = dyn_cast<MemRefType>(chan.getMemref().getType());
+  if (!type || !type.hasStaticShape())
+    return std::nullopt;
+  constexpr int64_t limit = 1 << 16;
+  auto offsets = chan.getMixedOffsets();
+  auto sizes = chan.getMixedSizes();
+  auto strides = chan.getMixedStrides();
+  SmallVector<int64_t> elems;
+  if (sizes.empty()) {
+    if (type.getNumElements() > limit)
+      return std::nullopt;
+    return llvm::to_vector(llvm::seq<int64_t>(0, type.getNumElements()));
+  }
+  if (offsets.size() != sizes.size() || strides.size() != sizes.size())
+    return std::nullopt;
+  SmallVector<int64_t> o, n, st;
+  int64_t count = 1;
+  for (auto [off, sz, str] : llvm::zip(offsets, sizes, strides)) {
+    auto oc = getConstantIntValue(off), nc = getConstantIntValue(sz),
+         sc = getConstantIntValue(str);
+    if (!oc || !nc || !sc || *nc <= 0)
+      return std::nullopt;
+    o.push_back(*oc);
+    n.push_back(*nc);
+    st.push_back(*sc);
+    count *= *nc;
+    if (count > limit)
+      return std::nullopt;
+  }
+  SmallVector<int64_t> idx(n.size(), 0);
+  for (int64_t k = 0; k < count; k++) {
+    int64_t pos = 0;
+    for (unsigned d = 0; d < n.size(); d++)
+      pos += (o[d] + idx[d]) * st[d];
+    elems.push_back(pos);
+    for (int d = n.size() - 1; d >= 0; d--) {
+      if (++idx[d] < n[d])
+        break;
+      idx[d] = 0;
+    }
+  }
+  return elems;
+}
+
+static ChannelTransfers analyzeChannelTransfers(ModuleOp module) {
+  ChannelTransfers result;
+  // Endpoints per function and channel, in program order. Each function is a
+  // program of its own, with streams of its own.
+  llvm::MapVector<std::pair<Operation *, StringRef>,
+                  SmallVector<air::ChannelInterface>>
+      byChannel;
+  module.walk([&](air::ChannelInterface chan) {
+    byChannel[{chan->getParentOfType<func::FuncOp>(), chan.getChanName()}]
+        .push_back(chan);
+  });
+  // Runs once, in its block's program order: no loop, branch or execute
+  // around it, and every hierarchy op around it of one instance.
+  auto runsOnce = [](Operation *op) {
+    for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
+      if (isa<func::FuncOp>(p))
+        return true;
+      if (auto hier = dyn_cast<air::HierarchyInterface>(p)) {
+        if (!llvm::all_of(hier.getSizeOperands(),
+                          [](Value v) { return getConstantIntValue(v) == 1; }))
+          return false;
+        continue;
+      }
+      return false;
+    }
+    return false;
+  };
+  for (auto &[key, endpoints] : byChannel) {
+    auto decl = air::getChannelDeclarationThroughSymbol(endpoints.front());
+    if (!decl || decl->hasAttr("broadcast_shape"))
+      continue;
+    // Slots by constant indices; a non-constant index or a routed put leaves
+    // the whole channel alone.
+    std::map<SmallVector<int64_t>, SmallVector<air::ChannelInterface>> slots;
+    bool known = true;
+    for (air::ChannelInterface chan : endpoints) {
+      SmallVector<int64_t> key;
+      for (Value i : chan.getIndices()) {
+        auto c = getConstantIntValue(i);
+        if (!c) {
+          known = false;
+          break;
+        }
+        key.push_back(*c);
+      }
+      if (auto put = dyn_cast<air::ChannelPutOp>(chan.getOperation()))
+        known &= !put.getDest();
+      if (!known)
+        break;
+      slots[key].push_back(chan);
+    }
+    if (!known)
+      continue;
+    for (auto &[indices, slot] : slots) {
+      Block *block = slot.front()->getBlock();
+      if (!llvm::all_of(slot, [&](air::ChannelInterface c) {
+            return c->getBlock() == block && runsOnce(c) &&
+                   air::resolveBufferRoot(c.getMemref()) == c.getMemref();
+          }))
+        continue;
+      // Stream step of each endpoint's first element, per direction.
+      struct Side {
+        air::ChannelInterface op;
+        int64_t first;
+        SmallVector<int64_t> elems;
+      };
+      SmallVector<Side> puts, gets;
+      int64_t putStep = 0, getStep = 0;
+      bool ok = true;
+      for (air::ChannelInterface c : slot) {
+        auto elems = streamElements(c);
+        if (!elems) {
+          ok = false;
+          break;
+        }
+        bool isPut = isa<air::ChannelPutOp>(c.getOperation());
+        int64_t &step = isPut ? putStep : getStep;
+        (isPut ? puts : gets).push_back({c, step, *elems});
+        step += elems->size();
+      }
+      if (!ok)
+        continue;
+      // Each conflict: the put reads an element at step i that the get
+      // writes at step j. The stream orders the two as the program does when
+      // the put comes first and i <= j, or the get comes first and j < i.
+      // A put first with i > j reads, in the program, what is there before a
+      // write the stream has already made.
+      bool needsBuffer = false;
+      SmallVector<std::pair<Operation *, Operation *>> ordered;
+      for (Side &g : gets) {
+        if (needsBuffer)
+          break;
+        llvm::DenseMap<int64_t, int64_t> writeStep;
+        for (auto [k, e] : llvm::enumerate(g.elems))
+          writeStep.try_emplace(e, g.first + k);
+        for (Side &pt : puts) {
+          if (pt.op.getMemref() != g.op.getMemref())
+            continue;
+          bool putFirst = pt.op->isBeforeInBlock(g.op);
+          bool conflict = false, consistent = true;
+          for (auto [k, e] : llvm::enumerate(pt.elems)) {
+            auto it = writeStep.find(e);
+            if (it == writeStep.end())
+              continue;
+            conflict = true;
+            int64_t i = pt.first + k, j = it->second;
+            if (putFirst && i > j)
+              needsBuffer = true;
+            if (putFirst ? i > j : j >= i)
+              consistent = false;
+          }
+          if (needsBuffer)
+            break;
+          if (conflict && consistent)
+            ordered.push_back({pt.op, g.op});
+        }
+      }
+      // A buffered get still waits for the puts before it that read its
+      // buffer, and the puts it waits for are buffered only if every get on
+      // the slot is synchronous.
+      if (needsBuffer) {
+        for (Side &g : gets)
+          result.keepSync.insert(g.op);
+        continue;
+      }
+      for (auto pair : ordered)
+        result.unordered.insert(pair);
+    }
+  }
+  return result;
+}
+
 class AIRDependency : public air::impl::AIRDependencyBase<AIRDependency> {
 
 public:
@@ -119,6 +324,8 @@ public:
     ChannelOpID = 0;
     DmaOpID = 0;
 
+    transfers = analyzeChannelTransfers(module);
+
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
         if (air::isAsyncOp(op) || isa<air::WaitAllOp>(op)) {
@@ -140,9 +347,10 @@ public:
 
         if (isa<air::DmaMemcpyNdOp>(op))
           createAsyncDMA(rewriter, op);
-        else if (isa<air::ChannelInterface>(op))
-          createAsyncChannel(rewriter, op);
-        else if (isa<linalg::LinalgOp, func::CallOp, memref::DeallocOp>(op)) {
+        else if (isa<air::ChannelInterface>(op)) {
+          if (!transfers.keepSync.contains(op))
+            createAsyncChannel(rewriter, op);
+        } else if (isa<linalg::LinalgOp, func::CallOp, memref::DeallocOp>(op)) {
           if (op->getNumResults())
             createAsyncExecute(rewriter, op,
                                op->getResults().front().getType());
@@ -210,11 +418,17 @@ public:
       });
     }
 
+    // The async endpoints are new ops: pair them again.
+    transfers.unordered = analyzeChannelTransfers(module).unordered;
+
     // 2nd traversal: trace deps among async execute regions; build a dep graph
 
     llvm::DenseMap<std::pair<StringRef, int>, Operation *> opIdToOpMap;
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
+        // A get kept synchronous is a blocking event, waited for below.
+        if (transfers.keepSync.contains(op))
+          return;
         Operation *sink_op = nullptr;
         if (auto async_execute_op = dyn_cast_if_present<air::ExecuteOp>(op)) {
           for (auto &child_op : async_execute_op.getChildOps())
@@ -503,9 +717,41 @@ public:
     // block, per execute.
     for (auto f : module.getOps<func::FuncOp>())
       waitForExecuteResultsInBareOps(f);
+
+    // A get kept synchronous runs when the host reaches it, after the ops
+    // before it in its block that touch its buffer, and the gets before it on
+    // its channel, have finished.
+    for (Operation *get : transfers.keepSync)
+      waitBeforeSyncGet(cast<air::ChannelGetOp>(get));
   }
 
 private:
+  void waitBeforeSyncGet(air::ChannelGetOp get) {
+    llvm::SmallDenseSet<Value> aliases;
+    air::collectBufferAliases(get.getMemref(), aliases);
+    SmallVector<Value> tokens;
+    for (Operation &o : *get->getBlock()) {
+      if (&o == get.getOperation())
+        break;
+      Value token = air::getAsyncTokenFromOp(&o);
+      if (!token)
+        continue;
+      bool touches = llvm::any_of(aliases, [&](Value a) {
+        return llvm::any_of(a.getUsers(),
+                            [&](Operation *u) { return o.isAncestor(u); });
+      });
+      auto other = dyn_cast<air::ChannelGetOp>(o);
+      if (touches || (other && other.getChanName() == get.getChanName()))
+        tokens.push_back(token);
+    }
+    if (tokens.empty())
+      return;
+    IRRewriter rewriter(get.getContext());
+    rewriter.setInsertionPoint(get);
+    air::WaitAllOp::create(rewriter, get.getLoc(), /*asyncToken=*/Type(),
+                           tokens);
+  }
+
   void waitForExecuteResultsInBareOps(func::FuncOp f) {
     llvm::DenseMap<Block *, llvm::SmallPtrSet<Operation *, 4>> waited;
     SmallVector<std::pair<Operation *, air::ExecuteOp>> toWait;
@@ -532,6 +778,7 @@ private:
     }
   }
 
+  ChannelTransfers transfers;
   uint64_t ExecuteOpID;
   uint64_t HierarchyOpID;
   uint64_t WaitAllOpID;
@@ -1004,6 +1251,12 @@ private:
     }
     for (auto &u : operand.getUses()) {
       if (!air::opOrAncestorIsDominantOver(u.getOwner(), op))
+        continue;
+      // A get kept synchronous is ordered by the host; a put and get sharing
+      // a transfer are ordered by it (ChannelTransfers).
+      if (transfers.keepSync.contains(u.getOwner()) ||
+          transfers.unordered.contains({u.getOwner(), op.getOperation()}) ||
+          transfers.unordered.contains({op.getOperation(), u.getOwner()}))
         continue;
       // If used in MemcpyInterface Op
       if (auto memcpy =
