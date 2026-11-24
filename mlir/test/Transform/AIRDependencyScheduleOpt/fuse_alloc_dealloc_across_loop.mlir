@@ -236,3 +236,136 @@ func.func @written_whole_in_pieces() {
   memref.dealloc %a : memref<4x8xi32, 1 : i32>
   return
 }
+
+// -----
+
+// A transposed vector write: each row step writes one column element, so the
+// steps cover column 0 only and the put reads what earlier iterations left in
+// the rest. The alloc stays outside the loop.
+
+// CHECK-LABEL: func.func @transposed_write_in_steps
+// CHECK: memref.alloc()
+// CHECK-NEXT: scf.for
+// CHECK-NOT: memref.alloc()
+// CHECK: air.channel.put
+air.channel @c [1]
+func.func @transposed_write_in_steps(%v: vector<1x8xi32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %a = memref.alloc() : memref<4x8xi32, 2 : i32>
+  scf.for %i = %c0 to %c4 step %c1 {
+    scf.for %j = %c0 to %c4 step %c1 {
+      vector.transfer_write %v, %a[%j, %c0] {permutation_map = affine_map<(d0, d1) -> (d1, d0)>} : vector<1x8xi32>, memref<4x8xi32, 2 : i32>
+    }
+    air.channel.put @c[] (%a[] [] []) : (memref<4x8xi32, 2 : i32>)
+  }
+  memref.dealloc %a : memref<4x8xi32, 2 : i32>
+  return
+}
+
+// -----
+
+// A vector with as many elements as the buffer but another shape writes only
+// the first two columns: the alloc stays outside the loop.
+
+// CHECK-LABEL: func.func @vector_of_other_shape
+// CHECK: memref.alloc()
+// CHECK-NEXT: scf.for
+// CHECK-NOT: memref.alloc()
+// CHECK: air.channel.put
+air.channel @c [1]
+func.func @vector_of_other_shape(%v: vector<4x2xi32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %a = memref.alloc() : memref<2x4xi32, 2 : i32>
+  scf.for %i = %c0 to %c4 step %c1 {
+    vector.transfer_write %v, %a[%c0, %c0] : vector<4x2xi32>, memref<2x4xi32, 2 : i32>
+    air.channel.put @c[] (%a[] [] []) : (memref<2x4xi32, 2 : i32>)
+  }
+  memref.dealloc %a : memref<2x4xi32, 2 : i32>
+  return
+}
+
+// -----
+
+// An execute that fills the buffer only when %p holds leaves it untouched
+// otherwise, and the put after it then reads the previous iteration's
+// contents: the alloc stays outside the loop.
+
+// CHECK-LABEL: func.func @conditional_fill_in_execute
+// CHECK: memref.alloc()
+// CHECK-NEXT: scf.for
+// CHECK-NOT: memref.alloc()
+// CHECK: air.channel.put
+air.channel @c [1]
+func.func @conditional_fill_in_execute(%p: i1) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %z = arith.constant 0 : i32
+  %a = memref.alloc() : memref<4xi32, 2 : i32>
+  scf.for %i = %c0 to %c4 step %c1 {
+    %t = air.execute {
+      scf.if %p {
+        linalg.fill ins(%z : i32) outs(%a : memref<4xi32, 2 : i32>)
+      }
+    }
+    air.channel.put @c[] (%a[] [] []) : (memref<4xi32, 2 : i32>)
+  }
+  memref.dealloc %a : memref<4xi32, 2 : i32>
+  return
+}
+
+// -----
+
+// Each iteration receives one column block, at an offset that is the loop's
+// induction variable, and sends that block on, in another shape: no iteration
+// reads what another wrote, so the alloc moves into the loop.
+
+// CHECK-LABEL: func.func @slice_per_iteration
+// CHECK: scf.for
+// CHECK-NEXT: memref.alloc()
+air.channel @c [1]
+air.channel @d [1]
+func.func @slice_per_iteration() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %c2 = arith.constant 2 : index
+  %c4 = arith.constant 4 : index
+  %c32 = arith.constant 32 : index
+  %c128 = arith.constant 128 : index
+  %a = memref.alloc() : memref<8x32xi32, 1 : i32>
+  scf.for %i = %c0 to %c32 step %c8 {
+    air.channel.get @d[] (%a[%c0, %i] [%c8, %c8] [%c32, %c1]) : (memref<8x32xi32, 1 : i32>)
+    air.channel.put @c[] (%a[%c0, %c0, %i] [%c2, %c4, %c8] [%c128, %c32, %c1]) : (memref<8x32xi32, 1 : i32>)
+  }
+  memref.dealloc %a : memref<8x32xi32, 1 : i32>
+  return
+}
+
+// -----
+
+// The same, but the put sends the whole buffer, column blocks earlier
+// iterations wrote included: the alloc stays outside the loop.
+
+// CHECK-LABEL: func.func @slice_per_iteration_read_whole
+// CHECK: memref.alloc()
+// CHECK-NEXT: scf.for
+air.channel @c [1]
+air.channel @d [1]
+func.func @slice_per_iteration_read_whole() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %c32 = arith.constant 32 : index
+  %a = memref.alloc() : memref<8x32xi32, 1 : i32>
+  scf.for %i = %c0 to %c32 step %c8 {
+    air.channel.get @d[] (%a[%c0, %i] [%c8, %c8] [%c32, %c1]) : (memref<8x32xi32, 1 : i32>)
+    air.channel.put @c[] (%a[] [] []) : (memref<8x32xi32, 1 : i32>)
+  }
+  memref.dealloc %a : memref<8x32xi32, 1 : i32>
+  return
+}
