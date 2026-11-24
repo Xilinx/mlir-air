@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 // RUN: air-opt %s -air-fuse-alloc-dealloc --split-input-file | FileCheck %s
 
-// Keep only the marked buffer outside the K loop; default sinking still works.
+// Keep only the marked buffer outside the K loop; default sinking still works
+// for the other, which each iteration writes whole before the call reads it.
 // CHECK-LABEL: @mixed_raw
 // CHECK: %[[PIN:.*]] = memref.alloc() {air.disable_alloc_sink}
 // CHECK: scf.for
@@ -12,6 +13,7 @@
 // CHECK: memref.dealloc %[[MOVE]]
 // CHECK: }
 // CHECK: memref.dealloc %[[PIN]]
+air.channel @in [1]
 func.func private @use(memref<64xbf16, 2>, memref<64xbf16, 2>)
 func.func @mixed_raw() {
   %c0 = arith.constant 0 : index
@@ -20,6 +22,7 @@ func.func @mixed_raw() {
   %pin = memref.alloc() {air.disable_alloc_sink} : memref<64xbf16, 2>
   %move = memref.alloc() : memref<64xbf16, 2>
   scf.for %i = %c0 to %c8 step %c1 {
+    air.channel.get @in[] (%move[] [] []) : (memref<64xbf16, 2>)
     func.call @use(%pin, %move) : (memref<64xbf16, 2>, memref<64xbf16, 2>) -> ()
   }
   memref.dealloc %move : memref<64xbf16, 2>

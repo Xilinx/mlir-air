@@ -1989,6 +1989,77 @@ static bool overwritesArgument(func::FuncOp fn, unsigned i) {
   return coversShape(boxes, type.getShape());
 }
 
+LogicalResult fuseAllocDeallocExecsIntoBlock(
+    Block *block, PatternRewriter &rewriter, IRMapping &remap,
+    std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> &allocDeallocExecs);
+static bool mayAccess(Value memref, bool write);
+static bool writtenWholeFirst(Block &block, Value memref);
+static bool noIterationReadsAnEarlierOne(Operation *loop, Value memref);
+
+// The loop air-fuse-alloc-dealloc would move the buffer `exec` allocates
+// into, as it did before it learnt to keep buffers that may carry data across
+// iterations out: the innermost loop holding every use, unless that loop's
+// body is just another loop, and only if the alloc is outside it.
+static Operation *loopAnAllocWouldSinkInto(air::ExecuteOp exec) {
+  if (exec.getNumResults() < 2 || exec.getChildOps().size() != 2)
+    return nullptr;
+  auto alloc = dyn_cast<memref::AllocOp>(exec.getChildOps().front());
+  if (!alloc || alloc->hasAttr(air::attrs::DisableAllocSink))
+    return nullptr;
+  SmallVector<Operation *> users;
+  for (Operation *user : exec->getResult(1).getUsers()) {
+    if (isa<memref::DeallocOp>(user))
+      continue;
+    users.push_back(user);
+  }
+  if (users.empty())
+    return nullptr;
+  for (Operation *loop = users.front()->getParentOp();
+       loop && exec->getParentRegion()->isProperAncestor(&loop->getRegion(0));
+       loop = loop->getParentOp()) {
+    if (!isa<scf::ForOp, scf::ParallelOp>(loop))
+      continue;
+    if (!llvm::all_of(users, [&](Operation *u) { return loop->isAncestor(u); }))
+      continue;
+    Block *body =
+        &cast<LoopLikeOpInterface>(loop).getLoopRegions().front()->front();
+    if (hasNImpureOps(body, 1) &&
+        llvm::any_of(body->without_terminator(),
+                     [](Operation &o) { return isa<LoopLikeOpInterface>(o); }))
+      continue;
+    // One it can show carries nothing across iterations it moves itself; if
+    // that one is still outside, it was not run or chose not to.
+    Value memref = exec->getResult(1);
+    if (!mayAccess(memref, /*write=*/true) ||
+        !mayAccess(memref, /*write=*/false) ||
+        noIterationReadsAnEarlierOne(loop, memref))
+      return nullptr;
+    return loop;
+  }
+  return nullptr;
+}
+
+// The allocs outside `forOp` whose buffers air-fuse-alloc-dealloc would have
+// moved into it, with their deallocs.
+static std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>>
+allocsKeptOutOf(scf::ForOp forOp) {
+  std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> out;
+  Operation *scope = forOp->getParentOfType<air::HierarchyInterface>();
+  if (!scope)
+    scope = forOp->getParentOfType<func::FuncOp>();
+  if (!scope)
+    return out;
+  scope->walk([&](air::ExecuteOp exec) {
+    if (forOp->isAncestor(exec) || loopAnAllocWouldSinkInto(exec) != forOp)
+      return;
+    air::ExecuteOp dealloc;
+    if (auto d = memref::findDealloc(exec->getResult(1)); d && *d)
+      dealloc = (*d)->getParentOfType<air::ExecuteOp>();
+    out.push_back({exec, dealloc});
+  });
+  return out;
+}
+
 struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -2029,6 +2100,15 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     for (auto exec : forOp.getOps<air::ExecuteOp>())
       for (auto alloc : exec.getOps<memref::AllocOp>())
         allocs.insert(alloc.getResult());
+    // Buffers air-fuse-alloc-dealloc kept out of the loop are moved in if it
+    // is labelled; they are judged as the allocs in the body are.
+    // Each is reached in the loop through its execute's result.
+    llvm::SmallDenseMap<Value, Value> keptOut;
+    for (auto [exec, dealloc] : allocsKeptOutOf(forOp))
+      for (auto alloc : exec.getOps<memref::AllocOp>()) {
+        allocs.insert(alloc.getResult());
+        keptOut[alloc.getResult()] = exec->getResult(1);
+      }
 
     auto isDefiniteWrite = [](Operation *op, Value v) {
       if (auto get = dyn_cast<air::ChannelGetOp>(op))
@@ -2075,8 +2155,22 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
           if (auto view = dyn_cast<ViewLikeOpInterface>(op);
               view && view.getViewSource() == operand)
             continue;
-          if (firstAccessSeen.insert(root).second &&
-              !isDefiniteWrite(op, operand))
+          if (!firstAccessSeen.insert(root).second)
+            continue;
+          // A buffer kept out is one the iterations share, and fuse moves in
+          // every one it can show no iteration reads an earlier one's data
+          // from. What is left may be moved in only if each iteration
+          // overwrites it all before anything else: a call, on every way
+          // through the body, to a function that overwrites the whole buffer.
+          if (auto it = keptOut.find(root); it != keptOut.end()) {
+            Operation *parent = op->getParentOp();
+            if (isa_and_present<air::ExecuteOp>(parent))
+              parent = parent->getParentOp();
+            if (!isa<func::CallOp>(op) || operand != it->second ||
+                parent != forOp.getOperation())
+              unsafe = true;
+          }
+          if (!isDefiniteWrite(op, operand))
             unsafe = true;
           continue;
         }
@@ -2117,6 +2211,10 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
       if (!exec || exec->getParentOp() != forOp || !isCoreScratch(a))
         duplicated += l1AllocBytes(a);
     });
+    for (auto [exec, dealloc] : allocsKeptOutOf(forOp))
+      for (auto a : exec.getOps<memref::AllocOp>())
+        if (!isCoreScratch(a))
+          duplicated += l1AllocBytes(a);
     return total + duplicated > budget;
   }
 
@@ -2186,7 +2284,10 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     if (optedOut)
       return false;
     SmallVector<Operation *> allocs;
-    for (auto exec : forOp.getOps<air::ExecuteOp>()) {
+    SmallVector<air::ExecuteOp> execs(forOp.getOps<air::ExecuteOp>());
+    for (auto [exec, dealloc] : allocsKeptOutOf(forOp))
+      execs.push_back(exec);
+    for (auto exec : execs) {
       for (auto alloc : exec.getOps<memref::AllocOp>()) {
         if (isCoreScratch(alloc))
           continue;
@@ -2329,6 +2430,17 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
 
     if (hasLabelableNestedFor(for_op, omitMemorySpace, l1Budget))
       return failure();
+
+    // Each iteration's first access writes the buffers air-fuse-alloc-dealloc
+    // kept out (isUnsafeToDuplicate), so moving them in, a buffer per
+    // iteration, keeps the program's meaning.
+    auto keptOut = allocsKeptOutOf(for_op);
+    if (!keptOut.empty()) {
+      IRMapping remap;
+      if (failed(fuseAllocDeallocExecsIntoBlock(for_op.getBody(), rewriter,
+                                                remap, keptOut)))
+        return failure();
+    }
 
     // Label the scf.for loop and all its child memref.allocs
     int unroll_factor = 2; // Unroll factor hardened as 2. TODO: add support for
@@ -10881,6 +10993,478 @@ public:
 private:
 };
 
+// Whether an access pattern covers all of `type`, each element once: from
+// offset 0, its dims sorted by stride step through the elements without gap
+// or overlap (the innermost by 1, each next by the previous stride times its
+// size), in any order, and their sizes multiply to the memref's size.
+static bool coversMemref(ArrayRef<OpFoldResult> offsets,
+                         ArrayRef<OpFoldResult> sizes,
+                         ArrayRef<OpFoldResult> strides, MemRefType type) {
+  if (offsets.empty() && sizes.empty() && strides.empty())
+    return true;
+  if (!type.hasStaticShape() || sizes.size() != strides.size() ||
+      !llvm::all_of(offsets,
+                    [](OpFoldResult o) { return isConstantIntValue(o, 0); }))
+    return false;
+  SmallVector<std::pair<int64_t, int64_t>> dims; // (stride, size)
+  for (auto [sz, st] : llvm::zip(sizes, strides)) {
+    auto szc = getConstantIntValue(sz), stc = getConstantIntValue(st);
+    if (!szc || !stc || *szc <= 0)
+      return false;
+    if (*szc > 1)
+      dims.push_back({*stc, *szc});
+  }
+  llvm::sort(dims);
+  int64_t next = 1;
+  for (auto [stride, size] : dims) {
+    if (stride != next)
+      return false;
+    next = stride * size;
+  }
+  return next == type.getNumElements();
+}
+
+static bool mayAccess(Value memref, bool write);
+static bool writesAllWithoutReading(Operation *op, Value memref);
+
+// Whether `loop` writes every element of `memref` and does not read it: its
+// body only writes it, stepping through one dim by the step from 0 to the
+// dim's end with the others covered whole, either with one vector write or
+// through a subview of that slice that one vector write covers.
+static bool loopWritesAll(scf::ForOp loop, Value memref, MemRefType type) {
+  auto lb = getConstantIntValue(loop.getLowerBound());
+  auto ub = getConstantIntValue(loop.getUpperBound());
+  auto step = getConstantIntValue(loop.getStep());
+  if (!lb || !ub || !step || *lb != 0 || !type.hasStaticShape())
+    return false;
+  Value iv = loop.getInductionVar();
+  ArrayRef<int64_t> shape = type.getShape();
+  // In the body, or alone in an air.execute there.
+  auto inBody = [&](Operation *op) {
+    Operation *parent = op->getParentOp();
+    if (isa_and_present<air::ExecuteOp>(parent))
+      parent = parent->getParentOp();
+    return parent == loop.getOperation();
+  };
+  // The one vector write of `target` covering it from its origin.
+  auto soleWholeWrite = [&](Value target) -> bool {
+    auto users = llvm::to_vector(target.getUsers());
+    if (users.size() != 1)
+      return false;
+    auto write = dyn_cast<vector::TransferWriteOp>(users.front());
+    return write && inBody(write) && writesAllWithoutReading(write, target);
+  };
+  // Dims: `slice[d]` is the extent written at the loop's position in dim d,
+  // which must be the step in the stepped dim and the whole dim elsewhere.
+  auto stepsThrough = [&](ArrayRef<OpFoldResult> offsets,
+                          ArrayRef<int64_t> slice) {
+    bool stepped = false;
+    for (auto [d, off] : llvm::enumerate(offsets)) {
+      if (dyn_cast<Value>(off) == iv) {
+        if (stepped || slice[d] != *step || *ub != shape[d])
+          return false;
+        stepped = true;
+      } else if (!isConstantIntValue(off, 0) || slice[d] != shape[d]) {
+        return false;
+      }
+    }
+    return stepped;
+  };
+  Operation *only = nullptr;
+  for (Operation *user : memref.getUsers()) {
+    if (!loop->isAncestor(user))
+      continue;
+    if (only)
+      return false;
+    only = user;
+  }
+  if (!only || !inBody(only))
+    return false;
+  if (auto write = dyn_cast<vector::TransferWriteOp>(only)) {
+    if (write.getMask() || !write.getPermutationMap().isMinorIdentity())
+      return false;
+    ArrayRef<int64_t> vec = write.getVectorType().getShape();
+    if (vec.size() > shape.size())
+      return false;
+    SmallVector<int64_t> slice(shape.size() - vec.size(), 1);
+    llvm::append_range(slice, vec);
+    return stepsThrough(getAsOpFoldResult(write.getIndices()), slice);
+  }
+  if (auto sv = dyn_cast<memref::SubViewOp>(only)) {
+    if (!llvm::all_of(sv.getMixedStrides(),
+                      [](OpFoldResult s) { return isConstantIntValue(s, 1); }))
+      return false;
+    SmallVector<int64_t> slice;
+    for (OpFoldResult sz : sv.getMixedSizes()) {
+      auto c = getConstantIntValue(sz);
+      if (!c)
+        return false;
+      slice.push_back(*c);
+    }
+    return stepsThrough(sv.getMixedOffsets(), slice) &&
+           soleWholeWrite(sv.getResult());
+  }
+  return false;
+}
+
+// Whether `op` writes every element of `memref` and does not read it.
+static bool writesAllWithoutReading(Operation *op, Value memref) {
+  auto type = dyn_cast<MemRefType>(memref.getType());
+  if (!type)
+    return false;
+  if (auto get = dyn_cast<air::ChannelGetOp>(op))
+    return get.getMemref() == memref &&
+           coversMemref(get.getMixedOffsets(), get.getMixedSizes(),
+                        get.getMixedStrides(), type);
+  if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(op))
+    return dma.getDstMemref() == memref && dma.getSrcMemref() != memref &&
+           coversMemref(dma.getMixedDstOffsets(), dma.getMixedDstSizes(),
+                        dma.getMixedDstStrides(), type);
+  if (auto fill = dyn_cast<linalg::FillOp>(op))
+    return fill.getOutputs().front() == memref &&
+           !llvm::is_contained(fill.getInputs(), memref);
+  if (auto copy = dyn_cast<memref::CopyOp>(op))
+    return copy.getTarget() == memref && copy.getSource() != memref;
+  // A store into a buffer of one element writes all of it.
+  if (auto store = dyn_cast<memref::StoreOp>(op))
+    return store.getMemRef() == memref && type.hasStaticShape() &&
+           type.getNumElements() == 1;
+  // A vector write of the buffer's shape, from its origin: the vector's dims
+  // are the trailing dims, the leading ones of size 1.
+  if (auto write = dyn_cast<vector::TransferWriteOp>(op)) {
+    ArrayRef<int64_t> vec = write.getVectorType().getShape();
+    ArrayRef<int64_t> shape = type.getShape();
+    return write.getBase() == memref && !write.getMask() &&
+           write.getPermutationMap().isMinorIdentity() &&
+           type.hasStaticShape() && vec.size() <= shape.size() &&
+           shape.take_back(vec.size()) == vec &&
+           llvm::all_of(shape.drop_back(vec.size()),
+                        [](int64_t d) { return d == 1; }) &&
+           llvm::all_of(write.getIndices(),
+                        [](Value i) { return isConstantIntValue(i, 0); });
+  }
+  if (auto loop = dyn_cast<scf::ForOp>(op))
+    return loopWritesAll(loop, memref, type);
+  return false;
+}
+
+// Whether any use of `memref` may write it (`write`) or read it (`!write`).
+// Uses known not to are skipped; views of it and the hierarchy ops it is
+// passed to are looked into.
+static bool mayAccess(Value memref, bool write) {
+  for (OpOperand &use : memref.getUses()) {
+    Operation *user = use.getOwner();
+    if (isa<memref::DeallocOp>(user))
+      continue;
+    if (auto view = dyn_cast<ViewLikeOpInterface>(user)) {
+      if (view.getViewSource() == memref &&
+          !mayAccess(user->getResult(0), write))
+        continue;
+      return true;
+    }
+    if (auto hier = dyn_cast<air::HierarchyInterface>(user)) {
+      for (unsigned i = 0; i < hier.getNumKernelOperands(); i++)
+        if (hier.getKernelOperand(i) == memref &&
+            mayAccess(hier.getKernelArgument(i), write))
+          return true;
+      continue;
+    }
+    bool reads = true, writes = true;
+    if (isa<air::ChannelPutOp, memref::LoadOp, vector::TransferReadOp>(user))
+      writes = false;
+    else if (isa<air::ChannelGetOp, memref::StoreOp, vector::TransferWriteOp,
+                 linalg::FillOp>(user))
+      reads = false;
+    else if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(user)) {
+      writes = dma.getDstMemref() == memref;
+      reads = dma.getSrcMemref() == memref;
+    } else if (auto copy = dyn_cast<memref::CopyOp>(user)) {
+      writes = copy.getTarget() == memref;
+      reads = copy.getSource() == memref;
+    } else if (auto linalgOp = dyn_cast<linalg::LinalgOp>(user)) {
+      writes = linalgOp.isDpsInit(&use);
+      reads = !writes || linalgOp.payloadUsesValueFromOperand(&use);
+    }
+    if (write ? writes : reads)
+      return true;
+  }
+  return false;
+}
+
+// Whether an affine.if on constants and the tile ids of a herd of constant
+// size holds for every tile (true), for none (false), or depends on the tile.
+static std::optional<bool> affineIfForEveryTile(affine::AffineIfOp ifOp) {
+  SmallVector<SmallVector<int64_t>> choices;
+  int64_t combos = 1;
+  for (Value v : ifOp.getOperands()) {
+    if (auto c = getConstantIntValue(v)) {
+      choices.push_back({*c});
+      continue;
+    }
+    auto herd = air::getHerdArgOwner(v);
+    if (!herd)
+      return std::nullopt;
+    std::optional<int64_t> size;
+    for (auto [id, sz] : llvm::zip(herd.getIds(), herd.getSizeOperands()))
+      if (id == v)
+        size = getConstantIntValue(sz);
+    if (!size || *size <= 0 || (combos *= *size) > 4096)
+      return std::nullopt;
+    choices.push_back(llvm::to_vector(llvm::seq<int64_t>(0, *size)));
+  }
+  IntegerSet set = ifOp.getIntegerSet();
+  MLIRContext *ctx = ifOp.getContext();
+  bool anyTrue = false, anyFalse = false;
+  SmallVector<size_t> pick(choices.size(), 0);
+  for (int64_t n = 0; n < combos; n++) {
+    SmallVector<AffineExpr> dims, syms;
+    for (unsigned i = 0; i < choices.size(); i++) {
+      auto c = getAffineConstantExpr(choices[i][pick[i]], ctx);
+      (i < set.getNumDims() ? dims : syms).push_back(c);
+    }
+    bool holds = true;
+    for (unsigned i = 0; i < set.getNumConstraints(); i++) {
+      auto v = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
+          set.getConstraint(i).replaceDimsAndSymbols(dims, syms), 0, 0));
+      if (!v)
+        return std::nullopt;
+      holds &= set.isEq(i) ? v.getValue() == 0 : v.getValue() >= 0;
+    }
+    (holds ? anyTrue : anyFalse) = true;
+    for (unsigned i = 0; i < pick.size(); i++) {
+      if (++pick[i] < choices[i].size())
+        break;
+      pick[i] = 0;
+    }
+  }
+  if (anyTrue != anyFalse)
+    return anyTrue;
+  return std::nullopt;
+}
+
+// How a block first accesses a buffer: not at all, by writing all of it
+// without reading it, or otherwise (or in a way not modelled).
+enum class FirstAccess { None, WholeWrite, Other };
+
+// A loop's induction variable taken at one value, to look at one iteration.
+struct IvAt {
+  Value iv;
+  int64_t value = 0;
+};
+
+// The elements a channel get or DMA writes into `memref` (`write`), or a
+// channel put or DMA reads from it (`!write`), if its pattern is constant once
+// `at.iv` is `at.value`: offset o, sizes n and strides s address
+// Σ (o_d + i_d) * s_d for 0 <= i_d < n_d; an empty pattern, a read of the whole
+// buffer, all of it. Empty for anything else.
+static SmallVector<int64_t> constantAccessedPositions(Operation *op,
+                                                      Value memref, bool write,
+                                                      IvAt at = {}) {
+  SmallVector<OpFoldResult> offsets, sizes, strides;
+  if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
+    if (!write || get.getMemref() != memref)
+      return {};
+    offsets = get.getMixedOffsets();
+    sizes = get.getMixedSizes();
+    strides = get.getMixedStrides();
+  } else if (auto put = dyn_cast<air::ChannelPutOp>(op)) {
+    if (write || put.getMemref() != memref)
+      return {};
+    offsets = put.getMixedOffsets();
+    sizes = put.getMixedSizes();
+    strides = put.getMixedStrides();
+  } else if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(op)) {
+    if (dma.getSrcMemref() == dma.getDstMemref())
+      return {};
+    if (write && dma.getDstMemref() == memref) {
+      offsets = dma.getMixedDstOffsets();
+      sizes = dma.getMixedDstSizes();
+      strides = dma.getMixedDstStrides();
+    } else if (!write && dma.getSrcMemref() == memref) {
+      offsets = dma.getMixedSrcOffsets();
+      sizes = dma.getMixedSrcSizes();
+      strides = dma.getMixedSrcStrides();
+    } else {
+      return {};
+    }
+  } else {
+    return {};
+  }
+  auto type = cast<MemRefType>(memref.getType());
+  if (!write && sizes.empty() && type.hasStaticShape())
+    return llvm::to_vector(llvm::seq<int64_t>(0, type.getNumElements()));
+  if (sizes.empty() || sizes.size() != strides.size() ||
+      offsets.size() != sizes.size())
+    return {};
+  auto constant = [&](OpFoldResult v) -> std::optional<int64_t> {
+    if (at.iv && dyn_cast<Value>(v) == at.iv)
+      return at.value;
+    return getConstantIntValue(v);
+  };
+  SmallVector<int64_t> o, n, st;
+  int64_t count = 1;
+  for (auto [off, sz, str] : llvm::zip(offsets, sizes, strides)) {
+    auto oc = constant(off), nc = getConstantIntValue(sz),
+         sc = getConstantIntValue(str);
+    if (!oc || !nc || !sc || *nc <= 0)
+      return {};
+    o.push_back(*oc);
+    n.push_back(*nc);
+    st.push_back(*sc);
+    count *= *nc;
+    if (count > (1 << 20))
+      return {};
+  }
+  SmallVector<int64_t> positions;
+  SmallVector<int64_t> idx(n.size(), 0);
+  for (int64_t k = 0; k < count; k++) {
+    int64_t pos = 0;
+    for (unsigned d = 0; d < n.size(); d++)
+      pos += (o[d] + idx[d]) * st[d];
+    positions.push_back(pos);
+    for (int d = n.size() - 1; d >= 0; d--) {
+      if (++idx[d] < n[d])
+        break;
+      idx[d] = 0;
+    }
+  }
+  return positions;
+}
+
+// The first access to `memref` in `block`, with `at.iv` at `at.value` if set.
+// An air.execute, a hierarchy op the buffer is passed to, and the arms of a
+// branch are looked into. A branch some arms of which write the whole buffer
+// and the others do not touch it leaves the next access to decide.
+static FirstAccess firstAccess(Block &block, Value memref, IvAt at = {}) {
+  // Writes of parts of the buffer seen so far, and reads only of what they
+  // wrote: the buffer is written whole once they cover it.
+  auto type = dyn_cast<MemRefType>(memref.getType());
+  llvm::BitVector covered;
+  bool partial = false;
+  for (Operation &o : block) {
+    if (!llvm::any_of(memref.getUsers(),
+                      [&](Operation *u) { return o.isAncestor(u); }))
+      continue;
+    if (writesAllWithoutReading(&o, memref))
+      return FirstAccess::WholeWrite;
+    if (type && type.hasStaticShape() && type.getNumElements() <= (1 << 20)) {
+      SmallVector<int64_t> written =
+          constantAccessedPositions(&o, memref, /*write=*/true, at);
+      if (!written.empty()) {
+        if (!partial)
+          covered.resize(type.getNumElements());
+        partial = true;
+        for (int64_t pos : written) {
+          if (pos < 0 || pos >= (int64_t)covered.size())
+            return FirstAccess::Other;
+          covered.set(pos);
+        }
+        if (covered.all())
+          return FirstAccess::WholeWrite;
+        continue;
+      }
+      // A read of elements written above sees nothing an earlier run of the
+      // block left.
+      if (partial) {
+        SmallVector<int64_t> read =
+            constantAccessedPositions(&o, memref, /*write=*/false, at);
+        if (!read.empty() && llvm::all_of(read, [&](int64_t pos) {
+              return pos >= 0 && pos < (int64_t)covered.size() &&
+                     covered.test(pos);
+            }))
+          continue;
+      }
+    }
+    if (partial)
+      return FirstAccess::Other;
+    // An execute or hierarchy op that leaves the buffer alone passes the
+    // question on to the ops after it.
+    if (auto exec = dyn_cast<air::ExecuteOp>(o)) {
+      FirstAccess inner = firstAccess(exec.getBody(), memref, at);
+      if (inner != FirstAccess::None)
+        return inner;
+      continue;
+    }
+    if (auto hier = dyn_cast<air::HierarchyInterface>(o)) {
+      std::optional<unsigned> arg;
+      for (unsigned i = 0; i < hier.getNumKernelOperands(); i++)
+        if (hier.getKernelOperand(i) == memref) {
+          if (arg)
+            return FirstAccess::Other;
+          arg = i;
+        }
+      if (!arg)
+        return FirstAccess::Other;
+      FirstAccess inner =
+          firstAccess(o.getRegion(0).front(), hier.getKernelArgument(*arg), at);
+      if (inner != FirstAccess::None)
+        return inner;
+      continue;
+    }
+    if (isa<scf::IfOp, affine::AffineIfOp, scf::IndexSwitchOp>(o)) {
+      // An affine.if on tile ids that every tile takes the same way: only
+      // that arm runs.
+      SmallVector<Region *> arms;
+      auto affineIf = dyn_cast<affine::AffineIfOp>(o);
+      std::optional<bool> always =
+          affineIf ? affineIfForEveryTile(affineIf) : std::nullopt;
+      if (always)
+        arms.push_back(*always ? &affineIf.getThenRegion()
+                               : &affineIf.getElseRegion());
+      else
+        for (Region &r : o.getRegions())
+          arms.push_back(&r);
+      bool allWrite = true;
+      for (Region *rp : arms) {
+        Region &r = *rp;
+        FirstAccess arm =
+            r.empty() ? FirstAccess::None : firstAccess(r.front(), memref, at);
+        if (arm == FirstAccess::Other)
+          return FirstAccess::Other;
+        allWrite &= arm == FirstAccess::WholeWrite;
+      }
+      if (allWrite)
+        return FirstAccess::WholeWrite;
+      continue;
+    }
+    return FirstAccess::Other;
+  }
+  return FirstAccess::None;
+}
+
+// Whether no read of `memref` in `block` can see what an earlier run of the
+// block left in it: its first access, on every way through, writes all of it.
+static bool writtenWholeFirst(Block &block, Value memref) {
+  return firstAccess(block, memref) != FirstAccess::Other;
+}
+
+// Whether no iteration of `loop` reads what an earlier one left in `memref`:
+// its body writes it whole first, or, for an scf.for of constant bounds, each
+// iteration reads only elements it wrote itself before.
+static bool noIterationReadsAnEarlierOne(Operation *loop, Value memref) {
+  Block &body =
+      cast<LoopLikeOpInterface>(loop).getLoopRegions().front()->front();
+  if (writtenWholeFirst(body, memref))
+    return true;
+  auto forOp = dyn_cast<scf::ForOp>(loop);
+  auto type = dyn_cast<MemRefType>(memref.getType());
+  if (!forOp || !type || !type.hasStaticShape())
+    return false;
+  auto lb = getConstantIntValue(forOp.getLowerBound());
+  auto ub = getConstantIntValue(forOp.getUpperBound());
+  auto step = getConstantIntValue(forOp.getStep());
+  if (!lb || !ub || !step || *step <= 0 || *ub <= *lb)
+    return false;
+  int64_t trips = llvm::divideCeil(*ub - *lb, *step);
+  if (trips * type.getNumElements() > (1 << 24))
+    return false;
+  for (int64_t v = *lb; v < *ub; v += *step)
+    if (firstAccess(body, memref, {forOp.getInductionVar(), v}) ==
+        FirstAccess::Other)
+      return false;
+  return true;
+}
+
 // Fuse pairs of alloc and dealloc into the inner-most loop-like op's body,
 // which contains all uses of the memref.
 template <typename OpTy>
@@ -10937,6 +11521,14 @@ struct AIRFuseAllocDeallocToLoopLike : public OpRewritePattern<OpTy> {
       if (!memrefIsOnlyUsedInRegionOrByDealloc(opRegion, memref))
         continue;
       if (carriesNoSink(memref))
+        continue;
+      // Inside the loop the buffer is fresh on every iteration: only move it
+      // there if no iteration reads what an earlier one left in it (it is
+      // never written, never read, or each iteration writes what it reads
+      // first).
+      if (mayAccess(memref, /*write=*/true) &&
+          mayAccess(memref, /*write=*/false) &&
+          !noIterationReadsAnEarlierOne(op.getOperation(), memref))
         continue;
       air::ExecuteOp allocExec = nullptr;
       air::ExecuteOp deallocExec = nullptr;
@@ -11005,6 +11597,15 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
         return isa<memref::DeallocOp>(user) || o == user;
       });
     };
+    auto crossesLoop = [&](Value memref) {
+      Region *defRegion = memref.getParentRegion();
+      for (Operation *p = op->getParentOp();
+           p && defRegion->isAncestor(p->getParentRegion());
+           p = p->getParentOp())
+        if (isa<LoopLikeOpInterface>(p))
+          return true;
+      return false;
+    };
     // Get candidate allocs and deallocs to be fused.
     std::vector<std::pair<Operation *, Operation *>> allocsDeallocs;
     std::vector<std::pair<Operation *, Operation *>> allocDeallocExecs;
@@ -11017,6 +11618,13 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
       if (auto herd = dyn_cast<air::HerdOp>(op.getOperation()))
         if (air::herdBufferHasCrossCoreDependence(herd, memref))
           continue;
+      // Across a loop between the alloc and the op, the buffer would be fresh
+      // on every iteration: only sink if no iteration reads what an earlier
+      // one left in it (as for loops, above).
+      if (crossesLoop(memref) && mayAccess(memref, /*write=*/true) &&
+          mayAccess(memref, /*write=*/false) &&
+          !writtenWholeFirst(*op->getBlock(), memref))
+        continue;
       air::ExecuteOp allocExec = nullptr;
       air::ExecuteOp deallocExec = nullptr;
       memref::AllocOp alloc = nullptr;
