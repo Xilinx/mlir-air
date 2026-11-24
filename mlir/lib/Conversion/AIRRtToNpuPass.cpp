@@ -3617,7 +3617,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     (void)applyPatternsGreedily(module, std::move(canoPatterns_3));
 
     // Core code keeps its stores to L1 and its copies.
-    DenseSet<Operation *> coreFuncsAtConversion = functionsCalledByCores(module);
+    DenseSet<Operation *> coreFuncsAtConversion =
+        functionsCalledByCores(module);
     ConversionTarget target(getContext());
     target.addIllegalDialect<airrt::AIRRtDialect>();
     target.addLegalDialect<arith::ArithDialect, AIE::AIEDialect,
