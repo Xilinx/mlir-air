@@ -1040,14 +1040,18 @@ private:
                                          op);
           }
         } else {
+          // A write after a write or a read: as for a read after a write,
+          // footprints that start apart may still share elements.
           if (tile == nullptr) {
             addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0), op);
           } else if (u.is(memcpy.getDstMemref())) {
-            if (areEqualIndexPartialMemrefs(tile, &memcpy_dst))
+            if (areEqualIndexPartialMemrefs(tile, &memcpy_dst) ||
+                footprintsIntersectInHostMemory(tile, &memcpy_dst))
               addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                          op);
           } else if (u.is(memcpy.getSrcMemref())) {
-            if (areEqualIndexPartialMemrefs(tile, &memcpy_src))
+            if (areEqualIndexPartialMemrefs(tile, &memcpy_src) ||
+                footprintsIntersectInHostMemory(tile, &memcpy_src))
               addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                          op);
           }
