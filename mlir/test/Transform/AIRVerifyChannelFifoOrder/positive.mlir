@@ -191,8 +191,9 @@ module {
 }
 
 // -----
-// Distinct loops are distinct scopes. The verifier has to match the emitter
-// here, or it rejects IR the emitter is content to produce.
+// One slot in two loops: the second loop's endpoint follows the first loop,
+// which orders its first iteration, and its own iteration argument, which
+// orders the rest. This is what the emitter produces.
 module {
   air.channel @channel_6 [1]
   func.func @pos_distinct_loops() {
@@ -215,7 +216,7 @@ module {
           scf.yield %g0 : !air.async.token
         }
         %l1 = scf.for %i = %c0 to %c4 step %c1_0 iter_args(%it = %t1) -> (!air.async.token) {
-          %g1 = air.channel.get async [%it] @channel_6[%c0] (%r1[] [] []) : (memref<8xi32, 1 : i32>)
+          %g1 = air.channel.get async [%it, %l0] @channel_6[%c0] (%r1[] [] []) : (memref<8xi32, 1 : i32>)
           scf.yield %g1 : !air.async.token
         }
       }

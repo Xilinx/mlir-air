@@ -496,10 +496,11 @@ public:
     // supply the iter_args that in-loop scopes hang off.
     air::enforceChannelFifoOrder(module);
 
-    // 6th traversal: an op that is not async (index arithmetic, a view, a
-    // loop's bound) reading an air.execute's result runs when the host
-    // reaches it, so it has to wait for the execute: a blocking wait_all
-    // before the first such op in each block, per execute.
+    // 6th traversal: an op other than an air async op (index arithmetic, a
+    // view, a loop's bound, a branch's condition, a yield) reading an
+    // air.execute's result runs when the host reaches it, so it has to wait
+    // for the execute: a blocking wait_all before the first such op in each
+    // block, per execute.
     for (auto f : module.getOps<func::FuncOp>())
       waitForExecuteResultsInBareOps(f);
   }
@@ -509,7 +510,10 @@ private:
     llvm::DenseMap<Block *, llvm::SmallPtrSet<Operation *, 4>> waited;
     SmallVector<std::pair<Operation *, air::ExecuteOp>> toWait;
     f.walk([&](Operation *op) {
-      if (air::isAsyncOp(op) || op->hasTrait<OpTrait::IsTerminator>() ||
+      // An scf.for or scf.if with a token of its own still reads its bounds
+      // or condition right away, and a yield its operands; only the air ops
+      // wait on their dependencies first.
+      if (isa<air::AsyncOpInterface>(op) ||
           op->getParentOfType<air::ExecuteOp>())
         return;
       for (Value v : op->getOperands()) {
