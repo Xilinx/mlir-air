@@ -610,10 +610,8 @@ static bool isCoreScratch(memref::AllocOp alloc) {
 struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
-  HoistMemallocInForPattern(MLIRContext *ctx, bool keepMemrefDealloc,
-                            StringRef attr = "hoist_alloc")
-      : OpRewritePattern(ctx), keepMemrefDealloc(keepMemrefDealloc),
-        attr(attr) {}
+  HoistMemallocInForPattern(MLIRContext *ctx, StringRef attr = "hoist_alloc")
+      : OpRewritePattern(ctx), attr(attr) {}
 
   LogicalResult matchAndRewrite(memref::AllocOp alloc_op,
                                 PatternRewriter &rewriter) const override {
@@ -658,7 +656,7 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
       skipOverOpInDependencyGraph(rewriter, dealloc_exec.getOperation(),
                                   for_op.getRegion());
 
-    if (dealloc_exec && !keepMemrefDealloc) {
+    if (dealloc_exec) {
       for (auto for_op_token : for_op->getResults()) {
         dealloc_exec.addAsyncDependency(for_op_token);
       }
@@ -666,7 +664,7 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
 
     // Hoist alloc and dealloc out of for loop
     alloc_exec->moveBefore(for_op);
-    if (dealloc_exec && !keepMemrefDealloc)
+    if (dealloc_exec)
       dealloc_exec->moveAfter(for_op);
 
     // Erase alloc hoisting attr
@@ -677,7 +675,6 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
   }
 
 private:
-  bool keepMemrefDealloc;
   std::string attr;
 
   void skipOverOpInDependencyGraph(OpBuilder &builder, Operation *op,
@@ -4130,7 +4127,7 @@ public:
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<HoistMemallocInForPattern>(ctx, clKeepMemrefDealloc);
+    patterns.insert<HoistMemallocInForPattern>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
@@ -4286,7 +4283,7 @@ public:
   void runHoistMemallocPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<HoistMemallocInForPattern>(ctx, clKeepMemrefDealloc);
+    patterns.insert<HoistMemallocInForPattern>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
@@ -4511,8 +4508,8 @@ public:
     // that they are not duplicated.
     for (auto f : funcOps) {
       RewritePatternSet patterns(&getContext());
-      patterns.insert<HoistMemallocInForPattern>(
-          f.getContext(), clKeepMemrefDealloc, "hoist_alloc_once");
+      patterns.insert<HoistMemallocInForPattern>(f.getContext(),
+                                                 "hoist_alloc_once");
       (void)applyPatternsGreedily(f, std::move(patterns));
     }
     for (auto f : funcOps)
@@ -7344,7 +7341,7 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     });
     if (!allocsToHoist.empty()) {
       RewritePatternSet patterns(f.getContext());
-      patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
+      patterns.insert<HoistMemallocInForPattern>(f.getContext());
       GreedyRewriteConfig hoistCfg;
       hoistCfg.setRegionSimplificationLevel(
           GreedySimplifyRegionLevel::Disabled);
