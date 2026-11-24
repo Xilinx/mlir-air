@@ -85,6 +85,75 @@ module {
 
 // -----
 
+// The same through a buffer the function allocates, which the pass wraps in an
+// air.execute: still no edge between the put and the get.
+
+// CHECK-LABEL: func.func @same_place_local
+// CHECK: %[[A:.*]], %{{.*}} = air.execute -> (memref<4xi32>)
+// CHECK: air.channel.put async [%[[A]]] @C[]
+// CHECK-NEXT: air.channel.get async [%[[A]]] @C[]
+module {
+  air.channel @C []
+  func.func @same_place_local() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %x = memref.alloc() : memref<4xi32>
+    air.channel.put @C[] (%x[%c0] [%c2] [%c1]) : (memref<4xi32>)
+    air.channel.get @C[] (%x[%c0] [%c2] [%c1]) : (memref<4xi32>)
+    return
+  }
+}
+
+// -----
+
+// The slot needs a buffer, and the second get writes a buffer the function
+// allocates: its blocking wait includes the allocation.
+
+// CHECK-LABEL: func.func @sync_get_waits_for_alloc
+// CHECK: %[[Y:.*]], %{{.*}} = air.execute -> (memref<4xi32>)
+// CHECK: %[[PX:.*]] = air.channel.put async [%{{.*}}] @C[]
+// CHECK: air.wait_all [%[[PX]]]
+// CHECK-NEXT: air.channel.get @C[]
+// CHECK-NEXT: air.wait_all [%[[Y]]]
+// CHECK-NEXT: air.channel.get @C[]
+module {
+  air.channel @C []
+  func.func @sync_get_waits_for_alloc(%a : memref<4xi32>, %x : memref<4xi32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %y = memref.alloc() : memref<4xi32>
+    air.channel.put @C[] (%a[%c0] [%c2] [%c1]) : (memref<4xi32>)
+    air.channel.put @C[] (%x[%c0] [%c2] [%c1]) : (memref<4xi32>)
+    air.channel.get @C[] (%x[%c0] [%c2] [%c1]) : (memref<4xi32>)
+    air.channel.get @C[] (%y[%c0] [%c2] [%c1]) : (memref<4xi32>)
+    return
+  }
+}
+
+// -----
+
+// A padded put: its padding takes stream steps the analysis does not model,
+// so the memory tracing orders the get after it as before.
+
+// CHECK-LABEL: func.func @padded_put
+// CHECK: %[[P:.*]] = air.channel.put async @C[]
+// CHECK: air.channel.get async [%[[P]]] @C[]
+module {
+  air.channel @C []
+  func.func @padded_put(%x : memref<4xi32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    air.channel.put @C[] (%x[%c0] [%c1] [%c1]) {pad_before = array<i32: 1>, pad_after = array<i32: 0>} : (memref<4xi32>)
+    air.channel.get @C[] (%x[%c0] [%c2] [%c1]) : (memref<4xi32>)
+    return
+  }
+}
+
+// -----
+
 // Endpoints in a loop: their stream steps are not tracked, and the memory
 // tracing orders them as before.
 

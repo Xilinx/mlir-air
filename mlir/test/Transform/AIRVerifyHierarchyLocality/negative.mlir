@@ -323,3 +323,21 @@ module {
     return
   }
 }
+
+// -----
+// Each instance writes two elements from %x, so neighbours overlap. The launch
+// is too large to compare element by element; the check gives up at once.
+module {
+  air.channel @channel_0 [1, 1]
+  func.func @neg_huge_launch(%arg0: memref<1073741824xi8>) {
+    %c1 = arith.constant 1 : index
+    %big = arith.constant 1073741824 : index
+    // expected-error@+1 {{the strides let one iteration's access reach}}
+    air.launch (%x, %y) in (%sx = %big, %sy = %c1) args(%out = %arg0) : memref<1073741824xi8> {
+      %c0 = arith.constant 0 : index
+      // expected-note@+1 {{access here}}
+      air.channel.get @channel_0[] (%out[%x, %c0] [1, 2] [1, 1]) : (memref<1073741824xi8>)
+    }
+    return
+  }
+}

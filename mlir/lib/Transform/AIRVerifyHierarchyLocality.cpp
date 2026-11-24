@@ -619,13 +619,13 @@ static bool stridesKeepInstancesApart(
   for (BlockArgument iv : ivs) {
     int64_t e = *hierarchyIvExtent(iv);
     int64_t m = ivMove.lookup(iv);
+    if ((int64_t)distances.size() > limit / count / (2 * e - 1))
+      return false;
     SmallVector<int64_t> next;
     for (int64_t base : distances)
       for (int64_t k = -(e - 1); k <= e - 1; ++k)
         next.push_back(base + k * m);
     distances = std::move(next);
-    if ((int64_t)distances.size() * count > limit)
-      return false;
   }
   std::vector<int64_t> footprint;
   footprint.reserve(count);

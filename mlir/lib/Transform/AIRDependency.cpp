@@ -115,11 +115,13 @@ struct ChannelTransfers {
 };
 
 // The buffer elements a channel op moves, in stream order, if its pattern is
-// constant (an empty pattern is the whole static buffer).
+// constant (an empty pattern is the whole static buffer). Padding takes stream
+// steps that no element occupies, and is not modelled.
 static std::optional<SmallVector<int64_t>>
 streamElements(air::ChannelInterface chan) {
   auto type = dyn_cast<MemRefType>(chan.getMemref().getType());
-  if (!type || !type.hasStaticShape())
+  if (!type || !type.hasStaticShape() || chan->hasAttr("pad_before") ||
+      chan->hasAttr("pad_after"))
     return std::nullopt;
   constexpr int64_t limit = 1 << 16;
   auto offsets = chan.getMixedOffsets();
@@ -215,11 +217,21 @@ static ChannelTransfers analyzeChannelTransfers(ModuleOp module) {
     }
     if (!known)
       continue;
+    // A whole buffer, not a view of one: the buffer itself, or the result of
+    // the air.execute that allocates it.
+    auto isWholeBuffer = [](Value m) {
+      Value root = air::resolveBufferRoot(m);
+      if (root == m)
+        return true;
+      auto exec = m.getDefiningOp<air::ExecuteOp>();
+      auto alloc = root.getDefiningOp<memref::AllocOp>();
+      return exec && alloc && alloc->getParentOp() == exec.getOperation();
+    };
     for (auto &[indices, slot] : slots) {
       Block *block = slot.front()->getBlock();
       if (!llvm::all_of(slot, [&](air::ChannelInterface c) {
             return c->getBlock() == block && runsOnce(c) &&
-                   air::resolveBufferRoot(c.getMemref()) == c.getMemref();
+                   isWholeBuffer(c.getMemref());
           }))
         continue;
       // Stream step of each endpoint's first element, per direction.
@@ -548,8 +560,10 @@ public:
         // Fill dep list of air channel ops
         else if (auto channel_op =
                      dyn_cast_if_present<air::ChannelInterface>(op)) {
-          fillAIRDepListUsingGraphTR<air::ChannelInterface>(channel_op,
-                                                            opIdToOpMap);
+          // A get kept synchronous has no vertex; blocking waits order it.
+          if (!transfers.keepSync.contains(op))
+            fillAIRDepListUsingGraphTR<air::ChannelInterface>(channel_op,
+                                                              opIdToOpMap);
         }
         // Fill dep list of air hierarchy ops
         else if (auto hier_op =
@@ -730,6 +744,10 @@ private:
     llvm::SmallDenseSet<Value> aliases;
     air::collectBufferAliases(get.getMemref(), aliases);
     SmallVector<Value> tokens;
+    // The air.execute allocating the buffer is not one of its users.
+    if (auto exec = get.getMemref().getDefiningOp<air::ExecuteOp>())
+      if (exec->getBlock() == get->getBlock())
+        tokens.push_back(exec.getAsyncToken());
     for (Operation &o : *get->getBlock()) {
       if (&o == get.getOperation())
         break;
@@ -741,7 +759,8 @@ private:
                             [&](Operation *u) { return o.isAncestor(u); });
       });
       auto other = dyn_cast<air::ChannelGetOp>(o);
-      if (touches || (other && other.getChanName() == get.getChanName()))
+      if ((touches || (other && other.getChanName() == get.getChanName())) &&
+          !llvm::is_contained(tokens, token))
         tokens.push_back(token);
     }
     if (tokens.empty())
