@@ -270,3 +270,59 @@ air.channel @pids_str [] {channel_type = "npu_dma_packet", packet_ids = ["x"]}
 
 // Test: valid packet_ids (positive test - should pass).
 air.channel @pids_ok [] {channel_type = "npu_dma_packet", packet_ids = [1, 4]}
+
+// -----
+
+// A put or get names one channel of its bundle: one index per dimension.
+air.channel @rank2 [2, 2]
+func.func @index_count(%m : memref<8xi32>) {
+  %c0 = arith.constant 0 : index
+  // expected-error @+1 {{'air.channel.put' op has 1 channel indices, but @rank2 has rank 2}}
+  air.channel.put @rank2[%c0] (%m[] [] []) : (memref<8xi32>)
+  return
+}
+
+// -----
+
+air.channel @four [2, 2]
+func.func @no_index_on_bundle(%m : memref<8xi32>) {
+  // expected-error @+1 {{'air.channel.get' op has no channel indices, but @four is a bundle of more than one channel}}
+  air.channel.get @four[] (%m[] [] []) : (memref<8xi32>)
+  return
+}
+
+// -----
+
+air.channel @two [2]
+func.func @index_out_of_range(%m : memref<8xi32>) {
+  %c2 = arith.constant 2 : index
+  // expected-error @+1 {{'air.channel.put' op channel index 0 (2) is outside @two's dimension of size 2}}
+  air.channel.put @two[%c2] (%m[] [] []) : (memref<8xi32>)
+  return
+}
+
+// -----
+
+// A get on a broadcast channel addresses the broadcast shape; a put the
+// bundle.
+air.channel @bc [1, 1] {broadcast_shape = [1, 4]}
+func.func @broadcast_get_range(%m : memref<8xi32>) {
+  %c0 = arith.constant 0 : index
+  %c3 = arith.constant 3 : index
+  %c4 = arith.constant 4 : index
+  air.channel.put @bc[%c0, %c0] (%m[] [] []) : (memref<8xi32>)
+  air.channel.get @bc[%c0, %c3] (%m[] [] []) : (memref<8xi32>)
+  // expected-error @+1 {{'air.channel.get' op channel index 1 (4) is outside @bc's dimension of size 4}}
+  air.channel.get @bc[%c0, %c4] (%m[] [] []) : (memref<8xi32>)
+  return
+}
+
+// -----
+
+air.channel @bc2 [1, 1] {broadcast_shape = [1, 4]}
+func.func @broadcast_get_needs_index(%m : memref<8xi32>) {
+  air.channel.put @bc2[] (%m[] [] []) : (memref<8xi32>)
+  // expected-error @+1 {{'air.channel.get' op has no channel indices, but @bc2 is a bundle of more than one channel}}
+  air.channel.get @bc2[] (%m[] [] []) : (memref<8xi32>)
+  return
+}

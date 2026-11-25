@@ -106,13 +106,13 @@ func.func @mixed(%dma_src: memref<16xi32>) {
 // CHECK-BCAST-NOT:     aiex.npu.blockwrite
 
 memref.global "private" @const_q : memref<8xi32> = dense<5>
-air.channel @bcast_mmio [1] {channel_type = "npu_mmio", broadcast_shape = [2]}
+air.channel @bcast_mmio [1, 1] {channel_type = "npu_mmio", broadcast_shape = [1, 2]}
 func.func @bcast() {
   %src = memref.get_global @const_q : memref<8xi32>
   %c1 = arith.constant 1 : index
   air.launch (%lx) in (%sx = %c1) args(%a = %src) : memref<8xi32> {
     %c0 = arith.constant 0 : index
-    air.channel.put @bcast_mmio[%c0] (%a[] [] []) : (memref<8xi32>)
+    air.channel.put @bcast_mmio[%c0, %c0] (%a[] [] []) : (memref<8xi32>)
     air.segment @seg {
       %c1_0 = arith.constant 1 : index
       %c2_0 = arith.constant 2 : index

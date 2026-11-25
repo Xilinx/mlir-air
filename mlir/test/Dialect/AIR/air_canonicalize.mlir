@@ -528,7 +528,7 @@ func.func @dma_compose_cast() {
 // CHECK: func.func @channel_compose_subview
 // CHECK: air.channel.put @channel[] ({{.*}}[{{.*}}, {{.*}}] [32, 32] [64, 1]
 // CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[{{.*}}, {{.*}}] [32, 32] [64, 1]
-air.channel @channel[2,2]
+air.channel @channel [1, 1]
 func.func @channel_compose_subview() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index

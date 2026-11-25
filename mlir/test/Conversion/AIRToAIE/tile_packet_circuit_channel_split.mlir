@@ -51,9 +51,9 @@
 // CHECK-NOT:    packet
 // CHECK:        aie.dma_bd(%{{.*}} : memref<8xbf16, 2> offset = 0 len = 8) {task_id
 
-air.channel @k [1] {air.tile_dma_channel = 1 : i32, channel_type = "npu_dma_packet"}
-air.channel @v [1] {channel_type = "npu_dma_packet"}
-air.channel @q [1]
+air.channel @k [1, 1] {air.tile_dma_channel = 1 : i32, channel_type = "npu_dma_packet"}
+air.channel @v [1, 1] {channel_type = "npu_dma_packet"}
+air.channel @q [1, 1]
 func.func @circuit_joins_collapsed_packets(%ext: memref<8xbf16>) {
   %c1 = arith.constant 1 : index
   air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
@@ -96,8 +96,8 @@ func.func @circuit_joins_collapsed_packets(%ext: memref<8xbf16>) {
 // CHECK:        aie.dma_start(MM2S, 0
 // CHECK-NOT:    aie.dma_start(MM2S, 1
 
-air.channel @k3 [1] {channel_type = "npu_dma_packet"}
-air.channel @v3 [1] {channel_type = "npu_dma_packet"}
+air.channel @k3 [1, 1] {channel_type = "npu_dma_packet"}
+air.channel @v3 [1, 1] {channel_type = "npu_dma_packet"}
 func.func @two_packets_share(%ext: memref<8xbf16>) {
   %c1 = arith.constant 1 : index
   air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {

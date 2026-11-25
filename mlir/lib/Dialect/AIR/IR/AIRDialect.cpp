@@ -3717,11 +3717,53 @@ static LogicalResult verifyRefeedCountAttr(Operation *op) {
   return success();
 }
 
+// A put or get names one channel of its bundle: one index per dim of the
+// bundle's size, or none on a bundle of a single channel, which then means
+// [0, ..., 0]. A constant index is within its dim; a get on a broadcast
+// channel addresses the broadcast shape.
+static LogicalResult verifyChannelIndices(air::ChannelInterface op,
+                                          bool isGet) {
+  air::ChannelOp chan = resolveChannelDecl(op);
+  if (!chan)
+    return success();
+  ArrayAttr dims =
+      isGet && chan.isBroadcast() ? chan.getBroadcastShape() : chan.getSize();
+  SmallVector<int64_t> shape;
+  for (Attribute dim : dims) {
+    auto size = dyn_cast<IntegerAttr>(dim);
+    if (!size)
+      return success(); // the declaration's verifier reports it
+    shape.push_back(size.getInt());
+  }
+  auto indices = op.getIndices();
+  if (indices.empty()) {
+    if (llvm::all_of(shape, [](int64_t s) { return s == 1; }))
+      return success();
+    return op->emitOpError()
+           << "has no channel indices, but @" << chan.getSymName()
+           << " is a bundle of more than one channel";
+  }
+  if (indices.size() != shape.size())
+    return op->emitOpError()
+           << "has " << indices.size() << " channel indices, but @"
+           << chan.getSymName() << " has rank " << shape.size();
+  for (auto [i, idx] : llvm::enumerate(indices)) {
+    auto c = getConstantIntValue(idx);
+    if (c && (*c < 0 || *c >= shape[i]))
+      return op->emitOpError()
+             << "channel index " << i << " (" << *c << ") is outside @"
+             << chan.getSymName() << "'s dimension of size " << shape[i];
+  }
+  return success();
+}
+
 LogicalResult air::ChannelPutOp::verify() {
   if (failed(verifySizesStridesRank(getOperation(), getMixedSrcSizes(),
                                     getMixedSrcStrides(), "src")))
     return failure();
   if (failed(verifyRefeedCountAttr(getOperation())))
+    return failure();
+  if (failed(verifyChannelIndices(*this, /*isGet=*/false)))
     return failure();
 
   // Channel bundle indices must not be temporal loop induction variables.
@@ -3833,6 +3875,8 @@ LogicalResult air::ChannelGetOp::verify() {
                                     getMixedDstStrides(), "dst")))
     return failure();
   if (failed(verifyRefeedCountAttr(getOperation())))
+    return failure();
+  if (failed(verifyChannelIndices(*this, /*isGet=*/true)))
     return failure();
 
   // Channel bundle indices must not be temporal loop induction variables.

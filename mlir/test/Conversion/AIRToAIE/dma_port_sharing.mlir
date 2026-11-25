@@ -198,9 +198,9 @@ module {
 
 module {
   // expected-note @+1 {{the other flow}}
-  air.channel @q4 [1] {air.tile_dma_channel = 0 : i32}
+  air.channel @q4 [1, 1] {air.tile_dma_channel = 0 : i32}
   // expected-error @+1 {{carries both a packet-switched and a circuit-switched flow}}
-  air.channel @k4 [1] {air.tile_dma_channel = 0 : i32, channel_type = "npu_dma_packet"}
+  air.channel @k4 [1, 1] {air.tile_dma_channel = 0 : i32, channel_type = "npu_dma_packet"}
   func.func @pinned_mixed_kinds(%ext: memref<8xbf16>) {
     %c1 = arith.constant 1 : index
     air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
@@ -233,9 +233,9 @@ module {
 
 module {
   // expected-note @+1 {{the other flow}}
-  air.channel @a5 [1] {air.tile_dma_channel = 0 : i32}
+  air.channel @a5 [1, 1] {air.tile_dma_channel = 0 : i32}
   // expected-error @+1 {{is fed by two circuit-switched sources}}
-  air.channel @b5 [1] {air.tile_dma_channel = 0 : i32}
+  air.channel @b5 [1, 1] {air.tile_dma_channel = 0 : i32}
   func.func @pinned_fan_in(%ext: memref<8xbf16>) {
     %c1 = arith.constant 1 : index
     air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
@@ -267,8 +267,8 @@ module {
 // one source port go to both destinations, which the switchbox can route.
 
 module {
-  air.channel @c6 [1] {air.tile_dma_channel = 0 : i32}
-  air.channel @d6 [1] {air.tile_dma_channel = 0 : i32}
+  air.channel @c6 [1, 1] {air.tile_dma_channel = 0 : i32}
+  air.channel @d6 [1, 1] {air.tile_dma_channel = 0 : i32}
   func.func @pinned_broadcast(%ext: memref<8xbf16>) {
     %c1 = arith.constant 1 : index
     air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {

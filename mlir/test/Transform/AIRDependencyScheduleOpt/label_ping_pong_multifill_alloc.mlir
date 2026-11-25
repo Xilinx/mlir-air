@@ -188,10 +188,10 @@ module {
 #set_c = affine_set<()[s0] : (s0 - 2 == 0)>
 
 module {
-  air.channel @chA [1, 1] {broadcast_shape = [1, 4]}
-  air.channel @chB [1, 1] {broadcast_shape = [1, 4]}
-  air.channel @chC [1, 1] {broadcast_shape = [1, 4]}
-  air.channel @chD [1, 1] {broadcast_shape = [1, 4]}
+  air.channel @chA [1, 1]
+  air.channel @chB [1, 1]
+  air.channel @chC [1, 1]
+  air.channel @chD [1, 1]
 
   func.func @affine_if_broadcast_branches_eligible(%arg0: memref<256x1024xbf16>) {
     %c1 = arith.constant 1 : index
