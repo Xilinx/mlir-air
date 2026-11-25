@@ -3255,6 +3255,41 @@ static LogicalResult verifySizesStridesRank(Operation *op,
   return success();
 }
 
+// The number of elements a DMA pattern moves, if it is constant: the product
+// of its sizes, or the memref's element count for an empty pattern. Padding,
+// per dimension of the pattern, adds pad_before[i] + pad_after[i] to size i.
+static std::optional<int64_t>
+constantPatternElements(Value memref, ArrayRef<OpFoldResult> sizes,
+                        ArrayRef<int32_t> padBefore = {},
+                        ArrayRef<int32_t> padAfter = {}) {
+  SmallVector<int64_t> dims;
+  if (sizes.empty()) {
+    auto type = dyn_cast<MemRefType>(memref.getType());
+    if (!type || !type.hasStaticShape())
+      return std::nullopt;
+    llvm::append_range(dims, type.getShape());
+  } else {
+    for (OpFoldResult size : sizes) {
+      auto c = getConstantIntValue(size);
+      if (!c)
+        return std::nullopt;
+      dims.push_back(*c);
+    }
+  }
+  if (!padBefore.empty() &&
+      (padBefore.size() != dims.size() || padAfter.size() != dims.size()))
+    return std::nullopt;
+  int64_t count = 1;
+  for (auto [i, d] : llvm::enumerate(dims)) {
+    int64_t n = d;
+    if (!padBefore.empty())
+      n += padBefore[i] + padAfter[i];
+    if (llvm::MulOverflow(count, n, count))
+      return std::nullopt;
+  }
+  return count;
+}
+
 LogicalResult air::DmaMemcpyNdOp::verify() {
   if (failed(verifySizesStridesRank(getOperation(), getMixedSrcSizes(),
                                     getMixedSrcStrides(), "src")))
@@ -3262,6 +3297,22 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
   if (failed(verifySizesStridesRank(getOperation(), getMixedDstSizes(),
                                     getMixedDstStrides(), "dst")))
     return failure();
+
+  // The destination takes what the source sends, padding included.
+  if (getSrcMemref() && getDstMemref()) {
+    ArrayRef<int32_t> padBefore, padAfter;
+    if (getPadBefore() && getPadAfter()) {
+      padBefore = *getPadBefore();
+      padAfter = *getPadAfter();
+    }
+    auto srcCount = constantPatternElements(getSrcMemref(), getMixedSrcSizes(),
+                                            padBefore, padAfter);
+    auto dstCount = constantPatternElements(getDstMemref(), getMixedDstSizes());
+    if (srcCount && dstCount && *srcCount != *dstCount)
+      return emitOpError() << "src pattern moves " << *srcCount << " elements"
+                           << (padBefore.empty() ? "" : " with padding")
+                           << " but dst pattern takes " << *dstCount;
+  }
 
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();

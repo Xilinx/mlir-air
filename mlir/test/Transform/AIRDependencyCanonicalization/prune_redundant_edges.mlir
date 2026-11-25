@@ -27,7 +27,7 @@ module {
         %3 = memref.alloc() : memref<512xi32>
         air.execute_terminator %3 : memref<512xi32>
       } {id = 1 : i32}
-      %1 = air.dma_memcpy_nd async [%asyncToken] (%valOut[] [] [], %arg5[%c0_0] [%c0_0] [%c0_0]) {id = 1 : i32} : (memref<512xi32>, memref<1024xi32>)
+      %1 = air.dma_memcpy_nd async [%asyncToken] (%valOut[] [] [], %arg5[0] [512] [1]) {id = 1 : i32} : (memref<512xi32>, memref<1024xi32>)
       %2 = air.segment async [%1]  unroll(%arg6, %arg7) in (%arg8=%c1_1, %arg9=%c1_1) args(%arg10=%valOut) : memref<512xi32> attributes {id = 2 : i32} {
         %c0_3 = arith.constant 0 : index
         %c1_4 = arith.constant 1 : index
@@ -35,14 +35,14 @@ module {
           %5 = memref.alloc() : memref<256xi32, 1>
           air.execute_terminator %5 : memref<256xi32, 1>
         } {id = 2 : i32}
-        %3 = air.dma_memcpy_nd async [%asyncToken_5] (%valOut_6[] [] [], %arg10[%c0_3] [%c0_3] [%c0_3]) {id = 2 : i32} : (memref<256xi32, 1>, memref<512xi32>)
+        %3 = air.dma_memcpy_nd async [%asyncToken_5] (%valOut_6[] [] [], %arg10[0] [256] [1]) {id = 2 : i32} : (memref<256xi32, 1>, memref<512xi32>)
         %4 = air.herd async [%3]  tile (%arg11, %arg12) in (%arg13=%c1_4, %arg14=%c1_4) args(%arg15=%valOut_6) : memref<256xi32, 1> attributes {id = 1 : i32} {
           %c0_8 = arith.constant 0 : index
           %asyncToken_9, %valOut_10 = air.execute -> (memref<128xi32, 2>){
             %6 = memref.alloc() : memref<128xi32, 2>
             air.execute_terminator %6 : memref<128xi32, 2>
           } {id = 3 : i32}
-          %5 = air.dma_memcpy_nd async [%asyncToken_9] (%valOut_10[] [] [], %arg15[%c0_8] [%c0_8] [%c0_8]) {id = 3 : i32} : (memref<128xi32, 2>, memref<256xi32, 1>)
+          %5 = air.dma_memcpy_nd async [%asyncToken_9] (%valOut_10[] [] [], %arg15[0] [128] [1]) {id = 3 : i32} : (memref<128xi32, 2>, memref<256xi32, 1>)
           %asyncToken_11 = air.execute [%5, %asyncToken_9] {
             memref.dealloc %valOut_10 : memref<128xi32, 2>
             air.execute_terminator

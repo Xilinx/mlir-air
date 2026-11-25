@@ -65,7 +65,7 @@ func.func @f3()  {
   %alloc = memref.alloc() : memref<1x1x16x8x8x4xbf16, 2 : i32>
   %alloc_0 = memref.alloc() : memref<1x1x64x128xbf16, 1 : i32>
   scf.parallel (%x,%y) = (%c0,%c0) to (%c2, %c2) step (%c1,%c1) {
-    air.dma_memcpy_nd (%alloc[] [] [], %alloc_0[] [] []) : (memref<1x1x16x8x8x4xbf16, 2 : i32>, memref<1x1x64x128xbf16, 1 : i32>)
+    air.dma_memcpy_nd (%alloc[] [] [], %alloc_0[0] [4096] [1]) : (memref<1x1x16x8x8x4xbf16, 2 : i32>, memref<1x1x64x128xbf16, 1 : i32>)
   }
   memref.dealloc %alloc_0 : memref<1x1x64x128xbf16, 1 : i32>
   memref.dealloc %alloc : memref<1x1x16x8x8x4xbf16, 2 : i32>

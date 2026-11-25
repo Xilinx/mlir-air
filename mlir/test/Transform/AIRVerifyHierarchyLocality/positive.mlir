@@ -90,7 +90,7 @@ module {
           (%arg[%c0, %x, %c0, %y, %c0]
                 [%c8, %c1, %c32, %c1, %c16]
                 [%c8192, %c2048, %c64, %c16, %c1],
-           %s[%c0] [%c8192] [%c1])
+           %s[0] [4096] [1])
           : (memref<8x4x32x4x16xi16, 2 : i32>, memref<8192xi16, 1 : i32>)
       air.herd_terminator
     }
@@ -124,7 +124,7 @@ module {
       %oy = affine.apply #map1()[%y]
       air.dma_memcpy_nd
           (%arg[%ox, %oy] [%c16_0, %c16_0] [%c64_0, %c1_0],
-           %s[%c0_0] [%c4096_0] [%c1_0])
+           %s[0] [256] [1])
           : (memref<64x64xi16, 2 : i32>, memref<4096xi16, 1 : i32>)
       air.herd_terminator
     }
