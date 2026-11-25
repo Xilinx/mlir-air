@@ -133,7 +133,7 @@ module {
           air.execute_terminator %alloc : memref<128x1024xbf16, 1>
         }
         %20 = scf.for %arg15 = %c0_8 to %c1024_9 step %c256_11 iter_args(%arg16 = %async_token_12) -> (!air.async.token) {
-          %23 = air.channel.get async [%arg16]  @channel_3[] (%results_13[%arg15, %c0_8] [%c128_10, %c128_10] [%c1024_9, %c1_7]) {id = 4 : i32} : (memref<128x1024xbf16, 1>)
+          %23 = air.channel.get async [%arg16]  @channel_3[] (%results_13[%c0_8, %arg15] [%c128_10, %c128_10] [%c1024_9, %c1_7]) {id = 4 : i32} : (memref<128x1024xbf16, 1>)
           %24 = scf.for %arg17 = %c0_8 to %c256_11 step %c128_10 iter_args(%arg18 = %23) -> (!air.async.token) {
             %25 = air.channel.put async [%arg18]  @channel_5[] (%results_13[%c0_8, %c0_8] [%c128_10, %c128_10] [%c128_10, %c1_7]) {id = 18 : i32} : (memref<128x1024xbf16, 1>)
             scf.yield %25 : !air.async.token
@@ -203,7 +203,7 @@ module {
           air.execute_terminator %alloc : memref<128x1024xbf16, 1>
         }
         %20 = scf.for %arg15 = %c0_8 to %c1024_9 step %c256_11 iter_args(%arg16 = %async_token_12) -> (!air.async.token) {
-          %23 = air.channel.get async [%arg16]  @channel_7[] (%results_13[%arg15, %c0_8] [%c128_10, %c128_10] [%c1024_9, %c1_7]) {id = 4 : i32} : (memref<128x1024xbf16, 1>)
+          %23 = air.channel.get async [%arg16]  @channel_7[] (%results_13[%c0_8, %arg15] [%c128_10, %c128_10] [%c1024_9, %c1_7]) {id = 4 : i32} : (memref<128x1024xbf16, 1>)
           %24 = scf.for %arg17 = %c0_8 to %c256_11 step %c128_10 iter_args(%arg18 = %23) -> (!air.async.token) {
             %25 = air.channel.put async [%arg18]  @channel_9[] (%results_13[%arg15, %c0_8] [%c128_10, %c128_10] [%c128_10, %c1_7]) {id = 18 : i32} : (memref<128x1024xbf16, 1>)
             scf.yield %25 : !air.async.token

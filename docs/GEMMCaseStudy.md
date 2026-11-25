@@ -22,7 +22,7 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 "canonicalize", "cse"  
 ["func.func(air-loop-fusion)"](#air-loop-fusion)  
 ["air-label-scf-for-to-ping-pong"](#air-label-scf-for-to-ping-pong)  
-["air-ping-pong-transform{keep-memref-dealloc=true}"](#air-ping-pong-transform)  
+["air-ping-pong-transform"](#air-ping-pong-transform)  
 "canonicalize", "cse"  
 ["air-specialize-channel-wrap-and-stride"](#air-specialize-channel-wrap-and-stride)  
 "canonicalize", "cse"  
@@ -51,7 +51,7 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 |Generate half-dma operations    |   <ul><li>`air-dma-to-channel`</li></ul>    |   Lowering synchronous or asynchronous `air.dma_memcpy_nd` operations to `air.channel.put` or `air.channel.get` operations representing half-dma data sends and receives. |
 |Outline L2 memrefs to memtile buffers    |   <ul><li>`func.func(air-split-l2-memref)`</li></ul>    |   Tiling L2 memrefs based on parallelizable data movements, explicitly represented via `scf.parallel` or `air.channel.put/get` operations, in order to maximize memtile bandwidth utilization. |
 |Memtile DMA BD Optimization    |   <ul><li>`air-isolate-async-dma-loop-nests`</li><li>`func.func(air-loop-fusion)`</li><li>`air-specialize-channel-wrap-and-stride`</li></ul>    |   Lowering L2 control flow program into finite-state machines made of Block Descriptors as states. |
-|Double buffering    |   <ul><li>`air-label-scf-for-to-ping-pong`</li><li>`air-ping-pong-transform{keep-memref-dealloc=true}`</li></ul>    |   Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a `memref` within an `scf.for` loop; explicitly represent the multiple asynchronous threads traversing through the loop. |
+|Double buffering    |   <ul><li>`air-label-scf-for-to-ping-pong`</li><li>`air-ping-pong-transform`</li></ul>    |   Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a `memref` within an `scf.for` loop; explicitly represent the multiple asynchronous threads traversing through the loop. |
 |Outline air.herd to aie.tiles    |   <ul><li>`air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}`</li><li>`func.func(air-renumber-dma)`</li></ul>    |   Placing `air.herd` onto `air.segment`; inferring `air.segment` shape and size. |
 |Convert MLIR-AIR to MLIR-AIE    |   <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. |
 |SHIM DMA BD Optimization    |   <ul><li>`air-to-std`</li><li>`func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})`</li><li>`func.func(air-unroll-outer-affine-loops{depth=2})`</li><li>`airrt-to-npu`</li></ul>    |   Converting the control code via AIRRt and AIEX.NPU dialect to NPU SHIM DMA instruction sequence. |

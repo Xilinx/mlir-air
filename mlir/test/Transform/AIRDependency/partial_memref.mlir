@@ -15,8 +15,8 @@
 // CHECK-NOT: %[[EVENT1:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT0]]
 // CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT0]]
 
-#map0 = affine_map<()[s0] -> (s0 * 64)>
-#map1 = affine_map<()[s0] -> (s0 * 512)>
+#map0 = affine_map<()[s0] -> (s0 * 16)>
+#map1 = affine_map<()[s0] -> (s0 * -16 + 112)>
 module {
   func.func @partial_memref() {
     %c8 = arith.constant 8 : index
@@ -27,8 +27,8 @@ module {
       %c16 = arith.constant 16 : index
       %c32 = arith.constant 32 : index
       %c128 = arith.constant 128 : index
-      %1 = affine.apply #map0()[%arg2]
-      %2 = affine.apply #map1()[%arg2]
+      %1 = affine.apply #map0()[%arg0]
+      %2 = affine.apply #map1()[%arg0]
       %3 = memref.alloc() : memref<128x128xf32, 2>
       air.dma_memcpy_nd (%3[%1, %arg1] [%c16, %c32] [%c128, %c1], %arg4[%1, %arg1] [%c16, %c32] [%c128, %c1]) {id = 1 : i32} : (memref<128x128xf32, 2>, memref<128x128xf32, 2>)
       air.dma_memcpy_nd (%3[%2, %arg1] [%c16, %c32] [%c128, %c1], %arg4[%1, %arg1] [%c16, %c32] [%c128, %c1]) {id = 2 : i32} : (memref<128x128xf32, 2>, memref<128x128xf32, 2>)

@@ -491,10 +491,6 @@ def AIRHoistMemallocInForPattern: Pass<"air-hoist-alloc-in-for-pattern", "Module
     pattern transformation to identify and isolate the statically allocated ping and 
     pong buffers.
   }];
-  let options = [
-    Option<"clKeepMemrefDealloc", "keep-memref-dealloc", "bool", /*default=*/"false",
-            "Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.">
-  ];
 }
 
 def AIRUnrollLoopForPipeliningPattern: Pass<"air-unroll-loop-for-pipelining-pattern", "ModuleOp"> {
@@ -540,8 +536,6 @@ def AIRPingPongTransformationPattern: Pass<"air-ping-pong-transform", "ModuleOp"
     edges which represent a ping-pong buffering scheduling.
   }];
   let options = [
-    Option<"clKeepMemrefDealloc", "keep-memref-dealloc", "bool", /*default=*/"false",
-            "Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.">,
     Option<"clOmitMemorySpace", "omit-memory-space", "std::string", /*default=*/"\"\"",
             "Omit ping-pong transformation for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means apply ping-pong to all memory levels (default).">
   ];

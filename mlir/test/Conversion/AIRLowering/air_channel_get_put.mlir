@@ -36,14 +36,14 @@ module {
           %c8_7 = arith.constant 8 : index
           %alloc = memref.alloc() {sym_name = "scratch"} : memref<16x8xi32, 2>
           %alloc_8 = memref.alloc() {sym_name = "scratch_copy"} : memref<16x8xi32, 2>
-          air.channel.get  @channel_0[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c1_4]) {id = 3 : i32} : (memref<16x8xi32, 2>)
+          air.channel.get  @channel_0[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c16_6, %c8_7] [%c8_7, %c1_4]) {id = 3 : i32} : (memref<16x8xi32, 2>)
           affine.for %arg18 = 0 to 8 {
             affine.for %arg19 = 0 to 16 {
               %2 = affine.load %alloc[%arg19, %arg18] : memref<16x8xi32, 2>
               affine.store %2, %alloc_8[%arg19, %arg18] : memref<16x8xi32, 2>
             }
           }
-          air.channel.put  @channel_1[%arg10, %arg11] (%alloc_8[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c1_4]) {id = 4 : i32} : (memref<16x8xi32, 2>)
+          air.channel.put  @channel_1[%arg10, %arg11] (%alloc_8[%c0_4, %c0_4] [%c16_6, %c8_7] [%c8_7, %c1_4]) {id = 4 : i32} : (memref<16x8xi32, 2>)
           memref.dealloc %alloc_8 : memref<16x8xi32, 2>
           memref.dealloc %alloc : memref<16x8xi32, 2>
         }
@@ -103,14 +103,14 @@ module {
           %c8_7 = arith.constant 8 : index
           %alloc = memref.alloc() {sym_name = "scratch"} : memref<16x8xi32, 2>
           %alloc_8 = memref.alloc() {sym_name = "scratch_copy"} : memref<16x8xi32, 2>
-          air.channel.get  @channel_2[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c1_4]) {id = 3 : i32} : (memref<16x8xi32, 2>)
+          air.channel.get  @channel_2[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c16_6, %c8_7] [%c8_7, %c1_4]) {id = 3 : i32} : (memref<16x8xi32, 2>)
           affine.for %arg18 = 0 to 8 {
             affine.for %arg19 = 0 to 16 {
               %3 = affine.load %alloc[%arg19, %arg18] : memref<16x8xi32, 2>
               affine.store %3, %alloc_8[%arg19, %arg18] : memref<16x8xi32, 2>
             }
           }
-          air.channel.put  @channel_3[%arg10, %arg11] (%alloc_8[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c1_4]) {id = 4 : i32} : (memref<16x8xi32, 2>)
+          air.channel.put  @channel_3[%arg10, %arg11] (%alloc_8[%c0_4, %c0_4] [%c16_6, %c8_7] [%c8_7, %c1_4]) {id = 4 : i32} : (memref<16x8xi32, 2>)
           memref.dealloc %alloc_8 : memref<16x8xi32, 2>
           memref.dealloc %alloc : memref<16x8xi32, 2>
         }
@@ -176,7 +176,7 @@ module {
           %c8_9 = arith.constant 8 : index
           %alloc = memref.alloc() {sym_name = "scratch"} : memref<16x8xi32, 2>
           %alloc_10 = memref.alloc() {sym_name = "scratch_copy"} : memref<16x8xi32, 2>
-          air.channel.get  @channel_4[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c8_9, %c16_8] [%c32_7, %c1_6]) {id = 3 : i32} : (memref<16x8xi32, 2>)
+          air.channel.get  @channel_4[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c16_8, %c8_9] [%c8_9, %c1_6]) {id = 3 : i32} : (memref<16x8xi32, 2>)
           affine.for %arg18 = 0 to 8 {
             affine.for %arg19 = 0 to 16 {
               %3 = affine.load %alloc[%arg19, %arg18] : memref<16x8xi32, 2>
@@ -184,7 +184,7 @@ module {
             }
           }
           scf.for %arg18 = %c0_4 to %c2_5 step %c1_6 {
-            air.channel.put  @channel_5[%arg10, %arg11] (%alloc_10[%c0_4, %c0_4] [%c8_9, %c16_8] [%c32_7, %c1_6]) {id = 4 : i32} : (memref<16x8xi32, 2>)
+            air.channel.put  @channel_5[%arg10, %arg11] (%alloc_10[%c0_4, %c0_4] [%c16_8, %c8_9] [%c8_9, %c1_6]) {id = 4 : i32} : (memref<16x8xi32, 2>)
           }
           memref.dealloc %alloc_10 : memref<16x8xi32, 2>
           memref.dealloc %alloc : memref<16x8xi32, 2>

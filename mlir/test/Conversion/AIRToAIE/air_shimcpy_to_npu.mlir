@@ -1027,10 +1027,10 @@ module {
       %c32 = arith.constant 32 : index
       %c1 = arith.constant 1 : index
       %c0 = arith.constant 0 : index
-      air.channel.put  @channel_0[%c0, %c0] (%arg2[%c0, %c0] [%c8, %c16] [%c32, %c1]) {id = 1 : i32} : (memref<32x16xi32>)
-      air.channel.put  @channel_0[%c1, %c0] (%arg2[%c16, %c0] [%c8, %c16] [%c32, %c1]) {id = 2 : i32} : (memref<32x16xi32>)
-      air.channel.put  @channel_0[%c0, %c1] (%arg2[%c0, %c16] [%c8, %c16] [%c32, %c1]) {id = 3 : i32} : (memref<32x16xi32>)
-      air.channel.put  @channel_0[%c1, %c1] (%arg2[%c16, %c16] [%c8, %c16] [%c32, %c1]) {id = 4 : i32} : (memref<32x16xi32>)
+      air.channel.put  @channel_0[%c0, %c0] (%arg2[%c0, %c0] [%c16, %c8] [%c16, %c1]) {id = 1 : i32} : (memref<32x16xi32>)
+      air.channel.put  @channel_0[%c1, %c0] (%arg2[%c16, %c0] [%c16, %c8] [%c16, %c1]) {id = 2 : i32} : (memref<32x16xi32>)
+      air.channel.put  @channel_0[%c0, %c1] (%arg2[%c0, %c8] [%c16, %c8] [%c16, %c1]) {id = 3 : i32} : (memref<32x16xi32>)
+      air.channel.put  @channel_0[%c1, %c1] (%arg2[%c16, %c8] [%c16, %c8] [%c16, %c1]) {id = 4 : i32} : (memref<32x16xi32>)
       air.segment @seg  {
         %c2 = arith.constant 2 : index
         air.herd @xaddherd  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) {

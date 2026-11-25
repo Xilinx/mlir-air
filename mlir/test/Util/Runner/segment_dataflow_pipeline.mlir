@@ -58,7 +58,7 @@ module {
           air.execute_terminator %alloc : memref<128x1024xbf16, 1>
         } {ping_pong = 1 : ui32}
         %5:4 = scf.for %arg4 = %c0 to %c1024 step %c512 iter_args(%arg5 = %async_token, %arg6 = %async_token_1, %arg7 = %async_token_1, %arg8 = %async_token_1) -> (!air.async.token, !air.async.token, !air.async.token, !air.async.token) {
-          %8 = air.channel.get async [%arg8, %arg5]  @channel_0[] (%results[%arg4, %c0] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, ping_pong = 0 : ui32, producer = 0 : ui32} : (memref<128x1024xbf16, 1>)
+          %8 = air.channel.get async [%arg8, %arg5]  @channel_0[] (%results[%c0, %arg4] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, ping_pong = 0 : ui32, producer = 0 : ui32} : (memref<128x1024xbf16, 1>)
           %9 = air.wait_all async [%arg7, %8] 
           %10 = scf.for %arg9 = %c0 to %c256 step %c128 iter_args(%arg10 = %9) -> (!air.async.token) {
             %15 = air.channel.put async [%arg10]  @channel_1[] (%results[%c0, %c0] [%c128, %c128] [%c128, %c1_0]) {id = 18 : i32} : (memref<128x1024xbf16, 1>)
@@ -66,7 +66,7 @@ module {
           } {async_back = true, consumer = 0 : ui32, ping_pong = 0 : ui32}
           %waitall_1 = air.wait_all async [%10]
           %11 = arith.addi %arg4, %c256 : index
-          %12 = air.channel.get async [%8, %arg6]  @channel_0[] (%results_2[%11, %c0] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, ping_pong = 1 : ui32, producer = 1 : ui32} : (memref<128x1024xbf16, 1>)
+          %12 = air.channel.get async [%8, %arg6]  @channel_0[] (%results_2[%c0, %11] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, ping_pong = 1 : ui32, producer = 1 : ui32} : (memref<128x1024xbf16, 1>)
           %13 = air.wait_all async [%waitall_1, %12] 
           %14 = scf.for %arg9 = %c0 to %c256 step %c128 iter_args(%arg10 = %13) -> (!air.async.token) {
             %15 = air.channel.put async [%arg10]  @channel_1[] (%results_2[%c0, %c0] [%c128, %c128] [%c128, %c1_0]) {id = 18 : i32} : (memref<128x1024xbf16, 1>)
@@ -121,7 +121,7 @@ module {
           air.execute_terminator %alloc : memref<128x1024xbf16, 1>
         } {ping_pong = 1 : ui32}
         %5:4 = scf.for %arg4 = %c0 to %c1024 step %c512 iter_args(%arg5 = %async_token, %arg6 = %async_token_1, %arg7 = %async_token_1, %arg8 = %async_token_1) -> (!air.async.token, !air.async.token, !air.async.token, !air.async.token) {
-          %8 = air.channel.get async [%arg8, %arg5]  @channel_2[] (%results[%arg4, %c0] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, ping_pong = 0 : ui32, producer = 0 : ui32} : (memref<128x1024xbf16, 1>)
+          %8 = air.channel.get async [%arg8, %arg5]  @channel_2[] (%results[%c0, %arg4] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, ping_pong = 0 : ui32, producer = 0 : ui32} : (memref<128x1024xbf16, 1>)
           %9 = air.wait_all async [%arg7, %8] 
           %10 = scf.for %arg9 = %c0 to %c256 step %c128 iter_args(%arg10 = %9) -> (!air.async.token) {
             %15 = air.channel.put async [%arg10]  @channel_3[] (%results[%arg4, %c0] [%c128, %c128] [%c128, %c1_0]) {id = 18 : i32} : (memref<128x1024xbf16, 1>)
@@ -129,7 +129,7 @@ module {
           } {async_back = true, consumer = 0 : ui32, ping_pong = 0 : ui32}
           %waitall_2 = air.wait_all async [%10]
           %11 = arith.addi %arg4, %c256 : index
-          %12 = air.channel.get async [%8, %arg6]  @channel_2[] (%results_2[%11, %c0] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, ping_pong = 1 : ui32, producer = 1 : ui32} : (memref<128x1024xbf16, 1>)
+          %12 = air.channel.get async [%8, %arg6]  @channel_2[] (%results_2[%c0, %11] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, ping_pong = 1 : ui32, producer = 1 : ui32} : (memref<128x1024xbf16, 1>)
           %13 = air.wait_all async [%waitall_2, %12] 
           %14 = scf.for %arg9 = %c0 to %c256 step %c128 iter_args(%arg10 = %13) -> (!air.async.token) {
             %15 = air.channel.put async [%arg10]  @channel_3[] (%results_2[%11, %c0] [%c128, %c128] [%c128, %c1_0]) {id = 18 : i32} : (memref<128x1024xbf16, 1>)

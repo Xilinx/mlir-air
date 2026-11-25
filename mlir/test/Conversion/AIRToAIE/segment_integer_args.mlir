@@ -122,7 +122,7 @@ func.func @herd_only_index_arg(%n: index) {
       %c8 = arith.constant 8 : index
       %c35 = arith.constant 35 : index
       %lt = arith.cmpi slt, %sn, %c35 : index
-      %arm = arith.index_cast %lt : i1 to index
+      %arm = arith.index_castui %lt : i1 to index
       %off = arith.muli %arm, %c8 : index
       %t, %l2 = air.execute -> (memref<16xbf16, 1>) {
         %alloc = memref.alloc() : memref<16xbf16, 1>

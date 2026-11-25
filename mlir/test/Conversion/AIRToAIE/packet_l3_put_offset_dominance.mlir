@@ -34,7 +34,7 @@ module {
   air.channel @to_core [1, 1]
   air.channel @from_core [1, 1]
   air.channel @out [1, 1]
-  func.func @func_l3_put_offset(%arg0: memref<128xi32>, %arg1: memref<128xi32>, %arg2: memref<64xi32>, %iv: index) {
+  func.func @func_l3_put_offset(%arg0: memref<128xi32>, %arg1: memref<256xi32>, %arg2: memref<64xi32>, %iv: index) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c64 = arith.constant 64 : index
@@ -46,8 +46,9 @@ module {
     // defining ops would trail the put that uses them.
     %base = arith.addi %iv, %c1 : index
     %off = arith.addi %base, %c64 : index
-    // Put (flow order 1) whose offset operand is %off.
-    air.channel.put @pkt_in_1[] (%arg1[%off] [%c64] [%c1]) {id = 2 : i32} : (memref<128xi32>)
+    // Put (flow order 1) whose offset operand is %off; %arg1 holds the 64
+    // elements it reads for %iv up to 127.
+    air.channel.put @pkt_in_1[] (%arg1[%off] [%c64] [%c1]) {id = 2 : i32} : (memref<256xi32>)
     air.segment @seg0 {
       %c1_0 = arith.constant 1 : index
       %l2_0 = memref.alloc() : memref<64xi32, 1>
