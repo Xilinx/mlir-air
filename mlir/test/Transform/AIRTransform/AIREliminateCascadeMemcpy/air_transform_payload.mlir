@@ -213,3 +213,40 @@ func.func @test_complex_original_pattern(%arg0: memref<2048xi32>, %arg1: memref<
   }
   return %alloc : memref<1024xi32>
 }
+
+// The second copy's destination offset is computed between the two copies:
+// it is not available where the first copy is, so the cascade stays.
+// CHECK-LABEL: @test_offset_between_copies
+// CHECK: air.dma_memcpy_nd
+// CHECK: arith.muli
+// CHECK: air.dma_memcpy_nd
+func.func @test_offset_between_copies(%src : memref<256xi32, 1>, %out : memref<1024xi32>, %i : index) {
+  %mid = memref.alloc() : memref<256xi32>
+  air.dma_memcpy_nd (%mid[] [] [], %src[] [] []) : (memref<256xi32>, memref<256xi32, 1>)
+  %c256 = arith.constant 256 : index
+  %off = arith.muli %i, %c256 : index
+  air.dma_memcpy_nd (%out[%off] [256] [1], %mid[] [] []) : (memref<1024xi32>, memref<256xi32>)
+  return
+}
+
+// A padded first copy: the new copy keeps the padding.
+// CHECK-LABEL: @test_padded_first_copy
+// CHECK: air.dma_memcpy_nd (%{{.*}}[0] [32] [1], %{{.*}}[0, 0] [4, 6] [6, 1]) {pad_after = array<i32: 0, 2>, pad_before = array<i32: 0, 0>}
+// CHECK-NOT: air.dma_memcpy_nd
+func.func @test_padded_first_copy(%src : memref<4x6xi32, 1>, %out : memref<64xi32>) {
+  %mid = memref.alloc() : memref<4x8xi32>
+  air.dma_memcpy_nd (%mid[] [] [], %src[0, 0] [4, 6] [6, 1]) {pad_before = array<i32: 0, 0>, pad_after = array<i32: 0, 2>} : (memref<4x8xi32>, memref<4x6xi32, 1>)
+  air.dma_memcpy_nd (%out[0] [32] [1], %mid[] [] []) : (memref<64xi32>, memref<4x8xi32>)
+  return
+}
+
+// A padded second copy: the cascade stays.
+// CHECK-LABEL: @test_padded_second_copy
+// CHECK: air.dma_memcpy_nd
+// CHECK: air.dma_memcpy_nd {{.*}}pad_after
+func.func @test_padded_second_copy(%src : memref<24xi32, 1>, %out : memref<4x8xi32>) {
+  %mid = memref.alloc() : memref<4x6xi32>
+  air.dma_memcpy_nd (%mid[] [] [], %src[] [] []) : (memref<4x6xi32>, memref<24xi32, 1>)
+  air.dma_memcpy_nd (%out[] [] [], %mid[0, 0] [4, 6] [6, 1]) {pad_before = array<i32: 0, 0>, pad_after = array<i32: 0, 2>} : (memref<4x8xi32>, memref<4x6xi32>)
+  return
+}

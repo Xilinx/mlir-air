@@ -705,6 +705,19 @@ struct EliminateIntermediateMemrefPattern
       return failure();
     if (firstMemcpy.getDstMemref() != secondMemcpy.getSrcMemref())
       return failure();
+    // The second copy's padding would come after the first copy's data in a
+    // stream the new copy cannot express.
+    if (secondMemcpy.getPadBefore() || secondMemcpy.getPadAfter())
+      return failure();
+    // The new copy takes the second copy's destination pattern where the first
+    // copy is, so its values must be available there.
+    DominanceInfo dom(firstMemcpy->getParentOfType<FunctionOpInterface>());
+    for (OpFoldResult ofr : llvm::concat<const OpFoldResult>(
+             secondMemcpy.getMixedDstOffsets(), secondMemcpy.getMixedDstSizes(),
+             secondMemcpy.getMixedDstStrides()))
+      if (auto v = dyn_cast<Value>(ofr);
+          v && !dom.properlyDominates(v, firstMemcpy))
+        return failure();
 
     // Create a new memcpy that directly copies from the source of the first
     // memcpy to the destination of the second memcpy. The intermediate buffer
@@ -723,8 +736,8 @@ struct EliminateIntermediateMemrefPattern
         secondMemcpy.getMixedDstOffsets(), secondMemcpy.getMixedDstSizes(),
         secondMemcpy.getMixedDstStrides(), firstMemcpy.getSrcMemref(),
         firstMemcpy.getMixedSrcOffsets(), firstMemcpy.getMixedSrcSizes(),
-        firstMemcpy.getMixedSrcStrides(),
-        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+        firstMemcpy.getMixedSrcStrides(), firstMemcpy.getPadBeforeAttr(),
+        firstMemcpy.getPadAfterAttr());
 
     // Replace the async token of the second memcpy with the new one if needed
     if (secondMemcpy.getAsyncToken() && newMemcpy.getAsyncToken()) {

@@ -168,3 +168,11 @@ func.func @dma_padding_counts(%m : memref<4x6xi32>) {
   air.dma_memcpy_nd (%d[0, 0] [4, 6] [8, 1], %m[0, 0] [4, 6] [6, 1]) {pad_before = array<i32: 0, 0>, pad_after = array<i32: 0, 2>} : (memref<4x8xi32, 1>, memref<4x6xi32>)
   return
 }
+
+// -----
+
+// Test: a padded count that does not fit is not checked.
+func.func @dma_padded_count_overflow(%m : memref<*xi32>, %d : memref<*xi32>) {
+  air.dma_memcpy_nd (%d[0] [9223372036854775807] [1], %m[0] [9223372036854775807] [1]) {pad_before = array<i32: 0>, pad_after = array<i32: 1>} : (memref<*xi32>, memref<*xi32>)
+  return
+}

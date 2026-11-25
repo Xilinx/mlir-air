@@ -3282,8 +3282,9 @@ constantPatternElements(Value memref, ArrayRef<OpFoldResult> sizes,
   int64_t count = 1;
   for (auto [i, d] : llvm::enumerate(dims)) {
     int64_t n = d;
-    if (!padBefore.empty())
-      n += padBefore[i] + padAfter[i];
+    if (!padBefore.empty() && (llvm::AddOverflow(n, int64_t(padBefore[i]), n) ||
+                               llvm::AddOverflow(n, int64_t(padAfter[i]), n)))
+      return std::nullopt;
     if (llvm::MulOverflow(count, n, count))
       return std::nullopt;
   }
