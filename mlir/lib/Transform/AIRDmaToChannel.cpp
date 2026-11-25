@@ -973,7 +973,16 @@ static void replaceAIRDmaWithAIRChannelPairs(
   auto module = op->getParentOfType<ModuleOp>();
   std::string cname = air::createChannelName(module);
 
-  if (op->hasAttr("broadcast_set")) {
+  // A broadcast has one source outside and many receivers inside. A copy out
+  // of the tiles under a broadcast_set is not one: each tile in the set sends
+  // its own transfer, as without the set.
+  bool isBroadcast = op->hasAttr("broadcast_set") &&
+                     air::getMemorySpace(dst_type) == innerMemorySpace;
+  if (op->hasAttr("broadcast_set") && !isBroadcast)
+    op->emitWarning("Attribute broadcast_set is set on a copy out of the "
+                    "inner memory space, which is not a broadcast. Therefore, "
+                    "the broadcast set is ignored.");
+  if (isBroadcast) {
     // If the data movement is subject to a broadcasting pattern, then
     // specialize each broadcast source in a bundle into a separate channel.
     // Infer broadcast shape from integer set, if broadcast_set attribute is
@@ -1017,7 +1026,7 @@ static void replaceAIRDmaWithAIRChannelPairs(
 
   SmallVector<Value, 1> channel_idx_internal{};
   SmallVector<Value, 1> channel_idx_external{};
-  if (op->hasAttr("broadcast_set")) {
+  if (isBroadcast) {
     // If broadcasting, let internal channel inherit affine.if's operands
     auto parent_affine_if_op = op->getParentOfType<affine::AffineIfOp>();
     for (auto operand : parent_affine_if_op->getOperands()) {
@@ -1121,7 +1130,7 @@ static void replaceAIRDmaWithAIRChannelPairs(
                           StringAttr::get(op->getContext(), "internalGetPut"));
   externalGetPut->setAttr("loop-carried-dep",
                           StringAttr::get(op->getContext(), "external"));
-  if (op->hasAttr("broadcast_set"))
+  if (isBroadcast)
     externalGetPut->setAttr("broadcast_set", op->getAttr("broadcast_set"));
 
   externalGetPutVector.push_back(externalGetPut);

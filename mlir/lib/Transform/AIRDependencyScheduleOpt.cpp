@@ -3990,14 +3990,13 @@ public:
   // Trace dma ops' dependency to loop induction variables
   void getDmaOpLoopDependency(func::FuncOp f) {
     f.walk([&](air::DmaMemcpyNdOp dma_op) {
-      bool isL1Memcpy = false;
-      if (dma_op.getSrcMemref())
-        isL1Memcpy |= air::isL1(
-            llvm::cast<BaseMemRefType>(dma_op.getSrcMemref().getType()));
-      if (dma_op.getDstMemref())
-        isL1Memcpy |= air::isL1(
-            llvm::cast<BaseMemRefType>(dma_op.getDstMemref().getType()));
-      if (dma_op->getParentOfType<xilinx::air::HerdOp>() && isL1Memcpy) {
+      // Only a copy into the tiles can be a broadcast: one source, many
+      // receivers. Tiles copying out to one place are each a transfer of
+      // their own.
+      bool intoL1 =
+          dma_op.getDstMemref() && air::isL1(llvm::cast<BaseMemRefType>(
+                                       dma_op.getDstMemref().getType()));
+      if (dma_op->getParentOfType<xilinx::air::HerdOp>() && intoL1) {
         // Start recursively tracing for loop induction variables
         dma_op_history.push_back(dma_op);
         SmallVector<Value, 1> loop_dep_history;
