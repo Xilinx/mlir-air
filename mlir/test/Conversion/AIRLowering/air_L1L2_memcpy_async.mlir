@@ -22,7 +22,7 @@ module  {
       %c16 = arith.constant 16 : index
       %1 = memref.alloc() : memref<16xi32, 2>
       %e0 = air.dma_memcpy_nd async (%1[][][], %arg6[%c0][%c16][%c16]) {id = 1 : i32} : (memref<16xi32, 2>, memref<1024xi32, 1>)
-      %e1 = air.dma_memcpy_nd async [%e0] (%arg6[%c16][%c0][%c16], %1[][][]) {id = 2 : i32} : (memref<1024xi32, 1>, memref<16xi32, 2>)
+      %e1 = air.dma_memcpy_nd async [%e0] (%arg6[%c0] [%c16] [%c16], %1[][][]) {id = 2 : i32} : (memref<1024xi32, 1>, memref<16xi32, 2>)
       air.wait_all [%e0, %e1]
     }
     memref.dealloc %0 : memref<1024xi32, 1>

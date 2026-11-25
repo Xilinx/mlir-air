@@ -11,7 +11,7 @@
 // CHECK-LABEL: @test_basic_cascade_elimination
 // CHECK: %[[ALLOC:.*]] = memref.alloc() alignment = 64 : memref<1024xi32>
 // CHECK: %[[ALLOC_3:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
-// CHECK: air.dma_memcpy_nd (%[[ALLOC]][] [] [], %[[ALLOC_3]][] [] []) : (memref<1024xi32>, memref<2x16x8xi32, 1>)
+// CHECK: air.dma_memcpy_nd (%[[ALLOC]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_3]][{{.*}}] [{{.*}}] [{{.*}}]) : (memref<1024xi32>, memref<2x16x8xi32, 1>)
 func.func @test_basic_cascade_elimination(%arg0: memref<2048xi32>, %arg1: memref<2048x1024xi32>) -> memref<1024xi32> {
   %alloc = memref.alloc() alignment = 64 : memref<1024xi32>
   %alloc_2 = memref.alloc() alignment = 64 : memref<2x128xi32>
@@ -21,7 +21,7 @@ func.func @test_basic_cascade_elimination(%arg0: memref<2048xi32>, %arg1: memref
   // First memcpy: %alloc_3 -> %alloc_2 (intermediate buffer)
   air.dma_memcpy_nd (%alloc_2[] [] [], %alloc_3[] [] []) : (memref<2x128xi32>, memref<2x16x8xi32, 1>)
   // Second memcpy: %alloc_2 -> %alloc (final destination)
-  air.dma_memcpy_nd (%alloc[] [] [], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
+  air.dma_memcpy_nd (%alloc[0] [256] [1], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
   
   return %alloc : memref<1024xi32>
 }
@@ -33,8 +33,8 @@ func.func @test_basic_cascade_elimination(%arg0: memref<2048xi32>, %arg1: memref
 // CHECK: %[[ALLOC:.*]] = memref.alloc() : memref<1024xi32>
 // CHECK: %[[ALLOC_1:.*]] = memref.alloc() : memref<2x128xi32>
 // CHECK: %[[ALLOC_3:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
-// CHECK: air.dma_memcpy_nd (%[[ALLOC_1]]{{.*}}%[[ALLOC_3]][] [] [])
-// CHECK: air.dma_memcpy_nd (%[[ALLOC]][] [] [], %[[ALLOC_1]][] [] [])
+// CHECK: air.dma_memcpy_nd (%[[ALLOC_1]]{{.*}}%[[ALLOC_3]][{{.*}}] [{{.*}}] [{{.*}}])
+// CHECK: air.dma_memcpy_nd (%[[ALLOC]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_1]][{{.*}}] [{{.*}}] [{{.*}}])
 func.func @test_non_default_access_patterns_not_eliminated() -> memref<1024xi32> {
   %c0 = arith.constant 0 : index
   %c128 = arith.constant 128 : index
@@ -44,8 +44,8 @@ func.func @test_non_default_access_patterns_not_eliminated() -> memref<1024xi32>
   %alloc_3 = memref.alloc() : memref<2x16x8xi32, 1>
   
   // Non-default access pattern (has offsets, sizes, strides)
-  air.dma_memcpy_nd (%alloc_2[%c0] [%c128] [%c1], %alloc_3[] [] []) : (memref<2x128xi32>, memref<2x16x8xi32, 1>)
-  air.dma_memcpy_nd (%alloc[] [] [], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
+  air.dma_memcpy_nd (%alloc_2[%c0] [%c128] [%c1], %alloc_3[0] [128] [1]) : (memref<2x128xi32>, memref<2x16x8xi32, 1>)
+  air.dma_memcpy_nd (%alloc[0] [256] [1], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
   
   return %alloc : memref<1024xi32>
 }
@@ -58,9 +58,9 @@ func.func @test_non_default_access_patterns_not_eliminated() -> memref<1024xi32>
 // CHECK: %[[ALLOC_2:.*]] = memref.alloc() : memref<2x128xi32>
 // CHECK: %[[ALLOC_3:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
 // CHECK: %[[ALLOC_4:.*]] = memref.alloc() : memref<2x128xi32>
-// CHECK: air.dma_memcpy_nd (%[[ALLOC_2]][] [] [], %[[ALLOC_3]][] [] [])
-// CHECK: air.dma_memcpy_nd (%[[ALLOC]][] [] [], %[[ALLOC_2]][] [] [])
-// CHECK: air.dma_memcpy_nd (%[[ALLOC_4]][] [] [], %[[ALLOC_2]][] [] [])
+// CHECK: air.dma_memcpy_nd (%[[ALLOC_2]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_3]][{{.*}}] [{{.*}}] [{{.*}}])
+// CHECK: air.dma_memcpy_nd (%[[ALLOC]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_2]][{{.*}}] [{{.*}}] [{{.*}}])
+// CHECK: air.dma_memcpy_nd (%[[ALLOC_4]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_2]][{{.*}}] [{{.*}}] [{{.*}}])
 func.func @test_intermediate_buffer_multiple_uses_not_eliminated() -> memref<1024xi32> {
   %alloc = memref.alloc() : memref<1024xi32>
   %alloc_2 = memref.alloc() : memref<2x128xi32>
@@ -69,7 +69,7 @@ func.func @test_intermediate_buffer_multiple_uses_not_eliminated() -> memref<102
   
   // Intermediate buffer used 3 times (should not be eliminated)
   air.dma_memcpy_nd (%alloc_2[] [] [], %alloc_3[] [] []) : (memref<2x128xi32>, memref<2x16x8xi32, 1>)
-  air.dma_memcpy_nd (%alloc[] [] [], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
+  air.dma_memcpy_nd (%alloc[0] [256] [1], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
   air.dma_memcpy_nd (%alloc_4[] [] [], %alloc_2[] [] []) : (memref<2x128xi32>, memref<2x128xi32>)
   
   return %alloc : memref<1024xi32>
@@ -81,7 +81,7 @@ func.func @test_intermediate_buffer_multiple_uses_not_eliminated() -> memref<102
 // CHECK-LABEL: @test_cascade_with_async_dependencies
 // CHECK: %[[ALLOC:.*]] = memref.alloc() : memref<1024xi32>
 // CHECK: %[[ALLOC_3:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
-// CHECK: air.dma_memcpy_nd (%[[ALLOC]][] [] [], %[[ALLOC_3]][] [] []) : (memref<1024xi32>, memref<2x16x8xi32, 1>)
+// CHECK: air.dma_memcpy_nd (%[[ALLOC]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_3]][{{.*}}] [{{.*}}] [{{.*}}]) : (memref<1024xi32>, memref<2x16x8xi32, 1>)
 func.func @test_cascade_with_async_dependencies() -> memref<1024xi32> {
   %alloc = memref.alloc() : memref<1024xi32>
   %alloc_2 = memref.alloc() : memref<2x128xi32>
@@ -89,7 +89,7 @@ func.func @test_cascade_with_async_dependencies() -> memref<1024xi32> {
   
   // Cascade with async tokens
   %token1 = air.dma_memcpy_nd async (%alloc_2[] [] [], %alloc_3[] [] []) : (memref<2x128xi32>, memref<2x16x8xi32, 1>)
-  %token2 = air.dma_memcpy_nd async [%token1] (%alloc[] [] [], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
+  %token2 = air.dma_memcpy_nd async [%token1] (%alloc[0] [256] [1], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
   
   return %alloc : memref<1024xi32>
 }
@@ -102,8 +102,8 @@ func.func @test_cascade_with_async_dependencies() -> memref<1024xi32> {
 // CHECK: %[[ALLOC_B:.*]] = memref.alloc() : memref<512xi32>
 // CHECK: %[[ALLOC_SRC1:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
 // CHECK: %[[ALLOC_SRC2:.*]] = memref.alloc() : memref<1x16x8xi32, 1>
-// CHECK: air.dma_memcpy_nd (%[[ALLOC_A]][] [] [], %[[ALLOC_SRC1]][] [] [])
-// CHECK: air.dma_memcpy_nd (%[[ALLOC_B]][] [] [], %[[ALLOC_SRC2]][] [] [])
+// CHECK: air.dma_memcpy_nd (%[[ALLOC_A]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_SRC1]][{{.*}}] [{{.*}}] [{{.*}}])
+// CHECK: air.dma_memcpy_nd (%[[ALLOC_B]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_SRC2]][{{.*}}] [{{.*}}] [{{.*}}])
 func.func @test_multiple_cascade_patterns() -> (memref<1024xi32>, memref<512xi32>) {
   %alloc_a = memref.alloc() : memref<1024xi32>
   %alloc_b = memref.alloc() : memref<512xi32>
@@ -114,11 +114,11 @@ func.func @test_multiple_cascade_patterns() -> (memref<1024xi32>, memref<512xi32
   
   // First cascade pattern
   air.dma_memcpy_nd (%alloc_int1[] [] [], %alloc_src1[] [] []) : (memref<2x128xi32>, memref<2x16x8xi32, 1>)
-  air.dma_memcpy_nd (%alloc_a[] [] [], %alloc_int1[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
+  air.dma_memcpy_nd (%alloc_a[0] [256] [1], %alloc_int1[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
   
   // Second cascade pattern
-  air.dma_memcpy_nd (%alloc_int2[] [] [], %alloc_src2[] [] []) : (memref<1x64xi32>, memref<1x16x8xi32, 1>)
-  air.dma_memcpy_nd (%alloc_b[] [] [], %alloc_int2[] [] []) : (memref<512xi32>, memref<1x64xi32>)
+  air.dma_memcpy_nd (%alloc_int2[] [] [], %alloc_src2[0] [64] [1]) : (memref<1x64xi32>, memref<1x16x8xi32, 1>)
+  air.dma_memcpy_nd (%alloc_b[0] [64] [1], %alloc_int2[] [] []) : (memref<512xi32>, memref<1x64xi32>)
   
   return %alloc_a, %alloc_b : memref<1024xi32>, memref<512xi32>
 }
@@ -131,7 +131,7 @@ func.func @test_multiple_cascade_patterns() -> (memref<1024xi32>, memref<512xi32
 // CHECK: %[[ALLOC:.*]] = memref.alloc() : memref<1024xi32>
 // CHECK: %[[ALLOC_3:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
 // CHECK-NOT: %[[ALLOC_2:.*]] = memref.alloc() : memref<2x128xi32>
-// CHECK: air.dma_memcpy_nd (%[[ALLOC]][] [] [], %[[ALLOC_3]][] [] [])
+// CHECK: air.dma_memcpy_nd (%[[ALLOC]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_3]][{{.*}}] [{{.*}}] [{{.*}}])
 func.func @test_cascade_in_scf_forall() {
   scf.forall (%arg3) in (2) {
     %alloc = memref.alloc() : memref<1024xi32>
@@ -139,7 +139,7 @@ func.func @test_cascade_in_scf_forall() {
     %alloc_3 = memref.alloc() : memref<2x16x8xi32, 1>
     
     air.dma_memcpy_nd (%alloc_2[] [] [], %alloc_3[] [] []) : (memref<2x128xi32>, memref<2x16x8xi32, 1>)
-    air.dma_memcpy_nd (%alloc[] [] [], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
+    air.dma_memcpy_nd (%alloc[0] [256] [1], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
   }
   return
 }
@@ -151,16 +151,16 @@ func.func @test_cascade_in_scf_forall() {
 // CHECK: %[[ALLOC_A:.*]] = memref.alloc() : memref<1024xi32>
 // CHECK: %[[ALLOC_B:.*]] = memref.alloc() : memref<512xi32>
 // CHECK: %[[ALLOC_C:.*]] = memref.alloc() : memref<256xi32>
-// CHECK: air.dma_memcpy_nd (%[[ALLOC_A]][] [] [], %[[ALLOC_B]][] [] [])
-// CHECK: air.dma_memcpy_nd (%[[ALLOC_B]][] [] [], %[[ALLOC_C]][] [] [])
+// CHECK: air.dma_memcpy_nd (%[[ALLOC_A]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_B]][{{.*}}] [{{.*}}] [{{.*}}])
+// CHECK: air.dma_memcpy_nd (%[[ALLOC_B]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_C]][{{.*}}] [{{.*}}] [{{.*}}])
 func.func @test_non_cascade_patterns_unaffected() -> memref<1024xi32> {
   %alloc_a = memref.alloc() : memref<1024xi32>
   %alloc_b = memref.alloc() : memref<512xi32>
   %alloc_c = memref.alloc() : memref<256xi32>
   
   // These are separate operations, not a cascade pattern
-  air.dma_memcpy_nd (%alloc_a[] [] [], %alloc_b[] [] []) : (memref<1024xi32>, memref<512xi32>)
-  air.dma_memcpy_nd (%alloc_b[] [] [], %alloc_c[] [] []) : (memref<512xi32>, memref<256xi32>)
+  air.dma_memcpy_nd (%alloc_a[0] [512] [1], %alloc_b[] [] []) : (memref<1024xi32>, memref<512xi32>)
+  air.dma_memcpy_nd (%alloc_b[0] [256] [1], %alloc_c[] [] []) : (memref<512xi32>, memref<256xi32>)
   
   return %alloc_a : memref<1024xi32>
 }
@@ -175,7 +175,7 @@ func.func @test_non_cascade_patterns_unaffected() -> memref<1024xi32> {
 // CHECK: %[[ALLOC_3:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
 // CHECK: scf.forall (%[[ARG3:.*]]) in (2) {
 // CHECK-NOT: %[[ALLOC_2:.*]] = memref.alloc() alignment = 64 : memref<2x128xi32>
-// CHECK: air.dma_memcpy_nd (%[[ALLOC]][] [] [], %[[ALLOC_3]][] [] [])
+// CHECK: air.dma_memcpy_nd (%[[ALLOC]][{{.*}}] [{{.*}}] [{{.*}}], %[[ALLOC_3]][{{.*}}] [{{.*}}] [{{.*}}])
 func.func @test_complex_original_pattern(%arg0: memref<2048xi32>, %arg1: memref<2048x1024xi32>) -> memref<1024xi32> {
   %c2048 = arith.constant 2048 : index
   %c8 = arith.constant 8 : index
@@ -206,10 +206,47 @@ func.func @test_complex_original_pattern(%arg0: memref<2048xi32>, %arg1: memref<
     }
     // This is the cascade pattern that should be eliminated:
     air.dma_memcpy_nd (%alloc_2[] [] [], %alloc_3[] [] []) : (memref<2x128xi32>, memref<2x16x8xi32, 1>)
-    air.dma_memcpy_nd (%alloc[] [] [], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
+    air.dma_memcpy_nd (%alloc[0] [256] [1], %alloc_2[] [] []) : (memref<1024xi32>, memref<2x128xi32>)
     memref.dealloc %alloc_0 : memref<16x128xi32, 1>
     memref.dealloc %alloc_1 : memref<2x16x128x128xi32, 1>
     memref.dealloc %alloc_3 : memref<2x16x8xi32, 1>
   }
   return %alloc : memref<1024xi32>
+}
+
+// The second copy's destination offset is computed between the two copies:
+// it is not available where the first copy is, so the cascade stays.
+// CHECK-LABEL: @test_offset_between_copies
+// CHECK: air.dma_memcpy_nd
+// CHECK: arith.muli
+// CHECK: air.dma_memcpy_nd
+func.func @test_offset_between_copies(%src : memref<256xi32, 1>, %out : memref<1024xi32>, %i : index) {
+  %mid = memref.alloc() : memref<256xi32>
+  air.dma_memcpy_nd (%mid[] [] [], %src[] [] []) : (memref<256xi32>, memref<256xi32, 1>)
+  %c256 = arith.constant 256 : index
+  %off = arith.muli %i, %c256 : index
+  air.dma_memcpy_nd (%out[%off] [256] [1], %mid[] [] []) : (memref<1024xi32>, memref<256xi32>)
+  return
+}
+
+// A padded first copy: the new copy keeps the padding.
+// CHECK-LABEL: @test_padded_first_copy
+// CHECK: air.dma_memcpy_nd (%{{.*}}[0] [32] [1], %{{.*}}[0, 0] [4, 6] [6, 1]) {pad_after = array<i32: 0, 2>, pad_before = array<i32: 0, 0>}
+// CHECK-NOT: air.dma_memcpy_nd
+func.func @test_padded_first_copy(%src : memref<4x6xi32, 1>, %out : memref<64xi32>) {
+  %mid = memref.alloc() : memref<4x8xi32>
+  air.dma_memcpy_nd (%mid[] [] [], %src[0, 0] [4, 6] [6, 1]) {pad_before = array<i32: 0, 0>, pad_after = array<i32: 0, 2>} : (memref<4x8xi32>, memref<4x6xi32, 1>)
+  air.dma_memcpy_nd (%out[0] [32] [1], %mid[] [] []) : (memref<64xi32>, memref<4x8xi32>)
+  return
+}
+
+// A padded second copy: the cascade stays.
+// CHECK-LABEL: @test_padded_second_copy
+// CHECK: air.dma_memcpy_nd
+// CHECK: air.dma_memcpy_nd {{.*}}pad_after
+func.func @test_padded_second_copy(%src : memref<24xi32, 1>, %out : memref<4x8xi32>) {
+  %mid = memref.alloc() : memref<4x6xi32>
+  air.dma_memcpy_nd (%mid[] [] [], %src[] [] []) : (memref<4x6xi32>, memref<24xi32, 1>)
+  air.dma_memcpy_nd (%out[] [] [], %mid[0, 0] [4, 6] [6, 1]) {pad_before = array<i32: 0, 0>, pad_after = array<i32: 0, 2>} : (memref<4x8xi32>, memref<4x6xi32>)
+  return
 }

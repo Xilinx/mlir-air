@@ -136,3 +136,43 @@ func.func @dma_dst_rank_negative() {
   }
   return
 }
+
+// -----
+
+// Test: the destination takes what the source sends.
+func.func @dma_element_count_mismatch(%m : memref<16xi32>) {
+  %d = memref.alloc() : memref<8xi32, 1>
+  // expected-error @+1 {{'air.dma_memcpy_nd' op src pattern moves 4 elements but dst pattern takes 8}}
+  air.dma_memcpy_nd (%d[0] [8] [1], %m[0] [4] [1]) : (memref<8xi32, 1>, memref<16xi32>)
+  return
+}
+
+// -----
+
+// Test: an empty pattern is the whole memref.
+func.func @dma_whole_memrefs_differ(%m : memref<16xi32>) {
+  %d = memref.alloc() : memref<8xi32, 1>
+  // expected-error @+1 {{'air.dma_memcpy_nd' op src pattern moves 16 elements but dst pattern takes 8}}
+  air.dma_memcpy_nd (%d[] [] [], %m[] [] []) : (memref<8xi32, 1>, memref<16xi32>)
+  return
+}
+
+// -----
+
+// Test: padding is sent with the data, so the destination takes it too: 4x6
+// padded by 2 columns is 4x8.
+func.func @dma_padding_counts(%m : memref<4x6xi32>) {
+  %d = memref.alloc() : memref<4x8xi32, 1>
+  air.dma_memcpy_nd (%d[] [] [], %m[0, 0] [4, 6] [6, 1]) {pad_before = array<i32: 0, 0>, pad_after = array<i32: 0, 2>} : (memref<4x8xi32, 1>, memref<4x6xi32>)
+  // expected-error @+1 {{'air.dma_memcpy_nd' op src pattern moves 32 elements with padding but dst pattern takes 24}}
+  air.dma_memcpy_nd (%d[0, 0] [4, 6] [8, 1], %m[0, 0] [4, 6] [6, 1]) {pad_before = array<i32: 0, 0>, pad_after = array<i32: 0, 2>} : (memref<4x8xi32, 1>, memref<4x6xi32>)
+  return
+}
+
+// -----
+
+// Test: a padded count that does not fit is not checked.
+func.func @dma_padded_count_overflow(%m : memref<*xi32>, %d : memref<*xi32>) {
+  air.dma_memcpy_nd (%d[0] [9223372036854775807] [1], %m[0] [9223372036854775807] [1]) {pad_before = array<i32: 0>, pad_after = array<i32: 1>} : (memref<*xi32>, memref<*xi32>)
+  return
+}
