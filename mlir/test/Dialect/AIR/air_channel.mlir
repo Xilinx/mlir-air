@@ -35,7 +35,7 @@ func.func @channel() {
 // CHECK: func.func @fork
 // CHECK: %[[V1:.*]] = air.channel.put async [{{.*}}] @bcast[] ({{.*}}[{{.*}},{{.*}}]
 // CHECK: air.channel.get @bcast[{{.*}}, {{.*}}] ({{.*}}[] [] []) 
-air.channel @bcast [2,1] {channel_type = "npu_dma_stream"}
+air.channel @bcast [1, 1] {broadcast_shape = [2, 1], channel_type = "npu_dma_stream"}
 func.func @fork() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -54,7 +54,7 @@ func.func @fork() {
 
 // CHECK: func.func @distribute
 // CHECK: air.channel.put @merge[{{.*}}, {{.*}}] ({{.*}}[
-// CHECK: %[[V2:.*]] = air.channel.get async [{{.*}}] @merge[]
+// CHECK: %[[V2:.*]] = air.channel.get async [{{.*}}] @merge[{{.*}}, {{.*}}]
 air.channel @merge[2,2] {channel_type = "npu_dma_stream"}
 func.func @distribute() {
   %c0 = arith.constant 0 : index
@@ -69,7 +69,7 @@ func.func @distribute() {
   }
   scf.parallel (%arg0, %arg1) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) {
     %4 = air.wait_all async
-    %5 = air.channel.get async [%4] @merge[] (%1[] [] []) : (memref<32x32xbf16, 2>)
+    %5 = air.channel.get async [%4] @merge[%arg0, %arg1] (%1[] [] []) : (memref<32x32xbf16, 2>)
   }
   return 
 } 
