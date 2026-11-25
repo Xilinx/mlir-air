@@ -136,3 +136,39 @@ func.func @dma_dst_rank_negative() {
   }
   return
 }
+
+// -----
+
+// Test: src_rank must name one of the enclosing air.rank's ranks.
+func.func @dma_src_rank_out_of_range() {
+  %c2 = arith.constant 2 : index
+  air.rank (%rx) in (%sx = %c2) {
+    %dst = memref.alloc() : memref<128xf32, 2>
+    %src = memref.alloc() {air.symmetric} : memref<128xf32>
+    // expected-error @+1 {{'air.dma_memcpy_nd' op src_rank 5 is outside the 2 ranks of the enclosing air.rank}}
+    air.dma_memcpy_nd (%dst[] [] [], %src[] [] []) {src_rank = 5 : i64}
+        : (memref<128xf32, 2>, memref<128xf32>)
+  }
+  return
+}
+
+// -----
+
+// Test: a buffer referenced cross-rank must be allocated by every rank, inside
+// an air.rank. A symmetric alloc outside one, not used cross-rank, is allowed.
+func.func @dma_symmetric_alloc_outside_rank(%out : memref<128xf32>, %bases : memref<?xindex>) {
+  %c2 = arith.constant 2 : index
+  %unused = memref.alloc() {air.symmetric} : memref<128xf32>
+  air.dma_memcpy_nd (%out[] [] [], %unused[] [] []) : (memref<128xf32>, memref<128xf32>)
+  %src = memref.alloc() {air.symmetric} : memref<128xf32>
+  air.rank (%rx) in (%sx = %c2) {
+    %dst = memref.alloc() : memref<128xf32, 2>
+    %peer = memref.alloc() {air.symmetric} : memref<128xf32>
+    air.dma_memcpy_nd (%dst[] [] [], %peer[] [] []) {src_rank = 1 : i64}
+        : (memref<128xf32, 2>, memref<128xf32>)
+  }
+  %c0 = arith.constant 0 : index
+  // expected-error @+1 {{'air.translate' op source is an air.symmetric memref.alloc that is not inside an air.rank}}
+  %t = air.translate %src, %c0, %c2, %bases : memref<128xf32>, memref<?xindex>
+  return
+}

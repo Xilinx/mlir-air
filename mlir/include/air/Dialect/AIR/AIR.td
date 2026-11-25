@@ -1241,6 +1241,7 @@ def air_TranslateOp : air_Op<"translate",
       [{ $source `,` $from_rank `,` $to_rank `,` $heap_bases
          attr-dict `:` type($source) `,` type($heap_bases) }];
   let hasFolder = 1;
+  let hasVerifier = 1;
 }
 
 def air_ChannelIssueOp

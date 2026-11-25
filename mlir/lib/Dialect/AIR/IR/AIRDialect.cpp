@@ -3255,6 +3255,18 @@ static LogicalResult verifySizesStridesRank(Operation *op,
   return success();
 }
 
+// The number of ranks of an air.rank, if its sizes are constants.
+static std::optional<int64_t> constantRankCount(air::RankOp rank) {
+  int64_t count = 1;
+  for (Value size : rank.getSizeOperands()) {
+    auto c = getConstantIntValue(size);
+    if (!c)
+      return std::nullopt;
+    count *= *c;
+  }
+  return count;
+}
+
 LogicalResult air::DmaMemcpyNdOp::verify() {
   if (failed(verifySizesStridesRank(getOperation(), getMixedSrcSizes(),
                                     getMixedSrcStrides(), "src")))
@@ -3295,15 +3307,22 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
     // of the generated getSrcRank()/getDstRank() (those return uint64_t
     // for OptionalAttr<I64Attr>, so a comparison against 0 is meaningless
     // for negative values stored as i64).
+    std::optional<int64_t> numRanks = constantRankCount(cast<air::RankOp>(p));
     if (auto srAttr = getSrcRankAttr()) {
       int64_t sr = srAttr.getInt();
       if (sr < 0)
         return emitOpError() << "src_rank must be >= 0, got " << sr;
+      if (numRanks && sr >= *numRanks)
+        return emitOpError() << "src_rank " << sr << " is outside the "
+                             << *numRanks << " ranks of the enclosing air.rank";
     }
     if (auto drAttr = getDstRankAttr()) {
       int64_t dr = drAttr.getInt();
       if (dr < 0)
         return emitOpError() << "dst_rank must be >= 0, got " << dr;
+      if (numRanks && dr >= *numRanks)
+        return emitOpError() << "dst_rank " << dr << " is outside the "
+                             << *numRanks << " ranks of the enclosing air.rank";
     }
 
     auto requireSymmetricAlloc = [&](Value v, StringRef side) -> LogicalResult {
@@ -3315,6 +3334,13 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
                              << " memref is referenced cross-rank but its "
                                 "memref.alloc lacks the \"air.symmetric\" "
                                 "attribute";
+      // A symmetric allocation is one per rank of the air.rank around it;
+      // outside one there is no other rank's copy to address.
+      if (!alloc->getParentOfType<air::RankOp>())
+        return emitOpError() << side
+                             << " memref is referenced cross-rank but its "
+                                "air.symmetric memref.alloc is not inside an "
+                                "air.rank";
       return success();
     };
     if (getSrcRank().has_value() &&
@@ -4202,6 +4228,31 @@ ParseResult air::CustomOp::parse(OpAsmParser &parser, OperationState &result) {
 //
 // TranslateOp
 //
+
+LogicalResult air::TranslateOp::verify() {
+  Value root = getSource();
+  while (auto view = root.getDefiningOp<ViewLikeOpInterface>())
+    root = view.getViewSource();
+  auto alloc = root.getDefiningOp<memref::AllocOp>();
+  if (!alloc || !alloc->hasAttr("air.symmetric"))
+    return success(); // other sources are the caller's contract
+  auto allocRank = alloc->getParentOfType<air::RankOp>();
+  if (!allocRank)
+    return emitOpError("source is an air.symmetric memref.alloc that is not "
+                       "inside an air.rank, so it has no copy on other ranks");
+  // This rank's own allocation is rank id's; a constant source rank names
+  // it for one rank only.
+  if (allocRank != (*this)->getParentOfType<air::RankOp>())
+    return success();
+  auto from = getConstantIntValue(getFromRank());
+  std::optional<int64_t> numRanks = constantRankCount(allocRank);
+  if (from && numRanks && *numRanks > 1)
+    return emitOpError() << "source is this rank's own air.symmetric buffer, "
+                            "but from_rank is the constant "
+                         << *from << ", which is this rank only on one of the "
+                         << *numRanks << " ranks";
+  return success();
+}
 
 OpFoldResult air::TranslateOp::fold(FoldAdaptor adaptor) {
   if (getFromRank() == getToRank())
