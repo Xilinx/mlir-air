@@ -427,8 +427,8 @@ SmallVector<Value> getAsyncDependenciesFromOpImpl(affine::AffineIfOp op) {
   return depList;
 }
 // Collect async token values used inside a multi-region branch op but defined
-// outside it. This allows areAsyncDependent to detect that the branch op
-// implicitly depends on async tokens consumed by ops in any of its branches.
+// outside it, so that the branch op is seen to depend on the async tokens
+// consumed by ops in any of its branches.
 //
 // Written against getRegions() rather than then/else so it serves scf.if and
 // scf.index_switch alike: an n-way branch differs from a 2-way one only in how
@@ -946,79 +946,6 @@ bool isAsyncOp(Operation *op) {
         return isa<air::AsyncTokenType>(r.getType());
       }))
     return true;
-  return false;
-}
-
-// Air dependency comes in two forms: production and consumption of the same
-// async token, and usage of the same air.channel.
-bool areAsyncDependent(Operation *a, Operation *b) {
-  return areAsyncDependent(a, b, isAsyncDependent);
-}
-
-bool areAsyncDependent(
-    Operation *a, Operation *b,
-    llvm::function_ref<bool(Operation *, Operation *)> dependsOn) {
-  SmallVector<Value> dep_a = getAsyncDependenciesFromOp(a);
-  Value token_a = getAsyncTokenFromOp(a);
-  SmallVector<Value> dep_b = getAsyncDependenciesFromOp(b);
-  Value token_b = getAsyncTokenFromOp(b);
-  if (!token_a)
-    return false;
-  if (!token_b)
-    return false;
-  for (auto dep : dep_a)
-    if (dep == token_b)
-      return true;
-  for (auto dep : dep_b)
-    if (dep == token_a)
-      return true;
-  // Deep async dependency tracing through air.wait_all.
-  if (dependsOn(a, b))
-    return true;
-  if (dependsOn(b, a))
-    return true;
-
-  auto chanA = dyn_cast_if_present<air::ChannelInterface>(a);
-  auto chanB = dyn_cast_if_present<air::ChannelInterface>(b);
-  if (chanA && chanB)
-    if (chanA.getChanName() == chanB.getChanName()) {
-      if (chanA.getIndices().size() != chanB.getIndices().size())
-        return true;
-      // Check all index positions. If ANY position has two different constant
-      // values, we can prove independence regardless of other positions.
-      for (unsigned i = 0; i < chanA.getIndices().size(); i++) {
-        auto constIdxA = getConstantIntValue(chanA.getIndices()[i]);
-        auto constIdxB = getConstantIntValue(chanB.getIndices()[i]);
-        // If BOTH are constants AND they differ → INDEPENDENT
-        if (constIdxA && constIdxB && (*constIdxA != *constIdxB))
-          return false;
-      }
-      // After checking all indices, if none were provably different →
-      // DEPENDENT
-      return true;
-    }
-  return false;
-}
-
-// Returns true if b is asynchronously dependent on a. This function performs a
-// deep dependency tracing that propagates through air.wait_all ops.
-bool isAsyncDependent(Operation *a, Operation *b) {
-  if (a == b)
-    return true;
-  Value token_a = getAsyncTokenFromOp(a);
-  SmallVector<Value> dep_b = getAsyncDependenciesFromOp(b);
-  if (!token_a)
-    return false;
-  if (dep_b.empty())
-    return false;
-  for (auto dep : dep_b) {
-    if (dep == token_a)
-      return true;
-    else if (dep.getDefiningOp() && air::isAsyncOp(dep.getDefiningOp())) {
-      if (isAsyncDependent(a, dep.getDefiningOp()))
-        return true;
-    }
-  }
   return false;
 }
 
