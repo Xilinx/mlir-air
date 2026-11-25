@@ -1387,17 +1387,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#transformairfold_pack_into_generic-transformfoldpackintogenericop" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        transform.air.fold_pack_into_generic (transform::FoldPackIntoGenericOp)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#transformairfold_unit_extent_dims-transformfoldunitextentdimsop" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1966,17 +1955,6 @@
     <span class="md-ellipsis">
       
         transform.air.fold_iter_args_into_induction_var (transform::FoldIterArgsIntoInductionVarOp)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#transformairfold_pack_into_generic-transformfoldpackintogenericop" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        transform.air.fold_pack_into_generic (transform::FoldPackIntoGenericOp)
       
     </span>
   </a>
@@ -3143,61 +3121,10 @@ strides; one carried by the loop cannot.</p>
 </tr>
 </tbody>
 </table>
-<h3 id="transformairfold_pack_into_generic-transformfoldpackintogenericop"><code>transform.air.fold_pack_into_generic</code> (transform::FoldPackIntoGenericOp)<a class="headerlink" href="#transformairfold_pack_into_generic-transformfoldpackintogenericop" title="Permanent link">&para;</a></h3>
-<p><em>Read a packed input through the generic's indexing map</em></p>
-<p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>operation ::= `transform.air.fold_pack_into_generic` $target attr-dict `:` functional-type(operands, results)
-</code></pre></div>
-<p>For each input of the target <code>linalg.generic</code> produced by a
-<code>linalg.pack</code> without padding (every tiled dimension divides evenly),
-replaces the operand by the pack's source and composes the pack's
-relayout into the operand's indexing map: a packed index
-<code>(..., o, ..., i)</code> reads source element <code>o * tile + i</code>. Packs left
-without uses are erased. The generic then reads the source directly,
-and no relayout copy (on AIE, a DMA between two L1 buffers) is made.</p>
-<p>The composed maps are not projected permutations: tile the generic so
-the outer packed dimensions are 1 and fold unit dimensions before
-vectorizing it. <code>structured.lower_pack</code>, generalizing its transpose and
-fusing it into the generic gives an equivalent read through a
-<code>tensor.expand_shape</code> view with a projected-permutation map; this op is
-for packs that have already been tiled and fused into a loop.</p>
-<p>Returns the updated generics.</p>
-<p>Traits: <code>FunctionalStyleTransformOpTrait</code></p>
-<p>Interfaces: <code>MemoryEffectsOpInterface</code>, <code>TransformOpInterface</code></p>
-<p><strong>Operands:</strong></p>
-<table>
-<thead>
-<tr>
-<th style="text-align: center;">Operand</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align: center;"><code>target</code></td>
-<td>TransformHandleTypeInterface instance</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Results:</strong></p>
-<table>
-<thead>
-<tr>
-<th style="text-align: center;">Result</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align: center;"><code>result</code></td>
-<td>TransformHandleTypeInterface instance</td>
-</tr>
-</tbody>
-</table>
 <h3 id="transformairfold_unit_extent_dims-transformfoldunitextentdimsop"><code>transform.air.fold_unit_extent_dims</code> (transform::FoldUnitExtentDimsOp)<a class="headerlink" href="#transformairfold_unit_extent_dims-transformfoldunitextentdimsop" title="Permanent link">&para;</a></h3>
 <p><em>Fold unit-extent dimensions with bounded greedy iterations</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>operation ::= `transform.air.fold_unit_extent_dims` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>operation ::= `transform.air.fold_unit_extent_dims` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Applies linalg fold_unit_extent_dims_via_reshapes patterns to the target
 function with a bounded number of greedy rewrite iterations. This is needed
@@ -3244,7 +3171,7 @@ pattern interactions.</p>
 <h3 id="transformairforall_with_reduce_to_parallel-transformforallwithreducetoparallelop"><code>transform.air.forall_with_reduce_to_parallel</code> (transform::ForallWithReduceToParallelOp)<a class="headerlink" href="#transformairforall_with_reduce_to_parallel-transformforallwithreducetoparallelop" title="Permanent link">&para;</a></h3>
 <p><em>Converts a pattern of scf.forall and linalg.reduce to scf.parallel</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>operation ::= `transform.air.forall_with_reduce_to_parallel` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>operation ::= `transform.air.forall_with_reduce_to_parallel` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Converts an <code>scf.forall</code> whose results feed a <code>linalg.reduce</code> into an
 <code>scf.parallel</code> with an <code>scf.reduce</code>. The init tensors of the
@@ -3291,7 +3218,7 @@ to the new <code>scf.parallel</code>.</p>
 <h3 id="transformairforward_copy_into_destination-transformforwardcopyintodestinationop"><code>transform.air.forward_copy_into_destination</code> (transform::ForwardCopyIntoDestinationOp)<a class="headerlink" href="#transformairforward_copy_into_destination-transformforwardcopyintodestinationop" title="Permanent link">&para;</a></h3>
 <p><em>Copy a buffer's source straight into the destination its tensor is materialized in</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>operation ::= `transform.air.forward_copy_into_destination` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>operation ::= `transform.air.forward_copy_into_destination` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Looks in the target for a buffer that only carries data from one place
 to another: a <code>memref.alloc</code> filled by one <code>memref.copy</code> and read once,
@@ -3344,7 +3271,7 @@ else is left unchanged.</p>
 <h3 id="transformairfuse_elementwise_linalg-transformfuseelementwiselinalgop"><code>transform.air.fuse_elementwise_linalg</code> (transform::FuseElementwiseLinalgOp)<a class="headerlink" href="#transformairfuse_elementwise_linalg-transformfuseelementwiselinalgop" title="Permanent link">&para;</a></h3>
 <p><em>Apply linalg elementwise fusion patterns to a func.func operation</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>operation ::= `transform.air.fuse_elementwise_linalg` $target (`fold_reshapes` $fold_reshapes^)? (`no_recompute` $no_recompute^)? attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>operation ::= `transform.air.fuse_elementwise_linalg` $target (`fold_reshapes` $fold_reshapes^)? (`no_recompute` $no_recompute^)? attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform walks the body of a func.func operation and applies the 
 linalg elementwise fusion patterns, which include:</p>
@@ -3362,35 +3289,35 @@ reshapes only with <code>fold_reshapes</code>, and then only between elementwise
 generics; and it adds none of the pass's canonicalization or constant
 folding patterns.</p>
 <p>Example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a>// Before fusion:
-<a id="__codelineno-35-2" name="__codelineno-35-2" href="#__codelineno-35-2"></a>%0 = linalg.generic {
-<a id="__codelineno-35-3" name="__codelineno-35-3" href="#__codelineno-35-3"></a>  indexing_maps = [#map0, #map1],
-<a id="__codelineno-35-4" name="__codelineno-35-4" href="#__codelineno-35-4"></a>  iterator_types = ["parallel"]
-<a id="__codelineno-35-5" name="__codelineno-35-5" href="#__codelineno-35-5"></a>} ins(%input : tensor&lt;16xf32&gt;) outs(%temp1 : tensor&lt;16xf32&gt;) {
-<a id="__codelineno-35-6" name="__codelineno-35-6" href="#__codelineno-35-6"></a>  ^bb0(%arg0: f32, %arg1: f32):
-<a id="__codelineno-35-7" name="__codelineno-35-7" href="#__codelineno-35-7"></a>    %1 = arith.mulf %arg0, %cst : f32
-<a id="__codelineno-35-8" name="__codelineno-35-8" href="#__codelineno-35-8"></a>    linalg.yield %1 : f32
-<a id="__codelineno-35-9" name="__codelineno-35-9" href="#__codelineno-35-9"></a>} -&gt; tensor&lt;16xf32&gt;
-<a id="__codelineno-35-10" name="__codelineno-35-10" href="#__codelineno-35-10"></a>
-<a id="__codelineno-35-11" name="__codelineno-35-11" href="#__codelineno-35-11"></a>%result = linalg.generic {
-<a id="__codelineno-35-12" name="__codelineno-35-12" href="#__codelineno-35-12"></a>  indexing_maps = [#map0, #map2, #map1],
-<a id="__codelineno-35-13" name="__codelineno-35-13" href="#__codelineno-35-13"></a>  iterator_types = ["parallel"]
-<a id="__codelineno-35-14" name="__codelineno-35-14" href="#__codelineno-35-14"></a>} ins(%0, %input2 : tensor&lt;16xf32&gt;, tensor&lt;16xf32&gt;) outs(%temp2 : tensor&lt;16xf32&gt;) {
-<a id="__codelineno-35-15" name="__codelineno-35-15" href="#__codelineno-35-15"></a>  ^bb0(%arg0: f32, %arg1: f32, %arg2: f32):
-<a id="__codelineno-35-16" name="__codelineno-35-16" href="#__codelineno-35-16"></a>    %2 = arith.addf %arg0, %arg1 : f32
-<a id="__codelineno-35-17" name="__codelineno-35-17" href="#__codelineno-35-17"></a>    linalg.yield %2 : f32
-<a id="__codelineno-35-18" name="__codelineno-35-18" href="#__codelineno-35-18"></a>} -&gt; tensor&lt;16xf32&gt;
-<a id="__codelineno-35-19" name="__codelineno-35-19" href="#__codelineno-35-19"></a>
-<a id="__codelineno-35-20" name="__codelineno-35-20" href="#__codelineno-35-20"></a>// After fusion:
-<a id="__codelineno-35-21" name="__codelineno-35-21" href="#__codelineno-35-21"></a>%result = linalg.generic {
-<a id="__codelineno-35-22" name="__codelineno-35-22" href="#__codelineno-35-22"></a>  indexing_maps = [#map0, #map2, #map1],
-<a id="__codelineno-35-23" name="__codelineno-35-23" href="#__codelineno-35-23"></a>  iterator_types = ["parallel"]
-<a id="__codelineno-35-24" name="__codelineno-35-24" href="#__codelineno-35-24"></a>} ins(%input, %input2 : tensor&lt;16xf32&gt;, tensor&lt;16xf32&gt;) outs(%temp2 : tensor&lt;16xf32&gt;) {
-<a id="__codelineno-35-25" name="__codelineno-35-25" href="#__codelineno-35-25"></a>  ^bb0(%arg0: f32, %arg1: f32, %arg2: f32):
-<a id="__codelineno-35-26" name="__codelineno-35-26" href="#__codelineno-35-26"></a>    %1 = arith.mulf %arg0, %cst : f32
-<a id="__codelineno-35-27" name="__codelineno-35-27" href="#__codelineno-35-27"></a>    %2 = arith.addf %1, %arg1 : f32
-<a id="__codelineno-35-28" name="__codelineno-35-28" href="#__codelineno-35-28"></a>    linalg.yield %2 : f32
-<a id="__codelineno-35-29" name="__codelineno-35-29" href="#__codelineno-35-29"></a>} -&gt; tensor&lt;16xf32&gt;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>// Before fusion:
+<a id="__codelineno-34-2" name="__codelineno-34-2" href="#__codelineno-34-2"></a>%0 = linalg.generic {
+<a id="__codelineno-34-3" name="__codelineno-34-3" href="#__codelineno-34-3"></a>  indexing_maps = [#map0, #map1],
+<a id="__codelineno-34-4" name="__codelineno-34-4" href="#__codelineno-34-4"></a>  iterator_types = ["parallel"]
+<a id="__codelineno-34-5" name="__codelineno-34-5" href="#__codelineno-34-5"></a>} ins(%input : tensor&lt;16xf32&gt;) outs(%temp1 : tensor&lt;16xf32&gt;) {
+<a id="__codelineno-34-6" name="__codelineno-34-6" href="#__codelineno-34-6"></a>  ^bb0(%arg0: f32, %arg1: f32):
+<a id="__codelineno-34-7" name="__codelineno-34-7" href="#__codelineno-34-7"></a>    %1 = arith.mulf %arg0, %cst : f32
+<a id="__codelineno-34-8" name="__codelineno-34-8" href="#__codelineno-34-8"></a>    linalg.yield %1 : f32
+<a id="__codelineno-34-9" name="__codelineno-34-9" href="#__codelineno-34-9"></a>} -&gt; tensor&lt;16xf32&gt;
+<a id="__codelineno-34-10" name="__codelineno-34-10" href="#__codelineno-34-10"></a>
+<a id="__codelineno-34-11" name="__codelineno-34-11" href="#__codelineno-34-11"></a>%result = linalg.generic {
+<a id="__codelineno-34-12" name="__codelineno-34-12" href="#__codelineno-34-12"></a>  indexing_maps = [#map0, #map2, #map1],
+<a id="__codelineno-34-13" name="__codelineno-34-13" href="#__codelineno-34-13"></a>  iterator_types = ["parallel"]
+<a id="__codelineno-34-14" name="__codelineno-34-14" href="#__codelineno-34-14"></a>} ins(%0, %input2 : tensor&lt;16xf32&gt;, tensor&lt;16xf32&gt;) outs(%temp2 : tensor&lt;16xf32&gt;) {
+<a id="__codelineno-34-15" name="__codelineno-34-15" href="#__codelineno-34-15"></a>  ^bb0(%arg0: f32, %arg1: f32, %arg2: f32):
+<a id="__codelineno-34-16" name="__codelineno-34-16" href="#__codelineno-34-16"></a>    %2 = arith.addf %arg0, %arg1 : f32
+<a id="__codelineno-34-17" name="__codelineno-34-17" href="#__codelineno-34-17"></a>    linalg.yield %2 : f32
+<a id="__codelineno-34-18" name="__codelineno-34-18" href="#__codelineno-34-18"></a>} -&gt; tensor&lt;16xf32&gt;
+<a id="__codelineno-34-19" name="__codelineno-34-19" href="#__codelineno-34-19"></a>
+<a id="__codelineno-34-20" name="__codelineno-34-20" href="#__codelineno-34-20"></a>// After fusion:
+<a id="__codelineno-34-21" name="__codelineno-34-21" href="#__codelineno-34-21"></a>%result = linalg.generic {
+<a id="__codelineno-34-22" name="__codelineno-34-22" href="#__codelineno-34-22"></a>  indexing_maps = [#map0, #map2, #map1],
+<a id="__codelineno-34-23" name="__codelineno-34-23" href="#__codelineno-34-23"></a>  iterator_types = ["parallel"]
+<a id="__codelineno-34-24" name="__codelineno-34-24" href="#__codelineno-34-24"></a>} ins(%input, %input2 : tensor&lt;16xf32&gt;, tensor&lt;16xf32&gt;) outs(%temp2 : tensor&lt;16xf32&gt;) {
+<a id="__codelineno-34-25" name="__codelineno-34-25" href="#__codelineno-34-25"></a>  ^bb0(%arg0: f32, %arg1: f32, %arg2: f32):
+<a id="__codelineno-34-26" name="__codelineno-34-26" href="#__codelineno-34-26"></a>    %1 = arith.mulf %arg0, %cst : f32
+<a id="__codelineno-34-27" name="__codelineno-34-27" href="#__codelineno-34-27"></a>    %2 = arith.addf %1, %arg1 : f32
+<a id="__codelineno-34-28" name="__codelineno-34-28" href="#__codelineno-34-28"></a>    linalg.yield %2 : f32
+<a id="__codelineno-34-29" name="__codelineno-34-29" href="#__codelineno-34-29"></a>} -&gt; tensor&lt;16xf32&gt;
 </code></pre></div></p>
 <p>With <code>fold_reshapes</code>, also folds <code>tensor.expand_shape</code> and
 <code>tensor.collapse_shape</code> ops between two all-parallel linalg.generic ops
@@ -3446,7 +3373,7 @@ producer's element again for every element it is broadcast to.</p>
 <h3 id="transformairfuse_into_containing_op-transformfuseintocontainingmemrefop"><code>transform.air.fuse_into_containing_op</code> (transform::FuseIntoContainingMemrefOp)<a class="headerlink" href="#transformairfuse_into_containing_op-transformfuseintocontainingmemrefop" title="Permanent link">&para;</a></h3>
 <p><em>Fuse a producer into a containing operation.</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>operation ::= `transform.air.fuse_into_containing_op` $producer_op `into` $containing_op attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a>operation ::= `transform.air.fuse_into_containing_op` $producer_op `into` $containing_op attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Fuses the <code>producer_op</code> into the <code>containing_op</code>.
 Returns a handle to the fused ops.</p>
@@ -3500,7 +3427,7 @@ This operation reads the containing op handle.</p>
 <h3 id="transformairfuse_multi_op_linalg-transformfusemultioplinalgop"><code>transform.air.fuse_multi_op_linalg</code> (transform::FuseMultiOpLinalgOp)<a class="headerlink" href="#transformairfuse_multi_op_linalg-transformfusemultioplinalgop" title="Permanent link">&para;</a></h3>
 <p><em>Fuse a linalg operation containing multiple element-wise ops with its consumer</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>operation ::= `transform.air.fuse_multi_op_linalg` $first_op `,` $second_op attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>operation ::= `transform.air.fuse_multi_op_linalg` $first_op `,` $second_op attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform fuses two linalg operations where:</p>
 <ol>
@@ -3524,37 +3451,37 @@ The fusion is performed by:</p>
 <li>Element-wise (operate independently on each element)</li>
 </ul>
 <p>Example with reduction in second op:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>// Before fusion:
-<a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a>%0 = linalg.generic {
-<a id="__codelineno-38-3" name="__codelineno-38-3" href="#__codelineno-38-3"></a>  indexing_maps = [#map0, #map1],
-<a id="__codelineno-38-4" name="__codelineno-38-4" href="#__codelineno-38-4"></a>  iterator_types = ["parallel", "parallel"]
-<a id="__codelineno-38-5" name="__codelineno-38-5" href="#__codelineno-38-5"></a>} ins(%input : tensor&lt;16x8xf16&gt;) outs(%temp : tensor&lt;16x8xf32&gt;) {
-<a id="__codelineno-38-6" name="__codelineno-38-6" href="#__codelineno-38-6"></a>  ^bb0(%arg0: f16):
-<a id="__codelineno-38-7" name="__codelineno-38-7" href="#__codelineno-38-7"></a>    %1 = arith.extf %arg0 : f16 to f32
-<a id="__codelineno-38-8" name="__codelineno-38-8" href="#__codelineno-38-8"></a>    %2 = arith.mulf %1, %cst : f32
-<a id="__codelineno-38-9" name="__codelineno-38-9" href="#__codelineno-38-9"></a>    linalg.yield %2 : f32
-<a id="__codelineno-38-10" name="__codelineno-38-10" href="#__codelineno-38-10"></a>} -&gt; tensor&lt;16x8xf32&gt;
-<a id="__codelineno-38-11" name="__codelineno-38-11" href="#__codelineno-38-11"></a>
-<a id="__codelineno-38-12" name="__codelineno-38-12" href="#__codelineno-38-12"></a>%result = linalg.generic {
-<a id="__codelineno-38-13" name="__codelineno-38-13" href="#__codelineno-38-13"></a>  indexing_maps = [#map2, #map3],
-<a id="__codelineno-38-14" name="__codelineno-38-14" href="#__codelineno-38-14"></a>  iterator_types = ["parallel", "reduction"]
-<a id="__codelineno-38-15" name="__codelineno-38-15" href="#__codelineno-38-15"></a>} ins(%0 : tensor&lt;16x8xf32&gt;) outs(%output : tensor&lt;16xf32&gt;) {
-<a id="__codelineno-38-16" name="__codelineno-38-16" href="#__codelineno-38-16"></a>  ^bb0(%arg0: f32, %arg1: f32):
-<a id="__codelineno-38-17" name="__codelineno-38-17" href="#__codelineno-38-17"></a>    %3 = arith.addf %arg0, %arg1 : f32
-<a id="__codelineno-38-18" name="__codelineno-38-18" href="#__codelineno-38-18"></a>    linalg.yield %3 : f32
-<a id="__codelineno-38-19" name="__codelineno-38-19" href="#__codelineno-38-19"></a>} -&gt; tensor&lt;16xf32&gt;
-<a id="__codelineno-38-20" name="__codelineno-38-20" href="#__codelineno-38-20"></a>
-<a id="__codelineno-38-21" name="__codelineno-38-21" href="#__codelineno-38-21"></a>// After fusion:
-<a id="__codelineno-38-22" name="__codelineno-38-22" href="#__codelineno-38-22"></a>%result = linalg.generic {
-<a id="__codelineno-38-23" name="__codelineno-38-23" href="#__codelineno-38-23"></a>  indexing_maps = [#map4, #map3],
-<a id="__codelineno-38-24" name="__codelineno-38-24" href="#__codelineno-38-24"></a>  iterator_types = ["parallel", "reduction"]
-<a id="__codelineno-38-25" name="__codelineno-38-25" href="#__codelineno-38-25"></a>} ins(%input : tensor&lt;16x8xf16&gt;) outs(%output : tensor&lt;16xf32&gt;) {
-<a id="__codelineno-38-26" name="__codelineno-38-26" href="#__codelineno-38-26"></a>  ^bb0(%arg0: f16, %arg1: f32):
-<a id="__codelineno-38-27" name="__codelineno-38-27" href="#__codelineno-38-27"></a>    %1 = arith.extf %arg0 : f16 to f32
-<a id="__codelineno-38-28" name="__codelineno-38-28" href="#__codelineno-38-28"></a>    %2 = arith.mulf %1, %cst : f32
-<a id="__codelineno-38-29" name="__codelineno-38-29" href="#__codelineno-38-29"></a>    %3 = arith.addf %2, %arg1 : f32
-<a id="__codelineno-38-30" name="__codelineno-38-30" href="#__codelineno-38-30"></a>    linalg.yield %3 : f32
-<a id="__codelineno-38-31" name="__codelineno-38-31" href="#__codelineno-38-31"></a>} -&gt; tensor&lt;16xf32&gt;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>// Before fusion:
+<a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>%0 = linalg.generic {
+<a id="__codelineno-37-3" name="__codelineno-37-3" href="#__codelineno-37-3"></a>  indexing_maps = [#map0, #map1],
+<a id="__codelineno-37-4" name="__codelineno-37-4" href="#__codelineno-37-4"></a>  iterator_types = ["parallel", "parallel"]
+<a id="__codelineno-37-5" name="__codelineno-37-5" href="#__codelineno-37-5"></a>} ins(%input : tensor&lt;16x8xf16&gt;) outs(%temp : tensor&lt;16x8xf32&gt;) {
+<a id="__codelineno-37-6" name="__codelineno-37-6" href="#__codelineno-37-6"></a>  ^bb0(%arg0: f16):
+<a id="__codelineno-37-7" name="__codelineno-37-7" href="#__codelineno-37-7"></a>    %1 = arith.extf %arg0 : f16 to f32
+<a id="__codelineno-37-8" name="__codelineno-37-8" href="#__codelineno-37-8"></a>    %2 = arith.mulf %1, %cst : f32
+<a id="__codelineno-37-9" name="__codelineno-37-9" href="#__codelineno-37-9"></a>    linalg.yield %2 : f32
+<a id="__codelineno-37-10" name="__codelineno-37-10" href="#__codelineno-37-10"></a>} -&gt; tensor&lt;16x8xf32&gt;
+<a id="__codelineno-37-11" name="__codelineno-37-11" href="#__codelineno-37-11"></a>
+<a id="__codelineno-37-12" name="__codelineno-37-12" href="#__codelineno-37-12"></a>%result = linalg.generic {
+<a id="__codelineno-37-13" name="__codelineno-37-13" href="#__codelineno-37-13"></a>  indexing_maps = [#map2, #map3],
+<a id="__codelineno-37-14" name="__codelineno-37-14" href="#__codelineno-37-14"></a>  iterator_types = ["parallel", "reduction"]
+<a id="__codelineno-37-15" name="__codelineno-37-15" href="#__codelineno-37-15"></a>} ins(%0 : tensor&lt;16x8xf32&gt;) outs(%output : tensor&lt;16xf32&gt;) {
+<a id="__codelineno-37-16" name="__codelineno-37-16" href="#__codelineno-37-16"></a>  ^bb0(%arg0: f32, %arg1: f32):
+<a id="__codelineno-37-17" name="__codelineno-37-17" href="#__codelineno-37-17"></a>    %3 = arith.addf %arg0, %arg1 : f32
+<a id="__codelineno-37-18" name="__codelineno-37-18" href="#__codelineno-37-18"></a>    linalg.yield %3 : f32
+<a id="__codelineno-37-19" name="__codelineno-37-19" href="#__codelineno-37-19"></a>} -&gt; tensor&lt;16xf32&gt;
+<a id="__codelineno-37-20" name="__codelineno-37-20" href="#__codelineno-37-20"></a>
+<a id="__codelineno-37-21" name="__codelineno-37-21" href="#__codelineno-37-21"></a>// After fusion:
+<a id="__codelineno-37-22" name="__codelineno-37-22" href="#__codelineno-37-22"></a>%result = linalg.generic {
+<a id="__codelineno-37-23" name="__codelineno-37-23" href="#__codelineno-37-23"></a>  indexing_maps = [#map4, #map3],
+<a id="__codelineno-37-24" name="__codelineno-37-24" href="#__codelineno-37-24"></a>  iterator_types = ["parallel", "reduction"]
+<a id="__codelineno-37-25" name="__codelineno-37-25" href="#__codelineno-37-25"></a>} ins(%input : tensor&lt;16x8xf16&gt;) outs(%output : tensor&lt;16xf32&gt;) {
+<a id="__codelineno-37-26" name="__codelineno-37-26" href="#__codelineno-37-26"></a>  ^bb0(%arg0: f16, %arg1: f32):
+<a id="__codelineno-37-27" name="__codelineno-37-27" href="#__codelineno-37-27"></a>    %1 = arith.extf %arg0 : f16 to f32
+<a id="__codelineno-37-28" name="__codelineno-37-28" href="#__codelineno-37-28"></a>    %2 = arith.mulf %1, %cst : f32
+<a id="__codelineno-37-29" name="__codelineno-37-29" href="#__codelineno-37-29"></a>    %3 = arith.addf %2, %arg1 : f32
+<a id="__codelineno-37-30" name="__codelineno-37-30" href="#__codelineno-37-30"></a>    linalg.yield %3 : f32
+<a id="__codelineno-37-31" name="__codelineno-37-31" href="#__codelineno-37-31"></a>} -&gt; tensor&lt;16xf32&gt;
 </code></pre></div></p>
 <p>Returns a handle to the fused operation (the second operation after modification).</p>
 <p>Traits: <code>FunctionalStyleTransformOpTrait</code></p>
@@ -3596,7 +3523,7 @@ The fusion is performed by:</p>
 <h3 id="transformairfuse_truncf_linalg-transformfusetruncflinalgop"><code>transform.air.fuse_truncf_linalg</code> (transform::FuseTruncfLinalgOp)<a class="headerlink" href="#transformairfuse_truncf_linalg-transformfusetruncflinalgop" title="Permanent link">&para;</a></h3>
 <p><em>Fuse a linalg operation containing only arith.truncf into its producer</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>operation ::= `transform.air.fuse_truncf_linalg` $truncf_op `,` $producer_op attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>operation ::= `transform.air.fuse_truncf_linalg` $truncf_op `,` $producer_op attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform fuses two linalg operations where:</p>
 <ol>
@@ -3614,26 +3541,26 @@ The fusion is performed by:</p>
 the use of native intrinsics on narrower datatypes, such as AMD AIEs, and reducing
 intermediate memory storage requirements.</p>
 <p>Example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>// Before fusion:
-<a id="__codelineno-40-2" name="__codelineno-40-2" href="#__codelineno-40-2"></a>%0 = linalg.generic {
-<a id="__codelineno-40-3" name="__codelineno-40-3" href="#__codelineno-40-3"></a>  ^bb0(%arg0: f32, %arg1: f32):
-<a id="__codelineno-40-4" name="__codelineno-40-4" href="#__codelineno-40-4"></a>    %1 = arith.addf %arg0, %arg1 : f32
-<a id="__codelineno-40-5" name="__codelineno-40-5" href="#__codelineno-40-5"></a>    linalg.yield %1 : f32
-<a id="__codelineno-40-6" name="__codelineno-40-6" href="#__codelineno-40-6"></a>} ins(%input1, %input2 : tensor&lt;16xf32&gt;, tensor&lt;16xf32&gt;) outs(%temp : tensor&lt;16xf32&gt;)
-<a id="__codelineno-40-7" name="__codelineno-40-7" href="#__codelineno-40-7"></a>
-<a id="__codelineno-40-8" name="__codelineno-40-8" href="#__codelineno-40-8"></a>%result = linalg.generic {
-<a id="__codelineno-40-9" name="__codelineno-40-9" href="#__codelineno-40-9"></a>  ^bb0(%arg0: f32):
-<a id="__codelineno-40-10" name="__codelineno-40-10" href="#__codelineno-40-10"></a>    %2 = arith.truncf %arg0 : f32 to f16
-<a id="__codelineno-40-11" name="__codelineno-40-11" href="#__codelineno-40-11"></a>    linalg.yield %2 : f16
-<a id="__codelineno-40-12" name="__codelineno-40-12" href="#__codelineno-40-12"></a>} ins(%0 : tensor&lt;16xf32&gt;) outs(%output : tensor&lt;16xf16&gt;)
-<a id="__codelineno-40-13" name="__codelineno-40-13" href="#__codelineno-40-13"></a>
-<a id="__codelineno-40-14" name="__codelineno-40-14" href="#__codelineno-40-14"></a>// After fusion:
-<a id="__codelineno-40-15" name="__codelineno-40-15" href="#__codelineno-40-15"></a>%result = linalg.generic {
-<a id="__codelineno-40-16" name="__codelineno-40-16" href="#__codelineno-40-16"></a>  ^bb0(%arg0: f32, %arg1: f32):
-<a id="__codelineno-40-17" name="__codelineno-40-17" href="#__codelineno-40-17"></a>    %1 = arith.addf %arg0, %arg1 : f32
-<a id="__codelineno-40-18" name="__codelineno-40-18" href="#__codelineno-40-18"></a>    %2 = arith.truncf %1 : f32 to f16
-<a id="__codelineno-40-19" name="__codelineno-40-19" href="#__codelineno-40-19"></a>    linalg.yield %2 : f16
-<a id="__codelineno-40-20" name="__codelineno-40-20" href="#__codelineno-40-20"></a>} ins(%input1, %input2 : tensor&lt;16xf32&gt;, tensor&lt;16xf32&gt;) outs(%output : tensor&lt;16xf16&gt;)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>// Before fusion:
+<a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a>%0 = linalg.generic {
+<a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a>  ^bb0(%arg0: f32, %arg1: f32):
+<a id="__codelineno-39-4" name="__codelineno-39-4" href="#__codelineno-39-4"></a>    %1 = arith.addf %arg0, %arg1 : f32
+<a id="__codelineno-39-5" name="__codelineno-39-5" href="#__codelineno-39-5"></a>    linalg.yield %1 : f32
+<a id="__codelineno-39-6" name="__codelineno-39-6" href="#__codelineno-39-6"></a>} ins(%input1, %input2 : tensor&lt;16xf32&gt;, tensor&lt;16xf32&gt;) outs(%temp : tensor&lt;16xf32&gt;)
+<a id="__codelineno-39-7" name="__codelineno-39-7" href="#__codelineno-39-7"></a>
+<a id="__codelineno-39-8" name="__codelineno-39-8" href="#__codelineno-39-8"></a>%result = linalg.generic {
+<a id="__codelineno-39-9" name="__codelineno-39-9" href="#__codelineno-39-9"></a>  ^bb0(%arg0: f32):
+<a id="__codelineno-39-10" name="__codelineno-39-10" href="#__codelineno-39-10"></a>    %2 = arith.truncf %arg0 : f32 to f16
+<a id="__codelineno-39-11" name="__codelineno-39-11" href="#__codelineno-39-11"></a>    linalg.yield %2 : f16
+<a id="__codelineno-39-12" name="__codelineno-39-12" href="#__codelineno-39-12"></a>} ins(%0 : tensor&lt;16xf32&gt;) outs(%output : tensor&lt;16xf16&gt;)
+<a id="__codelineno-39-13" name="__codelineno-39-13" href="#__codelineno-39-13"></a>
+<a id="__codelineno-39-14" name="__codelineno-39-14" href="#__codelineno-39-14"></a>// After fusion:
+<a id="__codelineno-39-15" name="__codelineno-39-15" href="#__codelineno-39-15"></a>%result = linalg.generic {
+<a id="__codelineno-39-16" name="__codelineno-39-16" href="#__codelineno-39-16"></a>  ^bb0(%arg0: f32, %arg1: f32):
+<a id="__codelineno-39-17" name="__codelineno-39-17" href="#__codelineno-39-17"></a>    %1 = arith.addf %arg0, %arg1 : f32
+<a id="__codelineno-39-18" name="__codelineno-39-18" href="#__codelineno-39-18"></a>    %2 = arith.truncf %1 : f32 to f16
+<a id="__codelineno-39-19" name="__codelineno-39-19" href="#__codelineno-39-19"></a>    linalg.yield %2 : f16
+<a id="__codelineno-39-20" name="__codelineno-39-20" href="#__codelineno-39-20"></a>} ins(%input1, %input2 : tensor&lt;16xf32&gt;, tensor&lt;16xf32&gt;) outs(%output : tensor&lt;16xf16&gt;)
 </code></pre></div></p>
 <p>Returns a handle to the fused operation (the producer operation after modification).</p>
 <p>Traits: <code>FunctionalStyleTransformOpTrait</code></p>
@@ -3675,7 +3602,7 @@ intermediate memory storage requirements.</p>
 <h3 id="transformairhoist_cast_pair-transformhoistcastpairop"><code>transform.air.hoist_cast_pair</code> (transform::HoistCastPairOp)<a class="headerlink" href="#transformairhoist_cast_pair-transformhoistcastpairop" title="Permanent link">&para;</a></h3>
 <p><em>Hoist extension/truncation operation pairs out of a loop</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>operation ::= `transform.air.hoist_cast_pair` $extension_op `,` $truncation_op `,` $loop_op attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>operation ::= `transform.air.hoist_cast_pair` $extension_op `,` $truncation_op `,` $loop_op attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform takes handles to an extension operation (arith.extsi, arith.extui, or arith.extf),
 a truncation operation (arith.trunci or arith.truncf), and their parent scf.for loop.
@@ -3698,54 +3625,54 @@ a wider type for computation and then truncated back to a narrow type at each it
 By keeping the accumulator in the wide type throughout all loop iterations, we eliminate
 redundant extend/truncate operations.</p>
 <p>Example (Integer):
-<div class="highlight"><pre><span></span><code><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>// Before:
-<a id="__codelineno-42-2" name="__codelineno-42-2" href="#__codelineno-42-2"></a>%init = ... : vector&lt;64xi16&gt;
-<a id="__codelineno-42-3" name="__codelineno-42-3" href="#__codelineno-42-3"></a>%result = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init) -&gt; (vector&lt;64xi16&gt;) {
-<a id="__codelineno-42-4" name="__codelineno-42-4" href="#__codelineno-42-4"></a>  %arg_shaped = vector.shape_cast %arg : vector&lt;64xi16&gt; to vector&lt;1x1x8x8xi16&gt;
-<a id="__codelineno-42-5" name="__codelineno-42-5" href="#__codelineno-42-5"></a>  %arg_ext = arith.extsi %arg_shaped : vector&lt;1x1x8x8xi16&gt; to vector&lt;1x1x8x8xi32&gt;
-<a id="__codelineno-42-6" name="__codelineno-42-6" href="#__codelineno-42-6"></a>  // ... computation using %arg_ext ...
-<a id="__codelineno-42-7" name="__codelineno-42-7" href="#__codelineno-42-7"></a>  %result_i32 = vector.contract ... : ... into vector&lt;1x1x8x8xi32&gt;
-<a id="__codelineno-42-8" name="__codelineno-42-8" href="#__codelineno-42-8"></a>  %result_i16 = arith.trunci %result_i32 : vector&lt;1x1x8x8xi32&gt; to vector&lt;1x1x8x8xi16&gt;
-<a id="__codelineno-42-9" name="__codelineno-42-9" href="#__codelineno-42-9"></a>  %result_flat = vector.shape_cast %result_i16 : vector&lt;1x1x8x8xi16&gt; to vector&lt;64xi16&gt;
-<a id="__codelineno-42-10" name="__codelineno-42-10" href="#__codelineno-42-10"></a>  scf.yield %result_flat : vector&lt;64xi16&gt;
-<a id="__codelineno-42-11" name="__codelineno-42-11" href="#__codelineno-42-11"></a>}
-<a id="__codelineno-42-12" name="__codelineno-42-12" href="#__codelineno-42-12"></a>
-<a id="__codelineno-42-13" name="__codelineno-42-13" href="#__codelineno-42-13"></a>// After:
-<a id="__codelineno-42-14" name="__codelineno-42-14" href="#__codelineno-42-14"></a>%init = ... : vector&lt;64xi16&gt;
-<a id="__codelineno-42-15" name="__codelineno-42-15" href="#__codelineno-42-15"></a>%init_shaped = vector.shape_cast %init : vector&lt;64xi16&gt; to vector&lt;1x1x8x8xi16&gt;
-<a id="__codelineno-42-16" name="__codelineno-42-16" href="#__codelineno-42-16"></a>%init_ext = arith.extsi %init_shaped : vector&lt;1x1x8x8xi16&gt; to vector&lt;1x1x8x8xi32&gt;
-<a id="__codelineno-42-17" name="__codelineno-42-17" href="#__codelineno-42-17"></a>%init_flat = vector.shape_cast %init_ext : vector&lt;1x1x8x8xi32&gt; to vector&lt;64xi32&gt;
-<a id="__codelineno-42-18" name="__codelineno-42-18" href="#__codelineno-42-18"></a>%result_i32 = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init_flat) -&gt; (vector&lt;64xi32&gt;) {
-<a id="__codelineno-42-19" name="__codelineno-42-19" href="#__codelineno-42-19"></a>  %arg_shaped = vector.shape_cast %arg : vector&lt;64xi32&gt; to vector&lt;1x1x8x8xi32&gt;
-<a id="__codelineno-42-20" name="__codelineno-42-20" href="#__codelineno-42-20"></a>  // ... computation using %arg_shaped directly (no extsi needed) ...
-<a id="__codelineno-42-21" name="__codelineno-42-21" href="#__codelineno-42-21"></a>  %result_i32 = vector.contract ... : ... into vector&lt;1x1x8x8xi32&gt;
-<a id="__codelineno-42-22" name="__codelineno-42-22" href="#__codelineno-42-22"></a>  %result_flat = vector.shape_cast %result_i32 : vector&lt;1x1x8x8xi32&gt; to vector&lt;64xi32&gt;
-<a id="__codelineno-42-23" name="__codelineno-42-23" href="#__codelineno-42-23"></a>  scf.yield %result_flat : vector&lt;64xi32&gt;
-<a id="__codelineno-42-24" name="__codelineno-42-24" href="#__codelineno-42-24"></a>}
-<a id="__codelineno-42-25" name="__codelineno-42-25" href="#__codelineno-42-25"></a>%result_shaped = vector.shape_cast %result_i32 : vector&lt;64xi32&gt; to vector&lt;1x1x8x8xi32&gt;
-<a id="__codelineno-42-26" name="__codelineno-42-26" href="#__codelineno-42-26"></a>%result_i16 = arith.trunci %result_shaped : vector&lt;1x1x8x8xi32&gt; to vector&lt;1x1x8x8xi16&gt;
-<a id="__codelineno-42-27" name="__codelineno-42-27" href="#__codelineno-42-27"></a>%result = vector.shape_cast %result_i16 : vector&lt;1x1x8x8xi16&gt; to vector&lt;64xi16&gt;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>// Before:
+<a id="__codelineno-41-2" name="__codelineno-41-2" href="#__codelineno-41-2"></a>%init = ... : vector&lt;64xi16&gt;
+<a id="__codelineno-41-3" name="__codelineno-41-3" href="#__codelineno-41-3"></a>%result = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init) -&gt; (vector&lt;64xi16&gt;) {
+<a id="__codelineno-41-4" name="__codelineno-41-4" href="#__codelineno-41-4"></a>  %arg_shaped = vector.shape_cast %arg : vector&lt;64xi16&gt; to vector&lt;1x1x8x8xi16&gt;
+<a id="__codelineno-41-5" name="__codelineno-41-5" href="#__codelineno-41-5"></a>  %arg_ext = arith.extsi %arg_shaped : vector&lt;1x1x8x8xi16&gt; to vector&lt;1x1x8x8xi32&gt;
+<a id="__codelineno-41-6" name="__codelineno-41-6" href="#__codelineno-41-6"></a>  // ... computation using %arg_ext ...
+<a id="__codelineno-41-7" name="__codelineno-41-7" href="#__codelineno-41-7"></a>  %result_i32 = vector.contract ... : ... into vector&lt;1x1x8x8xi32&gt;
+<a id="__codelineno-41-8" name="__codelineno-41-8" href="#__codelineno-41-8"></a>  %result_i16 = arith.trunci %result_i32 : vector&lt;1x1x8x8xi32&gt; to vector&lt;1x1x8x8xi16&gt;
+<a id="__codelineno-41-9" name="__codelineno-41-9" href="#__codelineno-41-9"></a>  %result_flat = vector.shape_cast %result_i16 : vector&lt;1x1x8x8xi16&gt; to vector&lt;64xi16&gt;
+<a id="__codelineno-41-10" name="__codelineno-41-10" href="#__codelineno-41-10"></a>  scf.yield %result_flat : vector&lt;64xi16&gt;
+<a id="__codelineno-41-11" name="__codelineno-41-11" href="#__codelineno-41-11"></a>}
+<a id="__codelineno-41-12" name="__codelineno-41-12" href="#__codelineno-41-12"></a>
+<a id="__codelineno-41-13" name="__codelineno-41-13" href="#__codelineno-41-13"></a>// After:
+<a id="__codelineno-41-14" name="__codelineno-41-14" href="#__codelineno-41-14"></a>%init = ... : vector&lt;64xi16&gt;
+<a id="__codelineno-41-15" name="__codelineno-41-15" href="#__codelineno-41-15"></a>%init_shaped = vector.shape_cast %init : vector&lt;64xi16&gt; to vector&lt;1x1x8x8xi16&gt;
+<a id="__codelineno-41-16" name="__codelineno-41-16" href="#__codelineno-41-16"></a>%init_ext = arith.extsi %init_shaped : vector&lt;1x1x8x8xi16&gt; to vector&lt;1x1x8x8xi32&gt;
+<a id="__codelineno-41-17" name="__codelineno-41-17" href="#__codelineno-41-17"></a>%init_flat = vector.shape_cast %init_ext : vector&lt;1x1x8x8xi32&gt; to vector&lt;64xi32&gt;
+<a id="__codelineno-41-18" name="__codelineno-41-18" href="#__codelineno-41-18"></a>%result_i32 = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init_flat) -&gt; (vector&lt;64xi32&gt;) {
+<a id="__codelineno-41-19" name="__codelineno-41-19" href="#__codelineno-41-19"></a>  %arg_shaped = vector.shape_cast %arg : vector&lt;64xi32&gt; to vector&lt;1x1x8x8xi32&gt;
+<a id="__codelineno-41-20" name="__codelineno-41-20" href="#__codelineno-41-20"></a>  // ... computation using %arg_shaped directly (no extsi needed) ...
+<a id="__codelineno-41-21" name="__codelineno-41-21" href="#__codelineno-41-21"></a>  %result_i32 = vector.contract ... : ... into vector&lt;1x1x8x8xi32&gt;
+<a id="__codelineno-41-22" name="__codelineno-41-22" href="#__codelineno-41-22"></a>  %result_flat = vector.shape_cast %result_i32 : vector&lt;1x1x8x8xi32&gt; to vector&lt;64xi32&gt;
+<a id="__codelineno-41-23" name="__codelineno-41-23" href="#__codelineno-41-23"></a>  scf.yield %result_flat : vector&lt;64xi32&gt;
+<a id="__codelineno-41-24" name="__codelineno-41-24" href="#__codelineno-41-24"></a>}
+<a id="__codelineno-41-25" name="__codelineno-41-25" href="#__codelineno-41-25"></a>%result_shaped = vector.shape_cast %result_i32 : vector&lt;64xi32&gt; to vector&lt;1x1x8x8xi32&gt;
+<a id="__codelineno-41-26" name="__codelineno-41-26" href="#__codelineno-41-26"></a>%result_i16 = arith.trunci %result_shaped : vector&lt;1x1x8x8xi32&gt; to vector&lt;1x1x8x8xi16&gt;
+<a id="__codelineno-41-27" name="__codelineno-41-27" href="#__codelineno-41-27"></a>%result = vector.shape_cast %result_i16 : vector&lt;1x1x8x8xi16&gt; to vector&lt;64xi16&gt;
 </code></pre></div></p>
 <p>Example (Floating-point):
-<div class="highlight"><pre><span></span><code><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a>// Before:
-<a id="__codelineno-43-2" name="__codelineno-43-2" href="#__codelineno-43-2"></a>%init = ... : vector&lt;64xbf16&gt;
-<a id="__codelineno-43-3" name="__codelineno-43-3" href="#__codelineno-43-3"></a>%result = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init) -&gt; (vector&lt;64xbf16&gt;) {
-<a id="__codelineno-43-4" name="__codelineno-43-4" href="#__codelineno-43-4"></a>  %arg_ext = arith.extf %arg : vector&lt;64xbf16&gt; to vector&lt;64xf32&gt;
-<a id="__codelineno-43-5" name="__codelineno-43-5" href="#__codelineno-43-5"></a>  // ... computation using %arg_ext ...
-<a id="__codelineno-43-6" name="__codelineno-43-6" href="#__codelineno-43-6"></a>  %result_f32 = vector.fma ... : vector&lt;64xf32&gt;
-<a id="__codelineno-43-7" name="__codelineno-43-7" href="#__codelineno-43-7"></a>  %result_bf16 = arith.truncf %result_f32 : vector&lt;64xf32&gt; to vector&lt;64xbf16&gt;
-<a id="__codelineno-43-8" name="__codelineno-43-8" href="#__codelineno-43-8"></a>  scf.yield %result_bf16 : vector&lt;64xbf16&gt;
-<a id="__codelineno-43-9" name="__codelineno-43-9" href="#__codelineno-43-9"></a>}
-<a id="__codelineno-43-10" name="__codelineno-43-10" href="#__codelineno-43-10"></a>
-<a id="__codelineno-43-11" name="__codelineno-43-11" href="#__codelineno-43-11"></a>// After:
-<a id="__codelineno-43-12" name="__codelineno-43-12" href="#__codelineno-43-12"></a>%init = ... : vector&lt;64xbf16&gt;
-<a id="__codelineno-43-13" name="__codelineno-43-13" href="#__codelineno-43-13"></a>%init_ext = arith.extf %init : vector&lt;64xbf16&gt; to vector&lt;64xf32&gt;
-<a id="__codelineno-43-14" name="__codelineno-43-14" href="#__codelineno-43-14"></a>%result_f32 = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init_ext) -&gt; (vector&lt;64xf32&gt;) {
-<a id="__codelineno-43-15" name="__codelineno-43-15" href="#__codelineno-43-15"></a>  // ... computation using %arg directly (no extf needed) ...
-<a id="__codelineno-43-16" name="__codelineno-43-16" href="#__codelineno-43-16"></a>  %result_f32 = vector.fma ... : vector&lt;64xf32&gt;
-<a id="__codelineno-43-17" name="__codelineno-43-17" href="#__codelineno-43-17"></a>  scf.yield %result_f32 : vector&lt;64xf32&gt;
-<a id="__codelineno-43-18" name="__codelineno-43-18" href="#__codelineno-43-18"></a>}
-<a id="__codelineno-43-19" name="__codelineno-43-19" href="#__codelineno-43-19"></a>%result = arith.truncf %result_f32 : vector&lt;64xf32&gt; to vector&lt;64xbf16&gt;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>// Before:
+<a id="__codelineno-42-2" name="__codelineno-42-2" href="#__codelineno-42-2"></a>%init = ... : vector&lt;64xbf16&gt;
+<a id="__codelineno-42-3" name="__codelineno-42-3" href="#__codelineno-42-3"></a>%result = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init) -&gt; (vector&lt;64xbf16&gt;) {
+<a id="__codelineno-42-4" name="__codelineno-42-4" href="#__codelineno-42-4"></a>  %arg_ext = arith.extf %arg : vector&lt;64xbf16&gt; to vector&lt;64xf32&gt;
+<a id="__codelineno-42-5" name="__codelineno-42-5" href="#__codelineno-42-5"></a>  // ... computation using %arg_ext ...
+<a id="__codelineno-42-6" name="__codelineno-42-6" href="#__codelineno-42-6"></a>  %result_f32 = vector.fma ... : vector&lt;64xf32&gt;
+<a id="__codelineno-42-7" name="__codelineno-42-7" href="#__codelineno-42-7"></a>  %result_bf16 = arith.truncf %result_f32 : vector&lt;64xf32&gt; to vector&lt;64xbf16&gt;
+<a id="__codelineno-42-8" name="__codelineno-42-8" href="#__codelineno-42-8"></a>  scf.yield %result_bf16 : vector&lt;64xbf16&gt;
+<a id="__codelineno-42-9" name="__codelineno-42-9" href="#__codelineno-42-9"></a>}
+<a id="__codelineno-42-10" name="__codelineno-42-10" href="#__codelineno-42-10"></a>
+<a id="__codelineno-42-11" name="__codelineno-42-11" href="#__codelineno-42-11"></a>// After:
+<a id="__codelineno-42-12" name="__codelineno-42-12" href="#__codelineno-42-12"></a>%init = ... : vector&lt;64xbf16&gt;
+<a id="__codelineno-42-13" name="__codelineno-42-13" href="#__codelineno-42-13"></a>%init_ext = arith.extf %init : vector&lt;64xbf16&gt; to vector&lt;64xf32&gt;
+<a id="__codelineno-42-14" name="__codelineno-42-14" href="#__codelineno-42-14"></a>%result_f32 = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init_ext) -&gt; (vector&lt;64xf32&gt;) {
+<a id="__codelineno-42-15" name="__codelineno-42-15" href="#__codelineno-42-15"></a>  // ... computation using %arg directly (no extf needed) ...
+<a id="__codelineno-42-16" name="__codelineno-42-16" href="#__codelineno-42-16"></a>  %result_f32 = vector.fma ... : vector&lt;64xf32&gt;
+<a id="__codelineno-42-17" name="__codelineno-42-17" href="#__codelineno-42-17"></a>  scf.yield %result_f32 : vector&lt;64xf32&gt;
+<a id="__codelineno-42-18" name="__codelineno-42-18" href="#__codelineno-42-18"></a>}
+<a id="__codelineno-42-19" name="__codelineno-42-19" href="#__codelineno-42-19"></a>%result = arith.truncf %result_f32 : vector&lt;64xf32&gt; to vector&lt;64xbf16&gt;
 </code></pre></div></p>
 <p>Requirements:</p>
 <ul>
@@ -3798,7 +3725,7 @@ redundant extend/truncate operations.</p>
 <h3 id="transformairhoist_loop_carried_pack-transformhoistloopcarriedpackop"><code>transform.air.hoist_loop_carried_pack</code> (transform::HoistLoopCarriedPackOp)<a class="headerlink" href="#transformairhoist_loop_carried_pack-transformhoistloopcarriedpackop" title="Permanent link">&para;</a></h3>
 <p><em>Carry a packed value through an scf.for instead of packing it every iteration</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>operation ::= `transform.air.hoist_loop_carried_pack` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a>operation ::= `transform.air.hoist_loop_carried_pack` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Each target is an <code>scf.for</code>. An iteration argument qualifies when it is
 read in the body by one <code>linalg.pack</code> and the value yielded back to it is
@@ -3806,21 +3733,21 @@ a <code>linalg.unpack</code> with the same layout, used only by the yield; the p
 has no padding. A <code>tensor.expand_shape</code> and a <code>tensor.collapse_shape</code>
 with the same reassociation qualify the same way. That is the shape
 packing a loop-carried accumulator leaves:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-45-1" name="__codelineno-45-1" href="#__codelineno-45-1"></a>%r = scf.for ... iter_args(%acc = %init) {
-<a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a>  %p = linalg.pack %acc ... into %empty
-<a id="__codelineno-45-3" name="__codelineno-45-3" href="#__codelineno-45-3"></a>  %x = &lt;compute on %p&gt;
-<a id="__codelineno-45-4" name="__codelineno-45-4" href="#__codelineno-45-4"></a>  %u = linalg.unpack %x ... into %acc
-<a id="__codelineno-45-5" name="__codelineno-45-5" href="#__codelineno-45-5"></a>  scf.yield %u
-<a id="__codelineno-45-6" name="__codelineno-45-6" href="#__codelineno-45-6"></a>}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>%r = scf.for ... iter_args(%acc = %init) {
+<a id="__codelineno-44-2" name="__codelineno-44-2" href="#__codelineno-44-2"></a>  %p = linalg.pack %acc ... into %empty
+<a id="__codelineno-44-3" name="__codelineno-44-3" href="#__codelineno-44-3"></a>  %x = &lt;compute on %p&gt;
+<a id="__codelineno-44-4" name="__codelineno-44-4" href="#__codelineno-44-4"></a>  %u = linalg.unpack %x ... into %acc
+<a id="__codelineno-44-5" name="__codelineno-44-5" href="#__codelineno-44-5"></a>  scf.yield %u
+<a id="__codelineno-44-6" name="__codelineno-44-6" href="#__codelineno-44-6"></a>}
 </code></pre></div>
 <p>The loop then carries the packed value instead. The pack moves before
 the loop, applied to the initial value, and the unpack after it:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>%p0 = linalg.pack %init ... into %empty
-<a id="__codelineno-46-2" name="__codelineno-46-2" href="#__codelineno-46-2"></a>%r:2 = scf.for ... iter_args(%acc = %init, %pa = %p0) {
-<a id="__codelineno-46-3" name="__codelineno-46-3" href="#__codelineno-46-3"></a>  %x = &lt;compute on %pa&gt;
-<a id="__codelineno-46-4" name="__codelineno-46-4" href="#__codelineno-46-4"></a>  scf.yield %acc, %x
-<a id="__codelineno-46-5" name="__codelineno-46-5" href="#__codelineno-46-5"></a>}
-<a id="__codelineno-46-6" name="__codelineno-46-6" href="#__codelineno-46-6"></a>%u = linalg.unpack %r#1 ... into %r#0
+<div class="highlight"><pre><span></span><code><a id="__codelineno-45-1" name="__codelineno-45-1" href="#__codelineno-45-1"></a>%p0 = linalg.pack %init ... into %empty
+<a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a>%r:2 = scf.for ... iter_args(%acc = %init, %pa = %p0) {
+<a id="__codelineno-45-3" name="__codelineno-45-3" href="#__codelineno-45-3"></a>  %x = &lt;compute on %pa&gt;
+<a id="__codelineno-45-4" name="__codelineno-45-4" href="#__codelineno-45-4"></a>  scf.yield %acc, %x
+<a id="__codelineno-45-5" name="__codelineno-45-5" href="#__codelineno-45-5"></a>}
+<a id="__codelineno-45-6" name="__codelineno-45-6" href="#__codelineno-45-6"></a>%u = linalg.unpack %r#1 ... into %r#0
 </code></pre></div>
 <p>The pack's destination, and the unpack's unless it is the iteration
 argument itself, must be defined outside the loop, or be a
@@ -3867,7 +3794,7 @@ silenceable failure.</p>
 <h3 id="transformairhoist_loop_invariant_transfers-transformhoistloopinvarianttransfersop"><code>transform.air.hoist_loop_invariant_transfers</code> (transform::HoistLoopInvariantTransfersOp)<a class="headerlink" href="#transformairhoist_loop_invariant_transfers-transformhoistloopinvarianttransfersop" title="Permanent link">&para;</a></h3>
 <p><em>Discover and hoist all loop-invariant vector transfer read/write pairs</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a>operation ::= `transform.air.hoist_loop_invariant_transfers` $scope_op `,` $loop_op attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>operation ::= `transform.air.hoist_loop_invariant_transfers` $scope_op `,` $loop_op attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform takes handles to a scope operation and an scf.for loop inside it.
 It automatically discovers all vector.transfer_read/write pairs in the loop that:</p>
@@ -3888,11 +3815,11 @@ exact number and ordering of transfer operations, which can change with
 different unroll factors, tile sizes, or data types.</p>
 <p>The op works across all matmul variants (BF16, I8, I16) and any unroll factor.</p>
 <p>Example usage:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>%herd = transform.structured.match ops{["air.herd"]} attributes{compute_herd}
-<a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a>  in %arg0 : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-48-3" name="__codelineno-48-3" href="#__codelineno-48-3"></a>%loop = ...  // innermost scf.for loop
-<a id="__codelineno-48-4" name="__codelineno-48-4" href="#__codelineno-48-4"></a>%updated_loop = transform.air.hoist_loop_invariant_transfers %herd, %loop
-<a id="__codelineno-48-5" name="__codelineno-48-5" href="#__codelineno-48-5"></a>  : (!transform.any_op, !transform.any_op) -&gt; !transform.any_op
+<div class="highlight"><pre><span></span><code><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a>%herd = transform.structured.match ops{["air.herd"]} attributes{compute_herd}
+<a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a>  in %arg0 : (!transform.any_op) -&gt; !transform.any_op
+<a id="__codelineno-47-3" name="__codelineno-47-3" href="#__codelineno-47-3"></a>%loop = ...  // innermost scf.for loop
+<a id="__codelineno-47-4" name="__codelineno-47-4" href="#__codelineno-47-4"></a>%updated_loop = transform.air.hoist_loop_invariant_transfers %herd, %loop
+<a id="__codelineno-47-5" name="__codelineno-47-5" href="#__codelineno-47-5"></a>  : (!transform.any_op, !transform.any_op) -&gt; !transform.any_op
 </code></pre></div></p>
 <p>Requirements:</p>
 <ul>
@@ -3939,7 +3866,7 @@ different unroll factors, tile sizes, or data types.</p>
 <h3 id="transformairhoist_static_alloc-transformairhoiststaticallocop"><code>transform.air.hoist_static_alloc</code> (transform::AIRHoistStaticAllocOp)<a class="headerlink" href="#transformairhoist_static_alloc-transformairhoiststaticallocop" title="Permanent link">&para;</a></h3>
 <p><em>Hoist static allocations.</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a>operation ::= `transform.air.hoist_static_alloc` $target prop-dict attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>operation ::= `transform.air.hoist_static_alloc` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Moves certain statically-sized <code>memref.alloc</code> operations from inner blocks
 to the entry block of the target function. This shortens and unifies buffer
@@ -3955,31 +3882,31 @@ lifetimes, which can unlock reuse and downstream optimizations.</p>
 </ul>
 <p><strong>Example</strong></p>
 <p>Before:
+<div class="highlight"><pre><span></span><code><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a>func.func @foo(%arg0: memref&lt;64xi32&gt;) {
+<a id="__codelineno-49-2" name="__codelineno-49-2" href="#__codelineno-49-2"></a>  scf.for %i = %c0 to %c4 step %c1 {
+<a id="__codelineno-49-3" name="__codelineno-49-3" href="#__codelineno-49-3"></a>    %tmp = memref.alloc() : memref&lt;64xi32&gt;
+<a id="__codelineno-49-4" name="__codelineno-49-4" href="#__codelineno-49-4"></a>    linalg.fill ins(%cst : i32) outs(%tmp : memref&lt;64xi32&gt;)
+<a id="__codelineno-49-5" name="__codelineno-49-5" href="#__codelineno-49-5"></a>    memref.dealloc %tmp : memref&lt;64xi32&gt;
+<a id="__codelineno-49-6" name="__codelineno-49-6" href="#__codelineno-49-6"></a>  }
+<a id="__codelineno-49-7" name="__codelineno-49-7" href="#__codelineno-49-7"></a>  return
+<a id="__codelineno-49-8" name="__codelineno-49-8" href="#__codelineno-49-8"></a>}
+</code></pre></div></p>
+<p>After:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-50-1" name="__codelineno-50-1" href="#__codelineno-50-1"></a>func.func @foo(%arg0: memref&lt;64xi32&gt;) {
-<a id="__codelineno-50-2" name="__codelineno-50-2" href="#__codelineno-50-2"></a>  scf.for %i = %c0 to %c4 step %c1 {
-<a id="__codelineno-50-3" name="__codelineno-50-3" href="#__codelineno-50-3"></a>    %tmp = memref.alloc() : memref&lt;64xi32&gt;
-<a id="__codelineno-50-4" name="__codelineno-50-4" href="#__codelineno-50-4"></a>    linalg.fill ins(%cst : i32) outs(%tmp : memref&lt;64xi32&gt;)
-<a id="__codelineno-50-5" name="__codelineno-50-5" href="#__codelineno-50-5"></a>    memref.dealloc %tmp : memref&lt;64xi32&gt;
-<a id="__codelineno-50-6" name="__codelineno-50-6" href="#__codelineno-50-6"></a>  }
+<a id="__codelineno-50-2" name="__codelineno-50-2" href="#__codelineno-50-2"></a>  %tmp.hoisted = memref.alloc() : memref&lt;64xi32&gt;
+<a id="__codelineno-50-3" name="__codelineno-50-3" href="#__codelineno-50-3"></a>  scf.for %i = %c0 to %c4 step %c1 {
+<a id="__codelineno-50-4" name="__codelineno-50-4" href="#__codelineno-50-4"></a>    linalg.fill ins(%cst : i32) outs(%tmp.hoisted : memref&lt;64xi32&gt;)
+<a id="__codelineno-50-5" name="__codelineno-50-5" href="#__codelineno-50-5"></a>  }
+<a id="__codelineno-50-6" name="__codelineno-50-6" href="#__codelineno-50-6"></a>  memref.dealloc %tmp.hoisted : memref&lt;64xi32&gt;
 <a id="__codelineno-50-7" name="__codelineno-50-7" href="#__codelineno-50-7"></a>  return
 <a id="__codelineno-50-8" name="__codelineno-50-8" href="#__codelineno-50-8"></a>}
 </code></pre></div></p>
-<p>After:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a>func.func @foo(%arg0: memref&lt;64xi32&gt;) {
-<a id="__codelineno-51-2" name="__codelineno-51-2" href="#__codelineno-51-2"></a>  %tmp.hoisted = memref.alloc() : memref&lt;64xi32&gt;
-<a id="__codelineno-51-3" name="__codelineno-51-3" href="#__codelineno-51-3"></a>  scf.for %i = %c0 to %c4 step %c1 {
-<a id="__codelineno-51-4" name="__codelineno-51-4" href="#__codelineno-51-4"></a>    linalg.fill ins(%cst : i32) outs(%tmp.hoisted : memref&lt;64xi32&gt;)
-<a id="__codelineno-51-5" name="__codelineno-51-5" href="#__codelineno-51-5"></a>  }
-<a id="__codelineno-51-6" name="__codelineno-51-6" href="#__codelineno-51-6"></a>  memref.dealloc %tmp.hoisted : memref&lt;64xi32&gt;
-<a id="__codelineno-51-7" name="__codelineno-51-7" href="#__codelineno-51-7"></a>  return
-<a id="__codelineno-51-8" name="__codelineno-51-8" href="#__codelineno-51-8"></a>}
-</code></pre></div></p>
 <p><strong>Usage (Transform dialect)</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-52-1" name="__codelineno-52-1" href="#__codelineno-52-1"></a>transform.sequence %arg0 : !transform.any_op failures(propagate) {
-<a id="__codelineno-52-2" name="__codelineno-52-2" href="#__codelineno-52-2"></a>^bb0(%f: !transform.any_op):
-<a id="__codelineno-52-3" name="__codelineno-52-3" href="#__codelineno-52-3"></a>  transform.air.hoist_static_alloc %f
-<a id="__codelineno-52-4" name="__codelineno-52-4" href="#__codelineno-52-4"></a>    : (!transform.any_op) -&gt; ()
-<a id="__codelineno-52-5" name="__codelineno-52-5" href="#__codelineno-52-5"></a>}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a>transform.sequence %arg0 : !transform.any_op failures(propagate) {
+<a id="__codelineno-51-2" name="__codelineno-51-2" href="#__codelineno-51-2"></a>^bb0(%f: !transform.any_op):
+<a id="__codelineno-51-3" name="__codelineno-51-3" href="#__codelineno-51-3"></a>  transform.air.hoist_static_alloc %f
+<a id="__codelineno-51-4" name="__codelineno-51-4" href="#__codelineno-51-4"></a>    : (!transform.any_op) -&gt; ()
+<a id="__codelineno-51-5" name="__codelineno-51-5" href="#__codelineno-51-5"></a>}
 </code></pre></div>
 <p>Traits: <code>ReportTrackingListenerFailuresOpTrait</code>, <code>TransformEachOpTrait</code></p>
 <p>Interfaces: <code>MemoryEffectOpInterface</code>, <code>TransformOpInterface</code></p>
@@ -4007,7 +3934,7 @@ lifetimes, which can unlock reuse and downstream optimizations.</p>
 <h3 id="transformairhoist_vector_transfer_pointers-transformhoistvectortransferpointersop"><code>transform.air.hoist_vector_transfer_pointers</code> (transform::HoistVectorTransferPointersOp)<a class="headerlink" href="#transformairhoist_vector_transfer_pointers-transformhoistvectortransferpointersop" title="Permanent link">&para;</a></h3>
 <p><em>Optimize vector transfers by hoisting pointer computations out of loops</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-53-1" name="__codelineno-53-1" href="#__codelineno-53-1"></a>operation ::= `transform.air.hoist_vector_transfer_pointers` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-52-1" name="__codelineno-52-1" href="#__codelineno-52-1"></a>operation ::= `transform.air.hoist_vector_transfer_pointers` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform takes a handle to an scf.for loop and optimizes vector transfer operations
 (vector.transfer_read and vector.transfer_write) inside the loop by:</p>
@@ -4026,28 +3953,28 @@ lifetimes, which can unlock reuse and downstream optimizations.</p>
 into simple "pointer + constant" arithmetic with iter_args, which is particularly beneficial 
 for hardware accelerators with limited address computation capabilities.</p>
 <p>Example with IV-dependent indices:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-54-1" name="__codelineno-54-1" href="#__codelineno-54-1"></a>// Before:
-<a id="__codelineno-54-2" name="__codelineno-54-2" href="#__codelineno-54-2"></a>scf.for %i = %c0 to %c8 step %c1 {
-<a id="__codelineno-54-3" name="__codelineno-54-3" href="#__codelineno-54-3"></a>  %val = vector.transfer_read %mem[%c0, %i], %pad 
-<a id="__codelineno-54-4" name="__codelineno-54-4" href="#__codelineno-54-4"></a>    : memref&lt;32x32xi16&gt;, vector&lt;8x8xi16&gt;
-<a id="__codelineno-54-5" name="__codelineno-54-5" href="#__codelineno-54-5"></a>  // ... computation ...
-<a id="__codelineno-54-6" name="__codelineno-54-6" href="#__codelineno-54-6"></a>  vector.transfer_write %result, %mem[%c0, %i] 
-<a id="__codelineno-54-7" name="__codelineno-54-7" href="#__codelineno-54-7"></a>    : vector&lt;8x8xi16&gt;, memref&lt;32x32xi16&gt;
-<a id="__codelineno-54-8" name="__codelineno-54-8" href="#__codelineno-54-8"></a>}
-<a id="__codelineno-54-9" name="__codelineno-54-9" href="#__codelineno-54-9"></a>
-<a id="__codelineno-54-10" name="__codelineno-54-10" href="#__codelineno-54-10"></a>// After:
-<a id="__codelineno-54-11" name="__codelineno-54-11" href="#__codelineno-54-11"></a>%flat_mem = memref.collapse_shape %mem [[0, 1]] : memref&lt;32x32xi16&gt; into memref&lt;1024xi16&gt;
-<a id="__codelineno-54-12" name="__codelineno-54-12" href="#__codelineno-54-12"></a>%base_ptr = affine.apply affine_map&lt;(d0, d1) -&gt; (d0 * 32 + d1)&gt;(%c0, %c0)
-<a id="__codelineno-54-13" name="__codelineno-54-13" href="#__codelineno-54-13"></a>%stride = arith.constant 1 : index
-<a id="__codelineno-54-14" name="__codelineno-54-14" href="#__codelineno-54-14"></a>scf.for %i = %c0 to %c8 step %c1 iter_args(%ptr = %base_ptr) -&gt; (index) {
-<a id="__codelineno-54-15" name="__codelineno-54-15" href="#__codelineno-54-15"></a>  %val_1d = vector.transfer_read %flat_mem[%ptr], %pad : memref&lt;1024xi16&gt;, vector&lt;64xi16&gt;
-<a id="__codelineno-54-16" name="__codelineno-54-16" href="#__codelineno-54-16"></a>  %val = vector.shape_cast %val_1d : vector&lt;64xi16&gt; to vector&lt;8x8xi16&gt;
-<a id="__codelineno-54-17" name="__codelineno-54-17" href="#__codelineno-54-17"></a>  // ... computation ...
-<a id="__codelineno-54-18" name="__codelineno-54-18" href="#__codelineno-54-18"></a>  %result_1d = vector.shape_cast %result : vector&lt;8x8xi16&gt; to vector&lt;64xi16&gt;
-<a id="__codelineno-54-19" name="__codelineno-54-19" href="#__codelineno-54-19"></a>  vector.transfer_write %result_1d, %flat_mem[%ptr] : vector&lt;64xi16&gt;, memref&lt;1024xi16&gt;
-<a id="__codelineno-54-20" name="__codelineno-54-20" href="#__codelineno-54-20"></a>  %next_ptr = arith.addi %ptr, %stride : index
-<a id="__codelineno-54-21" name="__codelineno-54-21" href="#__codelineno-54-21"></a>  scf.yield %next_ptr : index
-<a id="__codelineno-54-22" name="__codelineno-54-22" href="#__codelineno-54-22"></a>}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-53-1" name="__codelineno-53-1" href="#__codelineno-53-1"></a>// Before:
+<a id="__codelineno-53-2" name="__codelineno-53-2" href="#__codelineno-53-2"></a>scf.for %i = %c0 to %c8 step %c1 {
+<a id="__codelineno-53-3" name="__codelineno-53-3" href="#__codelineno-53-3"></a>  %val = vector.transfer_read %mem[%c0, %i], %pad 
+<a id="__codelineno-53-4" name="__codelineno-53-4" href="#__codelineno-53-4"></a>    : memref&lt;32x32xi16&gt;, vector&lt;8x8xi16&gt;
+<a id="__codelineno-53-5" name="__codelineno-53-5" href="#__codelineno-53-5"></a>  // ... computation ...
+<a id="__codelineno-53-6" name="__codelineno-53-6" href="#__codelineno-53-6"></a>  vector.transfer_write %result, %mem[%c0, %i] 
+<a id="__codelineno-53-7" name="__codelineno-53-7" href="#__codelineno-53-7"></a>    : vector&lt;8x8xi16&gt;, memref&lt;32x32xi16&gt;
+<a id="__codelineno-53-8" name="__codelineno-53-8" href="#__codelineno-53-8"></a>}
+<a id="__codelineno-53-9" name="__codelineno-53-9" href="#__codelineno-53-9"></a>
+<a id="__codelineno-53-10" name="__codelineno-53-10" href="#__codelineno-53-10"></a>// After:
+<a id="__codelineno-53-11" name="__codelineno-53-11" href="#__codelineno-53-11"></a>%flat_mem = memref.collapse_shape %mem [[0, 1]] : memref&lt;32x32xi16&gt; into memref&lt;1024xi16&gt;
+<a id="__codelineno-53-12" name="__codelineno-53-12" href="#__codelineno-53-12"></a>%base_ptr = affine.apply affine_map&lt;(d0, d1) -&gt; (d0 * 32 + d1)&gt;(%c0, %c0)
+<a id="__codelineno-53-13" name="__codelineno-53-13" href="#__codelineno-53-13"></a>%stride = arith.constant 1 : index
+<a id="__codelineno-53-14" name="__codelineno-53-14" href="#__codelineno-53-14"></a>scf.for %i = %c0 to %c8 step %c1 iter_args(%ptr = %base_ptr) -&gt; (index) {
+<a id="__codelineno-53-15" name="__codelineno-53-15" href="#__codelineno-53-15"></a>  %val_1d = vector.transfer_read %flat_mem[%ptr], %pad : memref&lt;1024xi16&gt;, vector&lt;64xi16&gt;
+<a id="__codelineno-53-16" name="__codelineno-53-16" href="#__codelineno-53-16"></a>  %val = vector.shape_cast %val_1d : vector&lt;64xi16&gt; to vector&lt;8x8xi16&gt;
+<a id="__codelineno-53-17" name="__codelineno-53-17" href="#__codelineno-53-17"></a>  // ... computation ...
+<a id="__codelineno-53-18" name="__codelineno-53-18" href="#__codelineno-53-18"></a>  %result_1d = vector.shape_cast %result : vector&lt;8x8xi16&gt; to vector&lt;64xi16&gt;
+<a id="__codelineno-53-19" name="__codelineno-53-19" href="#__codelineno-53-19"></a>  vector.transfer_write %result_1d, %flat_mem[%ptr] : vector&lt;64xi16&gt;, memref&lt;1024xi16&gt;
+<a id="__codelineno-53-20" name="__codelineno-53-20" href="#__codelineno-53-20"></a>  %next_ptr = arith.addi %ptr, %stride : index
+<a id="__codelineno-53-21" name="__codelineno-53-21" href="#__codelineno-53-21"></a>  scf.yield %next_ptr : index
+<a id="__codelineno-53-22" name="__codelineno-53-22" href="#__codelineno-53-22"></a>}
 </code></pre></div></p>
 <p>Requirements:</p>
 <ul>
@@ -4090,7 +4017,7 @@ for hardware accelerators with limited address computation capabilities.</p>
 </table>
 <h3 id="transformairlinalg_promote-transformlinalgpromoteop"><code>transform.air.linalg_promote</code> (transform::LinalgPromoteOp)<a class="headerlink" href="#transformairlinalg_promote-transformlinalgpromoteop" title="Permanent link">&para;</a></h3>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-55-1" name="__codelineno-55-1" href="#__codelineno-55-1"></a>operation ::= `transform.air.linalg_promote` $target prop-dict attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-54-1" name="__codelineno-54-1" href="#__codelineno-54-1"></a>operation ::= `transform.air.linalg_promote` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Promotes the specified operands of the target into a separate memory buffer
 using the <code>mlir::linalg::promoteSubViews</code> utility.</p>
@@ -4104,19 +4031,19 @@ inplace.</p>
 allocated buffers can be specified with with the memory_space attribute as
 "L1", "L2" or "L3". The default memory space is L1.</p>
 <p>example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-56-1" name="__codelineno-56-1" href="#__codelineno-56-1"></a>%0 = transform.structured.match ops{["linalg.matmul"]} in %code  : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-56-2" name="__codelineno-56-2" href="#__codelineno-56-2"></a>%1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0]}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-55-1" name="__codelineno-55-1" href="#__codelineno-55-1"></a>%0 = transform.structured.match ops{["linalg.matmul"]} in %code  : (!transform.any_op) -&gt; !transform.any_op
+<a id="__codelineno-55-2" name="__codelineno-55-2" href="#__codelineno-55-2"></a>%1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0]}
 </code></pre></div></p>
 <p>The <code>group_size</code> attribute is used to apply promotion to multiple
 linalg ops. When <code>group_size=N</code>, the <code>operands_to_promote</code> attribute refers to
 <code>N</code> payload operations at a time and the operand indices apply to the
 operands of the <code>N</code> operations in the order they appear in the target handle.</p>
 <p>For example,
-<div class="highlight"><pre><span></span><code><a id="__codelineno-57-1" name="__codelineno-57-1" href="#__codelineno-57-1"></a>%m = transform.structured.match ops{["linalg.matmul"]} in %f : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-57-2" name="__codelineno-57-2" href="#__codelineno-57-2"></a>%f = transform.structured.match ops{["linalg.fill"]} in %f : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-57-3" name="__codelineno-57-3" href="#__codelineno-57-3"></a>%h = transform.merge_handles %f, %m : !transform.any_op
-<a id="__codelineno-57-4" name="__codelineno-57-4" href="#__codelineno-57-4"></a>// promote the input of the fill operation and the output of the matmul operation to L1 memory
-<a id="__codelineno-57-5" name="__codelineno-57-5" href="#__codelineno-57-5"></a>transform.air.linalg_promote %h {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-56-1" name="__codelineno-56-1" href="#__codelineno-56-1"></a>%m = transform.structured.match ops{["linalg.matmul"]} in %f : (!transform.any_op) -&gt; !transform.any_op
+<a id="__codelineno-56-2" name="__codelineno-56-2" href="#__codelineno-56-2"></a>%f = transform.structured.match ops{["linalg.fill"]} in %f : (!transform.any_op) -&gt; !transform.any_op
+<a id="__codelineno-56-3" name="__codelineno-56-3" href="#__codelineno-56-3"></a>%h = transform.merge_handles %f, %m : !transform.any_op
+<a id="__codelineno-56-4" name="__codelineno-56-4" href="#__codelineno-56-4"></a>// promote the input of the fill operation and the output of the matmul operation to L1 memory
+<a id="__codelineno-56-5" name="__codelineno-56-5" href="#__codelineno-56-5"></a>transform.air.linalg_promote %h {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
 </code></pre></div></p>
 <p>Interfaces: <code>MemoryEffectOpInterface</code>, <code>TransformOpInterface</code></p>
 <p><strong>Attributes:</strong></p>
@@ -4215,7 +4142,7 @@ performed with the <code>transform::tileToForallOpImpl</code> so that an
 <h3 id="transformairlinalg_to_library_call-transformlinalgtolibrarycallop"><code>transform.air.linalg_to_library_call</code> (transform::LinalgToLibraryCallOp)<a class="headerlink" href="#transformairlinalg_to_library_call-transformlinalgtolibrarycallop" title="Permanent link">&para;</a></h3>
 <p><em>Convert a linalg op to a function call (library call)</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-58-1" name="__codelineno-58-1" href="#__codelineno-58-1"></a>operation ::= `transform.air.linalg_to_library_call` $target prop-dict attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-57-1" name="__codelineno-57-1" href="#__codelineno-57-1"></a>operation ::= `transform.air.linalg_to_library_call` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Replaces a linalg op with a call to a function. If the <code>function_name</code>
 attribute is provided, it is used as the function name. Otherwise, the
@@ -4225,8 +4152,8 @@ to link the function call to a prebuilt object that contains the
 implementation of the function. If the linalg op is inside a herd, the 
 <code>link_with</code> attribute is propagated to the herd.</p>
 <p>Example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-59-1" name="__codelineno-59-1" href="#__codelineno-59-1"></a>%matmul = transform.structured.match ops{["linalg.matmul"]} in %f : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-59-2" name="__codelineno-59-2" href="#__codelineno-59-2"></a>%call = transform.air.linalg_to_library_call %matmul { function_name = "my_matmul", link_with = "extern_func.o" } : (!transform.any_op) -&gt; !transform.any_op
+<div class="highlight"><pre><span></span><code><a id="__codelineno-58-1" name="__codelineno-58-1" href="#__codelineno-58-1"></a>%matmul = transform.structured.match ops{["linalg.matmul"]} in %f : (!transform.any_op) -&gt; !transform.any_op
+<a id="__codelineno-58-2" name="__codelineno-58-2" href="#__codelineno-58-2"></a>%call = transform.air.linalg_to_library_call %matmul { function_name = "my_matmul", link_with = "extern_func.o" } : (!transform.any_op) -&gt; !transform.any_op
 </code></pre></div></p>
 <p>Traits: <code>FunctionalStyleTransformOpTrait</code>, <code>TransformEachOpTrait</code></p>
 <p>Interfaces: <code>MemoryEffectsOpInterface</code>, <code>TransformOpInterface</code></p>
@@ -4270,7 +4197,7 @@ implementation of the function. If the linalg op is inside a herd, the
 <h3 id="transformairlinearize_vectors-transformlinearizevectorsop"><code>transform.air.linearize_vectors</code> (transform::LinearizeVectorsOp)<a class="headerlink" href="#transformairlinearize_vectors-transformlinearizevectorsop" title="Permanent link">&para;</a></h3>
 <p><em>Rewrite n-D elementwise vector computation as rank-1 vectors</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-60-1" name="__codelineno-60-1" href="#__codelineno-60-1"></a>operation ::= `transform.air.linearize_vectors` $target (`arch` `=` $arch^)? (`f32_lanes` `=` $f32_lanes^)? (`contract` $contract^)? attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-59-1" name="__codelineno-59-1" href="#__codelineno-59-1"></a>operation ::= `transform.air.linearize_vectors` $target (`arch` `=` $arch^)? (`f32_lanes` `=` $f32_lanes^)? (`contract` $contract^)? attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Rewrites the elementwise vector computation nested in <code>target</code> so every
 value it produces is a rank-1 vector, the form the AIE vector lowerings
@@ -4330,20 +4257,20 @@ or 32 or 64 on AIE2P.</p>
 <p>Run it after vectorization, then canonicalize so that adjacent
 <code>vector.shape_cast</code> pairs fold.</p>
 <p>Example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-61-1" name="__codelineno-61-1" href="#__codelineno-61-1"></a>%s = vector.transfer_read %scale[%c0, %c0, %c0], %pad
-<a id="__codelineno-61-2" name="__codelineno-61-2" href="#__codelineno-61-2"></a>    {in_bounds = [true, true, true],
-<a id="__codelineno-61-3" name="__codelineno-61-3" href="#__codelineno-61-3"></a>     permutation_map = affine_map&lt;(d0, d1, d2) -&gt; (d0, 0, d2)&gt;}
-<a id="__codelineno-61-4" name="__codelineno-61-4" href="#__codelineno-61-4"></a>    : memref&lt;1x1x8xbf16&gt;, vector&lt;1x4x8xbf16&gt;
-<a id="__codelineno-61-5" name="__codelineno-61-5" href="#__codelineno-61-5"></a>%w = arith.mulf %q, %s : vector&lt;1x4x8xbf16&gt;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-60-1" name="__codelineno-60-1" href="#__codelineno-60-1"></a>%s = vector.transfer_read %scale[%c0, %c0, %c0], %pad
+<a id="__codelineno-60-2" name="__codelineno-60-2" href="#__codelineno-60-2"></a>    {in_bounds = [true, true, true],
+<a id="__codelineno-60-3" name="__codelineno-60-3" href="#__codelineno-60-3"></a>     permutation_map = affine_map&lt;(d0, d1, d2) -&gt; (d0, 0, d2)&gt;}
+<a id="__codelineno-60-4" name="__codelineno-60-4" href="#__codelineno-60-4"></a>    : memref&lt;1x1x8xbf16&gt;, vector&lt;1x4x8xbf16&gt;
+<a id="__codelineno-60-5" name="__codelineno-60-5" href="#__codelineno-60-5"></a>%w = arith.mulf %q, %s : vector&lt;1x4x8xbf16&gt;
 </code></pre></div>
 becomes
-<div class="highlight"><pre><span></span><code><a id="__codelineno-62-1" name="__codelineno-62-1" href="#__codelineno-62-1"></a>%r = vector.transfer_read %scale[%c0, %c0, %c0], %pad
-<a id="__codelineno-62-2" name="__codelineno-62-2" href="#__codelineno-62-2"></a>    {in_bounds = [true, true, true]} : memref&lt;1x1x8xbf16&gt;, vector&lt;1x1x8xbf16&gt;
-<a id="__codelineno-62-3" name="__codelineno-62-3" href="#__codelineno-62-3"></a>%r1 = vector.shape_cast %r : vector&lt;1x1x8xbf16&gt; to vector&lt;8xbf16&gt;
-<a id="__codelineno-62-4" name="__codelineno-62-4" href="#__codelineno-62-4"></a>%s1 = vector.shuffle %r1, %r1 [0, 1, ..., 7, 0, 1, ..., 7, ...]
-<a id="__codelineno-62-5" name="__codelineno-62-5" href="#__codelineno-62-5"></a>    : vector&lt;8xbf16&gt;, vector&lt;8xbf16&gt;
-<a id="__codelineno-62-6" name="__codelineno-62-6" href="#__codelineno-62-6"></a>%q1 = vector.shape_cast %q : vector&lt;1x4x8xbf16&gt; to vector&lt;32xbf16&gt;
-<a id="__codelineno-62-7" name="__codelineno-62-7" href="#__codelineno-62-7"></a>%w1 = arith.mulf %q1, %s1 : vector&lt;32xbf16&gt;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-61-1" name="__codelineno-61-1" href="#__codelineno-61-1"></a>%r = vector.transfer_read %scale[%c0, %c0, %c0], %pad
+<a id="__codelineno-61-2" name="__codelineno-61-2" href="#__codelineno-61-2"></a>    {in_bounds = [true, true, true]} : memref&lt;1x1x8xbf16&gt;, vector&lt;1x1x8xbf16&gt;
+<a id="__codelineno-61-3" name="__codelineno-61-3" href="#__codelineno-61-3"></a>%r1 = vector.shape_cast %r : vector&lt;1x1x8xbf16&gt; to vector&lt;8xbf16&gt;
+<a id="__codelineno-61-4" name="__codelineno-61-4" href="#__codelineno-61-4"></a>%s1 = vector.shuffle %r1, %r1 [0, 1, ..., 7, 0, 1, ..., 7, ...]
+<a id="__codelineno-61-5" name="__codelineno-61-5" href="#__codelineno-61-5"></a>    : vector&lt;8xbf16&gt;, vector&lt;8xbf16&gt;
+<a id="__codelineno-61-6" name="__codelineno-61-6" href="#__codelineno-61-6"></a>%q1 = vector.shape_cast %q : vector&lt;1x4x8xbf16&gt; to vector&lt;32xbf16&gt;
+<a id="__codelineno-61-7" name="__codelineno-61-7" href="#__codelineno-61-7"></a>%w1 = arith.mulf %q1, %s1 : vector&lt;32xbf16&gt;
 </code></pre></div></p>
 <p>Returns a handle to <code>target</code>.</p>
 <p>Traits: <code>FunctionalStyleTransformOpTrait</code></p>
@@ -4389,7 +4316,7 @@ becomes
 <h3 id="transformairmerge_adjacent_reads-transformmergeadjacentreadsop"><code>transform.air.merge_adjacent_reads</code> (transform::MergeAdjacentReadsOp)<a class="headerlink" href="#transformairmerge_adjacent_reads-transformmergeadjacentreadsop" title="Permanent link">&para;</a></h3>
 <p><em>Read two adjacent pieces of memory as one wider vector</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-63-1" name="__codelineno-63-1" href="#__codelineno-63-1"></a>operation ::= `transform.air.merge_adjacent_reads` $target `max_bits` `=` $max_bits attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-62-1" name="__codelineno-62-1" href="#__codelineno-62-1"></a>operation ::= `transform.air.merge_adjacent_reads` $target `max_bits` `=` $max_bits attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Merges two <code>vector.transfer_read</code> ops in one block of <code>target</code> into one
 read of both, whose halves (<code>vector.extract_strided_slice</code> of it
@@ -4447,7 +4374,7 @@ register each become one read of the whole register.</p>
 <h3 id="transformairmerge_sibling_copies-transformmergesiblingcopiesop"><code>transform.air.merge_sibling_copies</code> (transform::MergeSiblingCopiesOp)<a class="headerlink" href="#transformairmerge_sibling_copies-transformmergesiblingcopiesop" title="Permanent link">&para;</a></h3>
 <p><em>Copy several views of one buffer as one copy of their bounding region</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-64-1" name="__codelineno-64-1" href="#__codelineno-64-1"></a>operation ::= `transform.air.merge_sibling_copies` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-63-1" name="__codelineno-63-1" href="#__codelineno-63-1"></a>operation ::= `transform.air.merge_sibling_copies` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Finds the <code>memref.copy</code> ops under <code>target</code> that copy a
 <code>memref.reinterpret_cast</code> of a common base into a fresh <code>memref.alloc</code>
@@ -4498,7 +4425,7 @@ alone.</p>
 <h3 id="transformairnormalize_for_bounds-transformnormalizeforboundsop"><code>transform.air.normalize_for_bounds</code> (transform::NormalizeForBoundsOp)<a class="headerlink" href="#transformairnormalize_for_bounds-transformnormalizeforboundsop" title="Permanent link">&para;</a></h3>
 <p><em>Normalize scf.for loop bounds by folding affine.apply on induction variable</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-65-1" name="__codelineno-65-1" href="#__codelineno-65-1"></a>operation ::= `transform.air.normalize_for_bounds` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-64-1" name="__codelineno-64-1" href="#__codelineno-64-1"></a>operation ::= `transform.air.normalize_for_bounds` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform normalizes an scf.for loop by folding affine.apply operations
 that multiply the induction variable by a constant factor into the loop bounds.</p>
@@ -4514,16 +4441,16 @@ the transformation will:</p>
 <li>Erase the affine.apply operation</li>
 </ol>
 <p>Example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-66-1" name="__codelineno-66-1" href="#__codelineno-66-1"></a>// Before:
-<a id="__codelineno-66-2" name="__codelineno-66-2" href="#__codelineno-66-2"></a>scf.for %i = %c0 to %c64 step %c8 {
-<a id="__codelineno-66-3" name="__codelineno-66-3" href="#__codelineno-66-3"></a>  %scaled = affine.apply affine_map&lt;(d0) -&gt; (d0 * 8)&gt;(%i)
-<a id="__codelineno-66-4" name="__codelineno-66-4" href="#__codelineno-66-4"></a>  // ... uses of %scaled ...
-<a id="__codelineno-66-5" name="__codelineno-66-5" href="#__codelineno-66-5"></a>}
-<a id="__codelineno-66-6" name="__codelineno-66-6" href="#__codelineno-66-6"></a>
-<a id="__codelineno-66-7" name="__codelineno-66-7" href="#__codelineno-66-7"></a>// After:
-<a id="__codelineno-66-8" name="__codelineno-66-8" href="#__codelineno-66-8"></a>scf.for %i = %c0 to %c512 step %c64 {
-<a id="__codelineno-66-9" name="__codelineno-66-9" href="#__codelineno-66-9"></a>  // ... uses of %i directly (scaled bounds) ...
-<a id="__codelineno-66-10" name="__codelineno-66-10" href="#__codelineno-66-10"></a>}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-65-1" name="__codelineno-65-1" href="#__codelineno-65-1"></a>// Before:
+<a id="__codelineno-65-2" name="__codelineno-65-2" href="#__codelineno-65-2"></a>scf.for %i = %c0 to %c64 step %c8 {
+<a id="__codelineno-65-3" name="__codelineno-65-3" href="#__codelineno-65-3"></a>  %scaled = affine.apply affine_map&lt;(d0) -&gt; (d0 * 8)&gt;(%i)
+<a id="__codelineno-65-4" name="__codelineno-65-4" href="#__codelineno-65-4"></a>  // ... uses of %scaled ...
+<a id="__codelineno-65-5" name="__codelineno-65-5" href="#__codelineno-65-5"></a>}
+<a id="__codelineno-65-6" name="__codelineno-65-6" href="#__codelineno-65-6"></a>
+<a id="__codelineno-65-7" name="__codelineno-65-7" href="#__codelineno-65-7"></a>// After:
+<a id="__codelineno-65-8" name="__codelineno-65-8" href="#__codelineno-65-8"></a>scf.for %i = %c0 to %c512 step %c64 {
+<a id="__codelineno-65-9" name="__codelineno-65-9" href="#__codelineno-65-9"></a>  // ... uses of %i directly (scaled bounds) ...
+<a id="__codelineno-65-10" name="__codelineno-65-10" href="#__codelineno-65-10"></a>}
 </code></pre></div></p>
 <p>The transform supports:</p>
 <ul>
@@ -4567,7 +4494,7 @@ the transformation will:</p>
 <h3 id="transformairnormalize_loop_to_unit_step-transformnormalizelooptounitstepop"><code>transform.air.normalize_loop_to_unit_step</code> (transform::NormalizeLoopToUnitStepOp)<a class="headerlink" href="#transformairnormalize_loop_to_unit_step-transformnormalizelooptounitstepop" title="Permanent link">&para;</a></h3>
 <p><em>Rewrite scf.for to count from 0 by 1, the IV's value an affine.apply</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-67-1" name="__codelineno-67-1" href="#__codelineno-67-1"></a>operation ::= `transform.air.normalize_loop_to_unit_step` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-66-1" name="__codelineno-66-1" href="#__codelineno-66-1"></a>operation ::= `transform.air.normalize_loop_to_unit_step` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Rewrites each target <code>scf.for %i = %lb to %ub step %s</code> in place as
 <code>scf.for %j = 0 to ceildiv(%ub - %lb, %s) step 1</code>, replacing the uses of
@@ -4615,7 +4542,7 @@ silenceable failure and no loop is rewritten.</p>
 <h3 id="transformairoverride_memref_memory_space-transformoverridememrefmemoryspaceop"><code>transform.air.override_memref_memory_space</code> (transform::OverrideMemRefMemorySpaceOp)<a class="headerlink" href="#transformairoverride_memref_memory_space-transformoverridememrefmemoryspaceop" title="Permanent link">&para;</a></h3>
 <p><em>Override memref memory spaces within a target operation scope</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-68-1" name="__codelineno-68-1" href="#__codelineno-68-1"></a>operation ::= `transform.air.override_memref_memory_space` $target prop-dict attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-67-1" name="__codelineno-67-1" href="#__codelineno-67-1"></a>operation ::= `transform.air.override_memref_memory_space` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Overrides the memory space of all <code>memref.alloc</code> operations within the target
 operation to the specified <code>memory_space</code> value. The scope is inferred from
@@ -4635,17 +4562,17 @@ hierarchy levels by invoking the op multiple times with different targets.</p>
 </ol>
 <p>This is the transform dialect equivalent of the <code>air-override-memref-memory-space</code> pass.</p>
 <p>Example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-69-1" name="__codelineno-69-1" href="#__codelineno-69-1"></a>// Override herd allocs to L1 (memory_space 2)
-<a id="__codelineno-69-2" name="__codelineno-69-2" href="#__codelineno-69-2"></a>%herd = transform.structured.match ops{["air.herd"]} in %arg1
-<a id="__codelineno-69-3" name="__codelineno-69-3" href="#__codelineno-69-3"></a>  : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-69-4" name="__codelineno-69-4" href="#__codelineno-69-4"></a>transform.air.override_memref_memory_space %herd {memory_space = 2}
-<a id="__codelineno-69-5" name="__codelineno-69-5" href="#__codelineno-69-5"></a>  : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-69-6" name="__codelineno-69-6" href="#__codelineno-69-6"></a>
-<a id="__codelineno-69-7" name="__codelineno-69-7" href="#__codelineno-69-7"></a>// Override func-level allocs to L2 (memory_space 1), excluding herds
-<a id="__codelineno-69-8" name="__codelineno-69-8" href="#__codelineno-69-8"></a>%func = transform.structured.match ops{["func.func"]} in %arg1
-<a id="__codelineno-69-9" name="__codelineno-69-9" href="#__codelineno-69-9"></a>  : (!transform.any_op) -&gt; !transform.any_op
-<a id="__codelineno-69-10" name="__codelineno-69-10" href="#__codelineno-69-10"></a>transform.air.override_memref_memory_space %func {memory_space = 1}
-<a id="__codelineno-69-11" name="__codelineno-69-11" href="#__codelineno-69-11"></a>  : (!transform.any_op) -&gt; !transform.any_op
+<div class="highlight"><pre><span></span><code><a id="__codelineno-68-1" name="__codelineno-68-1" href="#__codelineno-68-1"></a>// Override herd allocs to L1 (memory_space 2)
+<a id="__codelineno-68-2" name="__codelineno-68-2" href="#__codelineno-68-2"></a>%herd = transform.structured.match ops{["air.herd"]} in %arg1
+<a id="__codelineno-68-3" name="__codelineno-68-3" href="#__codelineno-68-3"></a>  : (!transform.any_op) -&gt; !transform.any_op
+<a id="__codelineno-68-4" name="__codelineno-68-4" href="#__codelineno-68-4"></a>transform.air.override_memref_memory_space %herd {memory_space = 2}
+<a id="__codelineno-68-5" name="__codelineno-68-5" href="#__codelineno-68-5"></a>  : (!transform.any_op) -&gt; !transform.any_op
+<a id="__codelineno-68-6" name="__codelineno-68-6" href="#__codelineno-68-6"></a>
+<a id="__codelineno-68-7" name="__codelineno-68-7" href="#__codelineno-68-7"></a>// Override func-level allocs to L2 (memory_space 1), excluding herds
+<a id="__codelineno-68-8" name="__codelineno-68-8" href="#__codelineno-68-8"></a>%func = transform.structured.match ops{["func.func"]} in %arg1
+<a id="__codelineno-68-9" name="__codelineno-68-9" href="#__codelineno-68-9"></a>  : (!transform.any_op) -&gt; !transform.any_op
+<a id="__codelineno-68-10" name="__codelineno-68-10" href="#__codelineno-68-10"></a>transform.air.override_memref_memory_space %func {memory_space = 1}
+<a id="__codelineno-68-11" name="__codelineno-68-11" href="#__codelineno-68-11"></a>  : (!transform.any_op) -&gt; !transform.any_op
 </code></pre></div></p>
 <p>Traits: <code>FunctionalStyleTransformOpTrait</code></p>
 <p>Interfaces: <code>MemoryEffectsOpInterface</code>, <code>TransformOpInterface</code></p>
@@ -4687,7 +4614,7 @@ hierarchy levels by invoking the op multiple times with different targets.</p>
 </table>
 <h3 id="transformairpar_to_herd-transformpartoherdop"><code>transform.air.par_to_herd</code> (transform::ParToHerdOp)<a class="headerlink" href="#transformairpar_to_herd-transformpartoherdop" title="Permanent link">&para;</a></h3>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-70-1" name="__codelineno-70-1" href="#__codelineno-70-1"></a>operation ::= `transform.air.par_to_herd` $target prop-dict attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-69-1" name="__codelineno-69-1" href="#__codelineno-69-1"></a>operation ::= `transform.air.par_to_herd` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Transform a <code>scf.parallel</code> operation into a <code>air.herd</code> operation.
 If the <code>scf.parallel</code> operation has more than two dimensions, then only
@@ -4733,7 +4660,7 @@ herd. Returns the new <code>air.herd</code> operation.</p>
 </table>
 <h3 id="transformairpar_to_launch-transformpartolaunchop"><code>transform.air.par_to_launch</code> (transform::ParToLaunchOp)<a class="headerlink" href="#transformairpar_to_launch-transformpartolaunchop" title="Permanent link">&para;</a></h3>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-71-1" name="__codelineno-71-1" href="#__codelineno-71-1"></a>operation ::= `transform.air.par_to_launch` $target prop-dict attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-70-1" name="__codelineno-70-1" href="#__codelineno-70-1"></a>operation ::= `transform.air.par_to_launch` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Transform a <code>scf.parallel</code> operation into a <code>air.launch</code> operation.
 Returns the new <code>air.launch</code> operation.</p>
@@ -4777,7 +4704,7 @@ Returns the new <code>air.launch</code> operation.</p>
 </table>
 <h3 id="transformairpar_to_segment-transformpartosegmentop"><code>transform.air.par_to_segment</code> (transform::ParToSegmentOp)<a class="headerlink" href="#transformairpar_to_segment-transformpartosegmentop" title="Permanent link">&para;</a></h3>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-72-1" name="__codelineno-72-1" href="#__codelineno-72-1"></a>operation ::= `transform.air.par_to_segment` $target prop-dict attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-71-1" name="__codelineno-71-1" href="#__codelineno-71-1"></a>operation ::= `transform.air.par_to_segment` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Transform a <code>scf.parallel</code> operation into a <code>air.segment</code> operation.
 Returns the new <code>air.segment</code> operation.</p>
@@ -4822,7 +4749,7 @@ Returns the new <code>air.segment</code> operation.</p>
 <h3 id="transformairpush_unpack_through_slices-transformpushunpackthroughslicesop"><code>transform.air.push_unpack_through_slices</code> (transform::PushUnpackThroughSlicesOp)<a class="headerlink" href="#transformairpush_unpack_through_slices-transformpushunpackthroughslicesop" title="Permanent link">&para;</a></h3>
 <p><em>Move a linalg.unpack below an expand_shape and the single-index slices of it</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-73-1" name="__codelineno-73-1" href="#__codelineno-73-1"></a>operation ::= `transform.air.push_unpack_through_slices` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-72-1" name="__codelineno-72-1" href="#__codelineno-72-1"></a>operation ::= `transform.air.push_unpack_through_slices` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Each target is a <code>linalg.unpack</code> whose only user is a
 <code>tensor.expand_shape</code> splitting exactly one packed dim <code>d</code> into <code>[n, s]</code>,
@@ -4873,7 +4800,7 @@ match is a silenceable failure.</p>
 <h3 id="transformairraise_load_buffer_to_tensor-transformraiseloadbuffertotensorop"><code>transform.air.raise_load_buffer_to_tensor</code> (transform::RaiseLoadBufferToTensorOp)<a class="headerlink" href="#transformairraise_load_buffer_to_tensor-transformraiseloadbuffertotensorop" title="Permanent link">&para;</a></h3>
 <p><em>Rewrite a buffer built by a fill and box copies as tensor ops</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-74-1" name="__codelineno-74-1" href="#__codelineno-74-1"></a>operation ::= `transform.air.raise_load_buffer_to_tensor` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-73-1" name="__codelineno-73-1" href="#__codelineno-73-1"></a>operation ::= `transform.air.raise_load_buffer_to_tensor` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Looks for <code>memref.alloc</code> ops in the target that are written only by an
 optional <code>linalg.fill</code> of the whole buffer (possibly alone in an <code>scf.if</code>)
@@ -4928,7 +4855,7 @@ non-unit strides is left unchanged.</p>
 <h3 id="transformairremove_uninitialized_copy-transformremoveuninitializedcopyop"><code>transform.air.remove_uninitialized_copy</code> (transform::RemoveUninitializedCopyOp)<a class="headerlink" href="#transformairremove_uninitialized_copy-transformremoveuninitializedcopyop" title="Permanent link">&para;</a></h3>
 <p><em>Remove copy operations that copy from uninitialized memrefs</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-75-1" name="__codelineno-75-1" href="#__codelineno-75-1"></a>operation ::= `transform.air.remove_uninitialized_copy` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-74-1" name="__codelineno-74-1" href="#__codelineno-74-1"></a>operation ::= `transform.air.remove_uninitialized_copy` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform walks through a func.func operation and identifies memref.copy 
 and linalg.copy operations where the source is an uninitialized memref 
@@ -4942,16 +4869,16 @@ undefined data.</p>
 </ol>
 <p>Returns a handle to the modified function.</p>
 <p>Examples:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-76-1" name="__codelineno-76-1" href="#__codelineno-76-1"></a>// memref.copy case
-<a id="__codelineno-76-2" name="__codelineno-76-2" href="#__codelineno-76-2"></a>%alloc = memref.alloc() : memref&lt;2x16x8xi32, 1&gt;
-<a id="__codelineno-76-3" name="__codelineno-76-3" href="#__codelineno-76-3"></a>%subview = memref.subview %alloc[0, 0, 0] [1, 16, 8] [1, 1, 1] : ...
-<a id="__codelineno-76-4" name="__codelineno-76-4" href="#__codelineno-76-4"></a>%target = memref.alloc() : memref&lt;1x16x8xi32, 2&gt;
-<a id="__codelineno-76-5" name="__codelineno-76-5" href="#__codelineno-76-5"></a>memref.copy %subview, %target  // &lt;- This copy will be erased
-<a id="__codelineno-76-6" name="__codelineno-76-6" href="#__codelineno-76-6"></a>
-<a id="__codelineno-76-7" name="__codelineno-76-7" href="#__codelineno-76-7"></a>// linalg.copy case
-<a id="__codelineno-76-8" name="__codelineno-76-8" href="#__codelineno-76-8"></a>%alloc2 = memref.alloc() : memref&lt;16x8xi32, 1&gt;
-<a id="__codelineno-76-9" name="__codelineno-76-9" href="#__codelineno-76-9"></a>%target2 = memref.alloc() : memref&lt;16x8xi32, 2&gt;
-<a id="__codelineno-76-10" name="__codelineno-76-10" href="#__codelineno-76-10"></a>linalg.copy ins(%alloc2 : memref&lt;16x8xi32, 1&gt;) outs(%target2 : memref&lt;16x8xi32, 2&gt;)  // &lt;- This copy will be erased
+<div class="highlight"><pre><span></span><code><a id="__codelineno-75-1" name="__codelineno-75-1" href="#__codelineno-75-1"></a>// memref.copy case
+<a id="__codelineno-75-2" name="__codelineno-75-2" href="#__codelineno-75-2"></a>%alloc = memref.alloc() : memref&lt;2x16x8xi32, 1&gt;
+<a id="__codelineno-75-3" name="__codelineno-75-3" href="#__codelineno-75-3"></a>%subview = memref.subview %alloc[0, 0, 0] [1, 16, 8] [1, 1, 1] : ...
+<a id="__codelineno-75-4" name="__codelineno-75-4" href="#__codelineno-75-4"></a>%target = memref.alloc() : memref&lt;1x16x8xi32, 2&gt;
+<a id="__codelineno-75-5" name="__codelineno-75-5" href="#__codelineno-75-5"></a>memref.copy %subview, %target  // &lt;- This copy will be erased
+<a id="__codelineno-75-6" name="__codelineno-75-6" href="#__codelineno-75-6"></a>
+<a id="__codelineno-75-7" name="__codelineno-75-7" href="#__codelineno-75-7"></a>// linalg.copy case
+<a id="__codelineno-75-8" name="__codelineno-75-8" href="#__codelineno-75-8"></a>%alloc2 = memref.alloc() : memref&lt;16x8xi32, 1&gt;
+<a id="__codelineno-75-9" name="__codelineno-75-9" href="#__codelineno-75-9"></a>%target2 = memref.alloc() : memref&lt;16x8xi32, 2&gt;
+<a id="__codelineno-75-10" name="__codelineno-75-10" href="#__codelineno-75-10"></a>linalg.copy ins(%alloc2 : memref&lt;16x8xi32, 1&gt;) outs(%target2 : memref&lt;16x8xi32, 2&gt;)  // &lt;- This copy will be erased
 </code></pre></div></p>
 <p>Traits: <code>FunctionalStyleTransformOpTrait</code></p>
 <p>Interfaces: <code>MemoryEffectsOpInterface</code>, <code>TransformOpInterface</code></p>
@@ -4988,7 +4915,7 @@ undefined data.</p>
 <h3 id="transformairreuse_input_as_init-transformreuseinputasinitop"><code>transform.air.reuse_input_as_init</code> (transform::ReuseInputAsInitOp)<a class="headerlink" href="#transformairreuse_input_as_init-transformreuseinputasinitop" title="Permanent link">&para;</a></h3>
 <p><em>Make an elementwise linalg op write its result over one of its inputs</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-77-1" name="__codelineno-77-1" href="#__codelineno-77-1"></a>operation ::= `transform.air.reuse_input_as_init` $target (`input` `=` $input^)? attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-76-1" name="__codelineno-76-1" href="#__codelineno-76-1"></a>operation ::= `transform.air.reuse_input_as_init` $target (`input` `=` $input^)? attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Sets the init of the target's output to one of its inputs, so that
 bufferization writes the result into that input's buffer, and makes the
@@ -5002,19 +4929,19 @@ given, otherwise the first input with the output's type and indexing
 map; either way it must have both.</p>
 <p>A value updated in a loop, such as a running maximum, is computed from its
 previous value into a new tensor:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-78-1" name="__codelineno-78-1" href="#__codelineno-78-1"></a>%m_new = linalg.generic {...}
-<a id="__codelineno-78-2" name="__codelineno-78-2" href="#__codelineno-78-2"></a>    ins(%m_old, %rowmax : tensor&lt;64x1xbf16&gt;, tensor&lt;64x1xbf16&gt;)
-<a id="__codelineno-78-3" name="__codelineno-78-3" href="#__codelineno-78-3"></a>    outs(%empty : tensor&lt;64x1xbf16&gt;)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-77-1" name="__codelineno-77-1" href="#__codelineno-77-1"></a>%m_new = linalg.generic {...}
+<a id="__codelineno-77-2" name="__codelineno-77-2" href="#__codelineno-77-2"></a>    ins(%m_old, %rowmax : tensor&lt;64x1xbf16&gt;, tensor&lt;64x1xbf16&gt;)
+<a id="__codelineno-77-3" name="__codelineno-77-3" href="#__codelineno-77-3"></a>    outs(%empty : tensor&lt;64x1xbf16&gt;)
 </code></pre></div>
 <p>and bufferizes to a buffer of its own in every iteration. With the
 previous value as the init, read through the output, it is updated in
 place:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-79-1" name="__codelineno-79-1" href="#__codelineno-79-1"></a>%m_new = linalg.generic {...}
-<a id="__codelineno-79-2" name="__codelineno-79-2" href="#__codelineno-79-2"></a>    ins(%m_old, %rowmax : tensor&lt;64x1xbf16&gt;, tensor&lt;64x1xbf16&gt;)
-<a id="__codelineno-79-3" name="__codelineno-79-3" href="#__codelineno-79-3"></a>    outs(%m_old : tensor&lt;64x1xbf16&gt;) {
-<a id="__codelineno-79-4" name="__codelineno-79-4" href="#__codelineno-79-4"></a>^bb0(%unused: bf16, %r: bf16, %m: bf16):
-<a id="__codelineno-79-5" name="__codelineno-79-5" href="#__codelineno-79-5"></a>  ...
-<a id="__codelineno-79-6" name="__codelineno-79-6" href="#__codelineno-79-6"></a>}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-78-1" name="__codelineno-78-1" href="#__codelineno-78-1"></a>%m_new = linalg.generic {...}
+<a id="__codelineno-78-2" name="__codelineno-78-2" href="#__codelineno-78-2"></a>    ins(%m_old, %rowmax : tensor&lt;64x1xbf16&gt;, tensor&lt;64x1xbf16&gt;)
+<a id="__codelineno-78-3" name="__codelineno-78-3" href="#__codelineno-78-3"></a>    outs(%m_old : tensor&lt;64x1xbf16&gt;) {
+<a id="__codelineno-78-4" name="__codelineno-78-4" href="#__codelineno-78-4"></a>^bb0(%unused: bf16, %r: bf16, %m: bf16):
+<a id="__codelineno-78-5" name="__codelineno-78-5" href="#__codelineno-78-5"></a>  ...
+<a id="__codelineno-78-6" name="__codelineno-78-6" href="#__codelineno-78-6"></a>}
 </code></pre></div>
 <p>Returns a handle to the updated op. Fails silenceably if the target does
 not qualify.</p>
@@ -5059,7 +4986,7 @@ not qualify.</p>
 <h3 id="transformairshare_alloc-transformshareallocop"><code>transform.air.share_alloc</code> (transform::ShareAllocOp)<a class="headerlink" href="#transformairshare_alloc-transformshareallocop" title="Permanent link">&para;</a></h3>
 <p><em>Use one buffer for several allocations that are never live together</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-80-1" name="__codelineno-80-1" href="#__codelineno-80-1"></a>operation ::= `transform.air.share_alloc` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-79-1" name="__codelineno-79-1" href="#__codelineno-79-1"></a>operation ::= `transform.air.share_alloc` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>The targets are <code>memref.alloc</code> ops in one block, with static identity
 layouts, one memory space and one element type, each with an element
@@ -5116,7 +5043,7 @@ loops that run one after the other.</p>
 <h3 id="transformairsink_operand_producers-transformsinkoperandproducersop"><code>transform.air.sink_operand_producers</code> (transform::SinkOperandProducersOp)<a class="headerlink" href="#transformairsink_operand_producers-transformsinkoperandproducersop" title="Permanent link">&para;</a></h3>
 <p><em>Move the ops that compute some operands of an op right before it</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-81-1" name="__codelineno-81-1" href="#__codelineno-81-1"></a>operation ::= `transform.air.sink_operand_producers` $target `operand_indices` `=` $operand_indices attr-dict `:` type($target)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-80-1" name="__codelineno-80-1" href="#__codelineno-80-1"></a>operation ::= `transform.air.sink_operand_producers` $target `operand_indices` `=` $operand_indices attr-dict `:` type($target)
 </code></pre></div>
 <p>For each <code>target</code>, finds the ops of its block that compute the operands
 at <code>operand_indices</code>, directly or through each other (including values
@@ -5156,7 +5083,7 @@ silenceable error, reported before anything moves.</p>
 <h3 id="transformairswap_transpose_with_collapse-transformswaptransposewithcollapseop"><code>transform.air.swap_transpose_with_collapse</code> (transform::SwapTransposeWithCollapseOp)<a class="headerlink" href="#transformairswap_transpose_with_collapse-transformswaptransposewithcollapseop" title="Permanent link">&para;</a></h3>
 <p><em>Move transposes above the collapse_shape ops they read</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-82-1" name="__codelineno-82-1" href="#__codelineno-82-1"></a>operation ::= `transform.air.swap_transpose_with_collapse` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-81-1" name="__codelineno-81-1" href="#__codelineno-81-1"></a>operation ::= `transform.air.swap_transpose_with_collapse` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Applies, within the target, a pattern that rewrites a <code>linalg.transpose</code>
 of a <code>tensor.collapse_shape</code> as a <code>tensor.collapse_shape</code> of a transpose
@@ -5200,7 +5127,7 @@ directly, and the two can compose.</p>
 <h3 id="transformairtranspose_reduce-transformtransposereduceop"><code>transform.air.transpose_reduce</code> (transform::TransposeReduceOp)<a class="headerlink" href="#transformairtranspose_reduce-transformtransposereduceop" title="Permanent link">&para;</a></h3>
 <p><em>Transpose inputs of linalg.reduce ops to make reduction dimensions innermost</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-83-1" name="__codelineno-83-1" href="#__codelineno-83-1"></a>operation ::= `transform.air.transpose_reduce` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-82-1" name="__codelineno-82-1" href="#__codelineno-82-1"></a>operation ::= `transform.air.transpose_reduce` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform takes a handle to linalg.reduce operations and checks if the 
 reduction dimensions are at the innermost (last/lowest) dimensions. If any 
@@ -5255,7 +5182,7 @@ efficient reductions when the reduction dimensions are contiguous and innermost.
 <h3 id="transformairunswitch_loop-transformunswitchloopop"><code>transform.air.unswitch_loop</code> (transform::UnswitchLoopOp)<a class="headerlink" href="#transformairunswitch_loop-transformunswitchloopop" title="Permanent link">&para;</a></h3>
 <p><em>Hoist a loop-invariant select condition out of a loop</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-84-1" name="__codelineno-84-1" href="#__codelineno-84-1"></a>operation ::= `transform.air.unswitch_loop` $target attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-83-1" name="__codelineno-83-1" href="#__codelineno-83-1"></a>operation ::= `transform.air.unswitch_loop` $target attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>Each target is an <code>scf.for</code>. When an <code>arith.select</code> in the loop is decided
 by an <code>i1</code> defined outside it (directly, or through a <code>vector.broadcast</code>
@@ -5302,7 +5229,7 @@ costs nothing when the flag has the other value.</p>
 <h3 id="transformairvector_type_cast-transformvectortypecastop"><code>transform.air.vector_type_cast</code> (transform::VectorTypeCastOp)<a class="headerlink" href="#transformairvector_type_cast-transformvectortypecastop" title="Permanent link">&para;</a></h3>
 <p><em>Cast vector operands and results of vector operations to a user-provided datatype</em></p>
 <p>Syntax:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-85-1" name="__codelineno-85-1" href="#__codelineno-85-1"></a>operation ::= `transform.air.vector_type_cast` $target prop-dict attr-dict `:` functional-type(operands, results)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-84-1" name="__codelineno-84-1" href="#__codelineno-84-1"></a>operation ::= `transform.air.vector_type_cast` $target prop-dict attr-dict `:` functional-type(operands, results)
 </code></pre></div>
 <p>This transform takes a handle to vector dialect operations and casts input operands
 and/or results of vector type to a user-provided datatype. By default, if none of 
@@ -5326,32 +5253,32 @@ operations with mixed vector sizes (e.g., vector.multi_reduction with a multi-el
 input and single-element accumulator) are still transformed, as they contain at least 
 one multi-element vector.</p>
 <p>Example 1 - Cast all inputs and outputs (default behavior):
+<div class="highlight"><pre><span></span><code><a id="__codelineno-85-1" name="__codelineno-85-1" href="#__codelineno-85-1"></a>// Before:
+<a id="__codelineno-85-2" name="__codelineno-85-2" href="#__codelineno-85-2"></a>%result = vector.fma %a, %b, %c : vector&lt;8xf32&gt;
+<a id="__codelineno-85-3" name="__codelineno-85-3" href="#__codelineno-85-3"></a>
+<a id="__codelineno-85-4" name="__codelineno-85-4" href="#__codelineno-85-4"></a>// After (with target_element_type = f16):
+<a id="__codelineno-85-5" name="__codelineno-85-5" href="#__codelineno-85-5"></a>%a_cast = arith.truncf %a : vector&lt;8xf32&gt; to vector&lt;8xf16&gt;
+<a id="__codelineno-85-6" name="__codelineno-85-6" href="#__codelineno-85-6"></a>%b_cast = arith.truncf %b : vector&lt;8xf32&gt; to vector&lt;8xf16&gt;
+<a id="__codelineno-85-7" name="__codelineno-85-7" href="#__codelineno-85-7"></a>%c_cast = arith.truncf %c : vector&lt;8xf32&gt; to vector&lt;8xf16&gt;
+<a id="__codelineno-85-8" name="__codelineno-85-8" href="#__codelineno-85-8"></a>%result_f16 = vector.fma %a_cast, %b_cast, %c_cast : vector&lt;8xf16&gt;
+<a id="__codelineno-85-9" name="__codelineno-85-9" href="#__codelineno-85-9"></a>%result = arith.extf %result_f16 : vector&lt;8xf16&gt; to vector&lt;8xf32&gt;
+</code></pre></div></p>
+<p>Example 2 - Cast only specific inputs:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-86-1" name="__codelineno-86-1" href="#__codelineno-86-1"></a>// Before:
 <a id="__codelineno-86-2" name="__codelineno-86-2" href="#__codelineno-86-2"></a>%result = vector.fma %a, %b, %c : vector&lt;8xf32&gt;
 <a id="__codelineno-86-3" name="__codelineno-86-3" href="#__codelineno-86-3"></a>
-<a id="__codelineno-86-4" name="__codelineno-86-4" href="#__codelineno-86-4"></a>// After (with target_element_type = f16):
+<a id="__codelineno-86-4" name="__codelineno-86-4" href="#__codelineno-86-4"></a>// After (with target_element_type = f16, input_indices = [0, 1]):
 <a id="__codelineno-86-5" name="__codelineno-86-5" href="#__codelineno-86-5"></a>%a_cast = arith.truncf %a : vector&lt;8xf32&gt; to vector&lt;8xf16&gt;
 <a id="__codelineno-86-6" name="__codelineno-86-6" href="#__codelineno-86-6"></a>%b_cast = arith.truncf %b : vector&lt;8xf32&gt; to vector&lt;8xf16&gt;
-<a id="__codelineno-86-7" name="__codelineno-86-7" href="#__codelineno-86-7"></a>%c_cast = arith.truncf %c : vector&lt;8xf32&gt; to vector&lt;8xf16&gt;
-<a id="__codelineno-86-8" name="__codelineno-86-8" href="#__codelineno-86-8"></a>%result_f16 = vector.fma %a_cast, %b_cast, %c_cast : vector&lt;8xf16&gt;
-<a id="__codelineno-86-9" name="__codelineno-86-9" href="#__codelineno-86-9"></a>%result = arith.extf %result_f16 : vector&lt;8xf16&gt; to vector&lt;8xf32&gt;
-</code></pre></div></p>
-<p>Example 2 - Cast only specific inputs:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-87-1" name="__codelineno-87-1" href="#__codelineno-87-1"></a>// Before:
-<a id="__codelineno-87-2" name="__codelineno-87-2" href="#__codelineno-87-2"></a>%result = vector.fma %a, %b, %c : vector&lt;8xf32&gt;
-<a id="__codelineno-87-3" name="__codelineno-87-3" href="#__codelineno-87-3"></a>
-<a id="__codelineno-87-4" name="__codelineno-87-4" href="#__codelineno-87-4"></a>// After (with target_element_type = f16, input_indices = [0, 1]):
-<a id="__codelineno-87-5" name="__codelineno-87-5" href="#__codelineno-87-5"></a>%a_cast = arith.truncf %a : vector&lt;8xf32&gt; to vector&lt;8xf16&gt;
-<a id="__codelineno-87-6" name="__codelineno-87-6" href="#__codelineno-87-6"></a>%b_cast = arith.truncf %b : vector&lt;8xf32&gt; to vector&lt;8xf16&gt;
-<a id="__codelineno-87-7" name="__codelineno-87-7" href="#__codelineno-87-7"></a>%result_f16 = vector.fma %a_cast, %b_cast, %c : vector&lt;8xf16, f32, f32&gt;
-<a id="__codelineno-87-8" name="__codelineno-87-8" href="#__codelineno-87-8"></a>%result = arith.extf %result_f16 : vector&lt;8xf16&gt; to vector&lt;8xf32&gt;
+<a id="__codelineno-86-7" name="__codelineno-86-7" href="#__codelineno-86-7"></a>%result_f16 = vector.fma %a_cast, %b_cast, %c : vector&lt;8xf16, f32, f32&gt;
+<a id="__codelineno-86-8" name="__codelineno-86-8" href="#__codelineno-86-8"></a>%result = arith.extf %result_f16 : vector&lt;8xf16&gt; to vector&lt;8xf32&gt;
 </code></pre></div></p>
 <p>Example 3 - Cast only outputs:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-88-1" name="__codelineno-88-1" href="#__codelineno-88-1"></a>// Transform only the output
-<a id="__codelineno-88-2" name="__codelineno-88-2" href="#__codelineno-88-2"></a>transform.air.vector_type_cast %op {
-<a id="__codelineno-88-3" name="__codelineno-88-3" href="#__codelineno-88-3"></a>  target_element_type = f16,
-<a id="__codelineno-88-4" name="__codelineno-88-4" href="#__codelineno-88-4"></a>  output_indices = [0]
-<a id="__codelineno-88-5" name="__codelineno-88-5" href="#__codelineno-88-5"></a>}
+<div class="highlight"><pre><span></span><code><a id="__codelineno-87-1" name="__codelineno-87-1" href="#__codelineno-87-1"></a>// Transform only the output
+<a id="__codelineno-87-2" name="__codelineno-87-2" href="#__codelineno-87-2"></a>transform.air.vector_type_cast %op {
+<a id="__codelineno-87-3" name="__codelineno-87-3" href="#__codelineno-87-3"></a>  target_element_type = f16,
+<a id="__codelineno-87-4" name="__codelineno-87-4" href="#__codelineno-87-4"></a>  output_indices = [0]
+<a id="__codelineno-87-5" name="__codelineno-87-5" href="#__codelineno-87-5"></a>}
 </code></pre></div></p>
 <p>Attributes:</p>
 <ul>
