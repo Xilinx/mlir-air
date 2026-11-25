@@ -1253,11 +1253,6 @@ def segment(grid=None, name=None, params=None):
 # ---------------------------------------------------------------------------
 
 
-def _needs(obj, kernel):
-    """Phrase one claim on a herd's single link_with slot, for a conflict."""
-    return f"calls {kernel} from {obj!r}" if kernel else f"declares link_with={obj!r}"
-
-
 def _staged_in_scope(segment):
     """The segment's L2 buffers that are still live where a herd is going.
 
