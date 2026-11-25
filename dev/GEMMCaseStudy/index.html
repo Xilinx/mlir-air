@@ -2004,7 +2004,7 @@
 "canonicalize", "cse"<br />
 <a href="#air-loop-fusion">"func.func(air-loop-fusion)"</a><br />
 <a href="#air-label-scf-for-to-ping-pong">"air-label-scf-for-to-ping-pong"</a><br />
-<a href="#air-ping-pong-transform">"air-ping-pong-transform{keep-memref-dealloc=true}"</a><br />
+<a href="#air-ping-pong-transform">"air-ping-pong-transform"</a><br />
 "canonicalize", "cse"<br />
 <a href="#air-specialize-channel-wrap-and-stride">"air-specialize-channel-wrap-and-stride"</a><br />
 "canonicalize", "cse"<br />
@@ -2064,7 +2064,7 @@
 </tr>
 <tr>
 <td style="text-align: left;">Double buffering</td>
-<td style="text-align: left;"><ul><li><code>air-label-scf-for-to-ping-pong</code></li><li><code>air-ping-pong-transform{keep-memref-dealloc=true}</code></li></ul></td>
+<td style="text-align: left;"><ul><li><code>air-label-scf-for-to-ping-pong</code></li><li><code>air-ping-pong-transform</code></li></ul></td>
 <td style="text-align: left;">Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a <code>memref</code> within an <code>scf.for</code> loop; explicitly represent the multiple asynchronous threads traversing through the loop.</td>
 </tr>
 <tr>

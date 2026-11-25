@@ -1216,10 +1216,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#capacity-and-depth" class="md-nav__link">
+  <a href="#capacity" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Capacity and depth
+        Capacity
       
     </span>
   </a>
@@ -2396,10 +2396,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#capacity-and-depth" class="md-nav__link">
+  <a href="#capacity" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Capacity and depth
+        Capacity
       
     </span>
   </a>
@@ -2742,10 +2742,25 @@ all cross-level data movement is explicit.</p>
 <p>All data-movement and hierarchy operations may execute <strong>asynchronously</strong>. An op that
 produces an <code>!air.token</code> result is dispatched immediately and executes concurrently
 with subsequent operations. Token values are used to express data, control, affinity,
-and concurrency constraints (see §1.5). <code>air.wait_all</code> merges multiple tokens into a
-single synchronization point. <code>air.execute</code> wraps sequential computation in an
-asynchronous region.</p>
+and concurrency constraints (see §1.5; only data and control are implemented today).
+<code>air.wait_all</code> merges multiple tokens into a single synchronization point.
+<code>air.execute</code> wraps sequential computation in an asynchronous region.</p>
 <h3 id="15-token-taxonomy-and-operation-lifetimes">1.5 Token taxonomy and operation lifetimes<a class="headerlink" href="#15-token-taxonomy-and-operation-lifetimes" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p><strong>Implementation status.</strong> This section, and the syntax used throughout this
+document, describe the planned token design. What the dialect implements today:</p>
+<ul>
+<li>one token type, <code>!air.async.token</code> (<code>!air.token</code> does not parse);</li>
+<li>no <code>air.token.alloc</code> op;</li>
+<li>one token list per op, its <code>async_dependencies</code> operands, written
+  <code>air.op async [%t0, %t1]</code>; it has the semantics given below for the
+  <code>dependency</code> list;</li>
+<li>no <code>affinity</code> or <code>concurrency</code> lists.</li>
+</ul>
+<p>Read <code>!air.token</code> as <code>!air.async.token</code> and <code>[dependency = [...]]</code> as the
+<code>async [...]</code> list; the <code>affinity</code> and <code>concurrency</code> lists, and the rules about
+them, are planned.</p>
+</blockquote>
 <h4 id="operation-lifetimes">Operation lifetimes<a class="headerlink" href="#operation-lifetimes" title="Permanent link">&para;</a></h4>
 <p>Every AIR hierarchy operation has two distinct lifetimes:</p>
 <ul>
@@ -3388,7 +3403,7 @@ backend does not support these attributes.</p>
 <hr />
 <h3 id="25-airchannel-airchannelput-airchannelget">2.5 <code>air.channel</code>, <code>air.channel.put</code>, <code>air.channel.get</code><a class="headerlink" href="#25-airchannel-airchannelput-airchannelget" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>// Channel declaration — at module scope
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>air.channel @name [dim₀, dim₁, …] {channel_type = "npu_dma_stream", depth = &lt;N&gt;}
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>air.channel @name [dim₀, dim₁, …] {channel_type = "npu_dma_stream"}
 <a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
 <a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>// Synchronous put/get — block until the transfer completes
 <a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>air.channel.put @name[indices] (src[offsets][sizes][strides]) : (type_src)
@@ -3407,7 +3422,8 @@ backend does not support these attributes.</p>
 consumer sites. They decouple the put and get sides, allowing the compiler to schedule
 them independently and to introduce double-buffering.</p>
 <p>A channel may be an array (e.g., <code>[4, 4]</code> for a 4×4 array). The <code>indices</code> operand on
-<code>put</code>/<code>get</code> selects the specific channel within the array.</p>
+<code>put</code>/<code>get</code> selects the specific channel within the array. The array's shape is the
+shape of a bundle of channels, not a capacity.</p>
 <p>The <code>channel_type</code> attribute controls the underlying mechanism. Values are
 namespaced by backend: NPU (AIE) channels use the <code>npu_</code> prefix; GPU channels
 use the <code>gpu_</code> prefix.</p>
@@ -3476,44 +3492,47 @@ made it.</p>
 <p>Runtime destination selection requires an interconnect that can route each transfer
 independently. Backends may therefore restrict which <code>channel_type</code> values support it;
 see the backend mapping sections.</p>
-<h4 id="capacity-and-depth">Capacity and depth<a class="headerlink" href="#capacity-and-depth" title="Permanent link">&para;</a></h4>
-<p>A channel has a finite buffer capacity set by the <code>depth</code> attribute (default <strong>1</strong>).
-The depth specifies how many transfers may be in-flight simultaneously:</p>
+<h4 id="capacity">Capacity<a class="headerlink" href="#capacity" title="Permanent link">&para;</a></h4>
+<p>A channel has no buffer of its own, and no attribute sets one. Whether a transfer is
+buffered depends on its two ends:</p>
 <table>
 <thead>
 <tr>
-<th>Depth</th>
+<th>Ends</th>
 <th>Effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>1 (default)</td>
-<td>Rendezvous: each <code>put</code> must be consumed by a <code>get</code> before the next <code>put</code> can proceed.</td>
+<td><code>put</code> and <code>get</code> both asynchronous</td>
+<td>Rendezvous: the data moves only while both are in progress. A <code>put</code> cannot complete before its <code>get</code> has started and been given the data, and vice versa, so a program can deadlock through backpressure.</td>
 </tr>
 <tr>
-<td>2</td>
-<td>Double-buffering: producer may issue one transfer ahead of the consumer.</td>
-</tr>
-<tr>
-<td>N</td>
-<td>Producer may have up to N transfers outstanding before it must wait.</td>
+<td><code>put</code> or <code>get</code> synchronous</td>
+<td>Buffered without bound: the synchronous end completes without waiting for the other one. A synchronous <code>put</code> followed by its <code>get</code> on the next line does not block.</td>
 </tr>
 </tbody>
 </table>
-<p>Increasing depth relaxes the coupling between producer and consumer at the cost of
-additional buffer memory (each slot requires storage for one transfer's worth of data).</p>
+<p>Overlapping a producer with its consumer (double-buffering) is expressed with buffers
+and tokens in the program, not with channel capacity.</p>
+<p>This table, and the flow-control and deadlock rules below, give the program's meaning.
+A backend may buffer differently, and a program that relies on buffering a backend does
+not provide does not run there. For example, the CPU runtime (<code>runtime_lib/aircpu</code>)
+holds one transfer per channel index. A <code>put</code> there waits until the previous transfer
+has been taken, then completes once its data is in the channel, whether or not its
+<code>get</code> has started. Two synchronous <code>put</code>s before their <code>get</code>s therefore block on that
+runtime.</p>
 <h4 id="flow-control-semantics">Flow control semantics<a class="headerlink" href="#flow-control-semantics" title="Permanent link">&para;</a></h4>
-<p><code>put</code> and <code>get</code> are <strong>blocking</strong> at the channel boundary:</p>
+<p>In the program's meaning (see Capacity for backends that buffer differently):</p>
 <ul>
-<li>A <code>put</code> issued when the channel already holds <code>depth</code> unread transfers stalls until
-  the consumer issues a <code>get</code> and frees a slot.</li>
-<li>A <code>get</code> issued when the channel holds no data stalls until the producer issues a <code>put</code>.</li>
+<li>A <code>get</code> whose data has not been put yet waits until its <code>put</code> provides it.</li>
+<li>An asynchronous <code>put</code> whose <code>get</code> is also asynchronous waits until that <code>get</code> takes
+  the data.</li>
 </ul>
 <p>In the asynchronous form the operation is dispatched immediately and the returned
-<code>!air.token</code> does not signal until the blocking condition is resolved and the transfer
-is complete. This allows other work to proceed while the channel handshake is in
-progress, but does not remove the fundamental flow-control constraint.</p>
+<code>!air.token</code> does not signal until the transfer is complete. This allows other work to
+proceed while the channel handshake is in progress, but does not remove the
+rendezvous between two asynchronous ends.</p>
 <h4 id="balance-requirement">Balance requirement<a class="headerlink" href="#balance-requirement" title="Permanent link">&para;</a></h4>
 <p>For a channel to make progress, every <code>put</code> must be matched by a <code>get</code> on the same
 channel index, and vice versa. The compiler enforces the <strong>static balance condition</strong>:</p>
@@ -3564,24 +3583,26 @@ leaves the two same-slot endpoints unordered.</p>
 <p>A program deadlocks when a <code>put</code> is waiting for a <code>get</code> that can never execute, or a
 <code>get</code> is waiting for a <code>put</code> that can never execute, and no other operation can break
 the wait.</p>
-<p><strong>Minimal deadlock</strong> — <code>put</code> and <code>get</code> in the same sequential scope:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>air.channel @C [] {depth = 1}
+<p><strong>Minimal deadlock</strong> — an asynchronous <code>get</code> that waits for its own asynchronous <code>put</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>air.channel @C []
 <a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
 <a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>air.segment @deadlock {
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>  // put blocks: channel is at capacity, waiting for a get to free space
-<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>  air.channel.put @C[] (%src[][][]) : (memref&lt;…, 1&gt;)
-<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>  // never reached — sequential control flow cannot reach get while put blocks
-<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>  air.channel.get @C[] (%dst[][][]) : (memref&lt;…, 1&gt;)
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>  // the put cannot complete until a get takes its data
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>  %p = air.channel.put async @C[] (%src[][][]) : (memref&lt;…, 1&gt;)
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>  // the get does not start until the put has completed
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>  %g = air.channel.get async [%p] @C[] (%dst[][][]) : (memref&lt;…, 1&gt;)
 <a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>  air.segment_terminator
 <a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>}
 </code></pre></div>
-<p>The necessary condition for deadlock freedom is that for every channel there exists a
+<p>These conditions are those of the program's meaning; a backend with less buffering (see
+Capacity) can deadlock in more programs.</p>
+<p>When both ends of a transfer are asynchronous, deadlock freedom requires a
 <strong>concurrent execution context</strong> in which the matching <code>put</code> and <code>get</code> can both
 make progress simultaneously. In practice:</p>
 <ul>
-<li><code>put</code> and <code>get</code> on the same channel must appear in different herds, different async
-  branches, or different segment instances — any context that allows them to execute
-  concurrently.</li>
+<li>such a <code>put</code> and <code>get</code> must appear in different herds, different async branches, or
+  different segment instances, or otherwise not wait for each other — any context that
+  allows them to execute concurrently.</li>
 <li>The communication graph (nodes = ops, edges = channel put→get dependencies) must
   be <strong>acyclic</strong>: a cycle means at least one op in the cycle is waiting on another in
   the same cycle, which can never be resolved.</li>
@@ -3603,8 +3624,8 @@ only by channel pairing, and so are the drain and the inputs that feed its produ
 <li>block on the drain's completion before any host access that may touch the memory it
   writes, as the drain's token requires.</li>
 </ul>
-<p>How many transfers a channel can have in flight is a property of the backend, not of the
-program.</p>
+<p>Between two asynchronous ends a transfer is a rendezvous (see Capacity), so a lowering
+cannot rely on a channel holding data for an end that has not been reached yet.</p>
 <hr />
 <h3 id="26-airexecute-and-airwait_all">2.6 <code>air.execute</code> and <code>air.wait_all</code><a class="headerlink" href="#26-airexecute-and-airwait_all" title="Permanent link">&para;</a></h3>
 <p><code>air.execute</code> wraps a sequential block of host-visible computation (e.g., <code>memref.alloc</code>,
