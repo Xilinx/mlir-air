@@ -707,24 +707,23 @@ struct EliminateIntermediateMemrefPattern
       return failure();
 
     // Create a new memcpy that directly copies from the source of the first
-    // memcpy to the destination of the second memcpy
+    // memcpy to the destination of the second memcpy. The intermediate buffer
+    // is written and read whole, so the new copy keeps the first's source
+    // pattern and the second's destination pattern.
     rewriter.setInsertionPoint(firstMemcpy);
 
-    SmallVector<Value> emptyOffsets, emptySizes, emptyStrides;
-    SmallVector<Type> emptyTypes;
-
+    SmallVector<Type> resultTypes;
     if (!firstMemcpy.getAsyncDependencies().empty()) {
-      emptyTypes.push_back(air::AsyncTokenType::get(rewriter.getContext()));
+      resultTypes.push_back(air::AsyncTokenType::get(rewriter.getContext()));
     }
 
     auto newMemcpy = air::DmaMemcpyNdOp::create(
-        rewriter, firstMemcpy.getLoc(),
-        emptyTypes,                         // result types
-        firstMemcpy.getAsyncDependencies(), // async dependencies
-        secondMemcpy.getDstMemref(),        // destination from second memcpy
-        emptyOffsets, emptySizes, emptyStrides, // dst access pattern
-        firstMemcpy.getSrcMemref(),             // source from first memcpy
-        emptyOffsets, emptySizes, emptyStrides, // src access pattern
+        rewriter, firstMemcpy.getLoc(), resultTypes,
+        firstMemcpy.getAsyncDependencies(), secondMemcpy.getDstMemref(),
+        secondMemcpy.getMixedDstOffsets(), secondMemcpy.getMixedDstSizes(),
+        secondMemcpy.getMixedDstStrides(), firstMemcpy.getSrcMemref(),
+        firstMemcpy.getMixedSrcOffsets(), firstMemcpy.getMixedSrcSizes(),
+        firstMemcpy.getMixedSrcStrides(),
         /*pad_before=*/nullptr, /*pad_after=*/nullptr);
 
     // Replace the async token of the second memcpy with the new one if needed
