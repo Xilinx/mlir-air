@@ -877,12 +877,8 @@ public:
             SmallVector<OpFoldResult> newSrcSizes(srcSizes);
             newSrcSizes[padDimIdx] = actualAttr;
             dmaOp.setMixedSrcSizes(newSrcSizes);
-            auto dstSizes = dmaOp.getMixedDstSizes();
-            if (padDimIdx < (int64_t)dstSizes.size()) {
-              SmallVector<OpFoldResult> newDstSizes(dstSizes);
-              newDstSizes[padDimIdx] = actualAttr;
-              dmaOp.setMixedDstSizes(newDstSizes);
-            }
+            // The padding is sent with the data: the destination keeps the
+            // whole tile and receives both.
 
             int64_t numDims = srcSizes.size();
             SmallVector<int32_t> padBefore(numDims, 0);
@@ -1402,7 +1398,9 @@ public:
       dmaOp.setMixedSrcSizes(newSizes);
     });
 
-    // Step 5: Add explicit dst sizes/strides to segment-level L3->L2 DMAs.
+    // Step 5: Add explicit dst sizes/strides to L3->L2 DMAs, at segment or
+    // launch level: Step 4 shrank their source, and the destination takes
+    // the same elements, the padding coming later from the L2->L1 side.
     struct DmaS2MMInfo {
       air::DmaMemcpyNdOp dmaOp;
       int64_t padDimInMemref;
@@ -1411,8 +1409,6 @@ public:
     SmallVector<DmaS2MMInfo> dmasToFixup;
 
     launch.walk([&](air::DmaMemcpyNdOp dmaOp) {
-      if (!dmaOp->getParentOfType<air::SegmentOp>())
-        return;
       auto dstType = dyn_cast<BaseMemRefType>(dmaOp.getDstMemref().getType());
       auto srcType = dyn_cast<BaseMemRefType>(dmaOp.getSrcMemref().getType());
       if (!dstType || !srcType)
@@ -1478,12 +1474,14 @@ public:
         strides.push_back(builder.getIndexAttr(stride));
       }
 
+      SmallVector<Type, 1> resultTypes;
+      if (dmaOp.getAsyncToken())
+        resultTypes.push_back(dmaOp.getAsyncToken().getType());
       auto newDma = air::DmaMemcpyNdOp::create(
-          builder, loc,
-          dmaOp.getAsyncToken() ? dmaOp.getAsyncToken().getType() : Type(),
-          dmaOp.getAsyncDependencies(), dmaOp.getDstMemref(), offsets, sizes,
-          strides, dmaOp.getSrcMemref(), dmaOp.getMixedSrcOffsets(),
-          dmaOp.getMixedSrcSizes(), dmaOp.getMixedSrcStrides(),
+          builder, loc, resultTypes, dmaOp.getAsyncDependencies(),
+          dmaOp.getDstMemref(), offsets, sizes, strides, dmaOp.getSrcMemref(),
+          dmaOp.getMixedSrcOffsets(), dmaOp.getMixedSrcSizes(),
+          dmaOp.getMixedSrcStrides(),
           /*pad_before=*/DenseI32ArrayAttr(),
           /*pad_after=*/DenseI32ArrayAttr());
       // Only discardable attrs carry over: the inherent ones (the static
