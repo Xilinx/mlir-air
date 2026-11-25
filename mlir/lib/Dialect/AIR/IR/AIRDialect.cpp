@@ -3255,16 +3255,43 @@ static LogicalResult verifySizesStridesRank(Operation *op,
   return success();
 }
 
-// The number of ranks of an air.rank, if its sizes are constants.
+// The number of ranks of an air.rank, if its sizes are constants and their
+// product fits.
 static std::optional<int64_t> constantRankCount(air::RankOp rank) {
   int64_t count = 1;
   for (Value size : rank.getSizeOperands()) {
     auto c = getConstantIntValue(size);
-    if (!c)
+    if (!c || llvm::MulOverflow(count, *c, count))
       return std::nullopt;
-    count *= *c;
   }
   return count;
+}
+
+// The value a memref comes from, through views and the kernel arguments of
+// the hierarchy ops it enters.
+static Value traceMemrefSource(Value v) {
+  for (unsigned step = 0; v && step < 64; ++step) {
+    if (auto view = v.getDefiningOp<ViewLikeOpInterface>()) {
+      v = view.getViewSource();
+      continue;
+    }
+    auto arg = dyn_cast<BlockArgument>(v);
+    auto hier = arg ? dyn_cast_if_present<air::HierarchyInterface>(
+                          arg.getOwner()->getParentOp())
+                    : nullptr;
+    if (!hier)
+      return v;
+    bool found = false;
+    for (unsigned i = 0; i < hier.getNumKernelOperands(); ++i)
+      if (hier.getKernelArgument(i) == arg) {
+        v = hier.getKernelOperand(i);
+        found = true;
+        break;
+      }
+    if (!found)
+      return v;
+  }
+  return v;
 }
 
 LogicalResult air::DmaMemcpyNdOp::verify() {
@@ -3326,7 +3353,7 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
     }
 
     auto requireSymmetricAlloc = [&](Value v, StringRef side) -> LogicalResult {
-      auto alloc = v.getDefiningOp<memref::AllocOp>();
+      auto alloc = traceMemrefSource(v).getDefiningOp<memref::AllocOp>();
       if (!alloc)
         return success(); // Block args / non-alloc sources are user-trusted.
       if (!alloc->hasAttr("air.symmetric"))
@@ -4230,10 +4257,12 @@ ParseResult air::CustomOp::parse(OpAsmParser &parser, OperationState &result) {
 //
 
 LogicalResult air::TranslateOp::verify() {
-  Value root = getSource();
-  while (auto view = root.getDefiningOp<ViewLikeOpInterface>())
-    root = view.getViewSource();
-  auto alloc = root.getDefiningOp<memref::AllocOp>();
+  // The ranks are those of the air.rank around the op; once a lowering has
+  // removed it, there is nothing left to check against.
+  auto rank = (*this)->getParentOfType<air::RankOp>();
+  if (!rank)
+    return success();
+  auto alloc = traceMemrefSource(getSource()).getDefiningOp<memref::AllocOp>();
   if (!alloc || !alloc->hasAttr("air.symmetric"))
     return success(); // other sources are the caller's contract
   auto allocRank = alloc->getParentOfType<air::RankOp>();
@@ -4241,8 +4270,9 @@ LogicalResult air::TranslateOp::verify() {
     return emitOpError("source is an air.symmetric memref.alloc that is not "
                        "inside an air.rank, so it has no copy on other ranks");
   // This rank's own allocation is rank id's; a constant source rank names
-  // it for one rank only.
-  if (allocRank != (*this)->getParentOfType<air::RankOp>())
+  // it for one rank only. Only checked directly in the rank's body: control
+  // flow around the op may select the rank it runs on.
+  if (allocRank != rank || (*this)->getParentOp() != rank.getOperation())
     return success();
   auto from = getConstantIntValue(getFromRank());
   std::optional<int64_t> numRanks = constantRankCount(allocRank);

@@ -167,8 +167,26 @@ func.func @dma_symmetric_alloc_outside_rank(%out : memref<128xf32>, %bases : mem
     air.dma_memcpy_nd (%dst[] [] [], %peer[] [] []) {src_rank = 1 : i64}
         : (memref<128xf32, 2>, memref<128xf32>)
   }
-  %c0 = arith.constant 0 : index
-  // expected-error @+1 {{'air.translate' op source is an air.symmetric memref.alloc that is not inside an air.rank}}
-  %t = air.translate %src, %c0, %c2, %bases : memref<128xf32>, memref<?xindex>
+  air.rank (%ry) in (%sy = %c2) args(%s = %src, %b = %bases) : memref<128xf32>, memref<?xindex> {
+    %c0 = arith.constant 0 : index
+    // expected-error @+1 {{'air.translate' op source is an air.symmetric memref.alloc that is not inside an air.rank}}
+    %t = air.translate %s, %ry, %c0, %b : memref<128xf32>, memref<?xindex>
+  }
+  return
+}
+
+// -----
+
+// Test: the symmetric buffer may enter the air.rank as a kernel argument; it is
+// still an allocation outside any air.rank.
+func.func @dma_symmetric_alloc_outside_rank_via_args() {
+  %c2 = arith.constant 2 : index
+  %outer = memref.alloc() {air.symmetric} : memref<128xf32>
+  air.rank (%rx) in (%sx = %c2) args(%src = %outer) : memref<128xf32> {
+    %dst = memref.alloc() : memref<128xf32, 2>
+    // expected-error @+1 {{'air.dma_memcpy_nd' op src memref is referenced cross-rank but its air.symmetric memref.alloc is not inside an air.rank}}
+    air.dma_memcpy_nd (%dst[] [] [], %src[] [] []) {src_rank = 1 : i64}
+        : (memref<128xf32, 2>, memref<128xf32>)
+  }
   return
 }
