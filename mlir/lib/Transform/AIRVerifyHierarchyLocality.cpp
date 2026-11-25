@@ -515,6 +515,155 @@ static bool dimLexPacks(const OffsetDecomp &decomp, int64_t staticSize) {
   return true;
 }
 
+// The checks above work one dim at a time, in index units. With explicit
+// strides that holds for addresses only if no dim's indices reach the
+// addresses of another's: over the index range each dim covers across all
+// iterations, the strides, sorted, form a mixed radix (each stride is past
+// everything the dims with smaller strides reach). Otherwise fall back to
+// whole spans of addresses: an iteration's span is one more than
+// Σ (size_d - 1 + innerSpan_d) * |stride_d|, each iv moves it by
+// Σ c_iv,d * stride_d, and the lex-packing condition of dimLexPacks is
+// checked on those.
+static bool stridesKeepInstancesApart(
+    ArrayRef<std::optional<OffsetDecomp>> dimDecomps,
+    ArrayRef<std::optional<int64_t>> sizes, ArrayRef<Value> offsets,
+    ArrayRef<OpFoldResult> strides, ArrayRef<BlockArgument> ivs) {
+  unsigned rank = dimDecomps.size();
+  if (strides.size() < rank)
+    return false;
+  // Per dim: stride, index range over all iterations, and over one.
+  struct Dim {
+    int64_t stride, range, span;
+  };
+  SmallVector<Dim> dims;
+  llvm::SmallDenseMap<BlockArgument, int64_t, 4> ivMove;
+  for (unsigned d = 0; d < rank; ++d) {
+    auto stride = getConstantIntValue(strides[d]);
+    if (!stride || !sizes[d] || *sizes[d] <= 0)
+      return false;
+    int64_t size = *sizes[d];
+    int64_t span = size, range = size;
+    if (offsets[d]) {
+      // An offset the analysis could not decompose may vary within an
+      // iteration by any amount.
+      if (!dimDecomps[d])
+        return false;
+      span += dimDecomps[d]->innerSpan;
+      range = span;
+      for (auto &[iv, c] : dimDecomps[d]->ivCoeffs) {
+        auto e = hierarchyIvExtent(iv);
+        if (!e)
+          return false;
+        range += std::abs(c) * (*e > 0 ? *e - 1 : 0);
+        ivMove[iv] += c * *stride;
+      }
+    }
+    dims.push_back({*stride, range, span});
+  }
+
+  SmallVector<Dim> sorted(dims);
+  llvm::sort(sorted, [](const Dim &a, const Dim &b) {
+    return std::abs(a.stride) < std::abs(b.stride);
+  });
+  int64_t reach = 0;
+  bool mixedRadix = true;
+  for (const Dim &dim : sorted) {
+    if (dim.range == 1)
+      continue;
+    if (std::abs(dim.stride) <= reach) {
+      mixedRadix = false;
+      break;
+    }
+    reach += std::abs(dim.stride) * (dim.range - 1);
+  }
+  if (mixedRadix)
+    return true;
+
+  int64_t acc = 1;
+  for (const Dim &dim : dims)
+    acc += std::abs(dim.stride) * (dim.span - 1);
+  SmallVector<std::pair<BlockArgument, int64_t>, 4> moves;
+  for (BlockArgument iv : ivs) {
+    int64_t m = std::abs(ivMove.lookup(iv));
+    if (m == 0)
+      return false;
+    moves.push_back({iv, m});
+  }
+  llvm::sort(moves,
+             [](const auto &a, const auto &b) { return a.second < b.second; });
+  bool spansApart = true;
+  for (const auto &[iv, m] : moves) {
+    auto e = hierarchyIvExtent(iv);
+    if (!e)
+      return false;
+    if (m < acc) {
+      spansApart = false;
+      break;
+    }
+    acc += m * (*e > 0 ? *e - 1 : 0);
+  }
+  if (spansApart)
+    return true;
+
+  // Last, element by element, within bounds: the addresses one iteration
+  // reaches, relative to its start, against every distance between two
+  // iterations' starts.
+  constexpr int64_t limit = 1 << 28;
+  int64_t count = 1;
+  for (const Dim &dim : dims) {
+    count *= dim.span;
+    if (count > (1 << 22))
+      return false;
+  }
+  SmallVector<int64_t> distances = {0};
+  for (BlockArgument iv : ivs) {
+    int64_t e = *hierarchyIvExtent(iv);
+    int64_t m = ivMove.lookup(iv);
+    if ((int64_t)distances.size() > limit / count / (2 * e - 1))
+      return false;
+    SmallVector<int64_t> next;
+    for (int64_t base : distances)
+      for (int64_t k = -(e - 1); k <= e - 1; ++k)
+        next.push_back(base + k * m);
+    distances = std::move(next);
+  }
+  std::vector<int64_t> footprint;
+  footprint.reserve(count);
+  SmallVector<int64_t> idx(dims.size(), 0);
+  for (int64_t k = 0; k < count; ++k) {
+    int64_t pos = 0;
+    for (unsigned d = 0; d < dims.size(); ++d)
+      pos += idx[d] * dims[d].stride;
+    footprint.push_back(pos);
+    for (int d = dims.size() - 1; d >= 0; --d) {
+      if (++idx[d] < dims[d].span)
+        break;
+      idx[d] = 0;
+    }
+  }
+  llvm::sort(footprint);
+  footprint.erase(llvm::unique(footprint), footprint.end());
+  // Two iterations meet if their starts are a nonzero distance apart that
+  // two addresses of one footprint also are. A distance of zero between
+  // distinct iterations means they start together.
+  unsigned zeros = 0;
+  llvm::DenseSet<int64_t> checked;
+  for (int64_t dist : distances) {
+    if (dist == 0) {
+      if (++zeros > 1)
+        return false;
+      continue;
+    }
+    // -dist is the same pair the other way round.
+    if (dist < 0 || !checked.insert(dist).second)
+      continue;
+    for (int64_t a : footprint)
+      if (std::binary_search(footprint.begin(), footprint.end(), a + dist))
+        return false;
+  }
+  return true;
+}
+
 // Result of analyzing a single terminal access.
 enum class CheckResult {
   Disjoint,     // proven disjoint across all herd IVs
@@ -541,6 +690,9 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
   SmallVector<Value> offsets;
   SmallVector<Value> sizesVal;
   SmallVector<std::optional<int64_t>> sizesStatic;
+  // The explicit strides of a channel or DMA pattern; empty when the access
+  // follows the memref's own layout.
+  SmallVector<OpFoldResult> strides;
   bool hasPattern = false;
 
   auto pushSize = [&](Value v) {
@@ -619,13 +771,18 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
   }
 
   if (auto chan = dyn_cast<xilinx::air::ChannelInterface>(op)) {
-    if (chan.getMemref() == t.consumed)
+    if (chan.getMemref() == t.consumed) {
       pushMixedPattern(chan.getMixedOffsets(), chan.getMixedSizes());
+      strides = chan.getMixedStrides();
+    }
   } else if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
-    if (dma.getDst() == t.consumed)
+    if (dma.getDst() == t.consumed) {
       pushMixedPattern(dma.getMixedDstOffsets(), dma.getMixedDstSizes());
-    else if (dma.getSrc() == t.consumed)
+      strides = dma.getMixedDstStrides();
+    } else if (dma.getSrc() == t.consumed) {
       pushMixedPattern(dma.getMixedSrcOffsets(), dma.getMixedSrcSizes());
+      strides = dma.getMixedSrcStrides();
+    }
   } else if (auto sv = dyn_cast<memref::SubViewOp>(op)) {
     if (sv.getSource() == t.consumed)
       pushMixedPattern(sv.getMixedOffsets(), sv.getMixedSizes());
@@ -766,6 +923,16 @@ static CheckOutcome checkTerminal(const TerminalAccess &t,
               op};
     }
   }
+
+  SmallVector<std::optional<int64_t>> sizes;
+  for (unsigned d = 0; d < dimDecomps.size(); ++d)
+    sizes.push_back(resolveSize(sizesVal[d], sizesStatic[d]));
+  if (!strides.empty() &&
+      !stridesKeepInstancesApart(dimDecomps, sizes, offsets, strides, ivs))
+    return {CheckResult::Inconclusive,
+            "the strides let one iteration's access reach the addresses of "
+            "another's; iterations could not be proven disjoint",
+            op};
 
   return {CheckResult::Disjoint, {}, op};
 }

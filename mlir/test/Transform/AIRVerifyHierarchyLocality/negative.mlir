@@ -192,3 +192,152 @@ module {
     return
   }
 }
+
+// -----
+// The access is indexed by (%x, %y) in the leading dims, but its strides do not
+// follow the memref's layout: the dims of size 32 and 4 have strides 8 and 32,
+// so a tile reaches element 2143 past its start, beyond the next tile's start
+// at 2048.
+module {
+  func.func @neg_strides_spill_into_next_tile() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c8 = arith.constant 8 : index
+    %c16 = arith.constant 16 : index
+    %c32 = arith.constant 32 : index
+    %c128 = arith.constant 128 : index
+    %c256 = arith.constant 256 : index
+    %c2048 = arith.constant 2048 : index
+    %c8192 = arith.constant 8192 : index
+    %src = memref.alloc() : memref<32768xi16, 1 : i32>
+    %a = memref.alloc() : memref<4x4x8x32x4x8xi16, 2 : i32>
+    // expected-error@+1 {{the strides let one iteration's access reach}}
+    air.herd tile (%x, %y) in (%sx = %c4, %sy = %c4)
+        args(%arg = %a, %s = %src) :
+        memref<4x4x8x32x4x8xi16, 2 : i32>, memref<32768xi16, 1 : i32> {
+      %c0_0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c4_0 = arith.constant 4 : index
+      %c8_0 = arith.constant 8 : index
+      %c32_0 = arith.constant 32 : index
+      %c8192_0 = arith.constant 8192 : index
+      %c2048_0 = arith.constant 2048 : index
+      %c256_0 = arith.constant 256 : index
+      // expected-note@+1 {{access here}}
+      air.dma_memcpy_nd
+          (%arg[%x, %y, %c0_0, %c0_0, %c0_0, %c0_0]
+                [%c1_0, %c1_0, %c8_0, %c32_0, %c4_0, %c8_0]
+                [%c8192_0, %c2048_0, %c256_0, %c8_0, %c32_0, %c1_0],
+           %s[%c0_0] [%c8192_0] [%c1_0])
+          : (memref<4x4x8x32x4x8xi16, 2 : i32>, memref<32768xi16, 1 : i32>)
+      air.herd_terminator
+    }
+    return
+  }
+}
+
+// -----
+// %x and %y index dims 1 and 3, but every stride is 1, so the tiles' accesses
+// all overlap.
+module {
+  func.func @neg_unit_strides_overlap() {
+    %c4 = arith.constant 4 : index
+    %src = memref.alloc() : memref<8192xi16, 1 : i32>
+    %a = memref.alloc() : memref<8x4x32x4x16xi16, 2 : i32>
+    // expected-error@+1 {{the strides let one iteration's access reach}}
+    air.herd tile (%x, %y) in (%sx = %c4, %sy = %c4)
+        args(%arg = %a, %s = %src) :
+        memref<8x4x32x4x16xi16, 2 : i32>, memref<8192xi16, 1 : i32> {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c8 = arith.constant 8 : index
+      %c16 = arith.constant 16 : index
+      %c32 = arith.constant 32 : index
+      %c8192 = arith.constant 8192 : index
+      // Sizes: [8, 1, 32, 1, 16] — IVs are in dims 1 and 3, both size 1.
+      // expected-note@+1 {{access here}}
+      air.dma_memcpy_nd
+          (%arg[%c0, %x, %c0, %y, %c0]
+                [%c8, %c1, %c32, %c1, %c16]
+                [%c1, %c1, %c1, %c1, %c1],
+           %s[%c0] [%c8192] [%c1])
+          : (memref<8x4x32x4x16xi16, 2 : i32>, memref<8192xi16, 1 : i32>)
+      air.herd_terminator
+    }
+    return
+  }
+}
+
+// -----
+// Tiles of 16x16 at (16 * %x, 16 * %y) with a row stride of 1 instead of 64:
+// tile (1, 0) and tile (0, 1) both start at element 16.
+#map = affine_map<()[s0] -> (s0 * 16)>
+#map1 = affine_map<()[s0] -> (s0 * 16)>
+module {
+  func.func @neg_unit_row_stride_overlap() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c16 = arith.constant 16 : index
+    %src = memref.alloc() : memref<4096xi16, 1 : i32>
+    %a = memref.alloc() : memref<64x64xi16, 2 : i32>
+    // expected-error@+1 {{the strides let one iteration's access reach}}
+    air.herd tile (%x, %y) in (%sx = %c4, %sy = %c4)
+        args(%arg = %a, %s = %src) :
+        memref<64x64xi16, 2 : i32>, memref<4096xi16, 1 : i32> {
+      %c0_0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c16_0 = arith.constant 16 : index
+      %c4096_0 = arith.constant 4096 : index
+      %ox = affine.apply #map()[%x]
+      %oy = affine.apply #map1()[%y]
+      // expected-note@+1 {{access here}}
+      air.dma_memcpy_nd
+          (%arg[%ox, %oy] [%c16_0, %c16_0] [%c1_0, %c1_0],
+           %s[%c0_0] [%c4096_0] [%c1_0])
+          : (memref<64x64xi16, 2 : i32>, memref<4096xi16, 1 : i32>)
+      air.herd_terminator
+    }
+    return
+  }
+}
+
+// -----
+// The same column blocks with a block stride of 32: four blocks of 64 columns
+// cover only 160, and the column tiles 128 apart overlap.
+#map = affine_map<()[s0] -> (s0 * 256)>
+#map1 = affine_map<()[s0] -> (s0 * 128)>
+module {
+  air.channel @channel_0 [1, 1]
+  func.func @neg_column_blocks_overlap(%arg0: memref<2560x2304xbf16>) {
+    %c10 = arith.constant 10 : index
+    %c9 = arith.constant 9 : index
+    // expected-error@+1 {{the strides let one iteration's access reach}}
+    air.launch (%x, %y) in (%sx = %c10, %sy = %c9) args(%out = %arg0) : memref<2560x2304xbf16> {
+      %row = affine.apply #map()[%x]
+      %col = affine.apply #map1()[%y]
+      // expected-note@+1 {{access here}}
+      air.channel.get @channel_0[] (%out[0, %row, 0, %col] [1, 32, 4, 64] [73728, 2304, 32, 1]) : (memref<2560x2304xbf16>)
+    }
+    return
+  }
+}
+
+// -----
+// Each instance writes two elements from %x, so neighbours overlap. The launch
+// is too large to compare element by element; the check gives up at once.
+module {
+  air.channel @channel_0 [1, 1]
+  func.func @neg_huge_launch(%arg0: memref<1073741824xi8>) {
+    %c1 = arith.constant 1 : index
+    %big = arith.constant 1073741824 : index
+    // expected-error@+1 {{the strides let one iteration's access reach}}
+    air.launch (%x, %y) in (%sx = %big, %sy = %c1) args(%out = %arg0) : memref<1073741824xi8> {
+      %c0 = arith.constant 0 : index
+      // expected-note@+1 {{access here}}
+      air.channel.get @channel_0[] (%out[%x, %c0] [1, 2] [1, 1]) : (memref<1073741824xi8>)
+    }
+    return
+  }
+}
