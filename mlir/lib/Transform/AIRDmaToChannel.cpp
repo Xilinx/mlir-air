@@ -982,6 +982,9 @@ static void replaceAIRDmaWithAIRChannelPairs(
     op->emitWarning("Attribute broadcast_set is set on a copy out of the "
                     "inner memory space, which is not a broadcast. Therefore, "
                     "the broadcast set is ignored.");
+  // The broadcast set's lower bounds: a receiver's index is its tile's
+  // position in the set.
+  SmallVector<int, 2> bcastLbs;
   if (isBroadcast) {
     // If the data movement is subject to a broadcasting pattern, then
     // specialize each broadcast source in a bundle into a separate channel.
@@ -995,6 +998,7 @@ static void replaceAIRDmaWithAIRChannelPairs(
     air::getSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
     SmallVector<int64_t, 2> bcast_sizes = {ubs_int[0] - lbs_int[0] + 1,
                                            ubs_int[1] - lbs_int[1] + 1};
+    bcastLbs = lbs_int;
     auto channel_op =
         createChannelOp(builder, module, cname, loc, channel_sizes);
     channel_op->setAttr("broadcast_shape",
@@ -1027,9 +1031,17 @@ static void replaceAIRDmaWithAIRChannelPairs(
   SmallVector<Value, 1> channel_idx_internal{};
   SmallVector<Value, 1> channel_idx_external{};
   if (isBroadcast) {
-    // If broadcasting, let internal channel inherit affine.if's operands
+    // If broadcasting, the internal channel is indexed by the affine.if's
+    // operands, less the set's lower bounds: a position in the broadcast
+    // shape.
     auto parent_affine_if_op = op->getParentOfType<affine::AffineIfOp>();
-    for (auto operand : parent_affine_if_op->getOperands()) {
+    for (auto [i, operand] :
+         llvm::enumerate(parent_affine_if_op->getOperands())) {
+      int lb = i < bcastLbs.size() ? bcastLbs[i] : 0;
+      if (lb > 0)
+        operand = arith::SubIOp::create(
+            builder, loc, operand,
+            arith::ConstantIndexOp::create(builder, loc, lb));
       channel_idx_internal.push_back(operand);
     }
   } else if (auto parent_herd_op = op->getParentOfType<air::HerdOp>()) {

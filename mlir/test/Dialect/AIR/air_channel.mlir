@@ -35,7 +35,7 @@ func.func @channel() {
 // CHECK: func.func @fork
 // CHECK: %[[V1:.*]] = air.channel.put async [{{.*}}] @bcast[] ({{.*}}[{{.*}},{{.*}}]
 // CHECK: air.channel.get @bcast[{{.*}}, {{.*}}] ({{.*}}[] [] []) 
-air.channel @bcast [1, 1] {broadcast_shape = [2, 1], channel_type = "npu_dma_stream"}
+air.channel @bcast [1, 1] {broadcast_shape = [2, 2], channel_type = "npu_dma_stream"}
 func.func @fork() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
