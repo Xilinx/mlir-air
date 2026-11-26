@@ -6735,7 +6735,7 @@ public:
     // onto the free channels now that every allocation is known; collapse that
     // is load-bearing (bundled sub-channels, broadcasts, pinned/dedicated
     // flows) is left alone.
-    shim_dma_alloc.spreadCollapsedPacketChannels(memcpy_flows);
+    shim_dma_alloc.spreadCollapsedPacketChannels(memcpy_flows, tile_dma_alloc);
 
     // Step 3f: with every channel final, reject a port two flows share in a way
     // the switchbox cannot carry. A tile out of free channels gets a flow
