@@ -399,6 +399,14 @@ public:
   // connected rather than after. Returns failure if any chain is rejected.
   LogicalResult verifyMM2SChains();
 
+  // Move every S2MM transfer of `decl` on (`tile`, `chan`) to a free S2MM
+  // channel of the tile, keeping the order flows are created in. Returns
+  // false, changing nothing, if the tile has no free S2MM channel.
+  bool moveS2MMFlowToFreeChannel(Operation *decl, Operation *tile, int chan,
+                                 std::vector<MemcpyBundleAsFlow> &memcpy_flows);
+  // Whether `tile` has a free S2MM channel.
+  bool hasFreeS2MMChannel(Operation *tile);
+
   // Separate the flows sharing a compute-tile DMA channel where sharing it is
   // unsound. Applies to BOTH directions -- the pass walks mm2s_allocs and
   // s2mm_allocs alike, since a ring is walked in order whichever way the data
@@ -497,8 +505,15 @@ public:
   // `memcpy_flows` is updated in lockstep -- the bundles carry their own copy
   // of the allocation and the flows are connected from that copy, so leaving
   // it behind would route packets to the channel the BDs just left.
+  //
+  // A flow moved to another channel is a second producer for every in-order
+  // S2MM ring it shares with the flows left behind, and the ring's order no
+  // longer fixes which buffer a packet lands in. So such a ring is first split
+  // by producer, the moved flow onto a free S2MM channel of its tile
+  // (`tileAlloc`); where that is not possible, the flow is not moved.
   void
-  spreadCollapsedPacketChannels(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
+  spreadCollapsedPacketChannels(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
+                                TileDMAAllocator &tileAlloc);
 };
 
 class MemTileDMAAllocator : public DMAAllocator {

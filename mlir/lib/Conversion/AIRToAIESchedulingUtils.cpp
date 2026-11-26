@@ -3484,8 +3484,93 @@ air::ShimDMAAllocator::foundFlowReuseOpportunity(
   return failure();
 }
 
-void air::ShimDMAAllocator::spreadCollapsedPacketChannels(
+bool air::TileDMAAllocator::hasFreeS2MMChannel(Operation *tileOp) {
+  llvm::SmallDenseSet<int> used;
+  AIE::TileLike tile = nullptr;
+  for (auto &a : s2mm_allocs)
+    if (a.dma_tile && a.dma_tile.getOperation() == tileOp) {
+      used.insert(a.dma_channel.channel);
+      tile = a.dma_tile;
+    }
+  if (!tile)
+    return false;
+  return (int)used.size() < getNumTileDMAChannels(tile, /*isMM2S=*/false);
+}
+
+bool air::TileDMAAllocator::moveS2MMFlowToFreeChannel(
+    Operation *decl, Operation *tileOp, int chan,
     std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
+  auto declOf = [](Operation *o) -> Operation * {
+    auto c = dyn_cast_if_present<air::ChannelInterface>(o);
+    if (!c)
+      return nullptr;
+    auto d = air::getChannelDeclarationThroughSymbol(c);
+    return d ? d.getOperation() : nullptr;
+  };
+  llvm::SmallDenseSet<int> used;
+  AIE::TileLike tile = nullptr;
+  for (auto &a : s2mm_allocs)
+    if (a.dma_tile && a.dma_tile.getOperation() == tileOp) {
+      used.insert(a.dma_channel.channel);
+      tile = a.dma_tile;
+    }
+  if (!tile)
+    return false;
+  int freeChan = -1;
+  for (int c = 0, e = getNumTileDMAChannels(tile, /*isMM2S=*/false);
+       c < e && freeChan < 0; c++)
+    if (!used.count(c))
+      freeChan = c;
+  if (freeChan < 0)
+    return false;
+
+  // A split is inserted right after its parent: the order of this vector is
+  // the order flows are created in, and the pathfinder is greedy.
+  for (size_t i = 0; i < s2mm_allocs.size(); i++) {
+    auto &a = s2mm_allocs[i];
+    if (!a.dma_tile || a.dma_tile.getOperation() != tileOp ||
+        a.dma_channel.channel != chan)
+      continue;
+    std::vector<Operation *> keepOps, moveOps;
+    for (auto *o : a.memcpyOps)
+      (declOf(o) == decl ? moveOps : keepOps).push_back(o);
+    if (moveOps.empty())
+      continue;
+    a.packet_flow_id = -1; // reassigned on flow connection
+    if (keepOps.empty()) {
+      a.dma_channel = {AIE::DMAChannelDir::S2MM, freeChan};
+      a.tile_channel = freeChan;
+      continue;
+    }
+    allocation_info_t split = a;
+    split.dma_channel = {AIE::DMAChannelDir::S2MM, freeChan};
+    split.tile_channel = freeChan;
+    split.memcpyOps = moveOps;
+    a.memcpyOps = keepOps;
+    s2mm_allocs.insert(s2mm_allocs.begin() + i + 1, split);
+    i++;
+  }
+  for (auto &f : memcpy_flows) {
+    if (f.air_flow_op != decl)
+      continue;
+    for (auto &fa : f.S2MM_alloc) {
+      if (!fa.dma_tile || fa.dma_tile.getOperation() != tileOp ||
+          fa.dma_channel.channel != chan)
+        continue;
+      fa.dma_channel.channel = freeChan;
+      fa.tile_channel = freeChan;
+      fa.packet_flow_id = -1;
+    }
+  }
+  LLVM_DEBUG(llvm::dbgs() << "TileDMAAllocator::moveS2MMFlowToFreeChannel: @"
+                          << cast<air::ChannelOp>(decl).getSymName()
+                          << " to S2MM " << freeChan << "\n");
+  return true;
+}
+
+void air::ShimDMAAllocator::spreadCollapsedPacketChannels(
+    std::vector<MemcpyBundleAsFlow> &memcpy_flows,
+    TileDMAAllocator &tileAlloc) {
   auto declOf = [](Operation *o) -> Operation * {
     auto chan = dyn_cast_if_present<air::ChannelInterface>(o);
     if (!chan)
@@ -3584,6 +3669,47 @@ void air::ShimDMAAllocator::spreadCollapsedPacketChannels(
           }
         if (freeChan < 0)
           break; // fully subscribed: the remaining flows keep multiplexing
+
+        // The rings `moveDecl` arrives on that also take another flow of
+        // this chain. Moved alone, it would be a second producer for them.
+        SmallVector<std::pair<Operation *, int>> sharedRings;
+        bool unsplittable = false;
+        if (dir == AIE::DMAChannelDir::MM2S)
+          for (auto &f : memcpy_flows) {
+            if (f.air_flow_op != moveDecl)
+              continue;
+            for (auto &fa : f.S2MM_alloc) {
+              if (!fa.dma_tile)
+                continue;
+              Operation *rt = fa.dma_tile.getOperation();
+              int rc = fa.dma_channel.channel;
+              bool shared = false;
+              for (auto &g : memcpy_flows) {
+                if (g.air_flow_op == moveDecl ||
+                    !llvm::is_contained(order, g.air_flow_op))
+                  continue;
+                for (auto &ga : g.S2MM_alloc)
+                  shared |= ga.dma_tile && ga.dma_tile.getOperation() == rt &&
+                            ga.dma_channel.channel == rc;
+              }
+              if (!shared)
+                continue;
+              // Only a compute tile's ring is split here.
+              auto tl = dyn_cast<AIE::TileLike>(rt);
+              if (!tl || !tl.isCoreTile() || !tileAlloc.hasFreeS2MMChannel(rt))
+                unsplittable = true;
+              sharedRings.push_back({rt, rc});
+            }
+          }
+        // Two rings on one tile need two free channels; leave such a flow
+        // where it is rather than reason about it.
+        llvm::SmallPtrSet<Operation *, 4> ringTiles;
+        for (auto &[rt, rc] : sharedRings)
+          unsplittable |= !ringTiles.insert(rt).second;
+        if (unsplittable)
+          continue;
+        for (auto &[rt, rc] : sharedRings)
+          tileAlloc.moveS2MMFlowToFreeChannel(moveDecl, rt, rc, memcpy_flows);
 
         // Retarget an allocation whose transfers all move; split the rest.
         SmallVector<allocation_info_t> splits;

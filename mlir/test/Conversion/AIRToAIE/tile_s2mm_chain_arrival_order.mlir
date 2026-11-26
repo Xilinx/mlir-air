@@ -28,12 +28,16 @@
 // Symmetric arms: both arms consume @sA then @sB, onto the same buffers. The
 // two arms fold onto one 2-BD ring that matches either path. This is the shape
 // the shipped llama-3.2-1B q4nx decode rms tile produces (@rmsX/@rmsW/@rmsW2
-// under an scf.index_switch) and it must stay silent.
+// under an scf.index_switch) and it must stay silent. The shim spreads @sB onto
+// its own MM2S channel; its packets then arrive in any order with @sA's, so
+// the ring is split by producer, @sB onto the tile's free S2MM channel.
 
 // CHECK-LABEL: aie.device
 // CHECK: aie.mem
 // CHECK: aie.dma_start(S2MM, 0
-// CHECK-NOT: aie.dma_start(S2MM, 1
+// CHECK: aie.dma_start(S2MM, 1
+// CHECK: aie.shim_dma_allocation @air_sA({{.*}}, MM2S, 0)
+// CHECK: aie.shim_dma_allocation @air_sB({{.*}}, MM2S, 1)
 
 air.channel @sA [1] {channel_type = "npu_dma_packet"}
 air.channel @sB [1] {channel_type = "npu_dma_packet"}
@@ -197,12 +201,13 @@ func.func @single_flow_asymmetric(%ext: memref<8xbf16>, %mode: i32) {
 // Straight-line multi-flow chain with unequal multiplicity, all transfers
 // mapping to interchangeable BDs. There is no branch, so every dispatch
 // delivers the same word and the chain is in step. #1771's multiplicity
-// heuristic split this; it must not be reported.
+// heuristic split this; it must not be reported. The shim spread gives @eB its
+// own MM2S channel, so the tile ring is split by producer.
 
 // CHECK-LABEL: aie.device
 // CHECK: aie.mem
 // CHECK: aie.dma_start(S2MM, 0
-// CHECK-NOT: aie.dma_start(S2MM, 1
+// CHECK: aie.dma_start(S2MM, 1
 
 air.channel @eA [1] {channel_type = "npu_dma_packet"}
 air.channel @eB [1] {channel_type = "npu_dma_packet"}
