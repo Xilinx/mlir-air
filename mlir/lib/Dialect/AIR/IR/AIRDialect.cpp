@@ -3255,6 +3255,18 @@ static LogicalResult verifySizesStridesRank(Operation *op,
   return success();
 }
 
+// The number of ranks of an air.rank, if its sizes are constants and their
+// product fits.
+static std::optional<int64_t> constantRankCount(air::RankOp rank) {
+  int64_t count = 1;
+  for (Value size : rank.getSizeOperands()) {
+    auto c = getConstantIntValue(size);
+    if (!c || llvm::MulOverflow(count, *c, count))
+      return std::nullopt;
+  }
+  return count;
+}
+
 // The number of elements a DMA pattern moves, if it is constant: the product
 // of its sizes, or the memref's element count for an empty pattern. Padding,
 // per dimension of the pattern, adds pad_before[i] + pad_after[i] to size i.
@@ -3289,6 +3301,33 @@ constantPatternElements(Value memref, ArrayRef<OpFoldResult> sizes,
       return std::nullopt;
   }
   return count;
+}
+
+// The value a memref comes from, through views and the kernel arguments of
+// the hierarchy ops it enters.
+static Value traceMemrefSource(Value v) {
+  for (unsigned step = 0; v && step < 64; ++step) {
+    if (auto view = v.getDefiningOp<ViewLikeOpInterface>()) {
+      v = view.getViewSource();
+      continue;
+    }
+    auto arg = dyn_cast<BlockArgument>(v);
+    auto hier = arg ? dyn_cast_if_present<air::HierarchyInterface>(
+                          arg.getOwner()->getParentOp())
+                    : nullptr;
+    if (!hier)
+      return v;
+    bool found = false;
+    for (unsigned i = 0; i < hier.getNumKernelOperands(); ++i)
+      if (hier.getKernelArgument(i) == arg) {
+        v = hier.getKernelOperand(i);
+        found = true;
+        break;
+      }
+    if (!found)
+      return v;
+  }
+  return v;
 }
 
 LogicalResult air::DmaMemcpyNdOp::verify() {
@@ -3347,19 +3386,26 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
     // of the generated getSrcRank()/getDstRank() (those return uint64_t
     // for OptionalAttr<I64Attr>, so a comparison against 0 is meaningless
     // for negative values stored as i64).
+    std::optional<int64_t> numRanks = constantRankCount(cast<air::RankOp>(p));
     if (auto srAttr = getSrcRankAttr()) {
       int64_t sr = srAttr.getInt();
       if (sr < 0)
         return emitOpError() << "src_rank must be >= 0, got " << sr;
+      if (numRanks && sr >= *numRanks)
+        return emitOpError() << "src_rank " << sr << " is outside the "
+                             << *numRanks << " ranks of the enclosing air.rank";
     }
     if (auto drAttr = getDstRankAttr()) {
       int64_t dr = drAttr.getInt();
       if (dr < 0)
         return emitOpError() << "dst_rank must be >= 0, got " << dr;
+      if (numRanks && dr >= *numRanks)
+        return emitOpError() << "dst_rank " << dr << " is outside the "
+                             << *numRanks << " ranks of the enclosing air.rank";
     }
 
     auto requireSymmetricAlloc = [&](Value v, StringRef side) -> LogicalResult {
-      auto alloc = v.getDefiningOp<memref::AllocOp>();
+      auto alloc = traceMemrefSource(v).getDefiningOp<memref::AllocOp>();
       if (!alloc)
         return success(); // Block args / non-alloc sources are user-trusted.
       if (!alloc->hasAttr("air.symmetric"))
@@ -3367,6 +3413,13 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
                              << " memref is referenced cross-rank but its "
                                 "memref.alloc lacks the \"air.symmetric\" "
                                 "attribute";
+      // A symmetric allocation is one per rank of the air.rank around it;
+      // outside one there is no other rank's copy to address.
+      if (!alloc->getParentOfType<air::RankOp>())
+        return emitOpError() << side
+                             << " memref is referenced cross-rank but its "
+                                "air.symmetric memref.alloc is not inside an "
+                                "air.rank";
       return success();
     };
     if (getSrcRank().has_value() &&
@@ -4298,6 +4351,34 @@ ParseResult air::CustomOp::parse(OpAsmParser &parser, OperationState &result) {
 //
 // TranslateOp
 //
+
+LogicalResult air::TranslateOp::verify() {
+  // The ranks are those of the air.rank around the op; once a lowering has
+  // removed it, there is nothing left to check against.
+  auto rank = (*this)->getParentOfType<air::RankOp>();
+  if (!rank)
+    return success();
+  auto alloc = traceMemrefSource(getSource()).getDefiningOp<memref::AllocOp>();
+  if (!alloc || !alloc->hasAttr("air.symmetric"))
+    return success(); // other sources are the caller's contract
+  auto allocRank = alloc->getParentOfType<air::RankOp>();
+  if (!allocRank)
+    return emitOpError("source is an air.symmetric memref.alloc that is not "
+                       "inside an air.rank, so it has no copy on other ranks");
+  // This rank's own allocation is rank id's; a constant source rank names
+  // it for one rank only. Only checked directly in the rank's body: control
+  // flow around the op may select the rank it runs on.
+  if (allocRank != rank || (*this)->getParentOp() != rank.getOperation())
+    return success();
+  auto from = getConstantIntValue(getFromRank());
+  std::optional<int64_t> numRanks = constantRankCount(allocRank);
+  if (from && numRanks && *numRanks > 1)
+    return emitOpError() << "source is this rank's own air.symmetric buffer, "
+                            "but from_rank is the constant "
+                         << *from << ", which is this rank only on one of the "
+                         << *numRanks << " ranks";
+  return success();
+}
 
 OpFoldResult air::TranslateOp::fold(FoldAdaptor adaptor) {
   if (getFromRank() == getToRank())
