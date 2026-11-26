@@ -540,12 +540,6 @@ std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 writeAccessPattern(memref::SubViewOp subview);
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 writeAccessPattern(VectorTransferOpInterface transfer);
-SmallVector<int64_t>
-getDataAccessShapeFromMemcpyOp(Value memref,
-                               SmallVector<air::ChannelInterface> chanUsers);
-SmallVector<int64_t>
-getDataAccessShapeFromMemcpyOp(Value memref,
-                               SmallVector<air::ChannelInterface> chanOps);
 SmallVector<int64_t> getDataAccessShapeFromMemcpyOp(
     Value memref,
     SmallVector<

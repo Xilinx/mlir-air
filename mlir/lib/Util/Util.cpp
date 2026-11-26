@@ -2921,16 +2921,6 @@ air::writeAccessPattern(VectorTransferOpInterface transfer) {
                             accessExtents);
 }
 
-SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
-    Value memref, SmallVector<air::ChannelInterface> chanUsers) {
-  SmallVector<
-      std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
-      accessPatterns;
-  for (auto chanUser : chanUsers) {
-    accessPatterns.push_back(writeAccessPattern(chanUser));
-  }
-  return getDataAccessShapeFromMemcpyOp(memref, accessPatterns);
-}
 SmallVector<int64_t>
 air::getDataAccessShapeFromMemcpyOp(Value memref,
                                     SmallVector<Operation *> users) {
