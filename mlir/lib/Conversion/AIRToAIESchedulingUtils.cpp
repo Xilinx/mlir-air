@@ -3694,9 +3694,13 @@ void air::ShimDMAAllocator::spreadCollapsedPacketChannels(
               }
               if (!shared)
                 continue;
-              // Only a compute tile's ring is split here.
+              // Only a compute tile's ring is split here, and not for a flow
+              // pinned to its tile DMA channel: the pin states the receiver's
+              // port.
               auto tl = dyn_cast<AIE::TileLike>(rt);
-              if (!tl || !tl.isCoreTile() || !tileAlloc.hasFreeS2MMChannel(rt))
+              if (!tl || !tl.isCoreTile() ||
+                  moveDecl->hasAttr(air::attrs::TileDmaChannel) ||
+                  !tileAlloc.hasFreeS2MMChannel(rt))
                 unsplittable = true;
               sharedRings.push_back({rt, rc});
             }

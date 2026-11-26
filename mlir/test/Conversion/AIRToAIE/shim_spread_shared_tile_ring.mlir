@@ -85,3 +85,35 @@ func.func @no_free_receiver(%ext: memref<8xbf16>) {
   }
   return
 }
+
+// -----
+
+// As the first case, but @rB is pinned to the tile's S2MM channel 0: the pin
+// states the receiver's port, so the ring is not split and the shim keeps @rA
+// and @rB on one channel.
+
+// CHECK-LABEL: aie.device
+// CHECK: aie.shim_dma_allocation @air_rA({{.*}}, MM2S, 0)
+// CHECK: aie.shim_dma_allocation @air_rB({{.*}}, MM2S, 0)
+
+air.channel @rA [1] {channel_type = "npu_dma_packet"}
+air.channel @rB [1] {air.tile_dma_channel = 0 : i32, channel_type = "npu_dma_packet"}
+func.func @pinned_receiver(%ext: memref<8xbf16>) {
+  %c1 = arith.constant 1 : index
+  air.launch (%l0, %l1) in (%s0=%c1, %s1=%c1) args(%e=%ext) : memref<8xbf16> {
+    air.channel.put @rA[] (%e[] [] []) {id = 1 : i32} : (memref<8xbf16>)
+    air.channel.put @rB[] (%e[] [] []) {id = 2 : i32} : (memref<8xbf16>)
+    air.segment @seg {
+      %c1_0 = arith.constant 1 : index
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) attributes {x_loc = 2 : i64, y_loc = 3 : i64} {
+        %a = memref.alloc() : memref<8xbf16, 2>
+        %b = memref.alloc() : memref<8xbf16, 2>
+        air.channel.get @rA[] (%a[] [] []) {id = 3 : i32} : (memref<8xbf16, 2>)
+        air.channel.get @rB[] (%b[] [] []) {id = 4 : i32} : (memref<8xbf16, 2>)
+        memref.dealloc %a : memref<8xbf16, 2>
+        memref.dealloc %b : memref<8xbf16, 2>
+      }
+    }
+  }
+  return
+}
