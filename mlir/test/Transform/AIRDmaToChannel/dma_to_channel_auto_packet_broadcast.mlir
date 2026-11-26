@@ -52,27 +52,27 @@ module {
           %buf_c = memref.alloc() : memref<256xbf16, 2>
           // 4 broadcast inputs, each spanning 8 columns.
           affine.if #set_ty0()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb0[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb0[0] [256] [1])
                 {broadcast_set = #set_ty0} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set_ty1()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb1[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb1[0] [256] [1])
                 {broadcast_set = #set_ty1} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set_ty2()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb2[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb2[0] [256] [1])
                 {broadcast_set = #set_ty2} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set_ty3()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb3[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb3[0] [256] [1])
                 {broadcast_set = #set_ty3} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           // 1 output (non-broadcast).
-          air.dma_memcpy_nd (%hc[] [] [], %buf_c[] [] []) :
+          air.dma_memcpy_nd (%hc[0] [256] [1], %buf_c[] [] []) :
               (memref<1024xbf16>, memref<256xbf16, 2>)
           memref.dealloc %buf : memref<256xbf16, 2>
           memref.dealloc %buf_c : memref<256xbf16, 2>
@@ -132,37 +132,37 @@ module {
           %buf = memref.alloc() : memref<256xbf16, 2>
           %buf_c = memref.alloc() : memref<256xbf16, 2>
           affine.if #set2_ty0()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb0[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb0[0] [256] [1])
                 {broadcast_set = #set2_ty0} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set2_ty1()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb1[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb1[0] [256] [1])
                 {broadcast_set = #set2_ty1} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set2_ty2()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb2[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb2[0] [256] [1])
                 {broadcast_set = #set2_ty2} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set2_ty3()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb3[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb3[0] [256] [1])
                 {broadcast_set = #set2_ty3} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set2_ty4()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb4[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb4[0] [256] [1])
                 {broadcast_set = #set2_ty4} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set2_ty5()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb5[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb5[0] [256] [1])
                 {broadcast_set = #set2_ty5} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           // 1 output (non-broadcast).
-          air.dma_memcpy_nd (%hc[] [] [], %buf_c[] [] []) :
+          air.dma_memcpy_nd (%hc[0] [256] [1], %buf_c[] [] []) :
               (memref<1024xbf16>, memref<256xbf16, 2>)
           memref.dealloc %buf : memref<256xbf16, 2>
           memref.dealloc %buf_c : memref<256xbf16, 2>
@@ -218,28 +218,28 @@ module {
           %buf2 = memref.alloc() : memref<256xbf16, 2>
           %buf_c = memref.alloc() : memref<256xbf16, 2>
           // 2 non-broadcast inputs.
-          air.dma_memcpy_nd (%buf[] [] [], %ha0[] [] []) :
+          air.dma_memcpy_nd (%buf[] [] [], %ha0[0] [256] [1]) :
               (memref<256xbf16, 2>, memref<1024xbf16>)
-          air.dma_memcpy_nd (%buf2[] [] [], %ha1[] [] []) :
+          air.dma_memcpy_nd (%buf2[] [] [], %ha1[0] [256] [1]) :
               (memref<256xbf16, 2>, memref<1024xbf16>)
           // 3 broadcast inputs spanning 4 columns.
           affine.if #set3_bcast()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb0[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb0[0] [256] [1])
                 {broadcast_set = #set3_bcast} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set3_bcast2()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb1[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb1[0] [256] [1])
                 {broadcast_set = #set3_bcast2} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set3_bcast3()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb2[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb2[0] [256] [1])
                 {broadcast_set = #set3_bcast3} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           // 1 output (non-broadcast).
-          air.dma_memcpy_nd (%hc[] [] [], %buf_c[] [] []) :
+          air.dma_memcpy_nd (%hc[0] [256] [1], %buf_c[] [] []) :
               (memref<1024xbf16>, memref<256xbf16, 2>)
           memref.dealloc %buf : memref<256xbf16, 2>
           memref.dealloc %buf2 : memref<256xbf16, 2>
@@ -292,28 +292,28 @@ module {
           %buf_c = memref.alloc() : memref<256xbf16, 2>
           // 2 wide broadcasts (span 8 columns).
           affine.if #set4_wide0()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb0[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb0[0] [256] [1])
                 {broadcast_set = #set4_wide0} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set4_wide1()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb1[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb1[0] [256] [1])
                 {broadcast_set = #set4_wide1} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           // 2 narrow broadcasts (span 2 columns).
           affine.if #set4_narrow0()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb2[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb2[0] [256] [1])
                 {broadcast_set = #set4_narrow0} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set4_narrow1()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb3[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb3[0] [256] [1])
                 {broadcast_set = #set4_narrow1} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           // 1 output (non-broadcast).
-          air.dma_memcpy_nd (%hc[] [] [], %buf_c[] [] []) :
+          air.dma_memcpy_nd (%hc[0] [256] [1], %buf_c[] [] []) :
               (memref<1024xbf16>, memref<256xbf16, 2>)
           memref.dealloc %buf : memref<256xbf16, 2>
           memref.dealloc %buf_c : memref<256xbf16, 2>
@@ -361,22 +361,22 @@ module {
           %buf_c = memref.alloc() : memref<256xbf16, 2>
           // 3 row-only broadcasts, one per column.
           affine.if #set5_row0()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb0[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb0[0] [256] [1])
                 {broadcast_set = #set5_row0} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set5_row1()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb1[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb1[0] [256] [1])
                 {broadcast_set = #set5_row1} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set5_row2()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb2[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb2[0] [256] [1])
                 {broadcast_set = #set5_row2} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           // 1 output (non-broadcast).
-          air.dma_memcpy_nd (%hc[] [] [], %buf_c[] [] []) :
+          air.dma_memcpy_nd (%hc[0] [256] [1], %buf_c[] [] []) :
               (memref<1024xbf16>, memref<256xbf16, 2>)
           memref.dealloc %buf : memref<256xbf16, 2>
           memref.dealloc %buf_c : memref<256xbf16, 2>
@@ -423,22 +423,22 @@ module {
           %buf_c = memref.alloc() : memref<256xbf16, 2>
           // 3 row-only broadcasts into column 0.
           affine.if #set6_row0()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb0[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb0[0] [256] [1])
                 {broadcast_set = #set6_row0} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set6_row1()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb1[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb1[0] [256] [1])
                 {broadcast_set = #set6_row1} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set6_row2()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb2[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb2[0] [256] [1])
                 {broadcast_set = #set6_row2} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           // 1 output (non-broadcast).
-          air.dma_memcpy_nd (%hc[] [] [], %buf_c[] [] []) :
+          air.dma_memcpy_nd (%hc[0] [256] [1], %buf_c[] [] []) :
               (memref<1024xbf16>, memref<256xbf16, 2>)
           memref.dealloc %buf : memref<256xbf16, 2>
           memref.dealloc %buf_c : memref<256xbf16, 2>
@@ -485,16 +485,16 @@ module {
           %buf_c = memref.alloc() : memref<256xbf16, 2>
           // 2 row-only broadcasts into column 0 of @a.
           affine.if #set7_col0()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb0[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb0[0] [256] [1])
                 {broadcast_set = #set7_col0} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
           affine.if #set7_col0()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb1[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb1[0] [256] [1])
                 {broadcast_set = #set7_col0} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }
-          air.dma_memcpy_nd (%hc[] [] [], %buf_c[] [] []) :
+          air.dma_memcpy_nd (%hc[0] [256] [1], %buf_c[] [] []) :
               (memref<1024xbf16>, memref<256xbf16, 2>)
           memref.dealloc %buf : memref<256xbf16, 2>
           memref.dealloc %buf_c : memref<256xbf16, 2>
@@ -505,7 +505,7 @@ module {
           %buf = memref.alloc() : memref<256xbf16, 2>
           // 1 row-only broadcast into column 1 of @b.
           affine.if #set7_col1()[%tx, %ty] {
-            air.dma_memcpy_nd (%buf[] [] [], %hb2[] [] [])
+            air.dma_memcpy_nd (%buf[] [] [], %hb2[0] [256] [1])
                 {broadcast_set = #set7_col1} :
                 (memref<256xbf16, 2>, memref<1024xbf16>)
           }

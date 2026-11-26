@@ -56,7 +56,8 @@ module {
                 %10 = air.dma_memcpy_nd async [%async_token_7, %arg19] (%results_8[] [] [], %arg17[%c0_3, %arg18] [%c32, %c32] [%c64_4, %c1]) {broadcast_set = #set, id = 1 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
                 affine.yield %10 : !air.async.token
               } else {
-// CHECK: %[[EVENT4:.*]] = air.channel.get async{{.*}}@channel_1[%[[VALUE0]], %[[VALUE1]]]
+// CHECK: %[[ROW1:.*]] = arith.subi %[[VALUE0]], %{{.*}} : index
+// CHECK: %[[EVENT4:.*]] = air.channel.get async{{.*}}@channel_1[%[[ROW1]], %[[VALUE1]]]
                 %10 = air.dma_memcpy_nd async [%async_token_7, %arg19] (%results_8[] [] [], %arg17[%c32, %arg18] [%c32, %c32] [%c64_4, %c1]) {broadcast_set = #set1, id = 2 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
                 affine.yield %10 : !air.async.token
               }

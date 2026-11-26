@@ -43,7 +43,8 @@ module {
 // CHECK: %[[EVENT5:.*]] = air.channel.put async{{.*}}@channel_1[]
 // CHECK: %[[EVENT6:.*]] = air.herd @herd_0 async{{.*}}tile (%[[VALUE2:.*]], %[[VALUE3:.*]]) in
 // CHECK: %[[EVENT7:.*]] = air.channel.get async{{.*}}@channel_0[%[[VALUE2]], %[[VALUE3]]]
-// CHECK: %[[EVENT8:.*]] = air.channel.get async{{.*}}@channel_1[%[[VALUE2]], %[[VALUE3]]]
+// CHECK: %[[ROW1:.*]] = arith.subi %[[VALUE2]], %{{.*}} : index
+// CHECK: %[[EVENT8:.*]] = air.channel.get async{{.*}}@channel_1[%[[ROW1]], %[[VALUE3]]]
           %4 = air.herd @herd_0 async  tile (%arg13, %arg14) in (%arg15=%c2, %arg16=%c2) args(%arg17=%results_1) : memref<64x64xbf16, 1> attributes {id = 1 : i32} {
             %c1 = arith.constant 1 : index
             %c0_3 = arith.constant 0 : index

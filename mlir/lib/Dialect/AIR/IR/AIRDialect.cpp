@@ -3267,6 +3267,42 @@ static std::optional<int64_t> constantRankCount(air::RankOp rank) {
   return count;
 }
 
+// The number of elements a DMA pattern moves, if it is constant: the product
+// of its sizes, or the memref's element count for an empty pattern. Padding,
+// per dimension of the pattern, adds pad_before[i] + pad_after[i] to size i.
+static std::optional<int64_t>
+constantPatternElements(Value memref, ArrayRef<OpFoldResult> sizes,
+                        ArrayRef<int32_t> padBefore = {},
+                        ArrayRef<int32_t> padAfter = {}) {
+  SmallVector<int64_t> dims;
+  if (sizes.empty()) {
+    auto type = dyn_cast<MemRefType>(memref.getType());
+    if (!type || !type.hasStaticShape())
+      return std::nullopt;
+    llvm::append_range(dims, type.getShape());
+  } else {
+    for (OpFoldResult size : sizes) {
+      auto c = getConstantIntValue(size);
+      if (!c)
+        return std::nullopt;
+      dims.push_back(*c);
+    }
+  }
+  if (!padBefore.empty() &&
+      (padBefore.size() != dims.size() || padAfter.size() != dims.size()))
+    return std::nullopt;
+  int64_t count = 1;
+  for (auto [i, d] : llvm::enumerate(dims)) {
+    int64_t n = d;
+    if (!padBefore.empty() && (llvm::AddOverflow(n, int64_t(padBefore[i]), n) ||
+                               llvm::AddOverflow(n, int64_t(padAfter[i]), n)))
+      return std::nullopt;
+    if (llvm::MulOverflow(count, n, count))
+      return std::nullopt;
+  }
+  return count;
+}
+
 // The value a memref comes from, through views and the kernel arguments of
 // the hierarchy ops it enters.
 static Value traceMemrefSource(Value v) {
@@ -3301,6 +3337,22 @@ LogicalResult air::DmaMemcpyNdOp::verify() {
   if (failed(verifySizesStridesRank(getOperation(), getMixedDstSizes(),
                                     getMixedDstStrides(), "dst")))
     return failure();
+
+  // The destination takes what the source sends, padding included.
+  if (getSrcMemref() && getDstMemref()) {
+    ArrayRef<int32_t> padBefore, padAfter;
+    if (getPadBefore() && getPadAfter()) {
+      padBefore = *getPadBefore();
+      padAfter = *getPadAfter();
+    }
+    auto srcCount = constantPatternElements(getSrcMemref(), getMixedSrcSizes(),
+                                            padBefore, padAfter);
+    auto dstCount = constantPatternElements(getDstMemref(), getMixedDstSizes());
+    if (srcCount && dstCount && *srcCount != *dstCount)
+      return emitOpError() << "src pattern moves " << *srcCount << " elements"
+                           << (padBefore.empty() ? "" : " with padding")
+                           << " but dst pattern takes " << *dstCount;
+  }
 
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
@@ -3770,11 +3822,53 @@ static LogicalResult verifyRefeedCountAttr(Operation *op) {
   return success();
 }
 
+// A put or get names one channel of its bundle: one index per dim of the
+// bundle's size, or none on a bundle of a single channel, which then means
+// [0, ..., 0]. A constant index is within its dim; a get on a broadcast
+// channel addresses the broadcast shape.
+static LogicalResult verifyChannelIndices(air::ChannelInterface op,
+                                          bool isGet) {
+  air::ChannelOp chan = resolveChannelDecl(op);
+  if (!chan)
+    return success();
+  ArrayAttr dims =
+      isGet && chan.isBroadcast() ? chan.getBroadcastShape() : chan.getSize();
+  SmallVector<int64_t> shape;
+  for (Attribute dim : dims) {
+    auto size = dyn_cast<IntegerAttr>(dim);
+    if (!size)
+      return success(); // the declaration's verifier reports it
+    shape.push_back(size.getInt());
+  }
+  auto indices = op.getIndices();
+  if (indices.empty()) {
+    if (llvm::all_of(shape, [](int64_t s) { return s == 1; }))
+      return success();
+    return op->emitOpError()
+           << "has no channel indices, but @" << chan.getSymName()
+           << " is a bundle of more than one channel";
+  }
+  if (indices.size() != shape.size())
+    return op->emitOpError()
+           << "has " << indices.size() << " channel indices, but @"
+           << chan.getSymName() << " has rank " << shape.size();
+  for (auto [i, idx] : llvm::enumerate(indices)) {
+    auto c = getConstantIntValue(idx);
+    if (c && (*c < 0 || *c >= shape[i]))
+      return op->emitOpError()
+             << "channel index " << i << " (" << *c << ") is outside @"
+             << chan.getSymName() << "'s dimension of size " << shape[i];
+  }
+  return success();
+}
+
 LogicalResult air::ChannelPutOp::verify() {
   if (failed(verifySizesStridesRank(getOperation(), getMixedSrcSizes(),
                                     getMixedSrcStrides(), "src")))
     return failure();
   if (failed(verifyRefeedCountAttr(getOperation())))
+    return failure();
+  if (failed(verifyChannelIndices(*this, /*isGet=*/false)))
     return failure();
 
   // Channel bundle indices must not be temporal loop induction variables.
@@ -3886,6 +3980,8 @@ LogicalResult air::ChannelGetOp::verify() {
                                     getMixedDstStrides(), "dst")))
     return failure();
   if (failed(verifyRefeedCountAttr(getOperation())))
+    return failure();
+  if (failed(verifyChannelIndices(*this, /*isGet=*/true)))
     return failure();
 
   // Channel bundle indices must not be temporal loop induction variables.

@@ -705,27 +705,39 @@ struct EliminateIntermediateMemrefPattern
       return failure();
     if (firstMemcpy.getDstMemref() != secondMemcpy.getSrcMemref())
       return failure();
+    // The second copy's padding would come after the first copy's data in a
+    // stream the new copy cannot express.
+    if (secondMemcpy.getPadBefore() || secondMemcpy.getPadAfter())
+      return failure();
+    // The new copy takes the second copy's destination pattern where the first
+    // copy is, so its values must be available there.
+    DominanceInfo dom(firstMemcpy->getParentOfType<FunctionOpInterface>());
+    for (OpFoldResult ofr : llvm::concat<const OpFoldResult>(
+             secondMemcpy.getMixedDstOffsets(), secondMemcpy.getMixedDstSizes(),
+             secondMemcpy.getMixedDstStrides()))
+      if (auto v = dyn_cast<Value>(ofr);
+          v && !dom.properlyDominates(v, firstMemcpy))
+        return failure();
 
     // Create a new memcpy that directly copies from the source of the first
-    // memcpy to the destination of the second memcpy
+    // memcpy to the destination of the second memcpy. The intermediate buffer
+    // is written and read whole, so the new copy keeps the first's source
+    // pattern and the second's destination pattern.
     rewriter.setInsertionPoint(firstMemcpy);
 
-    SmallVector<Value> emptyOffsets, emptySizes, emptyStrides;
-    SmallVector<Type> emptyTypes;
-
+    SmallVector<Type> resultTypes;
     if (!firstMemcpy.getAsyncDependencies().empty()) {
-      emptyTypes.push_back(air::AsyncTokenType::get(rewriter.getContext()));
+      resultTypes.push_back(air::AsyncTokenType::get(rewriter.getContext()));
     }
 
     auto newMemcpy = air::DmaMemcpyNdOp::create(
-        rewriter, firstMemcpy.getLoc(),
-        emptyTypes,                         // result types
-        firstMemcpy.getAsyncDependencies(), // async dependencies
-        secondMemcpy.getDstMemref(),        // destination from second memcpy
-        emptyOffsets, emptySizes, emptyStrides, // dst access pattern
-        firstMemcpy.getSrcMemref(),             // source from first memcpy
-        emptyOffsets, emptySizes, emptyStrides, // src access pattern
-        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+        rewriter, firstMemcpy.getLoc(), resultTypes,
+        firstMemcpy.getAsyncDependencies(), secondMemcpy.getDstMemref(),
+        secondMemcpy.getMixedDstOffsets(), secondMemcpy.getMixedDstSizes(),
+        secondMemcpy.getMixedDstStrides(), firstMemcpy.getSrcMemref(),
+        firstMemcpy.getMixedSrcOffsets(), firstMemcpy.getMixedSrcSizes(),
+        firstMemcpy.getMixedSrcStrides(), firstMemcpy.getPadBeforeAttr(),
+        firstMemcpy.getPadAfterAttr());
 
     // Replace the async token of the second memcpy with the new one if needed
     if (secondMemcpy.getAsyncToken() && newMemcpy.getAsyncToken()) {
@@ -7660,64 +7672,6 @@ void transform::HoistLoopCarriedPackOp::getEffects(
   consumesHandle(getTargetMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
   modifiesPayload(effects);
-}
-
-//===----------------------------------------------------------------------===//
-// FoldPackIntoGenericOp
-//===----------------------------------------------------------------------===//
-
-DiagnosedSilenceableFailure
-transform::FoldPackIntoGenericOp::apply(transform::TransformRewriter &rewriter,
-                                        transform::TransformResults &results,
-                                        transform::TransformState &state) {
-  if (!llvm::all_of(state.getPayloadOps(getTarget()),
-                    llvm::IsaPred<linalg::GenericOp>))
-    return emitSilenceableError() << "expects linalg.generic targets";
-  SmallVector<Operation *> updated;
-  for (Operation *target : state.getPayloadOps(getTarget())) {
-    auto generic = cast<linalg::GenericOp>(target);
-    SmallVector<AffineMap> maps = generic.getIndexingMapsArray();
-    // A pack feeding several inputs is folded into each, and erased once.
-    llvm::SetVector<Operation *> folded;
-    for (OpOperand *operand : generic.getDpsInputOperands()) {
-      auto pack = operand->get().getDefiningOp<linalg::PackOp>();
-      if (!pack)
-        continue;
-      ArrayRef<int64_t> srcShape = pack.getSourceType().getShape();
-      ArrayRef<int64_t> innerPos = pack.getInnerDimsPos();
-      SmallVector<int64_t> tiles(pack.getStaticInnerTiles());
-      // Without padding: every tiled dimension divides into whole tiles.
-      bool exact = true;
-      for (auto [d, t] : llvm::zip_equal(innerPos, tiles))
-        exact &= !ShapedType::isDynamic(t) &&
-                 !ShapedType::isDynamic(srcShape[d]) && srcShape[d] % t == 0;
-      if (!exact)
-        continue;
-      int64_t srcRank = srcShape.size();
-      AffineMap packed = maps[operand->getOperandNumber()];
-      ArrayRef<int64_t> outerPerm = pack.getOuterDimsPerm();
-      SmallVector<AffineExpr> exprs(srcRank);
-      for (int64_t j = 0; j < srcRank; ++j)
-        exprs[outerPerm.empty() ? j : outerPerm[j]] = packed.getResult(j);
-      for (auto [i, d] : llvm::enumerate(innerPos))
-        exprs[d] = exprs[d] * tiles[i] + packed.getResult(srcRank + i);
-      maps[operand->getOperandNumber()] =
-          AffineMap::get(packed.getNumDims(), packed.getNumSymbols(), exprs,
-                         rewriter.getContext());
-      rewriter.modifyOpInPlace(generic,
-                               [&] { operand->set(pack.getSource()); });
-      folded.insert(pack);
-    }
-    rewriter.modifyOpInPlace(generic, [&] {
-      generic.setIndexingMapsAttr(rewriter.getAffineMapArrayAttr(maps));
-    });
-    for (Operation *pack : folded)
-      if (pack->use_empty())
-        rewriter.eraseOp(pack);
-    updated.push_back(generic);
-  }
-  results.set(llvm::cast<OpResult>(getResult()), updated);
-  return DiagnosedSilenceableFailure::success();
 }
 
 //===----------------------------------------------------------------------===//

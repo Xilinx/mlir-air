@@ -72,7 +72,8 @@ module {
           %a0 = memref.alloc() : memref<1024xbf16, 1>
           air.execute_terminator %a0 : memref<1024xbf16, 1>
         }
-        %p = air.channel.put async [%t0] @bcast[] (%b0[] [] []) {id = 20 : i32} : (memref<1024xbf16, 1>)
+        %i0 = arith.constant 0 : index
+        %p = air.channel.put async [%t0] @bcast[%i0] (%b0[] [] []) {id = 20 : i32} : (memref<1024xbf16, 1>)
       }
 
       // Consumer 0, its own segment, taking its own copy.
@@ -81,7 +82,8 @@ module {
           %a1 = memref.alloc() : memref<1024xbf16, 1>
           air.execute_terminator %a1 : memref<1024xbf16, 1>
         }
-        %g1 = air.channel.get async [%t1] @bcast[] (%b1[] [] []) {id = 21 : i32} : (memref<1024xbf16, 1>)
+        %i1 = arith.constant 0 : index
+        %g1 = air.channel.get async [%t1] @bcast[%i1] (%b1[] [] []) {id = 21 : i32} : (memref<1024xbf16, 1>)
       }
 
       // Consumer 1, its own segment, taking its own copy.
@@ -90,7 +92,8 @@ module {
           %a2 = memref.alloc() : memref<1024xbf16, 1>
           air.execute_terminator %a2 : memref<1024xbf16, 1>
         }
-        %g2 = air.channel.get async [%t2] @bcast[] (%b2[] [] []) {id = 22 : i32} : (memref<1024xbf16, 1>)
+        %i2 = arith.constant 1 : index
+        %g2 = air.channel.get async [%t2] @bcast[%i2] (%b2[] [] []) {id = 22 : i32} : (memref<1024xbf16, 1>)
       }
 
       // Consumer 2, its own segment, taking its own copy.
@@ -99,7 +102,8 @@ module {
           %a3 = memref.alloc() : memref<1024xbf16, 1>
           air.execute_terminator %a3 : memref<1024xbf16, 1>
         }
-        %g3 = air.channel.get async [%t3] @bcast[] (%b3[] [] []) {id = 23 : i32} : (memref<1024xbf16, 1>)
+        %i3 = arith.constant 2 : index
+        %g3 = air.channel.get async [%t3] @bcast[%i3] (%b3[] [] []) {id = 23 : i32} : (memref<1024xbf16, 1>)
       }
 
       // Consumer 3, its own segment, taking its own copy.
@@ -108,7 +112,8 @@ module {
           %a4 = memref.alloc() : memref<1024xbf16, 1>
           air.execute_terminator %a4 : memref<1024xbf16, 1>
         }
-        %g4 = air.channel.get async [%t4] @bcast[] (%b4[] [] []) {id = 24 : i32} : (memref<1024xbf16, 1>)
+        %i4 = arith.constant 3 : index
+        %g4 = air.channel.get async [%t4] @bcast[%i4] (%b4[] [] []) {id = 24 : i32} : (memref<1024xbf16, 1>)
       }
 
       // Consumer 4, its own segment, taking its own copy.
@@ -117,7 +122,8 @@ module {
           %a5 = memref.alloc() : memref<1024xbf16, 1>
           air.execute_terminator %a5 : memref<1024xbf16, 1>
         }
-        %g5 = air.channel.get async [%t5] @bcast[] (%b5[] [] []) {id = 25 : i32} : (memref<1024xbf16, 1>)
+        %i5 = arith.constant 4 : index
+        %g5 = air.channel.get async [%t5] @bcast[%i5] (%b5[] [] []) {id = 25 : i32} : (memref<1024xbf16, 1>)
       }
 
       // Consumer 5, its own segment, taking its own copy.
@@ -126,7 +132,8 @@ module {
           %a6 = memref.alloc() : memref<1024xbf16, 1>
           air.execute_terminator %a6 : memref<1024xbf16, 1>
         }
-        %g6 = air.channel.get async [%t6] @bcast[] (%b6[] [] []) {id = 26 : i32} : (memref<1024xbf16, 1>)
+        %i6 = arith.constant 5 : index
+        %g6 = air.channel.get async [%t6] @bcast[%i6] (%b6[] [] []) {id = 26 : i32} : (memref<1024xbf16, 1>)
       }
 
       // Consumer 6, its own segment, taking its own copy.
@@ -135,7 +142,8 @@ module {
           %a7 = memref.alloc() : memref<1024xbf16, 1>
           air.execute_terminator %a7 : memref<1024xbf16, 1>
         }
-        %g7 = air.channel.get async [%t7] @bcast[] (%b7[] [] []) {id = 27 : i32} : (memref<1024xbf16, 1>)
+        %i7 = arith.constant 6 : index
+        %g7 = air.channel.get async [%t7] @bcast[%i7] (%b7[] [] []) {id = 27 : i32} : (memref<1024xbf16, 1>)
       }
 
       // Consumer 7, its own segment, taking its own copy.
@@ -144,7 +152,8 @@ module {
           %a8 = memref.alloc() : memref<1024xbf16, 1>
           air.execute_terminator %a8 : memref<1024xbf16, 1>
         }
-        %g8 = air.channel.get async [%t8] @bcast[] (%b8[] [] []) {id = 28 : i32} : (memref<1024xbf16, 1>)
+        %i8 = arith.constant 7 : index
+        %g8 = air.channel.get async [%t8] @bcast[%i8] (%b8[] [] []) {id = 28 : i32} : (memref<1024xbf16, 1>)
       }
     }
     return

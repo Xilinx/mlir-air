@@ -181,8 +181,8 @@ func.func @func1() {
 
 #map = affine_map<()[s0] -> (s0 * 128)>
 air.channel @channel_12 [2, 2]
-air.channel @channel_5 [1, 1] {broadcast_shape = [1, 2]}
-air.channel @channel_4 [1, 1] {broadcast_shape = [1, 2]}
+air.channel @channel_5 [1, 1]
+air.channel @channel_4 [1, 1]
 func.func private @linalg_fill_bf16(bf16, memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>) attributes {link_with = "mm.o", llvm.emit_c_interface}
 func.func @func2() {
   %c4 = arith.constant 4 : index

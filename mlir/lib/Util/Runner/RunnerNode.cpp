@@ -1730,11 +1730,21 @@ private:
     std::string key = chan_op.getChanName().str();
     if (!channelIsIndexable(chan_op))
       return key;
+    // A get on a broadcast channel names a receiver in the broadcast shape;
+    // the entry it takes from is that index in each dim the bundle has, and
+    // 0 in each dim the broadcast adds.
+    SmallVector<int64_t> bundle;
+    if (isa<air::ChannelGetOp>(chan_op.getOperation()))
+      if (auto chan = getChannelDeclarationThroughSymbol(chan_op);
+          chan && chan->hasAttr("broadcast_shape"))
+        bundle = extractFromIntegerArrayAttr<int64_t>(chan.getSize());
     std::string suffix;
-    for (auto v : chan_op.getIndices()) {
+    for (auto [d, v] : llvm::enumerate(chan_op.getIndices())) {
       auto c = resolveConstantThroughHierarchy(v);
       if (!c)
         return key;
+      if (d < bundle.size() && bundle[d] == 1)
+        c = 0;
       suffix += (suffix.empty() ? "" : ",") + std::to_string(*c);
     }
     return key + "[" + suffix + "]";

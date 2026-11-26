@@ -68,18 +68,21 @@ module {
               } else {
                 %10 = affine.if #set1()[%arg13, %arg14] -> !air.async.token {
                   %c16_15 = arith.constant 16 : index
-// CHECK: %[[EVENT6:.*]] = air.channel.get async{{.*}}@channel_1[%[[VALUE0]], %[[VALUE1]]]
+// CHECK: %[[ROW1:.*]] = arith.subi %[[VALUE0]], %{{.*}} : index
+// CHECK: %[[EVENT6:.*]] = air.channel.get async{{.*}}@channel_1[%[[ROW1]], %[[VALUE1]]]
                   %11 = air.dma_memcpy_nd async [%async_token_5, %arg19] (%results_6[] [] [], %arg17[%c16_15, %arg18] [%c16, %c16] [%c64_2, %c1]) {broadcast_set = #set1, id = 2 : i32} : (memref<16x16xbf16, 2>, memref<64x64xbf16, 1>)
                   affine.yield %11 : !air.async.token
                 } else {
                   %11 = affine.if #set2()[%arg13, %arg14] -> !air.async.token {
                     %c32 = arith.constant 32 : index
-// CHECK: %[[EVENT7:.*]] = air.channel.get async{{.*}}@channel_2[%[[VALUE0]], %[[VALUE1]]]
+// CHECK: %[[ROW2:.*]] = arith.subi %[[VALUE0]], %{{.*}} : index
+// CHECK: %[[EVENT7:.*]] = air.channel.get async{{.*}}@channel_2[%[[ROW2]], %[[VALUE1]]]
                     %12 = air.dma_memcpy_nd async [%async_token_5, %arg19] (%results_6[] [] [], %arg17[%c32, %arg18] [%c16, %c16] [%c64_2, %c1]) {broadcast_set = #set2, id = 3 : i32} : (memref<16x16xbf16, 2>, memref<64x64xbf16, 1>)
                     affine.yield %12 : !air.async.token
                   } else {
                     %c48 = arith.constant 48 : index
-// CHECK: %[[EVENT8:.*]] = air.channel.get async{{.*}}@channel_3[%[[VALUE0]], %[[VALUE1]]]
+// CHECK: %[[ROW3:.*]] = arith.subi %[[VALUE0]], %{{.*}} : index
+// CHECK: %[[EVENT8:.*]] = air.channel.get async{{.*}}@channel_3[%[[ROW3]], %[[VALUE1]]]
                     %12 = air.dma_memcpy_nd async [%async_token_5, %arg19] (%results_6[] [] [], %arg17[%c48, %arg18] [%c16, %c16] [%c64_2, %c1]) {broadcast_set = #set3, id = 4 : i32} : (memref<16x16xbf16, 2>, memref<64x64xbf16, 1>)
                     affine.yield %12 : !air.async.token
                   }

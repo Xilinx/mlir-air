@@ -52,15 +52,16 @@ module {
 
       %seg = air.segment @case1_seg async [%put_l3] attributes {id = 2 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
         %c1_seg = arith.constant 1 : index
+        %c0_seg = arith.constant 0 : index
         // L2 staging buffer (memtile, memory_space = 1).
         %async_l2, %buf_l2 = air.execute -> (memref<64xbf16, 1>) {
           %alloc = memref.alloc() : memref<64xbf16, 1>
           air.execute_terminator %alloc : memref<64xbf16, 1>
         }
-        %get_l2 = air.channel.get async [%async_l2] @l3_to_l2[%c1_seg, %c1_seg] (%buf_l2[] [] []) {id = 2 : i32} : (memref<64xbf16, 1>)
+        %get_l2 = air.channel.get async [%async_l2] @l3_to_l2[%c0_seg, %c0_seg] (%buf_l2[] [] []) {id = 2 : i32} : (memref<64xbf16, 1>)
         // L2-side put: drives the intra-device (memtile -> compute) packet
         // flow. Pre-fix this got pkt_id = 0 (same as the shim flow above).
-        %put_l2 = air.channel.put async [%get_l2] @l2_to_l1[%c1_seg, %c1_seg] (%buf_l2[] [] []) {id = 3 : i32} : (memref<64xbf16, 1>)
+        %put_l2 = air.channel.put async [%get_l2] @l2_to_l1[%c0_seg, %c0_seg] (%buf_l2[] [] []) {id = 3 : i32} : (memref<64xbf16, 1>)
 
         %herd = air.herd @case1_herd async [%put_l2] tile (%tx, %ty) in (%htx=%c1_seg, %hty=%c1_seg) attributes {id = 3 : i32} {
           %hc0 = arith.constant 0 : index
@@ -120,20 +121,21 @@ module {
 
       %seg = air.segment @case2_seg async [%put_a, %put_b] attributes {id = 2 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
         %c1_seg = arith.constant 1 : index
+        %c0_seg = arith.constant 0 : index
 
         %async_l2a, %buf_l2a = air.execute -> (memref<64xbf16, 1>) {
           %alloc = memref.alloc() : memref<64xbf16, 1>
           air.execute_terminator %alloc : memref<64xbf16, 1>
         }
-        %get_l2a = air.channel.get async [%async_l2a] @l3_to_l2_a[%c1_seg, %c1_seg] (%buf_l2a[] [] []) {id = 3 : i32} : (memref<64xbf16, 1>)
-        %put_l2a = air.channel.put async [%get_l2a] @l2_to_l1_a[%c1_seg, %c1_seg] (%buf_l2a[] [] []) {id = 4 : i32} : (memref<64xbf16, 1>)
+        %get_l2a = air.channel.get async [%async_l2a] @l3_to_l2_a[%c0_seg, %c0_seg] (%buf_l2a[] [] []) {id = 3 : i32} : (memref<64xbf16, 1>)
+        %put_l2a = air.channel.put async [%get_l2a] @l2_to_l1_a[%c0_seg, %c0_seg] (%buf_l2a[] [] []) {id = 4 : i32} : (memref<64xbf16, 1>)
 
         %async_l2b, %buf_l2b = air.execute -> (memref<64xbf16, 1>) {
           %alloc = memref.alloc() : memref<64xbf16, 1>
           air.execute_terminator %alloc : memref<64xbf16, 1>
         }
-        %get_l2b = air.channel.get async [%async_l2b] @l3_to_l2_b[%c1_seg, %c1_seg] (%buf_l2b[] [] []) {id = 5 : i32} : (memref<64xbf16, 1>)
-        %put_l2b = air.channel.put async [%get_l2b] @l2_to_l1_b[%c1_seg, %c1_seg] (%buf_l2b[] [] []) {id = 6 : i32} : (memref<64xbf16, 1>)
+        %get_l2b = air.channel.get async [%async_l2b] @l3_to_l2_b[%c0_seg, %c0_seg] (%buf_l2b[] [] []) {id = 5 : i32} : (memref<64xbf16, 1>)
+        %put_l2b = air.channel.put async [%get_l2b] @l2_to_l1_b[%c0_seg, %c0_seg] (%buf_l2b[] [] []) {id = 6 : i32} : (memref<64xbf16, 1>)
 
         %herd = air.herd @case2_herd async [%put_l2a, %put_l2b] tile (%tx, %ty) in (%htx=%c1_seg, %hty=%c1_seg) attributes {id = 3 : i32} {
           %hc0 = arith.constant 0 : index
@@ -191,11 +193,12 @@ module {
     %0 = air.launch async () in () attributes {id = 1 : i32} {
       %seg = air.segment @case3_seg async attributes {id = 2 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
         %c1_seg = arith.constant 1 : index
+        %c0_seg = arith.constant 0 : index
         %async_l2, %buf_l2 = air.execute -> (memref<64xbf16, 1>) {
           %alloc = memref.alloc() : memref<64xbf16, 1>
           air.execute_terminator %alloc : memref<64xbf16, 1>
         }
-        %put_l2 = air.channel.put async [%async_l2] @l2_to_l1_only[%c1_seg, %c1_seg] (%buf_l2[] [] []) {id = 1 : i32} : (memref<64xbf16, 1>)
+        %put_l2 = air.channel.put async [%async_l2] @l2_to_l1_only[%c0_seg, %c0_seg] (%buf_l2[] [] []) {id = 1 : i32} : (memref<64xbf16, 1>)
 
         %herd = air.herd @case3_herd async [%put_l2] tile (%tx, %ty) in (%htx=%c1_seg, %hty=%c1_seg) attributes {id = 3 : i32} {
           %hc0 = arith.constant 0 : index

@@ -64,18 +64,19 @@ module {
         
         // conv3x3_coreA herd - produces to cascade channel L1ToL1_Conv3x3AToSkip
         %3 = air.herd @conv3x3_coreA async tile (%arg6, %arg7) in (%arg8=%c1_0, %arg9=%c1_0) attributes {id = 4 : i32} {
-          %c1_1 = arith.constant 1 : index
+          %c0_1 = arith.constant 0 : index
           %alloc = memref.alloc() : memref<32x1x32xui8, 2 : i32>
-          air.channel.get @L1ToL1_Conv1ToConv3x3[%c1_1, %c1_1] (%alloc[] [] []) : (memref<32x1x32xui8, 2 : i32>)
+          air.channel.get @L1ToL1_Conv1ToConv3x3[%c0_1, %c0_1] (%alloc[] [] []) : (memref<32x1x32xui8, 2 : i32>)
           air.channel.put @L1ToL1_Conv3x3AToSkip[] (%alloc[] [] []) : (memref<32x1x32xui8, 2 : i32>)
           memref.dealloc %alloc : memref<32x1x32xui8, 2 : i32>
         }
         
         // conv3x3_coreB herd - produces to cascade channel L1ToL1_Conv3x3BToSkip
         %4 = air.herd @conv3x3_coreB async tile (%arg6, %arg7) in (%arg8=%c1_0, %arg9=%c1_0) attributes {id = 5 : i32} {
+          %c0_1 = arith.constant 0 : index
           %c1_1 = arith.constant 1 : index
           %alloc = memref.alloc() : memref<32x1x32xui8, 2 : i32>
-          air.channel.get @L1ToL1_Conv1ToConv3x3[%c1_1, %c1_1] (%alloc[] [] []) : (memref<32x1x32xui8, 2 : i32>)
+          air.channel.get @L1ToL1_Conv1ToConv3x3[%c1_1, %c0_1] (%alloc[] [] []) : (memref<32x1x32xui8, 2 : i32>)
           air.channel.put @L1ToL1_Conv3x3BToSkip[] (%alloc[] [] []) : (memref<32x1x32xui8, 2 : i32>)
           memref.dealloc %alloc : memref<32x1x32xui8, 2 : i32>
         }

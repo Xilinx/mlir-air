@@ -232,7 +232,7 @@ module {
           %src = memref.alloc() : memref<64xbf16, 2>
           %dst = memref.alloc() : memref<8x8xbf16, 2>
           // expected-error@+1 {{copies between two L1 buffers parts of different or unknown shapes, which a core's copy does not take}}
-          air.dma_memcpy_nd (%dst[] [] [], %src[%c0] [%c8] [%c1_1]) {id = 1 : i32} : (memref<8x8xbf16, 2>, memref<64xbf16, 2>)
+          air.dma_memcpy_nd (%dst[0, 0] [1, 8] [8, 1], %src[%c0] [%c8] [%c1_1]) {id = 1 : i32} : (memref<8x8xbf16, 2>, memref<64xbf16, 2>)
         }
       }
     }
