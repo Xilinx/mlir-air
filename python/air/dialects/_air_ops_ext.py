@@ -443,14 +443,6 @@ segment = _hierarchy_region_op(Segment, terminator=lambda *_args: SegmentTermina
 rank = region_op(Rank, terminator=lambda *_args: RankTerminatorOp())
 
 
-def external_func(name, inputs, outputs=None, visibility="private"):
-    if outputs is None:
-        outputs = []
-    return FuncOp(
-        name=name, type=FunctionType.get(inputs, outputs), visibility=visibility
-    )
-
-
 # Wrapper for func CallOp.
 class call(CallOp):
     """Specialize CallOp class constructor to take python integers"""
