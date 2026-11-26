@@ -62,7 +62,7 @@ module {
 // CHECK: %[[EVENT8:.*]], %[[VALUE0:.*]] = air.execute
         %19 = memref.alloc() : memref<64x64xbf16, 1>
 // CHECK: %[[EVENT9:.*]] = air.channel.get async [%[[EVENT8]]]{{.*}}@channel_3[]
-// CHECK: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT9]]]
+// CHECK: %[[EVENT10:.*]] = air.wait_all async [{{.*}}%[[EVENT9]]]
         air.channel.get @channel_3[] (%19[] [] []) : (memref<64x64xbf16, 1>)
         scf.for %arg16 = %c0 to %c1024 step %c64 {
 
