@@ -11,6 +11,8 @@
 
 module  {
   air.channel @unused_args_chan [1]
+  air.channel @reshape_feed [1, 1]
+  air.channel @reshape_drain [1, 1]
 // CHECK-LABEL: module
   func.func @foo(%arg0: memref<1024xi32>) {
     %c0 = arith.constant 0 : index
@@ -102,6 +104,30 @@ module  {
         }
         memref.dealloc %buf : memref<256xi32, 2>
       }
+    }
+    return
+  }
+  // A read through a reshape view is a read: @h only reads %buf (through
+  // memref.collapse_shape), so it does not wait for the put that also reads
+  // %buf. It holds the get matching that put, which an edge would deadlock.
+  func.func @herd_reads_reshaped_arg() {
+    // CHECK-LABEL: func.func @herd_reads_reshaped_arg
+    air.segment @s {
+      %c1_0 = arith.constant 1 : index
+      %buf = memref.alloc() : memref<4x16xi32, 1>
+      // CHECK: %[[ALLOC:.*]], %{{.*}} = air.execute
+      air.channel.put @reshape_feed[] (%buf[] [] []) : (memref<4x16xi32, 1>)
+      // CHECK: air.channel.put async [%[[ALLOC]]]
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%buf) : memref<4x16xi32, 1> {
+      // CHECK: air.herd @h async [%[[ALLOC]]]
+        %l = memref.alloc() : memref<4x16xi32, 2>
+        air.channel.get @reshape_feed[%tx, %ty] (%l[] [] []) : (memref<4x16xi32, 2>)
+        %flat = memref.collapse_shape %a [[0, 1]] : memref<4x16xi32, 1> into memref<64xi32, 1>
+        air.channel.put @reshape_drain[%tx, %ty] (%flat[] [] []) : (memref<64xi32, 1>)
+        memref.dealloc %l : memref<4x16xi32, 2>
+      }
+      %o = memref.alloc() : memref<64xi32, 1>
+      air.channel.get @reshape_drain[] (%o[] [] []) : (memref<64xi32, 1>)
     }
     return
   }

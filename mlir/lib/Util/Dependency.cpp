@@ -1912,6 +1912,57 @@ getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
   return operands;
 }
 
+HierarchyArgAccess getHierarchyArgAccess(Value kernelArg) {
+  bool read = false;
+  llvm::SmallPtrSet<Value, 8> seen;
+  SmallVector<Value> work{kernelArg};
+  while (!work.empty()) {
+    Value v = work.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    // The read helper reports a read through a reshape under the reshape's
+    // source.
+    Value readName = v;
+    if (Operation *def = v.getDefiningOp())
+      if (isa<memref::ReshapeOp, memref::ExpandShapeOp,
+              memref::CollapseShapeOp>(def))
+        readName = def->getOperand(0);
+    for (OpOperand &u : v.getUses()) {
+      Operation *user = u.getOwner();
+      if (auto view = dyn_cast<ViewLikeOpInterface>(user)) {
+        if (view.getViewSource() == v) {
+          llvm::append_range(work, user->getResults());
+          continue;
+        }
+      }
+      if (auto hier = dyn_cast<air::HierarchyInterface>(user)) {
+        bool isKernelOperand = false;
+        for (unsigned i = 0; i < hier.getNumKernelOperands(); i++)
+          if (u.is(hier.getKernelOperand(i))) {
+            work.push_back(hier.getKernelArgument(i));
+            isKernelOperand = true;
+          }
+        if (isKernelOperand)
+          continue;
+      }
+      auto writes = getAllWriteAccessedMemrefOperandsFromOp(user);
+      auto reads = getAllReadAccessedMemrefOperandsFromOp(user);
+      if (failed(writes) || failed(reads))
+        return HierarchyArgAccess::Write;
+      if (llvm::any_of(*writes, [&](const MemrefAccessPattern &entry) {
+            return entry.first == v;
+          }))
+        return HierarchyArgAccess::Write;
+      if (!llvm::any_of(*reads, [&](const MemrefAccessPattern &entry) {
+            return entry.first == readName;
+          }))
+        return HierarchyArgAccess::Write;
+      read = true;
+    }
+  }
+  return read ? HierarchyArgAccess::Read : HierarchyArgAccess::None;
+}
+
 // Get index or scalar operands accessed by op.
 FailureOr<SmallVector<Value>>
 getAllAccessedScalarOperandsFromOp(Operation *op) {
@@ -3245,15 +3296,22 @@ dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     if (!hasDepToHier)
       continue;
 
-    // Build partial memref list from herd's kernel operands.
-    SmallVector<air::partialMemref, 1> herd_memref_accesses;
+    // The herd accesses its memref args as its body does.
+    SmallVector<air::partialMemref, 1> herd_memref_reads;
+    SmallVector<air::partialMemref, 1> herd_memref_writes;
     for (unsigned i = 0; i < herd_op.getNumKernelOperands(); i++) {
       auto operand = herd_op.getKernelOperand(i);
-      if (isa<BaseMemRefType>(operand.getType())) {
-        herd_memref_accesses.push_back(air::partialMemref(operand));
-      }
+      if (!isa<BaseMemRefType>(operand.getType()))
+        continue;
+      HierarchyArgAccess access =
+          getHierarchyArgAccess(herd_op.getKernelArgument(i));
+      if (access == HierarchyArgAccess::None)
+        continue;
+      herd_memref_reads.push_back(air::partialMemref(operand));
+      if (access == HierarchyArgAccess::Write)
+        herd_memref_writes.push_back(air::partialMemref(operand));
     }
-    if (herd_memref_accesses.empty())
+    if (herd_memref_reads.empty())
       continue;
 
     // Erase hierarchy deps and re-trace.
@@ -3264,10 +3322,10 @@ dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
       }
     }
     if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-            herd_memref_accesses, herd_op, "RAW")))
+            herd_memref_reads, herd_op, "RAW")))
       return failure();
     if (failed(depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-            herd_memref_accesses, herd_op, "WAW/WAR")))
+            herd_memref_writes, herd_op, "WAW/WAR")))
       return failure();
   }
 
@@ -3361,9 +3419,10 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
       for (unsigned hier_argument_id = 0;
            hier_argument_id < hier.getNumKernelOperands(); hier_argument_id++) {
         if (u.is(hier.getKernelOperand(hier_argument_id))) {
-          auto child_op = hier.getKernelArgument(hier_argument_id);
-          char rw_check = checkOperandReadOrWrite(child_op);
-          if (rw == 'n' || rw_check == rw) {
+          HierarchyArgAccess access =
+              getHierarchyArgAccess(hier.getKernelArgument(hier_argument_id));
+          if (access == HierarchyArgAccess::Write ||
+              (access == HierarchyArgAccess::Read && rw == 'n')) {
             addDependencyBetweenOps(hier.getOperation(), op.getOperation());
           }
         }
@@ -3484,30 +3543,6 @@ bool dependencyTracer::areOverlappingPartialMemrefs(partialMemref *tile_0,
     return getLinearAccessRange(tile->offsets, tile->sizes, tile->strides);
   };
   return mayOverlap(range(tile_0), range(tile_1));
-}
-
-char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
-  if (!llvm::isa<BaseMemRefType>(operand.getType()))
-    operand.getDefiningOp()->emitOpError(
-        "operand being traced is not a memref");
-  bool foundWriteAccess = false;
-  bool foundReadAccess = false;
-  for (auto &u : operand.getUses()) {
-    char rw_code = checkOpOperandReadOrWrite(u);
-    if (rw_code == 'w')
-      foundWriteAccess = true;
-    else if (rw_code == 'r')
-      foundReadAccess = true;
-    // If unknown op, then assume write access for safety
-    else if (rw_code == 'u')
-      foundWriteAccess = true;
-  }
-  if (foundWriteAccess)
-    return 'w';
-  else if (foundReadAccess)
-    return 'r';
-  else
-    return 'w';
 }
 
 LogicalResult dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {

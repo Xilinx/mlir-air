@@ -183,6 +183,14 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op);
 FailureOr<SmallVector<MemrefAccessPattern>>
 getAllWriteAccessedMemrefOperandsFromOp(Operation *op);
 
+// What a hierarchy op's body does with a memref it receives through its args
+// (`kernelArg` is the block argument). Views and the args of nested hierarchy
+// ops are followed; a use with no known access pattern counts as a write. An
+// arg the body never accesses gives the hierarchy op no footprint on the
+// buffer.
+enum class HierarchyArgAccess { None, Read, Write };
+HierarchyArgAccess getHierarchyArgAccess(Value kernelArg);
+
 //===----------------------------------------------------------------------===//
 // Dependency graph
 //===----------------------------------------------------------------------===//
@@ -560,8 +568,6 @@ private:
   // Check if two partial memref tiles have identical indices
   bool areOverlappingPartialMemrefs(partialMemref *tile_0,
                                     partialMemref *tile_1);
-
-  char checkOperandReadOrWrite(mlir::Value operand);
 
   // Add dependency edge
   void addDependencyBetweenOps(Operation *source, Operation *sink);

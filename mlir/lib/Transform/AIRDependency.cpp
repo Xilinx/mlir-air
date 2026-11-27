@@ -503,12 +503,12 @@ public:
               continue;
             // The arg's value exists once its defining op is done.
             pushDefiningOpAsDep<air::HierarchyInterface>(operand, hier);
-            ArgAccess access =
-                getHierarchyArgAccess(hier.getKernelArgument(i));
-            if (access == ArgAccess::None)
+            air::HierarchyArgAccess access =
+                air::getHierarchyArgAccess(hier.getKernelArgument(i));
+            if (access == air::HierarchyArgAccess::None)
               continue;
             sink_op_memref_reads.push_back(partialMemref(operand));
-            if (access == ArgAccess::Write)
+            if (access == air::HierarchyArgAccess::Write)
               sink_op_memref_writes.push_back(partialMemref(operand));
           }
         }
@@ -1241,55 +1241,6 @@ private:
     }
   }
 
-  enum class ArgAccess { None, Read, Write };
-
-  // What a hierarchy op's body does with a memref it receives through its
-  // args. Views and the args of nested hierarchy ops are followed; a use with
-  // no known access pattern counts as a write. An arg the body never accesses
-  // gives the hierarchy op no footprint on the buffer.
-  ArgAccess getHierarchyArgAccess(Value arg) {
-    bool read = false;
-    llvm::SmallPtrSet<Value, 8> seen;
-    SmallVector<Value> work{arg};
-    while (!work.empty()) {
-      Value v = work.pop_back_val();
-      if (!seen.insert(v).second)
-        continue;
-      for (OpOperand &u : v.getUses()) {
-        Operation *user = u.getOwner();
-        if (auto view = dyn_cast<ViewLikeOpInterface>(user)) {
-          if (view.getViewSource() == v) {
-            llvm::append_range(work, user->getResults());
-            continue;
-          }
-        }
-        if (auto hier = dyn_cast<air::HierarchyInterface>(user)) {
-          bool isKernelOperand = false;
-          for (unsigned i = 0; i < hier.getNumKernelOperands(); i++)
-            if (u.is(hier.getKernelOperand(i))) {
-              work.push_back(hier.getKernelArgument(i));
-              isKernelOperand = true;
-            }
-          if (isKernelOperand)
-            continue;
-        }
-        auto writes = air::getAllWriteAccessedMemrefOperandsFromOp(user);
-        auto reads = air::getAllReadAccessedMemrefOperandsFromOp(user);
-        if (failed(writes) || failed(reads))
-          return ArgAccess::Write;
-        auto isUse = [&](const air::MemrefAccessPattern &entry) {
-          return entry.first == v;
-        };
-        if (llvm::any_of(*writes, isUse))
-          return ArgAccess::Write;
-        if (!llvm::any_of(*reads, isUse))
-          return ArgAccess::Write;
-        read = true;
-      }
-    }
-    return read ? ArgAccess::Read : ArgAccess::None;
-  }
-
   // Trace operand's uses at current scope
   template <typename T>
   void pushDepsAtCurrentScope(mlir::Value operand, T op, char rw = 'n',
@@ -1389,10 +1340,10 @@ private:
              hier_argument_id < hier.getNumKernelOperands();
              hier_argument_id++) {
           if (u.is(hier.getKernelOperand(hier_argument_id))) {
-            ArgAccess access =
-                getHierarchyArgAccess(hier.getKernelArgument(hier_argument_id));
-            if (access == ArgAccess::Write ||
-                (access == ArgAccess::Read && rw == 'n')) {
+            air::HierarchyArgAccess access = air::getHierarchyArgAccess(
+                hier.getKernelArgument(hier_argument_id));
+            if (access == air::HierarchyArgAccess::Write ||
+                (access == air::HierarchyArgAccess::Read && rw == 'n')) {
               addAsyncDepToGraphIfNew<T>(hier->getResult(0), op);
             }
           }
