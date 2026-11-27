@@ -10,6 +10,9 @@
 // Async dependency tracing through air hierarchies
 
 module  {
+  air.channel @unused_args_chan [1]
+  air.channel @reshape_feed [1, 1]
+  air.channel @reshape_drain [1, 1]
 // CHECK-LABEL: module
   func.func @foo(%arg0: memref<1024xi32>) {
     %c0 = arith.constant 0 : index
@@ -48,11 +51,12 @@ module  {
     }
     return
   }
-  // Sequential herds sharing the same buffer: second herd must depend on first.
-  // traceDeps for HierarchyInterface creates RAW dependency between herds.
+  // Sequential herds sharing the same buffer: the second herd reads what the
+  // first writes, so it must depend on the first (RAW through the herd args).
   func.func @sequential_herds_same_buffer() {
     %c1 = arith.constant 1 : index
     air.launch (%arg0, %arg1) in (%arg2=%c1, %arg3=%c1) {
+    // CHECK-LABEL: func.func @sequential_herds_same_buffer
     // CHECK: air.launch async
       air.segment {
         %c1_0 = arith.constant 1 : index
@@ -60,13 +64,70 @@ module  {
         // CHECK: %[[ALLOC:.*]], %[[BUF:.*]] = air.execute
         air.herd tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%buf) : memref<256xi32, 2> {
         // CHECK: %[[HERD1:.*]] = air.herd async [{{.*}}%[[ALLOC]]{{.*}}]
+          %c0 = arith.constant 0 : index
+          %v = arith.constant 7 : i32
+          memref.store %v, %a[%c0] : memref<256xi32, 2>
         }
         air.herd tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%buf) : memref<256xi32, 2> {
         // CHECK: %[[HERD2:.*]] = air.herd async [{{.*}}%[[HERD1]]{{.*}}]
+          %c0 = arith.constant 0 : index
+          %v = memref.load %a[%c0] : memref<256xi32, 2>
         }
         memref.dealloc %buf : memref<256xi32, 2>
         // CHECK: air.execute [{{.*}}%[[HERD2]]{{.*}}]
       }
+    }
+    return
+  }
+  // A hierarchy op's footprint is what its body accesses, not its args. The
+  // herds receive %buf but never access it: each waits only for the alloc that
+  // defines it, and they do not wait for each other or for the put that reads
+  // %buf before them.
+  func.func @herds_with_unused_args() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0, %arg1) in (%arg2=%c1, %arg3=%c1) {
+    // CHECK-LABEL: func.func @herds_with_unused_args
+      air.segment {
+        %c1_0 = arith.constant 1 : index
+        %buf = memref.alloc() : memref<256xi32, 2>
+        // CHECK: %[[ALLOC:.*]], %{{.*}} = air.execute
+        air.channel.put @unused_args_chan[] (%buf[] [] []) : (memref<256xi32, 2>)
+        // CHECK: air.channel.put async [%[[ALLOC]]]
+        air.herd tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%buf) : memref<256xi32, 2> {
+        // CHECK: air.herd async [%[[ALLOC]]]
+          %b = memref.alloc() : memref<256xi32, 2>
+          air.channel.get @unused_args_chan[] (%b[] [] []) : (memref<256xi32, 2>)
+          memref.dealloc %b : memref<256xi32, 2>
+        }
+        air.herd tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%buf) : memref<256xi32, 2> {
+        // CHECK: air.herd async [%[[ALLOC]]]
+        }
+        memref.dealloc %buf : memref<256xi32, 2>
+      }
+    }
+    return
+  }
+  // A read through a reshape view is a read: @h only reads %buf (through
+  // memref.collapse_shape), so it does not wait for the put that also reads
+  // %buf. It holds the get matching that put, which an edge would deadlock.
+  func.func @herd_reads_reshaped_arg() {
+    // CHECK-LABEL: func.func @herd_reads_reshaped_arg
+    air.segment @s {
+      %c1_0 = arith.constant 1 : index
+      %buf = memref.alloc() : memref<4x16xi32, 1>
+      // CHECK: %[[ALLOC:.*]], %{{.*}} = air.execute
+      air.channel.put @reshape_feed[] (%buf[] [] []) : (memref<4x16xi32, 1>)
+      // CHECK: air.channel.put async [%[[ALLOC]]]
+      air.herd @h tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%buf) : memref<4x16xi32, 1> {
+      // CHECK: air.herd @h async [%[[ALLOC]]]
+        %l = memref.alloc() : memref<4x16xi32, 2>
+        air.channel.get @reshape_feed[%tx, %ty] (%l[] [] []) : (memref<4x16xi32, 2>)
+        %flat = memref.collapse_shape %a [[0, 1]] : memref<4x16xi32, 1> into memref<64xi32, 1>
+        air.channel.put @reshape_drain[%tx, %ty] (%flat[] [] []) : (memref<64xi32, 1>)
+        memref.dealloc %l : memref<4x16xi32, 2>
+      }
+      %o = memref.alloc() : memref<64xi32, 1>
+      air.channel.get @reshape_drain[] (%o[] [] []) : (memref<64xi32, 1>)
     }
     return
   }

@@ -8,16 +8,16 @@
 // RUN: air-opt %s -air-dependency | FileCheck %s
 
 // A launch-scope air.channel.get that drains data produced on-device (its
-// matching air.channel.put lives inside a herd/segment, writing a disjoint L1
-// buffer) has an implicit producer->consumer dependency on the producing
-// segment. The memref tracer cannot see it (drain writes L3 %aout, the producer
-// writes L1), so air-dependency must add an explicit edge from the segment to
-// the drain get. Without it the drain floats ahead of the segment and its host
-// wait is emitted before the data can exist.
+// matching air.channel.put lives inside a herd in a segment) must not wait for
+// the segment. Both ends are async, so the put finishes only once the get has
+// started; the segment's token fires only once the put has finished. An edge
+// from the segment to the get would deadlock. The segment takes %aout as an
+// arg but never accesses it, so it gives no footprint on %aout either. The host
+// wait for the drain is placed at the launch terminator by AIRLowering.
 
-// CHECK: %[[SEG:.*]] = air.segment @seg async
-// The drain get depends on the producing segment:
-// CHECK: air.channel.get async [%[[SEG]]]  @drain[] (%{{.*}}[] [] []) {{.*}}: (memref<64xi32>)
+// CHECK: air.segment @seg async
+// CHECK: air.channel.put async [%{{.*}}]  @drain[]
+// CHECK: air.channel.get async  @drain[] (%{{.*}}[] [] []) {{.*}}: (memref<64xi32>)
 
 module {
   air.channel @drain [1]

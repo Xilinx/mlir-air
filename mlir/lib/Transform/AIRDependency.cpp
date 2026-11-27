@@ -493,6 +493,26 @@ public:
               accessor, sink_op_memref_reads, sink_op_memref_writes,
               sink_op_scalar_ins, sink_op_scalar_outs);
 
+        // A hierarchy op accesses its memref args as its body does.
+        if (auto hier = dyn_cast<air::HierarchyInterface>(op)) {
+          sink_op_memref_reads.clear();
+          sink_op_memref_writes.clear();
+          for (unsigned i = 0; i < hier.getNumKernelOperands(); i++) {
+            Value operand = hier.getKernelOperand(i);
+            if (!isa<BaseMemRefType>(operand.getType()))
+              continue;
+            // The arg's value exists once its defining op is done.
+            pushDefiningOpAsDep<air::HierarchyInterface>(operand, hier);
+            air::HierarchyArgAccess access =
+                air::getHierarchyArgAccess(hier.getKernelArgument(i));
+            if (access == air::HierarchyArgAccess::None)
+              continue;
+            sink_op_memref_reads.push_back(partialMemref(operand));
+            if (access == air::HierarchyArgAccess::Write)
+              sink_op_memref_writes.push_back(partialMemref(operand));
+          }
+        }
+
         // Detect dependencies
         if (auto async_execute_op = dyn_cast_if_present<air::ExecuteOp>(op)) {
           // Detect RAW deps
@@ -525,7 +545,6 @@ public:
                                            "WAW/WAR");
           traceTileIndices(sink_op_memref_reads, sink_op_memref_writes,
                            sink_op_scalar_ins, sink_op_scalar_outs, channel_op);
-          traceChannelProducerHierarchyDep(channel_op);
           opIdToOpMap[std::make_pair("channel", channel_op.getId())] =
               channel_op;
         } else if (auto hier_op =
@@ -1222,44 +1241,6 @@ private:
     }
   }
 
-  char checkOperandReadOrWrite(mlir::Value operand) {
-    if (!llvm::isa<BaseMemRefType>(operand.getType())) {
-      operand.getDefiningOp()->emitOpError(
-          "operand being traced is not a memref");
-    }
-    bool foundWriteAccess = false;
-    bool foundReadAccess = false;
-    for (auto &u : operand.getUses()) {
-      auto writeAccesses =
-          air::getAllWriteAccessedMemrefOperandsFromOp(u.getOwner());
-      auto readAccesses =
-          air::getAllReadAccessedMemrefOperandsFromOp(u.getOwner());
-      if (failed(writeAccesses) || failed(readAccesses)) {
-        operand.getDefiningOp()->emitOpError(
-            "has user which failed to get memref accesses.");
-        return 'x';
-      }
-      foundWriteAccess =
-          foundWriteAccess ||
-          llvm::any_of(*writeAccesses,
-                       [&u](const air::MemrefAccessPattern &entry) {
-                         return entry.first == u.get();
-                       });
-      foundReadAccess =
-          foundReadAccess ||
-          llvm::any_of(*readAccesses,
-                       [&u](const air::MemrefAccessPattern &entry) {
-                         return entry.first == u.get();
-                       });
-    }
-    if (foundWriteAccess)
-      return 'w';
-    else if (foundReadAccess)
-      return 'r';
-    else
-      return 'w';
-  }
-
   // Trace operand's uses at current scope
   template <typename T>
   void pushDepsAtCurrentScope(mlir::Value operand, T op, char rw = 'n',
@@ -1359,9 +1340,10 @@ private:
              hier_argument_id < hier.getNumKernelOperands();
              hier_argument_id++) {
           if (u.is(hier.getKernelOperand(hier_argument_id))) {
-            auto child_op = hier.getKernelArgument(hier_argument_id);
-            char rw_check = checkOperandReadOrWrite(child_op);
-            if (rw == 'n' || rw_check == rw) {
+            air::HierarchyArgAccess access = air::getHierarchyArgAccess(
+                hier.getKernelArgument(hier_argument_id));
+            if (access == air::HierarchyArgAccess::Write ||
+                (access == air::HierarchyArgAccess::Read && rw == 'n')) {
               addAsyncDepToGraphIfNew<T>(hier->getResult(0), op);
             }
           }
@@ -1426,41 +1408,6 @@ private:
         SmallVector<partialMemref, 1> subview_operands = {subview_tile};
         traceDeps<T>(subview_operands, sink_air_op, dep_type);
       }
-    }
-  }
-
-  // Channel put->get backpressure across a hierarchy boundary. A
-  // launch/segment-scope air.channel.get (consumer) whose matching
-  // air.channel.put (producer) lives inside a sibling hierarchy op
-  // (air.segment/herd/launch) has an implicit data dependency on that
-  // hierarchy: the get drains what the hierarchy produces. The memref-based
-  // tracer cannot see it -- the two ops touch disjoint memrefs across the
-  // scope boundary (e.g. an L1 producer buffer vs an L3 host buffer) -- so add
-  // the edge explicitly. Without it a launch-scope drain to host DDR is
-  // scheduled ahead of the producing segment and its wait is emitted before the
-  // data can exist.
-  void traceChannelProducerHierarchyDep(air::ChannelInterface channel_op) {
-    auto get = dyn_cast<air::ChannelGetOp>(channel_op.getOperation());
-    if (!get)
-      return;
-    Block *getBlock = get->getBlock();
-    DominanceInfo domInfo(getBlock->getParentOp());
-    for (air::ChannelPutOp put : getTheOtherChannelOpThroughSymbol(get)) {
-      // Walk up from the producer to the ancestor that is a sibling of the get
-      // (a direct child of the get's block). A same-scope partner (anc == put)
-      // or one under an unrelated block (anc == null) needs no explicit edge.
-      Operation *anc = put.getOperation();
-      while (anc && anc->getBlock() != getBlock)
-        anc = anc->getParentOp();
-      if (!anc || anc == get.getOperation())
-        continue;
-      auto hier = dyn_cast<air::HierarchyInterface>(anc);
-      if (!hier)
-        continue;
-      if (!domInfo.properlyDominates(hier.getOperation(), get.getOperation()))
-        continue;
-      addAsyncDepToGraphIfNew<air::ChannelInterface>(hier->getResult(0),
-                                                     channel_op);
     }
   }
 
